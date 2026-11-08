@@ -38,6 +38,9 @@ HOME_TEMPLATE_ENV = "CLIO_AGENT_CLIO_CODER_HOME_TEMPLATE"
 MODEL_ENV = "CLIO_AGENT_CLIO_CODER_MODEL"
 URL_ENV = "CLIO_AGENT_CLIO_CODER_URL"
 KEY_ENV_ENV = "CLIO_AGENT_CLIO_CODER_API_KEY_ENV"
+#: Clio Coder autonomy levels, least to most; a delegation never exceeds the dispatcher's.
+AUTONOMY_LEVELS = ("read-only", "default", "yolo")
+AUTONOMY_INHERIT = "inherit"
 DIFF_LIMIT = 60_000
 TEXT_LIMIT = 20_000
 _CANCEL_POLL_SECONDS = 0.5
@@ -62,13 +65,38 @@ def _target_from_env() -> ClioCoderTarget | None:
     )
 
 
-def _workspace_root() -> tuple[Any, str, Path]:
+def _active_session() -> tuple[Any, Any, Path]:
     app, sid = context.active_app(), context.active_session_id()
     session = app.state.sessions.get(sid) if app is not None and sid else None
     workspace = app.state.workspaces.get(session.workspace_id) if session is not None else None
     if workspace is None or not workspace.root_path:
         raise ValueError("Delegating to Clio Coder requires an active workspace conversation")
-    return app, sid, Path(workspace.root_path)
+    return app, session, Path(workspace.root_path)
+
+
+def autonomy_ceiling(session: Any) -> str:
+    """The most autonomy this conversation can hand down: its own, never more.
+
+    A plan-mode conversation may delegate only read-only work; only a conversation whose
+    approvals are bypassed (CLIO's yolo) may run Clio Coder in yolo.
+    """
+    if getattr(session, "mode", "edit") == "plan":
+        return "read-only"
+    return "yolo" if getattr(session, "approval_mode", "ask") == "bypass" else "default"
+
+
+def resolve_autonomy(requested: str, ceiling: str) -> str:
+    """``inherit`` takes the ceiling; an explicit level must not exceed it."""
+    if requested == AUTONOMY_INHERIT:
+        return ceiling
+    if requested not in AUTONOMY_LEVELS:
+        raise ValueError(f"autonomy must be one of inherit, {', '.join(AUTONOMY_LEVELS)}")
+    if AUTONOMY_LEVELS.index(requested) > AUTONOMY_LEVELS.index(ceiling):
+        raise ValueError(
+            f"autonomy {requested} exceeds this conversation's autonomy ({ceiling}); a delegated "
+            "run may only have the same or less"
+        )
+    return requested
 
 
 async def _approve(app: Any, args: dict[str, Any], root: Path) -> None:
@@ -114,7 +142,7 @@ async def delegate_to_clio_coder(
     follow_ups: list[str] | None = None,
     verify_command: str = "",
     timeout_s: float = 900,
-    autonomy: str = "default",
+    autonomy: str = AUTONOMY_INHERIT,
     allow_permission_asks: bool = False,
 ) -> dict[str, Any]:
     """Hand a self-contained coding task to a fresh Clio Coder instance and get the change back.
@@ -127,8 +155,11 @@ async def delegate_to_clio_coder(
     the same Clio Coder session. verify_command is a shell command run from the worktree root
     (for example `pytest -q tests/test_x.py`); it is declared to the instance and run again by
     CLIO afterwards; treat verified=false or a failed outcome as unaccepted work. autonomy
-    `yolo` runs without Clio Coder's own asks (its sandbox and safety judge stay on);
-    allow_permission_asks approves each ask Clio Coder raises, otherwise every ask is refused.
+    defaults to `inherit` (this conversation's own level) and may only be lowered: `read-only`
+    (no writes or commands), `default`, or `yolo` (no Clio Coder asks; its sandbox and safety
+    judge stay on), which needs a conversation whose approvals are bypassed.
+    allow_permission_asks approves each ask Clio Coder raises (also only when approvals are
+    bypassed); otherwise every ask is refused.
     timeout_s bounds the whole session (60 to 3600 seconds). The change is committed on the
     returned branch (`commit`); landing it is a separate step, for example
     `git diff <base_commit> <commit> | git apply` in the checkout, a merge, or discarding it.
@@ -137,11 +168,16 @@ async def delegate_to_clio_coder(
         raise ValueError("Provide a nonempty coding task")
     if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or not 60 <= timeout_s <= 3600:
         raise ValueError("timeout_s must be between 60 and 3600 seconds")
-    if autonomy not in ("default", "yolo"):
-        raise ValueError("autonomy must be 'default' or 'yolo'")
     follow_ups = [str(item) for item in follow_ups or [] if str(item).strip()]
     verify = _shell_argv(verify_command) if verify_command.strip() else None
-    app, _sid, root = _workspace_root()
+    app, session, root = _active_session()
+    ceiling = autonomy_ceiling(session)
+    autonomy = resolve_autonomy(autonomy, ceiling)
+    if allow_permission_asks and ceiling != "yolo":
+        raise ValueError(
+            "allow_permission_asks approves Clio Coder's asks without the person, so it needs a "
+            "conversation whose approvals are bypassed"
+        )
     if not (root / ".git").exists():
         raise ValueError(f"Clio Coder delegation needs a git repository; {root} is not one")
     args = {
@@ -162,7 +198,11 @@ async def delegate_to_clio_coder(
         follow_ups=follow_ups,
         target=_target_from_env(),
         home_template=Path(template) if template else None,
-        options=RunOptions(autonomy=autonomy, timeout=timeout_s),
+        options=RunOptions(
+            autonomy="default" if autonomy == "read-only" else autonomy,
+            read_only=autonomy == "read-only",
+            timeout=timeout_s,
+        ),
         verify_command=verify,
     )
     if request.target is None and request.home_template is None:
@@ -325,9 +365,9 @@ def build_delegate_to_clio_coder_tool() -> Any:
             },
             "autonomy": {
                 "type": "string",
-                "enum": ["default", "yolo"],
-                "default": "default",
-                "description": "Clio Coder autonomy; yolo skips its asks, keeps its sandbox.",
+                "enum": [AUTONOMY_INHERIT, *AUTONOMY_LEVELS],
+                "default": AUTONOMY_INHERIT,
+                "description": "Clio Coder autonomy: this conversation's own (inherit) or less.",
             },
             "allow_permission_asks": {
                 "type": "boolean",

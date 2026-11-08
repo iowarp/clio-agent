@@ -113,8 +113,26 @@ async def test_arguments_are_validated_before_any_instance_starts() -> None:
         await tool.delegate_to_clio_coder("  ")
     with pytest.raises(ValueError, match="timeout_s"):
         await tool.delegate_to_clio_coder("x", timeout_s=5)
-    with pytest.raises(ValueError, match="autonomy"):
-        await tool.delegate_to_clio_coder("x", autonomy="root")
+
+
+def test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it() -> None:
+    from types import SimpleNamespace
+
+    def ceiling(mode: str = "edit", approval_mode: str = "ask") -> str:
+        return tool.autonomy_ceiling(SimpleNamespace(mode=mode, approval_mode=approval_mode))
+
+    assert ceiling() == "default"
+    assert ceiling(approval_mode="auto-edits") == "default"
+    assert ceiling(approval_mode="bypass") == "yolo"
+    assert ceiling(mode="plan", approval_mode="bypass") == "read-only"
+    assert tool.resolve_autonomy("inherit", "yolo") == "yolo"
+    assert tool.resolve_autonomy("read-only", "default") == "read-only"
+    with pytest.raises(ValueError, match="exceeds this conversation's autonomy"):
+        tool.resolve_autonomy("yolo", "default")
+    with pytest.raises(ValueError, match="exceeds"):
+        tool.resolve_autonomy("default", "read-only")
+    with pytest.raises(ValueError, match="autonomy must be one of"):
+        tool.resolve_autonomy("root", "yolo")
 
 
 def test_the_tool_is_withheld_when_clio_coder_is_not_installed(
