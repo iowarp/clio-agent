@@ -81,6 +81,17 @@ def smoke(app: Path, *, bundled: bool) -> None:
             runtime = app / "Contents/Resources/gact-runtime"
             if not (runtime / "runtime.json").is_file():
                 raise ValueError("Bundled app has no runtime manifest")
+            # The signed app's own git must run with no git on PATH (a fresh Mac
+            # has only the developer-tools placeholder at /usr/bin/git).
+            git = runtime / "git/libexec/git-core/git"
+            if not git.is_file():
+                raise ValueError("Bundled app has no git")
+            subprocess.run(
+                [str(git), "--version"],
+                env={"PATH": "/var/empty", "HOME": str(root)},
+                check=True,
+                timeout=30,
+            )
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]

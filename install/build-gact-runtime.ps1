@@ -182,6 +182,67 @@ New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
 Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uv.exe') -Force
 Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
 
+# CLIO installs marketplace plugins with git, which a fresh Windows machine does
+# not have. Ship Git for Windows' MinGit (relocatable by design; entry point
+# git\cmd\git.exe, resolved by clio_agent/runtime/git_executable.py). Git
+# Credential Manager (.NET/Avalonia, ~35 MB) and the updater are removed: CLIO
+# clones public marketplaces, and a person's installed Git keeps serving their
+# own shells.
+$mingitVersion = '2.56.0.4'
+$mingitTag = 'v2.56.0.windows.4'
+if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+  $mingitAsset = "MinGit-$mingitVersion-arm64.zip"
+  $mingitSha256 = '70f7649f78088c1db1d2f3571ca46a04d5bef06e4e9d56d8ed7f9829e8c6c4db'
+} else {
+  $mingitAsset = "MinGit-$mingitVersion-64-bit.zip"
+  $mingitSha256 = 'e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877'
+}
+$gitRoot = Join-Path $Out 'git'
+$mingitZip = Join-Path ([System.IO.Path]::GetTempPath()) $mingitAsset
+Write-Host "[build-gact-runtime] downloading $mingitAsset"
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/git-for-windows/git/releases/download/$mingitTag/$mingitAsset" -OutFile $mingitZip
+$mingitActual = (Get-FileHash -LiteralPath $mingitZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($mingitActual -ne $mingitSha256) {
+  throw "build-gact-runtime: $mingitAsset checksum $mingitActual, expected $mingitSha256"
+}
+Expand-Archive -LiteralPath $mingitZip -DestinationPath $gitRoot -Force
+Remove-Item -LiteralPath $mingitZip -Force
+$gcmPatterns = @(
+  'Atlassian.*.dll', 'Avalonia*.dll', 'GitHub.dll', 'GitLab.dll', 'HarfBuzzSharp.dll',
+  'libHarfBuzzSharp.dll', 'MicroCom.Runtime.dll', 'Microsoft.*.dll', 'SkiaSharp.dll',
+  'libSkiaSharp.dll', 'System.*.dll', 'av_libglesv2.dll', 'gcmcore.dll', 'msalruntime.dll',
+  'git-credential-manager.exe', 'git-credential-manager.exe.config',
+  'git-credential-helper-selector.exe', 'git-update-git-for-windows', 'scalar.exe'
+)
+foreach ($mingwBin in @('ucrt64\bin', 'clangarm64\bin', 'mingw64\bin')) {
+  $dir = Join-Path $gitRoot $mingwBin
+  if (-not (Test-Path -LiteralPath $dir)) { continue }
+  foreach ($pattern in $gcmPatterns) {
+    Get-ChildItem -LiteralPath $dir -Filter $pattern -File -ErrorAction SilentlyContinue |
+      Remove-Item -Force
+  }
+}
+Remove-Item -LiteralPath (Join-Path $gitRoot 'cmd\scalar.exe') -Force -ErrorAction SilentlyContinue
+# MinGit's system config names the removed manager and an LFS filter that is not
+# shipped, and includes an installed Git's config. Keep its line-ending and pack
+# defaults; use the Windows certificate store (Schannel) so enterprise roots work.
+$gitConfig = @"
+[core]
+	symlinks = false
+	autocrlf = true
+[pack]
+	packSizeLimit = 2g
+[http]
+	sslBackend = schannel
+"@
+[System.IO.File]::WriteAllText((Join-Path $gitRoot 'etc\gitconfig'), $gitConfig.Replace("`r`n", "`n") + "`n")
+$bundledGit = Join-Path $gitRoot 'cmd\git.exe'
+if (-not (Test-Path -LiteralPath $bundledGit)) {
+  throw "build-gact-runtime: MinGit has no cmd\git.exe"
+}
+Invoke-Native -Exe $bundledGit -Args @('--version')
+Write-Host "[build-gact-runtime] bundled git: $(Get-DirSizeMB $gitRoot) MB"
+
 $sizeBefore = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size before prune: $sizeBefore MB"
 
@@ -319,6 +380,31 @@ Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-m', 'clio_agent.gact', '--help
 Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
 $relocUv = Join-Path $reloc 'bin\uv.exe'
 Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
+# The bundled git must work through CLIO's resolver with no git on PATH.
+Write-Host "[build-gact-runtime] sanity (relocated): bundled git ls-remote without git on PATH"
+$gitProbe = @'
+from clio_agent.runtime.git_executable import resolve_git, run_git
+git = resolve_git()
+if git.source != "bundled":
+    raise SystemExit(f"build-gact-runtime: resolver chose {git.source} git {git.path}")
+run_git(["ls-remote", "https://github.com/iowarp/clio-agent-marketplace.git", "HEAD"],
+        check=True, capture_output=True, timeout=120)
+print(f"[build-gact-runtime] bundled git OK: {git.path}")
+'@
+# A script file, not -c: Windows PowerShell 5.1 mangles quotes in native arguments.
+$gitProbeFile = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-git-probe-" + [System.IO.Path]::GetRandomFileName() + ".py")
+[System.IO.File]::WriteAllText($gitProbeFile, $gitProbe)
+$previousPath = $env:PATH
+$previousGitExecPath = $env:GIT_EXEC_PATH
+try {
+  $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+  Remove-Item Env:GIT_EXEC_PATH -ErrorAction SilentlyContinue
+  Invoke-Native -Exe $relocPy -Args @('-I', '-B', $gitProbeFile)
+} finally {
+  $env:PATH = $previousPath
+  if ($null -ne $previousGitExecPath) { $env:GIT_EXEC_PATH = $previousGitExecPath }
+  Remove-Item -LiteralPath $gitProbeFile -Force -ErrorAction SilentlyContinue
+}
 # Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
 # the relocated image can launch clio-core and select the intended tiered
 # backend instead of degrading to LocalFS after installation.
