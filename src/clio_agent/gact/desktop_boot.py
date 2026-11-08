@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 from argparse import SUPPRESS, ArgumentParser, Namespace
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 _DESKTOP_HEARTBEAT_ENV = "CLIO_DESKTOP_BOOT_HEARTBEAT"
@@ -39,6 +39,9 @@ def _capabilities_ready() -> bool:
     try:
         with urlopen(request, timeout=0.5) as response:  # noqa: S310 - loopback URL only
             return response.status == 200
+    except HTTPError as exc:
+        # The server answers; only its startup gate (503) still means "starting".
+        return exc.code != 503
     except (OSError, URLError):
         return False
 
@@ -65,11 +68,11 @@ def start_desktop_boot_heartbeat() -> bool:
         _heartbeat_started = True
 
     def _report() -> None:
+        # Check before every line: the desktop may already show the backend as
+        # ready, and a late "active" line would move its progress backwards.
         interval = threading.Event()
-        while True:
+        while not _capabilities_ready():
             print("sidecar-progress: backend startup is active", file=sys.stderr, flush=True)
-            if _capabilities_ready():
-                return
             interval.wait(_HEARTBEAT_INTERVAL_SECONDS)
 
     threading.Thread(
