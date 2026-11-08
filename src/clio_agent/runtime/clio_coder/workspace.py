@@ -1,0 +1,166 @@
+"""Disposable git worktrees for delegated work, the diff hand-back, and the caller's own check."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+from clio_agent.runtime.clio_coder.launch import REASON_WORKSPACE, ClioCoderError
+from clio_agent.runtime.clio_coder.results import Verification
+
+#: Clio Coder's own project-local state never counts as part of the delegated change.
+_EXCLUDED_PATHSPECS = (":(exclude).clio-coder", ":(exclude)CLIO-CODER.md")
+_OUTPUT_TAIL_BYTES = 4000
+_VERIFIER_CATALOG = Path(".clio-coder") / "verifiers.yaml"
+ACCEPTANCE_CHECK_ID = "clio-agent-acceptance"
+
+
+@dataclass(frozen=True)
+class Workspace:
+    path: Path
+    repo: Path | None = None
+    branch: str | None = None
+    base_commit: str | None = None
+
+    @property
+    def is_worktree(self) -> bool:
+        return self.branch is not None
+
+
+def _git(cwd: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        raise ClioCoderError(
+            REASON_WORKSPACE,
+            f"git {args[0]} failed",
+            {"args": list(args), "stderr": completed.stderr.strip()[-2000:]},
+        )
+    return completed.stdout
+
+
+def create_worktree(repo: Path, root: Path, run_id: str) -> Workspace:
+    """Check out ``repo``'s HEAD into ``root/run_id`` on a fresh ``clio-coder/<run_id>`` branch."""
+    repo = Path(_git(repo, "rev-parse", "--show-toplevel").strip())
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    branch = f"clio-coder/{run_id}"
+    path = root / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    _git(repo, "worktree", "add", "--quiet", "-b", branch, str(path), base)
+    return Workspace(path=path, repo=repo, branch=branch, base_commit=base)
+
+
+def adopt_directory(path: Path) -> Workspace:
+    """Use an existing directory in place; the base is its HEAD when it is a git checkout."""
+    try:
+        base = _git(path, "rev-parse", "HEAD").strip()
+    except ClioCoderError:
+        base = None
+    return Workspace(path=path, base_commit=base)
+
+
+def collect_changes(workspace: Workspace) -> tuple[list[str], str]:
+    """Return the changed paths and the unified diff against the base, untracked files included."""
+    if workspace.base_commit is None:
+        return [], ""
+    if workspace.is_worktree:
+        _git(workspace.path, "add", "--all", "--", ".", *_EXCLUDED_PATHSPECS)
+        diff_args = ("diff", "--cached", workspace.base_commit, "--", ".", *_EXCLUDED_PATHSPECS)
+    else:
+        # In an adopted checkout the index belongs to the operator: report without staging.
+        diff_args = ("diff", workspace.base_commit, "--", ".", *_EXCLUDED_PATHSPECS)
+    names = _git(workspace.path, *diff_args[:1], "--name-only", *diff_args[1:])
+    return [line for line in names.splitlines() if line], _git(workspace.path, *diff_args)
+
+
+def declare_acceptance_check(workspace: Workspace, command: Sequence[str], timeout: float) -> bool:
+    """Declare the parent's acceptance check as a Clio Coder verifier in the worktree.
+
+    Clio Coder's finish gate then validates against the same check the parent will run, instead
+    of recording an unverifiable limitation. Only a worktree is touched; an adopted checkout
+    belongs to the operator. Returns whether the check is declared.
+    """
+    if not workspace.is_worktree:
+        return False
+    catalog_path = workspace.path / _VERIFIER_CATALOG
+    catalog: dict = {"version": 2, "checks": []}
+    if catalog_path.exists():
+        loaded = yaml.safe_load(catalog_path.read_text("utf-8")) or {}
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("checks", []), list):
+            raise ClioCoderError(
+                REASON_WORKSPACE,
+                "the repository's .clio-coder/verifiers.yaml is not a check catalog",
+                {"path": str(catalog_path)},
+            )
+        catalog = {**loaded, "checks": list(loaded.get("checks", []))}
+    catalog["checks"] = [c for c in catalog["checks"] if c.get("id") != ACCEPTANCE_CHECK_ID]
+    catalog["checks"].append(
+        {
+            "id": ACCEPTANCE_CHECK_ID,
+            "description": "Acceptance check the delegating agent runs on the hand-back",
+            "command": list(command),
+            "cwd": ".",
+            "timeoutMs": int(timeout * 1000),
+            "tags": ["test", "acceptance"],
+        }
+    )
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False), "utf-8")
+    return True
+
+
+def remove_worktree(workspace: Workspace) -> None:
+    """Delete the worktree and the branch this module created for it."""
+    if not workspace.is_worktree or workspace.repo is None:
+        return
+    _git(workspace.repo, "worktree", "remove", "--force", str(workspace.path))
+    _git(workspace.repo, "branch", "-D", str(workspace.branch))
+
+
+async def run_verification(
+    workspace: Workspace, command: Sequence[str], *, timeout: float
+) -> Verification:
+    """Run the caller's check in the workspace as an owned, confined process tree."""
+    from clio_agent.runtime import sandbox
+    from clio_agent.runtime.task_process_tree import TaskProcessTree, task_spawn_options
+
+    confined = sandbox.wrap_confined(
+        command[0],
+        list(command[1:]),
+        write_roots=(workspace.path,),
+        profile=sandbox.PROFILE_SHELL,
+        cwd=workspace.path,
+    )
+    process = await asyncio.create_subprocess_exec(
+        confined.command,
+        *confined.args,
+        cwd=str(workspace.path),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        **task_spawn_options(confined.popen_kwargs),
+    )
+    tree = TaskProcessTree(process.pid)
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout)
+        exit_code = process.returncode
+    except TimeoutError:
+        tree.terminate()
+        await process.wait()
+        output, exit_code = f"verification timed out after {timeout}s".encode(), None
+    finally:
+        if tree.active():
+            tree.terminate()
+        tree.close()
+    text = output.decode("utf-8", "replace")
+    return Verification(list(command), exit_code, text[-_OUTPUT_TAIL_BYTES:])
