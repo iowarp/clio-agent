@@ -568,7 +568,7 @@ def delete_podman_data(root: Path, manifest: dict[str, Any]) -> None:
             root,
             [
                 "unshare",
-                "python3",
+                sys.executable,
                 "-c",
                 "import shutil,sys; shutil.rmtree(sys.argv[1])",
                 str(data),

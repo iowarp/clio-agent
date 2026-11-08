@@ -41,3 +41,29 @@ async def test_python3_resolves_to_clio_interpreter_over_an_older_system_python(
 
     assert result.exit_code == 0
     assert result.stdout.strip() == str(tuple(sys.version_info[:2]))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shim directory")
+async def test_python3_is_clio_interpreter_even_when_its_directory_has_no_python3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A bundled runtime whose bin/ holds only python3.X; /usr/bin/python3 on a Mac
+    # without the Command Line Tools is a stub that opens an install dialog.
+    runtime_bin = tmp_path / "runtime" / "bin"
+    runtime_bin.mkdir(parents=True)
+    interpreter = runtime_bin / f"python{sys.version_info[0]}.{sys.version_info[1]}"
+    interpreter.symlink_to(os.path.realpath(sys.executable))
+    stub_dir = tmp_path / "usr-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "python3"
+    stub.write_text("#!/bin/sh\necho clt-stub-dialog\nexit 1\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(interpreter))
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}/bin")
+
+    result = await run_local(
+        CommandSpec(program="python3", args=["-c", "print('clio')"], timeout_seconds=30)
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "clio"
