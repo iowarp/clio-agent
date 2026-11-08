@@ -236,18 +236,21 @@ install_desktop_linux() {
 install_desktop_mac() {
   local scratch="$1" asset="$2" destination app staging backup=""
   pgrep -x clio-desktop >/dev/null && die "Quit CLIO Desktop before installing."
-  hdiutil verify "$scratch/$asset" >/dev/null || die "the disk image failed verification"
+  # The image's SHA-256 is already checked against the release; the app's signature
+  # is checked once, on the copy that is installed.
   mkdir "$scratch/mount"
   hdiutil attach "$scratch/$asset" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
   app="$scratch/mount/CLIO Desktop.app"
   [ -d "$app" ] || die "the disk image does not contain CLIO Desktop.app"
-  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
   destination="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
   case "$destination" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
   mkdir -p "$destination"
   staging="$(mktemp -d "$destination/.clio-install.XXXXXXXX")"
   ditto "$app" "$staging/CLIO Desktop.app"
-  codesign --verify --deep --strict "$staging/CLIO Desktop.app" || die "the copied app failed its signature check"
+  if ! codesign --verify --deep --strict "$staging/CLIO Desktop.app"; then
+    rm -rf "$staging"
+    die "the app's signature is invalid or absent; nothing installed"
+  fi
   if [ -e "$destination/CLIO Desktop.app" ]; then
     backup="$destination/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
     mv "$destination/CLIO Desktop.app" "$backup"
@@ -259,7 +262,8 @@ install_desktop_mac() {
   rmdir "$staging"
   say "Installed: $destination/CLIO Desktop.app"
   [ -z "$backup" ] || say "Previous app kept: $backup"
-  say "Open CLIO Desktop from Applications. macOS may ask once: Privacy & Security > Open Anyway."
+  # curl does not quarantine what it downloads, so Gatekeeper does not prompt for this copy.
+  say "Open it from $destination in Finder, or run: open \"$destination/CLIO Desktop.app\""
 }
 
 if [ "$OPT_DESKTOP" = 1 ]; then
@@ -756,6 +760,26 @@ chmod +x "$PREFIX/uninstall.sh"
 
 # ---------- finishing notes -------------------------------------------
 say "Done."
+# macOS defaults to zsh; name the startup file of the shell this person actually uses.
+case "$(basename "${SHELL:-}")" in
+  zsh)  shell_rc="$HOME/.zshrc"; completion_line="autoload -Uz compinit && compinit; source <(clio completion zsh)" ;;
+  bash) if [ "$OS" = darwin ]; then shell_rc="$HOME/.bash_profile"; else shell_rc="$HOME/.bashrc"; fi
+        completion_line="source <(clio completion bash)" ;;
+  *)    shell_rc="" ;;
+esac
+case ":$PATH:" in
+  *":$BIN_DIR:"*) path_step="$BIN_DIR is already on your PATH." ;;
+  *) if [ -n "$shell_rc" ]; then
+       path_step="Add $BIN_DIR to your PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> \"$shell_rc\""
+     else
+       path_step="Add $BIN_DIR to your PATH in your shell's startup file."
+     fi ;;
+esac
+if [ -n "$shell_rc" ]; then
+  completion_step="Tab-completion:    echo '$completion_line' >> \"$shell_rc\""
+else
+  completion_step="Tab-completion:    clio completion bash|zsh prints a script for your shell"
+fi
 clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
 cat <<EOF
 
@@ -765,10 +789,10 @@ clio-agent:          $clio_src
 Frontend:            Web (release installs); Desktop is available with --desktop
 
 Next steps:
-  1. Make sure $BIN_DIR is on your PATH.
+  1. $path_step
   2. Run:   clio (Web), or clio start (headless service)
   3. Manage the server: clio status | clio restart | clio logs
-  4. Tab-completion:    clio completion bash >> ~/.bashrc   (or zsh)
+  4. $completion_step
   5. Uninstall:         clio uninstall   (add --purge to drop config)
 
 EOF

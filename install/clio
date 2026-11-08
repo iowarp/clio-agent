@@ -371,7 +371,8 @@ _clio() {
   cmds=($cmds)
   _describe 'command' cmds
 }
-_clio "\$@"
+# Autoloaded from fpath it completes; sourced from ~/.zshrc it registers.
+if [ "\$funcstack[1]" = "_clio" ]; then _clio "\$@"; else compdef _clio clio; fi
 EOF
       ;;
     *)
