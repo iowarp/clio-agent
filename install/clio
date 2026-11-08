@@ -122,6 +122,12 @@ serving_web() {
   curl --noproxy '*' -sS -m 1 "http://127.0.0.1:$CLIO_PORT/" 2>/dev/null | grep -qiE "<html|<!doctype html"
 }
 
+# file_mtime echoes a file's modification time in epoch seconds, or 0.
+# GNU stat spells it `-c %Y`; BSD/macOS stat spells it `-f %m`.
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 # update_check prints a one-line hint when the installed clio-agent is behind
 # the latest PyPI release. Best-effort: throttled to ~once/day via a stamp file,
 # bounded by a short curl timeout, and silent on any failure (offline, no venv).
@@ -130,7 +136,7 @@ serving_web() {
 update_check() {
   [[ "${CLIO_NO_UPDATE_CHECK:-0}" = "1" ]] && return 0
   if [[ -f "$UPDATE_STAMP" ]]; then
-    local age=$(( $(date +%s) - $(stat -c %Y "$UPDATE_STAMP" 2>/dev/null || echo 0) ))
+    local age=$(( $(date +%s) - $(file_mtime "$UPDATE_STAMP") ))
     [[ "$age" -lt 86400 ]] && return 0
   fi
   local installed latest behind
@@ -208,11 +214,26 @@ start_server() {
     return 1
   fi
   say "Starting CLIO server on :$CLIO_PORT (log: $SERVER_LOG)"
-  # setsid runs the server as its own session/process-group leader (PGID == PID)
+  # The server runs as its own session/process-group leader (PGID == PID)
   # so stop_server can group-kill the server AND every MCP child it spawns (the
   # uvx stdio servers) instead of orphaning them. It also detaches from the
   # controlling terminal (replaces nohup); stdin from /dev/null so the daemon
-  # never blocks on a read.
+  # never blocks on a read. macOS ships no setsid(1), so the install's own
+  # Python calls setsid(2) and then execs the server under the same PID.
+  local detach=()
+  if command -v setsid >/dev/null 2>&1; then
+    detach=(setsid)
+  elif [[ -x "$CLIO_VENV/bin/python" ]]; then
+    # setsid(2) fails only when the caller already leads a process group, which
+    # satisfies the group-kill contract as well.
+    detach=("$CLIO_VENV/bin/python" -I -B -c \
+      'import os, sys
+try:
+    os.setsid()
+except OSError:
+    pass
+os.execv(sys.argv[1], sys.argv[1:])')
+  fi
   (
     cd "$CLIO_PREFIX/clio-agent" &&
     api_port="$CLIO_PORT" &&
@@ -224,7 +245,7 @@ start_server() {
     # generic name for its native RPC listener, so leaking it would make the
     # runtime steal the HTTP API port. The agent already receives --port.
     unset CLIO_PORT &&
-    exec setsid "$SERVER_BIN" serve --port "$api_port" >"$SERVER_LOG" 2>&1 </dev/null
+    exec ${detach[@]+"${detach[@]}"} "$SERVER_BIN" serve --port "$api_port" >"$SERVER_LOG" 2>&1 </dev/null
   ) &
   echo $! >"$PIDFILE"
   SERVER_WAS_STARTED=1

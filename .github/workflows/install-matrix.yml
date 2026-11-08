@@ -239,6 +239,9 @@ jobs:
           rec --name "script: uninstall" -- "$CLIO_BIN_DIR/clio" uninstall --yes
           left=$(find "$CLIO_PREFIX" -type f 2>/dev/null | wc -l | tr -d ' ')
           echo "{\"name\": \"script: files left after uninstall\", \"os\": \"$RUNNER_OS\", \"seconds\": 0, \"exit_code\": $left, \"killed\": false, \"outcome\": \"$([ "$left" = 0 ] && echo ok || echo "$left files left")\"}" >> "$TIMINGS"
+      # The steps record and continue so one failure still reports the rest; the
+      # "Enforce budgets" step then fails the job on any required step that failed,
+      # including "source: start" (macOS never started while the launcher needed setsid(1)).
       - name: From source (POSIX)
         if: runner.os != 'Windows'
         continue-on-error: true

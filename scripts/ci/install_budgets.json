@@ -34,6 +34,21 @@
       "budget": "install < 180 s",
       "measured": "desktop job; runs on schedule and on request only"
     },
+    "source: start": {
+      "seconds": 90,
+      "ok": true,
+      "budget": "server starts within the launcher's 90 s window",
+      "measured": "new; macOS never started before the launcher stopped requiring setsid(1)",
+      "required_in": [
+        "script"
+      ]
+    },
+    "script: start": {
+      "seconds": 90,
+      "ok": true,
+      "budget": "server starts within the launcher's 90 s window",
+      "measured": "release path; runs on schedule and on request only"
+    },
     "source: stop": {
       "seconds": 20,
       "ok": true,
