@@ -180,7 +180,11 @@ Remove-Item -LiteralPath $constraints -Force -ErrorAction SilentlyContinue
 $runtimeBin = Join-Path $Out 'bin'
 New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
 Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uv.exe') -Force
-Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
+# uvx.exe is uv's shim that runs the sibling uv as `uv tool run`; a renamed uv
+# copy still behaves as plain uv.
+$uvx = Join-Path (Split-Path -Parent $uv.Source) 'uvx.exe'
+if (-not (Test-Path -LiteralPath $uvx -PathType Leaf)) { throw "uvx.exe shim missing beside $($uv.Source)" }
+Copy-Item -LiteralPath $uvx -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
 
 $sizeBefore = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size before prune: $sizeBefore MB"

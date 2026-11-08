@@ -148,7 +148,11 @@ rm -f "$CONSTRAINTS"
 # install developer tooling or configure PATH.
 mkdir -p "$OUT/bin"
 cp "$(command -v uv)" "$OUT/bin/uv"
-cp "$(command -v uv)" "$OUT/bin/uvx"
+# uvx is uv's own small shim that execs the sibling uv as `uv tool run`; a copy
+# of uv renamed uvx still behaves as plain uv (`uvx pkg` -> `uv pkg`).
+UVX="$(dirname "$(command -v uv)")/uvx"
+[ -x "$UVX" ] || { echo "build-gact-runtime: uvx shim missing beside uv" >&2; exit 1; }
+cp "$UVX" "$OUT/bin/uvx"
 chmod +x "$OUT/bin/uv" "$OUT/bin/uvx"
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
