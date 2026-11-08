@@ -207,6 +207,20 @@ def _extract_linux(archive: Path, root: Path) -> None:
                 contents.extractall(root, members=members, filter="data")
 
 
+def _copy_app_bundle(source: Path, target: Path) -> None:
+    """Copy a signed macOS app out of its image with its signature metadata intact.
+
+    ``shutil.copytree`` cannot copy extended attributes on macOS (``os.listxattr``
+    is Linux-only), which drops the ``com.apple.cs.*`` signatures of non-Mach-O
+    files. ``ditto`` keeps xattrs, ACLs and symlinks, and is part of base macOS.
+    """
+    ditto = Path("/usr/bin/ditto")
+    if ditto.is_file():
+        run([str(ditto), str(source), str(target)], cwd=target.parent, timeout=300)
+    else:
+        shutil.copytree(source, target, symlinks=True)
+
+
 def _extract(archive: Path, root: Path) -> None:
     if platform.system() == "Windows":
         from importlib import import_module
@@ -230,7 +244,7 @@ def _extract(archive: Path, root: Path) -> None:
                 timeout=120,
             )
             try:
-                shutil.copytree(mount / "LibreOffice.app", root / "LibreOffice.app", symlinks=True)
+                _copy_app_bundle(mount / "LibreOffice.app", root / "LibreOffice.app")
             finally:
                 run(["/usr/bin/hdiutil", "detach", str(mount)], cwd=root, timeout=30)
     else:
@@ -241,9 +255,11 @@ def _verify_office(executable_path: Path, *, cwd: Path) -> None:
     """Probe without joining another Office instance or touching the user's profile."""
     # A real Windows first launch can exhaust the native probe deadline while
     # the same binary verifies promptly after its timed-out process tree retires.
-    # Recover once with a new profile; keep the deadline and fail closed when
-    # neither attempt verifies. Other failures and platforms are not retried.
-    attempts = 2 if platform.system() == "Windows" else 1
+    # A macOS first launch is likewise delayed by the one-time Gatekeeper/XProtect
+    # assessment of the freshly copied app. Recover once with a new profile; keep
+    # the deadline and fail closed when neither attempt verifies. Other failures
+    # and Linux are not retried.
+    attempts = 2 if platform.system() in {"Windows", "Darwin"} else 1
     for attempt in range(attempts):
         temporary = tempfile.TemporaryDirectory(prefix="lo-version-")
         try:
