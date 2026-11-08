@@ -10,6 +10,7 @@ merged on their branch.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -94,9 +95,11 @@ def land_run(state_root: Path, repo: Path, run_id: str, action: str) -> LandResu
         raise ValueError(f"action must be {ACTION_APPLY} or {ACTION_DISCARD}")
     with run_lock(state_root, run_id):
         result = _land_locked(state_root, repo, run_id, action)
-        # The run has ended and refuses every later turn or land, so its lock file goes too.
+    # The run has ended and refuses every later turn or land, so its lock file goes too, once
+    # released (Windows cannot delete a held lock; a racing holder keeps it, harmlessly).
+    with contextlib.suppress(OSError):
         run_path(state_root, run_id).with_suffix(".lock").unlink(missing_ok=True)
-        return result
+    return result
 
 
 def _land_locked(state_root: Path, repo: Path, run_id: str, action: str) -> LandResult:

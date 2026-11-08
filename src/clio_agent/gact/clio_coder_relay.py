@@ -29,14 +29,20 @@ def _input_text(raw: Any) -> str:
     return text if len(text) <= _INPUT_LIMIT else text[:_INPUT_LIMIT] + "..."
 
 
-def describe_ask(params: Mapping[str, Any]) -> dict[str, Any]:
-    """The gate arguments for one ACP ``session/request_permission``: what Clio Coder wants."""
+def ask_locations(params: Mapping[str, Any]) -> list[str]:
+    """Every path a Clio Coder ask names; the gate checks them all."""
     call = params.get("toolCall") if isinstance(params.get("toolCall"), Mapping) else {}
-    locations = [
+    return [
         str(loc.get("path"))
         for loc in call.get("locations") or []
         if isinstance(loc, Mapping) and loc.get("path")
     ]
+
+
+def describe_ask(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The gate arguments for one ACP ``session/request_permission``: what Clio Coder wants."""
+    call = params.get("toolCall") if isinstance(params.get("toolCall"), Mapping) else {}
+    locations = ask_locations(params)
     return {
         "request": str(call.get("title") or "a tool call"),
         "kind": str(call.get("kind") or "other"),
@@ -64,7 +70,7 @@ def gate_permission_relay(app: Any, tool_name: str, run_id: str) -> PermissionHa
             summary += f": {ask['input']}"
         # Path-scoped policies match one ``path`` per call, so each location is gated on its own
         # and the ask is allowed only when every location is.
-        targets = ask["locations"] or [None]
+        targets = ask_locations(params) or [None]
         decision = "allow"
         for target in targets:
             args = {"run": run_id, **ask, **({"path": target} if target else {})}

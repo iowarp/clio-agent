@@ -307,12 +307,14 @@ async def test_a_path_scoped_deny_on_any_location_refuses_the_ask() -> None:
         **ASK,
         "toolCall": {
             **ASK["toolCall"],
-            "locations": [{"path": "/wt/build"}, {"path": "/wt/protected/key"}],
+            # Past the 20 locations the ask's description shows: the gate still sees every one.
+            "locations": [{"path": f"/wt/build/{i}"} for i in range(25)]
+            + [{"path": "/wt/protected/key"}],
         },
     }
     app = SimpleNamespace(state=SimpleNamespace(pending_permission_gate=gate))
     assert await relay.gate_permission_relay(app, tool.TOOL_NAME, RUN)(ask) == "reject-once"
-    assert paths == ["/wt/build", "/wt/protected/key"]
+    assert paths[-1] == "/wt/protected/key" and len(paths) == 26
 
 
 def test_progress_streams_session_finished_tools_and_notices_once_each(
