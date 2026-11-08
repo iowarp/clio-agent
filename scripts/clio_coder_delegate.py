@@ -54,7 +54,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model")
     parser.add_argument("--target")
     parser.add_argument("--target-url", help="write a one-target home for this endpoint")
-    parser.add_argument("--target-runtime", default="openai-compatible")
+    parser.add_argument("--target-runtime", default="openai-compat")
     parser.add_argument("--api-key-env")
     parser.add_argument("--autonomy", choices=("default", "yolo"), default="default")
     parser.add_argument("--read-only", action="store_true")

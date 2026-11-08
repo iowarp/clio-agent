@@ -338,6 +338,26 @@ def test_instance_home_refuses_relative_and_real_homes(tmp_path: Path) -> None:
     assert not {"CLIO_SECRET_X", "CLIO_GACT_BEARER_TOKEN", "CLIO_CODER_X"} & env.keys()
 
 
+def test_a_later_route_is_added_to_the_home_and_its_key_reaches_only_the_child(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    home = InstanceHome(tmp_path / "home", extra_env={"CLIO_DELEGATED_MODEL_API_KEY": "k"})
+    first = ClioCoderTarget(model="m1", target_id="clio-a", url="http://a/v1")
+    home.prepare(first)
+    home.prepare(ClioCoderTarget(model="m2", target_id="clio-b", api_key_env="K"))
+    home.prepare(ClioCoderTarget(model="m3", target_id="clio-a", url="http://a2/v1"))
+    settings = yaml.safe_load((tmp_path / "home" / "config" / "settings.yaml").read_text())
+    assert [(t["id"], t["defaultModel"]) for t in settings["targets"]] == [
+        ("clio-b", "m2"),
+        ("clio-a", "m3"),
+    ]
+    assert settings["chat"]["target"] == "clio-a" and first.runtime == "openai-compat"
+    assert home.environment({"PATH": "/bin"})["CLIO_DELEGATED_MODEL_API_KEY"] == "k"
+    assert "CLIO_DELEGATED_MODEL_API_KEY" not in os.environ
+
+
 def test_install_resolution_prefers_explicit_then_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

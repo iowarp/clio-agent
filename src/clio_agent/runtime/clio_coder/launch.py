@@ -75,7 +75,7 @@ class ClioCoderTarget:
 
     model: str
     target_id: str = "default"
-    runtime: str = "openai-compatible"
+    runtime: str = "openai-compat"
     url: str | None = None
     api_key_env: str | None = None
     thinking: str = "off"
@@ -111,6 +111,8 @@ class InstanceHome:
     """A scoped Clio Coder home: every config, data, state, cache and temp write lands here."""
 
     root: Path
+    #: Variables only this instance's process receives (for example a key CLIO resolved).
+    extra_env: Mapping[str, str] = field(default_factory=dict, compare=False)
 
     def __post_init__(self) -> None:
         if not self.root.is_absolute():
@@ -135,8 +137,23 @@ class InstanceHome:
         for path in self.dirs().values():
             path.mkdir(parents=True, exist_ok=True)
         settings = self.root / "config" / "settings.yaml"
-        if target is not None and not settings.exists():
+        if target is None:
+            return
+        if not settings.exists():
             settings.write_text(yaml.safe_dump(target.settings(), sort_keys=False), "utf-8")
+            return
+        # A later run may route elsewhere: add or refresh its target, keep everything else.
+        document = yaml.safe_load(settings.read_text("utf-8")) or {}
+        rendered = target.settings()["targets"][0]
+        existing = list(document.get("targets") or [])
+        if rendered not in existing:
+            kept = [
+                entry
+                for entry in existing
+                if not (isinstance(entry, dict) and entry.get("id") == target.target_id)
+            ]
+            document["targets"] = [*kept, rendered]
+            settings.write_text(yaml.safe_dump(document, sort_keys=False), "utf-8")
 
     def environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
         """The child environment: parent minus secrets and stray Clio Coder overrides, plus home."""
@@ -160,6 +177,7 @@ class InstanceHome:
                 "TEMP": str(dirs["tmp"]),
             }
         )
+        env.update(self.extra_env)
         return env
 
 

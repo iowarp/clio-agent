@@ -12,7 +12,7 @@ import re
 import shlex
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,6 +58,8 @@ class DelegationRequest:
     isolate: bool = True
     target: ClioCoderTarget | None = None
     home_template: Path | None = None
+    #: Variables only the instance process receives, such as a key resolved by the parent.
+    child_env: Mapping[str, str] = field(default_factory=dict)
     options: RunOptions = field(default_factory=RunOptions)
     verify_command: Sequence[str] | None = None
     verify_timeout: float = 120.0
@@ -118,7 +120,7 @@ async def delegate_coding_task(
         raise ValueError("follow-up prompts need the ACP surface")
     install = request.install or ClioCoderInstall.resolve()
     state_root = request.state_root.resolve()
-    home = InstanceHome(state_root / "home")
+    home = InstanceHome(state_root / "home", extra_env=dict(request.child_env))
     home.prepare(request.target, template=request.home_template)
     run_id = request.run_id or _new_run_id()
 

@@ -18,11 +18,11 @@ from typing import Any
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import declare_structured_content, native_tool
+from clio_agent.gact.clio_coder_route import resolve_route
 from clio_agent.paths import workspace_state_dir
 from clio_agent.runtime.clio_coder import (
     ClioCoderError,
     ClioCoderInstall,
-    ClioCoderTarget,
     DelegationRequest,
     DelegationResult,
     RunOptions,
@@ -32,12 +32,6 @@ from clio_agent.runtime.clio_coder.acp import allow_permissions_once, reject_per
 from clio_agent.tools.execution import current_tool_runtime
 
 TOOL_NAME = "delegate_to_clio_coder"
-#: A seeded Clio Coder home (with ``config/settings.yaml``) every instance starts from.
-HOME_TEMPLATE_ENV = "CLIO_AGENT_CLIO_CODER_HOME_TEMPLATE"
-#: Or one model route: model id, plus optional endpoint URL and the env var holding its key.
-MODEL_ENV = "CLIO_AGENT_CLIO_CODER_MODEL"
-URL_ENV = "CLIO_AGENT_CLIO_CODER_URL"
-KEY_ENV_ENV = "CLIO_AGENT_CLIO_CODER_API_KEY_ENV"
 #: Clio Coder autonomy levels, least to most; a delegation never exceeds the dispatcher's.
 AUTONOMY_LEVELS = ("read-only", "default", "yolo")
 AUTONOMY_INHERIT = "inherit"
@@ -52,17 +46,6 @@ def clio_coder_available() -> bool:
     except ClioCoderError:
         return False
     return True
-
-
-def _target_from_env() -> ClioCoderTarget | None:
-    model = os.environ.get(MODEL_ENV, "").strip()
-    if not model:
-        return None
-    return ClioCoderTarget(
-        model=model,
-        url=os.environ.get(URL_ENV) or None,
-        api_key_env=os.environ.get(KEY_ENV_ENV) or None,
-    )
 
 
 def _active_session() -> tuple[Any, Any, Path]:
@@ -144,6 +127,8 @@ async def delegate_to_clio_coder(
     timeout_s: float = 900,
     autonomy: str = AUTONOMY_INHERIT,
     allow_permission_asks: bool = False,
+    model: str = "",
+    provider: str = "",
 ) -> dict[str, Any]:
     """Hand a self-contained coding task to a fresh Clio Coder instance and get the change back.
 
@@ -160,6 +145,8 @@ async def delegate_to_clio_coder(
     judge stay on), which needs a conversation whose approvals are bypassed.
     allow_permission_asks approves each ask Clio Coder raises (also only when approvals are
     bypassed); otherwise every ask is refused.
+    model (with provider, a fleet catalog provider id) picks the model for this call only; leave
+    both empty to use Clio Coder's binding, else the fleet default, else this conversation's model.
     timeout_s bounds the whole session (60 to 3600 seconds). The change is committed on the
     returned branch (`commit`); landing it is a separate step, for example
     `git diff <base_commit> <commit> | git apply` in the checkout, a merge, or discarding it.
@@ -180,6 +167,7 @@ async def delegate_to_clio_coder(
         )
     if not (root / ".git").exists():
         raise ValueError(f"Clio Coder delegation needs a git repository; {root} is not one")
+    route = resolve_route(app, session, model=str(model or ""), provider=str(provider or ""))
     args = {
         "task": task,
         "follow_ups": follow_ups,
@@ -187,36 +175,33 @@ async def delegate_to_clio_coder(
         "timeout_s": timeout_s,
         "autonomy": autonomy,
         "allow_permission_asks": allow_permission_asks,
+        "model": route.describe(),
     }
     await _approve(app, args, root)
-    template = os.environ.get(HOME_TEMPLATE_ENV)
     state_root = workspace_state_dir(root) / "clio-coder"
     request = DelegationRequest(
         task=task,
         repo=root,
         state_root=state_root,
         follow_ups=follow_ups,
-        target=_target_from_env(),
-        home_template=Path(template) if template else None,
+        target=route.target,
+        home_template=route.home_template,
+        child_env=route.env,
         options=RunOptions(
             autonomy="default" if autonomy == "read-only" else autonomy,
             read_only=autonomy == "read-only",
             timeout=timeout_s,
+            target=route.target.target_id if route.target is not None else None,
+            model=route.target.model if route.target is not None else None,
         ),
         verify_command=verify,
     )
-    if request.target is None and request.home_template is None:
-        settings = state_root / "home" / "config" / "settings.yaml"
-        if not settings.exists():
-            raise ValueError(
-                f"Clio Coder has no model configured for CLIO: set {MODEL_ENV} (with {URL_ENV} "
-                f"and {KEY_ENV_ENV}) or {HOME_TEMPLATE_ENV}, or configure {settings}"
-            )
     try:
         result = await _run_cancellable(request, allow_permission_asks)
     except ClioCoderError as exc:
         raise RuntimeError(f"Clio Coder could not run: {exc}") from exc
     row = result_row(result, task, follow_ups)
+    row["route"] = route.describe()
     declare_structured_content(row)
     return row
 
@@ -373,6 +358,17 @@ def build_delegate_to_clio_coder_tool() -> Any:
                 "type": "boolean",
                 "default": False,
                 "description": "Approve each ask Clio Coder raises instead of refusing it.",
+            },
+            "model": {
+                "type": "string",
+                "default": "",
+                "description": "Model for this call only; empty uses the binding, fleet default "
+                "or this conversation's model.",
+            },
+            "provider": {
+                "type": "string",
+                "default": "",
+                "description": "Fleet provider id for model; empty means this conversation's.",
             },
         },
         title="Delegate to Clio Coder",
