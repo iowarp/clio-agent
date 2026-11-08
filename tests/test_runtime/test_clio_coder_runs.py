@@ -231,11 +231,21 @@ async def test_a_crash_or_failed_turn_is_a_failed_turn_the_run_survives(
         land_run(tmp_path / "state", repo, first.run_id, "apply")
 
     refused = await _continue(tmp_path, install, first.run_id, "@TURNFAIL")
-    assert refused.outcome == "failed" and "turn_failed" in refused.error["message"]
+    assert refused.outcome == "failed" and refused.error["message"].endswith(
+        "turn_failed: model no-such-model not found"
+    )
 
     recovered = await _continue(tmp_path, install, first.run_id, "fix add properly")
     assert recovered.outcome == "succeeded" and recovered.verified and recovered.turn == 4
     assert land_run(tmp_path / "state", repo, first.run_id, "apply").status == "landed"
+
+
+async def test_a_failed_turn_that_changed_nothing_is_not_checked(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall
+) -> None:
+    failed = await _open_run(repo, tmp_path, install, "@TURNFAIL")
+    assert failed.outcome == "failed" and not failed.changed_files
+    assert failed.verification is None and not failed.verified
 
 
 async def test_unknown_or_malformed_runs_are_refused_before_any_instance_starts(

@@ -150,8 +150,11 @@ FAKE_CLIO_CODER = textwrap.dedent(
             if "@CRASH" in text:
                 os._exit(3)
             if "@TURNFAIL" in text:
+                sys.stderr.write("[clio-coder:acp] turn failed: model no-such-model not found\\n")
+                sys.stderr.flush()
                 out({"jsonrpc": "2.0", "id": msg["id"],
-                     "error": {"code": -32603, "message": "turn_failed"}})
+                     "error": {"code": -32603, "message": "turn_failed",
+                               "data": {"code": "turn_failed"}}})
                 continue
             if "@HANG" in text:
                 while not session["cancel"]:

@@ -89,6 +89,9 @@ async def _drain_stderr(instance: SpawnedInstance, buffer: bytearray) -> None:
         del buffer[: max(0, len(buffer) - _STDERR_TAIL_BYTES)]
 
 
+_ACP_TURN_FAILED = "[clio-coder:acp] turn failed:"
+
+
 def _explain_startup_failure(result: DelegationResult) -> None:
     """Give a run that ended before any session (a refusal, a bad flag) its stderr reason."""
     if (
@@ -317,7 +320,23 @@ async def run_acp(
         result.exit_code = instance.process.returncode
         result.tools = list(state.tools.values())
     _explain_startup_failure(result)
+    _explain_turn_failure(result)
     return result
+
+
+def _explain_turn_failure(result: DelegationResult) -> None:
+    """Name why a prompt turn failed: Clio Coder keeps the reason off the wire, on stderr."""
+    error = result.error or {}
+    details = error.get("details") or {}
+    if (details.get("data") or {}).get("code") != "turn_failed":
+        return
+    reasons = [
+        line.split(_ACP_TURN_FAILED, 1)[1].strip()
+        for line in result.stderr_tail.splitlines()
+        if _ACP_TURN_FAILED in line
+    ]
+    if reasons and reasons[-1]:
+        result.error = {**error, "message": f"{error.get('message')}: {reasons[-1][:300]}"}
 
 
 async def _configure_session(

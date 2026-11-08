@@ -33,7 +33,7 @@ from clio_agent.runtime.clio_coder.launch import (
     ClioCoderTarget,
     InstanceHome,
 )
-from clio_agent.runtime.clio_coder.results import DelegationResult, command_text
+from clio_agent.runtime.clio_coder.results import OUTCOME_SUCCEEDED, DelegationResult, command_text
 from clio_agent.runtime.clio_coder.runs import (
     REASON_RUN,
     RUN_OPEN,
@@ -313,7 +313,8 @@ async def _hand_back(
         result.commit = commit_changes(workspace, _commit_message(task))
     except ClioCoderError as exc:
         result.error = result.error or exc.to_dict()
-    if verify_command:
+    # A failed turn that changed nothing would only re-check the base and read as a pass.
+    if verify_command and (result.changed_files or result.outcome == OUTCOME_SUCCEEDED):
         result.verification = await run_verification(
             workspace, verify_command, timeout=verify_timeout
         )
