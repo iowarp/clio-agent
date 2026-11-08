@@ -8,7 +8,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
-from typing import Any, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal
 
 import requests
 
@@ -29,6 +29,12 @@ class GitHubAccess:
         self._metadata: OrderedDict[tuple[str, str, str, int, str], tuple[float, Any]] = (
             OrderedDict()
         )
+        self._clear_listeners: list[Callable[[], None]] = []
+
+    def on_client_dropped(self, listener: Callable[[], None]) -> None:
+        """Call ``listener`` whenever the signed-in GitHub clients are dropped."""
+        with self._lock:
+            self._clear_listeners.append(listener)
 
     def clear(self) -> None:
         """Drop cached authenticated clients when the user signs out."""
@@ -37,6 +43,9 @@ class GitHubAccess:
             self._metadata.clear()
             self._rate_limits.clear()
             self._retry_at, self._backoff = 0, 60
+            listeners = list(self._clear_listeners)
+        for listener in listeners:
+            listener()
 
     def _limited(self) -> ValueError:
         minutes = max(1, math.ceil((self._retry_at - time.time()) / 60))

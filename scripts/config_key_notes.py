@@ -1069,6 +1069,10 @@ KEY_NOTES: dict[str, str] = {
         "Seconds a session's pooled Claude Code connection is kept between turns, so the next "
         "turn sends only new messages; a connection is never reaped while its turn runs."
     ),
+    "providers.copilot.session_idle_ttl_s": (
+        "Seconds an idle GitHub Copilot runtime entry is kept before the reaper closes it; an "
+        "entry whose session has a running turn is never reaped."
+    ),
     "providers.native_image_url_allowlist": (
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
         "empty (the default) accepts only inline data: URIs, so no attachment leaves CLIO "

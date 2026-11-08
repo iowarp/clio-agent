@@ -40,6 +40,7 @@ _LOCK = threading.Lock()
 #: The Codex Direct transport's live backend model list (``providers.codex.model_list``).
 CODEX_SOURCE = "codex_direct_model_list"
 CLAUDE_CODE_SOURCE = "claude_code_catalog"
+COPILOT_SOURCE = "copilot_list_models"
 HTTP_SOURCE = "live_handshake"
 
 #: Typed staleness reasons, in the ``stream_fallback`` reason-catalog style: the
@@ -61,6 +62,10 @@ OVERLAY_STALENESS_REASONS: dict[str, str] = {
     "overlay_generated_at_unreadable": (
         "this catalog carries no readable discovery timestamp, so its age cannot be "
         "checked; it is treated as unverified rather than assumed fresh"
+    ),
+    "overlay_account_changed": (
+        "the account this catalog was read under has signed out or changed since; it "
+        "describes the previous account until a refresh re-reads it under the new one"
     ),
 }
 
@@ -101,6 +106,13 @@ def entry_staleness(entry: Mapping[str, Any]) -> dict[str, Any] | None:
             "overlay_refresh_failed",
             failed_reason=failed,
             last_attempt_at=str(entry.get("last_attempt_at") or ""),
+            generated_at=str(entry.get("generated_at") or ""),
+        )
+    account_changed_at = str(entry.get("account_changed_at") or "")
+    if account_changed_at:
+        return _staleness_reason(
+            "overlay_account_changed",
+            account_changed_at=account_changed_at,
             generated_at=str(entry.get("generated_at") or ""),
         )
     ttl = overlay_staleness_ttl_s()
@@ -373,6 +385,7 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
             entry["default_model"] = result.default_model
             entry["generated_at"] = result.generated_at
             entry.pop("failed_reason", None)
+            entry.pop("account_changed_at", None)
             if result.default_model_reason:
                 entry["default_model_reason"] = result.default_model_reason
             else:
@@ -446,6 +459,7 @@ def update_entry_fields(provider: str, fields: Mapping[str, Any]) -> None:
 __all__ = [
     "CODEX_SOURCE",
     "CLAUDE_CODE_SOURCE",
+    "COPILOT_SOURCE",
     "HTTP_SOURCE",
     "OVERLAY_STALENESS_REASONS",
     "OverlayMalformedError",

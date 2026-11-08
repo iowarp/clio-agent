@@ -626,7 +626,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
     # 1030 -> 918: bind configuration preparation moved to its provider owner;
     # effort-only edits reuse the existing binding without fresh discovery.
-    "src/clio_agent/gact/routes/providers.py": 915,
+    "src/clio_agent/gact/routes/providers.py": 914,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

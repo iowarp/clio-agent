@@ -123,7 +123,7 @@ EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
 #: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
 #: Every other kind is probed live and keeps a last-good list for empty probes.
-_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
+_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code", "copilot"})
 
 
 #: Codex reasoning-effort vocabulary -> CLIO level, for reading a raw
@@ -493,7 +493,7 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "failure": failure,
         "models": [model_catalog_row(preset, report, model) for model in models],
     }
-    if preset.provider == "claude_code":
+    if preset.provider in {"claude_code", "copilot"}:
         # Which CLI the SDK transport runs, as a typed fact on the row (Codex
         # runs none: its one transport is direct).
         from clio_agent.providers.components.client_binary import (  # noqa: PLC0415

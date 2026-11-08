@@ -31,9 +31,14 @@ def _recorded(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
 
-def test_the_registry_declares_exactly_the_codex_runtime_and_the_claude_sdk() -> None:
-    assert USER_UPDATABLE_COMPONENTS == {"openai-codex-cli-bin", "claude-agent-sdk"}
+def test_the_registry_declares_exactly_the_codex_runtime_and_the_two_sdks() -> None:
+    assert USER_UPDATABLE_COMPONENTS == {
+        "openai-codex-cli-bin",
+        "claude-agent-sdk",
+        "github-copilot-sdk",
+    }
     assert PROVIDER_COMPONENTS["codex"].distributions == ("openai-codex-cli-bin",)
+    assert PROVIDER_COMPONENTS["copilot"].distributions == ("github-copilot-sdk",)
 
 
 def test_windows_skips_claude_releases_without_a_windows_wheel() -> None:

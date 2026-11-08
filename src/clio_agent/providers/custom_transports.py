@@ -11,13 +11,15 @@ from __future__ import annotations
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as CODEX_DIRECT_PROVIDER
 
 CLAUDE_CODE_PROVIDER = "claude_code"
+COPILOT_PROVIDER = "copilot"
 
 CLIO_CUSTOM_LITELLM_PROVIDERS: frozenset[str] = frozenset(
-    {CLAUDE_CODE_PROVIDER, CODEX_DIRECT_PROVIDER}
+    {CLAUDE_CODE_PROVIDER, CODEX_DIRECT_PROVIDER, COPILOT_PROVIDER}
 )
 
 __all__ = [
     "CLAUDE_CODE_PROVIDER",
     "CLIO_CUSTOM_LITELLM_PROVIDERS",
     "CODEX_DIRECT_PROVIDER",
+    "COPILOT_PROVIDER",
 ]

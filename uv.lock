@@ -735,6 +735,7 @@ all = [
     { name = "claude-agent-sdk" },
     { name = "ddgs" },
     { name = "flowcept", extra = ["mongo", "redis"] },
+    { name = "github-copilot-sdk" },
     { name = "globus-sdk" },
     { name = "hypothesis" },
     { name = "mypy" },
@@ -758,6 +759,9 @@ argonne = [
 ]
 claude-code = [
     { name = "claude-agent-sdk" },
+]
+copilot = [
+    { name = "github-copilot-sdk" },
 ]
 desktop = [
     { name = "ddgs" },
@@ -803,7 +807,7 @@ install-bootstrap = [
 requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.159" },
-    { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
+    { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "copilot", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
     { name = "clio-kit", specifier = "==2.11.1" },
     { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas?rev=41cb8d69b00990ee8c2746655308d41609f8b63e" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
@@ -815,6 +819,7 @@ requires-dist = [
     { name = "flowcept", extras = ["redis", "mongo"], marker = "extra == 'flowcept'", specifier = ">=1.0.3,<2" },
     { name = "fsspec", specifier = ">=2025.9.0" },
     { name = "gdrive-fsspec", specifier = ">=0.4.1" },
+    { name = "github-copilot-sdk", marker = "extra == 'copilot'", specifier = ">=1.0.29" },
     { name = "globus-sdk", specifier = ">=4.6.0" },
     { name = "globus-sdk", marker = "extra == 'argonne'", specifier = ">=3.0.0" },
     { name = "globusfs", specifier = "==0.2.1" },
@@ -881,7 +886,7 @@ requires-dist = [
     { name = "zarr", specifier = ">=3" },
     { name = "zstandard", specifier = "==0.25.0" },
 ]
-provides-extras = ["optimizers", "adios", "argonne", "desktop", "claude-code", "flowcept", "dev", "all"]
+provides-extras = ["optimizers", "adios", "argonne", "desktop", "claude-code", "copilot", "flowcept", "dev", "all"]
 
 [package.metadata.requires-dev]
 install-bootstrap = [
@@ -1704,6 +1709,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/95/56/925779e5690971f1b022f7d107caf015c33ec09560261273ec137e23a8f2/gepa-0.1.4.tar.gz", hash = "sha256:6dd153a676ae5481764860d19286a9c0e8ddb5ef70d7f13044faf24978bdb6b8", size = 351343, upload-time = "2026-07-15T14:53:59.929Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/77/5b3a281cfd9caaa9e68349b434cf27f1ca448003ee0067a1ae2184dc52d1/gepa-0.1.4-py3-none-any.whl", hash = "sha256:12b971039599625c156d2231f6d72a29c31a22e9c237689459b5f1a3c353f532", size = 290167, upload-time = "2026-07-15T14:53:58.422Z" },
+]
+
+[[package]]
+name = "github-copilot-sdk"
+version = "1.0.29"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/f7/bf23175a479735546e81add65aecd4b6bcb5f2831fe550f78579fe7a5806/github_copilot_sdk-1.0.29-py3-none-any.whl", hash = "sha256:8b67b71c4feb2e7d95ea119ee0cfd96e096f6a24ebd32f743e8abe8637321700", size = 1007957, upload-time = "2026-11-06T20:46:49.821Z" },
 ]
 
 [[package]]

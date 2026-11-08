@@ -37,8 +37,10 @@ on :class:`~clio_agent.gact.routes.deps.GactDeps`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.util
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -71,6 +73,7 @@ from clio_agent.gact.providers.selection_store import (
     selection_status_fields,
 )
 from clio_agent.gact.routes.provider_auth import supports_logout
+from clio_agent.gact.routes.provider_auth_copilot import copilot_readiness
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
 from clio_agent.gact.server_boot import process_arc_off_loop
@@ -189,6 +192,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "",
         )
 
+    # Subscription kinds whose models come only from a verified account read.
+    readiness_by_kind: dict[str, Callable[..., tuple[str, str, bool, str]]] = {
+        "codex": _codex_readiness,
+        "claude_code": _claude_code_readiness,
+        "copilot": functools.partial(copilot_readiness, app),
+    }
+
     def _provider_auth_state(preset: "LMProviderPreset") -> tuple[list[str], bool]:
         """Return (auth_methods, is_authenticated) for a preset.
 
@@ -203,11 +213,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
           catalog check.
         - local (lm_studio/ollama): no auth required.
         """
-        if preset.provider == "codex":
-            _, _, verified, _ = _codex_readiness()
-            return ["subscription"], verified
-        if preset.provider == "claude_code":
-            _, _, verified, _ = _claude_code_readiness()
+        if preset.provider in readiness_by_kind:
+            _, _, verified, _ = readiness_by_kind[preset.provider]()
             return ["subscription"], verified
         if preset.provider == "argonne":
             authed = False
@@ -237,9 +244,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         (e.g. codex's ``gpt-5.6-sol``) instead of a snapshot that may already be
         rejected (#1184). CLI-provider candidates are never automatic defaults;
         only a fresh account discovery supplies one."""
-        if preset.provider in {"codex", "claude_code"}:
-            readiness = _codex_readiness if preset.provider == "codex" else _claude_code_readiness
-            _, _, verified, default_model = readiness()
+        if preset.provider in readiness_by_kind:
+            _, _, verified, default_model = readiness_by_kind[preset.provider]()
             return default_model if verified else ""
 
         from clio_agent.providers import model_discovery  # noqa: PLC0415
@@ -304,15 +310,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True
-        if preset.provider == "codex":
-            status, message, verified, default_model = _codex_readiness()
-            update["status"] = status
-            update["status_message"] = message
-            update["is_authenticated"] = verified
-            update["suggested_model"] = default_model
-            return preset.model_copy(update=update)
-        if preset.provider == "claude_code":
-            status, message, verified, default_model = _claude_code_readiness()
+        if preset.provider in readiness_by_kind:
+            status, message, verified, default_model = readiness_by_kind[preset.provider]()
             update["status"] = status
             update["status_message"] = message
             update["is_authenticated"] = verified
@@ -544,7 +543,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             from clio_agent.config import create_lm  # noqa: PLC0415
 
             cfg, thinking_only = await prepare_bind_configuration(
-                app, req, _codex_readiness, _claude_code_readiness
+                app, req, _codex_readiness, _claude_code_readiness, readiness_by_kind["copilot"]
             )
             if not thinking_only:
                 await asyncio.get_running_loop().run_in_executor(None, _apply_lm_studio_load_config)

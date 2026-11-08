@@ -7,8 +7,10 @@ closes after ``tools.mcp.workspace_ttl_s`` without a tool call -- so a person re
 conversation for two minutes saw its servers drop to "Starts when used". A view is a
 live SSE subscriber on the conversation (``GET /v1/sessions/{sid}/events``):
 
-* the first view of a session takes a lease on its workspace fleet (the same lease a
-  running turn or a session waiting on its user holds), so the reaper keeps it;
+* the first view of a session takes a residency hold on its workspace fleet (the same
+  hold a session waiting on its user takes), so the reaper keeps it; unlike a running
+  turn's lease it does not block a connected-data access change, which restarts the
+  idle fleet with the new permissions;
 * the last view to go releases it and starts a fresh idle window (the reaper's
   ``note_resolved``), so the fleet then leaves on the normal idle path: one
   ``workspace_ttl_s`` after the view went, not at the next reap tick.
@@ -77,7 +79,9 @@ def _acquire(app: Any, sid: str) -> None:
     root = _fleet_root(app, sid)
     if not root or not callable(lease):
         return
-    scope = lease(root)
+    from clio_agent.tools.reaper import residency_lease  # noqa: PLC0415
+
+    scope: Any = residency_lease(agent, root)
     try:
         scope.__enter__()
     except RuntimeError as error:  # connected-data access is being reconfigured

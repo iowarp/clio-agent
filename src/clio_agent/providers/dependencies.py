@@ -201,6 +201,7 @@ PROVIDER_SUPPORT: Mapping[str, ProviderSupport] = {
     "claude_code": ProviderSupport(
         "claude_code", "claude_agent_sdk", ("claude-agent-sdk",), "Claude Code"
     ),
+    "copilot": ProviderSupport("copilot", "copilot", ("github-copilot-sdk",), "GitHub Copilot"),
 }
 
 
@@ -286,12 +287,49 @@ def ensure_claude_code_support(*, python_executable: str | None = None) -> bool:
     return _recorded("claude_code", installed)
 
 
+def ensure_copilot_support(*, python_executable: str | None = None) -> bool:
+    """Ensure the backend has the GitHub Copilot SDK and its staged runtime.
+
+    The SDK release comes from CLIO's own ``copilot`` extra. The runtime the
+    SDK pins is staged here, on the person's Install action, so a turn never
+    downloads it (``COPILOT_SKIP_CLI_DOWNLOAD`` is set for every client).
+    Returns ``True`` when this call installed the SDK or staged the runtime.
+    """
+    target = python_executable or sys.executable
+    installed = ensure_provider_extra(
+        extra_name="copilot",
+        module_name=PROVIDER_SUPPORT["copilot"].module,
+        display_name="GitHub Copilot support",
+        python_executable=target,
+    )
+    from clio_agent.providers.copilot.runtime import staged_runtime_path  # noqa: PLC0415
+
+    if target == sys.executable and staged_runtime_path():
+        return _recorded("copilot", installed)
+    try:
+        result = _run_install_command([target, "-m", "copilot", "download-runtime"])
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProviderDependencyInstallError(
+            f"GitHub Copilot runtime could not be staged: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        raise ProviderDependencyInstallError(
+            f"GitHub Copilot runtime could not be staged: {_bounded_install_error(result)}"
+        )
+    from clio_agent.providers.components.client_binary import reset_client_cache  # noqa: PLC0415
+
+    # A selection cached before staging (``copilot_no_runtime``) must not outlive it.
+    reset_client_cache()
+    return _recorded("copilot", True)
+
+
 #: Provider kind -> its installer. The single generic seam the route dispatches
 #: through (``ensure_provider_support``) so adding a new installable provider
 #: is a registry entry here, never a new route-level special case.
 _PROVIDER_INSTALLERS: Mapping[str, Callable[..., bool]] = {
     "argonne": ensure_argonne_support,
     "claude_code": ensure_claude_code_support,
+    "copilot": ensure_copilot_support,
 }
 
 

@@ -7,10 +7,11 @@ the `GET /v1/providers/lm` endpoint (gact's modal). Adding a new
 provider is one new `Provider(...)` entry; see
 [ADDING_A_PROVIDER.md](ADDING_A_PROVIDER.md) for the walkthrough.
 
-Every provider routes through **DSPy → LiteLLM**. There are no raw
-HTTP side channels; if a backend doesn't work through LiteLLM
-directly, it goes through a LiteLLM `CustomLLM` (see [codex](codex.md)
-and [claude_code](claude_code.md) for CLI-backed examples).
+Every provider routes through **DSPy**. HTTP providers go through
+LiteLLM, natively or through a LiteLLM `CustomLLM`. The subscription
+transports ([codex](codex.md), [claude_code](claude_code.md),
+[copilot](copilot.md)) are DSPy engine pairs that `create_lm()` builds
+directly. There are no raw HTTP side channels.
 
 ## Supported providers
 
@@ -23,6 +24,7 @@ and [claude_code](claude_code.md) for CLI-backed examples).
 | `openrouter` | `openai` | api_key | OpenAI-compat gateway to many providers; free tier available |
 | [`codex`](codex.md) | `codex` | in-app sign-in (OAuth) | Your Codex subscription, no per-token cost |
 | [`claude_code`](claude_code.md) | `claude_code` | `claude login` | Your Claude Code subscription, no Anthropic API key |
+| [`copilot`](copilot.md) | `copilot` | CLIO's GitHub sign-in | Models included with your GitHub Copilot plan |
 | `argonne_sophia` | `argonne` | Globus OAuth | ALCF Sophia inference gateway (vLLM) |
 | `argonne_metis` | `argonne` | Globus OAuth | ALCF Metis inference gateway (gpt-oss-120b) |
 | `argonne_local_vllm` | `openai` | none | Local OpenAI-compatible vLLM endpoint |
@@ -66,6 +68,7 @@ that do not use those providers.
 
 - [Codex](codex.md) — uses your Codex subscription
 - [Claude Code](claude_code.md) — uses your Claude subscription
+- [GitHub Copilot](copilot.md) — uses your GitHub Copilot plan via CLIO's GitHub sign-in
 
 ## Authoring a new provider
 

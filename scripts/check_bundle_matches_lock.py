@@ -97,7 +97,9 @@ INTERPRETER_SEEDED = frozenset({"pip"})
 #: past the lock, from the provider panel. MUST equal
 #: ``clio_agent.providers.components.registry.USER_UPDATABLE_COMPONENTS`` (a
 #: test enforces this; release checks must not import the CLIO application).
-USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex-cli-bin", "claude-agent-sdk"})
+USER_UPDATABLE_COMPONENTS = frozenset(
+    {"openai-codex-cli-bin", "claude-agent-sdk", "github-copilot-sdk"}
+)
 
 _RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
 
