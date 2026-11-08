@@ -138,7 +138,7 @@ def prepare_interactive_session(
     except BaseException:
         remove_worktree(workspace)
         raise
-    env = {**home.environment(), **overlay}
+    env = home.environment({**os.environ, **overlay})
     return InteractiveSession(
         run_id=run_id,
         task=task,

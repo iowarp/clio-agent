@@ -255,6 +255,7 @@ class InstanceHome:
             or (key not in _STRIPPED_ENV_KEYS and not key.startswith(_STRIPPED_ENV_PREFIXES))
         }
         dirs = self.dirs()
+        env.update(self.extra_env)
         env.update(
             {
                 "CLIO_CODER_HOME": str(self.root),
@@ -262,6 +263,7 @@ class InstanceHome:
                 "CLIO_CODER_DATA_DIR": str(dirs["data"]),
                 "CLIO_CODER_STATE_DIR": str(dirs["state"]),
                 "CLIO_CODER_CACHE_DIR": str(dirs["cache"]),
+                "XDG_CACHE_HOME": str(dirs["cache"]),
                 # Never read the operator's other agent installs (Claude, Codex, Pi homes).
                 "CLIO_CODER_INTEROP_HOME": "none",
                 "TMPDIR": str(dirs["tmp"]),
@@ -269,7 +271,6 @@ class InstanceHome:
                 "TEMP": str(dirs["tmp"]),
             }
         )
-        env.update(self.extra_env)
         return env
 
 
@@ -358,7 +359,7 @@ async def spawn_instance(
     from clio_agent.runtime.task_process_tree import TaskProcessTree, task_spawn_options
 
     command, overlay, confinement = confine(install, args, cwd=cwd, home=home)
-    env = {**home.environment(base_env), **overlay}
+    env = home.environment({**(os.environ if base_env is None else base_env), **overlay})
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
