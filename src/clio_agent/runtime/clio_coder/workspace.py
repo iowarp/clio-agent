@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import shlex
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -11,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from clio_agent.runtime.clio_coder.launch import REASON_WORKSPACE, ClioCoderError
-from clio_agent.runtime.clio_coder.results import Verification
+from clio_agent.runtime.clio_coder.results import Verification, command_text
 
 #: Clio Coder's own project-local state never counts as part of the delegated change.
 # Clio Coder's own state and interpreter caches that running code leaves behind are never handed
@@ -25,6 +27,11 @@ _EXCLUDED_PATHSPECS = (
 _OUTPUT_TAIL_BYTES = 4000
 _VERIFIER_CATALOG = Path(".clio-coder") / "verifiers.yaml"
 ACCEPTANCE_CHECK_ID = "clio-agent-acceptance"
+# Clio Coder's verifier catalog runs a command vector and refuses these as the executable.
+_SHELL_EXECUTABLES = frozenset(
+    {"bash", "cmd", "command.com", "dash", "fish", "ksh", "powershell", "pwsh", "sh", "tcsh", "zsh"}
+)
+_SHELL_SYNTAX = re.compile(r"[|&;<>()$`*?\[\]{}~!#\n\\]")
 
 
 @dataclass(frozen=True)
@@ -118,16 +125,41 @@ def commit_changes(workspace: Workspace, message: str) -> str | None:
     return _git(workspace.path, "rev-parse", "HEAD").strip()
 
 
+def catalog_argv(command: Sequence[str]) -> list[str] | None:
+    """The check as a shell-free argv Clio Coder's verifier catalog accepts, or None.
+
+    The catalog runs a command vector and refuses shell executables, so a check written as shell
+    text (``/bin/sh -c "..."``) is declarable only when that text is a plain command with no
+    shell syntax; otherwise it stays CLIO's own check and is not declared.
+    """
+    argv = list(command)
+    text = command_text(argv)
+    if text != shlex.join(argv):
+        if _SHELL_SYNTAX.search(text):
+            return None
+        try:
+            argv = shlex.split(text)
+        except ValueError:
+            return None
+    if not argv or "=" in argv[0] or Path(argv[0]).name in _SHELL_EXECUTABLES:
+        return None
+    return argv
+
+
 def declare_acceptance_check(workspace: Workspace, command: Sequence[str], timeout: float) -> bool:
     """Declare the parent's acceptance check as a Clio Coder verifier in the worktree.
 
     Clio Coder's finish gate then validates against the same check the parent will run, instead
     of recording an unverifiable limitation. Only a worktree is touched; an adopted checkout
-    belongs to the operator. Returns whether the check is declared.
+    belongs to the operator. A check that is not a shell-free command is not declared, and a
+    previous declaration is withdrawn. Returns whether the check is declared.
     """
     if not workspace.is_worktree:
         return False
+    argv = catalog_argv(command)
     catalog_path = workspace.path / _VERIFIER_CATALOG
+    if argv is None and not catalog_path.exists():
+        return False
     catalog: dict = {"version": 2, "checks": []}
     if catalog_path.exists():
         loaded = yaml.safe_load(catalog_path.read_text("utf-8")) or {}
@@ -139,11 +171,14 @@ def declare_acceptance_check(workspace: Workspace, command: Sequence[str], timeo
             )
         catalog = {**loaded, "checks": list(loaded.get("checks", []))}
     catalog["checks"] = [c for c in catalog["checks"] if c.get("id") != ACCEPTANCE_CHECK_ID]
+    if argv is None:
+        catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False), "utf-8")
+        return False
     catalog["checks"].append(
         {
             "id": ACCEPTANCE_CHECK_ID,
             "description": "Acceptance check the delegating agent runs on the hand-back",
-            "command": list(command),
+            "command": argv,
             "cwd": ".",
             "timeoutMs": int(timeout * 1000),
             "tags": ["test", "acceptance"],

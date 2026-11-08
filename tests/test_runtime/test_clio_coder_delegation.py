@@ -606,6 +606,23 @@ def test_acceptance_check_merges_into_a_worktree_catalog_only(repo: Path, tmp_pa
     assert compose_task("t", None, False) == "t"
 
 
+def test_acceptance_check_is_declared_only_as_a_shell_free_command(
+    repo: Path, tmp_path: Path
+) -> None:
+    # Clio Coder's catalog refuses shell executables, so shell text is unwrapped or not declared.
+    workspace = create_worktree(repo, tmp_path / "wt", "r1")
+    catalog = workspace.path / ".clio-coder" / "verifiers.yaml"
+    assert declare_acceptance_check(workspace, ["/bin/sh", "-c", "pytest -q 'tests/a b.py'"], 30)
+    assert yaml.safe_load(catalog.read_text())["checks"][0]["command"] == [
+        "pytest",
+        "-q",
+        "tests/a b.py",
+    ]
+    for shell_only in (["/bin/sh", "-c", "pytest -q && ruff check"], ["bash", "x.sh"]):
+        assert not declare_acceptance_check(workspace, shell_only, 30)
+        assert yaml.safe_load(catalog.read_text())["checks"] == []
+
+
 def test_exit_codes_and_usage_facts_fold_to_outcomes() -> None:
     assert [outcome_for_exit(code) for code in (0, 1, 4, 124, 143, -15, None)] == [
         "succeeded",
