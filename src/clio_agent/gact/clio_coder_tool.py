@@ -316,12 +316,19 @@ def _run_line(row: Mapping[str, Any]) -> str | None:
     if not row.get("run"):
         return None
     usage = row.get("run_usage") or {}
-    spent = ", ".join(
-        f"{key} {usage[key]}" for key in ("totalTokens", "costUsd") if usage.get(key) is not None
-    )
+    spent = [
+        f"{usage[key]} {label}"
+        for key, label in (
+            ("input", "input tokens"),
+            ("output", "output tokens"),
+            ("totalTokens", "tokens"),
+            ("costUsd", "USD"),
+        )
+        if isinstance(usage.get(key), (int, float))
+    ]
     return (
         f"Run {row['run']}, turn {row.get('turn')}, Clio Coder session {row.get('session_id')}"
-        + (f"; run total: {spent}" if spent else "")
+        + (f"; run total: {', '.join(spent)}" if spent else "")
         + "."
     )
 

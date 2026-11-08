@@ -239,7 +239,7 @@ def test_each_turn_names_its_run_turn_session_and_next_step() -> None:
         commit="abc",
         run_id=RUN,
         turn=2,
-        run_usage={"totalTokens": 1200, "costUsd": 0.0},
+        run_usage={"input": 1200, "output": 30, "cacheRead": 900},
         verification=Verification(["true"], 0, ""),
     )
     row = tool.result_row(result, "add sub", [])
@@ -247,7 +247,7 @@ def test_each_turn_names_its_run_turn_session_and_next_step() -> None:
     view = tool.clio_coder_presentation({"task": "add sub", "continue_run": RUN}, None, row)
     assert view["action"] == f"Continue Clio Coder run {RUN}"
     assert _blocks(view)["run"]["text"] == (
-        f"Run {RUN}, turn 2, Clio Coder session s-1; run total: totalTokens 1200, costUsd 0.0."
+        f"Run {RUN}, turn 2, Clio Coder session s-1; run total: 1200 input tokens, 30 output tokens."
     )
     result.verification = Verification(["true"], 1, "")
     assert "continue_run=" in tool.result_row(result, "add sub", [])["next"]
