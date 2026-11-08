@@ -67,6 +67,9 @@ class RunOptions:
     timeout: float = 600.0
     max_cost_usd: float | None = None
     allow_tools: Sequence[str] | None = None
+    #: Shell commands Clio Coder runs as acceptance checks after its turn (``run --verify``).
+    verify: Sequence[str] = ()
+    verify_timeout: float | None = None
     extra_args: Sequence[str] = field(default_factory=tuple)
 
 
@@ -97,6 +100,10 @@ def headless_args(task: str, cwd: Path, options: RunOptions) -> list[str]:
         args += ["--max-cost-usd", str(options.max_cost_usd)]
     if options.allow_tools is not None:
         args += ["--allow-tools", ",".join(options.allow_tools) or "none"]
+    for check in options.verify:
+        args += ["--verify", check]
+    if options.verify and options.verify_timeout is not None:
+        args += ["--verify-timeout", str(max(1, int(options.verify_timeout)))]
     return [*args, *options.extra_args, task]
 
 
@@ -125,6 +132,7 @@ def _fold_headless_frame(
         result.outcome = str(frame.get("outcome") or outcome_for_exit(result.exit_code))
         result.outcome_detail = frame.get("outcomeDetail")
         result.safety = frame.get("safety") or {}
+        result.child_checks = [c for c in frame.get("verify") or () if isinstance(c, dict)]
         if frame.get("error"):
             result.error = {"message": frame["error"]}
 

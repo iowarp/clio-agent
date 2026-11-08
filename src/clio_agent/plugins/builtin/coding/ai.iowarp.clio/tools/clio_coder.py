@@ -2,4 +2,4 @@
 
 from clio_agent.sdk import native_tool
 
-delegate_to_clio_coder = native_tool("delegate_to_clio_coder")
+run_clio_coder = native_tool("run_clio_coder")

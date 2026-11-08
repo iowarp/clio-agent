@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -39,7 +40,7 @@ from clio_agent.runtime.clio_coder.workspace import (
 
 FAKE_CLIO_CODER = textwrap.dedent(
     """
-    import json, os, sys, time
+    import json, os, subprocess, sys, time
     from pathlib import Path
 
     def out(message):
@@ -58,8 +59,20 @@ FAKE_CLIO_CODER = textwrap.dedent(
         )
 
     args = sys.argv[1:]
+    if args[-1:] == ["--help"]:
+        flag = {"run": "verify"}.get(args[0], "session-file")
+        offered = Path(__file__).with_name(flag + "-flag").exists()
+        print("Usage: clio-coder [options]", "  --timeout <seconds>",
+              f"  --{flag} <value>" if offered else "", sep="\\n")
+        sys.exit(0)
     cwd = args[args.index("--cwd") + 1] if "--cwd" in args else os.getcwd()
     env_report(cwd)
+    if "--session-file" in args:
+        Path(args[args.index("--session-file") + 1]).write_text(json.dumps({
+            "version": 1, "sessionId": "s-tui", "outcome": "quit", "exitCode": 0, "turns": 2,
+            "model": {"target": "t", "model": "tui-model"},
+            "usage": {"tokens": {"display": "1,234", "fact": {}},
+                      "cost": {"display": "not measured", "fact": {}}}}))
     if args[0] == "run":
         task = args[-1]
         Path(os.environ["CLIO_CODER_STATE_DIR"], "task.txt").write_text(task)
@@ -72,10 +85,19 @@ FAKE_CLIO_CODER = textwrap.dedent(
         out({"type": "notice", "level": "info", "text": "checks passed"})
         out({"type": "agent_end", "usage": {"input": 10, "output": 2, "cost": 0}})
         code = 1 if "@FAIL" in task else 0
+        checks = []
+        for i, flag in enumerate(a for a in args if a == "--verify"):
+            command = args[[j for j, a in enumerate(args) if a == "--verify"][i] + 1]
+            ran = subprocess.run(command, shell=True, cwd=cwd)
+            checks.append({"id": "run-acceptance", "command": command,
+                           "exitCode": ran.returncode, "passed": ran.returncode == 0,
+                           "durationMs": 1, "timedOut": False, "ranAfterLastEdit": False})
+        Path(os.environ["CLIO_CODER_STATE_DIR"], "args.json").write_text(json.dumps(args))
         out({"type": "turn_end", "exitCode": code, "text": "fixed add",
              "outcome": "failed" if code else "succeeded",
              "outcomeDetail": "limitation" if code else None,
-             "safety": {"decisions": 1, "blockedAttempts": 0}})
+             "safety": {"decisions": 1, "blockedAttempts": 0}}
+            | ({"verify": checks} if checks else {}))
         sys.exit(code)
 
     session = {"id": None, "mode": "default", "cancel": False}
@@ -173,6 +195,24 @@ def _request(repo: Path, tmp_path: Path, install: ClioCoderInstall, task: str, *
         verify_command=CHECK,
         **kw,
     )
+
+
+async def test_a_clio_coder_with_run_verify_runs_the_check_itself_without_a_catalog_file(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall
+) -> None:
+    (Path(install.argv[-1]).parent / "verify-flag").touch()
+    result = await delegate_coding_task(_request(repo, tmp_path, install, "fix add"))
+
+    state = tmp_path / "state" / "home" / "state"
+    args = json.loads((state / "args.json").read_text())
+    check = args[args.index("--verify") + 1]
+    assert check == shlex.join(CHECK)
+    assert args[args.index("--verify-timeout") + 1] == "120"
+    assert "your run's acceptance check" in (state / "task.txt").read_text()
+    assert not (Path(result.workspace) / ".clio-coder" / "verifiers.yaml").exists()
+    assert [c["passed"] for c in result.child_checks] == [True]
+    # The parent's own check still decides.
+    assert result.verified and result.changed_files == ["calc.py"]
 
 
 async def test_headless_delegation_hands_back_a_verified_worktree_diff(
@@ -446,6 +486,11 @@ async def test_a_tui_session_launches_fenced_and_hands_back_like_a_delegation(
     assert session.launch.argv[-2:] == ("--autonomy", "yolo")
     assert f"fix {session.workspace.path}/calc.py" in session.brief()
 
+    opened = session.launch.terminal_open_args({"CLIO_AUTH_TOKEN": "x", "PATH": "/bin"})
+    assert opened["argv"][:2] == ["env", "-uCLIO_AUTH_TOKEN"]
+    assert opened["argv"][2:] == list(session.launch.argv)
+    assert opened["cwd"] == str(session.workspace.path) and "CLIO_CODER_STATE_DIR" in opened["env"]
+
     exit_file = tmp_path / "tui.exit"
     command = session.launch.shell_command(exit_file=exit_file)
     subprocess.run(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, check=True, timeout=60)
@@ -463,3 +508,30 @@ async def test_a_tui_session_launches_fenced_and_hands_back_like_a_delegation(
         ["git", "-C", str(repo), "rev-parse", result.branch], capture_output=True, text=True
     ).stdout.strip()
     assert tip == result.commit
+    assert session.session_file is None and result.session_id is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the terminal host here is a POSIX shell")
+async def test_a_tui_that_writes_a_session_record_hands_back_its_session_and_outcome(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall
+) -> None:
+    from clio_agent.runtime.clio_coder.interactive import (
+        finish_interactive_session,
+        prepare_interactive_session,
+    )
+
+    (Path(install.argv[-1]).parent / "session-file-flag").touch()
+    session = prepare_interactive_session(_request(repo, tmp_path, install, "fix calc"))
+    assert session.session_file is not None
+    assert str(session.session_file) in session.launch.argv
+    command = session.launch.shell_command()
+    subprocess.run(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, check=True, timeout=60)
+
+    # The host saw no exit status; the record supplies it with the session, model and usage.
+    result = await finish_interactive_session(session, exit_code=None)
+    assert (result.outcome, result.exit_code, result.session_id) == ("succeeded", 0, "s-tui")
+    assert result.model == "tui-model" and result.usage["tokens"] == "1,234"
+
+    session.session_file.write_text(json.dumps({"outcome": "interrupted", "exitCode": 130}))
+    again = await finish_interactive_session(session, exit_code=0, keep_worktree=False)
+    assert (again.outcome, again.exit_code) == ("canceled", 130)

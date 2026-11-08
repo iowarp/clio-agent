@@ -24,6 +24,7 @@ CLIO_CODER_BIN_ENV = "CLIO_AGENT_CLIO_CODER_BIN"
 #: The oldest Clio Coder whose headless, ACP and fence contracts this package speaks.
 MIN_CLIO_CODER_VERSION = (0, 7, 0)
 _VERSION_RE = re.compile(r"Clio Coder (\d+)\.(\d+)\.(\d+)")
+_FLAG_RE = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]*")
 
 #: Typed failure reasons, carried as ``ClioCoderError.error_type``.
 REASON_NOT_FOUND = "clio_coder_not_found"
@@ -75,14 +76,20 @@ class ClioCoderInstall:
             return cls((node, str(path.resolve())))
         return cls((candidate,))
 
-    def version(self) -> tuple[int, int, int] | None:
-        """The installed version from ``--version``; ``None`` when it cannot be read."""
+    def _stamp(self) -> int:
         entry = shutil.which(self.argv[-1]) or self.argv[-1]
         try:
-            stamp = Path(entry).stat().st_mtime_ns
+            return Path(entry).stat().st_mtime_ns
         except OSError:
-            stamp = 0
-        return _read_version(self.argv, stamp)
+            return 0
+
+    def version(self) -> tuple[int, int, int] | None:
+        """The installed version from ``--version``; ``None`` when it cannot be read."""
+        return _read_version(self.argv, self._stamp())
+
+    def help_flags(self, *command: str) -> frozenset[str]:
+        """The flags ``command`` (the TUI when empty) lists in its help; empty when unreadable."""
+        return _read_help_flags(self.argv, command, self._stamp())
 
     def require_supported(self) -> tuple[int, int, int]:
         """The version, or a refusal naming the minimum when it is older or unreadable."""
@@ -102,12 +109,35 @@ class ClioCoderInstall:
 def _read_version(argv: tuple[str, ...], _stamp: int) -> tuple[int, int, int] | None:
     try:
         done = subprocess.run(
-            [*argv, "--version"], capture_output=True, text=True, timeout=20, check=False
+            [*argv, "--version"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=20,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     match = _VERSION_RE.search(done.stdout or "")
     return (int(match[1]), int(match[2]), int(match[3])) if match else None
+
+
+@functools.lru_cache(maxsize=8)
+def _read_help_flags(
+    argv: tuple[str, ...], command: tuple[str, ...], _stamp: int
+) -> frozenset[str]:
+    try:
+        done = subprocess.run(
+            [*argv, *command, "--help"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    return frozenset(_FLAG_RE.findall(done.stdout or ""))
 
 
 @dataclass(frozen=True)

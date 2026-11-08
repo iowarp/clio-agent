@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -74,6 +76,16 @@ class Verification:
         return self.exit_code == 0
 
 
+def command_text(argv: Sequence[str]) -> str:
+    """The shell text of a check: the command itself when it is wrapped in the platform shell."""
+    argv = list(argv)
+    if argv[:2] == ["/bin/sh", "-c"] and len(argv) == 3:
+        return argv[2]
+    if argv[:4] == ["cmd", "/d", "/s", "/c"] and len(argv) == 5:
+        return argv[4]
+    return shlex.join(argv)
+
+
 @dataclass
 class ToolActivity:
     name: str
@@ -103,6 +115,9 @@ class DelegationResult:
     changed_files: list[str] = field(default_factory=list)
     diff: str = ""
     verification: Verification | None = None
+    #: Clio Coder's own runs of the acceptance check (``turn_end.verify``); informative only,
+    #: the parent's ``verification`` decides acceptance.
+    child_checks: list[dict[str, Any]] = field(default_factory=list)
     confinement: dict[str, Any] = field(default_factory=dict)
     stderr_tail: str = ""
     error: dict[str, Any] | None = None

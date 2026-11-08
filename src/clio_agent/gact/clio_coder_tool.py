@@ -1,4 +1,4 @@
-"""``delegate_to_clio_coder``: hand a coding task to a spawned Clio Coder instance.
+"""``run_clio_coder``: hand a coding task to a spawned Clio Coder instance.
 
 Clio Coder works in a disposable git worktree of the conversation's workspace, under a scoped
 instance home owned by this workspace's CLIO state. The tool returns the instance's answer, the
@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import math
 import os
-import shlex
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -29,9 +28,10 @@ from clio_agent.runtime.clio_coder import (
     delegate_coding_task,
 )
 from clio_agent.runtime.clio_coder.acp import allow_permissions_once, reject_permissions
+from clio_agent.runtime.clio_coder.results import command_text
 from clio_agent.tools.execution import current_tool_runtime
 
-TOOL_NAME = "delegate_to_clio_coder"
+TOOL_NAME = "run_clio_coder"
 #: Clio Coder autonomy levels, least to most; a delegation never exceeds the dispatcher's.
 AUTONOMY_LEVELS = ("read-only", "default", "yolo")
 AUTONOMY_INHERIT = "inherit"
@@ -125,7 +125,7 @@ def _bounded(text: str, limit: int) -> tuple[str, bool]:
     return (text, False) if len(text) <= limit else (text[:limit], True)
 
 
-async def delegate_to_clio_coder(
+async def run_clio_coder(
     task: str,
     follow_ups: list[str] | None = None,
     verify_command: str = "",
@@ -231,12 +231,15 @@ def _shell_argv(command: str) -> list[str]:
     return ["/bin/sh", "-c", command]
 
 
-def _command_text(argv: list[str]) -> str:
-    if argv[:2] == ["/bin/sh", "-c"] and len(argv) == 3:
-        return argv[2]
-    if argv[:4] == ["cmd", "/d", "/s", "/c"] and len(argv) == 5:
-        return argv[4]
-    return shlex.join(argv)
+def _child_check(check: Mapping[str, Any]) -> str:
+    if check.get("timedOut"):
+        verdict = "timed out"
+    elif check.get("passed"):
+        verdict = "passed"
+    else:
+        verdict = f"failed (exit {check.get('exitCode')})"
+    after = "; it also ran it after its last edit" if check.get("ranAfterLastEdit") else ""
+    return f"Clio Coder's own run of `{check.get('command')}`: {verdict}{after}."
 
 
 def _row(result: Any, structured: Any) -> Mapping[str, Any] | None:
@@ -296,12 +299,17 @@ def clio_coder_presentation(
             )
     else:
         blocks.append({"id": "no-change", "type": "text", "text": "No files were changed."})
+    for index, check in enumerate(row.get("child_checks") or []):
+        if isinstance(check, Mapping):
+            blocks.append(
+                {"id": f"child-check-{index}", "type": "text", "text": _child_check(check)}
+            )
     if isinstance(verification, Mapping):
         blocks.append(
             {
                 "id": "verification",
                 "type": "terminal",
-                "command": _command_text(list(verification.get("command") or [])),
+                "command": command_text(list(verification.get("command") or [])),
                 "detail": f"Working directory: {row.get('workspace')}",
                 "text": str(verification.get("output_tail") or ""),
                 "exit_code": verification.get("exit_code"),
@@ -324,11 +332,11 @@ def clio_coder_presentation(
     return presentation
 
 
-def build_delegate_to_clio_coder_tool() -> Any:
+def build_run_clio_coder_tool() -> Any:
     return native_tool(
-        delegate_to_clio_coder,
+        run_clio_coder,
         name=TOOL_NAME,
-        desc=delegate_to_clio_coder.__doc__,
+        desc=run_clio_coder.__doc__,
         args={
             "task": {
                 "type": "string",

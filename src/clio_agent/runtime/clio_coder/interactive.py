@@ -10,6 +10,7 @@ the caller's acceptance command.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from collections.abc import Mapping, Sequence
@@ -61,6 +62,16 @@ class TerminalLaunch:
         unset = sorted(key for key in base if key not in self.env)
         return assign, unset
 
+    def terminal_open_args(self, base: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """The Desktop terminal's ``terminal_open`` arguments: ``argv``, added ``env`` and ``cwd``.
+
+        The host adds ``env`` to its own environment; variables the launch removes are unset by
+        ``env -u`` ahead of the program (POSIX hosts).
+        """
+        assign, unset = self.env_changes(base)
+        argv = ["env", *(f"-u{key}" for key in unset), *self.argv] if unset else list(self.argv)
+        return {"argv": argv, "env": assign, "cwd": str(self.cwd)}
+
     def shell_command(
         self, base: Mapping[str, str] | None = None, *, exit_file: Path | None = None
     ) -> str:
@@ -90,6 +101,8 @@ class InteractiveSession:
     verify_command: list[str] | None
     verify_timeout: float
     confinement: dict[str, Any] = field(default_factory=dict)
+    #: Where the TUI writes its session record on exit (``--session-file``), when it can.
+    session_file: Path | None = None
 
     def brief(self) -> str:
         """The assignment the person (or the agent beside them) starts the session with."""
@@ -116,6 +129,11 @@ def prepare_interactive_session(
         if verify:
             declare_acceptance_check(workspace, verify, request.verify_timeout)
         args = ["--autonomy", autonomy] if autonomy else []
+        session_file = None
+        if "--session-file" in install.help_flags():
+            session_file = home.root / "state" / "tui-sessions" / f"{run_id}.json"
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            args += ["--session-file", str(session_file)]
         argv, overlay, confinement = confine(install, args, cwd=workspace.path, home=home)
     except BaseException:
         remove_worktree(workspace)
@@ -129,24 +147,47 @@ def prepare_interactive_session(
         verify_command=verify,
         verify_timeout=request.verify_timeout,
         confinement=confinement,
+        session_file=session_file,
     )
 
 
 async def finish_interactive_session(
     session: InteractiveSession, *, keep_worktree: bool = True, exit_code: int | None = 0
 ) -> DelegationResult:
-    """Hand back what the person and Clio Coder changed; call once the TUI has exited."""
+    """Hand back what the person and Clio Coder changed; call once the TUI has exited.
+
+    The TUI's own session record, when it wrote one, supplies the exit code, outcome, session,
+    model and usage; ``exit_code`` is the terminal host's view and is used otherwise.
+    """
     close_egress(session.confinement)
     workspace = session.workspace
+    record = _read_session_record(session.session_file)
+    if record and isinstance(record.get("exitCode"), int):
+        exit_code = record["exitCode"]
+    outcome = "succeeded" if exit_code == 0 else "failed"
+    if record and record.get("outcome") in _RECORD_OUTCOMES:
+        outcome = _RECORD_OUTCOMES[record["outcome"]] or outcome
     result = DelegationResult(
         surface=SURFACE_TUI,
-        outcome="succeeded" if exit_code == 0 else "failed",
+        outcome=outcome,
         exit_code=exit_code,
         workspace=str(workspace.path),
         branch=workspace.branch,
         base_commit=workspace.base_commit,
         confinement=dict(session.confinement),
     )
+    if record:
+        model = record.get("model") if isinstance(record.get("model"), dict) else {}
+        usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
+        result.session_id = record.get("sessionId")
+        result.model = model.get("model")
+        result.usage = {
+            name: fact["display"]
+            for name, fact in usage.items()
+            if isinstance(fact, dict) and fact.get("display")
+        }
+        if isinstance(record.get("turns"), int):
+            result.notices.append(f"{record['turns']} turn(s) in the Clio Coder session")
     try:
         result.changed_files, result.diff = collect_changes(workspace)
         result.commit = commit_changes(workspace, _commit_message(session.task or "TUI session"))
@@ -159,6 +200,20 @@ async def finish_interactive_session(
     if not keep_worktree:
         remove_worktree(workspace)
     return result
+
+
+#: The TUI record's ``outcome`` as a delegation outcome; ``None`` defers to the exit code.
+_RECORD_OUTCOMES = {"quit": None, "interrupted": "canceled", "crashed": "failed"}
+
+
+def _read_session_record(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        record = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
 def describe_launch(session: InteractiveSession, base: Mapping[str, str] | None = None) -> dict:

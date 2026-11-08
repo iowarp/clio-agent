@@ -31,7 +31,7 @@ def probe_clio_coder() -> IntegrationStatus:
         return IntegrationStatus(
             name=NAME,
             state=IntegrationState.SKIPPED,
-            summary=f"{exc}; coding delegation (delegate_to_clio_coder) is withheld",
+            summary=f"{exc}; coding delegation (run_clio_coder) is withheld",
             config_source=source,
             next_action=f"install clio-coder {minimum}+ on PATH or set {CLIO_CODER_BIN_ENV}",
             required=False,

@@ -8,12 +8,12 @@ are kept for the caller to land or discard unless ``keep_worktree`` is false.
 
 from __future__ import annotations
 
+import asyncio
 import re
-import shlex
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from clio_agent.runtime.clio_coder.acp import PermissionHandler, reject_permissions
@@ -24,7 +24,7 @@ from clio_agent.runtime.clio_coder.launch import (
     ClioCoderTarget,
     InstanceHome,
 )
-from clio_agent.runtime.clio_coder.results import DelegationResult
+from clio_agent.runtime.clio_coder.results import DelegationResult, command_text
 from clio_agent.runtime.clio_coder.workspace import (
     ACCEPTANCE_CHECK_ID,
     Workspace,
@@ -75,17 +75,26 @@ class DelegationRequest:
         return SURFACE_ACP if self.follow_ups else SURFACE_HEADLESS
 
 
-def compose_task(task: str, verify_command: Sequence[str] | None, declared: bool) -> str:
+def compose_task(
+    task: str,
+    verify_command: Sequence[str] | None,
+    declared: bool,
+    *,
+    run_after_turn: bool = False,
+) -> str:
     """The prompt Clio Coder receives: the task, plus the acceptance check the parent will run."""
     if not verify_command:
         return task
-    check = shlex.join(verify_command)
-    where = (
-        f"It is declared as the project verifier `{ACCEPTANCE_CHECK_ID}`; you may run it with "
-        "the verify tool."
-        if declared
-        else "You may run it yourself."
-    )
+    check = command_text(verify_command)
+    if run_after_turn:
+        where = "It is also your run's acceptance check; run it yourself after your last edit."
+    elif declared:
+        where = (
+            f"It is declared as the project verifier `{ACCEPTANCE_CHECK_ID}`; you may run it "
+            "with the verify tool."
+        )
+    else:
+        where = "You may run it yourself."
     return (
         f"{task}\n\nAcceptance: when you finish, I will run `{check}` in this workspace and "
         f"accept the change only if it exits 0. {where}"
@@ -138,22 +147,38 @@ async def delegate_coding_task(
             rebase = _path_rebaser(workspace.repo, workspace.path)
             prompts = [rebase(prompt) for prompt in prompts]
             verify_command = [rebase(arg) for arg in verify_command] if verify_command else None
-        declared = bool(verify_command) and declare_acceptance_check(
-            workspace, verify_command or (), request.verify_timeout
+        options = request.options
+        # A Clio Coder that runs the check itself after its turn (`run --verify`) needs no
+        # catalog file in the worktree; older installs and ACP get the declared verifier.
+        run_after_turn = (
+            surface == SURFACE_HEADLESS
+            and bool(verify_command)
+            and "--verify" in await asyncio.to_thread(install.help_flags, "run")
         )
-        task = compose_task(prompts[0], verify_command, declared)
+        if run_after_turn:
+            options = replace(
+                options,
+                verify=(command_text(verify_command or ()),),
+                verify_timeout=request.verify_timeout,
+            )
+        declared = (
+            bool(verify_command)
+            and not run_after_turn
+            and declare_acceptance_check(workspace, verify_command or (), request.verify_timeout)
+        )
+        task = compose_task(prompts[0], verify_command, declared, run_after_turn=run_after_turn)
         if surface == SURFACE_ACP:
             result = await run_acp(
                 install,
                 home,
                 workspace.path,
                 [task, *prompts[1:]],
-                request.options,
+                options,
                 sink,
                 on_permission,
             )
         else:
-            result = await run_headless(install, home, workspace.path, task, request.options, sink)
+            result = await run_headless(install, home, workspace.path, task, options, sink)
         result.workspace = str(workspace.path)
         result.branch = workspace.branch
         result.base_commit = workspace.base_commit

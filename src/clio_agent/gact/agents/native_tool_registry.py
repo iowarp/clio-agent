@@ -102,7 +102,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool  # noqa: PLC0415
     from clio_agent.gact.browser.tools import BUILDERS as BROWSER_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.clio_coder_tool import (  # noqa: PLC0415
-        build_delegate_to_clio_coder_tool,
+        build_run_clio_coder_tool,
     )
     from clio_agent.gact.code_mode.tool import build_run_code_tool  # noqa: PLC0415
     from clio_agent.gact.document_tools import (  # noqa: PLC0415
@@ -202,7 +202,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "latex_outline": build_latex_outline_tool,
         "latex_locate": build_latex_locate_tool,
         "ssh_execute": build_ssh_execute_tool,
-        "delegate_to_clio_coder": build_delegate_to_clio_coder_tool,
+        "run_clio_coder": build_run_clio_coder_tool,
         "clio_search": build_clio_search_tool,
         "clio_search_read": build_clio_search_read_tool,
         **MEMORY_BUILDERS,
@@ -263,7 +263,7 @@ _SINGLE_NAMES = frozenset(
         "latex_outline",
         "latex_locate",
         "ssh_execute",
-        "delegate_to_clio_coder",
+        "run_clio_coder",
         "clio_search",
         "clio_search_read",
         "session_search",
@@ -410,13 +410,13 @@ def build_native_tools(
         withheld.setdefault(name, reason)  # memory off, a read-only session, recall off
     for name in wanted & configured_withheld():  # tools.withheld, e.g. an ablation
         withheld.setdefault(name, "withheld_by_config")
-    if "delegate_to_clio_coder" in wanted and not describe_all:
+    if "run_clio_coder" in wanted and not describe_all:
         from clio_agent.gact.clio_coder_tool import (  # noqa: PLC0415
             clio_coder_unavailable_reason,
         )
 
         if reason := clio_coder_unavailable_reason():
-            withheld.setdefault("delegate_to_clio_coder", reason)
+            withheld.setdefault("run_clio_coder", reason)
     wanted -= set(withheld)
     available: dict[str, Any] = {}
     if wanted & TASK_TOOL_NAMES:

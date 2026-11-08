@@ -1,4 +1,4 @@
-"""``delegate_to_clio_coder``: its contract, withholding and human presentation.
+"""``run_clio_coder``: its contract, withholding and human presentation.
 
 The showcase rows are the real result shape (``DelegationResult.to_dict`` plus the tool's
 bounded fields): a small verified change, a large truncated diff, a no-op, a run Clio Coder
@@ -59,6 +59,24 @@ def test_a_verified_change_shows_assignment_answer_diff_check_and_branch() -> No
     )
 
 
+def test_clio_coders_own_check_runs_are_shown_but_the_parent_check_decides() -> None:
+    checks = [
+        {"command": "make test", "passed": True, "exitCode": 0, "ranAfterLastEdit": True},
+        {"command": "make lint", "passed": False, "exitCode": 2, "timedOut": False},
+    ]
+    view = tool.clio_coder_presentation(
+        ARGS, None, _row(child_checks=checks, verified=False, verification={"exit_code": 1})
+    )
+    blocks = _blocks(view)
+    assert view["status"] == "failed" and view["summary"].endswith("check failed")
+    assert blocks["child-check-0"]["text"] == (
+        "Clio Coder's own run of `make test`: passed; it also ran it after its last edit."
+    )
+    assert (
+        blocks["child-check-1"]["text"] == "Clio Coder's own run of `make lint`: failed (exit 2)."
+    )
+
+
 def test_a_large_diff_is_bounded_and_points_at_the_branch() -> None:
     files = [f"src/very/long/package/name/module_{index:03d}.py" for index in range(240)]
     diff = "".join(f"diff --git a/{name} b/{name}\n+x\n" for name in files) * 20
@@ -110,9 +128,9 @@ def test_running_state_shows_the_assignment_and_unreadable_results_are_disclosed
 
 async def test_arguments_are_validated_before_any_instance_starts() -> None:
     with pytest.raises(ValueError, match="nonempty"):
-        await tool.delegate_to_clio_coder("  ")
+        await tool.run_clio_coder("  ")
     with pytest.raises(ValueError, match="timeout_s"):
-        await tool.delegate_to_clio_coder("x", timeout_s=5)
+        await tool.run_clio_coder("x", timeout_s=5)
 
 
 def test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it() -> None:
@@ -139,16 +157,12 @@ def test_the_tool_is_withheld_when_clio_coder_is_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(tool, "clio_coder_unavailable_reason", lambda: "clio_coder_not_installed")
-    available, _gateway, withheld = registry.build_native_tools(
-        None, ["delegate_to_clio_coder"], {}
-    )
-    assert withheld == {"delegate_to_clio_coder": "clio_coder_not_installed"}
+    available, _gateway, withheld = registry.build_native_tools(None, ["run_clio_coder"], {})
+    assert withheld == {"run_clio_coder": "clio_coder_not_installed"}
     assert not available
     monkeypatch.setattr(tool, "clio_coder_unavailable_reason", lambda: None)
-    available, _gateway, withheld = registry.build_native_tools(
-        None, ["delegate_to_clio_coder"], {}
-    )
-    assert list(available) == ["delegate_to_clio_coder"] and not withheld
+    available, _gateway, withheld = registry.build_native_tools(None, ["run_clio_coder"], {})
+    assert list(available) == ["run_clio_coder"] and not withheld
 
 
 def test_a_limitation_is_a_delegation_result_not_a_failed_tool_call() -> None:
