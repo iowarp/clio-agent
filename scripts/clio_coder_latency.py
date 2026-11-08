@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import psutil
+
 from clio_agent.runtime.clio_coder import delegate as delegation
 from clio_agent.runtime.clio_coder import drivers
 from clio_agent.runtime.clio_coder.launch import ClioCoderInstall, InstanceHome
@@ -202,6 +204,14 @@ async def cancel_run(root: Path, template: Path, target: str, model: str) -> dic
     """Cancel a real spawned headless session and confirm worktree cleanup."""
     repo = fixture_repo(root)
     ready = asyncio.Event()
+    instances = []
+    original_spawn = drivers.spawn_instance
+
+    async def tracked_spawn(*args: Any, **kwargs: Any) -> Any:
+        instance = await original_spawn(*args, **kwargs)
+        instances.append(instance)
+        return instance
+
     request = delegation.DelegationRequest(
         task=TASK,
         repo=repo,
@@ -209,31 +219,64 @@ async def cancel_run(root: Path, template: Path, target: str, model: str) -> dic
         home_template=template,
         options=drivers.RunOptions(target=target, model=model, timeout=180),
     )
-    work = asyncio.create_task(
-        delegation.delegate_coding_task(
-            request, sink=lambda event: ready.set() if event.get("kind") == "session" else None
+    with patch.object(drivers, "spawn_instance", tracked_spawn):
+        work = asyncio.create_task(
+            delegation.delegate_coding_task(
+                request,
+                sink=lambda event: ready.set() if event.get("kind") == "session" else None,
+            )
         )
-    )
-    try:
-        await asyncio.wait_for(ready.wait(), timeout=60)
-        if work.done():
-            return {"passed": False, "reason": "run finished before cancellation"}
-        work.cancel()
         try:
-            await work
-        except asyncio.CancelledError:
-            clean = len(git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
-            return {"passed": clean, "reason": "canceled after session creation"}
-        return {"passed": False, "reason": "cancellation was not propagated"}
-    finally:
-        if not work.done():
+            await asyncio.wait_for(ready.wait(), timeout=60)
+            if work.done():
+                return {"passed": False, "reason": "run finished before cancellation"}
+            leader = psutil.Process(instances[0].process.pid)
+            owned = [leader, *leader.children(recursive=True)]
+            identities = [(proc, proc.create_time()) for proc in owned]
             work.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            result = await work
-            if result.branch:
-                remove_worktree(
-                    Workspace(Path(result.workspace), repo, result.branch, result.base_commit)
-                )
+            try:
+                await work
+            except asyncio.CancelledError:
+                clean = len(git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+                survivors = []
+                for proc, born in identities:
+                    try:
+                        if (
+                            proc.create_time() == born
+                            and proc.is_running()
+                            and proc.status() != psutil.STATUS_ZOMBIE
+                        ):
+                            survivors.append(proc.pid)
+                    except psutil.NoSuchProcess:
+                        continue
+                if survivors:
+                    leaked = [proc for proc, _born in identities if proc.pid in survivors]
+                    for proc in leaked:
+                        with contextlib.suppress(psutil.NoSuchProcess):
+                            proc.terminate()
+                    _gone, alive = await asyncio.to_thread(psutil.wait_procs, leaked, timeout=5)
+                    for proc in alive:
+                        with contextlib.suppress(psutil.NoSuchProcess):
+                            proc.kill()
+                    await asyncio.to_thread(psutil.wait_procs, alive, timeout=5)
+                return {
+                    "passed": clean
+                    and not survivors
+                    and instances[0].process.returncode is not None,
+                    "reason": "canceled after session creation",
+                    "observed_processes": [proc.pid for proc, _born in identities],
+                    "survivors": survivors,
+                }
+            return {"passed": False, "reason": "cancellation was not propagated"}
+        finally:
+            if not work.done():
+                work.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                result = await work
+                if result.branch:
+                    remove_worktree(
+                        Workspace(Path(result.workspace), repo, result.branch, result.base_commit)
+                    )
 
 
 def save(path: Path, value: Any) -> None:

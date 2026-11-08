@@ -20,6 +20,13 @@ Model precedence is per-call override, `fleet.agents.clio-coder` binding,
 Unset that variable to return to inherited routing. API keys belong in the
 provider's environment or credential store, never in task text or CLI arguments.
 
+On non-Windows hosts, the Core loopback probe treats TCP timeout as not running,
+as well as connection refusal. This lets WSL self-spawn Core when a closed port
+drops rather than refuses the connection. A saturated listener can also time
+out; the probe alone does not distinguish it from an absent listener. Socket
+resource/permission errors and Windows listener-table failures remain errors,
+not permission to replace a daemon.
+
 ## One-command golden checks
 
 From the checkout, with dependencies and the pinned marketplace installed:

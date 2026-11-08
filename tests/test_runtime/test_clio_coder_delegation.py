@@ -7,6 +7,7 @@ so the hand-back, the parent's verification and worktree cleanup are exercised e
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import os
@@ -84,6 +85,8 @@ FAKE_CLIO_CODER = textwrap.dedent(
         out({"type": "session", "schemaVersion": 1, "id": "s-headless", "cwd": cwd,
              "model": "fake-model"})
         if "@HANG" in task:
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            Path(os.environ["CLIO_CODER_STATE_DIR"], "hang-child.pid").write_text(str(child.pid))
             time.sleep(60)
         fix(cwd)
         out({"type": "tool_execution_end", "toolName": "edit", "isError": False})
@@ -200,6 +203,57 @@ def _request(repo: Path, tmp_path: Path, install: ClioCoderInstall, task: str, *
         verify_command=CHECK,
         **kw,
     )
+
+
+async def test_caller_cancel_stops_headless_child_and_removes_worktree(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch
+) -> None:
+    from clio_agent.runtime.clio_coder import drivers
+
+    instances = []
+    original_spawn = drivers.spawn_instance
+
+    async def tracked_spawn(*args, **kwargs):
+        instance = await original_spawn(*args, **kwargs)
+        instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(drivers, "spawn_instance", tracked_spawn)
+    ready = asyncio.Event()
+    work = asyncio.create_task(
+        delegate_coding_task(
+            _request(repo, tmp_path, install, "@HANG"),
+            sink=lambda event: ready.set() if event.get("kind") == "session" else None,
+        )
+    )
+    try:
+        await asyncio.wait_for(ready.wait(), 10)
+        work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+        assert instances[0].process.returncode is not None
+        assert _branches(repo) == ["main"]
+        assert not list((tmp_path / "state" / "worktrees").iterdir())
+    finally:
+        if not work.done():
+            work.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await work
+
+
+async def test_golden_cancel_checks_owned_processes_and_worktree_cleanup(
+    tmp_path: Path, install: ClioCoderInstall, monkeypatch
+) -> None:
+    from scripts import clio_coder_latency as latency
+
+    monkeypatch.setattr(ClioCoderInstall, "resolve", lambda: install)
+    monkeypatch.setattr(latency, "TASK", "@HANG")
+    template = tmp_path / "template"
+    template.mkdir()
+    result = await latency.cancel_run(tmp_path / "demo", template, "fake", "fake-model")
+    assert result["passed"], result
+    assert result["survivors"] == []
+    assert result["observed_processes"]
 
 
 async def test_a_clio_coder_with_run_verify_runs_the_check_itself_without_a_catalog_file(

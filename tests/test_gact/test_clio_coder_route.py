@@ -129,3 +129,20 @@ def test_a_malformed_binding_is_an_error_not_a_silent_fallback(
     monkeypatch.setenv("CLIO_FLEET_AGENTS", json.dumps({"clio-coder": {"provider_id": "openai"}}))
     with pytest.raises(ValueError, match="fleet.agents.clio-coder"):
         route.resolve_route(app, None)
+
+
+def test_catalog_override_uses_the_selected_providers_endpoint(app, monkeypatch) -> None:
+    seen = []
+
+    def endpoint_config(**kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(api_base="https://api.anthropic.com", api_key="catalog-test-key")
+
+    monkeypatch.setattr("clio_agent.config.LMProviderConfig", endpoint_config)
+    resolved = route.resolve_route(app, None, model="claude-sonnet-5.5", provider="anthropic")
+    assert seen == [{"provider_id": "anthropic", "model": "claude-sonnet-5.5"}]
+    assert resolved.source == "call"
+    assert resolved.target.runtime == "anthropic"
+    assert resolved.target.url == "https://api.anthropic.com"
+    assert resolved.env == {route.DELEGATED_KEY_ENV: "catalog-test-key"}
+    assert "catalog-test-key" not in json.dumps(resolved.target.settings())

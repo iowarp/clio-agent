@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import psutil
+
+from clio_agent.runtime.clio_coder.launch import ClioCoderError
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -41,9 +45,12 @@ GROUPS = {
     ],
     "model resolution: one local target and catalog": [
         "test_with_nothing_configured_every_layer_collapses_to_the_conversations_model",
-        "test_precedence_is_call_then_binding_then_fleet_default_then_conversation",
+        "test_catalog_override_uses_the_selected_providers_endpoint",
     ],
-    "cancel": ["test_acp_default_policy_rejects_once_and_timeout_cancels_the_turn"],
+    "cancel": [
+        "test_caller_cancel_stops_headless_child_and_removes_worktree",
+        "test_acp_default_policy_rejects_once_and_timeout_cancels_the_turn",
+    ],
 }
 
 
@@ -268,7 +275,14 @@ def main() -> int:
     if args.live and passed:
         try:
             passed = asyncio.run(live(args))
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            subprocess.SubprocessError,
+            ClioCoderError,
+            psutil.Error,
+        ) as exc:
             save(args.out / "failure.json", {"type": type(exc).__name__, "message": str(exc)})
             passed = verdict("live golden demo", False, str(exc))
     return 0 if passed else 1
