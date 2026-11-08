@@ -29,6 +29,7 @@ Example:
 """
 
 import os
+import sys
 
 from clio_agent import _dspy_lazy_proxies
 
@@ -136,6 +137,24 @@ def _default_litellm_local_cost_map() -> None:
 
 
 _default_litellm_local_cost_map()
+
+
+def _default_uv_managed_python_on_macos() -> None:
+    """Keep every ``uv`` CLIO starts on macOS away from ``/usr/bin/python3``.
+
+    uv's interpreter discovery executes ``/usr/bin/python3``; on a Mac without the
+    Command Line Tools that is a stub which opens their install dialog. Children
+    inherit this, so ``uv sync``/``uv tool install``/``uv run`` use uv-managed
+    Pythons. ``UV_MANAGED_PYTHON`` (not ``UV_PYTHON_PREFERENCE``, which uv refuses
+    next to an explicit ``--no-managed-python``) still yields to such a flag, and
+    ``setdefault`` keeps an operator's explicit choice.
+    """
+
+    if sys.platform == "darwin":
+        os.environ.setdefault("UV_MANAGED_PYTHON", "1")
+
+
+_default_uv_managed_python_on_macos()
 
 
 # PEP 562 lazy attribute access. ``from clio_agent import ClioAgent``

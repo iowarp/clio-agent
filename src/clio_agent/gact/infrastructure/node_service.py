@@ -569,7 +569,7 @@ def worker(root: Path, action: str, generation: str) -> None:
             str(root / "environment"),
             "--python",
             str(manifest.get("python_version", "3.12")),
-            *(["--managed-python"] if os.name == "nt" else []),
+            *(["--managed-python"] if os.name == "nt" or sys.platform == "darwin" else []),
             *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     else:

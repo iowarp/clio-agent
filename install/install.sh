@@ -315,6 +315,11 @@ case "$(uname -s)" in
   Darwin*) OS=darwin ;;
   *) die "unsupported OS: $(uname -s) (use install.ps1 on Windows)" ;;
 esac
+# uv's interpreter discovery runs /usr/bin/python3, which on a Mac without the
+# Command Line Tools is a stub that opens their install dialog. Use uv's own Pythons.
+if [ "$OS" = darwin ]; then
+  export UV_MANAGED_PYTHON="${UV_MANAGED_PYTHON:-1}"
+fi
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=amd64 ;;
   arm64|aarch64) ARCH=arm64 ;;
