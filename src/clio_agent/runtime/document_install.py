@@ -23,7 +23,10 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     prepare_office_runtime,
 )
-from clio_agent.runtime.execution_environment import publish_environment
+from clio_agent.runtime.execution_environment import (
+    protect_bundled_runtime,
+    publish_environment,
+)
 from clio_agent.runtime.github_cli import ensure_github_cli
 from clio_agent.runtime.ripgrep import ensure_ripgrep
 from clio_agent.runtime.tectonic import ensure_tectonic
@@ -55,6 +58,7 @@ def prepare_managed_packages(
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Prepare package caches without qualifying protection or saving an install receipt."""
+    protect_bundled_runtime()
     workspace.mkdir(parents=True, exist_ok=True)
     # These installers own separate cache trees and locks. Overlap the native
     # downloads/extraction with Python/Node preparation, without changing the

@@ -216,7 +216,7 @@ test -n "$DOCUMENT_STACK"
 # some optional provider paths exceed Windows' legacy path limit.
 echo "[build-gact-runtime] compiling portable startup bytecode"
 "$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
-  --python-root "$OUT/python"
+  --python-root "$OUT/python" --package clio_agent --package clio_kit --package clio_schemas
 COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
 if [ "${COMPILED:-0}" -eq 0 ]; then
   echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2

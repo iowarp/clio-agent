@@ -30,6 +30,26 @@ def bundled_root() -> Path | None:
     return next((root for root in candidates if (root / "runtime.json").is_file()), None)
 
 
+def protect_bundled_runtime() -> bool:
+    """Keep this process and its children from writing bytecode into a bundled runtime.
+
+    The desktop runtime is a signed, read-only bundle: a ``.pyc`` written beside
+    its sources breaks the macOS code seal. ``runtime.json`` declares
+    ``PYTHONDONTWRITEBYTECODE`` for the server it launches, but setup entry points
+    and supervisors that do not apply the manifest's env would otherwise compile
+    into it (every interpreter or venv derived from the bundle imports its stdlib).
+
+    Returns:
+        ``True`` when running from a bundled runtime.
+    """
+
+    if bundled_root() is None:
+        return False
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    return True
+
+
 def _wrapper(path: Path, argv: list[str]) -> None:
     if os.name == "nt":
         quoted = " ".join('"' + item.replace("%", "%%") + '"' for item in argv)

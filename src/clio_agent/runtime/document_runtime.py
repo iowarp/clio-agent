@@ -110,11 +110,16 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
         _run(
             [
                 str(python),
+                "-B",
                 str(STACK_ROOT / "inventory.py"),
                 *(["--execution-only"] if discovery_only else []),
             ],
             cwd=STACK_ROOT,
-            env={**os.environ, "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root())},
+            env={
+                **os.environ,
+                "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root()),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
         )
     )
     if not isinstance(result, dict):
