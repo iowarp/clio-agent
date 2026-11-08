@@ -71,11 +71,12 @@ bypassed approvals for its new, disposable conversation; the child inherits
 that ceiling. Server authentication, if enabled, comes from
 `CLIO_GACT_BEARER_TOKEN` or `CLIO_AUTH_TOKEN`, not command-line arguments.
 
-**Mode C's persistent public entry point and the parent land action are pending
-the ix-acp integration.** The offline multi-turn stub is available. The live
-script explicitly reports Mode C as FAIL and cannot claim full success until
-that integration replaces the stub. Direct runtime measurements currently use
-Git apply only in the demo's own scratch repository.
+Mode C is public: `run_clio_coder(continue_run=...)` takes another turn of a
+run, and `land_clio_coder(run=..., action='apply'|'discard')` lands or drops
+it. **The golden script does not drive that entry point yet.** Its Mode C case
+is still the offline multi-turn stub, and the live script reports Mode C as FAIL
+until the stub is replaced. Direct runtime measurements currently use Git apply
+only in the demo's own scratch repository.
 
 ## Reading the measurements
 
