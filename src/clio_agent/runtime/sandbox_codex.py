@@ -75,8 +75,11 @@ CODEX_MIN_SUPPORTED_VERSION = (0, 145, 0)
 CODEX_BINARY_NAME = "codex"
 
 #: The desktop-bundled codex payload's path, relative to the runtime root
-#: (``clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root()``).
+#: (``clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root()``), on Windows.
 _BUNDLED_CODEX_RELATIVE = ("python", "Lib", "site-packages", "codex_cli_bin", "bin", "codex.exe")
+#: The same payload in a POSIX (macOS/Linux) runtime: ``python/lib/python3.X/site-packages``
+#: holds an extensionless ``codex``.
+_BUNDLED_CODEX_POSIX_TAIL = ("site-packages", "codex_cli_bin", "bin", CODEX_BINARY_NAME)
 
 #: Typed ``CodexDetection.source`` labels -- distinguishes the desktop-shipped binary from one
 #: resolved off PATH, so the row/logs can tell a fresh user install apart from the bundled one.
@@ -202,6 +205,20 @@ def _bundled_codex_root() -> Optional[Path]:
     return resolve_bundled_runtime_root()
 
 
+def _bundled_codex_binary(root: Path, platform: str = sys.platform) -> Path:
+    """The bundled codex binary's expected path under the runtime ``root`` for ``platform``."""
+    if platform.startswith("win"):
+        return Path(root, *_BUNDLED_CODEX_RELATIVE)
+    lib = Path(root, "python", "lib")
+    own = lib / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    candidates = [own, *sorted(lib.glob("python3.*"), reverse=True)] if lib.is_dir() else [own]
+    for version_dir in candidates:
+        binary = version_dir.joinpath(*_BUNDLED_CODEX_POSIX_TAIL)
+        if binary.is_file():
+            return binary
+    return own.joinpath(*_BUNDLED_CODEX_POSIX_TAIL)
+
+
 def _wheel_codex_binary(platform: str = sys.platform) -> Optional[Path]:
     """Find the active Python wheel's codex binary without importing or running it."""
     try:
@@ -226,8 +243,10 @@ def detect_codex(
     """Probe for the codex runtime + its version. DETECTION ONLY.
 
     Never spawns a fence. Every dependency is injectable so the ladder is unit-testable without
-    a real codex install. The desktop bundles its own ``codex.exe`` (under the relocatable
-    runtime's ``python/Lib/site-packages/codex_cli_bin/bin/``, resolved via ``bundled_root`` —
+    a real codex install. The desktop bundles its own codex (under the relocatable runtime's
+    ``python/Lib/site-packages/codex_cli_bin/bin/codex.exe`` on Windows and
+    ``python/lib/python3.X/site-packages/codex_cli_bin/bin/codex`` on macOS/Linux, resolved
+    via ``bundled_root`` —
     defaults to :func:`_bundled_codex_root`); when this process runs from that bundled runtime
     AND the bundled binary exists on disk, it is preferred FIRST (:data:`CODEX_SOURCE_BUNDLED`) —
     a desktop install must not depend on the user separately installing codex on PATH. Otherwise
@@ -244,7 +263,7 @@ def detect_codex(
     :attr:`CodexDetection.bundled_codex_absent` rather than silently swallowed.
     """
     root = bundled_root()
-    bundled_binary = Path(root, *_BUNDLED_CODEX_RELATIVE) if root is not None else None
+    bundled_binary = _bundled_codex_binary(root, platform) if root is not None else None
     bundled_codex_absent = False
     if bundled_binary is not None and bundled_binary.is_file():
         binary = str(bundled_binary)

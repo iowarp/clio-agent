@@ -550,12 +550,47 @@ def test_bundled_codex_detected_first(tmp_path: Path) -> None:
         bundled_root=lambda: runtime_root,
         which=_which_must_not_be_used,
         version_reader=lambda _binary: "0.145.0",
+        platform="win32",
     )
 
     assert det.installed is True
     assert det.source == sandbox_codex.CODEX_SOURCE_BUNDLED
     assert det.binary_path == str(codex_exe)
     assert det.reason == sandbox_codex.REASON_CODEX_DETECTED
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_bundled_posix_codex_detected_first_without_a_packaging_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, platform: str
+) -> None:
+    """A macOS/Linux runtime ships an extensionless `codex` under `python/lib/python3.X`."""
+
+    runtime_root = tmp_path
+    (runtime_root / "runtime.json").write_text("{}", encoding="utf-8")
+    codex_dir = (
+        runtime_root / "python" / "lib" / "python3.14" / "site-packages" / "codex_cli_bin" / "bin"
+    )
+    codex_dir.mkdir(parents=True)
+    codex = codex_dir / "codex"
+    codex.write_text("stub", encoding="utf-8")
+
+    def _must_not_be_used(*_args: object) -> None:
+        raise AssertionError("the bundled binary must win over the wheel and PATH lookups")
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.runtime.sandbox_codex"):
+        det = sandbox_codex.detect_codex(
+            bundled_root=lambda: runtime_root,
+            wheel_binary=_must_not_be_used,
+            which=_must_not_be_used,
+            version_reader=lambda _binary: "0.145.0",
+            platform=platform,
+        )
+
+    assert det.binary_path == str(codex)
+    assert det.source == sandbox_codex.CODEX_SOURCE_BUNDLED
+    assert det.bundled_codex_absent is False
+    assert det.reason == sandbox_codex.REASON_CODEX_DETECTED
+    assert not any("bundled_codex_absent" in r.getMessage() for r in caplog.records)
 
 
 def test_codex_detection_falls_back_to_path_outside_bundled_runtime() -> None:
