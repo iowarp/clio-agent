@@ -725,6 +725,12 @@ async def test_a_tui_that_writes_a_session_record_hands_back_its_session_and_out
     assert (result.outcome, result.exit_code, result.session_id) == ("succeeded", 0, "s-tui")
     assert result.model == "tui-model" and result.usage["tokens"] == "1,234"
 
+    (session.workspace.path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    host_failed = await finish_interactive_session(session, exit_code=1)
+    assert host_failed.outcome == "failed" and host_failed.exit_code == 0
+    assert host_failed.error and host_failed.error["error"] == "clio_coder_terminal_failed"
+    assert host_failed.verified
+
     session.session_file.write_text(
         json.dumps({"version": 1, "outcome": "interrupted", "exitCode": 130})
     )

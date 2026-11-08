@@ -503,6 +503,23 @@ def wrap_confined(
         cmd, arg_list = _compose_fence_prefix(
             resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port, cwd=cwd
         )
+        if resolved_state.mechanism == MECHANISM_CODEX and (
+            resolved_state.details.get("platform", sys.platform) == "linux"
+        ):
+            from clio_agent.runtime.codex_metadata import wrapper_argv  # noqa: PLC0415
+
+            try:
+                cmd, arg_list = wrapper_argv(
+                    cmd,
+                    arg_list,
+                    write_roots,
+                    paths.user_config_dir() / ".codex" / "clio-synthetic-mounts",
+                )
+            except ValueError as exc:
+                from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
+
+                close_child_channel(net_child_id)
+                raise SandboxCompositionError(str(exc)) from exc
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
     if pdeathsig:

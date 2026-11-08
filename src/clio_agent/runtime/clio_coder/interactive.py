@@ -180,6 +180,17 @@ async def finish_interactive_session(
         record = _read_session_record(session.session_file)
     except ClioCoderError as exc:
         record, record_error = None, exc.to_dict()
+    if (
+        record
+        and record.get("outcome") == "quit"
+        and record.get("exitCode") == 0
+        and exit_code not in (None, 0)
+    ):
+        record_error = ClioCoderError(
+            "clio_coder_terminal_failed",
+            "Terminal failed after a completed Clio Coder session",
+            {"terminal_exit_code": exit_code, "session_exit_code": 0},
+        ).to_dict()
     if record and isinstance(record.get("exitCode"), int):
         exit_code = record["exitCode"]
     outcome = "succeeded" if exit_code == 0 else "failed"
