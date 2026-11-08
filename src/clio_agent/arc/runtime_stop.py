@@ -37,6 +37,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
+from clio_agent.arc.clio_core_config import pin_loopback_bind
 from clio_agent.arc.clio_core_liveness import (
     _resolve_runtime_port,
     _runtime_alive,
@@ -345,6 +346,7 @@ def stop_runtime_daemon(
             env.setdefault("CTP_LOG_LEVEL", log_level)
             if config_path:
                 env["CLIO_SERVER_CONF"] = config_path
+            pin_loopback_bind(env)
             runtime_port = _resolve_runtime_port(config_path)
             stop_process = subprocess.Popen(  # noqa: S603 - fixed launcher path
                 [exe, "stop"],

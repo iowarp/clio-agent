@@ -53,6 +53,7 @@ from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for ca
     _default_cte_file_capacity,
     _default_cte_ram_capacity,
     default_cte_config_path,
+    pin_loopback_bind,
     runtime_state_dir,
 )
 from clio_agent.arc.clio_core_indexer import (
@@ -169,6 +170,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     env.setdefault("CTP_LOG_LEVEL", log_level)
     if config_path:
         env["CLIO_SERVER_CONF"] = config_path
+    pin_loopback_bind(env)
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)

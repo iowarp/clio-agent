@@ -45,7 +45,7 @@ import logging
 import os
 import re
 import socket
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,6 +178,23 @@ compose:
 # 1GB of ram, and whatever you want of <disk>" — the budget IS the ceiling.
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
 _DEFAULT_CTE_CORE_PORT = 9413
+
+# clio-core binds its RPC servers on every interface (0.0.0.0) unless
+# ``CLIO_BIND_ADDR`` names an address. CLIO's runtime is single-node and serves only
+# this machine's own processes, so it is pinned to loopback; an explicit value
+# (for a hand-authored multi-node hostfile) is respected.
+CORE_BIND_ADDR_ENV = "CLIO_BIND_ADDR"
+CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
+
+
+def pin_loopback_bind(env: MutableMapping[str, str]) -> None:
+    """Bind the clio-core runtime started or attached under ``env`` to loopback.
+
+    The daemon, its ``stop`` command, and this process's native client must agree,
+    so every environment that reaches clio-core goes through here.
+    """
+    if not env.get(CORE_BIND_ADDR_ENV):
+        env[CORE_BIND_ADDR_ENV] = CORE_LOOPBACK_BIND_ADDR
 
 
 # The path suffix identifying a ram data tier (hand-authored or older configs; the

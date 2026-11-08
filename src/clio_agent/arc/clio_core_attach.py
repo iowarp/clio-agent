@@ -43,6 +43,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from clio_agent.arc.clio_core_config import pin_loopback_bind
 from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
     CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
@@ -283,6 +284,7 @@ def export_client_config(config_path: str) -> None:
     """
     if config_path:
         os.environ["CLIO_SERVER_CONF"] = config_path
+    pin_loopback_bind(os.environ)
 
 
 def attach_native_client(
