@@ -220,6 +220,7 @@ def plain_multi_turn(server: str, root: Path) -> dict:
     repo = fixture_repo(root)
     workspace, sid = open_session(server, repo, "Plain multi-turn coding request")
     started = time.monotonic()
+    seed = git(repo, "rev-parse", "HEAD").strip()
     first = say(
         server,
         sid,
@@ -227,14 +228,21 @@ def plain_multi_turn(server: str, root: Path) -> dict:
         "my checkout.",
         600,
     )
-    held = git(repo, "status", "--porcelain", "--untracked-files=no").strip() == ""
+    held = (
+        git(repo, "rev-parse", "HEAD").strip() == seed
+        and git(repo, "status", "--porcelain", "--untracked-files=no").strip() == ""
+    )
     first_rows = [row for row in tool_rows(first) if accepted(row)]
     messages = say(server, sid, f"{FOLLOW_UP} When it checks out, put it into my checkout.", 600)
     save(root / "messages.json", {"messages": messages})
     rows = tool_rows(messages)
     runs = {row.get("run") for row in first_rows if row.get("run")}
+    # A continued turn commits anew on the same run; message order is not relied on.
+    seen = {row.get("commit") for row in tool_rows(first)}
     later = [
-        row for row in rows[len(tool_rows(first)) :] if accepted(row) and row.get("run") in runs
+        row
+        for row in rows
+        if accepted(row) and row.get("run") in runs and row.get("commit") not in seen
     ]
     landed = [
         row
