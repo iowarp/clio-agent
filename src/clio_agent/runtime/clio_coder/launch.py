@@ -202,19 +202,9 @@ def close_egress(confinement: Mapping[str, Any]) -> None:
 
 
 def confine(
-    install: ClioCoderInstall,
-    args: Sequence[str],
-    *,
-    cwd: Path,
-    home: InstanceHome,
-    territory: Path | None = None,
+    install: ClioCoderInstall, args: Sequence[str], *, cwd: Path, home: InstanceHome
 ) -> tuple[list[str], dict[str, str], dict[str, Any]]:
-    """Compose the fenced argv, its environment overlay and the confinement record.
-
-    The writable territory is ``cwd`` (or ``territory`` when given) plus the instance home. The
-    fence keeps a ``.git`` at the top of each writable root read-only, so a scratch repository
-    the child must commit in is placed one level below ``territory``.
-    """
+    """Compose the fenced argv, its environment overlay and the confinement record."""
     from clio_agent.runtime import sandbox
 
     argv = [*install.argv, *args]
@@ -222,7 +212,7 @@ def confine(
         confined = sandbox.wrap_confined(
             argv[0],
             argv[1:],
-            write_roots=(territory or cwd, home.root),
+            write_roots=(cwd, home.root),
             net_policy=sandbox.NET_ALLOW_RECORD,
             profile=sandbox.PROFILE_SHELL,
             cwd=cwd,
@@ -253,12 +243,11 @@ async def spawn_instance(
     home: InstanceHome,
     stdin_pipe: bool,
     base_env: Mapping[str, str] | None = None,
-    territory: Path | None = None,
 ) -> SpawnedInstance:
     """Spawn Clio Coder through the sandbox composer, as a fresh cancellable process tree."""
     from clio_agent.runtime.task_process_tree import TaskProcessTree, task_spawn_options
 
-    command, overlay, confinement = confine(install, args, cwd=cwd, home=home, territory=territory)
+    command, overlay, confinement = confine(install, args, cwd=cwd, home=home)
     env = {**home.environment(base_env), **overlay}
     try:
         process = await asyncio.create_subprocess_exec(
