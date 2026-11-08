@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
+import re
 import shutil
 import signal
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -18,9 +21,13 @@ from clio_agent.errors import ClioError
 
 #: Environment variable naming the Clio Coder entry point: an executable or a ``dist/cli/index.js``.
 CLIO_CODER_BIN_ENV = "CLIO_AGENT_CLIO_CODER_BIN"
+#: The oldest Clio Coder whose headless, ACP and fence contracts this package speaks.
+MIN_CLIO_CODER_VERSION = (0, 7, 0)
+_VERSION_RE = re.compile(r"Clio Coder (\d+)\.(\d+)\.(\d+)")
 
 #: Typed failure reasons, carried as ``ClioCoderError.error_type``.
 REASON_NOT_FOUND = "clio_coder_not_found"
+REASON_TOO_OLD = "clio_coder_too_old"
 REASON_HOME_REFUSED = "clio_coder_home_refused"
 REASON_SPAWN_FAILED = "clio_coder_spawn_failed"
 REASON_PROTOCOL = "clio_coder_protocol_error"
@@ -67,6 +74,40 @@ class ClioCoderInstall:
                 )
             return cls((node, str(path.resolve())))
         return cls((candidate,))
+
+    def version(self) -> tuple[int, int, int] | None:
+        """The installed version from ``--version``; ``None`` when it cannot be read."""
+        entry = shutil.which(self.argv[-1]) or self.argv[-1]
+        try:
+            stamp = Path(entry).stat().st_mtime_ns
+        except OSError:
+            stamp = 0
+        return _read_version(self.argv, stamp)
+
+    def require_supported(self) -> tuple[int, int, int]:
+        """The version, or a refusal naming the minimum when it is older or unreadable."""
+        found = self.version()
+        minimum = ".".join(map(str, MIN_CLIO_CODER_VERSION))
+        if found is None or found < MIN_CLIO_CODER_VERSION:
+            shown = ".".join(map(str, found)) if found else "an unreadable version"
+            raise ClioCoderError(
+                REASON_TOO_OLD,
+                f"Clio Coder {shown} is installed; CLIO needs {minimum} or newer",
+                {"argv": list(self.argv), "minimum": minimum},
+            )
+        return found
+
+
+@functools.lru_cache(maxsize=8)
+def _read_version(argv: tuple[str, ...], _stamp: int) -> tuple[int, int, int] | None:
+    try:
+        done = subprocess.run(
+            [*argv, "--version"], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _VERSION_RE.search(done.stdout or "")
+    return (int(match[1]), int(match[2]), int(match[3])) if match else None
 
 
 @dataclass(frozen=True)

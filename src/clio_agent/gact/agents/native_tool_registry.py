@@ -411,10 +411,12 @@ def build_native_tools(
     for name in wanted & configured_withheld():  # tools.withheld, e.g. an ablation
         withheld.setdefault(name, "withheld_by_config")
     if "delegate_to_clio_coder" in wanted and not describe_all:
-        from clio_agent.gact.clio_coder_tool import clio_coder_available  # noqa: PLC0415
+        from clio_agent.gact.clio_coder_tool import (  # noqa: PLC0415
+            clio_coder_unavailable_reason,
+        )
 
-        if not clio_coder_available():
-            withheld.setdefault("delegate_to_clio_coder", "clio_coder_not_installed")
+        if reason := clio_coder_unavailable_reason():
+            withheld.setdefault("delegate_to_clio_coder", reason)
     wanted -= set(withheld)
     available: dict[str, Any] = {}
     if wanted & TASK_TOOL_NAMES:

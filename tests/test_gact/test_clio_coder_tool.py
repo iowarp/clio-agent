@@ -138,13 +138,13 @@ def test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it() -> 
 def test_the_tool_is_withheld_when_clio_coder_is_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tool, "clio_coder_available", lambda: False)
+    monkeypatch.setattr(tool, "clio_coder_unavailable_reason", lambda: "clio_coder_not_installed")
     available, _gateway, withheld = registry.build_native_tools(
         None, ["delegate_to_clio_coder"], {}
     )
     assert withheld == {"delegate_to_clio_coder": "clio_coder_not_installed"}
     assert not available
-    monkeypatch.setattr(tool, "clio_coder_available", lambda: True)
+    monkeypatch.setattr(tool, "clio_coder_unavailable_reason", lambda: None)
     available, _gateway, withheld = registry.build_native_tools(
         None, ["delegate_to_clio_coder"], {}
     )

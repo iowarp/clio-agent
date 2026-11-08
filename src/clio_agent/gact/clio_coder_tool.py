@@ -40,12 +40,17 @@ TEXT_LIMIT = 20_000
 _CANCEL_POLL_SECONDS = 0.5
 
 
-def clio_coder_available() -> bool:
+def clio_coder_unavailable_reason() -> str | None:
+    """Why the tool is withheld: not installed, or older than CLIO supports; ``None`` if usable."""
     try:
-        ClioCoderInstall.resolve()
-    except ClioCoderError:
-        return False
-    return True
+        ClioCoderInstall.resolve().require_supported()
+    except ClioCoderError as exc:
+        return (
+            "clio_coder_too_old"
+            if exc.error_type == "clio_coder_too_old"
+            else ("clio_coder_not_installed")
+        )
+    return None
 
 
 def _active_session() -> tuple[Any, Any, Path]:

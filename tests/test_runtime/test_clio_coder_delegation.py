@@ -358,6 +358,38 @@ def test_a_later_route_is_added_to_the_home_and_its_key_reaches_only_the_child(
     assert "CLIO_DELEGATED_MODEL_API_KEY" not in os.environ
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the fake install is a POSIX shell script")
+def test_doctor_and_tool_require_the_minimum_clio_coder_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.clio_coder_tool import clio_coder_unavailable_reason
+    from clio_agent.runtime.clio_coder.doctor import probe_clio_coder
+
+    def install(name: str, output: str) -> None:
+        script = tmp_path / name
+        script.write_text(f"#!/bin/sh\necho '{output}'\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", str(script))
+
+    install("new", "Clio Coder 0.7.0")
+    row = probe_clio_coder()
+    assert (row.state.value, row.details["version"], row.config_source) == (
+        "ready",
+        "0.7.0",
+        "CLIO_AGENT_CLIO_CODER_BIN",
+    )
+    assert clio_coder_unavailable_reason() is None
+    install("old", "Clio Coder 0.6.13")
+    assert probe_clio_coder().state.value == "misconfigured"
+    assert clio_coder_unavailable_reason() == "clio_coder_too_old"
+    install("mute", "")
+    assert probe_clio_coder().state.value == "degraded"
+    monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", "")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert probe_clio_coder().state.value == "skipped"
+    assert clio_coder_unavailable_reason() == "clio_coder_not_installed"
+
+
 def test_install_resolution_prefers_explicit_then_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
