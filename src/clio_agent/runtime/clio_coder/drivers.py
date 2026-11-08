@@ -327,8 +327,9 @@ async def run_acp(
 def _explain_turn_failure(result: DelegationResult) -> None:
     """Name why a prompt turn failed: Clio Coder keeps the reason off the wire, on stderr."""
     error = result.error or {}
-    details = error.get("details") or {}
-    if (details.get("data") or {}).get("code") != "turn_failed":
+    data = (error.get("details") or {}).get("data") or {}
+    typed = (data.get("_meta") or {}).get("clio-coder/error") or {}
+    if typed.get("code") != "turn_failed":
         return
     reasons = [
         line.split(_ACP_TURN_FAILED, 1)[1].strip()

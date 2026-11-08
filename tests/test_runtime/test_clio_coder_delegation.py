@@ -154,7 +154,7 @@ FAKE_CLIO_CODER = textwrap.dedent(
                 sys.stderr.flush()
                 out({"jsonrpc": "2.0", "id": msg["id"],
                      "error": {"code": -32603, "message": "turn_failed",
-                               "data": {"code": "turn_failed"}}})
+                               "data": {"_meta": {"clio-coder/error": {"version": 1, "code": "turn_failed"}}}}})
                 continue
             if "@HANG" in text:
                 while not session["cancel"]:
