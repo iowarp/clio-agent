@@ -95,6 +95,8 @@ def test_precedence_is_call_then_binding_then_fleet_default_then_conversation(
 def test_a_home_template_binding_runs_on_the_profile_it_seeds(
     app, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.yaml").write_text("version: 2\n")
     monkeypatch.setenv(route.HOME_TEMPLATE_ENV, str(tmp_path))
     resolved = route.resolve_route(app, None)
     assert (resolved.source, resolved.target, resolved.home_template) == (
@@ -102,6 +104,14 @@ def test_a_home_template_binding_runs_on_the_profile_it_seeds(
         None,
         tmp_path,
     )
+
+
+def test_missing_home_template_names_the_repair_instead_of_starting_on_an_empty_home(
+    app, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv(route.HOME_TEMPLATE_ENV, str(tmp_path / "missing"))
+    with pytest.raises(ValueError, match="unset it to inherit"):
+        route.resolve_route(app, None)
 
 
 def test_routes_clio_coder_cannot_reach_are_refused_with_the_way_to_bind_one(app) -> None:

@@ -46,9 +46,9 @@ def clio_coder_unavailable_reason() -> str | None:
         ClioCoderInstall.resolve().require_supported()
     except ClioCoderError as exc:
         return (
-            "clio_coder_too_old"
-            if exc.error_type == "clio_coder_too_old"
-            else ("clio_coder_not_installed")
+            "clio_coder_not_installed"
+            if exc.error_type == "clio_coder_not_found"
+            else exc.error_type
         )
     return None
 

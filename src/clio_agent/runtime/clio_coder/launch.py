@@ -29,6 +29,7 @@ _FLAG_RE = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]*")
 #: Typed failure reasons, carried as ``ClioCoderError.error_type``.
 REASON_NOT_FOUND = "clio_coder_not_found"
 REASON_TOO_OLD = "clio_coder_too_old"
+REASON_VERSION_UNREADABLE = "clio_coder_version_unreadable"
 REASON_HOME_REFUSED = "clio_coder_home_refused"
 REASON_SPAWN_FAILED = "clio_coder_spawn_failed"
 REASON_PROTOCOL = "clio_coder_protocol_error"
@@ -72,11 +73,20 @@ class ClioCoderInstall:
             if node is None or not path.is_file():
                 raise ClioCoderError(
                     REASON_NOT_FOUND,
-                    "Clio Coder entry point needs node and an existing script",
+                    f"Cannot launch {candidate!r}: install Node.js and point "
+                    f"{CLIO_CODER_BIN_ENV} at an existing Clio Coder script",
                     {"entry": candidate, "node": node},
                 )
             return cls((node, str(path.resolve())))
-        return cls((candidate,))
+        executable = shutil.which(candidate)
+        if executable is None:
+            raise ClioCoderError(
+                REASON_NOT_FOUND,
+                f"Clio Coder executable {candidate!r} is missing or not executable; "
+                f"correct {CLIO_CODER_BIN_ENV} or unset it to use clio-coder on PATH",
+                {"entry": candidate},
+            )
+        return cls((str(Path(executable).absolute()),))
 
     def _stamp(self) -> int:
         entry = shutil.which(self.argv[-1]) or self.argv[-1]
@@ -97,11 +107,19 @@ class ClioCoderInstall:
         """The version, or a refusal naming the minimum when it is older or unreadable."""
         found = self.version()
         minimum = ".".join(map(str, MIN_CLIO_CODER_VERSION))
-        if found is None or found < MIN_CLIO_CODER_VERSION:
-            shown = ".".join(map(str, found)) if found else "an unreadable version"
+        if found is None:
+            raise ClioCoderError(
+                REASON_VERSION_UNREADABLE,
+                f"Cannot read Clio Coder's version from {self.argv[-1]!r}; run that entry "
+                f"with --version and check its Node.js runtime. CLIO needs {minimum} or newer",
+                {"argv": list(self.argv), "minimum": minimum},
+            )
+        if found < MIN_CLIO_CODER_VERSION:
+            shown = ".".join(map(str, found))
             raise ClioCoderError(
                 REASON_TOO_OLD,
-                f"Clio Coder {shown} is installed; CLIO needs {minimum} or newer",
+                f"Clio Coder {shown} is installed; upgrade to {minimum} or newer "
+                f"and restart CLIO (selected entry: {self.argv[-1]})",
                 {"argv": list(self.argv), "minimum": minimum},
             )
         return found
@@ -120,7 +138,7 @@ def _read_version(argv: tuple[str, ...], _stamp: int) -> tuple[int, int, int] | 
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    match = _VERSION_RE.search(done.stdout or "")
+    match = _VERSION_RE.search(done.stdout or "") if done.returncode == 0 else None
     return (int(match[1]), int(match[2]), int(match[3])) if match else None
 
 

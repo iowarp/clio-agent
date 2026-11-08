@@ -30,33 +30,46 @@ def probe_clio_coder() -> IntegrationStatus:
     except ClioCoderError as exc:
         return IntegrationStatus(
             name=NAME,
-            state=IntegrationState.SKIPPED,
+            state=(
+                IntegrationState.MISCONFIGURED
+                if source == CLIO_CODER_BIN_ENV
+                else IntegrationState.SKIPPED
+            ),
             summary=f"{exc}; coding delegation (run_clio_coder) is withheld",
             config_source=source,
-            next_action=f"install clio-coder {minimum}+ on PATH or set {CLIO_CODER_BIN_ENV}",
+            next_action=(
+                f"Correct or unset {CLIO_CODER_BIN_ENV}; then run clio-coder --version"
+                if source == CLIO_CODER_BIN_ENV
+                else f"Install clio-coder {minimum}+ on PATH and restart CLIO"
+            ),
+            details={"reason": exc.error_type, "minimum": minimum},
             required=False,
         )
     entry = " ".join(install.argv)
-    found = install.version()
-    if found is None or found < MIN_CLIO_CODER_VERSION:
-        shown = f"Clio Coder {'.'.join(map(str, found))}" if found else "Its version is unreadable"
+    try:
+        found = install.require_supported()
+    except ClioCoderError as exc:
         return IntegrationStatus(
             name=NAME,
-            state=IntegrationState.MISCONFIGURED if found else IntegrationState.DEGRADED,
-            summary=f"{shown}; CLIO needs {minimum}+, so coding delegation is withheld",
+            state=(
+                IntegrationState.MISCONFIGURED
+                if exc.error_type == "clio_coder_too_old"
+                else IntegrationState.DEGRADED
+            ),
+            summary=f"{exc}; coding delegation is withheld",
             config_source=source,
-            next_action=f"install clio-coder {minimum} or newer (check `clio-coder --version`)",
+            next_action=f"Check `{entry} --version`; install Clio Coder {minimum}+ and restart CLIO",
             endpoint=entry,
-            details={"minimum": minimum},
+            details={"minimum": minimum, "reason": exc.error_type},
             required=False,
         )
     version = ".".join(map(str, found))
     return IntegrationStatus(
         name=NAME,
         state=IntegrationState.READY,
-        summary=f"Clio Coder {version} (minimum {minimum}); coding delegation available",
+        summary=f"Clio Coder {version}; binary ready for coding delegation",
         config_source=source,
-        next_action="none",
+        next_action="No extra setup: delegation inherits the conversation's model and autonomy",
         endpoint=entry,
         details={"version": version, "minimum": minimum},
         required=False,

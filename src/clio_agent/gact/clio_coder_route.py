@@ -176,7 +176,14 @@ def _operator_route() -> DelegatedRoute | None:
         return DelegatedRoute(SOURCE_BINDING, "", model, target=target)
     template = os.environ.get(HOME_TEMPLATE_ENV, "").strip()
     if template:
-        return DelegatedRoute(SOURCE_BINDING, home_template=Path(template))
+        path = Path(template).expanduser().resolve()
+        if not (path / "config" / "settings.yaml").is_file():
+            raise ValueError(
+                f"{HOME_TEMPLATE_ENV}={template!r} has no config/settings.yaml; "
+                "point it at a prepared Clio Coder home or unset it to inherit "
+                "the conversation's model"
+            )
+        return DelegatedRoute(SOURCE_BINDING, home_template=path)
     return None
 
 
@@ -201,8 +208,9 @@ def resolve_route(app: Any, session: Any, *, model: str = "", provider: str = ""
         chosen = (SOURCE_MAIN, (main["provider_id"], main["model_id"]))
     if chosen is None:
         raise ValueError(
-            "Clio Coder has no model: this conversation has none, and no binding "
-            f"(fleet.agents.{AGENT_ID}) or fleet default is set"
+            "Clio Coder has no model: select a model for this CLIO conversation "
+            "(delegation inherits it without extra configuration), or set "
+            f"fleet.agents.{AGENT_ID} or fleet.default to {{provider_id, model_id}}"
         )
     source, (provider_id, model_id) = chosen
     target, env = target_for(app, provider_id, model_id)

@@ -264,6 +264,11 @@ async def test_headless_delegation_hands_back_a_verified_worktree_diff(
     assert seen["CLIO_CODER_INTEROP_HOME"] == "none"
     settings = yaml.safe_load((tmp_path / "state/home/config/settings.yaml").read_text())
     assert settings["targets"][0]["auth"] == {"apiKeyEnvVar": "FAKE_KEY"}
+    subprocess.run(
+        ["git", "-C", str(repo), "apply", "--check"], input=result.diff, text=True, check=True
+    )
+    subprocess.run(["git", "-C", str(repo), "apply"], input=result.diff, text=True, check=True)
+    subprocess.run(CHECK, cwd=repo, check=True)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the check below is a POSIX shell command")
@@ -442,6 +447,10 @@ def test_doctor_and_tool_require_the_minimum_clio_coder_version(
     assert clio_coder_unavailable_reason() == "clio_coder_too_old"
     install("mute", "")
     assert probe_clio_coder().state.value == "degraded"
+    assert clio_coder_unavailable_reason() == "clio_coder_version_unreadable"
+    monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", str(tmp_path / "missing"))
+    assert probe_clio_coder().state.value == "misconfigured"
+    assert "Correct or unset" in probe_clio_coder().next_action
     monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", "")
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert probe_clio_coder().state.value == "skipped"
@@ -467,11 +476,38 @@ def test_child_environment_keeps_only_narrowing_clio_coder_limits(tmp_path: Path
 def test_install_resolution_prefers_explicit_then_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", "/opt/clio-coder")
-    assert ClioCoderInstall.resolve().argv == ("/opt/clio-coder",)
-    assert ClioCoderInstall.resolve("/x/clio").argv == ("/x/clio",)
+    monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", sys.executable)
+    assert ClioCoderInstall.resolve().argv == (sys.executable,)
+    monkeypatch.setenv("CLIO_AGENT_CLIO_CODER_BIN", str(tmp_path / "missing"))
+    assert ClioCoderInstall.resolve(sys.executable).argv == (sys.executable,)
+    with pytest.raises(ClioCoderError, match="missing or not executable"):
+        ClioCoderInstall.resolve()
     with pytest.raises(ClioCoderError):
         ClioCoderInstall.resolve(str(tmp_path / "missing.js"))
+
+
+def test_failed_version_command_is_not_a_supported_install(tmp_path: Path) -> None:
+    script = tmp_path / "failed_version.py"
+    script.write_text("print('Clio Coder 0.7.0')\nraise SystemExit(1)\n")
+    install = ClioCoderInstall((sys.executable, str(script)))
+    with pytest.raises(ClioCoderError, match="Cannot read Clio Coder's version") as raised:
+        install.require_supported()
+    assert raised.value.error_type == "clio_coder_version_unreadable"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")
+def test_relative_binary_override_survives_the_child_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "clio-coder"
+    entry.write_text("#!/bin/sh\necho 'Clio Coder 0.7.0'\n")
+    entry.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    install = ClioCoderInstall.resolve("./clio-coder")
+    elsewhere = tmp_path / "worktree"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert install.require_supported() == (0, 7, 0)
 
 
 def test_acceptance_check_merges_into_a_worktree_catalog_only(repo: Path, tmp_path: Path) -> None:
