@@ -40,6 +40,13 @@
   "backend": {
     "mode": "managed",
     "sidecarName": "clio-agent",
+    "portConfig": {
+      "key": "gact.port",
+      "env": "CLIO_PORT",
+      "default": 17800,
+      "file": "config.yaml in the clio-agent config root (clio-paths.yaml roots.<os>.config)",
+      "resolver": "python -m clio_agent.server_port"
+    },
     "attachPort": 17800,
     "attachPortEnv": "CLIO_PORT",
     "attachUrlEnv": "CLIO_GACT_URL",

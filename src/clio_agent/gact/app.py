@@ -4,11 +4,11 @@ Exposes the GACT contract documented in ``gact-tui/contract/SPEC.md``.
 
 Run via::
 
-    clio-agent-gact --host 127.0.0.1 --port 8100
+    clio-agent-gact --host 127.0.0.1 --port 17800
 
 Or::
 
-    uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 8100
+    uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 17800
 
 This is CLIO's single HTTP front door. The legacy ``clio_agent.ui.api``
 REST server has been removed; the ``clio-agent-api`` console script is now
@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 
@@ -1672,7 +1673,7 @@ def __getattr__(name: str):
 
 def run_server(
     host: str = "127.0.0.1",
-    port: int = 8100,
+    port: int | None = None,
     *,
     reload: bool = False,
     no_agent: bool = False,
@@ -1689,12 +1690,19 @@ def run_server(
 
     Args:
         host: Bind host.
-        port: Bind port.
+        port: Bind port; ``None`` uses the configured default (``gact.port``).
         reload: uvicorn auto-reload on source changes (dev only).
         no_agent: Skip ClioAgent construction even when LM env is configured.
     """
     import uvicorn
 
+    from clio_agent.server_port import PORT_ENV, configured_port  # noqa: PLC0415
+
+    port = configured_port() if port is None else port
+    # CLIO_PORT names this HTTP API. clio-core reads the same generic name for its RPC
+    # port, in this process (the client) and in the daemon it spawns, so once the API
+    # port is resolved it must not leak there (the clio launcher unsets it likewise).
+    os.environ.pop(PORT_ENV, None)
     trace.configure()  # trace verbosity (file -> env -> default) + the formatted log handler
     from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
 
@@ -1735,7 +1743,9 @@ def main() -> None:
         description="CLIO's GACT v0.2 REST + SSE server.",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8100, type=int)
+    parser.add_argument(
+        "--port", default=None, type=int, help="server port (default: configured gact.port)"
+    )
     parser.add_argument(
         "--reload",
         action="store_true",

@@ -28,7 +28,11 @@ def _capabilities_ready() -> bool:
     """Return whether this desktop-managed server is already accepting API calls."""
 
     host = _argument_value("--host", "127.0.0.1")
-    port = _argument_value("--port", "8100")
+    port = _argument_value("--port", "")
+    if not port:
+        from clio_agent.server_port import configured_port  # noqa: PLC0415 - boot stays light
+
+        port = str(configured_port())
     request = Request(f"http://{host}:{port}/v1/capabilities")
     if token := os.environ.get("CLIO_AUTH_TOKEN", "").strip():
         request.add_header("Authorization", f"Bearer {token}")

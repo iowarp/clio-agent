@@ -23,7 +23,7 @@
 #
 # Environment overrides:
 #   CLIO_PREFIX   install root      (default: $HOME\AppData\Local\clio)
-#   CLIO_PORT     server port       (default: 17800)
+#   CLIO_PORT     server port       (default: gact.port in config.yaml, else 17800)
 #   CLIO_BIN_DIR  launcher location (default: ...\WindowsApps)
 param(
     [Parameter(Position = 0)]
@@ -54,6 +54,10 @@ if (Test-Path -LiteralPath $AgentPython) {
     $ClioState = (& $AgentPython -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())').Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Agent state directory' }
     New-Item -ItemType Directory -Path $ClioState -Force | Out-Null
+    # gact.port in CLIO's config.yaml, else CLIO_PORT, else 17800. Releases from
+    # before gact.port existed fail this lookup and keep the value above.
+    $ResolvedPort = & $AgentPython -m clio_agent.server_port 2>$null
+    if ($LASTEXITCODE -eq 0 -and $ResolvedPort) { $Port = [int]"$ResolvedPort".Trim() }
 }
 $PidFile   = Join-Path $ClioState 'clio-server.pid'
 $ServerLog = Join-Path $ClioState 'clio-server.log'

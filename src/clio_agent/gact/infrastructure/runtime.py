@@ -75,6 +75,7 @@ from clio_agent.gact.infrastructure.transport import (
     TransportUnavailableError,
 )
 from clio_agent.providers.credentials import resolve as resolve_credential
+from clio_agent.server_port import DEFAULT_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -570,7 +571,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 question = claim and conflict_question(
                     claim,
                     target_version=deployed_clio_version(),
-                    port=plan.connection_port or 17800,
+                    port=plan.connection_port or DEFAULT_PORT,
                 )
                 if question:
                     progress, conflict = question

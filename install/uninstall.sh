@@ -11,7 +11,7 @@
 #
 #   Environment overrides (must match the install):
 #     CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
-#     CLIO_PORT     server port       (default: 17800)
+#     CLIO_PORT     server port       (default: gact.port in config.yaml, else 17800)
 #     CLIO_BIN_DIR  launcher location (default: $HOME/.local/bin)
 set -euo pipefail
 
@@ -41,6 +41,8 @@ if [[ -x "$AGENT_PYTHON" ]]; then
   # the legacy paths above if they do not expose the namespace helpers.
   resolved_state="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())' 2>/dev/null)" && CLIO_STATE="$resolved_state"
   resolved_config="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>/dev/null)" && CLIO_CONFIG="$resolved_config"
+  # The server listens on gact.port from CLIO's config.yaml when one is set.
+  resolved_port="$("$AGENT_PYTHON" -m clio_agent.server_port 2>/dev/null)" && [[ -n "$resolved_port" ]] && CLIO_PORT="$resolved_port"
 fi
 HOST_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 PIDFILE="$CLIO_STATE/clio-server.$HOST_ID.pid"
