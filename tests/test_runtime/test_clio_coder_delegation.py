@@ -74,6 +74,11 @@ FAKE_CLIO_CODER = textwrap.dedent(
             "usage": {"tokens": {"display": "1,234", "fact": {}},
                       "cost": {"display": "not measured", "fact": {}}}}))
     if args[0] == "run":
+        ceiling = os.environ.get("CLIO_CODER_AUTONOMY_CEILING")
+        if "yolo" in args and ceiling not in (None, "", "yolo"):
+            print("    at boot (fake.js:1)", file=sys.stderr)
+            print(f"clio-coder run: dispatcher runs at autonomy {ceiling}", file=sys.stderr)
+            sys.exit(2)
         task = args[-1]
         Path(os.environ["CLIO_CODER_STATE_DIR"], "task.txt").write_text(task)
         out({"type": "session", "schemaVersion": 1, "id": "s-headless", "cwd": cwd,
@@ -307,6 +312,19 @@ async def test_headless_watchdog_stops_a_hung_instance_and_discards_nothing_kept
     assert _branches(repo) == ["main"]
 
 
+async def test_a_run_refused_before_its_session_reports_why(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_CODER_AUTONOMY_CEILING", "default")
+    request = _request(
+        repo, tmp_path, install, "fix add", surface="headless", options=RunOptions(autonomy="yolo")
+    )
+    result = await delegate_coding_task(request)
+
+    assert (result.outcome, result.exit_code, result.session_id) == ("failed", 2, None)
+    assert result.error == {"message": "clio-coder run: dispatcher runs at autonomy default"}
+
+
 async def test_acp_multi_turn_session_applies_mode_and_permission_policy(
     repo: Path, tmp_path: Path, install: ClioCoderInstall
 ) -> None:
@@ -428,6 +446,22 @@ def test_doctor_and_tool_require_the_minimum_clio_coder_version(
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert probe_clio_coder().state.value == "skipped"
     assert clio_coder_unavailable_reason() == "clio_coder_not_installed"
+
+
+def test_child_environment_keeps_only_narrowing_clio_coder_limits(tmp_path: Path) -> None:
+    base = {
+        "PATH": "/bin",
+        "CLIO_AUTH_TOKEN": "parent-secret",
+        "CLIO_CODER_STATE_DIR": "/operator/state",
+        "CLIO_CODER_AUTONOMY_CEILING": "default",
+        "CLIO_CODER_YOLO_CONFINEMENT": "contained",
+    }
+    env = InstanceHome(tmp_path / "home").environment(base)
+
+    assert "CLIO_AUTH_TOKEN" not in env and env["CLIO_CODER_STATE_DIR"] != "/operator/state"
+    # A dispatcher above CLIO capped autonomy; the delegated run must inherit that cap.
+    assert env["CLIO_CODER_AUTONOMY_CEILING"] == "default"
+    assert env["CLIO_CODER_YOLO_CONFINEMENT"] == "contained"
 
 
 def test_install_resolution_prefers_explicit_then_environment(

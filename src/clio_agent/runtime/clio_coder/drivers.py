@@ -87,6 +87,24 @@ async def _drain_stderr(instance: SpawnedInstance, buffer: bytearray) -> None:
         del buffer[: max(0, len(buffer) - _STDERR_TAIL_BYTES)]
 
 
+def _explain_startup_failure(result: DelegationResult) -> None:
+    """Give a run that ended before any session (a refusal, a bad flag) its stderr reason."""
+    if (
+        result.error is not None
+        or result.session_id is not None
+        or result.outcome == OUTCOME_SUCCEEDED
+    ):
+        return
+    lines = [line.strip() for line in result.stderr_tail.splitlines() if line.strip()]
+    # The last unindented line is the message; indented lines are stack frames.
+    unindented = [
+        line.strip() for line in result.stderr_tail.splitlines() if line[:1] not in ("", " ", "\t")
+    ]
+    message = (unindented or lines or [""])[-1]
+    if message:
+        result.error = {"message": message[:500]}
+
+
 def headless_args(task: str, cwd: Path, options: RunOptions) -> list[str]:
     args = ["run", "--json-events", "terminal", "--cwd", str(cwd)]
     args += ["--autonomy", options.autonomy, "--timeout", str(max(1, int(options.timeout)))]
@@ -180,6 +198,7 @@ async def run_headless(
             result.outcome = outcome_for_exit(exit_code)
     if result.exit_code == 4:
         result.outcome = OUTCOME_COST_CAPPED
+    _explain_startup_failure(result)
     return result
 
 
@@ -280,6 +299,7 @@ async def run_acp(
         result.stderr_tail = stderr.decode("utf-8", "replace")
         result.exit_code = instance.process.returncode
         result.tools = list(state.tools.values())
+    _explain_startup_failure(result)
     return result
 
 

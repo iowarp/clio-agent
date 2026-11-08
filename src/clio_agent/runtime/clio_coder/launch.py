@@ -37,6 +37,8 @@ REASON_WORKSPACE = "clio_coder_workspace_error"
 #: Parent credentials and control tokens that must never reach a delegated coding agent.
 _STRIPPED_ENV_KEYS = ("CLIO_AUTH_TOKEN", "CLIO_GACT_BEARER_TOKEN")
 _STRIPPED_ENV_PREFIXES = ("CLIO_SECRET_", "CLIO_CODER_")
+#: Clio Coder limits set by a dispatcher above CLIO; they only narrow the child, so they pass.
+_KEPT_CLIO_CODER_ENV = ("CLIO_CODER_AUTONOMY_CEILING", "CLIO_CODER_YOLO_CONFINEMENT")
 
 #: Grace period between the polite stop signal and killing the owned tree.
 STOP_GRACE_SECONDS = 5.0
@@ -231,7 +233,8 @@ class InstanceHome:
         env = {
             key: value
             for key, value in (os.environ if base is None else base).items()
-            if key not in _STRIPPED_ENV_KEYS and not key.startswith(_STRIPPED_ENV_PREFIXES)
+            if key in _KEPT_CLIO_CODER_ENV
+            or (key not in _STRIPPED_ENV_KEYS and not key.startswith(_STRIPPED_ENV_PREFIXES))
         }
         dirs = self.dirs()
         env.update(
