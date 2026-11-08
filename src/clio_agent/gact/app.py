@@ -1638,7 +1638,8 @@ def build_app(
                 try:
                     return await super().get_response(path, scope)
                 except StarletteHTTPException as exc:
-                    if exc.status_code == 404:
+                    # An unknown API path stays a JSON 404, never the SPA's HTML.
+                    if exc.status_code == 404 and not (path == "v1" or path.startswith("v1/")):
                         return FileResponse(Path(web_dir) / "index.html")
                     raise
 
