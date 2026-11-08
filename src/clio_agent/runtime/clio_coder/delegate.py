@@ -8,10 +8,11 @@ are kept for the caller to land or discard unless ``keep_worktree`` is false.
 
 from __future__ import annotations
 
+import re
 import shlex
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from clio_agent.runtime.clio_coder.workspace import (
     Workspace,
     adopt_directory,
     collect_changes,
+    commit_changes,
     create_worktree,
     declare_acceptance_check,
     remove_worktree,
@@ -88,6 +90,18 @@ def compose_task(task: str, verify_command: Sequence[str] | None, declared: bool
     )
 
 
+def _path_rebaser(repo: Path, worktree: Path) -> Callable[[str], str]:
+    """Map absolute paths inside the operator's checkout onto the same paths in the worktree."""
+    pattern = re.compile(re.escape(str(repo)) + r"(?![\w.-])")
+    return lambda text: pattern.sub(lambda _match: str(worktree), text)
+
+
+def _commit_message(task: str) -> str:
+    first = next((line.strip() for line in task.splitlines() if line.strip()), "delegated change")
+    subject = first if len(first) <= 72 else first[:69].rstrip() + "..."
+    return f"clio-coder: {subject}\n\nDelegated by CLIO; the full assignment follows.\n\n{task}"
+
+
 def _new_run_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
@@ -115,16 +129,23 @@ async def delegate_coding_task(
     )
     handed_back = False
     try:
-        declared = bool(request.verify_command) and declare_acceptance_check(
-            workspace, request.verify_command or (), request.verify_timeout
+        prompts = [request.task, *request.follow_ups]
+        verify_command = list(request.verify_command) if request.verify_command else None
+        if workspace.is_worktree and workspace.repo is not None:
+            # The instance and the check run in the worktree; checkout paths would escape it.
+            rebase = _path_rebaser(workspace.repo, workspace.path)
+            prompts = [rebase(prompt) for prompt in prompts]
+            verify_command = [rebase(arg) for arg in verify_command] if verify_command else None
+        declared = bool(verify_command) and declare_acceptance_check(
+            workspace, verify_command or (), request.verify_timeout
         )
-        task = compose_task(request.task, request.verify_command, declared)
+        task = compose_task(prompts[0], verify_command, declared)
         if surface == SURFACE_ACP:
             result = await run_acp(
                 install,
                 home,
                 workspace.path,
-                [task, *request.follow_ups],
+                [task, *prompts[1:]],
                 request.options,
                 sink,
                 on_permission,
@@ -136,11 +157,12 @@ async def delegate_coding_task(
         result.base_commit = workspace.base_commit
         try:
             result.changed_files, result.diff = collect_changes(workspace)
+            result.commit = commit_changes(workspace, _commit_message(request.task))
         except ClioCoderError as exc:
             result.error = result.error or exc.to_dict()
-        if request.verify_command:
+        if verify_command:
             result.verification = await run_verification(
-                workspace, request.verify_command, timeout=request.verify_timeout
+                workspace, verify_command, timeout=request.verify_timeout
             )
         handed_back = True
     finally:

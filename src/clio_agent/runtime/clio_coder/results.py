@@ -99,6 +99,7 @@ class DelegationResult:
     workspace: str | None = None
     branch: str | None = None
     base_commit: str | None = None
+    commit: str | None = None
     changed_files: list[str] = field(default_factory=list)
     diff: str = ""
     verification: Verification | None = None

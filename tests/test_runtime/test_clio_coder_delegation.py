@@ -7,7 +7,9 @@ so the hand-back, the parent's verification and worktree cleanup are exercised e
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -46,6 +48,8 @@ FAKE_CLIO_CODER = textwrap.dedent(
 
     def fix(cwd, extra=""):
         Path(cwd, "calc.py").write_text("def add(a, b):\\n    return a + b\\n" + extra)
+        Path(cwd, "__pycache__").mkdir(exist_ok=True)
+        Path(cwd, "__pycache__", "calc.cpython-314.pyc").write_bytes(b"\\0")
 
     def env_report(cwd):
         keys = sorted(k for k in os.environ if k.startswith(("CLIO_", "SECRET")))
@@ -58,6 +62,7 @@ FAKE_CLIO_CODER = textwrap.dedent(
     env_report(cwd)
     if args[0] == "run":
         task = args[-1]
+        Path(os.environ["CLIO_CODER_STATE_DIR"], "task.txt").write_text(task)
         out({"type": "session", "schemaVersion": 1, "id": "s-headless", "cwd": cwd,
              "model": "fake-model"})
         if "@HANG" in task:
@@ -188,6 +193,21 @@ async def test_headless_delegation_hands_back_a_verified_worktree_diff(
     # The operator's checkout is untouched; the work waits on its own branch.
     assert "a - b" in (repo / "calc.py").read_text()
     assert result.branch in _branches(repo) and Path(result.workspace).is_dir()
+    # The branch carries the change itself, without the check's or the instance's artifacts.
+    tip = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", result.branch], capture_output=True, text=True
+    ).stdout.strip()
+    assert result.commit == tip != result.base_commit
+    committed = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--name-only", result.base_commit, tip],
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert committed == ["calc.py"]
+    shown = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{tip}:calc.py"], capture_output=True, text=True
+    ).stdout
+    assert "a + b" in shown
     # The acceptance check is declared to the instance but never handed back as a change.
     verifiers = yaml.safe_load(
         (Path(result.workspace) / ".clio-coder" / "verifiers.yaml").read_text()
@@ -199,6 +219,26 @@ async def test_headless_delegation_hands_back_a_verified_worktree_diff(
     assert seen["CLIO_CODER_INTEROP_HOME"] == "none"
     settings = yaml.safe_load((tmp_path / "state/home/config/settings.yaml").read_text())
     assert settings["targets"][0]["auth"] == {"apiKeyEnvVar": "FAKE_KEY"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the check below is a POSIX shell command")
+async def test_checkout_paths_in_the_task_and_check_are_mapped_into_the_worktree(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall
+) -> None:
+    root = Path(
+        subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"], text=True
+        ).strip()
+    )
+    check = f"cd {root} && {sys.executable} -B -c 'import calc; assert calc.add(2, 3) == 5'"
+    request = _request(repo, tmp_path, install, f"fix {root}/calc.py", keep_worktree=False)
+    request = dataclasses.replace(request, verify_command=["/bin/sh", "-c", check])
+    result = await delegate_coding_task(request)
+
+    # The checkout still has the bug, so the check only passes because it ran in the worktree.
+    assert result.verified, result.verification
+    seen = (tmp_path / "state" / "home" / "state" / "task.txt").read_text()
+    assert f"fix {result.workspace}/calc.py" in seen and f"{root}/" not in seen
 
 
 async def test_headless_limitation_is_reported_alongside_parent_verification(

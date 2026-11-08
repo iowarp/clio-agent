@@ -14,7 +14,14 @@ from clio_agent.runtime.clio_coder.launch import REASON_WORKSPACE, ClioCoderErro
 from clio_agent.runtime.clio_coder.results import Verification
 
 #: Clio Coder's own project-local state never counts as part of the delegated change.
-_EXCLUDED_PATHSPECS = (":(exclude).clio-coder", ":(exclude)CLIO-CODER.md")
+# Clio Coder's own state and interpreter caches that running code leaves behind are never handed
+# back, even in repositories without a .gitignore for them.
+_EXCLUDED_PATHSPECS = (
+    ":(exclude).clio-coder",
+    ":(exclude)CLIO-CODER.md",
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.py[co]",
+)
 _OUTPUT_TAIL_BYTES = 4000
 _VERIFIER_CATALOG = Path(".clio-coder") / "verifiers.yaml"
 ACCEPTANCE_CHECK_ID = "clio-agent-acceptance"
@@ -81,6 +88,34 @@ def collect_changes(workspace: Workspace) -> tuple[list[str], str]:
         diff_args = ("diff", workspace.base_commit, "--", ".", *_EXCLUDED_PATHSPECS)
     names = _git(workspace.path, *diff_args[:1], "--name-only", *diff_args[1:])
     return [line for line in names.splitlines() if line], _git(workspace.path, *diff_args)
+
+
+def commit_changes(workspace: Workspace, message: str) -> str | None:
+    """Commit the change staged by :func:`collect_changes` onto the worktree's branch.
+
+    The branch is the hand-back the parent lands (merge, cherry-pick or ``git show``), so it must
+    carry the change rather than the base. Runs before the acceptance check so the check's own
+    artifacts never enter the commit. Returns the commit id, or ``None`` when nothing changed.
+    """
+    if not workspace.is_worktree:
+        return None
+    if not _git(workspace.path, "diff", "--cached", "--name-only"):
+        return None
+    _git(
+        workspace.path,
+        "-c",
+        "user.name=Clio Coder",
+        "-c",
+        "user.email=clio-coder@delegated.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "--no-verify",
+        "-m",
+        message,
+    )
+    return _git(workspace.path, "rev-parse", "HEAD").strip()
 
 
 def declare_acceptance_check(workspace: Workspace, command: Sequence[str], timeout: float) -> bool:
