@@ -139,6 +139,35 @@ async def test_arguments_are_validated_before_any_instance_starts() -> None:
         await land.land_clio_coder("20261108-000000-abcdef", action="merge")
 
 
+async def test_continue_run_resumes_the_run_it_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from types import SimpleNamespace
+
+    (tmp_path / ".git").mkdir()
+    session = SimpleNamespace(mode="edit", approval_mode="ask")
+    route = SimpleNamespace(target=None, home_template=None, env={}, describe=lambda: "binding")
+    seen: list[Any] = []
+
+    async def approve(*_args: Any) -> None:
+        return None
+
+    async def resume(request: Any, **hooks: Any) -> Any:
+        seen.append((request, sorted(hooks)))
+        raise RuntimeError("resumed")
+
+    app = SimpleNamespace(state=SimpleNamespace(pending_permission_gate=object()))
+    monkeypatch.setattr(tool, "_active_session", lambda: (app, session, tmp_path))
+    monkeypatch.setattr(tool, "resolve_route", lambda *_a, **_k: route)
+    monkeypatch.setattr(tool, "_approve", approve)
+    monkeypatch.setattr(tool, "continue_clio_coder_run", resume)
+    with pytest.raises(RuntimeError, match="resumed"):
+        await tool.run_clio_coder("also add sub", continue_run="20261108-000000-abcdef")
+    ((request, hooks),) = seen
+    assert request.run_id == "20261108-000000-abcdef" and request.task == "also add sub"
+    assert hooks == ["on_permission", "sink"]
+
+
 def test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it() -> None:
     from types import SimpleNamespace
 

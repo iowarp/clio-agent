@@ -35,6 +35,7 @@ from clio_agent.runtime.clio_coder import (
     RunOptions,
     delegate_coding_task,
 )
+from clio_agent.runtime.clio_coder import continue_run as continue_clio_coder_run
 from clio_agent.runtime.clio_coder.delegate import SURFACE_ACP
 from clio_agent.runtime.clio_coder.results import command_text
 from clio_agent.runtime.clio_coder.runs import new_run_id, valid_run_id
@@ -210,7 +211,7 @@ async def run_clio_coder(
         "on_permission": gate_permission_relay(app, TOOL_NAME, run_id),
     }
     if continuing:
-        work = continue_run(
+        work = continue_clio_coder_run(
             ContinueRequest(
                 run_id=run_id,
                 task=task,
