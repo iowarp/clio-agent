@@ -376,3 +376,36 @@ def test_landing_shows_what_was_applied_or_discarded() -> None:
         f"Discard Clio Coder run {RUN}",
         "discarded",
     )
+
+
+def test_windows_check_paths_keep_native_quotes_and_shell_operators() -> None:
+    from clio_agent.runtime.clio_coder.results import command_text
+
+    check = r'"C:\Python 3.14\python.exe" -B check.py && echo accepted'
+    argv = tool._shell_argv(check, platform="win32")
+    assert argv[-1] == check and argv[-2].endswith("windows_check.py")
+    assert command_text(argv, platform="win32") == check
+    native = [r"C:\Python 3.14\python.exe", "-B", r"C:\science data\check.py"]
+    assert command_text(native, platform="win32") == (
+        r'"C:\Python 3.14\python.exe" -B "C:\science data\check.py"'
+    )
+
+
+def test_windows_check_passes_the_original_string_to_cmd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.runtime.clio_coder import windows_check
+
+    command = r'"C:\Python 3.14\python.exe" -B check.py && echo accepted'
+    calls = []
+    monkeypatch.setattr(windows_check.sys, "platform", "win32")
+    monkeypatch.setattr(
+        windows_check.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or SimpleNamespace(returncode=7),
+    )
+    assert windows_check.run_check(command) == 7
+    assert calls[0][0] == (command,) and calls[0][1]["shell"] is True
+    assert calls[0][1]["stdin"] == windows_check.subprocess.DEVNULL

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
 import subprocess
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from clio_agent.runtime.clio_coder.launch import REASON_WORKSPACE, ClioCoderError
+from clio_agent.runtime.clio_coder.launch import REASON_WORKSPACE, ClioCoderError, close_egress
 from clio_agent.runtime.clio_coder.results import Verification, command_text
 
 #: Clio Coder's own project-local state never counts as part of the delegated change.
@@ -212,23 +213,37 @@ async def run_verification(
     from clio_agent.runtime import sandbox
     from clio_agent.runtime.task_process_tree import TaskProcessTree, task_spawn_options
 
-    confined = sandbox.wrap_confined(
-        command[0],
-        list(command[1:]),
-        write_roots=(workspace.path,),
-        profile=sandbox.PROFILE_SHELL,
-        cwd=workspace.path,
-    )
-    process = await asyncio.create_subprocess_exec(
-        confined.command,
-        *confined.args,
-        cwd=str(workspace.path),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        **task_spawn_options(confined.popen_kwargs),
-    )
-    tree = TaskProcessTree(process.pid)
+    try:
+        confined = sandbox.wrap_confined(
+            command[0],
+            list(command[1:]),
+            write_roots=(workspace.path,),
+            profile=sandbox.PROFILE_SHELL,
+            cwd=workspace.path,
+        )
+    except sandbox.SandboxCompositionError as exc:
+        raise ClioCoderError(
+            "clio_coder_check_failed", f"verification confinement failed: {exc}"
+        ) from exc
+    try:
+        process = await asyncio.create_subprocess_exec(
+            confined.command,
+            *confined.args,
+            cwd=str(workspace.path),
+            env={**os.environ, **confined.env_overlay},
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            **task_spawn_options(confined.popen_kwargs),
+        )
+    except BaseException:
+        close_egress(confined.result.details)
+        raise
+    try:
+        tree = TaskProcessTree(process.pid)
+    except BaseException:
+        close_egress(confined.result.details)
+        raise
     try:
         output, _ = await asyncio.wait_for(process.communicate(), timeout)
         exit_code = process.returncode
@@ -239,6 +254,8 @@ async def run_verification(
     finally:
         if tree.active():
             tree.terminate()
+        await process.wait()
         tree.close()
+        close_egress(confined.result.details)
     text = output.decode("utf-8", "replace")
     return Verification(list(command), exit_code, text[-_OUTPUT_TAIL_BYTES:])

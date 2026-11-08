@@ -658,8 +658,8 @@ async def test_a_tui_session_launches_fenced_and_hands_back_like_a_delegation(
     assert f"fix {session.workspace.path}/calc.py" in session.brief()
 
     opened = session.launch.terminal_open_args({"CLIO_AUTH_TOKEN": "x", "PATH": "/bin"})
-    assert opened["argv"][:2] == ["env", "-uCLIO_AUTH_TOKEN"]
-    assert opened["argv"][2:] == list(session.launch.argv)
+    assert opened["argv"] == list(session.launch.argv)
+    assert opened["env_clear"] and "CLIO_AUTH_TOKEN" not in opened["env"]
     assert opened["cwd"] == str(session.workspace.path) and "CLIO_CODER_STATE_DIR" in opened["env"]
 
     exit_file = tmp_path / "tui.exit"
@@ -683,6 +683,28 @@ async def test_a_tui_session_launches_fenced_and_hands_back_like_a_delegation(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the terminal host here is a POSIX shell")
+@pytest.mark.parametrize("fixed", [True, False])
+async def test_tui_shell_acceptance_runs_at_hand_back_without_an_invalid_catalog(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, fixed: bool
+) -> None:
+    from clio_agent.runtime.clio_coder.interactive import (
+        finish_interactive_session,
+        prepare_interactive_session,
+    )
+
+    request = _request(repo, tmp_path, install, "fix calc")
+    request.verify_command = ["/bin/sh", "-c", shlex.join(CHECK)]
+    session = prepare_interactive_session(request)
+    assert not (session.workspace.path / ".clio-coder" / "verifiers.yaml").exists()
+    assert "CLIO runs the shell acceptance check after you quit" in session.brief()
+    if fixed:
+        (session.workspace.path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    result = await finish_interactive_session(session, keep_worktree=False)
+    assert result.verified is fixed and bool(result.commit) is fixed
+    assert result.notices == session.notices
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the terminal host here is a POSIX shell")
 async def test_a_tui_that_writes_a_session_record_hands_back_its_session_and_outcome(
     repo: Path, tmp_path: Path, install: ClioCoderInstall
 ) -> None:
@@ -703,6 +725,73 @@ async def test_a_tui_that_writes_a_session_record_hands_back_its_session_and_out
     assert (result.outcome, result.exit_code, result.session_id) == ("succeeded", 0, "s-tui")
     assert result.model == "tui-model" and result.usage["tokens"] == "1,234"
 
-    session.session_file.write_text(json.dumps({"outcome": "interrupted", "exitCode": 130}))
+    session.session_file.write_text(
+        json.dumps({"version": 1, "outcome": "interrupted", "exitCode": 130})
+    )
     again = await finish_interactive_session(session, exit_code=0, keep_worktree=False)
     assert (again.outcome, again.exit_code) == ("canceled", 130)
+
+
+def test_instance_runtime_and_terminal_environment_are_host_independent(tmp_path: Path) -> None:
+    from clio_agent.runtime.clio_coder.interactive import TerminalLaunch
+
+    home = InstanceHome(tmp_path / "instance home", extra_env={"XDG_RUNTIME_DIR": "/stray"})
+    home.prepare(None)
+    env = home.environment(
+        {"XDG_RUNTIME_DIR": "/host/runtime", "CLIO_AUTH_TOKEN": "private", "PATH": "/bin"}
+    )
+    assert env["XDG_RUNTIME_DIR"] == str(home.root / "runtime")
+    assert (home.root / "runtime").stat().st_mode & 0o777 == 0o700
+    launch = TerminalLaunch(
+        (r"C:\Program Files\Clio\clio.exe", "--session-file", r"C:\work space\session.json"),
+        tmp_path,
+        env,
+    ).terminal_open_args()
+    assert launch["argv"][0] == r"C:\Program Files\Clio\clio.exe"
+    assert launch["env_clear"] is True and launch["env"] == env
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        "not JSON",
+        "[]",
+        '{"exitCode": true}',
+        '{"version": true, "exitCode": 0, "outcome": "quit"}',
+        '{"version": 1, "exitCode": 0, "outcome": []}',
+        '{"version": 1, "exitCode": 0, "outcome": "quit", "sessionId": 3}',
+    ],
+)
+async def test_missing_or_invalid_tui_records_are_not_successful_handbacks(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, record: str | None
+) -> None:
+    from clio_agent.runtime.clio_coder.interactive import (
+        finish_interactive_session,
+        prepare_interactive_session,
+    )
+
+    (Path(install.argv[-1]).parent / "session-file-flag").touch()
+    session = prepare_interactive_session(_request(repo, tmp_path, install, "fix calc"))
+    assert session.session_file is not None
+    if record is not None:
+        session.session_file.write_text(record)
+    result = await finish_interactive_session(session, exit_code=0, keep_worktree=False)
+    assert result.outcome == "failed"
+    assert result.error and result.error["error"] == "clio_coder_protocol_error"
+
+
+async def test_interactive_commit_failure_is_not_a_success(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch
+) -> None:
+    from clio_agent.runtime.clio_coder import interactive
+
+    session = interactive.prepare_interactive_session(_request(repo, tmp_path, install, "fix calc"))
+
+    def failed_commit(*args):
+        raise ClioCoderError("clio_coder_workspace_error", "commit failed")
+
+    monkeypatch.setattr(interactive, "commit_changes", failed_commit)
+    result = await interactive.finish_interactive_session(session, keep_worktree=False)
+    assert result.outcome == "failed"
+    assert result.error["message"] == "commit failed"

@@ -29,6 +29,7 @@ from clio_agent.gact.message_submission_errors import session_not_found
 from clio_agent.gact.off_loop import join_off_loop, run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.routes.clio_coder_terminal import guard_terminal_session_delete
 from clio_agent.gact.routes.dashboard_reports import register_dashboard_report_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state_async
@@ -169,15 +170,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise session_not_found(sid)
-        deps.guard_direct_destructive_action(
-            app,
-            session_id=sid,
-            workspace_id=sess.workspace_id,
-            tool_name="gact.session.delete",
-            args={"session_id": sid},
-            summary=f"delete session {sid}",
-            reason="user_requested_session_delete",
-        )
+        guard_terminal_session_delete(app, deps, sid, sess.workspace_id)
         active = app.state.task_history.tree_handles(sid, active_only=True)
         if active or app.state.turn_runner.busy(sid):
             raise HTTPException(

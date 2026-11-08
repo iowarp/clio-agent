@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import shlex
+import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 #: Normalized outcomes. ``succeeded`` only means Clio Coder finished; ``verified`` is separate.
@@ -76,14 +79,20 @@ class Verification:
         return self.exit_code == 0
 
 
-def command_text(argv: Sequence[str]) -> str:
+def command_text(argv: Sequence[str], *, platform: str | None = None) -> str:
     """The shell text of a check: the command itself when it is wrapped in the platform shell."""
     argv = list(argv)
     if argv[:2] == ["/bin/sh", "-c"] and len(argv) == 3:
         return argv[2]
     if argv[:4] == ["cmd", "/d", "/s", "/c"] and len(argv) == 5:
         return argv[4]
-    return shlex.join(argv)
+    if len(argv) == 4 and argv[1] == "-B" and Path(argv[2]).name == "windows_check.py":
+        return argv[3]
+    return (
+        subprocess.list2cmdline(argv)
+        if (platform or sys.platform).startswith("win")
+        else shlex.join(argv)
+    )
 
 
 @dataclass

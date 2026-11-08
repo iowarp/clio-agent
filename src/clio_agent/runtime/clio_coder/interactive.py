@@ -10,6 +10,7 @@ the caller's acceptance command.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
@@ -30,7 +31,7 @@ from clio_agent.runtime.clio_coder.launch import (
     close_egress,
     confine,
 )
-from clio_agent.runtime.clio_coder.results import DelegationResult
+from clio_agent.runtime.clio_coder.results import DelegationResult, command_text
 from clio_agent.runtime.clio_coder.runs import new_run_id
 from clio_agent.runtime.clio_coder.workspace import (
     Workspace,
@@ -63,14 +64,13 @@ class TerminalLaunch:
         return assign, unset
 
     def terminal_open_args(self, base: Mapping[str, str] | None = None) -> dict[str, Any]:
-        """The Desktop terminal's ``terminal_open`` arguments: ``argv``, added ``env`` and ``cwd``.
-
-        The host adds ``env`` to its own environment; variables the launch removes are unset by
-        ``env -u`` ahead of the program (POSIX hosts).
-        """
-        assign, unset = self.env_changes(base)
-        argv = ["env", *(f"-u{key}" for key in unset), *self.argv] if unset else list(self.argv)
-        return {"argv": argv, "env": assign, "cwd": str(self.cwd)}
+        """Native launch with an exact environment, independent of the Desktop's environment."""
+        return {
+            "argv": list(self.argv),
+            "env": dict(self.env),
+            "cwd": str(self.cwd),
+            "env_clear": True,
+        }
 
     def shell_command(
         self, base: Mapping[str, str] | None = None, *, exit_file: Path | None = None
@@ -103,12 +103,14 @@ class InteractiveSession:
     confinement: dict[str, Any] = field(default_factory=dict)
     #: Where the TUI writes its session record on exit (``--session-file``), when it can.
     session_file: Path | None = None
+    notices: list[str] = field(default_factory=list)
 
     def brief(self) -> str:
         """The assignment the person (or the agent beside them) starts the session with."""
         lines = [self.task.strip()] if self.task.strip() else []
         if self.verify_command:
-            lines.append(f"Acceptance: `{shlex.join(self.verify_command)}` must exit 0.")
+            lines.append(f"Acceptance: `{command_text(self.verify_command)}` must exit 0.")
+        lines.extend(self.notices)
         return "\n\n".join(lines)
 
 
@@ -118,7 +120,7 @@ def prepare_interactive_session(
     """Create the worktree and scoped home, and describe the fenced TUI launch."""
     install = request.install or ClioCoderInstall.resolve()
     state_root = request.state_root.resolve()
-    home = InstanceHome(state_root / "home")
+    home = InstanceHome(state_root / "home", extra_env=dict(request.child_env))
     home.prepare(request.target, template=request.home_template)
     run_id = request.run_id or new_run_id()
     workspace = create_worktree(request.repo, state_root / "worktrees", run_id)
@@ -126,9 +128,20 @@ def prepare_interactive_session(
         rebase = _path_rebaser(workspace.repo or request.repo.resolve(), workspace.path)
         task = rebase(request.task)
         verify = [rebase(arg) for arg in request.verify_command or ()] or None
+        notices = []
         if verify:
-            declare_acceptance_check(workspace, verify, request.verify_timeout)
+            if verify[:2] == ["/bin/sh", "-c"]:
+                notices.append(
+                    "CLIO runs the shell acceptance check after you quit. "
+                    "The TUI verifier catalog does not allow shell executables."
+                )
+            else:
+                declare_acceptance_check(workspace, verify, request.verify_timeout)
         args = ["--autonomy", autonomy] if autonomy else []
+        if request.options.read_only:
+            raise ClioCoderError(
+                "clio_coder_spawn_failed", "Interactive delegation is unavailable in plan mode"
+            )
         session_file = None
         if "--session-file" in install.help_flags():
             session_file = home.root / "state" / "tui-sessions" / f"{run_id}.json"
@@ -148,6 +161,7 @@ def prepare_interactive_session(
         verify_timeout=request.verify_timeout,
         confinement=confinement,
         session_file=session_file,
+        notices=notices,
     )
 
 
@@ -161,7 +175,11 @@ async def finish_interactive_session(
     """
     close_egress(session.confinement)
     workspace = session.workspace
-    record = _read_session_record(session.session_file)
+    record_error = None
+    try:
+        record = _read_session_record(session.session_file)
+    except ClioCoderError as exc:
+        record, record_error = None, exc.to_dict()
     if record and isinstance(record.get("exitCode"), int):
         exit_code = record["exitCode"]
     outcome = "succeeded" if exit_code == 0 else "failed"
@@ -175,7 +193,11 @@ async def finish_interactive_session(
         branch=workspace.branch,
         base_commit=workspace.base_commit,
         confinement=dict(session.confinement),
+        error=record_error,
+        notices=list(session.notices),
     )
+    if record_error:
+        result.outcome = "failed"
     if record:
         model = record.get("model") if isinstance(record.get("model"), dict) else {}
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
@@ -189,14 +211,25 @@ async def finish_interactive_session(
         if isinstance(record.get("turns"), int):
             result.notices.append(f"{record['turns']} turn(s) in the Clio Coder session")
     try:
-        result.changed_files, result.diff = collect_changes(workspace)
-        result.commit = commit_changes(workspace, _commit_message(session.task or "TUI session"))
+        result.changed_files, result.diff = await asyncio.to_thread(collect_changes, workspace)
+        result.commit = await asyncio.to_thread(
+            commit_changes, workspace, _commit_message(session.task or "TUI session")
+        )
     except ClioCoderError as exc:
         result.error = exc.to_dict()
+        result.outcome = "failed"
     if session.verify_command:
-        result.verification = await run_verification(
-            workspace, session.verify_command, timeout=session.verify_timeout
-        )
+        try:
+            result.verification = await run_verification(
+                workspace, session.verify_command, timeout=session.verify_timeout
+            )
+        except (ClioCoderError, OSError) as exc:
+            result.error = (
+                exc.to_dict()
+                if isinstance(exc, ClioCoderError)
+                else ClioCoderError("clio_coder_check_failed", str(exc)).to_dict()
+            )
+            result.outcome = "failed"
     if not keep_worktree:
         remove_worktree(workspace)
     return result
@@ -211,9 +244,22 @@ def _read_session_record(path: Path | None) -> dict[str, Any] | None:
         return None
     try:
         record = json.loads(path.read_text("utf-8"))
-    except (OSError, ValueError):
-        return None
-    return record if isinstance(record, dict) else None
+    except (OSError, ValueError) as exc:
+        raise ClioCoderError(
+            "clio_coder_protocol_error", f"Clio Coder session record unavailable: {exc}"
+        ) from exc
+    if (
+        not isinstance(record, dict)
+        or type(record.get("version")) is not int
+        or record["version"] != 1
+        or not isinstance(record.get("exitCode"), int)
+        or isinstance(record["exitCode"], bool)
+        or not isinstance(record.get("outcome"), str)
+        or record.get("outcome") not in _RECORD_OUTCOMES
+        or (record.get("sessionId") is not None and not isinstance(record["sessionId"], str))
+    ):
+        raise ClioCoderError("clio_coder_protocol_error", "Invalid Clio Coder session record")
+    return record
 
 
 def describe_launch(session: InteractiveSession, base: Mapping[str, str] | None = None) -> dict:

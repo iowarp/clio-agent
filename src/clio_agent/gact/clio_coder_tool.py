@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -276,10 +276,12 @@ def result_row(result: DelegationResult, task: str, follow_ups: list[str]) -> di
     return row
 
 
-def _shell_argv(command: str) -> list[str]:
+def _shell_argv(command: str, *, platform: str | None = None) -> list[str]:
     """Run the check through the platform shell so pipes, ``&&`` and ``cd`` work as written."""
-    if os.name == "nt":
-        return ["cmd", "/d", "/s", "/c", command]
+    if (platform or sys.platform).startswith("win"):
+        from clio_agent.runtime.clio_coder import windows_check  # noqa: PLC0415
+
+        return [sys.executable, "-B", str(Path(windows_check.__file__)), command]
     return ["/bin/sh", "-c", command]
 
 

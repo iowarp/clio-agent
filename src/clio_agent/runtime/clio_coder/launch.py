@@ -219,7 +219,10 @@ class InstanceHome:
                 )
 
     def dirs(self) -> dict[str, Path]:
-        return {name: self.root / name for name in ("config", "data", "state", "cache", "tmp")}
+        return {
+            name: self.root / name
+            for name in ("config", "data", "state", "cache", "tmp", "runtime")
+        }
 
     def prepare(self, target: ClioCoderTarget | None, *, template: Path | None = None) -> None:
         """Create the home; seed it from ``template`` or write settings for ``target``."""
@@ -227,6 +230,7 @@ class InstanceHome:
             shutil.copytree(template, self.root, dirs_exist_ok=True)
         for path in self.dirs().values():
             path.mkdir(parents=True, exist_ok=True)
+        self.dirs()["runtime"].chmod(0o700)
         settings = self.root / "config" / "settings.yaml"
         if target is None:
             return
@@ -269,6 +273,7 @@ class InstanceHome:
                 "TMPDIR": str(dirs["tmp"]),
                 "TMP": str(dirs["tmp"]),
                 "TEMP": str(dirs["tmp"]),
+                "XDG_RUNTIME_DIR": str(dirs["runtime"]),
             }
         )
         return env
