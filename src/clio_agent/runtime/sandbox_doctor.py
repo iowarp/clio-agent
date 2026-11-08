@@ -123,8 +123,17 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
         )
 
     from clio_agent.runtime import sandbox_codex as sc  # noqa: PLC0415
+    from clio_agent.runtime.execution_environment import bundled_root  # noqa: PLC0415
 
-    if resolved.reason in (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED):
+    codex_missing = (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED)
+    if resolved.reason in codex_missing and bundled_root() is not None:
+        # The Desktop ships codex inside its runtime: a missing one is a damaged app,
+        # and a global npm install would not be the binary this runtime resolves.
+        next_action = (
+            "CLIO Desktop's bundled sandbox (codex) is missing or unusable; reinstall "
+            "CLIO Desktop to restore it."
+        )
+    elif resolved.reason in codex_missing:
         # Codex backend floor: guide the operator to install/upgrade codex.
         next_action = "Install codex: npm install -g @openai/codex"
     elif resolved.reason == sc.REASON_CODEX_VERSION_PROBE_UNRESPONSIVE:

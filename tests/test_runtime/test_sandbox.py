@@ -529,6 +529,27 @@ def test_probe_sandbox_floor_is_degraded_never_error() -> None:
     assert row.required is True
 
 
+def test_probe_sandbox_desktop_floor_points_at_the_app_not_npm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bundled runtime ships codex; its absence calls for a reinstall, not a global npm."""
+    state = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_NONE,
+        active=False,
+        reason=sc.REASON_CODEX_NOT_INSTALLED,
+        details={},
+    )
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path / "absent"))
+    monkeypatch.setattr("sys.executable", str(tmp_path / "host" / "bin" / "python"))
+    assert "npm install" in sandbox.probe_sandbox(state=state).next_action
+
+    (tmp_path / "runtime.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path))
+    row = sandbox.probe_sandbox(state=state)
+    assert "reinstall CLIO Desktop" in row.next_action
+    assert "npm" not in row.next_action
+
+
 def test_probe_sandbox_reports_mechanism_and_reason() -> None:
     """The row surfaces the mechanism label + typed reason for the trace/doctor."""
     state = sandbox.SandboxResult(
