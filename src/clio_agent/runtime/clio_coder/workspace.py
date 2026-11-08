@@ -189,11 +189,11 @@ def declare_acceptance_check(workspace: Workspace, command: Sequence[str], timeo
     return True
 
 
-def restore_worktree(workspace: Workspace) -> None:
-    """Drop everything not committed on the worktree branch, keeping Clio Coder's own state."""
+def restore_worktree(workspace: Workspace, commit: str = "HEAD") -> None:
+    """Reset the worktree branch to ``commit`` and drop the rest, keeping Clio Coder's state."""
     if not workspace.is_worktree:
         return
-    _git(workspace.path, "reset", "--quiet", "--hard", "HEAD")
+    _git(workspace.path, "reset", "--quiet", "--hard", commit)
     _git(workspace.path, "clean", "-fdq", "-e", ".clio-coder", "-e", "CLIO-CODER.md")
 
 

@@ -70,12 +70,18 @@ def _out(cwd: Path | str, *args: str) -> str:
     return done.stdout
 
 
+def _leftovers(record: RunRecord) -> bool:
+    branch = _git(record.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{record.branch}")
+    return Path(record.worktree).exists() or branch.returncode == 0
+
+
 def retire_worktree(record: RunRecord) -> bool:
-    """Remove the run's worktree and branch; tolerate either being gone already."""
-    removed = _git(record.repo, "worktree", "remove", "--force", record.worktree).returncode == 0
+    """Remove the run's worktree and branch; ``True`` once neither is left."""
+    # Twice forced: a locked worktree refuses a single --force.
+    _git(record.repo, "worktree", "remove", "--force", "--force", record.worktree)
     _git(record.repo, "worktree", "prune")
     _git(record.repo, "branch", "-D", record.branch)
-    return removed
+    return not _leftovers(record)
 
 
 def _checkout_root(repo: Path) -> str:
@@ -109,7 +115,11 @@ def _land_locked(state_root: Path, repo: Path, run_id: str, action: str) -> Land
     )
     if action == ACTION_DISCARD:
         if record.status != RUN_OPEN:
-            raise ClioCoderError(REASON_RUN, f"run {run_id} is already {record.status}")
+            # An ended run whose cleanup failed is retired again; otherwise there is nothing to do.
+            if not _leftovers(record):
+                raise ClioCoderError(REASON_RUN, f"run {run_id} is already {record.status}")
+            result.removed_worktree = retire_worktree(record)
+            return result
         result.removed_worktree = retire_worktree(record)
         record.status = result.status = RUN_DISCARDED
         save_run(state_root, record)

@@ -294,6 +294,27 @@ async def test_clio_coder_asks_go_through_the_conversations_own_gate(
     )
 
 
+async def test_a_path_scoped_deny_on_any_location_refuses_the_ask() -> None:
+    from types import SimpleNamespace
+
+    paths: list[str] = []
+
+    def gate(name: str, args: dict, context: dict) -> str:
+        paths.append(args["path"])
+        return "deny" if args["path"].startswith("/wt/protected/") else "allow"
+
+    ask = {
+        **ASK,
+        "toolCall": {
+            **ASK["toolCall"],
+            "locations": [{"path": "/wt/build"}, {"path": "/wt/protected/key"}],
+        },
+    }
+    app = SimpleNamespace(state=SimpleNamespace(pending_permission_gate=gate))
+    assert await relay.gate_permission_relay(app, tool.TOOL_NAME, RUN)(ask) == "reject-once"
+    assert paths == ["/wt/build", "/wt/protected/key"]
+
+
 def test_progress_streams_session_finished_tools_and_notices_once_each(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

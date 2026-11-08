@@ -33,7 +33,12 @@ from clio_agent.runtime.clio_coder.launch import (
     ClioCoderTarget,
     InstanceHome,
 )
-from clio_agent.runtime.clio_coder.results import OUTCOME_SUCCEEDED, DelegationResult, command_text
+from clio_agent.runtime.clio_coder.results import (
+    OUTCOME_FAILED,
+    OUTCOME_SUCCEEDED,
+    DelegationResult,
+    command_text,
+)
 from clio_agent.runtime.clio_coder.runs import (
     REASON_RUN,
     RUN_OPEN,
@@ -228,7 +233,8 @@ async def delegate_coding_task(
             record.session_id = result.session_id
             _record_turn(record, result, request.task)
             save_run(state_root, record)
-        handed_back = True
+        # A resumable run that never got a session has no record to continue or discard it by.
+        handed_back = not (resumable and result.session_id is None)
     finally:
         # A run that raised has nothing to hand back, so its worktree is never kept.
         if not (request.keep_worktree and handed_back):
@@ -289,8 +295,9 @@ async def continue_run(
             )
             await _hand_back(result, workspace, request.task, verify_command, record.verify_timeout)
         except BaseException:
+            # The turn may have committed before it raised (a cancel during the check).
             with contextlib.suppress(ClioCoderError):
-                restore_worktree(workspace)
+                restore_worktree(workspace, record.tip or record.base_commit)
             raise
         _record_turn(record, result, request.task)
         save_run(state_root, record)
@@ -312,7 +319,10 @@ async def _hand_back(
         result.changed_files, result.diff = collect_changes(workspace)
         result.commit = commit_changes(workspace, _commit_message(task))
     except ClioCoderError as exc:
+        # An uncommitted turn has no tip to check or land; never let an older tip stand for it.
         result.error = result.error or exc.to_dict()
+        result.outcome, result.outcome_detail = OUTCOME_FAILED, "commit_failed"
+        return
     # A failed turn that changed nothing would only re-check the base and read as a pass.
     if verify_command and (result.changed_files or result.outcome == OUTCOME_SUCCEEDED):
         result.verification = await run_verification(

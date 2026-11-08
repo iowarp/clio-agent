@@ -46,7 +46,8 @@ async def land_clio_coder(run: str, action: str = ACTION_APPLY) -> dict[str, Any
     unless the run's last turn succeeded and its acceptance check passed on that commit, the
     branch has not moved since, and the checkout has no uncommitted edits in the files it
     touches. action `discard` drops the run. Either way the run's worktree and branch are
-    removed and the run ends; continue_run no longer accepts it.
+    removed and the run ends; continue_run no longer accepts it. If that cleanup could not
+    finish, `discard` on the ended run retries it.
     """
     run = str(run or "").strip()
     if not valid_run_id(run):
@@ -83,11 +84,16 @@ def land_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> 
         }
     presentation = land_start_presentation(args)
     blocks = presentation["blocks"]
+    leftover = (
+        ""
+        if row.get("removed_worktree")
+        else f" The run's worktree or branch {row.get('branch')} could not be removed; "
+        f"land_clio_coder(run={row.get('run')!r}, action='discard') retries the cleanup."
+    )
     if row.get("action") == ACTION_DISCARD:
         presentation["summary"] = "discarded"
-        blocks.append(
-            {"id": "discarded", "type": "text", "text": f"Removed branch {row.get('branch')}."}
-        )
+        text = f"Removed branch {row.get('branch')}." if not leftover else leftover.strip()
+        blocks.append({"id": "discarded", "type": "text", "text": text})
         return presentation
     changed = row.get("changed_files") or []
     presentation["summary"] = (
@@ -101,7 +107,8 @@ def land_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> 
             "type": "text",
             "text": (
                 f"Applied {str(row.get('commit'))[:12]} from branch {row.get('branch')} to "
-                f"{row.get('checkout')} (uncommitted); the run's worktree and branch are removed."
+                f"{row.get('checkout')} (uncommitted); "
+                + (leftover.strip() or "the run's worktree and branch are removed.")
             ),
         }
     )

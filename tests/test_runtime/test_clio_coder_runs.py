@@ -248,6 +248,69 @@ async def test_a_failed_turn_that_changed_nothing_is_not_checked(
     assert failed.verification is None and not failed.verified
 
 
+async def test_a_turn_whose_commit_fails_is_not_accepted_on_an_older_tip(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.runtime.clio_coder import delegate
+
+    first = await _open_run(repo, tmp_path, install)
+
+    def refuse(*_a, **_k):
+        raise ClioCoderError("clio_coder_workspace", "git commit failed")
+
+    monkeypatch.setattr(delegate, "commit_changes", refuse)
+    second = await _continue(tmp_path, install, first.run_id, "now add @SUB")
+    assert second.outcome == "failed" and second.outcome_detail == "commit_failed"
+    assert second.verification is None
+    with pytest.raises(ClioCoderError, match="did not succeed"):
+        land_run(tmp_path / "state", repo, first.run_id, "apply")
+
+
+async def test_a_turn_cancelled_during_its_check_leaves_the_branch_at_the_last_tip(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.runtime.clio_coder import delegate
+
+    first = await _open_run(repo, tmp_path, install)
+
+    async def cancelled(*_a, **_k):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(delegate, "run_verification", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await _continue(tmp_path, install, first.run_id, "now add @SUB")
+    assert _git(repo, "rev-parse", first.branch).strip() == first.commit
+    assert "def sub" not in Path(first.workspace, "calc.py").read_text()
+    assert load_run(tmp_path / "state", first.run_id).tip == first.commit
+
+
+async def test_a_resumable_run_that_never_got_a_session_keeps_nothing(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.runtime.clio_coder import delegate
+    from clio_agent.runtime.clio_coder.results import DelegationResult
+
+    async def no_session(*_a, **_k):
+        return DelegationResult(surface="acp", outcome="failed")
+
+    monkeypatch.setattr(delegate, "run_acp", no_session)
+    failed = await _open_run(repo, tmp_path, install)
+    assert failed.outcome == "failed" and failed.run_id is None
+    assert _branches(repo) == ["main"] and not Path(failed.workspace).exists()
+
+
+async def test_discarding_a_locked_worktree_still_retires_it(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall
+) -> None:
+    first = await _open_run(repo, tmp_path, install)
+    _git(repo, "worktree", "lock", first.workspace)
+    landed = land_run(tmp_path / "state", repo, first.run_id, "discard")
+    assert landed.removed_worktree and _branches(repo) == ["main"]
+    assert not Path(first.workspace).exists()
+    with pytest.raises(ClioCoderError, match="already discarded"):
+        land_run(tmp_path / "state", repo, first.run_id, "discard")
+
+
 async def test_unknown_or_malformed_runs_are_refused_before_any_instance_starts(
     tmp_path: Path, install: ClioCoderInstall
 ) -> None:

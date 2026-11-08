@@ -62,13 +62,21 @@ def gate_permission_relay(app: Any, tool_name: str, run_id: str) -> PermissionHa
         summary = f"Clio Coder (run {run_id}) asks to {ask['request']}{where}"
         if ask["input"]:
             summary += f": {ask['input']}"
-        decision = await asyncio.to_thread(
-            _invoke_permission_gate,
-            gate,
-            tool_name,
-            {"run": run_id, **ask},
-            {"kind": "native", "summary": summary[:1000]},
-        )
+        # Path-scoped policies match one ``path`` per call, so each location is gated on its own
+        # and the ask is allowed only when every location is.
+        targets = ask["locations"] or [None]
+        decision = "allow"
+        for target in targets:
+            args = {"run": run_id, **ask, **({"path": target} if target else {})}
+            decision = await asyncio.to_thread(
+                _invoke_permission_gate,
+                gate,
+                tool_name,
+                args,
+                {"kind": "native", "summary": summary[:1000]},
+            )
+            if decision != "allow":
+                break
         if decision == "allow":
             for option in params.get("options", []):
                 if option.get("kind") == "allow_once":

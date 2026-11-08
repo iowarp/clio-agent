@@ -10,7 +10,6 @@ each turn's verdict.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -20,6 +19,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from filelock import FileLock, Timeout
 
 from clio_agent.runtime.clio_coder.launch import REASON_WORKSPACE, ClioCoderError
 from clio_agent.runtime.clio_coder.workspace import Workspace
@@ -133,17 +134,17 @@ def run_lock(state_root: Path, run_id: str) -> Iterator[None]:
     """Hold the run exclusively: one turn, land or discard at a time, across processes."""
     path = run_path(state_root, run_id).with_suffix(".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ClioCoderError(
-                REASON_RUN, f"run {run_id} is busy with another turn", {"run": run_id}
-            ) from None
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    lock = FileLock(str(path), timeout=0)
+    try:
+        lock.acquire()
+    except Timeout:
+        raise ClioCoderError(
+            REASON_RUN, f"run {run_id} is busy with another turn", {"run": run_id}
+        ) from None
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def load_run(state_root: Path, run_id: str) -> RunRecord:
