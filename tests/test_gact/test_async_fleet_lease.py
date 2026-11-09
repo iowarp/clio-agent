@@ -12,11 +12,11 @@ from typing import Any
 
 import pytest
 
-from clio_agent import agent as agent_module
 from clio_agent.agent import ClioAgent
 from clio_agent.gact import context
 from clio_agent.gact.runtime.globals import _async_tool_session_context, _gact_app_context
 from clio_agent.plugins.servers import register_server_set, server_set_declarations
+from clio_agent.runtime import source_policy_wait
 from clio_agent.tools.execution import get_active_tool_server_set, get_active_tool_workspace_root
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
@@ -177,7 +177,7 @@ async def test_lease_rejection_does_not_enter_or_release_an_unacquired_lease(
     owner: tuple[Any, ClioAgent, str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, agent, _root, _server_set = owner
-    monkeypatch.setattr(agent_module, "SOURCE_POLICY_WAIT_S", 0.2)
+    monkeypatch.setattr(source_policy_wait, "SOURCE_POLICY_WAIT_S", 0.2)
     agent._source_policy_changing = True  # an access change that never finishes
     with _gact_app_context(app), pytest.raises(RuntimeError, match="still updating"):
         async with _async_tool_session_context("session"):
@@ -220,7 +220,7 @@ def test_residency_hold_and_event_loop_callers_are_refused_at_once(
     from clio_agent.tools.reaper import residency_lease
 
     _app, agent, root, _server_set = owner
-    monkeypatch.setattr(agent_module, "SOURCE_POLICY_WAIT_S", 60.0)
+    monkeypatch.setattr(source_policy_wait, "SOURCE_POLICY_WAIT_S", 60.0)
     agent._source_policy_changing = True
     with pytest.raises(RuntimeError, match="retry after setup finishes"):
         with residency_lease(agent, root):

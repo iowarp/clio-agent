@@ -54,6 +54,7 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_checker,
     cancellation_requested,
 )
+from clio_agent.runtime.source_policy_wait import await_source_policy_settled
 from clio_agent.search.web_mcp_default import load_agent_mcp_servers, with_web_placeholders
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -74,21 +75,6 @@ from clio_agent.tools.gateway import (
 from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, boot_discovery_pass
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.workspace_root import canonical_workspace_root
-
-#: Longest a fleet lease or tool resolve waits for a connected-data access change
-#: (a live grant swap restarting the workspace fleets) before it gives up.
-SOURCE_POLICY_WAIT_S = 30.0
-
-
-def _on_event_loop() -> bool:
-    """True on a thread running an asyncio loop, which must never sleep-wait."""
-    import asyncio  # noqa: PLC0415
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
 
 
 class ClioAgent(dspy.Module):
@@ -129,31 +115,6 @@ class ClioAgent(dspy.Module):
                     lock = threading.Lock()
                     self._workspace_executor_lock = lock
         return lock, self._workspace_tool_executors, self._workspace_leases
-
-    def _await_source_policy_settled(self, lock: threading.Lock, *, wait: bool = True) -> None:
-        """With ``lock`` held, wait (bounded) while connected-data access is being changed.
-
-        Linking a folder swaps the workspace fleets' grants live. A turn the person starts
-        in that window waits for the swap and then runs, instead of failing its first tool
-        calls. Callers that must not block (residency holds, an event-loop thread) are
-        refused at once, as before. Returns with ``lock`` held.
-        """
-        if not getattr(self, "_source_policy_changing", False):
-            return
-        if not wait or _on_event_loop():
-            raise RuntimeError("CLIO is updating connected-data access; retry after setup finishes")
-        deadline = time.monotonic() + SOURCE_POLICY_WAIT_S
-        while getattr(self, "_source_policy_changing", False):
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f"CLIO is still updating connected-data access after "
-                    f"{SOURCE_POLICY_WAIT_S:g}s; retry once setup finishes"
-                )
-            lock.release()
-            try:
-                time.sleep(0.05)
-            finally:
-                lock.acquire()
 
     def __init__(
         self,
@@ -471,7 +432,7 @@ class ClioAgent(dspy.Module):
         server_set = get_active_tool_server_set().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
-            self._await_source_policy_settled(lock)
+            await_source_policy_settled(self, lock)
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
             # #1236: a resident executor minted under an older MCP configuration (the
@@ -621,7 +582,7 @@ class ClioAgent(dspy.Module):
             return
         lock, _executors, leases = self._workspace_state()
         with lock:
-            self._await_source_policy_settled(lock, wait=wait)
+            await_source_policy_settled(self, lock, wait=wait)
             leases[root] = leases.get(root, 0) + 1
         try:
             yield
