@@ -13,8 +13,10 @@ import base64
 import pytest
 
 from clio_agent.arc.chunk_records import MAGIC, read_chunk
+from clio_agent.arc.lane_index import INDEX_SCOPE, SessionIndex, encode_index
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import encode_segments
+from clio_agent.arc.search_companion import SEARCH_FAMILY
 from clio_agent.arc.store_format import (
     ARC_STORE_FORMAT_OLD,
     ARC_STORE_FORMAT_UNKNOWN,
@@ -87,6 +89,31 @@ def test_one_old_record_among_new_ones_is_still_old(arc: ARCMemory) -> None:
     _conversation(arc, "sess_new")
     _as_v0951_stored_it(arc, _conversation(arc, "sess_old"))
     assert inspect_store(arc._segments._store).verdict == "old"
+
+
+def _framed_in_both_formats(arc: ARCMemory, session_id: str) -> None:
+    """The lane index and a search-companion chunk: still one framed put each."""
+    store = arc._segments._store
+    name = arc._segments._record_name
+    store.put("segments", name(session_id, INDEX_SCOPE), encode_index(SessionIndex()))
+    store.put("segments", name(session_id, f"{SEARCH_FAMILY}/_events/1"), b"\x90")
+
+
+def test_records_framed_in_both_formats_never_make_a_new_store_old(arc: ARCMemory) -> None:
+    """SABOTAGE: sample every listed name in ``_segment_names`` and the small framed
+    index reads as the retired frame: a store this CLIO just wrote is refused at boot."""
+    _conversation(arc, "sess_new")
+    _framed_in_both_formats(arc, "sess_new")
+    verdict = inspect_store(arc._segments._store)
+    assert verdict.verdict == "current"
+    assert verdict.counts["old"] == 0
+
+
+def test_only_records_framed_in_both_formats_is_unknown_not_empty(arc: ARCMemory) -> None:
+    _framed_in_both_formats(arc, "sess_x")
+    verdict = inspect_store(arc._segments._store)
+    assert verdict.verdict == "unknown"
+    assert verdict.error == "no format-telling record"
 
 
 def test_an_unrecognized_record_is_unknown_never_a_guess(arc: ARCMemory) -> None:
