@@ -42,6 +42,8 @@
 #   CLIO_WEB_SRC  gact-tui checkout for `--dev` builds (auto-detected if unset)
 #   CLIO_WEB_NO_BUILD  set to 1 to skip the `--dev` rebuild and serve the last dist
 #   CLIO_DESKTOP_BIN   installed desktop app binary for `clio --desktop`
+#   CLIO_ACCEPT_UNSANDBOXED  set to 1 to acknowledge running without protected
+#                 execution (OS sandbox) instead of confirming at the prompt
 set -euo pipefail
 
 if [[ "$(uname -s)" = Darwin* ]]; then
@@ -312,6 +314,75 @@ stop_server() {
   say "  stopped"
 }
 
+# sandbox_ack warns when the running server's agent tools have no OS write fence.
+# CLIO stays usable without one (fail-open), so the user must acknowledge the risk:
+# an interactive terminal must confirm, while other runs only warn. Set
+# CLIO_ACCEPT_UNSANDBOXED=1 to acknowledge without the prompt. Declining stops a
+# server this invocation started and returns 1.
+sandbox_ack() {
+  local py="$CLIO_VENV/bin/python" body verdict state="" reason="" warning="" next=""
+  [[ -x "$py" ]] || return 0
+  # The verdict exists once boot resolves the backend, a few seconds after /v1/health answers.
+  for _ in $(seq 1 120); do
+    body="$(curl --noproxy '*' -sS -m 2 "http://127.0.0.1:$CLIO_PORT/v1/system/sandbox" 2>/dev/null || true)"
+    verdict="$(printf '%s' "$body" | "$py" -I -B -c '
+import json, sys
+try:
+    row = json.loads(sys.stdin.read() or "null")
+except ValueError:
+    row = None
+if not isinstance(row, dict) or row.get("name") != "sandbox":
+    print("retry")
+    sys.exit()
+if "acknowledgement_required" in row:
+    resolved, required = row.get("resolved", True), row["acknowledgement_required"]
+else:  # a server from before the acknowledgement fields
+    resolved, required = True, row.get("status") != "ready"
+if not resolved:
+    print("retry")
+    sys.exit()
+print("warn" if required else "ok")
+for value in (row.get("reason"), row.get("warning") or row.get("summary"), row.get("next_action")):
+    print(" ".join(str(value or "").split()))
+' 2>/dev/null || echo retry)"
+    { IFS= read -r state; IFS= read -r reason; IFS= read -r warning; IFS= read -r next; } <<<"$verdict" || true
+    [[ "$state" == retry ]] || break
+    sleep 0.5
+  done
+  case "$state" in
+    ok) return 0 ;;
+    warn) ;;
+    *)
+      warn "could not read the sandbox (protected execution) state from the server; run 'clio sandbox status'"
+      return 0
+      ;;
+  esac
+  printf "${RED}%s${RESET}\n" \
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" \
+    "!!  SECURITY WARNING: protected execution (OS sandbox) is OFF" \
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+  printf "  %s\n" "$warning" >&2
+  [[ -n "$reason" ]] && printf "  reason: %s\n" "$reason" >&2
+  [[ -n "$next" ]] && printf "  next:   %s\n" "$next" >&2
+  if [[ "${CLIO_ACCEPT_UNSANDBOXED:-0}" == 1 ]]; then
+    warn "acknowledged by CLIO_ACCEPT_UNSANDBOXED=1"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    warn "not an interactive terminal: continuing without protected execution"
+    return 0
+  fi
+  local answer=""
+  printf "Continue without protected execution? [y/N] " >&2
+  IFS= read -r answer || answer=""
+  case "$answer" in
+    y|Y|yes|YES|Yes) return 0 ;;
+  esac
+  err "not acknowledged"
+  if (( SERVER_WAS_STARTED )); then stop_server; fi
+  return 1
+}
+
 status_server() {
   local p health_txt
   p="$(server_pid || true)"
@@ -450,6 +521,7 @@ main() {
         stop_server
       fi
       start_server
+      sandbox_ack || return 1
       url="http://127.0.0.1:$CLIO_PORT/"
       say "CLIO web UI: $url"
       open_url "$url"
@@ -479,9 +551,9 @@ main() {
       say "launching desktop app: $dt_bin"
       exec "$dt_bin"
       ;;
-    start)        update_check; start_server ;;
+    start)        update_check; start_server && sandbox_ack ;;
     stop)         stop_server ;;
-    restart)      stop_server; start_server ;;
+    restart)      stop_server; start_server && sandbox_ack ;;
     update)
       shift || true
       local uv_bin

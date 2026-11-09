@@ -78,6 +78,10 @@ Set `CLIO_LOG` to write the backend log to a different file on macOS and Linux. 
 
 On macOS and Linux, the `clio` command checks PyPI for a newer `clio-agent` at most about once a day and prints a one-line hint. To turn the check off, set `CLIO_NO_UPDATE_CHECK=1`. See [Data and network](/docs/privacy/).
 
+## Protected execution warning
+
+When protected execution (the OS sandbox) is off, the agent's tools can change any file your account can. CLIO still starts, so `clio`, `clio web`, `clio start` and `clio restart` print a security warning with the reason and the step that turns protection on. In a terminal they ask you to confirm. If you don't answer yes, `clio` stops the server it started. Scripts and other runs without a terminal only see the warning. To acknowledge it without the prompt, set `CLIO_ACCEPT_UNSANDBOXED=1`. Run `clio sandbox status` to check protection at any time.
+
 ## The clio-agent command
 
 `clio-agent` is the backend program that the `clio` command runs.
