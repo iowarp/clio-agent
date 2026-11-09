@@ -93,6 +93,8 @@ def test_verified_desktop_download(
         payload.write_bytes(b"changed payload")
     output = tmp_path / "downloads"
     urls = tmp_path / "urls.txt"
+    # Both installers report the shared steps; stdout then carries only the JSON events.
+    progress = checksum_format == "canonical" and integrity in ("valid", "tampered")
     if windows:
 
         def quote(path: Path) -> str:
@@ -110,7 +112,7 @@ function Invoke-WebRequest {{
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
 # Downloads use curl.exe when Windows has it; hide it so the stub above serves them.
 $env:PATH = (($env:PATH -split ';') | Where-Object {{ $_ -and -not (Test-Path (Join-Path $_ 'curl.exe')) }}) -join ';'
-& {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}
+& {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}{" -Progress json" if progress else ""}
 exit $LASTEXITCODE
 """,
             encoding="utf-8",
@@ -162,6 +164,7 @@ esac""",
             "--desktop",
             "--download-only",
             str(output),
+            *(["--progress", "json"] if progress else []),
         ]
     result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
     if integrity == "valid":
@@ -172,6 +175,18 @@ esac""",
         assert result.returncode != 0, result.stdout + result.stderr
         assert "checksum" in (result.stdout + result.stderr).lower()
         assert not output.exists()
+    if progress:
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        ended = [e["step"] for e in events if e["event"] == "step" and e["state"] == "end"]
+        summary = events[-1]
+        assert summary["event"] == "summary", result.stdout
+        if integrity == "valid":
+            assert ended == ["resolve", "download", "verify"]
+            assert summary["ok"] is True
+            assert list(summary["seconds"]) == ended
+        else:
+            assert ended == ["resolve", "download"]
+            assert (summary["ok"], summary["step"]) == (False, "verify")
 
 
 def test_windows_backend_installer_normalizes_hotfix_package_version(tmp_path: Path) -> None:
