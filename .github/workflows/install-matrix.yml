@@ -386,14 +386,28 @@ jobs:
             exit 0
           fi
           files="$(gh api --paginate 'repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files' -q '.[].filename')"
-          pattern='^(install/|src/clio_agent/runtime/document_runtime\.py$|src/clio_agent/runtime/document_stack/office\.py$|scripts/ci/(check_budgets\.py|install_budgets\.json)$|\.github/workflows/install-matrix\.yml$)'
+          pattern='^(install/|src/clio_agent/runtime/document_runtime\.py$|src/clio_agent/runtime/document_stack/office\.py$|scripts/ci/(check_budgets\.py|install_budgets\.json)$|scripts/smoke_desktop_package\.py$|\.github/workflows/install-matrix\.yml$)'
           if grep -Eq "$pattern" <<<"$files"; then echo "run=true"; else echo "run=false"; fi >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v5
+        if: steps.scope.outputs.run == 'true'
       - name: install.sh --desktop --progress json (scratch directory)
         if: steps.scope.outputs.run == 'true'
         continue-on-error: true
         run: |
           CLIO_DESKTOP_DIR="$RUNNER_TEMP/Applications" bash install/install.sh --desktop --progress json \
             > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
+      # The installed app's first launch (on what the install prepared) and a returning
+      # one: a faster install must not move work into the first launch.
+      - name: First and second launch of the installed app
+        if: steps.scope.outputs.run == 'true'
+        continue-on-error: true
+        run: |
+          app="$RUNNER_TEMP/Applications/CLIO Desktop.app"
+          for run in first second; do
+            uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
+              "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$run" \
+              --agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent" || true
+          done
       - name: Report
         if: always() && steps.scope.outputs.run == 'true'
         run: |
@@ -408,7 +422,7 @@ jobs:
         if: always() && steps.scope.outputs.run == 'true'
         run: >-
           python3 scripts/ci/check_budgets.py --install-events "$RUNNER_TEMP/install-events.jsonl"
-          --os macOS --job desktop-install >> "$GITHUB_STEP_SUMMARY"
+          --os macOS --job desktop-install --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.run == 'true'
         with:
@@ -416,6 +430,7 @@ jobs:
           path: |
             ${{ runner.temp }}/install-events.jsonl
             ${{ runner.temp }}/install.log
+            ${{ runner.temp }}/evidence-*/
           if-no-files-found: ignore
 
   desktop:
@@ -495,7 +510,8 @@ jobs:
           for run in first second; do
             rec --name "desktop: $run launch to ready, then quit" -- uv run --no-project --python 3.14 --with psutil \
               scripts/smoke_desktop_package.py "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 \
-              --evidence-dir "$RUNNER_TEMP/evidence-$run"
+              --evidence-dir "$RUNNER_TEMP/evidence-$run" \
+              --agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent"
           done
           rec --name "desktop: uninstall (remove the app)" -- rm -rf "$app"
       - name: Report
