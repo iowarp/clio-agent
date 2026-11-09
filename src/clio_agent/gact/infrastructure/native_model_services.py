@@ -17,7 +17,7 @@ from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.server_parameters import EngineId, compile_parameters
 from clio_agent.gact.infrastructure.service_paths import service_directory
 from clio_agent.gact.infrastructure.storage import resolved_locations
-from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+from clio_agent.gact.infrastructure.supervised_service import service_python, supervised_plan
 
 LLAMA_BUILD = "b11206"
 OLLAMA_VERSION = "0.34.4"
@@ -287,12 +287,13 @@ def native_model_plan(
         if backend != "cpu" and not configuration.get("param.gpu_layers"):
             flags += ["--n-gpu-layers", "999"]
     dependencies = ["zstandard==0.25.0"]
+    requires, interpreter = service_python(facts)
     manifest: dict[str, Any] = {
+        **interpreter,
         "service": engine,
         "definition_version": PROFILE,
-        "project": '[project]\nname="clio-native-model"\nversion="0.0.0"\nrequires-python=">=3.12,<3.13"\ndependencies='
-        + json.dumps(dependencies)
-        + "\n",
+        "project": '[project]\nname="clio-native-model"\nversion="0.0.0"\n'
+        f'requires-python="{requires}"\ndependencies=' + json.dumps(dependencies) + "\n",
         "launcher": "from native_model_hook import main\nimport sys\nsys.argv=['launch','serve']\nmain()\n",
         "files": {
             name: Path(__file__).with_name(name).read_text(encoding="utf-8")

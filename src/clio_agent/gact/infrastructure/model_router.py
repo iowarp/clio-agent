@@ -67,7 +67,7 @@ from clio_agent.gact.infrastructure.server_access import (
 from clio_agent.gact.infrastructure.server_parameters import compile_parameters
 from clio_agent.gact.infrastructure.service_paths import service_directory
 from clio_agent.gact.infrastructure.store import InfrastructureStore
-from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+from clio_agent.gact.infrastructure.supervised_service import service_python, supervised_plan
 
 #: Kept equal to CLIO's own ``litellm`` pin (pyproject.toml).
 LITELLM_VERSION = "1.102.2"
@@ -306,10 +306,12 @@ def router_plan(
     ownership = hashlib.sha256(
         f"{facts.target_id}:{facts.hostname}:{directory}".encode()
     ).hexdigest()
+    requires, interpreter = service_python(facts)
     manifest = {
+        **interpreter,
         "definition_version": DEFINITION_VERSION,
         "project": '[project]\nname="clio-model-router"\nversion="0.0.0"\n'
-        'requires-python=">=3.12,<3.13"\ndependencies='
+        f'requires-python="{requires}"\ndependencies='
         + json.dumps([f"litellm[proxy]=={LITELLM_VERSION}"])
         + "\n",
         "launcher": LAUNCHER,
