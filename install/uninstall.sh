@@ -42,14 +42,25 @@ fi
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 CLIO_STATE="$CLIO_PREFIX"
-CLIO_CONFIG="$HOME/.config/clio-agent"
 if [[ "$(uname -s)" = Darwin* ]]; then
+  default_config="$HOME/Library/Application Support/clio-agent/config"
   CLIO_CACHE="$HOME/Library/Caches/clio-agent"
+  # Host-wide Core supervision records, shared by the CLI and Desktop.
+  CLIO_HOST_STATE="$HOME/Library/Application Support/clio-agent/state"
 else
+  xdg_config="${XDG_CONFIG_HOME:-}"
+  case "$xdg_config" in /*) ;; *) xdg_config="$HOME/.config" ;; esac
+  default_config="$xdg_config/clio-agent"
+  xdg_state="${XDG_STATE_HOME:-}"
+  case "$xdg_state" in /*) ;; *) xdg_state="$HOME/.local/state" ;; esac
+  CLIO_HOST_STATE="$xdg_state/clio-agent"
   xdg_cache="${XDG_CACHE_HOME:-}"
   case "$xdg_cache" in /*) ;; *) xdg_cache="$HOME/.cache" ;; esac
   CLIO_CACHE="$xdg_cache/clio-agent"
 fi
+CLIO_CONFIG="${CLIO_AGENT_CONFIG_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/config}}"
+CLIO_CONFIG="${CLIO_CONFIG:-$default_config}"
+CLIO_HOST_STATE="${CLIO_AGENT_STATE_DIR:-$CLIO_HOST_STATE}"
 AGENT_PYTHON="$CLIO_PREFIX/clio-agent/.venv/bin/python"
 if [[ -x "$AGENT_PYTHON" ]]; then
   # Resolve before deleting the installed interpreter. Older releases retain
@@ -57,6 +68,7 @@ if [[ -x "$AGENT_PYTHON" ]]; then
   resolved_state="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())' 2>/dev/null)" && CLIO_STATE="$resolved_state"
   resolved_config="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>/dev/null)" && CLIO_CONFIG="$resolved_config"
   resolved_cache="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_cache_dir; print(user_cache_dir())' 2>/dev/null)" && CLIO_CACHE="$resolved_cache"
+  resolved_host_state="$("$AGENT_PYTHON" -c 'from clio_agent.paths import host_state_dir; print(host_state_dir())' 2>/dev/null)" && CLIO_HOST_STATE="$resolved_host_state"
   # The server listens on gact.port from CLIO's config.yaml when one is set.
   resolved_port="$("$AGENT_PYTHON" -m clio_agent.server_port 2>/dev/null)" && [[ -n "$resolved_port" ]] && CLIO_PORT="$resolved_port"
 fi
@@ -137,6 +149,9 @@ if [[ "$PURGE" -eq 1 ]]; then
   echo "  clio config:     $CLIO_CONFIG  (--purge)"
 else
   echo "  clio config:     $CLIO_CONFIG  (KEPT — pass --purge to remove)"
+fi
+if [[ "$PURGE" -eq 1 && -d "$CLIO_HOST_STATE/core-hosts" ]]; then
+  echo "  core records:    $CLIO_HOST_STATE/core-hosts  (--purge)"
 fi
 if [[ "$PURGE_CACHES" -eq 1 ]]; then
   echo "  clio caches:     $CLIO_CACHE  (--purge-caches)"
@@ -229,6 +244,30 @@ purge_core_seed() {
   rmdir -- "$CORE_HOME/bdev_perf" "$CORE_HOME" 2>/dev/null || true
   [[ ! -d "$CORE_HOME" ]] || warn "Retained other clio-core files in $CORE_HOME."
 }
+# The host-wide Core supervision records (lock, log, client registry), shared by
+# the CLI and Desktop. Kept while a clio-core daemon still runs.
+purge_host_state() {
+  local core="$CLIO_HOST_STATE/core-hosts"
+  [[ -d "$core" ]] || return 0
+  local pidfile pid
+  for pidfile in "$core"/*/clio-runtime.pid; do
+    [[ -f "$pidfile" ]] || continue
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      warn "The clio-core daemon (pid $pid) is running; kept $core."
+      return 0
+    fi
+  done
+  say "Removing $core"
+  rm -rf -- "$core"
+  rmdir -- "$CLIO_HOST_STATE" 2>/dev/null || true
+  # macOS keeps state inside the clio-agent folder; drop it once empty.
+  local parent
+  parent="$(dirname "$CLIO_HOST_STATE")"
+  if [[ "$(basename "$parent")" == clio-agent ]]; then rmdir -- "$parent" 2>/dev/null || true; fi
+}
+
+
 # Compare against the seeds before the payloads holding them go.
 if [[ "$PURGE" -eq 1 ]]; then purge_core_seed; fi
 
@@ -247,6 +286,7 @@ fi
 if [[ "$PURGE" -eq 1 ]]; then
   [[ -d "$CLIO_CONFIG" ]] && { say "Removing $CLIO_CONFIG"; rm -rf "$CLIO_CONFIG"; }
   # gact is a separate product; its configuration is retained.
+  purge_host_state
 fi
 if [[ "$PURGE_CACHES" -eq 1 && -d "$CLIO_CACHE" ]]; then
   say "Removing $CLIO_CACHE"

@@ -16,7 +16,7 @@ This stops the backend, removes the `clio` command, and deletes the install fold
 | Option | Effect |
 |---|---|
 | `--yes` or `-y` | Skip the confirmation prompt. On Windows, use `-Yes`. |
-| `--purge` | Also delete CLIO's configuration folder, including stored credentials (see the caution below). On macOS and Linux it also removes clio-core's unedited default config in `~/.clio` and CLIO's performance stats there. On Windows, use `-Purge`. |
+| `--purge` | Also delete CLIO's configuration folder, including stored credentials (see the caution below). On macOS and Linux it also removes clio-core's unedited default config in `~/.clio` and CLIO's performance stats there. It also removes the host-wide clio-core records in CLIO's state folder, unless that daemon is still running. On Windows, use `-Purge`. |
 | `--purge-caches` | macOS and Linux: also delete CLIO's cache folder (the document runtime, LibreOffice and tool caches, about 2 GB after first use). CLIO rebuilds it on the next launch. |
 | `--desktop` | macOS: also remove **CLIO Desktop.app** and its caches and logs. With `--purge`, also its settings folder. |
 

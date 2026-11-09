@@ -173,7 +173,10 @@ your workspaces are not affected.
   local test DMG. `uninstall.sh` removes `libexec/clio` and, with `--purge-caches`,
   CLIO's caches. With `--purge` it also removes clio-core's unedited `~/.clio`
   seed and CLIO's perf stats there; clio-core children now keep that state in
-  CLIO's runtime state directory (`CLIO_STORAGE_ROOT`).
+  CLIO's runtime state directory (`CLIO_STORAGE_ROOT`). `--purge` also removes the
+  host-wide clio-core records (`state/core-hosts`) unless that daemon is running,
+  and finds the macOS config in `~/Library/Application Support/clio-agent/config`
+  when no Agent is installed.
 - `install.sh --source` never runs the macOS `/usr/bin/git` placeholder. It uses
   `CLIO_GIT`, a real git, or the git bundled with an installed CLIO Desktop, and says
   what to install when there is none.

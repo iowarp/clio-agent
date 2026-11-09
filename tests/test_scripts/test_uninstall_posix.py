@@ -181,3 +181,60 @@ def test_without_purge_clio_core_files_are_kept(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (core / "clio.yaml").is_file()
+
+
+def _host_state(home: Path) -> Path:
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "clio-agent" / "state"
+    return home / ".local" / "state" / "clio-agent"
+
+
+def _config_root(home: Path) -> Path:
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "clio-agent" / "config"
+    return home / ".config" / "clio-agent"
+
+
+def test_purge_finds_the_native_config_root_without_an_installed_agent(tmp_path: Path) -> None:
+    # A Desktop-only machine has no Agent venv to ask; the fallback must still be the
+    # platform's real config root (it used to be ~/.config/clio-agent on macOS too).
+    _installed(tmp_path)
+    config = _config_root(tmp_path / "home")
+    config.mkdir(parents=True)
+    (config / "config.yaml").write_text("gact: {}\n")
+
+    result = _uninstall(_env(tmp_path), "--purge")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not config.exists()
+
+
+def test_purge_removes_the_host_wide_core_records(tmp_path: Path) -> None:
+    _installed(tmp_path)
+    core = _host_state(tmp_path / "home") / "core-hosts" / "host"
+    (core / "clio-runtime.clients").mkdir(parents=True)
+    (core / "clio-runtime.lock").write_text("")
+
+    kept = _uninstall(_env(tmp_path))
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    assert core.is_dir(), "kept without --purge"
+
+    result = _uninstall(_env(tmp_path), "--purge")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not _host_state(tmp_path / "home").exists(), result.stdout + result.stderr
+    if sys.platform == "darwin":
+        assert not (tmp_path / "home" / "Library" / "Application Support" / "clio-agent").exists()
+
+
+def test_purge_keeps_the_core_records_of_a_running_daemon(tmp_path: Path) -> None:
+    _installed(tmp_path)
+    core = _host_state(tmp_path / "home") / "core-hosts" / "host"
+    core.mkdir(parents=True)
+    (core / "clio-runtime.pid").write_text(str(os.getpid()))
+
+    result = _uninstall(_env(tmp_path), "--purge")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert core.is_dir()
+    assert "is running; kept" in result.stderr
