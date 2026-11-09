@@ -14,6 +14,8 @@ on:
     branches: [develop, main, 'claude/**']
     paths:
       - 'install/**'
+      - 'src/clio_agent/runtime/document_runtime.py'
+      - 'src/clio_agent/runtime/document_stack/office.py'
       - 'src/clio_agent/gact/app.py'
       - 'src/clio_agent/gact/server_boot.py'
       - 'src/clio_agent/gact/task_runtime.py'
@@ -358,6 +360,62 @@ jobs:
         with:
           name: ssh
           path: timings.jsonl
+          if-no-files-found: ignore
+
+  # install.sh --desktop from this checkout against the latest release, into a scratch
+  # directory: each shared step (resolve, download, verify, install, prepare) and the
+  # total are held to their budgets. Pull requests run it only when they change the
+  # installers, the first-run prepare they hand downloads to, or these budgets.
+  desktop-install:
+    name: Desktop install steps (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether this change touches the desktop install
+        id: scope
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(gh api --paginate 'repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files' -q '.[].filename')"
+          pattern='^(install/|src/clio_agent/runtime/document_runtime\.py$|src/clio_agent/runtime/document_stack/office\.py$|scripts/ci/(check_budgets\.py|install_budgets\.json)$|\.github/workflows/install-matrix\.yml$)'
+          if grep -Eq "$pattern" <<<"$files"; then echo "run=true"; else echo "run=false"; fi >> "$GITHUB_OUTPUT"
+      - name: install.sh --desktop --progress json (scratch directory)
+        if: steps.scope.outputs.run == 'true'
+        continue-on-error: true
+        run: |
+          CLIO_DESKTOP_DIR="$RUNNER_TEMP/Applications" bash install/install.sh --desktop --progress json \
+            > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
+      - name: Report
+        if: always() && steps.scope.outputs.run == 'true'
+        run: |
+          {
+            echo "## install.sh --desktop on macOS"
+            echo '```'
+            grep -v '"event":"progress"' "$RUNNER_TEMP/install-events.jsonl" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n 40 "$RUNNER_TEMP/install.log" || true
+      - name: Enforce the step budgets
+        if: always() && steps.scope.outputs.run == 'true'
+        run: >-
+          python3 scripts/ci/check_budgets.py --install-events "$RUNNER_TEMP/install-events.jsonl"
+          --os macOS --job desktop-install >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.run == 'true'
+        with:
+          name: desktop-install-macos
+          path: |
+            ${{ runner.temp }}/install-events.jsonl
+            ${{ runner.temp }}/install.log
           if-no-files-found: ignore
 
   desktop:
