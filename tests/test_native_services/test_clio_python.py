@@ -61,6 +61,7 @@ def test_only_an_interpreter_that_stays_put_is_durable(executable: str, durable:
     assert platform.durable_interpreter(executable) is durable
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the macOS shim is a POSIX shell script")
 def test_without_the_command_line_tools_install_name_tool_is_shadowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
