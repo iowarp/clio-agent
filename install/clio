@@ -36,11 +36,13 @@
 # (throttled to ~once/day; set CLIO_NO_UPDATE_CHECK=1 to disable).
 #
 # Environment overrides:
-#   CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
+#   CLIO_PREFIX   install root      (default: <agent data>/app: ~/Library/Application
+#                 Support/clio-agent/data/app on macOS, ~/.local/share/clio-agent/app
+#                 on Linux; ~/.local/share/clio for installs made before 0.9.5)
 #   CLIO_PORT     server port when no --port is given and the user config.yaml
 #                 sets no gact.port (default: 17800)
 #   CLIO_BIN_DIR  launcher location (default: $HOME/.local/bin)
-#   CLIO_LOG      server log path   (default: $CLIO_PREFIX/clio-server.log)
+#   CLIO_LOG      server log path   (default: <agent state>/clio-server.<host>.log)
 #   CLIO_NO_UPDATE_CHECK  set to 1 to skip the on-launch PyPI update check
 #   CLIO_WEB_DIR  built web dist to serve (overrides the installed bundle)
 #   CLIO_WEB_SRC  gact-tui checkout for `--dev` builds (auto-detected if unset)

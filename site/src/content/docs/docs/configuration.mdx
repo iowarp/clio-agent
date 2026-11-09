@@ -53,8 +53,11 @@ The install script puts the backend, interfaces, and logs in one folder.
 
 | System | Install folder |
 |---|---|
-| macOS and Linux | `~/.local/share/clio` |
-| Windows | `%LOCALAPPDATA%\clio` |
+| macOS | `~/Library/Application Support/clio-agent/data/app` |
+| Linux | `~/.local/share/clio-agent/app` |
+| Windows | `%LOCALAPPDATA%\clio-agent\data\app` |
+
+Installs made before 0.9.5 keep using `~/.local/share/clio` (`%LOCALAPPDATA%\clio` on Windows).
 
 Set `CLIO_PREFIX` before installing to change it. See [Install](/docs/install/).
 
