@@ -203,7 +203,9 @@ KEY_NOTES: dict[str, str] = {
     ),
     "gact.port": (
         "TCP port the CLIO server listens on and the launcher, Desktop and web UI attach to "
-        "when none is given; one shared value, so change it here rather than per surface."
+        "when none is given; one shared value, so change it here rather than per surface. "
+        "Read from the user config.yaml only (a workspace file cannot move it). Precedence: "
+        "--port > gact.port > CLIO_PORT > 17800."
     ),
     "gact.mailbox.max_pending_messages": (
         "Undelivered peer-message ceiling per session; 0 means unlimited. Task results and human "

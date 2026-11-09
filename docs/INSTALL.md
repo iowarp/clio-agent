@@ -228,6 +228,6 @@ The CLI (`clio` / `clio --web`) and the desktop app each spawn a gact server and
 to the **same port**. Agents sharing a state directory must not run two writers.
 Running two
 simultaneously can clash on the port and risk concurrent-write corruption / version skew.
-Use one at a time, or a different `CLIO_PORT` (desktop supervisor) / `--port`
-(raw server) + state dirs. Tracked in
+Use one at a time, or a different port (`clio --port N`, or `--port` on the raw
+server) and state directory. Tracked in
 [#698](https://github.com/iowarp/clio-agent/issues/698).

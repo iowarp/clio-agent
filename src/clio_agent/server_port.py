@@ -1,16 +1,27 @@
-"""The CLIO server's default port: one key in CLIO's configuration that every surface reads.
+"""The CLIO server's port: one machine-wide key in CLIO's user configuration.
 
-The key is ``gact.port`` in CLIO's layered configuration (:mod:`clio_agent.conf`): the
-workspace then user ``config.yaml`` (on macOS ``~/Library/Application Support/clio-agent/
-config/config.yaml``), then the ``CLIO_PORT`` environment variable, then 17800. The
-server entry points use it when no ``--port`` is given, the ``clio`` launcher asks for
-it (``python -m clio_agent.server_port``), and the Desktop and web UI read the same file
-(``branding/clio/brand.json`` ``backend.portConfig`` names the key and variable).
+Precedence, highest first:
+
+1. an explicit ``--port`` given to the server or the ``clio`` launcher;
+2. ``gact.port`` in the USER ``config.yaml`` (:func:`clio_agent.paths.user_config_dir`;
+   on macOS ``~/Library/Application Support/clio-agent/config/config.yaml``);
+3. the ``CLIO_PORT`` environment variable;
+4. 17800.
+
+There is one CLIO server per machine, so a workspace ``.clio-agent/shared/config.yaml``
+does NOT set it: the port, pidfile and attach target never depend on the directory a
+command runs from. The ``clio`` launcher and the Desktop/web UI ask for the resolved
+value with ``python -I -m clio_agent.server_port``, which prints only the port on one
+line and reads nothing from the working directory (``branding/clio/brand.json``
+``backend.portConfig`` names the key, file and variable). ``docs/ENVIRONMENT.md``
+documents the full contract.
 
 This module stays import-light: the launcher runs it before every command.
 """
 
 from __future__ import annotations
+
+import os
 
 from clio_agent import conf
 
@@ -21,7 +32,9 @@ PORT_ENV = "CLIO_PORT"
 
 def configured_port() -> int:
     """The port a CLIO server listens on and its clients attach to, unless told otherwise."""
-    port = conf.resolve("gact.port", env="CLIO_PORT", default=DEFAULT_PORT, cast=conf.as_int)
+    port = conf.resolve(
+        "gact.port", env="CLIO_PORT", default=DEFAULT_PORT, cast=conf.as_int, user_only=True
+    )
     if not 1 <= port <= 65535:
         raise ValueError(f"{PORT_KEY} (or {PORT_ENV}) must be a TCP port, got {port}")
     return port
@@ -34,8 +47,6 @@ def claim_api_port(port: int | None) -> int:
     RPC port, both in this process (the client) and in the daemon it spawns. Once the API
     port is resolved it must not leak there (the ``clio`` launcher unsets it likewise).
     """
-    import os  # noqa: PLC0415 - keep the launcher's per-command import light
-
     resolved = configured_port() if port is None else port
     os.environ.pop(PORT_ENV, None)
     return resolved

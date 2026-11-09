@@ -387,6 +387,15 @@ LAUNCHER_PRELUDE = (
     'export CLIO_PREFIX="$root" CLIO_BIN_DIR="$bin" CLIO_AGENT_HOME="$root/user"; '
 )
 
+# Run the deployed launcher on the deployment's port ($CLIO_PORT, exported by the caller).
+# A launcher that knows ``--port`` gets it explicitly, so a gact.port in that account's
+# config.yaml cannot move the server; one from an older release reads CLIO_PORT.
+CLIO_LAUNCHER = (
+    "clio_launcher() { "
+    'if grep -q "clio-launcher-feature: port-flag" "$bin/clio" 2>/dev/null; then '
+    '"$bin/clio" --port "$CLIO_PORT" "$@"; else "$bin/clio" "$@"; fi; }; '
+)
+
 PYPI_RELEASE_URL = "https://pypi.org/pypi/clio-agent/{version}/json"
 INSTALLER_URL = "https://raw.githubusercontent.com/iowarp/clio-agent/{tag}/install/install.sh"
 

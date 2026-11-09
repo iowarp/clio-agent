@@ -42,10 +42,14 @@ def test_spawned_daemon_binds_loopback(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert envs and envs[0][CORE_BIND_ADDR_ENV] == "127.0.0.1"
 
 
-def test_attaching_client_agrees_with_the_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attaching_client_leaves_the_server_environment_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv(CORE_BIND_ADDR_ENV, raising=False)
     monkeypatch.delenv("CLIO_SERVER_CONF", raising=False)
 
     clio_core_attach.export_client_config("/tmp/cte.yaml")
 
-    assert os.environ[CORE_BIND_ADDR_ENV] == "127.0.0.1"
+    # The bind is scoped to clio-core's children and the native init, never this
+    # server's environment (agent tools and every other child would inherit it).
+    assert CORE_BIND_ADDR_ENV not in os.environ

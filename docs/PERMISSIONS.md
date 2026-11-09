@@ -353,6 +353,21 @@ domain is granted, and the first connection to a new domain raises a
 `network_egress` permission request (grant-on-first-domain). The `host_pattern`
 vocabulary scopes a domain grant.
 
+### Local listeners
+
+The CLIO server listens on `127.0.0.1` at the `gact.port` (17800 by default) unless
+it is started with `--host`. The clio-core runtime it starts binds its RPC port
+(`9413` by default) and data port to loopback: CLIO sets `CLIO_BIND_ADDR=127.0.0.1`
+in the clio-core child environments only (`arc/clio_core_config.py`
+`pin_loopback_bind`), and keeps an explicit value set by a hand-authored multi-node
+setup. The server's own environment is not changed.
+
+**Known gap:** clio-core's control channel, on the RPC port + 2 (`9415` by default),
+binds `tcp://*` (all interfaces) and ignores `CLIO_BIND_ADDR`
+(`ControlChannelLoop` in iowarp/clio-core `context-runtime/src/ipc_manager.cc`).
+It needs an upstream clio-core fix to use the same bind address; until then, a host
+firewall is the only control for that port.
+
 ### Grants on the record (#979)
 
 A grant is a **user/model decision** (never a clio heuristic), recorded as a

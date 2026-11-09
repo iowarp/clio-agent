@@ -182,7 +182,11 @@ _DEFAULT_CTE_CORE_PORT = 9413
 # clio-core binds its RPC servers on every interface (0.0.0.0) unless
 # ``CLIO_BIND_ADDR`` names an address. CLIO's runtime is single-node and serves only
 # this machine's own processes, so it is pinned to loopback; an explicit value
-# (for a hand-authored multi-node hostfile) is respected.
+# (for a hand-authored multi-node hostfile) is respected. Only clio-core child
+# environments are pinned; the server's own ``os.environ`` is left alone.
+# Known gap: clio-core's control channel (port base+2, ``ControlChannelLoop`` in
+# ``context-runtime/src/ipc_manager.cc``) binds ``tcp://*`` and ignores this
+# variable; it needs an upstream iowarp/clio-core fix.
 CORE_BIND_ADDR_ENV = "CLIO_BIND_ADDR"
 CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
 
@@ -190,8 +194,8 @@ CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
 def pin_loopback_bind(env: MutableMapping[str, str]) -> None:
     """Bind the clio-core runtime started or attached under ``env`` to loopback.
 
-    The daemon, its ``stop`` command, and this process's native client must agree,
-    so every environment that reaches clio-core goes through here.
+    The daemon, its ``stop`` command and the native preflight must agree, so every
+    child environment that reaches clio-core goes through here.
     """
     if not env.get(CORE_BIND_ADDR_ENV):
         env[CORE_BIND_ADDR_ENV] = CORE_LOOPBACK_BIND_ADDR
