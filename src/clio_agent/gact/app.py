@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 import time
 
@@ -59,7 +58,6 @@ import openai  # noqa: E402, F401
 import pyarrow  # noqa: E402, F401
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
@@ -1621,30 +1619,10 @@ def build_app(
     # The Exception backstop is registered by install_error_envelope above,
     # paired with the middleware it must agree with.
 
-    # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
-    # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-
-    # byte unchanged unless web mode is explicitly enabled. Mounted LAST so every
-    # /v1 API route (and /docs, /openapi.json) registered above takes precedence;
-    # an SPA fallback serves index.html for unknown non-API paths so client-side
-    # (history) routing works. The bundle's API calls are same-origin (relative
-    # /v1/...), so no CORS/proxy is needed — this is the in-process equivalent of
-    # the docker clio-web nginx setup.
-    web_dir = _web_dir()
-    if web_dir and (Path(web_dir) / "index.html").is_file():
-        from fastapi.staticfiles import StaticFiles
-        from starlette.responses import FileResponse
+    # Optional web UI (`clio web`, CLIO_WEB_DIR), mounted LAST so every /v1 route wins.
+    from clio_agent.gact.web_mount import mount_web_ui  # noqa: PLC0415
 
-        class _SPAStaticFiles(StaticFiles):
-            async def get_response(self, path: str, scope: Any) -> Any:
-                try:
-                    return await super().get_response(path, scope)
-                except StarletteHTTPException as exc:
-                    # An unknown API path stays a JSON 404, never the SPA's HTML.
-                    if exc.status_code == 404 and not (path == "v1" or path.startswith("v1/")):
-                        return FileResponse(Path(web_dir) / "index.html")
-                    raise
-
-        app.mount("/", _SPAStaticFiles(directory=web_dir, html=True), name="web")
+    mount_web_ui(app, _web_dir())
 
     return app
 
@@ -1696,13 +1674,9 @@ def run_server(
     """
     import uvicorn
 
-    from clio_agent.server_port import PORT_ENV, configured_port  # noqa: PLC0415
+    from clio_agent.server_port import claim_api_port  # noqa: PLC0415
 
-    port = configured_port() if port is None else port
-    # CLIO_PORT names this HTTP API. clio-core reads the same generic name for its RPC
-    # port, in this process (the client) and in the daemon it spawns, so once the API
-    # port is resolved it must not leak there (the clio launcher unsets it likewise).
-    os.environ.pop(PORT_ENV, None)
+    port = claim_api_port(port)
     trace.configure()  # trace verbosity (file -> env -> default) + the formatted log handler
     from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
 
@@ -1743,9 +1717,7 @@ def main() -> None:
         description="CLIO's GACT v0.2 REST + SSE server.",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument(
-        "--port", default=None, type=int, help="server port (default: configured gact.port)"
-    )
+    parser.add_argument("--port", default=None, type=int, help="port (default: gact.port)")
     parser.add_argument(
         "--reload",
         action="store_true",

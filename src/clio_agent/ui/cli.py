@@ -953,9 +953,7 @@ def main() -> None:
         help="Accepted for CLI parity (Codex sandbox setup pops a native UAC prompt).",
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
-    parser.add_argument(
-        "--port", type=int, default=None, help="Server port (default: configured gact.port)"
-    )
+    parser.add_argument("--port", type=int, default=None, help="Server port (default: gact.port)")
     parser.add_argument(
         "--tune",
         type=str,

@@ -27,6 +27,20 @@ def configured_port() -> int:
     return port
 
 
+def claim_api_port(port: int | None) -> int:
+    """Resolve the API port for a server in this process and keep it from clio-core.
+
+    ``CLIO_PORT`` names this HTTP API, but clio-core reads the same generic name for its
+    RPC port, both in this process (the client) and in the daemon it spawns. Once the API
+    port is resolved it must not leak there (the ``clio`` launcher unsets it likewise).
+    """
+    import os  # noqa: PLC0415 - keep the launcher's per-command import light
+
+    resolved = configured_port() if port is None else port
+    os.environ.pop(PORT_ENV, None)
+    return resolved
+
+
 def main() -> None:
     print(configured_port())
 
