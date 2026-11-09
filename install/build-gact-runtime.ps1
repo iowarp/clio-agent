@@ -184,10 +184,10 @@ Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe')
 
 # CLIO installs marketplace plugins with git, which a fresh Windows machine does
 # not have. Ship Git for Windows' MinGit (relocatable by design; entry point
-# git\cmd\git.exe, resolved by clio_agent/runtime/git_executable.py). Git
-# Credential Manager (.NET/Avalonia, ~35 MB) and the updater are removed: CLIO
-# clones public marketplaces, and a person's installed Git keeps serving their
-# own shells.
+# git\cmd\git.exe), which clio_agent/runtime/git_executable.py falls back to when
+# the machine has no git of its own. Git Credential Manager stays (about 28 MB
+# unpacked, 11 MB compressed) so private repositories can still sign in; only
+# Scalar and the updater stub are removed.
 $mingitVersion = '2.56.0.4'
 $mingitTag = 'v2.56.0.windows.4'
 if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
@@ -207,38 +207,28 @@ if ($mingitActual -ne $mingitSha256) {
 }
 Expand-Archive -LiteralPath $mingitZip -DestinationPath $gitRoot -Force
 Remove-Item -LiteralPath $mingitZip -Force
-$gcmPatterns = @(
-  'Atlassian.*.dll', 'Avalonia*.dll', 'GitHub.dll', 'GitLab.dll', 'HarfBuzzSharp.dll',
-  'libHarfBuzzSharp.dll', 'MicroCom.Runtime.dll', 'Microsoft.*.dll', 'SkiaSharp.dll',
-  'libSkiaSharp.dll', 'System.*.dll', 'av_libglesv2.dll', 'gcmcore.dll', 'msalruntime.dll',
-  'git-credential-manager.exe', 'git-credential-manager.exe.config',
-  'git-credential-helper-selector.exe', 'git-update-git-for-windows', 'scalar.exe'
-)
 foreach ($mingwBin in @('ucrt64\bin', 'clangarm64\bin', 'mingw64\bin')) {
   $dir = Join-Path $gitRoot $mingwBin
   if (-not (Test-Path -LiteralPath $dir)) { continue }
-  foreach ($pattern in $gcmPatterns) {
-    Get-ChildItem -LiteralPath $dir -Filter $pattern -File -ErrorAction SilentlyContinue |
-      Remove-Item -Force
+  foreach ($name in @('scalar.exe', 'git-update-git-for-windows')) {
+    Remove-Item -LiteralPath (Join-Path $dir $name) -Force -ErrorAction SilentlyContinue
   }
 }
 Remove-Item -LiteralPath (Join-Path $gitRoot 'cmd\scalar.exe') -Force -ErrorAction SilentlyContinue
-# MinGit's system config names the removed manager and an LFS filter that is not
-# shipped, and includes an installed Git's config. Keep its line-ending and pack
-# defaults; use the Windows certificate store (Schannel) so enterprise roots work.
-$gitConfig = @"
-[core]
-	symlinks = false
-	autocrlf = true
-[pack]
-	packSizeLimit = 2g
-[http]
-	sslBackend = schannel
-"@
-[System.IO.File]::WriteAllText((Join-Path $gitRoot 'etc\gitconfig'), $gitConfig.Replace("`r`n", "`n") + "`n")
 $bundledGit = Join-Path $gitRoot 'cmd\git.exe'
 if (-not (Test-Path -LiteralPath $bundledGit)) {
   throw "build-gact-runtime: MinGit has no cmd\git.exe"
+}
+# MinGit's own system config is kept: credential.helper=manager and its include
+# of an installed Git for Windows' system config still apply. MinGit has no
+# git-lfs, so its required LFS filter would fail every LFS checkout; the Windows
+# certificate store (Schannel) lets enterprise roots work.
+$mingitConfig = Join-Path $gitRoot 'etc\gitconfig'
+Invoke-Native -Exe $bundledGit -Args @('config', '--file', $mingitConfig, '--remove-section', 'filter.lfs')
+Invoke-Native -Exe $bundledGit -Args @('config', '--file', $mingitConfig, 'http.sslBackend', 'schannel')
+$helper = (& $bundledGit config --file $mingitConfig --get credential.helper)
+if ($LASTEXITCODE -ne 0 -or $helper -ne 'manager') {
+  throw "build-gact-runtime: MinGit's credential.helper is '$helper', expected 'manager'"
 }
 Invoke-Native -Exe $bundledGit -Args @('--version')
 Write-Host "[build-gact-runtime] bundled git: $(Get-DirSizeMB $gitRoot) MB"

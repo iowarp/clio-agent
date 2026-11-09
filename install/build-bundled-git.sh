@@ -5,10 +5,13 @@
 # A fresh Mac has no git: /usr/bin/git is a stub that opens the "Install
 # Command Line Developer Tools" dialog. CLIO needs git to install marketplace
 # plugins, so the runtime carries its own (clio_agent/runtime/git_executable.py
-# resolves it). The result is deliberately small:
+# resolves it as the fallback when the machine has no real git). The result is
+# deliberately small:
 #
 #   <out>/libexec/git-core/git               the only git binary
-#   <out>/libexec/git-core/git-remote-https  https/http transport (libcurl)
+#   <out>/libexec/git-core/git-remote-https  https transport (libcurl)
+#   <out>/libexec/git-core/git-remote-http   http transport (same program)
+#   <out>/etc/gitconfig                      includes the machine's /etc/gitconfig
 #   <out>/share/git-core/templates/          description + info/exclude, no hooks
 #
 # There is no bin/ directory and there are no symlinks or hardlinks: Tauri's
@@ -25,7 +28,9 @@
 # (GIT_SSL_CAINFO, set by the resolver).
 #
 # No Perl, Python, Tcl/Tk, gettext, docs, dashed built-ins, credential helpers,
-# git-shell or upload/receive-pack binaries: CLIO only clones and fetches.
+# git-shell or upload/receive-pack binaries: CLIO only clones and fetches. The
+# machine's system config is included, so a credential helper or proxy configured
+# there (or in ~/.gitconfig, which git always reads) still applies.
 #
 # Env:
 #   MAKE                 GNU make (default: make)
@@ -203,15 +208,28 @@ EXEC="$OUT/libexec/git-core"
 TEMPLATES="$OUT/share/git-core/templates"
 mkdir -p "$EXEC" "$TEMPLATES/info"
 cp "$SRC/git" "$EXEC/git"
+# Separate copies, not links (see above): git runs git-remote-<scheme> by name.
 cp "$SRC/git-remote-http" "$EXEC/git-remote-https"
+cp "$SRC/git-remote-http" "$EXEC/git-remote-http"
 cp "$SRC/templates/description" "$TEMPLATES/description"
 cp "$SRC/templates/info/exclude" "$TEMPLATES/info/exclude"
-chmod 0755 "$EXEC/git" "$EXEC/git-remote-https"
+BINARIES=("$EXEC/git" "$EXEC/git-remote-https" "$EXEC/git-remote-http")
+chmod 0755 "${BINARIES[@]}"
 chmod 0644 "$TEMPLATES/description" "$TEMPLATES/info/exclude"
 if [ -n "$STRIP" ]; then
   # shellcheck disable=SC2086  # STRIP may carry flags
-  $STRIP "$EXEC/git" "$EXEC/git-remote-https"
+  $STRIP "${BINARIES[@]}"
 fi
+# RUNTIME_PREFIX reads the system config from <out>/etc/gitconfig, not
+# /etc/gitconfig. Include the machine's own (git ignores a missing include), so
+# its credential helpers, proxies and CA settings keep applying.
+mkdir -p "$OUT/etc"
+cat >"$OUT/etc/gitconfig" <<'GITCONFIG'
+# System config of the git bundled with CLIO.
+[include]
+	path = /etc/gitconfig
+GITCONFIG
+chmod 0644 "$OUT/etc/gitconfig"
 cp "$SRC/COPYING" "$OUT/COPYING"
 
 # --- verification -----------------------------------------------------------
@@ -220,18 +238,29 @@ if find "$OUT" -type l | grep -q .; then
 fi
 # An inherited GIT_EXEC_PATH (another git's helpers) would mask the relative
 # lookup this checks; the CLIO resolver clears it the same way.
-run_bundled() { env -u GIT_EXEC_PATH -u GIT_TEMPLATE_DIR "$EXEC/git" "$@"; }
+run_bundled() {
+  env -u GIT_EXEC_PATH -u GIT_TEMPLATE_DIR -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG_SYSTEM \
+    "$EXEC/git" "$@"
+}
 run_bundled --version >/dev/null || die "bundled git does not run"
 EXEC_PATH="$(run_bundled --exec-path)"
 [ "$EXEC_PATH" = "$EXEC" ] || die "exec-path is $EXEC_PATH, expected $EXEC (RUNTIME_PREFIX not effective)"
+# The system config must be this tree's etc/gitconfig, including /etc/gitconfig.
+SYSTEM_INCLUDE="$(run_bundled config --system --show-origin --get include.path)" ||
+  die "the bundled system config does not include /etc/gitconfig"
+case "$SYSTEM_INCLUDE" in
+  "file:/etc/gitconfig"*) die "system config is /etc/gitconfig itself (RUNTIME_PREFIX not effective)" ;;
+  file:*/etc/gitconfig$'\t'/etc/gitconfig) ;;
+  *) die "unexpected system config: $SYSTEM_INCLUDE" ;;
+esac
 if [ "$OS" = "Darwin" ] && command -v otool >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1; then
-  for bin in "$EXEC/git" "$EXEC/git-remote-https"; do
+  for bin in "${BINARIES[@]}"; do
     foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -v '^/usr/lib/' || true)"
     [ -z "$foreign" ] || die "$bin links outside /usr/lib: $foreign"
   done
 fi
 if [ "$OS" = "Linux" ]; then
-  for bin in "$EXEC/git" "$EXEC/git-remote-https"; do
+  for bin in "${BINARIES[@]}"; do
     foreign="$(ldd "$bin" | grep -Ev 'linux-vdso|ld-linux|libc\.so|libm\.so|libz\.so|libpthread\.so|libdl\.so|librt\.so' || true)"
     [ -z "$foreign" ] || die "$bin links unexpected libraries: $foreign"
   done

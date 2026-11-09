@@ -92,10 +92,22 @@ def test_an_override_that_is_not_executable_is_refused(
 
 
 @posix_only
-def test_bundled_git_wins_over_path_git_and_drops_a_foreign_exec_path(
+def test_the_persons_real_git_wins_over_the_bundled_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: Path
 ) -> None:
-    _script(clean_env / "git", "echo path")
+    """Their git keeps their credential helpers, proxies and configuration."""
+    on_path = _script(clean_env / "git", "echo path")
+    _use_runtime(monkeypatch, _runtime(tmp_path))
+    monkeypatch.setenv("GIT_EXEC_PATH", "/their/git/libexec/git-core")
+    git = gx.resolve_git()
+    assert (git.source, git.path) == ("path", on_path)
+    assert git.env() is None
+
+
+@posix_only
+def test_bundled_git_is_the_fallback_and_drops_a_foreign_exec_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: Path
+) -> None:
     runtime = _runtime(tmp_path)
     _use_runtime(monkeypatch, runtime)
     monkeypatch.setenv("GIT_EXEC_PATH", "/another/git/libexec/git-core")
@@ -143,6 +155,22 @@ def test_the_macos_placeholder_is_never_chosen_or_run(
     assert gx.real_git_on_path() is None
     with pytest.raises(gx.GitUnavailableError, match="placeholder"):
         gx.resolve_git()
+    assert not marker.exists()
+
+
+@posix_only
+def test_a_mac_with_only_the_placeholder_uses_the_bundled_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_env: Path,
+    macos_placeholder: tuple[Path, Path],
+) -> None:
+    placeholder, marker = macos_placeholder
+    runtime = _runtime(tmp_path)
+    _use_runtime(monkeypatch, runtime)
+    monkeypatch.setenv("PATH", str(placeholder.parent))
+    git = gx.resolve_git()
+    assert (git.source, git.path) == ("bundled", runtime / "git" / gx.BUNDLED_GIT_RELATIVE)
     assert not marker.exists()
 
 

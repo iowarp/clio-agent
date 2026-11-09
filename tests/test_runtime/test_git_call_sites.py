@@ -65,6 +65,21 @@ def test_marketplace_sources_run_the_bundled_git(
     assert log.read_text().split() == ["init", "-q", str(tmp_path / "repo")]
 
 
+@posix_only
+def test_marketplace_sources_prefer_the_persons_git(
+    bundled: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, log = bundled
+    theirs = tmp_path / "their-bin"
+    theirs.mkdir()
+    own = theirs / "git"
+    own.write_text('#!/bin/sh\necho "theirs $GIT_EXEC_PATH $*" >> "$CLIO_TEST_GIT_LOG"\n')
+    own.chmod(0o755)
+    monkeypatch.setenv("PATH", str(theirs))
+    sources._git(["fetch", "origin"])
+    assert log.read_text().split() == ["theirs", "/another/git-core", "fetch", "origin"]
+
+
 def test_marketplace_sources_report_a_missing_git_as_a_source_error(no_git: None) -> None:
     with pytest.raises(sources.SourceError, match="git is not installed"):
         sources._git(["fetch", "origin"])

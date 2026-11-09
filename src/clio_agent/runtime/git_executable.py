@@ -8,15 +8,16 @@ none at all. The desktop runtime therefore ships its own relocatable git
 :func:`resolve_git`, in this order:
 
 1. ``CLIO_GIT``: an explicit executable a person or test chose;
-2. the bundled git inside the desktop runtime;
-3. a git on ``PATH``, only when it is a real one (never the macOS placeholder).
+2. a git on ``PATH``, only when it is a real one (never the macOS placeholder): the
+   person's own git, with their credential helpers, proxies and configuration;
+3. the bundled git inside the desktop runtime, for a machine with no git.
 
 When none qualifies, :class:`GitUnavailableError` says what to install, instead of
 CLIO running the placeholder and leaving the person facing an installer dialog.
 
 Child processes that call git themselves (workspace shells, ``uvx git+...`` MCP
-servers) get the bundled git on ``PATH`` through :func:`with_bundled_git` when their
-``PATH`` has no real git; a person's own git keeps priority in their own shells.
+servers) get the bundled git on ``PATH`` through :func:`with_bundled_git` under the
+same rule: only when their ``PATH`` has no real git.
 """
 
 from __future__ import annotations
@@ -197,7 +198,7 @@ def _unavailable_message(environ: Mapping[str, str]) -> str:
 
 
 def resolve_git(environ: Mapping[str, str] | None = None) -> GitExecutable:
-    """The git CLIO runs: ``CLIO_GIT``, then the bundled git, then a real PATH git."""
+    """The git CLIO runs: ``CLIO_GIT``, then a real PATH git, then the bundled git."""
     environ = os.environ if environ is None else environ
     override = environ.get(GIT_OVERRIDE_ENV, "").strip()
     if override:
@@ -207,12 +208,12 @@ def resolve_git(environ: Mapping[str, str] | None = None) -> GitExecutable:
         if candidate is None:
             raise GitUnavailableError(f"{GIT_OVERRIDE_ENV}={override!r} is not an executable")
         return GitExecutable(Path(candidate), "override")
-    bundled = bundled_git()
-    if bundled is not None:
-        return GitExecutable(bundled, "bundled", bundled_git_env(environ), BUNDLED_GIT_CLEARED_ENV)
     on_path = real_git_on_path(environ=environ)
     if on_path is not None:
         return GitExecutable(on_path, "path")
+    bundled = bundled_git()
+    if bundled is not None:
+        return GitExecutable(bundled, "bundled", bundled_git_env(environ), BUNDLED_GIT_CLEARED_ENV)
     raise GitUnavailableError(_unavailable_message(environ))
 
 
