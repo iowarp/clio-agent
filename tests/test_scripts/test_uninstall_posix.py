@@ -238,3 +238,86 @@ def test_purge_keeps_the_core_records_of_a_running_daemon(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stdout + result.stderr
     assert core.is_dir()
     assert "is running; kept" in result.stderr
+
+
+def _source_install_in_data(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    """A --source install: the clone lives in <agent data>/app beside the user's data."""
+    home = tmp_path / "home"
+    data = _agent_data(home)
+    prefix = data / "app"
+    (prefix / "clio-agent" / "src").mkdir(parents=True)
+    (prefix / "clio-agent" / "pyproject.toml").write_text("[project]\n")
+    (data / "services" / "host" / "searxng").mkdir(parents=True)
+    (data / "workspace" / "notes.md").parent.mkdir(parents=True)
+    (data / "workspace" / "notes.md").write_text("mine\n")
+    state = _host_state(home)
+    state.mkdir(parents=True)
+    (state / "clio-server.host.log").write_text("log\n")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "clio").write_text("#!/bin/sh\n")
+    env = _env(tmp_path)
+    env["CLIO_PREFIX"] = str(prefix)
+    return env, data, state
+
+
+def test_data_and_state_are_kept_without_purge_data(tmp_path: Path) -> None:
+    env, data, state = _source_install_in_data(tmp_path)
+
+    result = _uninstall(env, "--purge", "--purge-caches")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (data / "workspace" / "notes.md").is_file()
+    assert (data / "app" / "clio-agent" / "pyproject.toml").is_file()
+    assert "pass --purge-data to remove" in result.stdout
+    assert "Retained user data and unknown files" in result.stderr
+
+
+def test_purge_data_removes_the_data_and_state_roots(tmp_path: Path) -> None:
+    env, data, state = _source_install_in_data(tmp_path)
+
+    result = _uninstall(env, "--purge", "--purge-caches", "--purge-data")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not data.exists() and not state.exists()
+    assert "Retained user data" not in result.stderr
+    if sys.platform == "darwin":
+        assert not (tmp_path / "home" / "Library" / "Application Support" / "clio-agent").exists()
+
+
+def test_purge_data_keeps_everything_while_clio_core_runs(tmp_path: Path) -> None:
+    env, data, state = _source_install_in_data(tmp_path)
+    core = state / "core-hosts" / "host"
+    core.mkdir(parents=True)
+    (core / "clio-runtime.pid").write_text(str(os.getpid()))
+
+    result = _uninstall(env, "--purge-data")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (data / "workspace" / "notes.md").is_file() and core.is_dir()
+    assert "is running; kept" in result.stderr
+
+
+def test_purge_data_refuses_a_custom_data_root(tmp_path: Path) -> None:
+    _installed(tmp_path)
+    mine = tmp_path / "research"
+    mine.mkdir()
+
+    result = _uninstall(_env(tmp_path, CLIO_AGENT_DATA_DIR=str(mine)), "--purge-data")
+
+    assert result.returncode == 2
+    assert "Refusing to purge a custom data or state root" in result.stderr
+    assert mine.is_dir()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="CLIO Desktop removal is macOS-only")
+def test_purge_data_with_desktop_removes_its_application_support(tmp_path: Path) -> None:
+    _installed(tmp_path)
+    app = tmp_path / "Applications" / "CLIO Desktop.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    support = tmp_path / "home" / "Library" / "Application Support" / "ai.iowarp.clio.desktop"
+    support.mkdir(parents=True)
+
+    result = _uninstall(_env(tmp_path, CLIO_DESKTOP_APP=str(app)), "--desktop", "--purge-data")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not app.exists() and not support.exists()

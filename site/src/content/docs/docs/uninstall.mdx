@@ -18,7 +18,8 @@ This stops the backend, removes the `clio` command, and deletes the install fold
 | `--yes` or `-y` | Skip the confirmation prompt. On Windows, use `-Yes`. |
 | `--purge` | Also delete CLIO's configuration folder, including stored credentials (see the caution below). On macOS and Linux it also removes clio-core's unedited default config in `~/.clio` and CLIO's performance stats there. It also removes the host-wide clio-core records in CLIO's state folder, unless that daemon is still running. On Windows, use `-Purge`. |
 | `--purge-caches` | macOS and Linux: also delete CLIO's cache folder (the document runtime, LibreOffice and tool caches, about 2 GB after first use). CLIO rebuilds it on the next launch. |
-| `--desktop` | macOS: also remove **CLIO Desktop.app** and its caches and logs. With `--purge`, also its settings folder. |
+| `--purge-data` | macOS and Linux: also delete CLIO's data and state folders: conversations, workspaces, memory, the clio-core store, service environments and a source install's clone. This cannot be undone. Kept while a clio-core daemon is still running. |
+| `--desktop` | macOS: also remove **CLIO Desktop.app** and its caches and logs. With `--purge` or `--purge-data`, also its own Application Support folder. |
 
 <Tabs syncKey="os">
 <TabItem label="macOS and Linux">
@@ -83,23 +84,29 @@ bash /tmp/clio-uninstall.sh --desktop --purge-caches
 ```
 
 Add `--purge` to also delete your CLIO settings and stored credentials, and the
-app's own settings folder `~/Library/Application Support/ai.iowarp.clio.desktop`.
+app's own folder `~/Library/Application Support/ai.iowarp.clio.desktop`. To leave
+nothing behind, quit CLIO and run:
+
+```sh
+bash /tmp/clio-uninstall.sh --desktop --purge --purge-caches --purge-data
+```
 
 ## What stays behind
 
 <Aside type="caution">
 `--purge` removes CLIO's configuration folder, which holds saved API keys and settings
 (`~/Library/Application Support/clio-agent/config` on macOS, `~/.config/clio-agent` on
-Linux). Sessions and other data under the data folder are kept.
+Linux). Sessions and other data under the data folder are kept unless you also pass
+`--purge-data`, which deletes them for good.
 </Aside>
 
 Delete these yourself if you want a completely clean machine:
 
 - **Your user configuration folder** on macOS and Windows, which holds sessions, saved API keys, installed marketplaces and plugins, your saved agents, and settings:
-  - macOS: `~/Library/Application Support/clio-agent`
+  - macOS: `~/Library/Application Support/clio-agent` (`--purge --purge-data` removes it)
   - Windows: `%LOCALAPPDATA%\clio-agent`
   - If you set `CLIO_USER_DIR`, delete that folder.
-- **Cache and data folders** that CLIO keeps beside the configuration folder, such as `~/.cache/clio-agent` and `~/.local/share/clio-agent` on Linux, and `~/Library/Caches/clio-agent` on macOS. The cache is safe to delete; `--purge-caches` removes it.
+- **Cache and data folders** that CLIO keeps beside the configuration folder, such as `~/.cache/clio-agent` and `~/.local/share/clio-agent` on Linux, and `~/Library/Caches/clio-agent` on macOS. The cache is safe to delete; `--purge-caches` removes it, and `--purge-data` removes the data and state folders.
 - **Workspace `.clio` folders.** Each workspace you used has one in its root, with that workspace's sessions and settings. Uninstall never touches them.
 - **clio-kit**, the tool launcher the install script added through uv. Remove it with `uv tool uninstall clio-kit`.
 - **The desktop app.** Uninstall it the usual way for your system, such as Apps and features on Windows, or your package manager on Linux. On macOS, see [Remove the desktop app on macOS](#remove-the-desktop-app-on-macos). It is separate from the command-line install.

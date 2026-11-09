@@ -216,7 +216,9 @@ existing checkout is never erased automatically. Uninstall retains Agent data,
 state, and unknown files. `--purge` / `-Purge` additionally removes the resolved
 Agent config directory, including saved credentials; custom config roots require
 explicit manual removal. `--purge-caches` (POSIX) removes the resolved Agent cache
-root, and `--desktop` (macOS) removes CLIO Desktop.app and its caches and logs.
+root, `--purge-data` (POSIX) removes the resolved Agent data and state roots (refusing
+custom roots, and keeping them while a clio-core daemon runs), and `--desktop` (macOS)
+removes CLIO Desktop.app and its caches and logs.
 
 The public Agent CI needs a `CLIO_NAMESPACES_READ_TOKEN` repository secret with
 read-only Contents access to the private `iowarp/clio-namespaces` repository.

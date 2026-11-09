@@ -12,12 +12,19 @@
 #     --purge-caches  also remove the Agent cache root (document runtime, LibreOffice,
 #                     tool caches; macOS: ~/Library/Caches/clio-agent). It is rebuilt
 #                     on the next launch.
+#     --purge-data    also remove the Agent data and state roots: conversations,
+#                     workspaces, memory, the clio-core store, service environments
+#                     and a source install's clone. This cannot be undone.
 #     --desktop       macOS: also remove CLIO Desktop.app from ~/Applications and
-#                     /Applications plus its caches and logs (with --purge, also its
-#                     Application Support folder). Quit the app first.
+#                     /Applications plus its caches and logs (with --purge or
+#                     --purge-data, also its Application Support folder). Quit the app
+#                     first.
+#
+#   Remove everything:  --purge --purge-caches --purge-data (and --desktop on macOS)
 #
 #   Environment overrides (must match the install):
-#     CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
+#     CLIO_PREFIX   install root      (default: <agent data>/app, as install.sh; macOS:
+#                   ~/Library/Application Support/clio-agent/data/app)
 #     CLIO_PORT     server port       (default: gact.port in config.yaml, else 17800)
 #     CLIO_BIN_DIR  launcher location (default: $HOME/.local/bin)
 #     CLIO_DESKTOP_APP  the one Desktop app bundle --desktop removes
@@ -69,6 +76,7 @@ if [[ -x "$AGENT_PYTHON" ]]; then
   resolved_config="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>/dev/null)" && CLIO_CONFIG="$resolved_config"
   resolved_cache="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_cache_dir; print(user_cache_dir())' 2>/dev/null)" && CLIO_CACHE="$resolved_cache"
   resolved_host_state="$("$AGENT_PYTHON" -c 'from clio_agent.paths import host_state_dir; print(host_state_dir())' 2>/dev/null)" && CLIO_HOST_STATE="$resolved_host_state"
+  resolved_data="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_data_dir; print(user_data_dir())' 2>/dev/null)" && agent_data="$resolved_data"
   # The server listens on gact.port from CLIO's config.yaml when one is set.
   resolved_port="$("$AGENT_PYTHON" -m clio_agent.server_port 2>/dev/null)" && [[ -n "$resolved_port" ]] && CLIO_PORT="$resolved_port"
 fi
@@ -83,14 +91,16 @@ LAUNCHER="$CLIO_BIN_DIR/clio"
 ASSUME_YES=0
 PURGE=0
 PURGE_CACHES=0
+PURGE_DATA=0
 DESKTOP=0
 for arg in "$@"; do
   case "$arg" in
     --yes|-y)       ASSUME_YES=1 ;;
     --purge)        PURGE=1 ;;
     --purge-caches) PURGE_CACHES=1 ;;
+    --purge-data)   PURGE_DATA=1 ;;
     --desktop)      DESKTOP=1 ;;
-    *) echo "uninstall: unknown flag '$arg' (want --yes, --purge, --purge-caches, --desktop)" >&2; exit 2 ;;
+    *) echo "uninstall: unknown flag '$arg' (want --yes, --purge, --purge-caches, --purge-data, --desktop)" >&2; exit 2 ;;
   esac
 done
 
@@ -105,6 +115,20 @@ if [[ "$PURGE_CACHES" -eq 1 ]]; then
     /*/clio-agent|/*/clio-agent/cache) ;;
     *) echo "Refusing to purge a custom cache root: $CLIO_CACHE. Remove its contents explicitly after review." >&2; exit 2 ;;
   esac
+fi
+# Without an installed Agent to ask, CLIO_STATE is still the legacy prefix; the
+# state root is then the platform's (the host-wide one, by default the same folder).
+data_state="$CLIO_STATE"
+[[ "$data_state" != "$CLIO_PREFIX" ]] || data_state="$CLIO_HOST_STATE"
+PURGE_DATA_DIRS=()
+if [[ "$PURGE_DATA" -eq 1 ]]; then
+  for dir in "$agent_data" "$data_state"; do
+    case "$dir" in
+      /*/clio-agent|/*/clio-agent/data|/*/clio-agent/state) ;;
+      *) echo "Refusing to purge a custom data or state root: $dir. Remove it explicitly after review." >&2; exit 2 ;;
+    esac
+    PURGE_DATA_DIRS+=("$dir")
+  done
 fi
 
 # CLIO Desktop (macOS): the app bundle and the folders macOS keeps under its
@@ -134,7 +158,9 @@ if [[ "$DESKTOP" -eq 1 ]]; then
     "$HOME/Library/Logs/$DESKTOP_ID"
     "$HOME/Library/WebKit/$DESKTOP_ID"
   )
-  [[ "$PURGE" -eq 1 ]] && DESKTOP_DIRS+=("$HOME/Library/Application Support/$DESKTOP_ID")
+  if [[ "$PURGE" -eq 1 || "$PURGE_DATA" -eq 1 ]]; then
+    DESKTOP_DIRS+=("$HOME/Library/Application Support/$DESKTOP_ID")
+  fi
 fi
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RESET='\033[0m'
@@ -157,6 +183,13 @@ if [[ "$PURGE_CACHES" -eq 1 ]]; then
   echo "  clio caches:     $CLIO_CACHE  (--purge-caches)"
 else
   echo "  clio caches:     $CLIO_CACHE  (KEPT — pass --purge-caches to remove)"
+fi
+if [[ "$PURGE_DATA" -eq 1 ]]; then
+  for dir in "${PURGE_DATA_DIRS[@]}"; do
+    echo "  clio data:       $dir  (--purge-data: conversations, workspaces, memory)"
+  done
+else
+  echo "  clio data:       $agent_data  (KEPT — pass --purge-data to remove)"
 fi
 for app in ${DESKTOP_APPS[@]+"${DESKTOP_APPS[@]}"}; do
   [[ -d "$app" ]] && echo "  desktop app:     $app"
@@ -246,18 +279,27 @@ purge_core_seed() {
 }
 # The host-wide Core supervision records (lock, log, client registry), shared by
 # the CLI and Desktop. Kept while a clio-core daemon still runs.
-purge_host_state() {
-  local core="$CLIO_HOST_STATE/core-hosts"
-  [[ -d "$core" ]] || return 0
+# Print the pid of a live clio-core daemon recorded under the host state, if any.
+core_daemon_pid() {
   local pidfile pid
-  for pidfile in "$core"/*/clio-runtime.pid; do
+  for pidfile in "$CLIO_HOST_STATE"/core-hosts/*/clio-runtime.pid; do
     [[ -f "$pidfile" ]] || continue
     pid="$(cat "$pidfile" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      warn "The clio-core daemon (pid $pid) is running; kept $core."
+      echo "$pid"
       return 0
     fi
   done
+  return 1
+}
+purge_host_state() {
+  local core="$CLIO_HOST_STATE/core-hosts"
+  [[ -d "$core" ]] || return 0
+  local pid
+  if pid="$(core_daemon_pid)"; then
+    warn "The clio-core daemon (pid $pid) is running; kept $core."
+    return 0
+  fi
   say "Removing $core"
   rm -rf -- "$core"
   rmdir -- "$CLIO_HOST_STATE" 2>/dev/null || true
@@ -265,6 +307,21 @@ purge_host_state() {
   local parent
   parent="$(dirname "$CLIO_HOST_STATE")"
   if [[ "$(basename "$parent")" == clio-agent ]]; then rmdir -- "$parent" 2>/dev/null || true; fi
+}
+# --purge-data: the data and state roots, never while clio-core still has its store open.
+purge_data() {
+  local pid dir parent
+  if pid="$(core_daemon_pid)"; then
+    warn "The clio-core daemon (pid $pid) is running; kept ${PURGE_DATA_DIRS[*]}."
+    return 0
+  fi
+  for dir in "${PURGE_DATA_DIRS[@]}"; do
+    [[ -d "$dir" ]] || continue
+    say "Removing $dir"
+    rm -rf -- "$dir"
+    parent="$(dirname "$dir")"
+    if [[ "$(basename "$parent")" == clio-agent ]]; then rmdir -- "$parent" 2>/dev/null || true; fi
+  done
 }
 
 
@@ -281,13 +338,16 @@ if [[ -d "$CLIO_PREFIX" ]]; then
   rm -rf -- "$CLIO_PREFIX/clio-agent/.venv" "$CLIO_PREFIX/clio-agent/web"
   rm -f -- "$CLIO_PREFIX/gact" "$CLIO_PREFIX/uninstall.sh" "$CLIO_PREFIX/libexec/clio"
   rmdir -- "$CLIO_PREFIX/libexec" "$CLIO_PREFIX/clio-agent" "$CLIO_PREFIX" 2>/dev/null || true
-  [[ ! -d "$CLIO_PREFIX" ]] || warn "Retained user data and unknown files in $CLIO_PREFIX."
+  if [[ -d "$CLIO_PREFIX" && ! ( "$PURGE_DATA" -eq 1 && "$CLIO_PREFIX" == "$agent_data"/* ) ]]; then
+    warn "Retained user data and unknown files in $CLIO_PREFIX."
+  fi
 fi
 if [[ "$PURGE" -eq 1 ]]; then
   [[ -d "$CLIO_CONFIG" ]] && { say "Removing $CLIO_CONFIG"; rm -rf "$CLIO_CONFIG"; }
   # gact is a separate product; its configuration is retained.
   purge_host_state
 fi
+if [[ "$PURGE_DATA" -eq 1 ]]; then purge_data; fi
 if [[ "$PURGE_CACHES" -eq 1 && -d "$CLIO_CACHE" ]]; then
   say "Removing $CLIO_CACHE"
   rm -rf -- "$CLIO_CACHE"
