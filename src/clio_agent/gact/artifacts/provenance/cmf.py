@@ -21,7 +21,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -190,7 +189,9 @@ def _resolve_python(configured: str) -> str:
         # context and therefore its site-packages (including cmflib).  Keep the
         # configured executable path while still making a relative path absolute.
         return str(path.absolute())
-    return shutil.which(value) or ""
+    from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+
+    return real_which(value) or ""
 
 
 def resolve_local_worker_command(configured: str, *, platform: str = sys.platform) -> list[str]:

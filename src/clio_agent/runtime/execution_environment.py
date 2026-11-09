@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shlex
 import shutil
@@ -86,6 +87,7 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
     environment.update(_clio_tools(environment))
+    environment.update(_without_command_line_tools_stubs(environment))
     path = environment.get("PATH", os.environ.get("PATH", ""))
     if shutil.which("gh", path=path):
         return environment
@@ -122,6 +124,41 @@ def _clio_tools(environment: dict[str, str]) -> dict[str, str]:
     if "UV_CACHE_DIR" not in environment and environment.get("TMPDIR"):
         tools["UV_CACHE_DIR"] = str(Path(environment["TMPDIR"]) / "uv-cache")
     return tools
+
+
+def _without_command_line_tools_stubs(environment: dict[str, str]) -> dict[str, str]:
+    """On a Mac without the Command Line Tools, keep shells away from their stubs.
+
+    ``python3`` there is ``/usr/bin/python3``, a stub that opens the "Install Command
+    Line Developer Tools" dialog; it answers with CLIO's Python instead. uv patches
+    each Python it downloads with ``install_name_tool``, another stub; the stand-in
+    fails, so uv warns and keeps the interpreter unpatched.
+    """
+    from clio_agent.runtime.macos_clt import is_command_line_tools_stub  # noqa: PLC0415
+
+    path = environment.get("PATH", os.environ.get("PATH", ""))
+    found = shutil.which("python3", path=path)
+    if found is None or not is_command_line_tools_stub(found):
+        return {}
+    from clio_agent import paths  # noqa: PLC0415
+
+    python = environment.get("CLIO_PYTHON") or sys.executable
+    digest = hashlib.sha256(python.encode("utf-8")).hexdigest()[:16]
+    tools = paths.user_cache_dir() / "clt-free-bin" / digest
+    if not (tools / "install_name_tool").is_file():
+        tools.mkdir(parents=True, exist_ok=True)
+        _wrapper(tools / "python3", [python])
+        (tools / "install_name_tool").write_text(
+            "#!/bin/sh\necho 'clio: install_name_tool needs the Command Line Tools;"
+            " the library is left as it is' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        (tools / "install_name_tool").chmod(0o755)
+    prefix = environment.get("CLIO_EXECUTION_PATH", "")
+    return {
+        "PATH": os.pathsep.join(item for item in (str(tools), path) if item),
+        "CLIO_EXECUTION_PATH": os.pathsep.join(item for item in (str(tools), prefix) if item),
+    }
 
 
 def _session_temp(session_id: str | None) -> dict[str, str]:

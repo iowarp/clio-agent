@@ -570,7 +570,10 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             )
         # Prefer the packaged module so an ambient shim cannot replace it.
         bundled = dmr.bundled_module_launcher(spec.command, spec.args) if spec.command else None
-        resolved = bundled[0] if bundled is not None else shutil.which(spec.command)
+        from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+
+        # A Command Line Tools stub (macOS ``/usr/bin/python3``) is not a launcher.
+        resolved = bundled[0] if bundled is not None else real_which(spec.command)
         resolved_args = list(spec.args)
         launcher_env: dict[str, str] = {}
         if bundled is not None:

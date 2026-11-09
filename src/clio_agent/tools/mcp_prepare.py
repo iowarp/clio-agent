@@ -411,8 +411,6 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
             stopped making progress.
     """
 
-    import shutil  # noqa: PLC0415
-
     from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
         acquire_launcher_cache_lock,
         uses_shared_launcher_cache,
@@ -422,7 +420,9 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
 
     if getattr(spec, "transport", "") != "stdio" or not getattr(spec, "command", ""):
         return PROVISION_NOT_APPLICABLE
-    resolved = shutil.which(str(spec.command))
+    from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+
+    resolved = real_which(str(spec.command))
     if not resolved:
         raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
     plan = provision_plan(spec, resolved)
