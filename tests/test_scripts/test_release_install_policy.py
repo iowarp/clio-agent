@@ -380,6 +380,16 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     stage_step = bundles[stage_idx:stage_end_idx]
     assert "-iname '*.sig'" in stage_step
     assert "-name '*.app.tar.gz'" in stage_step
+    assert "-name '*.app.aar'" in stage_step
+    assert 'base="${base%.app.aar}-bundled.app.aar"' in stage_step
+    assert "scripts/release_install_plan.py" in stage_step
+    assert "install-plan.${{ matrix.target }}.bundled.txt" in stage_step
+    plan_idx = stage_step.index("release_install_plan.py")
+    assert plan_idx < stage_step.index("SHA256SUMS.${{ matrix.target }}")  # sums cover the plan
+    # The archive is made from the stapled app and verified like the updater payload.
+    archive_idx = bundles.index("name: Archive the stapled macOS app")
+    assert bundles.index("name: Notarize and staple the macOS DMG") < archive_idx
+    assert archive_idx < bundles.index("name: Verify macOS release signatures") < stage_idx
     assert "-maxdepth 2 -type f" in stage_step  # never sweep deb work files or runtime internals
     assert "find \"$stage\" -type f -name '*-bundled.*' ! -name '*.sig' -print0" in stage_step
     assert 'base="${base//$tauri_version/$release_version}"' in stage_step
