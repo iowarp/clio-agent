@@ -331,6 +331,77 @@ Scratch `CLIO_DESKTOP_DIR`, isolated `HOME`, v0.9.5.1 (chart: `before-after.png`
   `.tar.gz` and saves only the copy.
 - **Windows**: not measured; its behaviour is unchanged.
 
+### Launch after install
+
+The `.aar` doesn't change the first launch. Measured with `scripts/smoke_desktop_package.py
+--quit`, alternating DMG and `.aar` installs. Each run used its own `HOME`, `TMPDIR` and
+`CLIO_DESKTOP_DIR`, with `--agent-home` pointing at the data that install's prepare wrote.
+"Ready" is launch to an authenticated `/v1/health` with clio-core attached and ARC ready.
+"Quit" is the time from quit to the whole process tree exiting. Each launch attached its own
+private clio-core; no other CLIO's core ran during a run.
+
+**Same app on disk.** The DMG install (`ditto`) and `aa extract` produce identical trees:
+33,548 entries with matching mode, size, symlink target, flags, owner and mtime. Both carry
+only `com.apple.provenance` xattrs, with no `com.apple.quarantine`. `CodeResources` is
+byte-identical, and `codesign --verify --deep --strict` passes on both (2.6 s each). `spctl`
+gives the same verdict for both: it rejects v0.9.5.1 because the release is ad-hoc signed
+(`flags=adhoc,runtime`), and #1978's Developer ID build replaces that. With no quarantine
+attribute there's no Gatekeeper first-launch scan. syspolicyd and amfid logged no assessments
+in the launch window, so library validation costs the same for both.
+
+**v0.9.5.1 with #1966's runtime fixes** (4dbb7e16d, a307eb71c and 3f12cb7d3 applied to the
+bundled `clio_agent`, then re-signed ad hoc). SearXNG syncs against CLIO's own Python with
+`--no-python-downloads`. A 0.2 s process sampler saw no `/usr/bin` developer-tool stub during
+these launches. The bare `python3 -c` helpers resolve to the bundled interpreter, because
+`local_environment()` puts it first on `PATH`.
+
+| Run | first: ready / quit (s) | second: ready / quit (s) |
+|---|---|---|
+| 5 DMG | 11.4 / 4.5 | 12.5 / 4.4 |
+| 6 `.aar` | 12.0 / 3.9 | 12.1 / 4.0 |
+| 7 `.aar` | 11.4 / 3.9 | 13.3 / 4.8 |
+| 8 DMG | harness failure¹ | 13.3 / 5.2 |
+| 9 DMG | 12.9 / 4.4 | 12.1 / 4.0 |
+| 10 `.aar` | 12.5 / 4.6 | 13.0 / 4.0 |
+
+Medians: DMG first 12.2 s, second 12.5 s; `.aar` first 12.0 s, second 13.0 s. Runs 9 and 10
+were sampled the same way, with no stub, no CPython download and no new CLT dialog, and no
+clio-core left running after any quit.
+
+¹ The smoke script read `cmdline()` of a short-lived helper macOS wouldn't expose and stopped
+with `psutil.AccessDenied`. The Desktop log shows that launch reused the prepared runtime and
+reached ready. Fixed in 5d448d3d5: an unreadable descendant is skipped, since it can't be the
+backend.
+
+**v0.9.5.1 as released.** Labelled separately: on each first launch, SearXNG's
+`uv sync --python 3.12` downloaded a CPython 3.12 into the service cache. That raised the
+user's "command line developer tools" dialogs for `python3` and `install_name_tool`. #1966
+fixes this.
+
+| Run | first: ready / quit (s) | second: ready / quit (s) |
+|---|---|---|
+| 1 DMG | 12.4 / 3.9 | 12.9 / 3.0 |
+| 2 `.aar` | 12.1 / 3.7 | 12.7 / 4.1 |
+| 3 `.aar` | 12.1 / 3.7 | 12.4 / 4.3 |
+| 4 DMG | 12.9 / 4.0 | 13.3 / 5.3 |
+
+- **Ready is about 11.4–13.3 s for both formats**, first or second launch. The spread within
+  a format is wider than the gap between formats. A second launch isn't faster because
+  prepare has already done the one-time work; the 12 s is backend start, clio-core attach and
+  ARC.
+- **Install-time prepare is what keeps the first launch clean.** Launched without
+  `--agent-home` (an empty agent home, as CI did before), "ready" still came at 14.8 s (`.aar`)
+  and 11.8 s (DMG). But the first-run setup (about 1.8 GB: LibreOffice, gh, Python document
+  packages, pnpm) kept running after ready, so quit took 42.6 s and 39.4 s. The ready metric
+  misses this; quit exposes it. A quit budget (warm quits are 3.0–5.3 s) would catch a prepare
+  that silently stopped running at install time. Not added yet, because Linux quit times
+  aren't measured.
+- **CI** (3db792f8a): the macOS `desktop-install` job now launches the app it just installed,
+  first and second, with `--agent-home` pointing at that install's prepared data, and
+  `check_budgets.py --desktop` holds it to the 60 s `backend_ready_seconds` budget. The macOS
+  launches in the release `desktop` job get the same `--agent-home`. Before this, they
+  measured a cold home and redid the whole prepare.
+
 ## Side findings
 
 - During `--prepare-runtime` with an isolated `HOME`, the store migration reported
@@ -345,3 +416,18 @@ Scratch `CLIO_DESKTOP_DIR`, isolated `HOME`, v0.9.5.1 (chart: `before-after.png`
   release.
 - On npm, `HEAD` returns no `Content-Length`, so the plan generator now reads the size from
   a one-byte range request.
+- **One Desktop per machine.** tauri-plugin-single-instance binds a socket hard-coded to
+  `/tmp/ai_iowarp_clio_desktop_si.sock` (the identifier, not `HOME`, `TMPDIR` or the install
+  folder, because of the 104-byte socket path limit). A second Desktop, even a scratch install
+  with its own `HOME`, focuses the running one and exits 0 with an empty log. Side-by-side
+  installs and parallel launch tests are impossible: these measurements had to stop the user's
+  CLIO and take turns with other sessions. A per-install identifier, or a socket under the
+  install's own data folder, would fix it.
+- `smoke_desktop_package.py --quit` counts clio-core processes started after launch across
+  the whole host, so another session's cores show up as `clio_core_left_running`. That
+  happened once here: 4 cores from a concurrent test run. It should count only the launched
+  tree's descendants.
+- Measuring this caused the user's "command line developer tools" dialogs: an early timing
+  loop ran a bare `python3` and an `xcrun stapler` loop, both of which resolve to CLT stubs on a
+  Mac without Xcode tools. The measurement scripts now use absolute interpreters and
+  `date +%s`. The `install.sh` desktop path calls no stub.
