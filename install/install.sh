@@ -394,8 +394,56 @@ if ! have uv; then
     || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
   export PATH="$BIN_DIR:$PATH"
 fi
+
+# A fresh Mac's /usr/bin/git is a placeholder: running it opens the "Install Command
+# Line Developer Tools" dialog. Decided from the filesystem, never by running it.
+macos_git_placeholder() {
+  local developer link
+  [ "$OS" = darwin ] || return 1
+  [ "$1" = /usr/bin/git ] || return 1
+  link="$(readlink /var/db/xcode_select_link 2>/dev/null || true)"
+  for developer in "${DEVELOPER_DIR:-}" "$link" /Applications/Xcode.app/Contents/Developer \
+      /Library/Developer/CommandLineTools; do
+    [ -n "$developer" ] && [ -f "$developer/usr/bin/git" ] && return 1
+  done
+  return 0
+}
+
+# The git --source uses, as CLIO resolves it (runtime/git_executable.py): CLIO_GIT, a
+# real git on PATH, else the git bundled with an installed CLIO Desktop.
+source_git() {
+  local candidate app
+  if [ -n "${CLIO_GIT:-}" ]; then
+    [ -x "$CLIO_GIT" ] && printf '%s' "$CLIO_GIT"
+    return
+  fi
+  candidate="$(command -v git 2>/dev/null || true)"
+  if [ -n "$candidate" ] && ! macos_git_placeholder "$candidate"; then
+    printf '%s' "$candidate"
+    return
+  fi
+  for app in "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app" "/Applications/CLIO Desktop.app"; do
+    candidate="$app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return; }
+  done
+}
+
 if [ "$OPT_SOURCE" = 1 ]; then
-  have git || die "git is required for --source"
+  SOURCE_GIT="$(source_git)"
+  if [ -z "$SOURCE_GIT" ]; then
+    [ "$OS" = darwin ] \
+      && die "git is required for --source. This Mac has none (/usr/bin/git only offers the Command Line Tools). Install CLIO Desktop first (install.sh --desktop), whose git --source uses, or the Command Line Tools (xcode-select --install), or set CLIO_GIT"
+    die "git is required for --source"
+  fi
+  if [ "$SOURCE_GIT" != "$(command -v git 2>/dev/null || true)" ]; then
+    # This script's git calls and uv's (the git-pinned dependencies) find this git
+    # first on PATH; a bundled one must not use another git's helpers.
+    git_shim="$(mktemp -d "${TMPDIR:-/tmp}/clio-git.XXXXXXXX")"
+    printf '#!/bin/sh\nunset GIT_EXEC_PATH\nexec "%s" "$@"\n' "$SOURCE_GIT" > "$git_shim/git"
+    chmod +x "$git_shim/git"
+    export PATH="$git_shim:$PATH"
+    say "Using git: $SOURCE_GIT"
+  fi
 fi
 
 # The checkout this script runs from, when it runs from one (not when streamed).
@@ -499,7 +547,10 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
 
 # Release installs carry Web; source installs provide the service without a frontend build.
 # The legacy TUI is frozen and unsupported. Do not build or download it here.
-on_exit() { [ -z "${lockdir:-}" ] || rm -rf "$lockdir"; }
+on_exit() {
+  [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
+  [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
+}
 trap on_exit EXIT
 
 # ---------- install clio-agent ----------------------------------------

@@ -172,6 +172,9 @@ your workspaces are not affected.
   verify, checks the app signature once, and accepts `--desktop-package` for a
   local test DMG. `uninstall.sh` removes `libexec/clio` and, with `--purge-caches`,
   CLIO's caches.
+- `install.sh --source` never runs the macOS `/usr/bin/git` placeholder. It uses
+  `CLIO_GIT`, a real git, or the git bundled with an installed CLIO Desktop, and says
+  what to install when there is none.
 
 - Windows protected execution qualifies on machines with a mapped network drive
   or the OpenAI Codex app installed. The bundled Codex runtime moves to 0.167.0, and

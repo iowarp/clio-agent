@@ -385,7 +385,7 @@ fi""",
         "codesign": 'echo "codesign $*" >> "$TEST_CALLS"',
         "plutil": "echo 0.9.6-test",
         "curl": 'echo "curl $*" >> "$TEST_CALLS"; exit 99',
-        }
+    }
     for name, contents in commands.items():
         path = bin_dir / name
         path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
@@ -472,3 +472,75 @@ def test_release_desktop_install_keeps_its_plain_copy() -> None:
     source = (ROOT / "install/install.sh").read_text()
     release = source.split("install_desktop() {", 1)[1].split("\n}\n", 1)[0]
     assert 'install_desktop_mac "$scratch" "$scratch/$asset"\n' in release
+
+
+def _git_functions() -> str:
+    """install.sh's --source git resolution, without the rest."""
+    script = (ROOT / "install/install.sh").read_text(encoding="utf-8")
+    blocks, keep = [], False
+    for line in script.splitlines():
+        if line.startswith(("macos_git_placeholder()", "source_git()")):
+            keep = True
+        if keep:
+            blocks.append(line)
+            if line == "}":
+                keep = False
+    return "\n".join(blocks)
+
+
+def _source_git(tmp_path: Path, env: dict[str, str], call: str = "source_git") -> str:
+    result = subprocess.run(
+        ["/bin/bash", "-c", "OS=darwin\n" + _git_functions() + f"\n{call}"],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        env={"HOME": str(tmp_path), **env},
+    )
+    return result.stdout if call == "source_git" else str(result.returncode)
+
+
+def _executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_source_git_prefers_clio_git_then_a_real_git_then_the_desktops(tmp_path: Path) -> None:
+    """--source never runs the macOS /usr/bin/git placeholder (CLT dialog); git is not run."""
+    chosen = _executable(tmp_path / "chosen/git")
+    on_path = _executable(tmp_path / "bin/git")
+    bundled = _executable(
+        tmp_path / "Apps/CLIO Desktop.app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
+    )
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    apps = {"CLIO_DESKTOP_DIR": str(tmp_path / "Apps")}
+    assert _source_git(tmp_path, {"CLIO_GIT": str(chosen), "PATH": str(on_path.parent)}) == str(
+        chosen
+    )
+    assert _source_git(tmp_path, {"PATH": str(on_path.parent), **apps}) == str(on_path)
+    assert _source_git(tmp_path, {"PATH": str(empty), **apps}) == str(bundled)
+    assert _source_git(tmp_path, {"PATH": str(empty)}) == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_usr_bin_git_counts_as_real_once_developer_tools_provide_it(tmp_path: Path) -> None:
+    developer = tmp_path / "Developer"
+    _executable(developer / "usr/bin/git")
+    check = "macos_git_placeholder /usr/bin/git"
+    assert _source_git(tmp_path, {"DEVELOPER_DIR": str(developer)}, check) == "1"
+    assert _source_git(tmp_path, {}, "macos_git_placeholder /opt/homebrew/bin/git") == "1"
+    no_tools = (
+        not any(
+            Path(d, "usr/bin/git").is_file()
+            for d in (
+                "/Applications/Xcode.app/Contents/Developer",
+                "/Library/Developer/CommandLineTools",
+            )
+        )
+        and not Path("/var/db/xcode_select_link").exists()
+    )
+    if no_tools:
+        assert _source_git(tmp_path, {}, check) == "0"
