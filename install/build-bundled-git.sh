@@ -77,6 +77,27 @@ fi
 log() { echo "[build-bundled-git] $*"; }
 die() { echo "build-bundled-git: $*" >&2; exit 1; }
 
+# Decide from the filesystem: on a Mac without developer tools, /usr/bin/make, cc,
+# strip, otool and xcode-select are placeholders whose first run opens the
+# "Install Command Line Developer Tools" dialog. Never run one.
+has_developer_tools() {
+  [ -n "${DEVELOPER_DIR:-}" ] || [ -e /var/db/xcode_select_link ] \
+    || [ -x /Library/Developer/CommandLineTools/usr/bin/otool ] \
+    || [ -d /Applications/Xcode.app/Contents/Developer ]
+}
+is_placeholder() {
+  [ "$OS" = "Darwin" ] && ! has_developer_tools \
+    && [ "$(command -v "$1" 2>/dev/null)" = "/usr/bin/$1" ]
+}
+for tool in "$MAKE" "${CC:-cc}"; do
+  ! is_placeholder "$tool" \
+    || die "$tool is the macOS developer-tools placeholder; set MAKE and CC to a real toolchain"
+done
+if [ -n "$STRIP" ] && is_placeholder "$STRIP"; then
+  log "skipping strip: $STRIP is the macOS developer-tools placeholder"
+  STRIP=""
+fi
+
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -307,7 +328,7 @@ if grep -Eq "not a git command|command not found" "$VERIFY/update.log"; then
   die "git submodule ran a command the bundled tree does not have"
 fi
 rm -rf "$VERIFY"
-if [ "$OS" = "Darwin" ] && command -v otool >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1; then
+if [ "$OS" = "Darwin" ] && command -v otool >/dev/null 2>&1 && has_developer_tools; then
   for bin in "${BINARIES[@]}"; do
     foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -v '^/usr/lib/' || true)"
     [ -z "$foreign" ] || die "$bin links outside /usr/lib: $foreign"
