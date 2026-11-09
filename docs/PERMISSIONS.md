@@ -342,16 +342,24 @@ See [SSH contract and qualification](verification/ssh-agent-execution-2026-10-19
 Child egress defaults to **ALLOW + RECORD**: every spawned child routes through one
 clio-owned CONNECT-only proxy (`runtime/net_chokepoint.py`), and each connection is
 recorded as a trace-only `net.egress` event and joined into provenance as a
-`used web:<domain>@<time>` ingest edge. On the legacy Codex tier the OS fence forces external traffic
-through the proxy; native MXC records external proxy enforcement and direct host
-loopback separately; on Landlock/floor tiers egress is proxy-ENV
+`used web:<domain>@<time>` ingest edge. On the legacy Codex tier (Linux and Windows)
+CLIO labels egress `proxy-enforced`; native MXC records external proxy enforcement and direct host
+loopback separately; on macOS Codex and on Landlock/floor tiers egress is proxy-ENV
 cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge label never
 claims enforcement the tier can't provide.
+
+On macOS the Codex write fence does not restrict network routes. Tools that honor
+`HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) go through CLIO's
+proxy and are recorded. A client that ignores those variables (raw `ssh`, raw sockets,
+some Node `fetch` clients) connects directly: that connection works but is not
+recorded.
 
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
 `network_egress` permission request (grant-on-first-domain). The `host_pattern`
-vocabulary scopes a domain grant.
+vocabulary scopes a domain grant. Deny mode is decided at CLIO's proxy, so on macOS
+(and other `env-cooperative` tiers) it cannot stop a client that ignores the proxy
+variables; treat it as a policy for cooperating tools, not a network barrier there.
 
 ### Local listeners
 
