@@ -45,6 +45,8 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 1
 fi
 set -euo pipefail
+# The PATH this person's shell gave us, before the installer prepends its own bin dir.
+CALLER_PATH="${PATH:-}"
 
 usage() { sed -n '2,25p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
@@ -907,7 +909,7 @@ case "$(basename "${SHELL:-}")" in
         completion_line="source <(clio completion bash)" ;;
   *)    shell_rc="" ;;
 esac
-case ":$PATH:" in
+case ":$CALLER_PATH:" in
   *":$BIN_DIR:"*) path_step="$BIN_DIR is already on your PATH." ;;
   *) if [ -n "$shell_rc" ]; then
        path_step="Add $BIN_DIR to your PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> \"$shell_rc\""

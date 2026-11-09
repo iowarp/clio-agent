@@ -197,3 +197,12 @@ def test_the_launcher_keeps_the_data_home_it_was_installed_for(
         assert f'export CLIO_AGENT_HOME="${{CLIO_AGENT_HOME:-{agent_home}}}"' in text
     else:
         assert "CLIO_AGENT_HOME" not in text
+
+
+def test_the_path_note_reads_the_callers_path_not_the_one_the_installer_extended() -> None:
+    # The installer prepends its bin dir to PATH for its own use; the finishing note
+    # must still tell someone whose shell lacks it to add it.
+    text = (ROOT / "install/install.sh").read_text()
+    captured = text.index('CALLER_PATH="${PATH:-}"')
+    assert captured < text.index('export PATH="$BIN_DIR:$PATH"')
+    assert 'case ":$CALLER_PATH:" in\n  *":$BIN_DIR:"*) path_step=' in text
