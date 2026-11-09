@@ -8,6 +8,7 @@
 #   Flags:
 #     --yes           skip the confirmation prompt (non-interactive)
 #     --purge         also remove Agent configuration (including stored credentials)
+#                     and clio-core's unedited ~/.clio seed and CLIO perf stats
 #     --purge-caches  also remove the Agent cache root (document runtime, LibreOffice,
 #                     tool caches; macOS: ~/Library/Caches/clio-agent). It is rebuilt
 #                     on the next launch.
@@ -182,6 +183,54 @@ fi
 if command -v pkill >/dev/null 2>&1; then
   pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?" 2>/dev/null || true
 fi
+
+# ---- clio-core's files in ~/.clio ------------------------------------
+# Importing iowarp_core seeds ~/.clio/clio.yaml, and older CLIO runtimes kept
+# clio-core's bdev perf stats in ~/.clio/bdev_perf. --purge removes the seed only
+# while it is byte-identical to a bundled default (an edited one is someone's
+# config), and only the perf files named after CLIO's own data paths. Find the
+# defaults now, before the payloads holding them are removed.
+CORE_HOME="$HOME/.clio"
+CORE_SEEDS=()
+core_seed_dirs=("$CLIO_PREFIX/clio-agent/.venv/lib")
+for app in ${DESKTOP_APPS[@]+"${DESKTOP_APPS[@]}"}; do
+  core_seed_dirs+=("$app/Contents/Resources/gact-runtime/python/lib")
+done
+for dir in "${core_seed_dirs[@]}"; do
+  for seed in "$dir"/python3*/site-packages/iowarp_core/data/clio_default.yaml; do
+    [[ -f "$seed" ]] && CORE_SEEDS+=("$seed")
+  done
+done
+# clio-core names a perf file after its bdev path with "/" and " " as "_".
+core_perf_name() { local name="${1//\//_}"; printf "%s_" "${name// /_}"; }
+core_perf_prefixes=(
+  "$(core_perf_name "$agent_data")"
+  "$(core_perf_name "$HOME/Library/Application Support/$DESKTOP_ID")"
+)
+
+purge_core_seed() {
+  [[ -d "$CORE_HOME" ]] || return 0
+  local seed perf prefix
+  if [[ -f "$CORE_HOME/clio.yaml" ]]; then
+    for seed in ${CORE_SEEDS[@]+"${CORE_SEEDS[@]}"}; do
+      if cmp -s "$seed" "$CORE_HOME/clio.yaml"; then
+        say "Removing clio-core default config $CORE_HOME/clio.yaml"
+        rm -f -- "$CORE_HOME/clio.yaml"
+        break
+      fi
+    done
+  fi
+  for perf in "$CORE_HOME"/bdev_perf/*.perf; do
+    [[ -f "$perf" ]] || continue
+    for prefix in "${core_perf_prefixes[@]}"; do
+      [[ "$(basename "$perf")" == "$prefix"* ]] && { rm -f -- "$perf"; break; }
+    done
+  done
+  rmdir -- "$CORE_HOME/bdev_perf" "$CORE_HOME" 2>/dev/null || true
+  [[ ! -d "$CORE_HOME" ]] || warn "Retained other clio-core files in $CORE_HOME."
+}
+# Compare against the seeds before the payloads holding them go.
+if [[ "$PURGE" -eq 1 ]]; then purge_core_seed; fi
 
 # ---- remove files ----------------------------------------------------
 if [[ -e "$LAUNCHER" ]]; then

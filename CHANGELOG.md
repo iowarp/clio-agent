@@ -171,7 +171,9 @@ your workspaces are not affected.
 - `install.sh --desktop` installs to `~/Applications` without a redundant DMG
   verify, checks the app signature once, and accepts `--desktop-package` for a
   local test DMG. `uninstall.sh` removes `libexec/clio` and, with `--purge-caches`,
-  CLIO's caches.
+  CLIO's caches. With `--purge` it also removes clio-core's unedited `~/.clio`
+  seed and CLIO's perf stats there; clio-core children now keep that state in
+  CLIO's runtime state directory (`CLIO_STORAGE_ROOT`).
 - `install.sh --source` never runs the macOS `/usr/bin/git` placeholder. It uses
   `CLIO_GIT`, a real git, or the git bundled with an installed CLIO Desktop, and says
   what to install when there is none.

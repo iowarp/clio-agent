@@ -201,6 +201,20 @@ def pin_loopback_bind(env: MutableMapping[str, str]) -> None:
         env[CORE_BIND_ADDR_ENV] = CORE_LOOPBACK_BIND_ADDR
 
 
+# clio-core keeps runtime state that the config does not name (bdev perf stats,
+# for one) under ``CLIO_STORAGE_ROOT``, which defaults to ~/.clio. Children get
+# this machine's runtime state directory instead, so the state stays with
+# CLIO's own data and is removed with it. An explicit value is respected.
+CORE_STORAGE_ROOT_ENV = "CLIO_STORAGE_ROOT"
+
+
+def pin_core_child_env(env: MutableMapping[str, str]) -> None:
+    """Prepare ``env`` for a clio-core child: loopback bind and a CLIO-owned storage root."""
+    pin_loopback_bind(env)
+    if not env.get(CORE_STORAGE_ROOT_ENV):
+        env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
+
+
 # The path suffix identifying a ram data tier (hand-authored or older configs; the
 # generated config has none) inside a clio-core ``compose`` block.
 _RAM_TIER_PATH_SUFFIX = "cte_ram_tier"

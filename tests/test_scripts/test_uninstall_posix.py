@@ -126,3 +126,58 @@ def test_desktop_flag_is_refused_off_macos(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "macOS" in result.stderr
+
+
+def _agent_data(home: Path) -> Path:
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "clio-agent" / "data"
+    return home / ".local" / "share" / "clio-agent"
+
+
+def _perf_name(path: Path) -> str:
+    return str(path).replace("/", "_").replace(" ", "_") + "_storage.bin_node0.perf"
+
+
+def _core_home(tmp_path: Path, seed: str) -> Path:
+    prefix = _installed(tmp_path)
+    data = prefix / "clio-agent" / ".venv" / "lib" / "python3.14" / "site-packages"
+    data = data / "iowarp_core" / "data"
+    data.mkdir(parents=True)
+    (data / "clio_default.yaml").write_text("# IOWarp Default Configuration\n")
+    core = tmp_path / "home" / ".clio"
+    (core / "bdev_perf").mkdir(parents=True)
+    (core / "clio.yaml").write_text(seed)
+    agent_data = _agent_data(tmp_path / "home")
+    (core / "bdev_perf" / _perf_name(agent_data / "cte" / "hosts" / "h")).write_text("x")
+    return core
+
+
+def test_purge_removes_clio_cores_unedited_seed_and_clio_perf_stats(tmp_path: Path) -> None:
+    core = _core_home(tmp_path, "# IOWarp Default Configuration\n")
+
+    result = _uninstall(_env(tmp_path), "--purge")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not core.exists(), sorted(p.name for p in core.rglob("*"))
+
+
+def test_purge_keeps_an_edited_clio_core_config_and_foreign_perf_stats(tmp_path: Path) -> None:
+    core = _core_home(tmp_path, "# someone's own clio-core config\n")
+    (core / "bdev_perf" / "_srv_scratch_storage.bin_node0.perf").write_text("x")
+
+    result = _uninstall(_env(tmp_path), "--purge")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (core / "clio.yaml").is_file()
+    assert [p.name for p in (core / "bdev_perf").iterdir()] == [
+        "_srv_scratch_storage.bin_node0.perf"
+    ]
+
+
+def test_without_purge_clio_core_files_are_kept(tmp_path: Path) -> None:
+    core = _core_home(tmp_path, "# IOWarp Default Configuration\n")
+
+    result = _uninstall(_env(tmp_path))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (core / "clio.yaml").is_file()
