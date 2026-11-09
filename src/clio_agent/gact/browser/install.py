@@ -160,19 +160,26 @@ _download: concurrent.futures.Future[Path] | None = None
 
 def _download_in_background(task: concurrent.futures.Future[Path]) -> None:
     global _download
+    found: Path | None = None
     error: BaseException | None = None
     try:
         found = ensure_chromium()
-    except BaseException as exc:  # noqa: BLE001 - handed to whoever waits on the task
+    except (BrowserError, ImportError, OSError, ValueError, subprocess.SubprocessError) as exc:
         error = exc
-    # Forget the task before completing it, so an action that sees it fail starts afresh.
-    with _DOWNLOAD_LOCK:
-        if _download is task:
-            _download = None
-    if error is not None:
-        task.set_exception(error)
-    else:
-        task.set_result(found)
+    finally:
+        # Forget the task before completing it, so an action that sees it fail starts afresh.
+        with _DOWNLOAD_LOCK:
+            if _download is task:
+                _download = None
+        if error is None and found is None:
+            # Anything else still propagates (the thread's excepthook); waiters get it typed.
+            error = BrowserError(
+                REASON_INSTALL_FAILED, "the Chromium download stopped unexpectedly"
+            )
+        if error is not None:
+            task.set_exception(error)
+        elif found is not None:
+            task.set_result(found)
 
 
 def chromium_for_action(wait_s: float) -> Path:
