@@ -11,6 +11,11 @@
 #   <out>/libexec/git-core/git               the only git binary
 #   <out>/libexec/git-core/git-remote-https  https transport (libcurl)
 #   <out>/libexec/git-core/git-remote-http   http transport (same program)
+#   <out>/libexec/git-core/git-submodule     `git submodule` (shell script, with
+#   <out>/libexec/git-core/git-sh-setup      the two shell libraries it sources)
+#   <out>/libexec/git-core/git-sh-i18n
+#   <out>/libexec/git-core/git-sh-i18n--envsubst  message helper git-sh-setup
+#                                            runs on every load
 #   <out>/etc/gitconfig                      includes the machine's /etc/gitconfig
 #   <out>/share/git-core/templates/          description + info/exclude, no hooks
 #
@@ -28,7 +33,9 @@
 # (GIT_SSL_CAINFO, set by the resolver).
 #
 # No Perl, Python, Tcl/Tk, gettext, docs, dashed built-ins, credential helpers,
-# git-shell or upload/receive-pack binaries: CLIO only clones and fetches. The
+# git-shell or upload/receive-pack binaries: CLIO clones, fetches and checks out
+# submodules (`install.sh --source`). git-submodule runs under /bin/sh and needs
+# sed, basename and uname on PATH (git puts its own exec-path first). The
 # machine's system config is included, so a credential helper or proxy configured
 # there (or in ~/.gitconfig, which git always reads) still applies.
 #
@@ -199,7 +206,10 @@ log "building git $GIT_VERSION"
 fetch "$GIT_URL" "$GIT_SHA256" "$WORK/git.tar.xz"
 tar -xJf "$WORK/git.tar.xz" -C "$WORK"
 SRC="$WORK/git-$GIT_VERSION"
-"$MAKE" -C "$SRC" -j"$JOBS" "${MAKE_FLAGS[@]}" git git-remote-http >"$WORK/git-build.log" 2>&1 || {
+SCRIPTS=(git-submodule git-sh-setup git-sh-i18n)
+"$MAKE" -C "$SRC" -j"$JOBS" "${MAKE_FLAGS[@]}" git git-remote-http git-sh-i18n--envsubst \
+  "${SCRIPTS[@]}" \
+  >"$WORK/git-build.log" 2>&1 || {
   tail -40 "$WORK/git-build.log" >&2
   die "git build failed (log: $WORK/git-build.log)"
 }
@@ -211,9 +221,16 @@ cp "$SRC/git" "$EXEC/git"
 # Separate copies, not links (see above): git runs git-remote-<scheme> by name.
 cp "$SRC/git-remote-http" "$EXEC/git-remote-https"
 cp "$SRC/git-remote-http" "$EXEC/git-remote-http"
+cp "$SRC/git-sh-i18n--envsubst" "$EXEC/git-sh-i18n--envsubst"
+for script in "${SCRIPTS[@]}"; do
+  cp "$SRC/$script" "$EXEC/$script"
+done
+# git-submodule is run; the two libraries are only sourced.
+chmod 0755 "$EXEC/git-submodule"
+chmod 0644 "$EXEC/git-sh-setup" "$EXEC/git-sh-i18n"
 cp "$SRC/templates/description" "$TEMPLATES/description"
 cp "$SRC/templates/info/exclude" "$TEMPLATES/info/exclude"
-BINARIES=("$EXEC/git" "$EXEC/git-remote-https" "$EXEC/git-remote-http")
+BINARIES=("$EXEC/git" "$EXEC/git-remote-https" "$EXEC/git-remote-http" "$EXEC/git-sh-i18n--envsubst")
 chmod 0755 "${BINARIES[@]}"
 chmod 0644 "$TEMPLATES/description" "$TEMPLATES/info/exclude"
 if [ -n "$STRIP" ]; then
@@ -253,6 +270,43 @@ case "$SYSTEM_INCLUDE" in
   file:*/etc/gitconfig$'\t'/etc/gitconfig) ;;
   *) die "unexpected system config: $SYSTEM_INCLUDE" ;;
 esac
+# git submodule (a shell script) must check out an https submodule from the
+# bundled tree with no other git on PATH (only the sed, basename and uname it
+# needs), and print no missing-command errors.
+VERIFY="$WORK/verify-submodule"
+SUBMODULE_URL="https://github.com/iowarp/clio-agent-marketplace.git"
+rm -rf "$VERIFY"
+mkdir -p "$VERIFY/tools" "$VERIFY/home"
+for tool in sed basename uname; do
+  ln -s "$(command -v "$tool")" "$VERIFY/tools/$tool"
+done
+in_verify() {
+  env -u GIT_EXEC_PATH -u GIT_TEMPLATE_DIR -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG_SYSTEM \
+    -u GIT_DIR -u GIT_WORK_TREE HOME="$VERIFY/home" PATH="$VERIFY/tools" \
+    GIT_AUTHOR_NAME=clio GIT_AUTHOR_EMAIL=clio@localhost \
+    GIT_COMMITTER_NAME=clio GIT_COMMITTER_EMAIL=clio@localhost \
+    "$EXEC/git" -c init.defaultBranch=main "$@"
+}
+SUBMODULE_HEAD="$(in_verify ls-remote "$SUBMODULE_URL" HEAD | cut -f1)"
+[ -n "$SUBMODULE_HEAD" ] || die "cannot reach $SUBMODULE_URL to check git submodule"
+{
+  in_verify init -q "$VERIFY/super" &&
+    in_verify -C "$VERIFY/super" config -f .gitmodules submodule.mp.path mp &&
+    in_verify -C "$VERIFY/super" config -f .gitmodules submodule.mp.url "$SUBMODULE_URL" &&
+    in_verify -C "$VERIFY/super" add .gitmodules &&
+    in_verify -C "$VERIFY/super" update-index --add --cacheinfo "160000,$SUBMODULE_HEAD,mp" &&
+    in_verify -C "$VERIFY/super" commit -q -m super &&
+    in_verify -C "$VERIFY/super" submodule update --init --depth 1 >"$VERIFY/update.log" 2>&1 &&
+    [ "$(in_verify -C "$VERIFY/super/mp" rev-parse HEAD)" = "$SUBMODULE_HEAD" ]
+} || {
+  cat "$VERIFY/update.log" >&2 2>/dev/null || true
+  die "git submodule update --init does not work from the bundled tree"
+}
+if grep -Eq "not a git command|command not found" "$VERIFY/update.log"; then
+  cat "$VERIFY/update.log" >&2
+  die "git submodule ran a command the bundled tree does not have"
+fi
+rm -rf "$VERIFY"
 if [ "$OS" = "Darwin" ] && command -v otool >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1; then
   for bin in "${BINARIES[@]}"; do
     foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -v '^/usr/lib/' || true)"
