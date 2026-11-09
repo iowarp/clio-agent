@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Any, Literal
 
 from clio_agent.gact.infrastructure.models import (
@@ -108,6 +109,20 @@ def _in_flight(runtime: Any) -> bool:
     )
 
 
+def _in_flight_by_clio(runtime: Any) -> list[str]:
+    """CLIO's own queued or running installs/starts of the local SearXNG."""
+
+    return [
+        row.id
+        for row in runtime.store.operations()
+        if row.service_id == SERVICE_ID
+        and row.target_id == LOCAL_TARGET
+        and row.action in _STARTING
+        and row.state not in _TERMINAL
+        and getattr(row, "initiator", "person") == "clio"
+    ]
+
+
 async def _finish(runtime: Any, operation_id: str, poll_seconds: float) -> str:
     while True:
         row = runtime.store.operation(operation_id)
@@ -164,17 +179,27 @@ async def stop_started(app: Any, *, timeout: float = 10.0, poll_seconds: float =
     """At shutdown, stop the local SearXNG when CLIO itself started it.
 
     A SearXNG the person started from Infrastructure keeps running. The stop is CLIO's
-    own action, so the next start of CLIO starts SearXNG again. Returns what happened:
-    ``not_started_by_clio``, ``not_running``, ``stopped``, ``stop_failed`` or
+    own action, so the next start of CLIO starts SearXNG again. A shutdown that lands
+    while CLIO's own install or start is still in flight cancels it and stops what it
+    launched: the service worker runs in its own session and would otherwise outlive
+    CLIO, and the stop would queue behind the start on the target's lock. Returns what
+    happened: ``not_started_by_clio``, ``not_running``, ``stopped``, ``stop_failed`` or
     ``stop_timed_out``.
     """
 
+    boot = getattr(app.state, "search_bootstrap_task", None)
+    if boot is not None and not boot.done():
+        boot.cancel()  # no further install/start step may follow this stop
     runtime = getattr(app.state, "infrastructure_runtime", None)
     store = getattr(app.state, "infrastructure_store", None)
     if runtime is None or store is None or not _started_by_clio(runtime):
         return "not_started_by_clio"
+    in_flight = _in_flight_by_clio(runtime)
+    for operation_id in in_flight:
+        with suppress(KeyError):
+            await runtime.cancel(operation_id)
     record = store.service(LOCAL_TARGET, SERVICE_ID)
-    if record is None or record.state != "running":
+    if not in_flight and (record is None or record.state != "running"):
         return "not_running"
     try:
         state = await asyncio.wait_for(_run(runtime, "stop", poll_seconds), timeout)
