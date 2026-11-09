@@ -106,7 +106,7 @@ def materialize(
         entries = adapter.entries()
         check_cancel(store, operation.id)
         revision = snapshot_revision(entries)
-        total = sum(row.size for row in entries if row.kind == "file")
+        total = sum(row.size or 0 for row in entries if row.kind == "file")
         store.update_operation(operation.id, bytes_total=total)
         if progress is not None:
             progress(0, total)

@@ -38,7 +38,7 @@ def connected_file_entries(
                         "type": "dir" if entry.kind == "directory" else "file",
                         "internal": False,
                         "source_id": source.id,
-                        "size": entry.size,
+                        **({"size": entry.size} if entry.size is not None else {}),
                         "media_type": detect_media_type(entry.path, b"")[0],
                     }
                 )
