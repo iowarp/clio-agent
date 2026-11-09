@@ -27,6 +27,13 @@ on:
         description: Explicit beta-only approval to publish while macOS Desktop qualification is pending
         type: boolean
         default: false
+      signed_macos_artifact:
+        description: >-
+          Build the Developer ID signed and notarized macOS aarch64 bundled
+          Desktop from the dispatch ref as a workflow artifact. `tag` only
+          labels the version; no release is created, changed or published.
+        type: boolean
+        default: false
 
 env:
   PNPM_VERSION: "9.15.9"
@@ -36,7 +43,7 @@ env:
 # ordinary workflow_dispatch waits for the in-flight run. An explicitly
 # approved beta macOS exception must be able to publish while those runners queue.
 concurrency:
-  group: clio-bundles-${{ inputs.tag || github.ref_name }}${{ inputs.allow_pending_macos && '-beta-macos-exception' || '' }}
+  group: clio-bundles-${{ inputs.tag || github.ref_name }}${{ inputs.allow_pending_macos && '-beta-macos-exception' || '' }}${{ inputs.signed_macos_artifact && format('-signed-artifact-{0}', github.ref_name) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -50,7 +57,7 @@ jobs:
   # it latest, only after check_release_completeness.py passes.
   release:
     name: create draft release
-    if: github.event_name == 'push' || inputs.rebuild_bundled
+    if: github.event_name == 'push' || inputs.rebuild_bundled || inputs.signed_macos_artifact
     runs-on: ubuntu-latest
     outputs:
       desktop_matrix: ${{ steps.matrix.outputs.value }}
@@ -59,9 +66,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       REBUILD_BUNDLED: ${{ inputs.rebuild_bundled || false }}
+      SIGNED_MACOS_ARTIFACT: ${{ inputs.signed_macos_artifact || false }}
     steps:
       - uses: actions/checkout@v4
       - name: Ensure exactly one draft release for the tag
+        if: ${{ !inputs.signed_macos_artifact }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -77,7 +86,11 @@ jobs:
         id: matrix
         run: |
           set -euo pipefail
-          if [ "$REBUILD_BUNDLED" = true ]; then
+          if [ "$SIGNED_MACOS_ARTIFACT" = true ]; then
+            value=$(jq -c '.variant = ["bundled"] | .target = ["aarch64-apple-darwin"] | del(.exclude) |
+              .include |= map(select(.target == "aarch64-apple-darwin"))' \
+              .github/desktop-bundle-matrix.json)
+          elif [ "$REBUILD_BUNDLED" = true ]; then
             value=$(jq -c '.variant = ["bundled"] |
               .target -= ["aarch64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"] |
               . as $matrix | .include |= map(select(.target as $target | $matrix.target | index($target)))' \
@@ -165,16 +178,19 @@ jobs:
   desktop:
     name: desktop · ${{ matrix.variant }} · ${{ matrix.os }} / ${{ matrix.target }}
     if: >-
-      !cancelled() && (github.event_name == 'push' || inputs.rebuild_bundled) &&
+      !cancelled() && (github.event_name == 'push' || inputs.rebuild_bundled || inputs.signed_macos_artifact) &&
       needs.release.result == 'success'
     needs: release
     runs-on: ${{ matrix.os }}
+    # Apple credentials exist only in this environment and only macOS legs enter it.
+    environment: ${{ startsWith(matrix.os, 'macos') && 'release-mac-signing' || '' }}
     timeout-minutes: 120
     permissions:
       contents: write
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       REBUILD_BUNDLED: ${{ inputs.rebuild_bundled || false }}
+      SIGNED_MACOS_ARTIFACT: ${{ inputs.signed_macos_artifact || false }}
       BUNDLE_CHECKER: ${{ inputs.rebuild_bundled && '.release-operations/scripts/check_bundle_matches_lock.py' || 'scripts/check_bundle_matches_lock.py' }}
     strategy:
       fail-fast: false
@@ -182,7 +198,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          # A signed artifact build tests the dispatch ref; releases build the tag.
+          ref: ${{ inputs.signed_macos_artifact && github.sha || env.RELEASE_TAG }}
           submodules: recursive
       - name: Check out release validation tooling
         if: inputs.rebuild_bundled
@@ -205,7 +222,19 @@ jobs:
         with:
           go-version: "1.26.x"
       - uses: astral-sh/setup-uv@v5
-        if: matrix.variant == 'bundled'
+        if: matrix.variant == 'bundled' || runner.os == 'macOS'
+      # Developer ID identity in a throwaway keychain; any missing Apple
+      # credential fails the leg, so no macOS release is built ad hoc.
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/macos_signing_keychain.sh setup
       - name: Linux deps
         if: runner.os == 'Linux'
         working-directory: external/gact-tui
@@ -251,6 +280,21 @@ jobs:
           external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14 \
             "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" \
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14
+      # Tauri signs only the app, its frameworks and the sidecar; the runtime
+      # ships as resources. Sign every runtime Mach-O (and the native members
+      # of the document wheels) inside-out before the bundler seals the app.
+      - name: Sign embedded runtime (macOS)
+        if: matrix.variant == 'bundled' && runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          runtime=external/gact-tui/desktop/src-tauri/gact-runtime
+          uv run --no-project --python 3.14 scripts/macos_sign_runtime.py sign \
+            --runtime "$runtime" --identity "$APPLE_SIGNING_IDENTITY" --keychain "$CLIO_SIGNING_KEYCHAIN"
+          uv run --no-project --python 3.14 scripts/macos_sign_runtime.py verify \
+            --runtime "$runtime" --team-id "$APPLE_TEAM_ID"
       - name: Verify bundled runtime matches uv.lock (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
@@ -358,6 +402,15 @@ jobs:
           # key") -- intended: a release must never ship unsigned updates.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS: Tauri signs the sidecar, main binary and app with this
+          # Developer ID (hardened runtime), notarizes and staples the app,
+          # and only then packs the DMG and the updater .app.tar.gz from it.
+          # APPLE_CERTIFICATE is deliberately absent: the bundler would build
+          # its own keychain instead of using the one imported above.
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
@@ -457,6 +510,17 @@ jobs:
               "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json",
             ];
           }
+          // The brand keeps ad hoc "-" for local builds; a macOS release is
+          // always signed with the Developer ID identity and hardened runtime.
+          if (process.env.RUNNER_OS === "macOS") {
+            const identity = process.env.APPLE_SIGNING_IDENTITY ?? "";
+            if (!identity.startsWith("Developer ID Application: ")) {
+              throw new Error("macOS release requires a Developer ID Application APPLE_SIGNING_IDENTITY");
+            }
+            config.bundle.macOS ??= {};
+            config.bundle.macOS.signingIdentity = identity;
+            config.bundle.macOS.hardenedRuntime = true;
+          }
           fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
           NODE
           # Sidecar guard (#907): every CLIO desktop bundle since the gact-tui
@@ -517,6 +581,27 @@ jobs:
             jq -e '.app.windows[0].decorations == true' "$merged" >/dev/null \
               || { echo "::error::macOS decorations assert: $merged does not restore native traffic lights (app.windows[0].decorations != true)"; exit 1; }
           fi
+      # Runs before staging so SHA256SUMS hashes the stapled DMG's final bytes.
+      - name: Notarize and staple the macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          bash scripts/macos_release_notarize.sh notarize-dmg
+          "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+      # Gatekeeper's view of the app, the DMG and the app the updater delivers.
+      - name: Verify macOS release signatures
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          bash scripts/macos_release_notarize.sh verify
+          "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          "${{ matrix.variant }}"
       - name: Stage artifacts
         shell: bash
         run: |
@@ -621,6 +706,7 @@ jobs:
       # escapes if it were part of the pattern. Same quoted-cd pattern the
       # checksum line above relies on; $PWD is the POSIX-form workspace.
       - name: Upload to draft release
+        if: ${{ !inputs.signed_macos_artifact }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -634,6 +720,17 @@ jobs:
           else
             bash "$uploader" "$RELEASE_TAG" ./*
           fi
+      - name: Upload signed macOS build as a workflow artifact
+        if: inputs.signed_macos_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clio-desktop-${{ matrix.target }}-${{ matrix.variant }}-signed
+          path: ${{ runner.temp }}/clio-desktop-stage/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Delete signing keychain
+        if: always() && runner.os == 'macOS'
+        run: bash scripts/macos_signing_keychain.sh cleanup
 
   macos-startup:
     name: macOS packaged startup · ${{ matrix.os }}
@@ -667,9 +764,15 @@ jobs:
           gh release download "$RELEASE_TAG" --pattern 'SHA256SUMS.aarch64-apple-darwin.bundled.txt' --dir package
           (cd package && grep 'aarch64-bundled.dmg$' SHA256SUMS.*.txt | shasum -a 256 --check)
           hdiutil verify package/*.dmg
+          # The published DMG must pass Gatekeeper as notarized and carry its ticket.
+          spctl --assess --type open --context context:primary-signature -vv package/*.dmg 2>&1 \
+            | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
+          xcrun stapler validate package/*.dmg
           hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
           ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
           hdiutil detach "$RUNNER_TEMP/clio-image"
+          spctl --assess --type execute -vv "$RUNNER_TEMP/CLIO Desktop.app" 2>&1 \
+            | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
           uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled \
             --quarantine --macho-list "$RUNNER_TEMP/gact-runtime-macho.json"
       - name: Publish the runtime's Mach-O inventory for signing
@@ -688,7 +791,8 @@ jobs:
     # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch. Also
     # runs standalone on workflow_dispatch (needs: jobs above are then skipped,
     # not failed, which always() tolerates) -- the frozen-at-tag escape hatch.
-    if: always()
+    # A signed macOS artifact build never touches a release.
+    if: always() && !inputs.signed_macos_artifact
     runs-on: ubuntu-latest
     permissions:
       contents: write
