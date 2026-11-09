@@ -635,3 +635,105 @@ def test_bundled_root_found_but_binary_missing_warns_and_falls_back_to_path(
     assert any("bundled_codex_absent" in record.getMessage() for record in caplog.records), (
         "a packaging defect (bundled root found, binary missing) must warn with a typed reason"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Start-up acknowledgement verdict (fail-open policy, user must acknowledge).  #
+# --------------------------------------------------------------------------- #
+
+
+def _resolved(active: bool, reason: str, mechanism: str) -> sandbox.SandboxResult:
+    return sandbox.SandboxResult(mechanism=mechanism, active=active, reason=reason, details={})
+
+
+def test_acknowledgement_verdict_for_each_row_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.runtime import sandbox_doctor
+
+    monkeypatch.setattr(sandbox, "fence_pending_restart", lambda: False)
+    monkeypatch.setattr(sandbox, "current_state", lambda: None)
+    unresolved = sandbox_doctor.sandbox_acknowledgement(probe_sandbox(state=None))
+    assert unresolved == {
+        "active": False,
+        "resolved": False,
+        "mechanism": None,
+        "acknowledgement_required": False,
+        "warning": None,
+    }
+
+    active = probe_sandbox(state=_resolved(True, sandbox.REASON_FENCE_ACTIVE, "codex"))
+    assert sandbox_doctor.sandbox_acknowledgement(active) == {
+        "active": True,
+        "resolved": True,
+        "mechanism": "codex",
+        "acknowledgement_required": False,
+        "warning": None,
+    }
+
+    off = probe_sandbox(
+        state=_resolved(False, sandbox_codex.REASON_CODEX_NOT_INSTALLED, sandbox.MECHANISM_NONE)
+    )
+    assert sandbox_doctor.sandbox_acknowledgement(off) == {
+        "active": False,
+        "resolved": True,
+        "mechanism": sandbox.MECHANISM_NONE,
+        "acknowledgement_required": True,
+        "warning": sandbox_doctor.SANDBOX_OFF_WARNING,
+    }
+
+    monkeypatch.setattr(sandbox, "fence_pending_restart", lambda: True)
+    pending = probe_sandbox(state=_resolved(True, sandbox.REASON_FENCE_ACTIVE, "codex"))
+    verdict = sandbox_doctor.sandbox_acknowledgement(pending)
+    assert verdict["active"] is False
+    assert verdict["acknowledgement_required"] is True
+    assert verdict["warning"] == sandbox_doctor.SANDBOX_PENDING_RESTART_WARNING
+
+
+def test_sandbox_wire_and_health_row_carry_the_acknowledgement_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.runtime import sandbox_doctor
+
+    monkeypatch.setattr(sandbox, "fence_pending_restart", lambda: False)
+    row = probe_sandbox(
+        state=_resolved(False, sandbox_codex.REASON_CODEX_NOT_INSTALLED, sandbox.MECHANISM_NONE)
+    )
+
+    wire = sandbox_setup_routes.sandbox_row_wire(row)
+    assert wire["active"] is False
+    assert wire["resolved"] is True
+    assert wire["mechanism"] == sandbox.MECHANISM_NONE
+    assert wire["acknowledgement_required"] is True
+    assert wire["warning"] == sandbox_doctor.SANDBOX_OFF_WARNING
+    assert wire["reason"] == sandbox_codex.REASON_CODEX_NOT_INSTALLED
+    assert wire["next_action"] == row.next_action
+
+    health = integration_to_wire(row)
+    assert health.active is False
+    assert health.acknowledgement_required is True
+    assert health.warning == sandbox_doctor.SANDBOX_OFF_WARNING
+
+
+def test_non_sandbox_health_rows_leave_the_acknowledgement_fields_unset() -> None:
+    from clio_agent.runtime.status import IntegrationStatus
+
+    other = IntegrationStatus(
+        name="lm_provider",
+        state=IntegrationState.DEGRADED,
+        summary="x",
+        config_source="test",
+        next_action="none",
+        required=True,
+    )
+    wire = integration_to_wire(other)
+    assert (wire.active, wire.acknowledgement_required, wire.warning) == (None, None, None)
+
+
+def test_get_sandbox_row_carries_the_acknowledgement_fields(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/system/sandbox").json()
+
+    for key in ("active", "resolved", "acknowledgement_required"):
+        assert isinstance(body[key], bool), key
+    assert body["acknowledgement_required"] == (body["resolved"] and not body["active"])
+    assert (body["warning"] is not None) == body["acknowledgement_required"]

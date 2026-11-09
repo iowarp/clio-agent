@@ -105,3 +105,16 @@ def test_web_ui_unknown_api_path_is_json_404_and_routes_fall_back_to_spa(
     page = client.get("/sessions/abc")
     assert page.status_code == 200
     assert "spa" in page.text
+
+
+def test_sandbox_verdict_answers_while_starting(loop: asyncio.AbstractEventLoop) -> None:
+    app = _app(loop.create_future())
+
+    @app.get("/v1/system/sandbox")
+    def sandbox_row() -> dict[str, bool]:
+        return {"resolved": False}
+
+    client = TestClient(app)
+
+    assert client.get("/v1/system/sandbox").status_code == 200
+    assert client.get("/v1/system/sandbox/setup").status_code == 503

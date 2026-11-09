@@ -174,3 +174,42 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
 
 
 __all__ = ["emit_boot_state_event", "probe_sandbox"]
+
+
+#: Banner text for a resolved backend that leaves agent tools outside any OS fence. The
+#: fail-open policy keeps CLIO usable; clients must show this and have the user acknowledge it.
+SANDBOX_OFF_WARNING = (
+    "Protected execution is off. Agent tools and the commands they run are not confined by an "
+    "OS sandbox, so they can change any file your user account can. CLIO still checks "
+    "file-tool paths and records writes outside your workspace, but it does not prevent them."
+)
+SANDBOX_PENDING_RESTART_WARNING = (
+    "Protected execution was just set up, but tool servers started before that are still "
+    "unconfined and can change any file your user account can until CLIO restarts."
+)
+
+
+def sandbox_acknowledgement(row: IntegrationStatus) -> dict[str, Any]:
+    """The client-facing verdict for the start-up "protected execution is off" banner.
+
+    ``active`` is True only when agent tools run inside an OS write fence right now (a READY
+    row). ``resolved`` is False until a server boot has picked a backend, so a client polling
+    during start-up waits instead of warning early. ``acknowledgement_required`` is
+    ``resolved and not active``; ``warning`` is the banner text exactly when it is True.
+    """
+    details = row.details if isinstance(row.details, dict) else {}
+    resolved = row.state is not IntegrationState.SKIPPED
+    active = row.state is IntegrationState.READY
+    required = resolved and not active
+    warning = None
+    if required:
+        pending = details.get("reason") == sb.REASON_FENCE_PENDING_RESTART
+        warning = SANDBOX_PENDING_RESTART_WARNING if pending else SANDBOX_OFF_WARNING
+    mechanism = details.get("mechanism")
+    return {
+        "active": active,
+        "resolved": resolved,
+        "mechanism": str(mechanism) if mechanism else None,
+        "acknowledgement_required": required,
+        "warning": warning,
+    }

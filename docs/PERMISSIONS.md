@@ -236,6 +236,37 @@ The advisory `allowed_roots` and fence `write_roots` share the same territory
 resolver. Windows uses verified native MXC when available or the legacy
 restricted-account backend. A runtime upgrade invalidates version-specific proof.
 
+### Start-up acknowledgement when the fence is off
+
+CLIO fails open: when no fence resolves, the agent still runs, with only the
+advisory layer. Because that is a security risk, every start that leaves the
+fence off must be acknowledged by the user. `clio`, `clio web`, `clio start`
+and `clio restart` print a security warning once the server has resolved its
+backend. On an interactive terminal they ask
+`Continue without protected execution? [y/N]`; anything but yes stops a server
+the command started and exits 1. Runs without a terminal only warn, and
+`CLIO_ACCEPT_UNSANDBOXED=1` acknowledges without the prompt. Desktop and Web
+show the same verdict as a banner.
+
+`GET /v1/system/sandbox` carries the verdict. It answers during start-up,
+before the other `/v1` routes stop returning 503:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `active` | bool | Agent tools run inside an OS write fence now. False on the floor, and while a just-activated fence still needs a restart. |
+| `resolved` | bool | A server boot has resolved the backend. Until it is true, wait and ask again; do not warn yet. |
+| `mechanism` | string or null | `codex`, `landlock` or `none`; null until resolved. |
+| `reason` | string | Typed reason token, for example `codex_not_installed` or `sandbox_fence_pending_restart`. |
+| `acknowledgement_required` | bool | `resolved and not active`: show the warning and require acknowledgement. |
+| `warning` | string or null | Banner text, present exactly when `acknowledgement_required` is true. |
+| `summary` | string | Technical one-line description of the row. |
+| `next_action` | string | The step that turns protection on, for example reinstalling CLIO Desktop. |
+| `status` | `ready`, `degraded` or `unavailable` | The doctor row's state, as in `/v1/health`. |
+
+The same row in `GET /v1/health` `integrations[]` (`name: "sandbox"`) carries
+`active`, `acknowledgement_required`, `warning`, `reason`, `summary` and
+`next_action`; those three new fields are null on every other row.
+
 ### Windows preparation and progress
 
 The backend prepares Windows protection off the event loop before constructing

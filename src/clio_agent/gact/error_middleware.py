@@ -85,9 +85,16 @@ def unhandled_error_envelope(exc: BaseException) -> ErrorEnvelope:
     )
 
 
-# Readable before the task runtime is up: readiness, identity and shutdown.
+# Readable before the task runtime is up: readiness, identity, shutdown, and the sandbox
+# verdict the launcher and UI must show (and have acknowledged) at start-up.
 _AVAILABLE_WHILE_STARTING = frozenset(
-    {"/v1/health", "/v1/capabilities", "/v1/server/shutdown", "/v1/desktop/shutdown"}
+    {
+        "/v1/health",
+        "/v1/capabilities",
+        "/v1/server/shutdown",
+        "/v1/desktop/shutdown",
+        "/v1/system/sandbox",
+    }
 )
 STARTUP_RETRY_AFTER_S = 1
 
