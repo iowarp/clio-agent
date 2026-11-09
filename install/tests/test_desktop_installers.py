@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -475,7 +478,8 @@ def test_release_desktop_install_keeps_its_plain_copy() -> None:
     """Only the explicit test package skips quarantine; the release path is unchanged."""
     source = (ROOT / "install/install.sh").read_text()
     release = source.split("install_desktop() {", 1)[1].split("\n}\n", 1)[0]
-    assert 'install_desktop_mac "$scratch" "$scratch/$asset"\n' in release
+    assert '*.dmg) install_desktop_mac "$DESKTOP_APP_FILE" ;;' in release
+    assert "--noqtn" not in release
 
 
 def _git_functions() -> str:
@@ -548,3 +552,193 @@ def test_usr_bin_git_counts_as_real_once_developer_tools_provide_it(tmp_path: Pa
     )
     if no_tools:
         assert _source_git(tmp_path, {}, check) == "0"
+
+
+def _app_archive(path: Path, marker: str = "release") -> str:
+    """A gzip tar of a fake ``CLIO Desktop.app``, as the release's updater archive."""
+    with tarfile.open(path, "w:gz") as archive:
+        for name, data, mode in [
+            (
+                "CLIO Desktop.app/Contents/MacOS/clio-desktop",
+                '#!/bin/bash\necho "app $* downloads=${CLIO_INSTALL_DOWNLOADS:-}" >> "$TEST_CALLS"\n',
+                0o755,
+            ),
+            ("CLIO Desktop.app/Contents/Info.plist", marker, 0o644),
+        ]:
+            member = tarfile.TarInfo(name)
+            member.size = len(data.encode())
+            member.mode = mode
+            archive.addfile(member, io.BytesIO(data.encode()))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _release_fixture(tmp_path: Path, names: list[str], *, tamper: bool = False) -> dict[str, str]:
+    """A v0.9.6 release whose manifest lists ``names`` (app archives) and an install plan."""
+    fixtures = tmp_path / "release"
+    fixtures.mkdir()
+    lines = []
+    for name in names:
+        digest = _app_archive(fixtures / name)
+        lines.append(f"{digest}  {name}")
+        if tamper:
+            _app_archive(fixtures / name, marker="changed")
+    office = fixtures / "LibreOffice.dmg"
+    office.write_bytes(b"office image")
+    plan = fixtures / "install-plan.aarch64-apple-darwin.bundled.txt"
+    plan.write_text(
+        f"office {hashlib.sha256(b'office image').hexdigest()} 12 LibreOffice.dmg "
+        "https://example.invalid/LibreOffice.dmg\n"
+        "office 0000 1 ../escape https://example.invalid/escape\n"
+    )
+    lines.append(f"{hashlib.sha256(plan.read_bytes()).hexdigest()}  {plan.name}")
+    (fixtures / "SHA256SUMS.aarch64-apple-darwin.bundled.txt").write_text("\n".join(lines) + "\n")
+    env, _ = _package_fakes(tmp_path)
+    fakes = {
+        "curl": """out=""; headers=""; url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -D) headers="$2"; shift 2 ;;
+    https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "curl $url" >> "$TEST_CALLS"
+file="$TEST_RELEASE/${url##*/}"
+[ -f "$file" ] || exit 22
+[ -z "$headers" ] || printf 'HTTP/2 200\\r\\ncontent-length: %s\\r\\n\\r\\n' "$(wc -c < "$file" | tr -d ' ')" > "$headers"
+if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi""",
+        "aa": 'echo "aa $*" >> "$TEST_CALLS"; [ "$1" = extract ] && [ "$2" = -d ]; exec tar -xzf - -C "$3"',
+        "shasum": 'if command -v sha256sum >/dev/null; then sha256sum; else /usr/bin/shasum "$@"; fi',
+        "sw_vers": "echo 15.0",
+        "sysctl": "echo 1",
+    }
+    for name, contents in fakes.items():
+        path = Path(env["PATH"].split(":", 1)[0]) / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env.update(TEST_RELEASE=str(fixtures), CLIO_VERSION="0.9.6")
+    return env
+
+
+def _events(stdout: str) -> list[dict[str, object]]:
+    return [json.loads(line) for line in stdout.splitlines()]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+@pytest.mark.parametrize(
+    ("listed", "chosen"),
+    [
+        (["CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar"], "aar"),
+        (
+            [
+                "CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz",
+                "CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar",
+            ],
+            "aar",
+        ),
+        (["CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz"], "tar.gz"),
+    ],
+)
+def test_mac_release_streams_the_app_archive_and_hands_over_prefetched_files(
+    tmp_path: Path, listed: list[str], chosen: str
+) -> None:
+    """The archive unpacks as it downloads; the plan's files arrive alongside and reach
+    the preparation; every shared step is reported as JSON, with a summary."""
+    env = _release_fixture(tmp_path, listed)
+    env["TEST_CALLS"] = str(tmp_path / "calls.txt")
+
+    result = _run_installer(["--desktop", "--progress", "json"], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = (tmp_path / "calls.txt").read_text()
+    assert (
+        f"curl https://github.com/iowarp/clio-agent/releases/download/v0.9.6/CLIO.Desktop-aarch64-apple-darwin-bundled.app.{chosen}"
+        in log
+    )
+    assert ("aa extract -d " in log) == (chosen == "aar")
+    assert "hdiutil" not in log and "ditto" not in log
+    assert log.count("codesign --verify --deep --strict") == 1
+    assert "curl https://example.invalid/LibreOffice.dmg" in log
+    assert "escape" not in log
+    prepared = next(line for line in log.splitlines() if line.startswith("app --prepare-runtime"))
+    assert "downloads=" in prepared and prepared.endswith("/downloads")
+    app = tmp_path / "Applications/CLIO Desktop.app"
+    assert (app / "Contents/Info.plist").read_text() == "release"
+    assert not list((tmp_path / "Applications").glob(".clio-install.*"))
+    assert not list(tmp_path.glob("clio-desktop.*"))
+    events = _events(result.stdout)
+    steps = [e["step"] for e in events if e["event"] == "step" and e["state"] == "end"]
+    assert steps == ["resolve", "download", "verify", "install", "prepare"]
+    summary = events[-1]
+    assert summary["event"] == "summary" and summary["ok"] is True
+    assert set(summary["seconds"]) == set(steps)  # type: ignore[arg-type]
+    assert (
+        summary["bytes"]
+        == (tmp_path / "release" / listed[-1 if chosen == "aar" and len(listed) > 1 else 0])
+        .stat()
+        .st_size
+        + 12
+    )
+    assert "Installed: " in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_mac_release_with_a_tampered_archive_installs_nothing(tmp_path: Path) -> None:
+    env = _release_fixture(
+        tmp_path, ["CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz"], tamper=True
+    )
+    applications = tmp_path / "Applications"
+    (applications / "CLIO Desktop.app").mkdir(parents=True)
+
+    result = _run_installer(["--desktop", "--progress=json"], env)
+
+    assert result.returncode != 0
+    assert "checksum mismatch" in result.stderr
+    assert sorted(p.name for p in applications.iterdir()) == ["CLIO Desktop.app"]
+    assert not list((applications / "CLIO Desktop.app").iterdir())
+    summary = _events(result.stdout)[-1]
+    assert summary["ok"] is False and summary["step"] == "verify"
+    assert "checksum mismatch" in str(summary["error"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_mac_release_human_output_names_each_step_and_its_time(tmp_path: Path) -> None:
+    env = _release_fixture(tmp_path, ["CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz"])
+    env["CLIO_DESKTOP_FORMAT"] = "tar.gz"
+
+    result = _run_installer(["--desktop"], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "unpacking it into" in result.stdout
+    assert "Fetching what the first launch needs at the same time: LibreOffice.dmg" in result.stdout
+    done = result.stdout.splitlines()[-1]
+    for step in ("resolve", "download", "verify", "install", "prepare"):
+        assert f"{step} " in done
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+@pytest.mark.parametrize(
+    ("running", "refused"),
+    [
+        ("/Applications/CLIO Desktop.app/Contents/MacOS/clio-desktop", False),
+        ("{dest}/CLIO Desktop.app/Contents/MacOS/clio-desktop", True),
+        ("", True),
+    ],
+)
+def test_only_a_desktop_running_from_the_destination_blocks_the_install(
+    tmp_path: Path, running: str, refused: bool
+) -> None:
+    env, calls = _package_fakes(tmp_path)
+    dest = tmp_path / "Applications"
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    (bin_dir / "pgrep").write_text("#!/bin/bash\necho 4242\n")
+    (bin_dir / "ps").write_text(f"#!/bin/bash\necho {shlex.quote(running.format(dest=dest))}\n")
+    (bin_dir / "ps").chmod(0o755)
+    image = tmp_path / "test.dmg"
+    image.write_bytes(b"test build")
+
+    result = _run_installer(["--desktop-package", str(image)], env)
+
+    assert ("Quit CLIO Desktop before installing." in result.stderr) == refused
+    assert (result.returncode != 0) == refused
