@@ -64,3 +64,27 @@ def test_apple_silicon_plan_prefetches_libreoffice_and_native_pnpm(tmp_path: Pat
 def test_unknown_target_has_no_plan() -> None:
     with pytest.raises(SystemExit):
         plan.entries("x86_64-pc-windows-msvc")
+
+
+def test_size_falls_back_to_a_one_byte_range_when_head_has_no_length(monkeypatch) -> None:
+    class Response:
+        def __init__(self, headers: dict[str, str]) -> None:
+            self.headers = headers
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    seen: list[tuple[str, str | None]] = []
+
+    def urlopen(request, timeout):
+        seen.append((request.get_method(), request.get_header("Range")))
+        if request.get_method() == "HEAD":
+            return Response({})
+        return Response({"Content-Range": "bytes 0-0/1028233"})
+
+    monkeypatch.setattr(plan.urllib.request, "urlopen", urlopen)
+    assert plan.remote_size("https://registry.npmjs.org/pnpm/-/pnpm-12.9.1.tgz") == 1028233
+    assert seen == [("HEAD", None), ("GET", "bytes=0-0")]

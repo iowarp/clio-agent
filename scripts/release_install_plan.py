@@ -77,7 +77,13 @@ def remote_size(url: str) -> int:
     request = urllib.request.Request(url, method="HEAD")
     try:
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - https pins
-            return int(response.headers.get("Content-Length") or 0)
+            size = int(response.headers.get("Content-Length") or 0)
+        if size:
+            return size
+        # The npm registry answers HEAD without a length; a one-byte range reports the total.
+        request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - https pins
+            return int((response.headers.get("Content-Range") or "/0").rsplit("/", 1)[1])
     except (OSError, ValueError):
         return 0
 
