@@ -75,6 +75,21 @@ from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, boot_discov
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
+#: Longest a fleet lease or tool resolve waits for a connected-data access change
+#: (a live grant swap restarting the workspace fleets) before it gives up.
+SOURCE_POLICY_WAIT_S = 30.0
+
+
+def _on_event_loop() -> bool:
+    """True on a thread running an asyncio loop, which must never sleep-wait."""
+    import asyncio  # noqa: PLC0415
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
 
 class ClioAgent(dspy.Module):
     """CLIO Agent host: providers, tools, ARC, workspaces, and registry.
@@ -114,6 +129,31 @@ class ClioAgent(dspy.Module):
                     lock = threading.Lock()
                     self._workspace_executor_lock = lock
         return lock, self._workspace_tool_executors, self._workspace_leases
+
+    def _await_source_policy_settled(self, lock: threading.Lock, *, wait: bool = True) -> None:
+        """With ``lock`` held, wait (bounded) while connected-data access is being changed.
+
+        Linking a folder swaps the workspace fleets' grants live. A turn the person starts
+        in that window waits for the swap and then runs, instead of failing its first tool
+        calls. Callers that must not block (residency holds, an event-loop thread) are
+        refused at once, as before. Returns with ``lock`` held.
+        """
+        if not getattr(self, "_source_policy_changing", False):
+            return
+        if not wait or _on_event_loop():
+            raise RuntimeError("CLIO is updating connected-data access; retry after setup finishes")
+        deadline = time.monotonic() + SOURCE_POLICY_WAIT_S
+        while getattr(self, "_source_policy_changing", False):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"CLIO is still updating connected-data access after "
+                    f"{SOURCE_POLICY_WAIT_S:g}s; retry once setup finishes"
+                )
+            lock.release()
+            try:
+                time.sleep(0.05)
+            finally:
+                lock.acquire()
 
     def __init__(
         self,
@@ -431,10 +471,7 @@ class ClioAgent(dspy.Module):
         server_set = get_active_tool_server_set().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
-            if getattr(self, "_source_policy_changing", False):
-                raise RuntimeError(
-                    "CLIO is updating connected-data access; retry after setup finishes"
-                )
+            self._await_source_policy_settled(lock)
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
             # #1236: a resident executor minted under an older MCP configuration (the
@@ -568,12 +605,14 @@ class ClioAgent(dspy.Module):
             return executor
 
     @contextmanager
-    def lease_workspace_fleet(self, root: str):
+    def lease_workspace_fleet(self, root: str, *, wait: bool = True):
         """Pin a workspace root against reaping for the caller's scope (#933).
 
         Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind
         the executor for the whole expert lifetime, so between-call idleness
-        inside a live turn must never count toward the reap TTL.
+        inside a live turn must never count toward the reap TTL. During a
+        connected-data access change it waits for the change (bounded) unless
+        ``wait`` is false.
         """
 
         root = canonical_workspace_root(root)
@@ -582,10 +621,7 @@ class ClioAgent(dspy.Module):
             return
         lock, _executors, leases = self._workspace_state()
         with lock:
-            if getattr(self, "_source_policy_changing", False):
-                raise RuntimeError(
-                    "CLIO is updating connected-data access; retry after setup finishes"
-                )
+            self._await_source_policy_settled(lock, wait=wait)
             leases[root] = leases.get(root, 0) + 1
         try:
             yield
