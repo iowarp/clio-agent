@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -155,11 +156,22 @@ def inventory(runtime: Path) -> Inventory:
     return Inventory(sorted(files, key=lambda t: t.path), sorted(archives), bundles)
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"{' '.join(command)} failed: {result.stderr.strip()}")
-    return result
+TIMESTAMP_UNAVAILABLE = "timestamp service is not available"
+TIMESTAMP_RETRIES = 6
+
+
+def _run(
+    command: list[str], sleep: Callable[[float], None] = time.sleep
+) -> subprocess.CompletedProcess[str]:
+    # Apple's timestamp server sheds load under bursts of requests; back off and retry.
+    for attempt in range(TIMESTAMP_RETRIES + 1):
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            return result
+        if TIMESTAMP_UNAVAILABLE not in result.stderr or attempt == TIMESTAMP_RETRIES:
+            break
+        sleep(2.0 * 2**attempt)
+    raise RuntimeError(f"{' '.join(command)} failed: {result.stderr.strip()}")
 
 
 @dataclass(frozen=True)
@@ -257,7 +269,7 @@ def _parallel(jobs: int, work: Callable[[Item], None], items: Iterable[Item]) ->
         list(executor.map(work, items))
 
 
-def sign_runtime(runtime: Path, signer: Signer, jobs: int = 8) -> Inventory:
+def sign_runtime(runtime: Path, signer: Signer, jobs: int = 4) -> Inventory:
     """Sign archives, libraries, executables, then bundles: always inside out."""
     signer.run(["xattr", "-cr", str(runtime)])
     found = inventory(runtime)
@@ -355,7 +367,8 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--team-id", help="required team; omit only for ad hoc checks")
     for command in (sign, verify):
         command.add_argument("--runtime", required=True, type=Path)
-        command.add_argument("--jobs", type=int, default=8)
+        # Signing is throttled by Apple's timestamp server; verification is local.
+        command.add_argument("--jobs", type=int, default=4 if command is sign else 8)
     args = parser.parse_args(argv)
     if not (args.runtime / "runtime.json").is_file():
         parser.error(f"{args.runtime} is not a built runtime (runtime.json missing)")

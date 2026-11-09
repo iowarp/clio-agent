@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from scripts import macos_sign_runtime
 from scripts.macos_sign_runtime import (
     Signer,
     check_signature,
@@ -269,3 +270,36 @@ def test_adhoc_round_trip_with_real_codesign(tmp_path: Path) -> None:
         capture_output=True,
     )
     assert main(["verify", "--runtime", str(runtime)]) == 1
+
+
+@pytest.mark.parametrize(
+    ("stderrs", "returns", "sleeps"),
+    [
+        (["x: The timestamp service is not available.", ""], True, [2.0]),
+        (
+            ["x: The timestamp service is not available."] * 7,
+            False,
+            [2.0, 4.0, 8.0, 16.0, 32.0, 64.0],
+        ),
+        (["x: errSecInternalComponent"], False, []),
+    ],
+    ids=["retried-then-signed", "gives-up", "other-failures-are-not-retried"],
+)
+def test_retries_only_an_unavailable_timestamp_service(
+    monkeypatch: pytest.MonkeyPatch, stderrs: list[str], returns: bool, sleeps: list[float]
+) -> None:
+    outcomes = iter(stderrs)
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        stderr = next(outcomes)
+        return subprocess.CompletedProcess(command, 1 if stderr else 0, "", stderr)
+
+    monkeypatch.setattr(macos_sign_runtime.subprocess, "run", fake_run)
+    slept: list[float] = []
+    if returns:
+        assert macos_sign_runtime._run(["codesign"], sleep=slept.append).returncode == 0
+    else:
+        with pytest.raises(RuntimeError, match="codesign failed"):
+            macos_sign_runtime._run(["codesign"], sleep=slept.append)
+    assert slept == sleeps
+    assert next(outcomes, None) is None
