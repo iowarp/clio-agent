@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for clio-core's daemon launcher
+  (site-packages/iowarp_core/bin/clio_run). See install/macos-signing.md.
+-->
+<plist version="1.0">
+<dict>
+  <!-- CLIO starts clio_run with DYLD_LIBRARY_PATH (arc/runtime_spawn.py); the
+       hardened runtime strips DYLD_* without this entitlement. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <!-- clio_run loads runtime modules that are signed with the same identity,
+       and wheel-provided libraries that may not be. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

@@ -100,6 +100,12 @@ your workspaces are not affected.
 
 ### Changed
 
+- **macOS releases are Developer ID signed and notarized.** CLIO Desktop for macOS,
+  its sidecar and every binary in the bundled runtime (including native modules in the
+  offline document wheels) are signed with CLIO's Developer ID, hardened runtime and a
+  secure timestamp. The DMG and the app are notarized and stapled, so a downloaded DMG
+  opens without an "Open Anyway" step. A release whose signing, notarization or
+  Gatekeeper check fails is not published.
 - **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
   length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
   for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
