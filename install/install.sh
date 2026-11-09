@@ -922,17 +922,25 @@ if [ -n "$shell_rc" ]; then
 else
   completion_step="Tab-completion:    clio completion bash|zsh prints a script for your shell"
 fi
+if [ -f "$PREFIX/clio-agent/web/index.html" ]; then
+  frontend="Web; Desktop is available with --desktop"
+  run_step="Run:   clio (Web), or clio start (headless service)"
+else
+  # Source installs carry no frontend build; say so instead of pointing at Web.
+  frontend="none (source install); Desktop is available with --desktop"
+  run_step="Run:   clio start (headless service); for Web set CLIO_WEB_DIR to a built web dist"
+fi
 clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
 cat <<EOF
 
 Installed to:        $PREFIX
 Launcher:            $LAUNCHER
 clio-agent:          $clio_src
-Frontend:            Web (release installs); Desktop is available with --desktop
+Frontend:            $frontend
 
 Next steps:
   1. $path_step
-  2. Run:   clio (Web), or clio start (headless service)
+  2. $run_step
   3. Manage the server: clio status | clio restart | clio logs
   4. $completion_step
   5. Uninstall:         clio uninstall   (add --purge to drop config)

@@ -206,3 +206,12 @@ def test_the_path_note_reads_the_callers_path_not_the_one_the_installer_extended
     captured = text.index('CALLER_PATH="${PATH:-}"')
     assert captured < text.index('export PATH="$BIN_DIR:$PATH"')
     assert 'case ":$CALLER_PATH:" in\n  *":$BIN_DIR:"*) path_step=' in text
+
+
+def test_the_finishing_note_offers_web_only_when_the_web_bundle_is_installed() -> None:
+    text = (ROOT / "install/install.sh").read_text()
+    notes = text[text.index('if [ -f "$PREFIX/clio-agent/web/index.html" ]; then') :]
+    web, rest = notes.split("else", 1)
+    assert "clio (Web)" in web
+    assert "clio (Web)" not in rest.split("fi", 1)[0]
+    assert "  2. $run_step\n" in notes
