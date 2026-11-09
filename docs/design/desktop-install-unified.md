@@ -1,9 +1,12 @@
 # Desktop install: one interface, fast macOS backend
 
-Status: proposal (2026-11-09). Measured on a clean Mac mini M4 (10 cores, macOS 26.5.1, no
-Homebrew, no Command Line Tools) against release v0.9.5.1, main, and PR #1966
-(`jaimecernuda-clio-agent-mac-fixes`). Diagram: [desktop-install-unified-diagram.md](desktop-install-unified-diagram.md).
-Charts and the chart script: [`evidence/desktop-install-mac-2026-11-09/`](evidence/desktop-install-mac-2026-11-09/).
+Status: shared steps, A and B implemented; C declined (2026-11-09). Measured on a clean Mac
+mini M4 (10 cores, macOS 26.5.1, no Homebrew, no Command Line Tools) against release
+v0.9.5.1, main, and PR #1966 (`jaimecernuda-clio-agent-mac-fixes`). The implementation is
+stacked on #1966 with #1978 (Developer ID signing) merged in; see
+[Implementation and measured results](#implementation-and-measured-results).
+Diagram: [desktop-install-unified-diagram.md](desktop-install-unified-diagram.md).
+Charts and the chart scripts: [`evidence/desktop-install-mac-2026-11-09/`](evidence/desktop-install-mac-2026-11-09/).
 
 ## Problem
 
@@ -135,6 +138,10 @@ The two numbers aren't comparable.
 
 ## Design: one install interface
 
+This section is the proposal. Where the implementation differs (a text plan instead of
+`install-plan.json`, pnpm prefetched instead of bundled, no option C), see
+[Implementation and measured results](#implementation-and-measured-results).
+
 ### Shared phases
 
 Every OS runs the same five phases in the same order, with the same progress output. Only the
@@ -153,14 +160,20 @@ On Linux it stays the AppImage/deb.
 
 ### Progress protocol
 
-Both scripts and `--prepare-runtime` print one line per event, human-readable by default and
-JSON with `--progress=json`:
+Both scripts print human-readable lines by default. With `--progress json` (`-Progress json`
+in PowerShell, or `CLIO_INSTALL_PROGRESS=json`), stdout carries only JSON lines and the
+readable messages move to stderr. As implemented (a real run on this Mac):
 
 ```json
-{"phase":"download","asset":"app","bytes":214000000,"total":428000000,"rate_mbps":8.1,"t":26.4}
-{"phase":"install","state":"done","seconds":0.4,"files":29323}
-{"phase":"summary","seconds":{"resolve":0.5,"download":92.6,"verify":0,"install":0.4,"prepare":12.0},"bytes":769000000}
+{"event":"step","step":"download","state":"begin"}
+{"event":"progress","step":"download","bytes":214000000,"total":747076163}
+{"event":"step","step":"download","state":"end","seconds":36.7}
+{"event":"summary","ok":true,"seconds":{"resolve":0.1,"download":36.7,"verify":0.0,"install":2.6,"prepare":17.3},"total":56.7,"bytes":747076163}
 ```
+
+A failure ends with `{"event":"summary","ok":false,"step":"verify","error":"…",…}`.
+`--prepare-runtime` keeps its own checkpoint lines; they go to stderr inside the `prepare`
+step.
 
 - The human form prints a line at each phase start and end, plus download progress at least
   every 5 s with rate and ETA. The user always sees which phase is running and why.
@@ -178,6 +191,11 @@ JSON with `--progress=json`:
 | total, CI runner | ≤ 180 s | keeps the existing ceiling |
 
 The bytes budget is deterministic, so it can't flake on network speed.
+
+As implemented, `scripts/ci/install_budgets.json` holds one entry per step for the macOS
+`desktop-install` job, read from the summary line by `check_budgets.py --install-events`:
+resolve 30 s, download 120 s, verify 30 s, install 60 s, prepare 150 s, total 180 s. A failed
+install fails its step's row and the total. The bytes budget isn't implemented yet.
 
 ## macOS backend changes
 
@@ -221,6 +239,12 @@ Each row is cumulative, with the expected first-install total at the measured 8.
   The macOS run is at 177.7 s today, so the current budget fails on noise, not on regressions.
 - Make the Windows job include its download, so the two OSes report the same phases.
 
+As implemented: a new `desktop-install` job (macos-15) in `install-matrix.yml` runs
+`install.sh --desktop --progress json` into `$RUNNER_TEMP/Applications` and enforces the step
+budgets. On pull requests it runs only when the PR touches the installers (`install/`, the
+budget files, `document_runtime.py`, `office.py`); it always runs on schedule and dispatch.
+The existing `desktop:` jobs are unchanged, so the Windows job still excludes its download.
+
 ## Open questions
 
 1. The 20 minutes wasn't reproduced. The model needs about 0.8 MB/s effective. The user's
@@ -230,9 +254,94 @@ Each row is cumulative, with the expected first-install total at the measured 8.
    but the first document task then waits for the 298 MB download.
 3. Developer ID signing and notarization: once adopted, `aa` keeps signatures intact, but the
    wheelhouse and any first-run native install get harder. This favors A over the wheelhouse.
+   Answered below: an `.aar` of the stapled app keeps the ticket.
 
-## Side finding
+## Implementation and measured results
 
-During `--prepare-runtime` with an isolated `HOME`, the store migration reported
-`store_unavailable`: it detected the user's running clio-core daemon through machine-wide
-core-hosts state. Prepare isn't fully isolated by `HOME`.
+Decided while the user was away: shared steps plus A and B; not C (LibreOffice stays
+mandatory and is installed up front, but downloads alongside the app). Windows changes only
+its output.
+
+### What changed
+
+- **Shared steps, both scripts.** `install.sh` and `install.ps1` run resolve, download,
+  verify, install (and on macOS/Linux, prepare). Each step is timed. Both scripts print
+  `Done in X s (resolve …, download …)` and support `--progress json`. The Windows download
+  and NSIS setup are unchanged.
+- **A, streamed `.aar`.** The release pipeline archives the stapled app with
+  `aa archive -a lzma` after notarization (`scripts/macos_release_notarize.sh archive-app`),
+  and `verify` unpacks it again and checks the app. It's published as
+  `CLIO.Desktop-<triple>-bundled.app.aar`. `install.sh` streams it:
+  `curl | tee (sha256, part file) | aa extract` into a staging folder beside the
+  destination. Then it checks the SHA-256 against the release manifest, runs one
+  `codesign --verify --deep --strict`, and swaps the app in, keeping the old one until the
+  new one is in place. Asset order: `.app.aar`, then the updater's `.app.tar.gz` (which
+  v0.9.5.1 already has), then the DMG. The DMG stays the fallback and is what
+  `--download-only` keeps.
+- **Notarization.** An `.aar` can't be notarized or stapled itself, and doesn't need to be:
+  the stapled ticket is stored inside the app bundle (`Contents/CodeResources`), and `aa`
+  preserves it. Checked by round-tripping a stapled app through `aa archive`/`aa extract`
+  and running `spctl -a -vv` on the result. Files fetched by `curl` carry no quarantine
+  attribute, as with the updater's `.tar.gz`.
+- **B, concurrent fetch.** The release publishes `install-plan.<triple>.bundled.txt`
+  (`scripts/release_install_plan.py`, listed in that triple's `SHA256SUMS`). It names
+  LibreOffice and pnpm (the JS package and its native binary) with SHA-256, size and URL.
+  `install.sh` fetches them at the same time as the app into a downloads folder, and passes
+  it to `--prepare-runtime` as `CLIO_INSTALL_DOWNLOADS`. `office.py` and
+  `document_runtime.py` use a file there only when its bytes match the pin; otherwise they
+  download as before.
+- **pnpm isn't bundled in the app.** pnpm 12 runs as a native binary
+  (`@pnpm/exe.<os>-<arch>`), so bundling it would mean another signed executable inside
+  the app. Prefetching both tarballs through the plan gives the same result offline.
+- **`office.py`**: `hdiutil attach -noverify` for the LibreOffice DMG; its SHA-256 is already
+  checked.
+- **CI**: the `desktop-install` job and per-step budgets above.
+
+### Measured on this Mac
+
+Scratch `CLIO_DESKTOP_DIR`, isolated `HOME`, v0.9.5.1 (chart: `before-after.png`).
+
+| Run | download | verify | install | prepare | total |
+|---|---:|---:|---:|---:|---:|
+| #1966 DMG, session 1 (10.5 MB/s) | 52.6 | 0.1 | 14.5 | 40.7 | **108.0 s** |
+| new script, v0.9.5.1 `.app.tar.gz`, no plan, session 1 | 54.9 | 0.0 | 2.4 | 45.1 | **102.9 s** |
+| #1966 DMG, session 2 (17.2 MB/s) | 31.9 | 0.1 | 14.7 | 45.2 | **92.0 s** |
+| new: streamed `.aar` + plan prefetch, session 2 (two runs) | 36.7 | 0.0 | 2.6 | 17.3–17.7 | **56.7–57.1 s** |
+
+- **Install step**: 14.5 s → 2.4–2.6 s. It's only the final codesign check; the unpack
+  overlaps the download. Unpacking the 428 MB `.aar` from a local file takes about 4 s.
+- **Download**: the `.aar` is 428 MB against 576 MB for the `.tar.gz` and 549 MB for the
+  DMG. Fetching the app, LibreOffice (298 MB) and pnpm (21 MB) at the same time took 47.9 s,
+  the same as the app alone: GitHub limits one stream (about 12 MB/s) below this link's
+  capacity, so LibreOffice arrives for free.
+- **Prepare** with the plan's files present: 14.0–14.6 s against 31.3–31.8 s cold, on the
+  same app, alternating runs. Office goes from about 31 s to 8.7 s, and pnpm from about
+  10 s (npm registry) to 0.6 s.
+- **How the after run was made**: v0.9.5.1 has no `.aar`, no plan, and a `--prepare-runtime`
+  that doesn't read `CLIO_INSTALL_DOWNLOADS`. So the measured "after" app is v0.9.5.1 with
+  this branch's `document_runtime.py`/`office.py` changes applied, ad-hoc re-signed, and
+  archived as an `.aar`. A wrapper `curl` served it with the plan from 127.0.0.1, held to
+  11.5 MiB/s (12 MB/s, the measured GitHub single-stream rate). LibreOffice and npm came
+  from the real network. Session 2's DMG arrived at 17.2 MB/s, so the 12 MB/s hold
+  understates the gain.
+- **Expected from the next release** (it ships the `.aar` and the plan): at 12 MB/s per
+  stream, about 57 s as measured. At session 2's 17.2 MB/s, the 428 MB `.aar` takes about
+  25 s and LibreOffice finishes within it, so about 0.1 + 25 + 2.6 + 15 ≈ 43 s. Compare
+  92–108 s for #1966 and about 156 s for main. With v0.9.5.1 the script streams the
+  `.tar.gz` and saves only the copy.
+- **Windows**: not measured; its behaviour is unchanged.
+
+## Side findings
+
+- During `--prepare-runtime` with an isolated `HOME`, the store migration reported
+  `store_unavailable`: it detected another CLIO's running clio-core daemon through
+  machine-wide core-hosts state. Prepare isn't fully isolated by `HOME`. No action taken.
+- v0.9.5.1's prepare breaks the installed app's code seal: something launched during
+  prepare runs the bundled Python without `-B` and writes about 20 `.pyc` files
+  (`encodings`, `xml`, `plistlib`, `office_compat`, …) into `Contents/Resources/gact-runtime`.
+  `codesign --verify --deep --strict` then reports "a sealed resource is missing or
+  invalid". Both #1966 and this branch install the release as-is, so both show it. Main
+  already fixes it (d3ca42a2e, `protect_bundled_runtime`), so it disappears with the next
+  release.
+- On npm, `HEAD` returns no `Content-Length`, so the plan generator now reads the size from
+  a one-byte range request.
