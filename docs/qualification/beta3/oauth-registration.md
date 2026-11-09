@@ -106,6 +106,9 @@ until the application key is supplied; private access requires a real user grant
    and its accompanying client value. The latter is non-confidential for this client
    type; it is not a service-account key, web-client secret, or user access token.
    Per-user access and refresh tokens remain in the private account store.
+   The bundled registration is the Desktop app client in Google Cloud project
+   `clio-514220` (`src/clio_agent/gact/storage/oauth_clients.py`). It is in **Testing**
+   until Google verifies it for production, so only listed test users can sign in.
 4. In Desktop, **Log in** starts a loopback receiver on the user's computer and
    opens the system browser. The callback is captured automatically and delivered
    only to the initiating connected CLIO. Google uses an ephemeral loopback port.
