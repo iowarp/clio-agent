@@ -301,9 +301,18 @@ mkdir -p "$VERIFY/tools" "$VERIFY/home"
 for tool in sed basename uname; do
   ln -s "$(command -v "$tool")" "$VERIFY/tools/$tool"
 done
+# The static Linux build has no default CA file; the resolver names the system
+# bundle at run time, so do the same here.
+CA_ENV=()
+if [ "$OS" = "Linux" ] && [ -z "${GIT_SSL_CAINFO:-}" ]; then
+  for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+    /etc/ssl/ca-bundle.pem /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; do
+    if [ -f "$bundle" ]; then CA_ENV=("GIT_SSL_CAINFO=$bundle"); break; fi
+  done
+fi
 in_verify() {
   env -u GIT_EXEC_PATH -u GIT_TEMPLATE_DIR -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG_SYSTEM \
-    -u GIT_DIR -u GIT_WORK_TREE HOME="$VERIFY/home" PATH="$VERIFY/tools" \
+    -u GIT_DIR -u GIT_WORK_TREE HOME="$VERIFY/home" PATH="$VERIFY/tools" ${CA_ENV[@]+"${CA_ENV[@]}"} \
     GIT_AUTHOR_NAME=clio GIT_AUTHOR_EMAIL=clio@localhost \
     GIT_COMMITTER_NAME=clio GIT_COMMITTER_EMAIL=clio@localhost \
     "$EXEC/git" -c init.defaultBranch=main "$@"
