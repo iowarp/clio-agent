@@ -524,6 +524,40 @@ clone_changes() {
     }'
 }
 
+# Check out each submodule of the clone at $1 at the commit it records, recursively.
+# This uses only commands every git has, for a git without `git submodule`, which is a
+# shell script: CLIO Desktop's bundled git ships the git binary and its HTTPS helpers only.
+checkout_submodules() {
+  local src="$1" key path name url commit
+  [ -f "$src/.gitmodules" ] || return 0
+  git -C "$src" config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r key path; do
+    name="${key#submodule.}"
+    name="${name%.path}"
+    url="$(git -C "$src" config -f .gitmodules --get "submodule.$name.url")" || exit 1
+    commit="$(git -C "$src" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
+    [ -n "$commit" ] || continue
+    if [ ! -e "$src/$path/.git" ]; then
+      git init -q "$src/$path" && git -C "$src/$path" remote add origin "$url" || exit 1
+    fi
+    if ! git -C "$src/$path" cat-file -e "$commit^{commit}" 2>/dev/null; then
+      git -C "$src/$path" fetch -q --depth 1 origin "$commit" || exit 1
+    fi
+    git -C "$src/$path" checkout -q --detach "$commit" && checkout_submodules "$src/$path" || exit 1
+  done
+}
+
+# `git submodule update --init --recursive` for the clone at $1 (further arguments go to
+# it), or checkout_submodules when this git has no `git submodule`.
+update_submodules() {
+  local src="$1"
+  shift
+  if [ -e "$(git --exec-path)/git-submodule" ]; then
+    git -C "$src" submodule update --init --recursive "$@"
+  else
+    checkout_submodules "$src"
+  fi
+}
+
 # Bring this installer's clone at $1 to ref $2: fetch it, check it out detached, update
 # the submodules. Local changes to tracked files (submodules included) refuse it.
 update_source_clone() {
@@ -541,7 +575,7 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
     || die "could not fetch '$ref' into '$src' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
   git -C "$src" checkout -q --detach FETCH_HEAD \
     || die "could not check out '$ref' in '$src' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)"
-  git -C "$src" submodule update --init --recursive --depth 1 \
+  update_submodules "$src" --depth 1 \
     || die "could not update the submodules of '$src' to '$ref' (git's message is above); run this installer again"
 }
 
@@ -574,7 +608,8 @@ if [ "$OPT_SOURCE" = 1 ]; then
       rm -rf "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
     fi
     ln -sfn "$SRC" "$PREFIX/clio-agent"
-    git -C "$SRC" submodule update --init --recursive
+    update_submodules "$SRC" \
+      || die "could not update the submodules of '$SRC' (git's message is above); run this installer again"
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --python "$py" --extra argonne --extra flowcept)
   else
@@ -584,14 +619,15 @@ if [ "$OPT_SOURCE" = 1 ]; then
       update_source_clone "$SRC" "$ref"
     else
       say "Cloning clio-agent at $ref"
-      if ! git clone --quiet --recurse-submodules --shallow-submodules --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
+      if ! git clone --quiet --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
         # A commit is not a branch or tag: fetch it by id.
         rm -rf "$SRC"
         git init -q "$SRC" && git -C "$SRC" remote add origin "$CLIO_REPO" \
           && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
-          && git -C "$SRC" submodule update --init --recursive --depth 1 \
           || die "could not fetch clio-agent at '$ref' from $CLIO_REPO: check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
       fi
+      update_submodules "$SRC" --depth 1 \
+        || die "could not fetch the submodules of clio-agent at '$ref' (git's message is above); run this installer again"
     fi
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)

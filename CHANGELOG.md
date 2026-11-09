@@ -179,7 +179,9 @@ your workspaces are not affected.
   when no Agent is installed.
 - `install.sh --source` never runs the macOS `/usr/bin/git` placeholder. It uses
   `CLIO_GIT`, a real git, or the git bundled with an installed CLIO Desktop, and says
-  what to install when there is none.
+  what to install when there is none. It checks out the recorded submodules with git
+  plumbing when that git has no `git submodule` command, as with the git bundled in
+  CLIO Desktop.
 
 - Windows protected execution qualifies on machines with a mapped network drive
   or the OpenAI Codex app installed. The bundled Codex runtime moves to 0.167.0, and
