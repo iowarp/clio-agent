@@ -422,8 +422,12 @@ def test_desktop_test_package_installs_unquarantined_and_prepares(tmp_path: Path
 
     assert result.returncode == 0, result.stdout + result.stderr
     log = calls.read_text()
-    assert f"hdiutil attach {image} -readonly" in log
+    assert f"hdiutil attach {image} -readonly -nobrowse -noverify" in log
     assert "ditto --noqtn " in log
+    # The long silent steps say what they are doing (a real user took them for a hang).
+    out = result.stdout
+    assert out.index("Copying CLIO Desktop into") < out.index("Checking the app's signature")
+    assert out.index("Signature valid.") < out.index("Installed: ")
     assert "codesign --verify --deep --strict" in log
     assert "app --prepare-runtime" in log
     assert "curl" not in log

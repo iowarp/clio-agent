@@ -291,21 +291,27 @@ install_desktop_linux() {
 install_desktop_mac() {
   local scratch="$1" image="$2" ditto_flags=("${@:3}") destination app staging backup=""
   pgrep -x clio-desktop >/dev/null && die "Quit CLIO Desktop before installing."
-  # The image's SHA-256 is already checked against the release; the app's signature
-  # is checked once, on the copy that is installed.
+  # The image's SHA-256 is already checked against the release, so attach skips its own
+  # checksum pass (-noverify); the app's signature is checked once, on the installed copy.
   mkdir "$scratch/mount"
-  hdiutil attach "$image" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
+  say "Opening the disk image"
+  hdiutil attach "$image" -readonly -nobrowse -noverify -mountpoint "$scratch/mount" -quiet \
+    || die "could not open the disk image $image"
   app="$scratch/mount/CLIO Desktop.app"
   [ -d "$app" ] || die "the disk image does not contain CLIO Desktop.app"
   destination="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
   case "$destination" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
   mkdir -p "$destination"
   staging="$(mktemp -d "$destination/.clio-install.XXXXXXXX")"
+  # Both steps below read the whole app (tens of thousands of files) and print nothing.
+  say "Copying CLIO Desktop into $destination (about 1.7 GB; this takes a few minutes)..."
   ditto ${ditto_flags[@]+"${ditto_flags[@]}"} "$app" "$staging/CLIO Desktop.app"
+  say "Checking the app's signature (about a minute)..."
   if ! codesign --verify --deep --strict "$staging/CLIO Desktop.app"; then
     rm -rf "$staging"
     die "the app's signature is invalid or absent; nothing installed"
   fi
+  say "Signature valid."
   if [ -e "$destination/CLIO Desktop.app" ]; then
     backup="$destination/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
     mv "$destination/CLIO Desktop.app" "$backup"
