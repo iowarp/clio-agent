@@ -287,3 +287,74 @@ def test_failed_helper_exit_retains_manifest_result(
     assert seen["env"]["TEMP"] == str(tmp_path / ".tmp")
     assert seen["env"]["CLIO_DOCUMENT_SOFFICE"] == "prepared-soffice"
     assert seen["env"]["CLIO_DOCUMENT_CONFINED"] == "1"
+
+
+def _npm_tarball(path: Path, files: dict[str, str]) -> str:
+    import hashlib
+    import io
+    import tarfile
+
+    with tarfile.open(path, "w:gz") as archive:
+        for name, data in files.items():
+            member = tarfile.TarInfo(f"package/{name}")
+            member.size = len(data.encode())
+            archive.addfile(member, io.BytesIO(data.encode()))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("downloads", ["valid", "wrong-version", "tampered", "absent"])
+def test_installer_downloaded_pnpm_replaces_the_registry_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloads: str
+) -> None:
+    """The installer's pinned pnpm tarballs unpack offline; anything else uses the registry."""
+    folder = tmp_path / "installer-downloads"
+    folder.mkdir()
+    host = "@pnpm/exe.darwin-arm64"
+    monkeypatch.setattr(runtime, "_pnpm_host_package", lambda: host)
+    version = runtime.PNPM_VERSION if downloads != "wrong-version" else "old"
+    wrapper = {
+        "package.json": json.dumps({"version": version, "bin": {"pnpm": "pnpm"}}),
+        "pnpm": "#!/usr/bin/env node",
+    }
+    pins = {
+        "pnpm": _npm_tarball(folder / runtime.pnpm_tarball("pnpm"), wrapper),
+        host: _npm_tarball(
+            folder / runtime.pnpm_tarball(host), {"package.json": "{}", "pnpm": "native"}
+        ),
+    }
+    monkeypatch.setattr(runtime, "PNPM_PACKAGES", pins)
+    if downloads == "tampered":
+        (folder / runtime.pnpm_tarball(host)).write_bytes(b"changed")
+    if downloads != "absent":
+        monkeypatch.setenv("CLIO_INSTALL_DOWNLOADS", str(folder))
+    node = tmp_path / "node" / "bin" / "node"
+    npm = tmp_path / "node/lib/node_modules/npm/bin/npm-cli.js"
+    npm.parent.mkdir(parents=True)
+    npm.touch()
+    modules = tmp_path / "cache/javascript-tools/node_modules"
+    installs: list[list[str]] = []
+    messages: list[str] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        if "--prefix" in command:
+            installs.append(command)
+            (modules / "pnpm").mkdir(parents=True, exist_ok=True)
+            (modules / "pnpm/pnpm").write_text("registry")
+            (modules / "pnpm/package.json").write_text(
+                json.dumps({"version": runtime.PNPM_VERSION, "bin": {"pnpm": "pnpm"}})
+            )
+        return runtime.PNPM_VERSION if "--version" in command else ""
+
+    monkeypatch.setattr(runtime, "_run", run)
+    _, pnpm = runtime._javascript_runtime(
+        tmp_path / "cache", tmp_path, {"node": str(node)}, progress=messages.append
+    )
+    assert pnpm == modules / "pnpm/pnpm"
+    if downloads == "valid":
+        assert installs == []
+        assert pnpm.read_text() == "#!/usr/bin/env node"
+        assert (modules / host / "pnpm").read_text() == "native"
+    else:
+        assert len(installs) == 1
+        assert pnpm.read_text() == "registry"
+        assert any("could not be used" in m for m in messages) == (downloads == "wrong-version")
