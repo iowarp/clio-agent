@@ -48,8 +48,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # the hidden ``_AgentAnswer`` dspy.Signature class was HOISTED to module
     # scope -- the fix is to hoist a class out of a function, not to record
     # and baseline-exempt it. Zero violations now.)
+    # (gact/app.py's entry retired: SPAStaticFiles was hoisted to module scope in
+    # gact/web_mount.py.)
     "src/clio_agent/gact/agents/builders.py": 1,
-    "src/clio_agent/gact/app.py": 1,
     "src/clio_agent/lm/adapters.py": 2,
     "src/clio_agent/providers/argonne_auth.py": 1,
     "src/clio_agent/runtime/lm_activity.py": 1,
