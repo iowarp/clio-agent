@@ -48,7 +48,10 @@ setup() {
 
   curl -fsSL --retry 3 "$G2_URL" -o "$intermediate"
   echo "$G2_SHA256  $intermediate" | shasum -a 256 --check --quiet
-  security add-certificates -k "$KEYCHAIN" "$intermediate"
+  # A .p12 exported with its chain already carries the intermediate.
+  if ! security find-certificate -Z -a "$KEYCHAIN" | grep -qi "SHA-256 hash: $G2_SHA256"; then
+    security add-certificates -k "$KEYCHAIN" "$intermediate"
+  fi
 
   # Let codesign use the key without a UI prompt, and put the keychain on the
   # user search list so codesign and Tauri's bundler find the identity.
