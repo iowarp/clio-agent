@@ -94,6 +94,7 @@ roots, or select its public tag with the complete installer's `--version` option
 | Command | Installs |
 |---|---|
 | `install.sh --desktop` | the desktop app, bundled with its agent (latest stable; `--dev`/`--version` as below) |
+| `install.sh --desktop-package <dmg\|URL> [--desktop-sha256 <hex>]` | a desktop test build that is not a release (see docs/INSTALL.md) |
 | `install.sh` | the latest stable release |
 | `install.sh --dev` | the most recently published release, pre-releases included |
 | `install.sh --source` | source at `main`, with what `main` pins (submodules, `uv.lock`) |

@@ -55,8 +55,15 @@ carries quarantine, so its first launch needs approval: on macOS 15 and 26 open 
 choose Done, then System Settings → Privacy & Security → Security → Open Anyway
 (Control-click → Open no longer bypasses Gatekeeper there). `install.sh --desktop`
 downloads with curl, which sets no quarantine. Neither script
-disables security settings or removes quarantine. Invalid checksums/signatures fail
-before replacing an installed app.
+disables security settings or removes quarantine from a release. Invalid
+checksums/signatures fail before replacing an installed app.
+
+A desktop test build that is not a release (for example the `macos-source-dmg` CI
+artifact) installs with `install.sh --desktop-package <file.dmg|https URL>
+[--desktop-sha256 <hex>]` (`CLIO_DESKTOP_PACKAGE`/`CLIO_DESKTOP_SHA256`). A URL needs the
+SHA-256; a local file is checked when it is given. The signature is still verified, and
+because the person named the file explicitly, the installed copy is not quarantined even
+when a browser downloaded it, so an ad-hoc test build opens without Open Anyway.
 
 The macOS CI builds a DMG from source and boots its relocated application and packaged
 backend on macOS 15 and 26. The same checks gate release publication. These checks

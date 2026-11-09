@@ -7,6 +7,9 @@
 #   install.sh --dev --source  source at `develop`
 #   install.sh --desktop       the desktop app, bundled with its agent (Apple Silicon macOS, Linux);
 #                              --dev and --version pick the release as above
+#   install.sh --desktop-package <file|https URL> [--desktop-sha256 <hex>]
+#                              a pre-release desktop test build (for example a CI artifact)
+#                              instead of a release; a URL needs --desktop-sha256
 #   install.sh --reset-old-data  move data CLIO 0.9.5.1 or older wrote aside without asking
 #                              (this release cannot open it; it is kept, never deleted)
 #
@@ -43,7 +46,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-usage() { sed -n '2,22p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
 OPT_SOURCE=0
 OPT_DEV=0
@@ -51,6 +54,8 @@ OPT_VERSION=""
 OPT_REF=""
 OPT_DESKTOP=0
 OPT_DOWNLOAD_ONLY=""
+OPT_DESKTOP_PACKAGE="${CLIO_DESKTOP_PACKAGE:-}"
+OPT_DESKTOP_SHA256="${CLIO_DESKTOP_SHA256:-}"
 OPT_RESET_OLD_DATA=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -61,6 +66,8 @@ while [ $# -gt 0 ]; do
     --ref|-Ref) OPT_REF="${2:?--ref needs a value}"; shift ;;
     --ref=*) OPT_REF="${1#*=}" ;;
     --desktop|-Desktop) OPT_DESKTOP=1 ;;
+    --desktop-package) OPT_DESKTOP_PACKAGE="${2:?--desktop-package needs a file or URL}"; shift ;;
+    --desktop-sha256) OPT_DESKTOP_SHA256="${2:?--desktop-sha256 needs a SHA-256}"; shift ;;
     --download-only|-DownloadOnly) OPT_DOWNLOAD_ONLY="${2:?--download-only needs a directory}"; shift ;;
     --reset-old-data|-ResetOldData) OPT_RESET_OLD_DATA=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -132,7 +139,51 @@ file_sha() {
   if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
 
+# A desktop test build that is not a release (a CI artifact): its checksum comes from the
+# person who built it, and its version from the app itself. A file a browser downloaded is
+# quarantined, which Gatekeeper refuses for a test build that is not notarized; the person
+# chose this file explicitly, so the installed copy is not quarantined (as a curl download).
+install_desktop_package() {
+  local package="$OPT_DESKTOP_PACKAGE" sha os file scratch app_dir version=""
+  sha="$(printf '%s' "$OPT_DESKTOP_SHA256" | tr 'A-F' 'a-f')"
+  [ -z "$sha" ] || [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "--desktop-sha256 must be a SHA-256 (64 hex digits)"
+  [ -z "$OPT_DOWNLOAD_ONLY" ] || die "--download-only selects a release; --desktop-package is already a file"
+  os="$(uname -s)"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/clio-desktop.XXXXXXXX")"
+  # shellcheck disable=SC2064 # expand now: the trap must remove this run's directory
+  trap "[ -d '$scratch/mount' ] && hdiutil detach '$scratch/mount' -quiet 2>/dev/null; rm -rf '$scratch'" EXIT
+  case "$package" in
+    https://*)
+      [ -n "$sha" ] || die "a --desktop-package URL needs --desktop-sha256"
+      have curl || die "curl is required"
+      file="${package%%\?*}"; file="$scratch/${file##*/}"
+      say "Downloading the CLIO Desktop test build ($package)"
+      curl --proto '=https' --tlsv1.2 -fL --progress-bar --retry 3 "$package" -o "$file" \
+        || die "could not download $package" ;;
+    *://*) die "--desktop-package must be a local file or an https URL" ;;
+    *) [ -f "$package" ] || die "no such desktop package: $package"; file="$package" ;;
+  esac
+  if [ -n "$sha" ]; then
+    [ "$(file_sha "$file")" = "$sha" ] || die "desktop package checksum mismatch; nothing installed"
+  else
+    warn "no --desktop-sha256 given: installing $file unverified"
+  fi
+  case "$os:$file" in
+    Darwin:*.dmg)
+      install_desktop_mac "$scratch" "$file" --noqtn
+      app_dir="${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app"
+      version="$(plutil -extract CFBundleShortVersionString raw -o - "$app_dir/Contents/Info.plist" 2>/dev/null || true)"
+      say "Installed the CLIO Desktop test build ${version:+$version }(not a release)"
+      prepare_desktop "" "$app_dir/Contents/MacOS/clio-desktop" ;;
+    Linux:*.deb|Linux:*.rpm)
+      install_desktop_linux "$file"
+      prepare_desktop "" /usr/bin/clio-desktop ;;
+    *) die "--desktop-package on $os takes a $( [ "$os" = Darwin ] && echo .dmg || echo .deb or .rpm )" ;;
+  esac
+}
+
 install_desktop() {
+  if [ -n "$OPT_DESKTOP_PACKAGE" ]; then install_desktop_package; return; fi
   [ "$OPT_SOURCE" = 0 ] || die "--desktop installs a released app; --source builds the agent only (build the app from gact-tui)"
   have curl || die "curl is required"
   local os cpu tag version asset manifest scratch
@@ -185,7 +236,7 @@ install_desktop() {
     return 0
   fi
   case "$os" in
-    Darwin) install_desktop_mac "$scratch" "$asset"
+    Darwin) install_desktop_mac "$scratch" "$scratch/$asset"
       prepare_desktop "$tag" "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app/Contents/MacOS/clio-desktop" ;;
     Linux) install_desktop_linux "$scratch/$asset"
       prepare_desktop "$tag" /usr/bin/clio-desktop ;;
@@ -203,9 +254,10 @@ desktop_prepares() {
 
 # What a first launch would do before the agent starts (its tool packages, Office),
 # done now, as the person who will open the app, as the Windows installer does.
+# An empty tag is a current test build, which can.
 prepare_desktop() {
   local tag="$1" desktop="$2"
-  desktop_prepares "$tag" || return 0
+  [ -z "$tag" ] || desktop_prepares "$tag" || return 0
   [ -x "$desktop" ] || { say "warning: $desktop not found; the app prepares itself on first launch"; return 0; }
   say "Preparing the desktop's agent and its tools"
   local run=("$desktop" --prepare-runtime)
@@ -233,20 +285,21 @@ install_desktop_linux() {
   say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."
 }
 
+# install_desktop_mac SCRATCH IMAGE [--noqtn]: --noqtn leaves quarantine off the copy.
 install_desktop_mac() {
-  local scratch="$1" asset="$2" destination app staging backup=""
+  local scratch="$1" image="$2" ditto_flags=("${@:3}") destination app staging backup=""
   pgrep -x clio-desktop >/dev/null && die "Quit CLIO Desktop before installing."
   # The image's SHA-256 is already checked against the release; the app's signature
   # is checked once, on the copy that is installed.
   mkdir "$scratch/mount"
-  hdiutil attach "$scratch/$asset" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
+  hdiutil attach "$image" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
   app="$scratch/mount/CLIO Desktop.app"
   [ -d "$app" ] || die "the disk image does not contain CLIO Desktop.app"
   destination="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
   case "$destination" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
   mkdir -p "$destination"
   staging="$(mktemp -d "$destination/.clio-install.XXXXXXXX")"
-  ditto "$app" "$staging/CLIO Desktop.app"
+  ditto ${ditto_flags[@]+"${ditto_flags[@]}"} "$app" "$staging/CLIO Desktop.app"
   if ! codesign --verify --deep --strict "$staging/CLIO Desktop.app"; then
     rm -rf "$staging"
     die "the app's signature is invalid or absent; nothing installed"
@@ -266,7 +319,7 @@ install_desktop_mac() {
   say "Open it from $destination in Finder, or run: open \"$destination/CLIO Desktop.app\""
 }
 
-if [ "$OPT_DESKTOP" = 1 ]; then
+if [ "$OPT_DESKTOP" = 1 ] || [ -n "$OPT_DESKTOP_PACKAGE" ]; then
   install_desktop
   exit 0
 fi
