@@ -51,6 +51,12 @@ The new registration is still in Google's **Testing** mode, so only Google accou
 on its test-user list can sign in. Ship it in test builds only; hold the public
 release until Google verifies the registration for production.
 
+Known issue: on a fresh install with no conversations yet, attaching a newly connected
+Drive folder stops at "Choose a conversation to track this work"
+([iowarp/gact-tui#873](https://github.com/iowarp/gact-tui/issues/873)). Start a
+conversation first, then attach the folder. Signing in and existing Drive sources are
+not affected.
+
 ### Added
 
 - `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio
