@@ -282,3 +282,70 @@ def test_job_wire_shape_is_typed() -> None:
     assert wire["running"] is False
     assert wire["error"] == {"code": "install_failed", "message": "x"}
     assert json.loads(json.dumps(wire)) == wire
+
+
+def _tree(directory: Path) -> dict[str, int]:
+    return {str(p.relative_to(directory)): p.stat().st_mtime_ns for p in directory.rglob("*")}
+
+
+def _site_of(python: str) -> Path:
+    out = subprocess.run(
+        [python, "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(out.stdout.strip())
+
+
+def _overlay_version(python: str, overlay: Path) -> str:
+    from clio_agent.runtime import package_overlay  # noqa: PLC0415
+
+    script = package_overlay.activation_prelude(overlay) + (
+        "import clio_fake_sdk, importlib.metadata as m\n"
+        "print(clio_fake_sdk.__version__, m.version('clio-fake-sdk'))"
+    )
+    out = subprocess.run([python, "-c", script], capture_output=True, text=True, check=True)  # noqa: S603
+    return out.stdout.strip()
+
+
+def test_a_sealed_runtime_updates_into_its_overlay_and_never_itself(
+    venv: str, wheels: dict[str, Path], tmp_path: Path
+) -> None:
+    """The scratch venv stands in for the signed app's runtime: not one file changes."""
+    overlay = tmp_path / "overlay"
+    site = _site_of(venv)
+    before = _tree(site)
+
+    job = updater.ComponentUpdater().run(
+        "fake",
+        env_for(
+            venv, {"1.0.0": wheels["1.0.0"], "1.1.0": wheels["1.1.0"]}, package_overlay=overlay
+        ),
+    )
+
+    assert (job.stage, job.error_code) == ("done", ""), job.error
+    assert _tree(site) == before
+    assert installed(venv) == "1.0.0"  # the runtime alone still holds its own copy
+    assert _overlay_version(venv, overlay) == "1.1.0 1.1.0"
+
+
+def test_a_sealed_runtime_rollback_empties_its_overlay(
+    venv: str, wheels: dict[str, Path], tmp_path: Path
+) -> None:
+    overlay = tmp_path / "overlay"
+    site = _site_of(venv)
+    before = _tree(site)
+
+    job = updater.ComponentUpdater().run(
+        "fake",
+        env_for(
+            venv, {"1.0.0": wheels["1.0.0"], "1.2.0": wheels["1.2.0"]}, package_overlay=overlay
+        ),
+    )
+
+    assert (job.stage, job.error_code) == ("failed", "verify_failed")
+    assert job.rolled_back is True
+    assert _tree(site) == before
+    assert not list(overlay.glob("clio_fake_sdk*"))  # the rollback copy equals the runtime's
+    assert _overlay_version(venv, overlay) == "1.0.0 1.0.0"
