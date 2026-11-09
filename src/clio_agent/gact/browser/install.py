@@ -15,6 +15,7 @@ server's own environment (``PLAYWRIGHT_BROWSERS_PATH``) is never changed for its
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import json
 import os
@@ -35,6 +36,7 @@ __all__ = [
     "REASON_PREPARING",
     "browsers_root",
     "chromium_executable",
+    "chromium_for_action",
     "ensure_chromium",
     "missing_libraries",
     "playwright_version",
@@ -126,7 +128,7 @@ def ensure_chromium() -> Path:
             return found
         other = preparing_answer()
         if other is not None:
-            raise BrowserError(REASON_PREPARING, other["message"], **other)
+            raise BrowserError(REASON_PREPARING, other["message"], status=other["status"])
         node, cli = _driver()
         trace.event("BROWSER", "chromium install starting root=%s", root)
         with package_preparation.preparing(root):
@@ -151,13 +153,60 @@ def ensure_chromium() -> Path:
         return found
 
 
-def preparing_answer() -> dict[str, Any] | None:
-    """A typed "still downloading" answer while another process downloads Chromium."""
-    record = package_preparation.current(browsers_root())
-    if record is None or record.get("state") != "preparing":
-        return None
-    if int(record.get("pid") or 0) == os.getpid():
-        return None
+_DOWNLOAD_LOCK = threading.Lock()
+#: This process's Chromium download, while it runs.
+_download: concurrent.futures.Future[Path] | None = None
+
+
+def _download_in_background(task: concurrent.futures.Future[Path]) -> None:
+    global _download
+    error: BaseException | None = None
+    try:
+        found = ensure_chromium()
+    except BaseException as exc:  # noqa: BLE001 - handed to whoever waits on the task
+        error = exc
+    # Forget the task before completing it, so an action that sees it fail starts afresh.
+    with _DOWNLOAD_LOCK:
+        if _download is task:
+            _download = None
+    if error is not None:
+        task.set_exception(error)
+    else:
+        task.set_result(found)
+
+
+def chromium_for_action(wait_s: float) -> Path:
+    """The Chromium executable for a browser action, waiting at most ``wait_s`` for it.
+
+    The first use downloads Chromium, which can take minutes, longer than one action's
+    ``browser.action_timeout_s``. The download runs on its own thread and outlives the
+    action; while it runs, the action gets ``browser_runtime_preparing`` instead of a
+    timeout, and a later action finds the browser installed (iowarp/clio-agent#1975).
+
+    Raises:
+        BrowserError: ``browser_runtime_preparing`` while the download runs,
+            ``browser_runtime_install_failed`` when it failed.
+    """
+    global _download
+    with _DOWNLOAD_LOCK:
+        task = _download
+        if task is None:
+            task = concurrent.futures.Future()
+            _download = task
+            threading.Thread(
+                target=_download_in_background,
+                args=(task,),
+                name="clio-browser-install",
+                daemon=True,
+            ).start()
+    try:
+        return task.result(timeout=max(0.0, wait_s))
+    except concurrent.futures.TimeoutError:
+        answer = _preparing()
+        raise BrowserError(REASON_PREPARING, answer["message"], status=answer["status"]) from None
+
+
+def _preparing() -> dict[str, Any]:
     return {
         "status": "preparing",
         "reason": REASON_PREPARING,
@@ -166,6 +215,16 @@ def preparing_answer() -> dict[str, Any] | None:
             "Try again in a minute."
         ),
     }
+
+
+def preparing_answer() -> dict[str, Any] | None:
+    """A typed "still downloading" answer while another process downloads Chromium."""
+    record = package_preparation.current(browsers_root())
+    if record is None or record.get("state") != "preparing":
+        return None
+    if int(record.get("pid") or 0) == os.getpid():
+        return None
+    return _preparing()
 
 
 _MISSING = re.compile(r"(lib[\w.+-]+\.so[\w.]*)")
