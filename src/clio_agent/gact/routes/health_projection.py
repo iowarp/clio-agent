@@ -24,14 +24,20 @@ _PROBE_STATE_TO_WIRE: dict[str, Literal["ready", "degraded", "unavailable"]] = {
 def integration_to_wire(item: IntegrationStatus) -> Integration:
     """Project one runtime probe to the health wire without losing detail."""
 
-    ack: dict[str, object] = {}
+    active: bool | None = None
+    acknowledgement_required: bool | None = None
+    warning: str | None = None
     if item.name == "sandbox":
         from clio_agent.runtime.sandbox_doctor import sandbox_acknowledgement  # noqa: PLC0415
 
         verdict = sandbox_acknowledgement(item)
-        ack = {key: verdict[key] for key in ("active", "acknowledgement_required", "warning")}
+        active = bool(verdict["active"])
+        acknowledgement_required = bool(verdict["acknowledgement_required"])
+        warning = verdict["warning"]
     return Integration(
-        **ack,
+        active=active,
+        acknowledgement_required=acknowledgement_required,
+        warning=warning,
         name=item.name,
         status=_PROBE_STATE_TO_WIRE.get(item.state.value, "degraded"),
         detail=item.summary,
