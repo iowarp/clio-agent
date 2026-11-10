@@ -85,6 +85,9 @@ class FlowCall:
         #: Set by the workflow flow for a step's call (run, step): a fork of the step
         #: counts against the run's growth bounds and approval.
         self.workflow_step: dict[str, Any] | None = None
+        #: A step deadline. Set after the call is built, so it stays out of the
+        #: invocation hash. The first acceptance stores it on the child.
+        self.execution_deadline: str | None = None
         self._task: asyncio.Future[CallResult] | None = None
 
     def _future(self) -> asyncio.Future[CallResult]:

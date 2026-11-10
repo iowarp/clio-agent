@@ -89,6 +89,7 @@ async def accept_call(ctx: FlowContext, call: FlowCall) -> str:
             session_metadata=session_metadata,
             parent_handle=ctx.root_handle,
             model=call.model,
+            execution_deadline=call.execution_deadline,
         )
     except AdmissionClosed as exc:
         await ctx.journal.record_call(
