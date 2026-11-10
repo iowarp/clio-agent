@@ -213,14 +213,24 @@ def support_installed(provider_kind: str) -> bool:
 def _recorded(provider_kind: str, installed: bool) -> bool:
     """Record a support this call installed, so a runtime change cannot lose it.
 
+    It also forgets every cached client selection, so the CLI the install just
+    provided is found without a restart.
+
     Only an install CLIO just performed is recorded -- support the runtime
     already carried (the desktop bundles ALCF sign-in) is not the person's
     install. A failed record is logged and reported by
     :mod:`clio_agent.providers.support_record`; the install itself stands.
     """
     if installed:
+        from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
+            reset_client_cache,
+        )
         from clio_agent.providers.support_record import record_support  # noqa: PLC0415
 
+        # A client selection cached before the install (``claude_no_cli``,
+        # ``copilot_no_runtime``) must not outlive it, or sign-in and model
+        # discovery keep reporting the support missing until a restart.
+        reset_client_cache()
         record_support(provider_kind)
     return installed
 
@@ -316,10 +326,6 @@ def ensure_copilot_support(*, python_executable: str | None = None) -> bool:
         raise ProviderDependencyInstallError(
             f"GitHub Copilot runtime could not be staged: {_bounded_install_error(result)}"
         )
-    from clio_agent.providers.components.client_binary import reset_client_cache  # noqa: PLC0415
-
-    # A selection cached before staging (``copilot_no_runtime``) must not outlive it.
-    reset_client_cache()
     return _recorded("copilot", True)
 
 

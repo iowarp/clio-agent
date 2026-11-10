@@ -35,6 +35,7 @@ CRASH_RECORD_NAME = "clio-runtime-crash.json"
 #: Daemon-log lines carried into the record — enough to name the failure without
 #: unbounded payloads in error details.
 _LOG_TAIL_LINES = 30
+_LOG_TAIL_MAX_BYTES = 64 * 1024
 
 # ``clio_run stop`` terminates the daemon with a non-zero platform status on
 # Windows (observed as 15).  The watcher cannot infer intent from that status
@@ -94,10 +95,17 @@ def read_crash_record(state_dir: Path) -> dict[str, Any] | None:
 
 
 def _log_tail(log_path: Path, offset: int = 0) -> str:
-    """Last lines this daemon wrote; the log is shared and appended across spawns."""
+    """Last lines this daemon wrote; the log is shared and appended across spawns.
+
+    Reads at most the last ``_LOG_TAIL_MAX_BYTES``: a flooding daemon's log can be
+    huge. An ``offset`` past the end means the log was rotated since the spawn
+    (the log pump caps it), so the whole current file belongs to this daemon.
+    """
     try:
         with log_path.open("rb") as fh:
-            fh.seek(offset)
+            size = fh.seek(0, 2)
+            start = offset if offset <= size else 0
+            fh.seek(max(start, size - _LOG_TAIL_MAX_BYTES))
             lines = fh.read().decode("utf-8", errors="replace").splitlines()
     except OSError:
         return ""

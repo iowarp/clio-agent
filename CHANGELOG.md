@@ -37,6 +37,25 @@ your workspaces are not affected.
   move it aside, and the conversation list answers with the same message.
   `clio-agent migrate` refuses such a store (exit 5).
 
+### Reconnect Google Drive after upgrading
+
+Drive sign-in has moved to a new Google client built into CLIO. If you connected
+Google Drive with 0.9.5.1 or earlier, you may need to sign in to Drive again: open
+**Connect data**, choose your Google account and select **Log in**. Your Drive
+sources keep their folders and settings and work again once you have signed in;
+nothing else needs to change. Distributors who set `CLIO_STORAGE_GOOGLE_CLIENT_ID` /
+`CLIO_STORAGE_GOOGLE_CLIENT_SECRET` are not affected.
+
+Google is still verifying the new client. Until it finishes, Drive sign-in works only
+for Google accounts the CLIO team has added; if Google refuses your sign-in, ask your
+CLIO contact to add your account.
+
+Known issue: on a fresh install with no conversations yet, attaching a newly connected
+Drive folder stops at "Choose a conversation to track this work"
+([iowarp/gact-tui#873](https://github.com/iowarp/gact-tui/issues/873)). Start a
+conversation first, then attach the folder. Signing in and existing Drive sources are
+not affected.
+
 ### Added
 
 - `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio

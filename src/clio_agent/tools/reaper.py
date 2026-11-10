@@ -402,7 +402,7 @@ def residency_lease(agent: Any, root: str) -> Iterator[None]:
     from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
 
     key = canonical_workspace_root(root)
-    with agent.lease_workspace_fleet(root):
+    with agent.lease_workspace_fleet(root, wait=False):
         reaper = getattr(agent, "_workspace_reaper", None)
         if reaper is None or not key:
             trace.event("TOOLS", "workspace_fleet_residency_untracked root=%s", root)

@@ -284,7 +284,11 @@ class BrowserService:
         loop = asyncio.get_running_loop()
         product = settings.channel()
         executable = (
-            await loop.run_in_executor(None, install.ensure_chromium)
+            # Half the action's clock: Playwright's start shares it, and a longer
+            # first-use download answers browser_runtime_preparing rather than timing out.
+            await loop.run_in_executor(
+                None, install.chromium_for_action, settings.action_timeout_s() / 2
+            )
             if product == "chromium"
             else None
         )

@@ -23,6 +23,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_CRITICAL` | `arc.clio_core.daemon_rss_critical_bytes` | int | `4294967296` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_WARN` | `arc.clio_core.daemon_rss_warn_bytes` | int | `1073741824` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S` | `arc.clio_core.liveness_ttl_s` | float | `3.0` | `src/clio_agent/arc/clio_core_liveness.py` |
+| `CLIO_ARC_CLIO_CORE_LOG_FLOOD_LINES_PER_S` | `arc.clio_core.log_flood_lines_per_s` | int | `1000` | `src/clio_agent/arc/runtime_log.py` |
+| `CLIO_ARC_CLIO_CORE_LOG_FLOOD_RESTART_LIVE` | `arc.clio_core.log_flood_restart_live` | bool | `false` | `src/clio_agent/arc/runtime_log_flood.py` |
+| `CLIO_ARC_CLIO_CORE_LOG_MAX_BYTES` | `arc.clio_core.log_max_bytes` | int | `16777216` | `src/clio_agent/arc/runtime_log.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_ATTEMPTS` | `arc.clio_core_write_retry.attempts` | int | `3` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_BACKOFF_FACTOR` | `arc.clio_core_write_retry.backoff_factor` | float | `3.0` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_FIRST_DELAY_S` | `arc.clio_core_write_retry.first_delay_s` | float | `0.2` | `src/clio_agent/arc/clio_core_retry.py` |
@@ -408,6 +411,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/env_file.py` |
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
+| `CLIO_GIT` | unmigrated | `src/clio_agent/runtime/git_executable.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |

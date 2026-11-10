@@ -35,9 +35,37 @@ def source_facts(app: Any, workspace_id: str) -> list[dict[str, Any]]:
                 "connected": bool(record.connected),
                 "access": "read-only" if record.linked_access == "read_only" else "editable",
                 "path": source.local_path or "",
+                "operations": running_operations(app, source.id),
             }
         )
     return rows
+
+
+#: Source operation states that are still in flight.
+_RUNNING_STATES = frozenset({"queued", "running", "cancellation_requested"})
+
+
+def running_operations(app: Any, source_id: str) -> list[dict[str, str]]:
+    """A source's link/refresh/download tasks still running, named by their task handle.
+
+    A person can link a folder and type at once: the agent must know the indexing has
+    not finished, and which handle to ``wait_tasks`` on, instead of reading a partial
+    folder.
+    """
+    from clio_agent.gact.storage.task_controls import source_operation_views  # noqa: PLC0415
+
+    if getattr(getattr(app, "state", None), "task_history", None) is None:
+        return []
+    views = source_operation_views(app, source_id)
+    return [
+        {
+            "handle": str(view["task_handle"]),
+            "kind": "download" if view.get("kind") == "materialize" else "indexing",
+            "state": str(view["state"]),
+        }
+        for view in views
+        if view.get("task_handle") and view.get("state") in _RUNNING_STATES
+    ]
 
 
 def resource_facts(app: Any, workspace_id: str) -> tuple[list[dict[str, Any]], int]:

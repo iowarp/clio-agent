@@ -34,7 +34,7 @@ def test_bundled_google_registration_exchanges_and_refreshes_with_pkce(
     """The actual registered pair reaches only the token endpoint, including refresh."""
     app = application("google_drive")
     assert app.client_id == (
-        "882476173721-10t4lm4vskm1l1p98jspmj8pfbequi0g.apps.googleusercontent.com"
+        "209468117785-4uplk9getqe898gbvms8g0qiae62rmoo.apps.googleusercontent.com"
     )
     assert app.client_secret
     assert app.client_secret not in repr(app)
