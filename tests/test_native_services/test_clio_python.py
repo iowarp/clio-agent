@@ -5,6 +5,7 @@ Stdlib-only: the lifecycle CI job runs this without the application dependencies
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,14 @@ def test_uv_builds_on_the_controller_interpreter_without_downloads() -> None:
     ]
 
 
+def platform_manages_python(system: str, nt: bool) -> bool:
+    return nt or system == "darwin"
+
+
+def test_managed_python_follows_the_running_platform() -> None:
+    assert platform.MANAGED_PYTHON == platform_manages_python(sys.platform, os.name == "nt")
+
+
 @pytest.mark.parametrize(
     ("system", "nt", "managed"),
     [("darwin", False, True), ("linux", False, False), ("win32", True, True)],
@@ -29,8 +38,8 @@ def test_uv_builds_on_the_controller_interpreter_without_downloads() -> None:
 def test_otherwise_uv_takes_the_manifest_python(
     monkeypatch: pytest.MonkeyPatch, system: str, nt: bool, managed: bool
 ) -> None:
-    monkeypatch.setattr(platform.sys, "platform", system)
-    monkeypatch.setattr(platform.os, "name", "nt" if nt else "posix")
+    # MANAGED_PYTHON is decided once at import, from the platform the module loads on.
+    monkeypatch.setattr(platform, "MANAGED_PYTHON", platform_manages_python(system, nt))
     arguments = platform.uv_python_arguments({"python_version": "3.10"})
     assert arguments == ["--python", "3.10", *(["--managed-python"] if managed else [])]
 
@@ -39,7 +48,7 @@ def test_a_vanishing_interpreter_falls_back_to_the_pinned_python(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(platform, "durable_interpreter", lambda executable=None: False)
-    monkeypatch.setattr(platform.sys, "platform", "darwin")
+    monkeypatch.setattr(platform, "MANAGED_PYTHON", platform_manages_python("darwin", False))
     assert platform.uv_python_arguments({"interpreter": "clio"}) == [
         "--python",
         "3.12",
