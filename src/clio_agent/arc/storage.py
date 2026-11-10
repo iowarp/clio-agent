@@ -29,6 +29,7 @@ from clio_agent import paths
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
 from clio_agent.arc import (
     clio_core_attach,
+    core_control_port,
     crashed_clients,
     runtime_log,
     runtime_log_flood,
@@ -382,6 +383,8 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
         starting = pidfile_live_pid(_daemon_pidfile())
         with runtime_stop.kill_spawned_daemon_on_failure():
             if starting is None:
+                # Stopgap for clio-core#1355; removal tracked in iowarp/clio-agent#2038.
+                core_control_port.hold_control_port(port)
                 _spawn_runtime_daemon(iowarp_core, config_path, log_level)
                 _wait_for_daemon_start(port, state)
                 return config_path
