@@ -45,7 +45,6 @@ def setup_workspace(
     external.mkdir()
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(root))
     monkeypatch.setitem(conf.store().data["tools"]["file_policy"], "allowed_roots", [str(root)])
-    monkeypatch.setattr("clio_agent.gact.permission_timeout.PERMISSION_REQUEST_TIMEOUT_S", 8)
     app = build_app(sessions_path=tmp_path / "sessions.json")
     client = TestClient(app)
     wid = client.post(
@@ -76,7 +75,7 @@ def test_real_read_waits_for_human_then_runs_or_returns_refusal(
     source = external / "notes.txt"
     source.write_text("private research", encoding="utf-8")
     arguments = {
-        "filepath": str(source),
+        "path": str(source),
         "access_reason": "Read the outside notes selected for this research.",
     }
 
@@ -112,7 +111,7 @@ def test_real_read_waits_for_human_then_runs_or_returns_refusal(
         assert result == "deny" and "user declined" in result.deny_message
         assert granted_write_roots(str(root)) == ()
     else:
-        assert result["content"] == "private research"
+        assert result["total_lines"] == 1 and result["path"] == str(source.resolve())
         assert app.state.workspaces.get(wid).config["granted_write_roots"] == [
             str(external.resolve())
         ]
@@ -183,7 +182,7 @@ def test_normalized_permission_response_rechecks_policy_and_only_user_can_grant(
 
     def ask() -> str:
         with _gact_app_context(app), _tool_session_context(sid):
-            return _make_permission_gate(app)("fs_read_file", {"filepath": str(source)})
+            return _make_permission_gate(app)("fs_read_file", {"path": str(source)})
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(ask)
@@ -264,7 +263,7 @@ def test_real_write_and_move_continue_after_approval(
         future = pool.submit(
             run,
             "fs_write_file",
-            {"filepath": str(source), "content": "reviewed"},
+            {"path": str(source), "content": "reviewed"},
             fs_server,
             "write_file",
         )
@@ -332,7 +331,7 @@ def test_granted_consumed_input_gets_hash_and_version(tmp_path: Path) -> None:
     scan = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(source)},
+        args={"path": str(source)},
         workspace_id="ws1",
         turn_id="",
         trace_id="",
@@ -351,7 +350,7 @@ def test_granted_consumed_input_gets_hash_and_version(tmp_path: Path) -> None:
     other_scan = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(other)},
+        args={"path": str(other)},
         workspace_id="ws1",
         turn_id="",
         trace_id="",
@@ -363,7 +362,7 @@ def test_granted_consumed_input_gets_hash_and_version(tmp_path: Path) -> None:
     failed = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(source)},
+        args={"path": str(source)},
         workspace_id="ws1",
         turn_id="",
         trace_id="",

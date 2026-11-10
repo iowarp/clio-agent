@@ -28,10 +28,16 @@ def run_doctor(json_output: bool = False) -> int:
     from clio_agent.gact.routes.provider_probe_env import (  # noqa: PLC0415
         runtime_provider_probe_env,
     )
-    from clio_agent.runtime.status import collect_runtime_status  # noqa: PLC0415
+    from clio_agent.gact.store_format_boot import doctor_rows  # noqa: PLC0415
+    from clio_agent.runtime.status import (
+        RuntimeReport,  # noqa: PLC0415
+        collect_runtime_status,  # noqa: PLC0415
+    )
 
     # The provider the agent would be built from (config.yaml -> env -> default).
     report = collect_runtime_status(env=runtime_provider_probe_env(None))
+    # Data written by CLIO 0.9.5.1 or older: read from the store while no CLIO uses it.
+    report = RuntimeReport(integrations=[*report.integrations, *doctor_rows()])
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))
     else:

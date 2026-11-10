@@ -269,16 +269,27 @@ def dual_run(
     identities_b = SessionRunIdentities(
         [event.id for event in cap_b.sse if N._sse_included(event.type)]
     )
-    sse_ref = [
-        {"type": r["type"], "payload": N._mask(identities_a.payload(r["payload"]), global_sse_mask)}
-        for r in N.bus_events_to_records(cap_a.sse)
-        if N._sse_included(r["type"])
-    ]
-    sse_cand = [
-        {"type": r["type"], "payload": N._mask(identities_b.payload(r["payload"]), global_sse_mask)}
-        for r in N.bus_events_to_records(cap_b.sse)
-        if N._sse_included(r["type"])
-    ]
+    # Deferred highway events are compared as their own ordered stream (N.served_order).
+    sse_ref = N.served_order(
+        [
+            {
+                "type": r["type"],
+                "payload": N._mask(identities_a.payload(r["payload"]), global_sse_mask),
+            }
+            for r in N.bus_events_to_records(cap_a.sse)
+            if N._sse_included(r["type"])
+        ]
+    )
+    sse_cand = N.served_order(
+        [
+            {
+                "type": r["type"],
+                "payload": N._mask(identities_b.payload(r["payload"]), global_sse_mask),
+            }
+            for r in N.bus_events_to_records(cap_b.sse)
+            if N._sse_included(r["type"])
+        ]
+    )
     sse_report = N.DiffReport(
         "sse",
         (

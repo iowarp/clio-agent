@@ -1,0 +1,79 @@
+"""What each MCP server says about itself (``instructions``), kept per namespace.
+
+A server may send ``instructions`` when a client connects. CLIO keeps them per
+namespace from the live listing (:func:`record_listing_facts`), persists them with the
+listing cache entry, and replays them on a cache hit, so a server deferred behind
+``search_tools`` is described in the prompt by its own words when its plugin gives no
+``servers.<name>.description`` (:mod:`clio_agent.gact.agents.deferred_tools`).
+
+The prompt's listing uses a short form (the first paragraph, up to
+``tools.instructions_chars``) and says when it is shortened; the whole instructions
+reach the model with the server's tools when ``search_tools`` loads them
+(:func:`clio_agent.gact.search_tools.search_result`).
+"""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Sequence
+from typing import Any
+
+from clio_agent import conf
+
+__all__ = [
+    "instructions_chars",
+    "instructions_for",
+    "record_instructions",
+    "record_listing_facts",
+]
+
+_LOCK = threading.Lock()
+_BY_NAMESPACE: dict[str, str] = {}
+
+
+def instructions_chars() -> int:
+    """How much of a server's instructions the deferred listing shows (``tools.instructions_chars``).
+
+    A default for the listing's short form only: ``search_tools`` gives the whole text.
+
+    Raises:
+        ValueError: The configured length is below 2 (one character and the ellipsis).
+    """
+    value = conf.resolve(
+        "tools.instructions_chars",
+        env="CLIO_TOOLS_INSTRUCTIONS_CHARS",
+        default=300,
+        cast=conf.as_int,
+    )
+    if value < 2:
+        raise ValueError(f"tools.instructions_chars must be at least 2, not {value}")
+    return value
+
+
+def record_instructions(namespace: str, instructions: str | None) -> None:
+    """Keep (or, with nothing, forget) a namespace's server instructions."""
+    text = str(instructions or "").strip()
+    with _LOCK:
+        if text:
+            _BY_NAMESPACE[namespace] = text
+        else:
+            _BY_NAMESPACE.pop(namespace, None)
+
+
+def instructions_for(namespace: str, *, summary: bool = False) -> str:
+    """The namespace's instructions; ``summary`` gives the first paragraph, bounded."""
+    with _LOCK:
+        text = _BY_NAMESPACE.get(namespace, "")
+    if not summary or not text:
+        return text
+    first = text.split("\n\n", 1)[0].strip()
+    limit = instructions_chars()
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
+
+
+def record_listing_facts(namespace: str, client: Any, tools: Sequence[Any]) -> None:
+    """Everything a live listing establishes: the task capability and the instructions."""
+    from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
+
+    record_definitive_capability(namespace, client, tools)
+    record_instructions(namespace, getattr(client, "instructions", None))

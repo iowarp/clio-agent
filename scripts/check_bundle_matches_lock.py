@@ -73,9 +73,10 @@ BUNDLE_TARGETS: tuple[str, ...] = (
     "aarch64-unknown-linux-gnu",
 )
 
-#: macOS deployment target of the bundle runner (macos-14). uv's darwin triples
-#: default to 13.0, below iowarp-core's macosx_14_0 wheel tag.
-BUNDLE_MACOSX_DEPLOYMENT_TARGET = "14.0"
+#: macOS deployment target of the bundle runner (macos-15), CLIO's macOS floor since
+#: iowarp-core 2.4.0 publishes macosx_15_0 wheels only. uv's darwin triples default to
+#: 13.0, below that tag.
+BUNDLE_MACOSX_DEPLOYMENT_TARGET = "15.0"
 
 #: The bundled runtime's interpreter version (build-gact-runtime default).
 BUNDLE_PYTHON = "3.14"
@@ -96,7 +97,9 @@ INTERPRETER_SEEDED = frozenset({"pip"})
 #: past the lock, from the provider panel. MUST equal
 #: ``clio_agent.providers.components.registry.USER_UPDATABLE_COMPONENTS`` (a
 #: test enforces this; release checks must not import the CLIO application).
-USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex-cli-bin", "claude-agent-sdk"})
+USER_UPDATABLE_COMPONENTS = frozenset(
+    {"openai-codex-cli-bin", "claude-agent-sdk", "github-copilot-sdk"}
+)
 
 _RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
 

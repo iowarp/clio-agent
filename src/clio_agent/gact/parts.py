@@ -152,6 +152,12 @@ class Part(DocumentPartFields):
     resource_revision: str = ""
     delivery_preference: str = ""
 
+    # summon -- the person named what handles this message (``target_kind`` ``subagent``,
+    # ``workflow``, ``flow`` or ``server``; ``target`` its name). The server acts only on these parts, never on an
+    # ``@`` the person typed without picking it.
+    target_kind: str = ""
+    target: str = ""
+
     # context_ref -- a server-resolved reference to existing context in this
     # session's workspace. ``id`` remains the message-part identity; ``ref_id``
     # is the referenced repository identity. Labels are display-only and are

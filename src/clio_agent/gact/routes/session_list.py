@@ -110,7 +110,14 @@ def register_session_list_route(app: FastAPI) -> None:
         total: Optional[int] = None
         if family_of or waiting_on_person:
             # Bounded by the open conversation's tree / the work waiting on a person.
-            related = await run_off_loop(lambda: store.related(family_of=family_of or ""))
+            # A request that parks no turn (a sandbox folder card) leaves its session
+            # idle, so the open permission rows name the sessions waiting that way.
+            waiting = (
+                _pending_permission_sessions(app) if waiting_on_person and not family_of else []
+            )
+            related = await run_off_loop(
+                lambda: store.related(family_of=family_of or "", waiting=waiting)
+            )
             rows = [
                 row
                 for row in related
@@ -143,6 +150,17 @@ def register_session_list_route(app: FastAPI) -> None:
             )
 
         return project_for_request(request, v3=v3, v2=v2)
+
+
+def _pending_permission_sessions(app: FastAPI) -> list[str]:
+    """The sessions with a pending permission row that wants a person's answer."""
+
+    rows = list((getattr(app.state, "permissions", None) or {}).values())
+    return [
+        str(row["session_id"])
+        for row in rows
+        if isinstance(row, dict) and row.get("status") == "pending" and row.get("session_id")
+    ]
 
 
 __all__ = ["DEFAULT_PAGE_SIZE", "register_session_list_route"]

@@ -8,20 +8,21 @@ call on a worker thread and waits with a bound, but a worker blocked in a GIL-ho
 call keeps the watcher itself from waking, so the bound could not fire and the whole
 server (event loop, health endpoint) froze with it.
 
-The async methods that submit without holding the GIL are used instead wherever the
-binding has one (measured: ``AsyncPutBlob``, ``AsyncDelBlob``, ``AsyncTagQuery`` let the
-main thread run ~300 times in the same 3 s). The worker polls ``Future.done()`` (it
-returns at once) and sleeps in between, GIL released, so the stall watch's own bound
-fires on time and the ladder degrades typed (``rpc_stalled``) as designed.
+The async methods submit with the GIL released (``core_bindings.cc``:
+``AsyncPutBlob``, ``AsyncGetBlob``, ``AsyncGetBlobSize``, ``AsyncDelBlob``,
+``AsyncTagQuery``; measured for puts and deletes: the main thread ran ~300 times in the
+same 3 s) and are used for every put, get, size and delete. :func:`await_future` waits
+in the native ``Future.wait(max_sec)``, GIL released, one bounded slice at a time, so a
+stall still ends typed (``rpc_stalled``); once a kind's tag id is cached these run
+inline on the caller thread instead of the pooled stall-watch worker.
 
-Still blocking, because the binding has no GIL-free alternative (drafted upstream):
-``Tag(name)`` (GetOrCreateTag, cached here once per kind), ``Tag.GetBlobSize`` and
-``Tag.GetBlob`` (``AsyncGetBlob`` blocks while submitting), ``Tag.GetContainedBlobs``
-(``AsyncBlobQuery`` returns no rows for these tags), and ``SemanticSearch``.
+Still blocking: ``Tag(name)`` (GetOrCreateTag, cached here once per kind),
+``Tag.GetContainedBlobs`` and ``SemanticSearch``; these keep the pooled stall watch.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import time
@@ -29,14 +30,20 @@ from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any
 
+from clio_agent.arc.native_threads import run_on_native_thread
 from clio_agent.arc.rpc_liveness import resolve_liveness_policy
 
-# ``Future.done()`` returns at once; the sleep between checks releases the GIL.
+# A future without a native ``wait`` (a test double) is polled: ``Future.done()``
+# returns at once, and the sleep between checks (from 0.1 ms, doubling to 10 ms)
+# releases the GIL.
+_FIRST_POLL_S = 0.0001
 _POLL_S = 0.01
 # How much later than the caller's stall watch this worker-side wait decides: the stall
 # watch (rpc_liveness) owns the typed ladder (reconnect, retry, quarantine), so on a
 # stall it must decide first; this wait only ends the abandoned worker, typed.
 _WATCH_FIRST_MARGIN_S = 1.0
+# GetBlobSize's published "no such blob" return code.
+_BLOB_NOT_FOUND = 1
 
 
 class ClioCoreFutureTimeout(TimeoutError):
@@ -62,12 +69,43 @@ class ClioCoreFutureTimeout(TimeoutError):
         )
 
 
+@functools.cache
+def _sample_after_s() -> float:
+    """How long a pending RPC is waited for before the daemon's progress is first sampled.
+
+    ``arc.liveness.sample_after_s``. Locating the daemon and reading its CPU and I/O
+    counters costs pidfile and ``/proc`` reads; taken after a 1 ms miss it ran on most
+    puts while the daemon was busy (P7, 2026-11-02). A stall is still decided a whole
+    ``arc.liveness.stall_after_s`` window after this baseline.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "arc.liveness.sample_after_s",
+        env="CLIO_ARC_LIVENESS_SAMPLE_AFTER_S",
+        default=0.1,
+        cast=conf.as_float,
+    )
+
+
 def _polled(future: Any) -> Callable[[float], bool]:
-    """``done_within`` for a native Future: poll ``done()``, sleeping (GIL released)."""
+    """``done_within`` for a native Future: block in ``wait`` with the GIL released.
+
+    The native ``Future.wait(max_sec)`` blocks without the interpreter lock and returns
+    when the task completes. Polling ``done()`` instead woke a pending put up to eight
+    times (sleeps doubling to 10 ms), each wake retaking the lock from the threads doing
+    the agent's own work: a script's nested call waited on those hand-offs (2026-11-05
+    profile). A future without ``wait`` (a test double) is polled (``_FIRST_POLL_S``).
+    """
 
     def done_within(timeout: float) -> bool:
         deadline = time.monotonic() + timeout
-        interval = min(0.001, _POLL_S)
+        wait = getattr(future, "wait", None)
+        if callable(wait) and timeout > 0:
+            wait(timeout)
+            if future.done():
+                return True
+        interval = _FIRST_POLL_S
         while not future.done():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -101,12 +139,12 @@ def await_future(future: Any, *, op_name: str, ceiling_s: float | None = None) -
     """
     if future.done():  # the common case: no bound to resolve (config reads are not free)
         return future
-    # A native submission can finish just after the first check. Give that
-    # normal reply one millisecond before resolving configuration and sampling
-    # daemon processes for every tiny write. Pending work still enters the same
-    # health/progress policy; this is no execution deadline or alternate backend.
+    # A native submission usually finishes within milliseconds, also while the daemon
+    # is busy. Wait that long before resolving configuration and sampling daemon
+    # processes. Pending work still enters the same health/progress policy; this is no
+    # execution deadline or alternate backend.
     polled = _polled(future)
-    if polled(0.001):
+    if polled(_sample_after_s()):
         return future
     from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
         max_wait_s,
@@ -147,9 +185,16 @@ class TagIds:
         with self._lock:
             tag_id = self._ids.get(kind)
             if tag_id is None:
-                tag_id = self._cte.Tag(self._tag_name(kind)).GetTagId()
+                name = self._tag_name(kind)
+                # A process-lived thread enters the runtime (arc.native_threads).
+                tag_id = run_on_native_thread(lambda: self._cte.Tag(name).GetTagId())
                 self._ids[kind] = tag_id
         return tag_id
+
+    def cached(self, kind: str) -> bool:
+        """Whether ``kind``'s id is known, so using it makes no blocking ``Tag()`` call."""
+        with self._lock:
+            return kind in self._ids
 
     def clear(self) -> None:
         """Forget every cached id (after a reconnect)."""
@@ -191,14 +236,88 @@ class AsyncPutTag:
             raise ClioCorePutRefused(name, code)
 
 
+def store_put_if_absent(store: Any, kind: str, name: str, body: bytes) -> bool:
+    """Create blob ``name`` of ``store`` with ``body`` only if it does not exist (GIL-free).
+
+    One ``AsyncPutBlobIfAbsent`` (iowarp-core 2.4): clio-core decides atomically, so two
+    writers of the same name never both create it. Returns ``True`` when this call
+    created the blob, ``False`` when it already existed (``PUT_EXISTS_RC``; the stored
+    bytes are left as they were).
+
+    Raises:
+        ClioCorePutRefused: The runtime refused the put with any other code.
+    """
+    import clio_cte_core_ext as cte  # noqa: PLC0415 - loaded with the client
+
+    tag_id = store._tag_ids.get(kind)
+    future = await_future(store._client.AsyncPutBlobIfAbsent(tag_id, name, body, 0), op_name="put")
+    code = future.wait(0)
+    if code == cte.PUT_EXISTS_RC:
+        return False
+    if code != 0:
+        raise ClioCorePutRefused(name, code)
+    return True
+
+
 def delete_blob(client: Any, tag_id: Any, name: str) -> bool:
     """Delete one blob via ``AsyncDelBlob``; ``True`` iff it existed (return code 0)."""
     future = await_future(client.AsyncDelBlob(tag_id, name), op_name="delete")
     return bool(future.wait(0) == 0)
 
 
-def store_put(store: Any, kind: str, name: str, body: bytes) -> None:
-    """Write one blob of ``store`` (retried per :func:`put_blob_with_retry`), GIL-free.
+def store_blob_size(store: Any, kind: str, name: str) -> int:
+    """A blob's stored size (0 when missing), asked GIL-free (``AsyncGetBlobSize``).
+
+    Raises:
+        RuntimeError: The runtime refused the probe with a code other than not-found.
+    """
+    tag_id = store._tag_ids.get(kind)
+    future = await_future(store._client.AsyncGetBlobSize(tag_id, name), op_name="get")
+    code = future.wait(0)
+    if code == _BLOB_NOT_FOUND:
+        return 0
+    if code:
+        raise RuntimeError(f"GetBlobSize operation failed (return code {code})")
+    return int(future.result(0) or 0)
+
+
+def store_blob_sizes(store: Any, kind: str, names: Sequence[str]) -> dict[str, int]:
+    """Stored sizes of several blobs (0 when missing): every ``AsyncGetBlobSize`` is
+    issued before any is awaited, so the probe costs about one round trip.
+
+    Raises:
+        RuntimeError: The runtime refused a probe with a code other than not-found.
+    """
+    tag_id = store._tag_ids.get(kind)
+    issued = [(name, store._client.AsyncGetBlobSize(tag_id, name)) for name in names]
+    sizes: dict[str, int] = {}
+    for name, pending in issued:
+        future = await_future(pending, op_name="get")
+        code = future.wait(0)
+        if code and code != _BLOB_NOT_FOUND:
+            raise RuntimeError(f"GetBlobSize operation failed (return code {code})")
+        sizes[name] = 0 if code else int(future.result(0) or 0)
+    return sizes
+
+
+def store_read(store: Any, kind: str, name: str, length: int, offset: int = 0) -> bytes:
+    """``length`` bytes of a blob from ``offset``, read GIL-free (``AsyncGetBlob``).
+
+    Raises:
+        RuntimeError: The runtime refused the read (its return code), as the blocking
+            ``Tag.GetBlob`` did.
+    """
+    tag_id = store._tag_ids.get(kind)
+    future = await_future(store._client.AsyncGetBlob(tag_id, name, length, offset), op_name="get")
+    code = future.wait(0)
+    if code:
+        raise RuntimeError(f"GetBlob operation failed (return code {code})")
+    return bytes(future.result(0))
+
+
+def store_put(store: Any, kind: str, name: str, body: bytes, offset: int = 0) -> None:
+    """Write one blob of ``store`` at ``offset`` (retried per :func:`put_blob_with_retry`),
+    GIL-free. A put past the blob's end grows it; nothing shrinks it.
 
     Reads ``store._client`` and the tag id at call time, so a stall-ladder retry after a
     reconnect uses the fresh client and re-resolved tag.
@@ -211,16 +330,21 @@ def store_put(store: Any, kind: str, name: str, body: bytes) -> None:
         AsyncPutTag(store._client, tag_id),
         name,
         body,
+        offset=offset,
         recover_capacity=partial(recover_capacity, store, tag_id, name, len(body)),
     )
 
 
 def store_put_many(
-    store: Any, kind: str, blobs: list[tuple[str, bytes]]
+    store: Any,
+    kind: str,
+    blobs: list[tuple[str, bytes]],
+    offsets: dict[str, int] | None = None,
 ) -> dict[str, RuntimeError]:
     """Write several blobs of ``store`` concurrently: every ``AsyncPutBlob`` is issued
-    before any is awaited, then each is awaited. A refused blob continues its own bounded
-    retry (:func:`put_blob_with_retry`). Returns ``{name: final refusal}`` of the blobs
+    before any is awaited, then each is awaited. A blob named in ``offsets`` is written at
+    that offset (0 otherwise). A refused blob continues its own bounded retry
+    (:func:`put_blob_with_retry`). Returns ``{name: final refusal}`` of the blobs
     that were lost (empty when all were written); every blob has completed by then.
 
     Raises:
@@ -236,7 +360,11 @@ def store_put_many(
     from clio_agent.arc.clio_core_growth import recover_capacity  # noqa: PLC0415
 
     tag_id = store._tag_ids.get(kind)
-    issued = [(name, data, client.AsyncPutBlob(tag_id, name, data, 0)) for name, data in blobs]
+    at = offsets or {}
+    issued = [
+        (name, data, client.AsyncPutBlob(tag_id, name, data, at.get(name, 0)))
+        for name, data in blobs
+    ]
     lost: dict[str, RuntimeError] = {}
     for name, data, future in issued:
         try:
@@ -249,6 +377,7 @@ def store_put_many(
                     AsyncPutTag(client, tag_id),
                     name,
                     data,
+                    offset=at.get(name, 0),
                     first_failure=refused,
                     recover_capacity=partial(recover_capacity, store, tag_id, name, len(data)),
                 )
@@ -262,6 +391,19 @@ def store_put_many(
 def store_delete(store: Any, kind: str, name: str) -> bool:
     """Delete one blob of ``store`` (a missing one is a no-op), GIL-free."""
     return delete_blob(store._client, store._tag_ids.get(kind), name)
+
+
+def store_delete_together(store: Any, kind: str, names: Sequence[str]) -> None:
+    """Delete a few blobs of ``store`` in one round trip (a missing one is a no-op).
+
+    Every ``AsyncDelBlob`` is issued before any is awaited, then each is awaited with
+    :func:`await_future`, so a stalled reply raises :class:`ClioCoreFutureTimeout`
+    itself, typed for the caller's stall watch (which reruns the whole delete).
+    """
+    tag_id = store._tag_ids.get(kind)
+    futures = [store._client.AsyncDelBlob(tag_id, name) for name in names]
+    for future in futures:
+        await_future(future, op_name="delete")
 
 
 def store_delete_many(store: Any, kind: str, names: Sequence[str]) -> None:

@@ -18,6 +18,10 @@ from clio_agent.arc.schema import Conversation as ARCConversation
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._compaction_summary import (
+    keep_open_request_only,
+    summary_lm,
+)
 
 CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
@@ -165,14 +169,17 @@ class RetryCompactAgent:
         self.retry_labels: list[str] = []
         self.arc = CompactArc()
 
-    def _run_chat_agent(self, question: str, session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         self.chat_calls += 1
         if self.chat_calls == 1:
             raise RuntimeError("Tokens/minute limit exceeded")
         assert "important experiment details" in question
-        assert "evidence-preserving compact memory" in question
-        assert "Do not invent dataset names" in question
-        assert session_id == ""
+        assert "## Findings and evidence" in question
+        assert "Do not fill gaps with plausible details" in question
         return "Recovered compact summary."
 
     def _call_with_transient_provider_retries(
@@ -195,7 +202,11 @@ class RetryCompactAgent:
 class ExhaustedCompactAgent(RetryCompactAgent):
     """Fake compact agent whose retry wrapper exhausts and re-raises."""
 
-    def _run_chat_agent(self, question: str, session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         self.chat_calls += 1
         raise RuntimeError("Tokens/minute limit exceeded")
 
@@ -207,10 +218,13 @@ class CapturingCompactAgent(RetryCompactAgent):
         super().__init__()
         self.prompts: list[str] = []
 
-    def _run_chat_agent(self, question: str, session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         self.chat_calls += 1
         self.prompts.append(question)
-        assert session_id == ""
         return "captured exact identifiers"
 
     def _call_with_transient_provider_retries(
@@ -401,8 +415,8 @@ def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) ->
         assert agent.retry_labels == ["compact_summary"]
         assert len(agent.prompts) == 1
         prompt = agent.prompts[0]
-        assert "evidence-preserving compact memory" in prompt
-        assert "Do not invent dataset names" in prompt
+        assert "## Findings and evidence" in prompt
+        assert "Do not fill gaps with plausible details" in prompt
         assert "/plasma/electron_temperature" in prompt
         assert "anomaly_score" in prompt
         assert "operator_note" in prompt
@@ -631,3 +645,9 @@ def test_patch_session_rejects_deleted_chat_mode(client: TestClient) -> None:
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
     resp = client.patch(f"/v1/sessions/{sid}", json={"mode": "chat"})
     assert resp.status_code == 422
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

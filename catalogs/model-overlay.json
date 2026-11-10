@@ -310,6 +310,46 @@
       "capabilities": {
         "audio": false,
         "chat": true,
+        "contextWindow": 1000000,
+        "description": "Inception's Mercury 3, a diffusion language model that refines a whole answer in parallel denoising steps instead of writing token by token.",
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 131072,
+        "reasoning": true,
+        "rerank": false,
+        "streamShape": "snapshot",
+        "structuredOutputs": "json-schema",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": false
+      },
+      "family": "mercury-3",
+      "matchPatterns": [
+        "mercury-3"
+      ],
+      "quirks": {
+        "serving": {
+          "temperatureRange": [
+            0.5,
+            1.0
+          ]
+        },
+        "thinking": {
+          "effortByLevel": {
+            "high": "high",
+            "low": "low",
+            "medium": "medium",
+            "minimal": "instant"
+          },
+          "guidance": "Reasoning is always on. reasoning_effort instant/low/medium/high trades\nlatency for depth. With diffusing=true a stream carries the whole\ncurrent answer on every chunk (a snapshot), not an appended delta.\n",
+          "mechanism": "effort-levels"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
         "contextWindow": 128000,
         "embeddings": false,
         "fim": false,

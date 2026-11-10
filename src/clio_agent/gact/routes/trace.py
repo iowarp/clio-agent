@@ -104,8 +104,10 @@ def register_trace_routes(app: FastAPI, deps: "GactDeps") -> None:
         if arc is None or not callable(iterator):
             raise _arc_unavailable(sid)
 
+        from clio_agent.gact.task_event_merge import session_log_segments  # noqa: PLC0415
+
         events: list[dict[str, Any]] = []
-        for segment in iterator(sid):
+        for segment in session_log_segments(arc, sid):  # task events live in their lane
             event = semantic_event_from_events_content(
                 segment.content,
                 session_id=sid,

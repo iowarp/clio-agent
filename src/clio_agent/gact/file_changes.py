@@ -24,14 +24,17 @@ appends from tool threads while the routes scan on the loop.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
+from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.fs_edit import (
     FILE_WRITE_TOOLS,
     UNDO_CHANGED_BEFORE_WRITE,
@@ -50,6 +53,12 @@ FILE_CHANGES_LEDGER = "file_changes"
 
 #: Typed reason logged when a successful write tool returned no change record.
 FILE_CHANGE_UNRECORDED = "file_change_unrecorded"
+
+#: Typed reason logged when a created file's diff could not be rebuilt for the person.
+CREATED_DIFF_UNAVAILABLE = "created_file_diff_unavailable"
+
+#: The largest created file whose whole content becomes the person's diff.
+CREATED_DIFF_MAX_BYTES = 1024 * 1024
 
 
 def pop_previous_content(result: Any) -> PreviousContent | None:
@@ -96,6 +105,35 @@ def _undo_state(
     return previous.content, ""
 
 
+def _person_diff(record: Mapping[str, Any]) -> str:
+    """The diff the person sees for one change.
+
+    A created file's tool result carries no diff (the model wrote the content and does
+    not need it echoed back), so the person's diff is rebuilt here from the file as
+    written: every line added. The file is read only when it still holds the bytes the
+    write produced (its sha256); otherwise the reason is logged and the row shows the
+    path and its counts.
+    """
+
+    diff = str(record.get("unified_diff") or "")
+    if diff or record.get("created") is not True:
+        return diff
+    path = Path(str(record["path"]))
+    reason = ""
+    try:
+        data = path.read_bytes() if path.stat().st_size <= CREATED_DIFF_MAX_BYTES else None
+    except OSError as exc:
+        data, reason = None, type(exc).__name__
+    if data is None:
+        reason = reason or "too_large"
+    elif hashlib.sha256(data).hexdigest() != str(record.get("sha256") or ""):
+        data, reason = None, "changed_since_write"
+    if data is None:
+        logger.info("%s path=%s reason=%s", CREATED_DIFF_UNAVAILABLE, path, reason)
+        return ""
+    return unified_file_diff("", data.decode("utf-8", errors="replace"), path.name)
+
+
 def record_file_change(
     app: "FastAPI",
     sid: str,
@@ -133,7 +171,7 @@ def record_file_change(
         type="file_diff",
         agent_id=agent_id,
         path=str(record["path"]),
-        unified_diff=str(record.get("unified_diff") or ""),
+        unified_diff=_person_diff(record),
         status="applied",
         lines_added=int(record.get("lines_added") or 0),
         lines_removed=int(record.get("lines_removed") or 0),

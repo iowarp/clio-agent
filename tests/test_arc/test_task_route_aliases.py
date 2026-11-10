@@ -13,10 +13,12 @@ from fastapi import FastAPI
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import TaskOwner, TaskSnapshot
+from clio_agent.gact import child_report_fit
 from clio_agent.gact.native_work import now
 from clio_agent.gact.routes.tasks import register_task_routes
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
+from tests._result_room import pin_result_room
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 
 
@@ -30,7 +32,8 @@ async def test_rest_result_cursor_reconstructs_exact_unicode_output(
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "64")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "64")
+    pin_result_room(monkeypatch, 64)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(64 // 4))
     body = {"output": "é 中文 🚀 " * 80, "count": 80}
 
     def prepare() -> TaskSnapshot:

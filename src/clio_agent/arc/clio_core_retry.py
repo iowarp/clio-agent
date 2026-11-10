@@ -184,6 +184,7 @@ def put_blob_with_retry(
     name: str,
     payload: bytes,
     *,
+    offset: int = 0,
     first_failure: RuntimeError | None = None,
     recover_capacity: Callable[[], bool] | None = None,
 ) -> None:
@@ -198,6 +199,8 @@ def put_blob_with_retry(
         name: Blob name (re-putting the same name is an idempotent overwrite,
             which is what makes the retry safe).
         payload: The exact bytes to store.
+        offset: Where in the blob ``payload`` goes (re-putting the same bytes at the
+            same offset is idempotent too).
         first_failure: The refusal of a first attempt already made elsewhere (a
             batch's concurrent put); the ladder continues from attempt 2.
         recover_capacity: Optional managed-store recovery. Called at most once,
@@ -216,7 +219,7 @@ def put_blob_with_retry(
         try:
             if attempt == 0 and first_failure is not None:
                 raise first_failure
-            tag.PutBlob(name, payload, 0)
+            tag.PutBlob(name, payload, offset)
         except RuntimeError as exc:
             if attempt == attempts - 1:
                 _record_lost_write(name=name, payload=payload, exc=exc)

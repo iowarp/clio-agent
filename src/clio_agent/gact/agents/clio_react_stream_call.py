@@ -13,7 +13,9 @@ from dspy.lm15 import LM15Error, Request, Response
 from dspy.utils.exceptions import LMUnexpectedError
 
 from clio_agent.gact.agents import clio_react_stream as stream
+from clio_agent.gact.agents.clio_react_canvas import SnapshotStream
 from clio_agent.gact.agents.clio_react_recovery import StreamProgress, interrupted_stream
+from clio_agent.lm.diffusion import diffusion_requested
 from clio_agent.lm.engines.lm_loop import run_on_lm_loop
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,9 @@ def call_lm(lm: Any, request: Request) -> Response:
 
     session_id = _ctx.active_session_id() or ""
     progress = StreamProgress()
+    # A call that asked a diffusion model to show its steps streams whole snapshots:
+    # the one snapshot owner reads it (replace lane), never the append path.
+    snapshots = SnapshotStream() if diffusion_requested(lm) else None
     # Each model call's text is its own part: the boundary is ordered after the
     # previous call's deltas and before this call's first one.
     note_lm_call_start()
@@ -51,8 +56,13 @@ def call_lm(lm: Any, request: Request) -> Response:
             async with receive:
                 async for chunk in receive:
                     progress.emitted = True
+                    if snapshots is not None:
+                        stream.route_pieces(progress.observe(snapshots.feed(chunk)))
+                        progress.answer |= bool(snapshots.canvas)
+                        continue
                     stream.route_pieces(progress.observe(router.feed(chunk)))
-            stream.route_pieces(progress.observe(router.finish()), unclosed=router.incomplete)
+            if snapshots is None:
+                stream.route_pieces(progress.observe(router.finish()), unclosed=router.incomplete)
             consumed.set()
 
         async def watch_cancel() -> None:
@@ -115,6 +125,8 @@ def call_lm(lm: Any, request: Request) -> Response:
         if response is None and handle is not None and handle.aborted:
             raise _turn_cancelled()  # the session cancel closed the stream (abort handle)
         assert response is not None
+        if snapshots is not None:
+            return snapshots.finish(response, app=_ctx.active_app(), session_id=session_id)
         return response
 
     try:

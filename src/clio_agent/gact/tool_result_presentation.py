@@ -56,7 +56,14 @@ class PresentationBlock(BaseModel):
     media_type: str = ""
     text: str = ""
     label: str = ""
+    #: A child report's name (its task label) and the model it ran on.
+    title: str | None = None
+    model: str | None = None
     language: str = ""
+    # "code": the file line number of the block's first line (a ranged read or a
+    # search hit's context); "link" to a file: the line the link opens at.
+    start_line: int | None = None
+    line: int | None = None
     # "workspace_file" only (U3): the workspace-relative identity of a file the
     # agent inspected via view_image/view_pdf, so the transcript can show what
     # the agent actually saw. Never carries bytes -- the client fetches and
@@ -78,6 +85,7 @@ class PresentationBlock(BaseModel):
             "surface",
             "connected_data",
             "memory",
+            "task",  # a background task, by its handle: opens its row among the tasks
         ]
         | None
     ) = None

@@ -18,6 +18,11 @@ transcript that ends in the user's message. Two things follow, at different cost
   - any transcript write to it, which closes the interrupted turn before the write
     lands, so nothing is ever appended after a dangling user message.
 
+  A turn whose own sealed parts are the transcript's last row (an incomplete
+  assistant message) keeps them. Either closing row also gets each call of the turn
+  that started with no recorded outcome, typed ``tool_outcome_unrecorded``
+  (:mod:`clio_agent.gact.interrupted_tool_calls`), so it reads as unknown.
+
 The mark carries ``transcript: "pending"`` until the transcript is closed, so a stop
 before that resumes it on the next start. Nothing here is a new store: the pending set
 is the session records' own mark, held in memory for the cheap per-write check.
@@ -169,8 +174,16 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
             messages = _read_transcript(app, session_id)
         durable = list(messages or [])
         last = durable[-1] if durable else None
+        closing = None
         if last is not None and last.role == "user":
-            durable.append(_interrupted_assistant_row(app, session_id, last))
+            closing = _interrupted_assistant_row(app, session_id, last)
+            durable.append(closing)
+        elif last is not None and last.role == "assistant" and last.stop_reason == "incomplete":
+            # The turn's own sealed parts are the last row: it keeps them as they are,
+            # plus any call whose outcome was never recorded (interrupted_tool_calls).
+            closing = _with_unrecorded_calls(app, session_id, last)
+            durable[-1] = closing
+        if closing is not None and closing is not last:
             # Through the sanctioned replace seam (undo/rewind use it too), so the
             # atom lane and the resident ledger agree by construction (#1334 F2).
             _replace_session_messages(app, session_id, durable)
@@ -193,6 +206,16 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
         len(durable),
     )
     return True
+
+
+def _with_unrecorded_calls(app: "FastAPI", session_id: str, row: "Message") -> "Message":
+    from clio_agent.gact.interrupted_tool_calls import with_unrecorded_calls  # noqa: PLC0415
+    from clio_agent.gact.transcript_projection import canonical_log_arc  # noqa: PLC0415
+
+    arc = canonical_log_arc(app)
+    if arc is None:
+        raise OSError("restart interruption settle needs the canonical Core store")
+    return with_unrecorded_calls(arc, session_id, row.turn_id or row.id, row)
 
 
 def _read_transcript(app: "FastAPI", session_id: str) -> list["Message"]:

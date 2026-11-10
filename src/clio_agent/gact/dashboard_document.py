@@ -87,9 +87,19 @@ def compile_dashboard_surface(
             identity = json.dumps([report_id, group]).encode()
             component["syncGroup"] = "dashboard_" + hashlib.sha256(identity).hexdigest()[:40]
         # Invalid authored names remain invalid for ordinary catalog validation.
-    reference_error = _data_reference.validate_component_data_references(app, components)
+    source_notes: list[dict[str, str]] = []
+    data_bindings: list[dict[str, Any]] = []
+    reference_error = _data_reference.validate_component_data_references(
+        app, components, source_notes, data_bindings
+    )
     if reference_error:
         raise ValueError(json.dumps(reference_error))
+    if source_notes:
+        # Live study sources with no rows yet: said, not accepted silently (a study view).
+        export_report["study_sources_unchecked"] = source_notes
+    if data_bindings:
+        # Which views follow their source (live) and which show one version (pinned).
+        export_report["data_bindings"] = data_bindings
     chart_error = _chart_spec.validate_chart_components(components)
     if chart_error:
         raise ValueError(json.dumps(chart_error))

@@ -7,6 +7,8 @@
 #   install.sh --dev --source  source at `develop`
 #   install.sh --desktop       the desktop app, bundled with its agent (Apple Silicon macOS, Linux);
 #                              --dev and --version pick the release as above
+#   install.sh --reset-old-data  move data CLIO 0.9.5.1 or older wrote aside without asking
+#                              (this release cannot open it; it is kept, never deleted)
 #
 # --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
 # checkout in place, on whatever branch it is; streamed (`curl ... | bash`) it clones.
@@ -41,7 +43,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-usage() { sed -n '2,20p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
 OPT_SOURCE=0
 OPT_DEV=0
@@ -49,6 +51,7 @@ OPT_VERSION=""
 OPT_REF=""
 OPT_DESKTOP=0
 OPT_DOWNLOAD_ONLY=""
+OPT_RESET_OLD_DATA=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --source|-Source) OPT_SOURCE=1 ;;
@@ -59,6 +62,7 @@ while [ $# -gt 0 ]; do
     --ref=*) OPT_REF="${1#*=}" ;;
     --desktop|-Desktop) OPT_DESKTOP=1 ;;
     --download-only|-DownloadOnly) OPT_DOWNLOAD_ONLY="${2:?--download-only needs a directory}"; shift ;;
+    --reset-old-data|-ResetOldData) OPT_RESET_OLD_DATA=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "clio installer: unknown option '$1' (try --help)" >&2; exit 2 ;;
   esac
@@ -140,7 +144,7 @@ install_desktop() {
     || die "invalid release version: $tag"
   case "$os" in
     Darwin)
-      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] || die "CLIO Desktop requires macOS 14 or newer"
+      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ] || die "CLIO Desktop requires macOS 15 or newer"
       # uname can describe the Rosetta shell rather than the physical machine.
       [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ] \
         || die "CLIO Desktop is not available for Intel Macs yet; install CLIO without --desktop instead"
@@ -439,6 +443,11 @@ trap on_exit EXIT
 # ---------- install clio-agent ----------------------------------------
 VENV="$PREFIX/clio-agent/.venv"
 SRC=""
+# The CLIO this install replaces, named if the data check below cannot tell.
+PREVIOUS_VERSION=""
+if [ -x "$VENV/bin/python" ]; then
+  PREVIOUS_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
+fi
 
 if [ "$OPT_SOURCE" = 1 ]; then
   if [ -n "$CHECKOUT" ] && [ -z "$OPT_REF" ]; then
@@ -558,6 +567,66 @@ if [ -x "$VENV/bin/python" ]; then
   CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
 fi
 
+# ---------- data an older CLIO wrote: moved aside, never deleted ------
+# This release cannot open what CLIO 0.9.5.1 or older stored. `store-check` reads the
+# store itself and says so in plain words (exit 5: written by 0.9.5.1 or older; 6 or
+# 4: cannot tell; 3: CLIO is running). Old data is moved aside after a yes (without
+# asking with --reset-old-data or when no terminal can ask); data whose writer cannot
+# be told is moved only after a yes. `reset-store --yes` renames it, keeping every byte.
+
+# Whether the person can be asked: output on a terminal and a terminal to read from
+# (the script itself may be stdin, as in `curl ... | bash`).
+can_ask() { [ -t 1 ] && { : < /dev/tty; } 2>/dev/null; }
+
+# ask_yes QUESTION DEFAULT: 0 for yes; an empty answer is DEFAULT (y or n).
+ask_yes() {
+  local answer=""
+  printf '%s ' "$1"
+  IFS= read -r answer < /dev/tty || answer=""
+  answer="$(printf '%s' "${answer:-$2}" | tr '[:upper:]' '[:lower:]')"
+  case "$answer" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+move_old_data_aside() {
+  local status=0
+  "$VENV/bin/python" -m clio_agent.gact.store_reset_command reset --yes || status=$?
+  [ "$status" = 0 ] \
+    || warn "Your data was not moved (exit $status, the reason is above). CLIO reports it when it starts; 'clio reset-store' moves it later."
+}
+
+check_old_data() {
+  "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.gact.store_reset_command") else 3)' 2>/dev/null \
+    || return 0  # a release before the check: its store is its own
+  say "Checking which CLIO version wrote your data"
+  local status=0
+  "$VENV/bin/python" -m clio_agent.gact.store_reset_command check || status=$?
+  case "$status" in
+    0) return 0 ;;
+    3) warn "CLIO is running, so your data was not checked. This release cannot open data written by CLIO 0.9.5.1 or older: stop CLIO ('clio stop', or quit CLIO Desktop) and run this installer again, or run 'clio reset-store' if CLIO says your data is from an older version."
+       return 0 ;;
+    5)
+      if [ "$OPT_RESET_OLD_DATA" = 1 ]; then
+        say "Moving it aside (--reset-old-data)"
+      elif can_ask; then
+        if ! ask_yes "Move it aside now? [Y/n]" y; then
+          warn "Your data was left in place. CLIO $CLIO_INSTALLED_VERSION cannot open it and says so when it starts. To move it later: 'clio stop', then 'clio reset-store'."
+          return 0
+        fi
+      else
+        say "No terminal to ask on: moving it aside (pass --reset-old-data to say so explicitly)"
+      fi ;;
+    *)
+      warn "The installer cannot tell whether your data must be moved aside, so it does not move it on its own."
+      [ -z "$PREVIOUS_VERSION" ] || say "The CLIO this install replaced was $PREVIOUS_VERSION."
+      if ! { can_ask && ask_yes "Move it aside anyway? [y/N]" n; }; then
+        warn "Your data was left in place. If CLIO says it was written by CLIO 0.9.5.1 or older, stop CLIO and run 'clio reset-store'."
+        return 0
+      fi ;;
+  esac
+  move_old_data_aside
+}
+check_old_data
+
 # ---------- upgrade the store: migrations run here, never at boot ------
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
@@ -569,6 +638,7 @@ if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.ut
   case "$migrate_status" in
     0) ;;
     3) warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')" ;;
+    5) warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside" ;;
     *) warn "clio-agent migrate failed (exit $migrate_status, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
   esac
   doc_flags=(--skip-store-migrations)

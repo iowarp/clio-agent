@@ -107,11 +107,9 @@ def test_forward_writes_arc_and_emits_highway(tmp_path, monkeypatch: pytest.Monk
     assert step_events[1]["is_finish"] is True, "no finishing (submit) step on the highway"
     assert lifecycle_events == ["expert.lifecycle.started", "expert.extract.completed"]
 
-    # ARC half: CLIO's tool-use note and the user message, then thought / tool_call /
-    # observation per step, call id carried through.
+    # ARC half: the user message, then thought / tool_call / observation per step, call
+    # id carried through (no recorded tool-use note: the guidance rides the tool rules).
     live = arc.render_segments(SID, SCOPE)
-    assert live[0].content.get("source") == "tool_use"
-    live = live[1:]
     assert [s.kind for s in live] == [
         "user",
         "thought",

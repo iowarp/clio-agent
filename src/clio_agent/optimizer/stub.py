@@ -3,14 +3,11 @@
 Research-pending (#801 owner decision, tracked in
 https://github.com/iowarp/clio-agent/issues/633): the optimizer vertical is
 kept as planned research, and until it lands every user-facing path into it
-(the gact ``/optimize`` command row, the ``optimizer_command`` capability-gap
-row, and the ``--tune`` CLI hook) must return the same structured
+(the ``--tune`` CLI hook) must return the same structured
 not-implemented response defined here — no path may silently half-run.
 
-This module is deliberately dependency-free (stdlib only) so the gact runtime
-leaves (:mod:`clio_agent.gact.runtime.commands`,
-:mod:`clio_agent.gact.runtime.capabilities`) can import it without pulling
-DSPy or the rest of the optimizer package.
+This module is deliberately dependency-free (stdlib only), so callers can import
+it without pulling DSPy or the rest of the optimizer package.
 """
 
 from __future__ import annotations

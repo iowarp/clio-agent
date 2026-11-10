@@ -17,6 +17,7 @@ from clio_agent.arc.task_types import (
     CoreReference,
     TaskSnapshot,
 )
+from clio_agent.gact import child_report_fit
 from clio_agent.gact.assignment_evidence import render_delegation, select_assignment_evidence
 from clio_agent.gact.conversations import Conversations
 from clio_agent.gact.native_work import now
@@ -25,6 +26,7 @@ from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_declarations import _collected
 from clio_agent.gact.task_operations import TaskOperations
 from clio_agent.gact.task_result_content import result_cursor
+from tests._result_room import pin_result_room
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_arc.test_task_observation_compatibility import forbidden_cancel
 
@@ -115,7 +117,8 @@ async def test_shared_evidence_requires_committed_input_and_never_collects_sourc
 ) -> None:
     app, owner, source, critic, body = await evidence_children(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "23")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "23")
+    pin_result_room(monkeypatch, 23)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(23 // 4))
     operations, caller = (
         TaskOperations(owner.history, forbidden_cancel),
         TaskCaller(critic.owner.session_id, "human"),
@@ -157,7 +160,7 @@ async def test_shared_evidence_cursor_survives_grant_revocation_and_successor_re
 ) -> None:
     _app, owner, source, critic, body = await evidence_children(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "31")
+    pin_result_room(monkeypatch, 31)  # version-1 cursor page size
     cursor = await asyncio.to_thread(commit_delegation, owner, critic)
     operations, caller = (
         TaskOperations(owner.history, forbidden_cancel),
@@ -218,10 +221,12 @@ async def test_selected_shared_evidence_preserves_delegated_snapshot(
 ) -> None:
     _app, owner, source, critic, body = await evidence_children(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "31")
+    pin_result_room(monkeypatch, 31)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(31 // 4))
     await asyncio.to_thread(commit_delegation, owner, critic)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "12000")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "12000")
+    pin_result_room(monkeypatch, 12000)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(12000 // 4))
     operations = TaskOperations(owner.history, forbidden_cancel)
     page = await asyncio.to_thread(
         operations.result,
@@ -244,7 +249,8 @@ async def test_result_corruption_is_not_hidden_by_shared_evidence_fallback(
 ) -> None:
     _app, owner, source, critic, _body = await evidence_children(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "31")
+    pin_result_room(monkeypatch, 31)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(31 // 4))
     await asyncio.to_thread(commit_delegation, owner, critic)
     history = owner.history
     original = history.read_content
@@ -272,7 +278,7 @@ async def test_a_pin_in_current_details_cannot_forge_committed_evidence(
 ) -> None:
     _app, owner, source, critic, _body = await evidence_children(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "31")
+    pin_result_room(monkeypatch, 31)  # version-1 cursor page size
     cursor = await asyncio.to_thread(commit_delegation, owner, critic)
 
     def change_pin_without_input_commit() -> None:

@@ -35,6 +35,7 @@ from clio_agent.gact.routes.session_question_helpers import (
     answer_question_response,
     question_surface_ids,
 )
+from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS, allows, offered
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.types import (
@@ -170,11 +171,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
     }
     status: Literal["pending", "answered", "cancelled"] = "pending"
     if row.get("status") != "pending":
-        status = (
-            "answered"
-            if row.get("action") in {"allow", "allow_session", "allow_workspace"}
-            else "cancelled"
-        )
+        status = "answered" if allows(row.get("action")) else "cancelled"
     return PendingInteraction(
         id=f"permission:{row.get('id', '')}",
         kind="permission",
@@ -205,12 +202,9 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
             "tool_call": dict(tool_call),
             "execution": execution,
             **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
+            **({"script": row["script"]} if isinstance(row.get("script"), Mapping) else {}),
         },
-        actions=(
-            list(row.get("actions") or ["allow", "deny", "allow_session", "allow_workspace"])
-            if status == "pending"
-            else []
-        ),
+        actions=(list(row.get("actions") or STANDARD_ANSWERS) if status == "pending" else []),
     )
 
 
@@ -603,7 +597,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             if permission.get("status") != "pending":
                 raise _error(409, "interaction_resolved", "interaction is already resolved")
             action = request.action
-            if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
+            if not offered(permission, action):
                 raise _error(422, "validation_error", "permission response action is invalid")
             if permission.get("kind") == "folder_access" and action not in permission["actions"]:
                 raise _error(422, "validation_error", "Choose Deny or Allow for workspace")

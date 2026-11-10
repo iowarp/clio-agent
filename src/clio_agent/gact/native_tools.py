@@ -36,12 +36,15 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import native_task_recovery, native_task_settlement
 from clio_agent.gact.core_recovery import CoreRecovery
+from clio_agent.gact.native_code import register_native_code
 from clio_agent.gact.native_identity import local_runtime_identity
 from clio_agent.gact.native_shell import register_native_shell
+from clio_agent.gact.native_task_replies import reply_status_line, unchanged_reply
 from clio_agent.gact.native_work import SUBMISSION_ARGUMENT, NativeWork, SubmissionAuthorizer, now
 from clio_agent.gact.task_access import TaskAccessDenied
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.native_roots import NativeRootKind, build_native_roots
 from clio_agent.tools.task_client import (
     AcceptedCallResult,
@@ -90,6 +93,7 @@ class NativeTools:
             for kind in self.roots
         }
         register_native_shell(self.roots["shell"], self.work["shell"])
+        register_native_code(self.roots["code"], self.work["code"])
         self.clients: dict[NativeRootKind, TaskAwareClient] = {}
         self._calls: dict[str, AcceptedNativeCall] = {}
         self._identities: dict[tuple[NativeRootKind, str], AcceptedNativeCall] = {}
@@ -210,6 +214,7 @@ class NativeTools:
             raise ValueError("Submission references are application-owned")
         if tool == "connected_data_continue":
             raise ValueError("Provider continuations are host-owned, not public submissions")
+        stream_audit("native.phase", handle="", phase="submit", tool=tool)
         component = await self.roots[root].server.get_tool(tool)
         if component is None:
             raise ValueError("Native workload is unavailable")
@@ -243,6 +248,7 @@ class NativeTools:
             local_runtime=await self.history.io.run(local_runtime_identity),
         )
         content = await self.history.io.run(self._confirm, context, kind, description)
+        stream_audit("native.phase", handle=context.handle, phase="confirmed")
         if isinstance(content, TaskSnapshot):
             return {
                 "handle": content.handle,
@@ -291,6 +297,7 @@ class NativeTools:
                     stopped = True
                     if rpc.cancelled():
                         raise
+            stream_audit("native.phase", handle=handle, phase="accepted")
             if not isinstance(response, AcceptedCallResult):
                 raise RuntimeError("Native-required workload returned without acceptance")
             if stopped:
@@ -307,7 +314,9 @@ class NativeTools:
                 driver = self._drivers.get(handle)
                 if driver is not None:
                     await asyncio.shield(driver)
+                stream_audit("native.phase", handle=handle, phase="driven")
                 current = await self.await_settlement(handle)
+                stream_audit("native.phase", handle=handle, phase="settled")
                 return {
                     "handle": handle,
                     "status": current.status,
@@ -410,7 +419,10 @@ class NativeTools:
                     owner=context.owner,
                     description=description,
                     description_missing=False,
-                    label=context.tool,
+                    # A background script is named by its label, not by the worker.
+                    label=str(context.arguments.get("label") or "") or context.tool
+                    if kind == "Code"
+                    else context.tool,
                     invocation_id=context.invocation_id,
                     tool=context.tool,
                     created_at=stamp,
@@ -566,16 +578,15 @@ class NativeTools:
                 raw = self.history.write_content(
                     current.owner.session_id, reply.model_dump(mode="json")
                 )
+            stamp = now()
             observed = current.model_copy(
                 update={
                     "raw_status": reply.status,
-                    "updated_at": now(),
+                    "updated_at": stamp,
                     "connection_freshness": "fresh",
                     "backend_observation": raw or current.backend_observation,
-                    "progress": current.progress.model_copy(
-                        update={"message": reply.status_message}
-                    )
-                    if reply.status_message is not None
+                    "progress": current.progress.model_copy(update={"message": line})
+                    if (line := reply_status_line(reply.status_message)) is not None
                     else current.progress,
                 }
             )
@@ -602,7 +613,10 @@ class NativeTools:
                         "attention_episode": None,
                     }
                 )
-            self.history.record_snapshot(observed, observation_id=uuid4().hex)
+            if not unchanged_reply(current, observed, stamp):  # (native_task_replies)
+                self.history.record_snapshot(observed, observation_id=uuid4().hex)
+            else:
+                observed = current  # a running task's repeated reply: not written again
             self._settle(observed, accepted)
 
     async def _cleanup(self, handle: str) -> None:

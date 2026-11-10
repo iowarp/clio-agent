@@ -31,10 +31,7 @@ from clio_agent.client.errors import ClioConnectionError, error_from_response
 from clio_agent.client.events import EventStream
 from clio_agent.client.types import (
     Agent,
-    ArtifactReview,
     Capabilities,
-    DocumentAnchor,
-    DocumentEditorSession,
     DocumentManifest,
     DocumentWorkingCopy,
     Health,
@@ -53,7 +50,7 @@ logger = logging.getLogger("clio_agent.client")
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8100"
 
-PermissionAction = Literal["allow", "deny", "allow_session", "allow_workspace"]
+PermissionAction = Literal["allow", "deny", "allow_session", "allow_workspace", "allow_script"]
 
 
 def _drop_missing(payload: dict[str, Any]) -> dict[str, Any]:
@@ -552,41 +549,6 @@ class DocumentsAPI:
         response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/document/content")
         return response.content
 
-    def reviews(self, artifact_id: str) -> list[ArtifactReview]:
-        """List durable reviews across the artifact's version chain."""
-
-        response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/reviews")
-        return [ArtifactReview.model_validate(row) for row in response.json().get("reviews", [])]
-
-    def review(
-        self,
-        session_id: str,
-        *,
-        artifact_id: str,
-        expected_version: int,
-        expected_sha256: str,
-        anchor: DocumentAnchor,
-        text: str,
-        idempotency_key: str,
-        allow_historical: bool = False,
-    ) -> ArtifactReview:
-        """Create and immediately dispatch one anchored review instruction."""
-
-        response = self._client._request(
-            "POST",
-            f"/v1/sessions/{session_id}/artifact-reviews",
-            json={
-                "artifact_id": artifact_id,
-                "expected_version": expected_version,
-                "expected_sha256": expected_sha256,
-                "anchor": anchor.model_dump(mode="json"),
-                "text": text,
-                "idempotency_key": idempotency_key,
-                "allow_historical": allow_historical,
-            },
-        )
-        return ArtifactReview.model_validate(response.json())
-
     def render_pdf(self, artifact_id: str, *, session_id: str) -> DocumentManifest:
         """Create a derived PDF rendition."""
 
@@ -603,7 +565,6 @@ class DocumentsAPI:
         artifact_id: str,
         *,
         session_id: str,
-        provider: str = "native",
         writable: bool = True,
         auto_checkpoint: bool = True,
     ) -> DocumentWorkingCopy:
@@ -614,7 +575,6 @@ class DocumentsAPI:
             f"/v1/artifacts/{artifact_id}/working-copies",
             json={
                 "session_id": session_id,
-                "provider": provider,
                 "writable": writable,
                 "auto_checkpoint": auto_checkpoint,
             },
@@ -651,26 +611,6 @@ class DocumentsAPI:
             },
         )
         return DocumentWorkingCopy.model_validate(response.json())
-
-    def editor_health(self) -> dict[str, Any]:
-        """Probe configured ONLYOFFICE and Collabora endpoints."""
-
-        return self._client._request("GET", "/v1/document-editors/health").json()
-
-    def create_editor_session(
-        self,
-        working_copy_id: str,
-        *,
-        provider: Literal["onlyoffice", "collabora"],
-    ) -> DocumentEditorSession:
-        """Create a short-lived embedded editor launch."""
-
-        response = self._client._request(
-            "POST",
-            f"/v1/document-working-copies/{working_copy_id}/editor-sessions",
-            json={"provider": provider},
-        )
-        return DocumentEditorSession.model_validate(response.json())
 
 
 class PermissionsAPI:

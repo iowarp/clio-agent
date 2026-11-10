@@ -176,7 +176,7 @@ def test_all_bounded_topology_warns_typed(
     assert warned, "two-arena tight shape + final<=ram must warn clio_core_tier_topology"
     msg = warned[0].getMessage()
     assert "TWO ram" in msg
-    assert "cannot absorb one full hot-tier spill" in msg
+    assert "cannot absorb one full spill of the ram tier" in msg
     # The ram tier itself is correctly bounded — no ram_uncapped warning.
     assert not [r for r in caplog.records if "clio_core_ram_uncapped" in r.getMessage()]
 
@@ -215,6 +215,7 @@ def test_memory_budget_is_the_arena_and_data_is_disk_only() -> None:
 
     rendered = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
         core_port=9413,
+        core_threads=4,
         conf_dir="c",
         file_tier="f",
         file_capacity="50GB",

@@ -80,7 +80,7 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.lm import dialect_wire
+from clio_agent.lm import dialect_wire, diffusion
 from clio_agent.providers.capabilities import accepted_parameters
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
@@ -315,6 +315,8 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
 
     dialect, accepted, effective = _resolve(config)
     extras: dict[str, Any] = dict(getattr(config, "provider_options", {}) or {})
+    # A CLIO-level option, not a LiteLLM kwarg: translated (or refused, typed) here.
+    diffusion.apply_show_diffusion(extras, config, dialect, effective)
     sent_optional = False
 
     thinking_on = _thinking_requested_on(config, effective)

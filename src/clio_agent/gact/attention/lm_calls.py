@@ -73,11 +73,21 @@ def _from_payload(
     )
 
 
+def _with_full_messages(events: list[tuple[dict[str, Any], dict[str, Any]]]) -> None:
+    """Restore each payload's full ``messages`` (stored as a delta of its chain)."""
+    from clio_agent.lm.call_messages_delta import rebuild  # noqa: PLC0415
+
+    payloads = [payload for _event, payload in events]
+    for (_event, payload), full in zip(events, rebuild(payloads), strict=True):
+        if payload.get("messages_prefix"):
+            payload["messages"] = full  # None: a missing earlier record; unavailable
+
+
 def lm_calls_from_jsonl(path: Path, session_id: str) -> list[LmCall]:
     """``lm.call`` events of one session from a native JSONL journal file."""
     if not path.is_file():
         return []
-    calls: list[LmCall] = []
+    found: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             event = json.loads(line)
@@ -85,13 +95,18 @@ def lm_calls_from_jsonl(path: Path, session_id: str) -> list[LmCall]:
             continue
         if event.get("event_type") != "lm.call" or event.get("session_id") != session_id:
             continue
+        payload = event.get("payload")
+        found.append((event, dict(payload) if isinstance(payload, dict) else {}))
+    _with_full_messages(found)
+    calls: list[LmCall] = []
+    for event, payload in found:
         calls.append(
             _from_payload(
                 event_id=str(event.get("event_id") or ""),
                 session_id=session_id,
                 turn_id=str(event.get("turn_id") or ""),
                 occurred_at=str(event.get("occurred_at") or ""),
-                payload=event.get("payload"),
+                payload=payload,
                 metadata={},
                 source="native",
             )
@@ -101,18 +116,25 @@ def lm_calls_from_jsonl(path: Path, session_id: str) -> list[LmCall]:
 
 def lm_calls_from_flowcept_rows(rows: list[dict[str, Any]], session_id: str) -> list[LmCall]:
     """Normalize Flowcept ``ai_model_invocation`` task rows for one session."""
-    calls: list[LmCall] = []
+    found: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for row in rows:
         clio = (row.get("custom_metadata") or {}).get("clio") or {}
         if clio.get("event_type") != "lm.call" or clio.get("session_id") != session_id:
             continue
+        payload = clio.get("payload")
+        found.append((row, dict(payload) if isinstance(payload, dict) else {}))
+    found.sort(key=lambda item: str(item[0].get("started_at") or ""))  # chain order
+    _with_full_messages(found)
+    calls: list[LmCall] = []
+    for row, payload in found:
+        clio = (row.get("custom_metadata") or {}).get("clio") or {}
         calls.append(
             _from_payload(
                 event_id=str(clio.get("event_id") or row.get("task_id") or ""),
                 session_id=session_id,
                 turn_id=str(clio.get("turn_id") or ""),
                 occurred_at=str(row.get("started_at") or ""),
-                payload=clio.get("payload"),
+                payload=payload,
                 metadata=clio,
                 source="flowcept",
             )

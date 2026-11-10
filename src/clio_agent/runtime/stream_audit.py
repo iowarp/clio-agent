@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_LOCK = threading.Lock()
+from clio_agent.runtime.append_handles import AppendHandles
 
 #: Envelope keys :func:`stream_audit` writes itself. A caller field with one
 #: of these names would either collide with the ``stage`` parameter (the
@@ -72,12 +71,11 @@ def stream_audit(stage: str, /, **fields: Any) -> None:
         **fields,
     }
     try:
-        path = Path(raw_path).expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(row, sort_keys=True, default=str)
-        with _LOCK:
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
-                f.write("\n")
+        _HANDLES.write(Path(raw_path).expanduser(), json.dumps(row, sort_keys=True, default=str))
     except Exception:  # noqa: BLE001 - audit-log write best-effort; skipped on failure
         return
+
+
+# One append handle per audit path (one row per store put: reopening it per row cost
+# about a tenth of a busy server's active time; :mod:`clio_agent.runtime.append_handles`).
+_HANDLES = AppendHandles()

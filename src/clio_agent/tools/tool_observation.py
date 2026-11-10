@@ -4,9 +4,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+#: The structured-value lane: when a caller binds a list here (a ``run_code`` script's
+#: nested call), each completed MCP call appends ``(error, observer_result)``, so the
+#: script gets the call's structured content while the model-facing text stays bounded.
+RESULT_SINK: ContextVar[list[tuple[str | None, Any]] | None] = ContextVar(
+    "clio_tool_result_sink", default=None
+)
+#: Set only in a background ``run_code`` script's context: an object whose ``observe``
+#: records repeated successful nested calls as one counted record per window
+#: (:mod:`clio_agent.gact.code_task_records`). Unset, every call is recorded as it happens.
+OBSERVATION_GROUP: ContextVar[Any | None] = ContextVar("clio_observation_group", default=None)
 
 ToolObserver = Callable[
     [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
@@ -30,8 +42,14 @@ def notify_tool_observer(
     agent did, so it propagates typed to the caller.
     """
 
+    sink = RESULT_SINK.get() if phase == "completed" else None
+    if sink is not None:
+        sink.append((error, result))
     if observer is None:
         return None
+    group = OBSERVATION_GROUP.get()
+    if group is not None:  # a background script's nested call: recorded grouped (CT5)
+        return group.observe(observer, name, args, phase, error, result)
     if result is None:
         return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
     try:

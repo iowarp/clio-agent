@@ -47,6 +47,18 @@
       "seconds": 20,
       "budget": "shutdown < 20 s",
       "measured": "0.3-3.1 s on Linux and macOS"
+    },
+    "desktop: download (Windows PowerShell 5.1)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "Windows only; new. The 507 MB 0.9.5.1 setup took 20 s with curl from a cloud host"
+    },
+    "desktop: download (pwsh)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "Windows only; new. The 507 MB 0.9.5.1 setup took 20 s with curl from a cloud host"
     }
   },
   "startup": {

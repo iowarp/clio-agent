@@ -54,6 +54,7 @@ from clio_agent.providers.model_discovery.claude_code import (
     discover_claude_code,
 )
 from clio_agent.providers.model_discovery.codex import discover_codex
+from clio_agent.providers.model_discovery.copilot import discover_copilot
 from clio_agent.providers.model_discovery.http import discover_http
 from clio_agent.providers.model_discovery.last_good import (
     LAST_GOOD_CATALOG_SOURCE,
@@ -73,6 +74,7 @@ from clio_agent.providers.model_discovery.modality_evidence import (
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
     CODEX_SOURCE,
+    COPILOT_SOURCE,
     HTTP_SOURCE,
     OVERLAY_STALENESS_REASONS,
     OverlayMalformedError,
@@ -100,6 +102,7 @@ __all__ = [
     "CODEX_SOURCE",
     "CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
     "CLAUDE_CODE_SOURCE",
+    "COPILOT_SOURCE",
     "HTTP_SOURCE",
     "LAST_GOOD_CATALOG_SOURCE",
     "LAST_GOOD_REASONS",
@@ -116,6 +119,7 @@ __all__ = [
     "attach_context_limits",
     "build_refresh_provider_models_tool",
     "discover_codex",
+    "discover_copilot",
     "discover_claude_code",
     "discover_http",
     "entry_staleness",

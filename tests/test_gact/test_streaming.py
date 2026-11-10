@@ -42,7 +42,7 @@ from tests.test_arc.child_worker_helpers import commit_model_input, execute_mode
 
 # #948 S4b: turns that POST through the engine now run the session's plugin agent;
 # route it to each test's ``build_app(agent=...)`` host fake.
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 @pytest.fixture(autouse=True)
@@ -275,22 +275,25 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         # AF-IMG: the only INPUT-side degradation in the set -- the text still
         # streamed live, the attachment did not ride the request.
         "native_model_inputs_dropped",
+        # Mercury: a diffusing request whose stream was not snapshot-shaped. The
+        # text still streamed live; only the step-by-step canvas was not honoured.
+        "diffusion_stream_shape_mismatch",
     } == set(catalog)
-    # Every DELIVERY-path reason means "the tokens did not stream"; the one
-    # input-side reason must not be flattened into that claim, so it is asserted
-    # on its own honest shape rather than excused from the invariant.
-    input_side = {"native_model_inputs_dropped"}
+    # Every DELIVERY-path reason means "the tokens did not stream"; the reasons
+    # whose text still streamed live must not be flattened into that claim, so
+    # each is asserted on its own honest shape rather than excused from the invariant.
+    streamed_live = {"native_model_inputs_dropped", "diffusion_stream_shape_mismatch"}
     for reason, details in catalog.items():
         assert details["category"], reason
         assert details["description"], reason
         assert details["recovery_actions"], reason
-        if reason in input_side:
+        if reason in streamed_live:
             continue
         assert details["synthetic_posthoc"] is True, reason
         assert details["live_streaming"] is False, reason
-    dropped = catalog["native_model_inputs_dropped"]
-    assert dropped["synthetic_posthoc"] is False
-    assert dropped["live_streaming"] is True
+    for reason in streamed_live:
+        assert catalog[reason]["synthetic_posthoc"] is False, reason
+        assert catalog[reason]["live_streaming"] is True, reason
 
     with pytest.raises(ValueError, match="Unknown stream fallback reason"):
         _record_stream_fallback(app, "sid", "unclassified_silent_downgrade")

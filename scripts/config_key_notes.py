@@ -8,7 +8,7 @@
 SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Runtime + paths",
-        ("runtime", "paths", "sandbox", "system"),
+        ("runtime", "paths", "sandbox", "system", "deployment"),
         "Process identity, filesystem locations and the global runtime toggles.",
     ),
     (
@@ -24,7 +24,18 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Agents, workflows and scheduling",
-        ("agents", "agent_tasks", "plugins", "workflows", "goal", "scheduler", "variants", "fleet"),
+        (
+            "agents",
+            "agent_tasks",
+            "plugins",
+            "workflows",
+            "goal",
+            "plan",
+            "delegation",
+            "scheduler",
+            "variants",
+            "fleet",
+        ),
         "Installed plugins and agents, child-agent concurrency, goal judging and the cron "
         "scheduler.",
     ),
@@ -51,9 +62,9 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Artifacts",
-        ("artifacts",),
-        "Artifact minting, the content-addressed store, lineage, exports and artifact-provenance "
-        "backends.",
+        ("artifacts", "streams"),
+        "Artifact minting, the content-addressed store, lineage, exports, artifact-provenance "
+        "backends and streams (artifacts whose latest rows live in memory).",
     ),
     (
         "Workspace resources",
@@ -63,9 +74,22 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Tools + MCP",
-        ("tools",),
-        "File-policy sandboxing, shell execution bounds and the MCP tool fleet's "
+        ("tools", "code", "fs", "hdf5"),
+        "File-policy sandboxing, the file tools' read and search bounds, shell and run_code "
+        "execution bounds, HDF5 reference summaries and the MCP tool fleet's "
         "discovery/cache/timeouts.",
+    ),
+    (
+        "Browser",
+        ("browser",),
+        "The in-app browser the agent drives from run_code: backend, profile, host grants, "
+        "action and page limits, the sandbox and the live view's frames.",
+    ),
+    (
+        "Comments",
+        ("comments",),
+        "What a comment session sends the agent: how much of the text under each mark an entry "
+        "carries, picked elements' HTML excerpts, text context, and the size of its images.",
     ),
     (
         "Web search",
@@ -88,6 +112,63 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
 ]
 
 KEY_NOTES: dict[str, str] = {
+    "deployment.target": (
+        "The infrastructure target this CLIO was started through; a remote deployment's "
+        "launcher sets it, and the browser names it when a host does not answer."
+    ),
+    "browser.backend": (
+        "managed (CLIO launches its own Chromium, the default) or cdp (connect to a Chrome you "
+        "run with remote debugging and a separate profile, at browser.cdp_url)."
+    ),
+    "browser.profile": (
+        "Name of the browser profile; one profile is one Chromium whose sign-ins every "
+        "conversation shares and that survives restarts."
+    ),
+    "browser.cdp_url": (
+        "DevTools endpoint of your own Chrome for the cdp backend, e.g. http://127.0.0.1:9222; "
+        "chrome or msedge attaches to the one you run, after you allow remote debugging at "
+        "chrome://inspect/#remote-debugging (Chrome 144 or later), with your sign-ins."
+    ),
+    "browser.channel": (
+        "The browser the managed backend runs: chromium (CLIO's own, the default), chrome or "
+        "msedge (your installed one, on a profile CLIO keeps; you sign in there once)."
+    ),
+    "browser.action_timeout_s": (
+        "Seconds one browser action may take; time waiting for your answer to a site question "
+        "is not counted."
+    ),
+    "comments.under_mark_chars": (
+        "Characters of what lies under one mark that its entry carries; the rest is written "
+        "to a session file the entry names."
+    ),
+    "comments.html_excerpt_chars": "Characters of a picked element's HTML kept on its comment.",
+    "comments.context_chars": "Characters of text kept before and after a text selection.",
+    "comments.max_image_side": (
+        "Longest side, in pixels, of an overview or crop sent to the agent; larger images are "
+        "scaled down."
+    ),
+    "browser.max_pages": "Pages open at once across the server; opening one more is refused.",
+    "browser.idle_minutes": (
+        "Minutes a page nobody uses or watches stays open, and a browser with no pages, "
+        "before it closes."
+    ),
+    "browser.allow_unsandboxed": (
+        "Run Chromium without its own sandbox when the sandbox cannot start (as root, or "
+        "without unprivileged user namespaces); off by default, and doctor and the live view "
+        "say when it is on."
+    ),
+    "browser.granted_hosts": (
+        "Comma-separated host patterns (*.example.org works) every conversation may load "
+        "without asking; a deployment pre-grant."
+    ),
+    "browser.person_window_s": (
+        "Seconds after your input in the live view in which a navigation counts as yours "
+        "(granted for the conversation) rather than the page's own."
+    ),
+    "browser.frame_quality": "JPEG quality, 1 to 100, of the live view's frames.",
+    "browser.frame_width": (
+        "Width in pixels of the live view's frames; lower it for a slow connection."
+    ),
     "a2ui.max_message_bytes": (
         "Byte ceiling on one encoded A2UI server-to-client message; raise only for trusted "
         "producers emitting larger surface updates."
@@ -148,6 +229,18 @@ KEY_NOTES: dict[str, str] = {
     "gact.tasks.storage.concurrency": (
         "Native Download/Indexing worker concurrency; positive, default 10, independent of Shell."
     ),
+    "gact.tasks.code.url": (
+        "Native backend URL for background run_code scripts, independent of Shell and storage. "
+        "memory:// is ephemeral: a script does not survive a restart in any case."
+    ),
+    "gact.tasks.code.queue": (
+        "Background run_code queue identity; empty selects an automatic clio-code name. Keep "
+        "it separate from Shell and storage."
+    ),
+    "gact.tasks.code.concurrency": (
+        "Worker slots for background run_code scripts; each running script holds one for its "
+        "life. Default 10000: nothing bounds how many scripts run, the person stops them."
+    ),
     "plugins.store_root": (
         "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
         "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
@@ -183,6 +276,18 @@ KEY_NOTES: dict[str, str] = {
     "arc.clio_core.daemon_rss_warn_bytes": (
         "RSS bytes marking the shared clio-core daemon elevated in the doctor report; tune to "
         "match normal daemon growth on this host."
+    ),
+    "arc.clio_core.log_flood_lines_per_s": (
+        "Sustained clio-core daemon log lines/s marking a log flood (a looping error); raise "
+        "only if a verbose CTP_LOG_LEVEL legitimately logs faster."
+    ),
+    "arc.clio_core.log_flood_restart_live": (
+        "Opt-in: replace a log-flooding clio-core daemon even while clients use it; they lose "
+        "the daemon until they attach again."
+    ),
+    "arc.clio_core.log_max_bytes": (
+        "Cap on the clio-core daemon log (one rotation to .1 keeps a second capped file); "
+        "raise to keep more daemon history."
     ),
     "arc.clio_core.liveness_ttl_s": (
         "Seconds a clio-core liveness probe is trusted before re-checking the socket; raise to cut "
@@ -227,6 +332,10 @@ KEY_NOTES: dict[str, str] = {
     "arc.events_chunk_segments": (
         "Semantic-event segments held per on-disk chunk of a session's event log before rolling; "
         "raise to cut chunk count, lower to bound re-encode cost."
+    ),
+    "arc.highway_deferred": (
+        "Record highway-only events (tool calls, routing, transforms, model calls) on a writer "
+        "thread in groups, before the next model request; false records each on the caller."
     ),
     "arc.liveness.backoff_initial_s": (
         "Seconds of initial backoff before the first retry of a stalled (zombie) clio-core RPC; "
@@ -334,6 +443,11 @@ KEY_NOTES: dict[str, str] = {
         "Ceiling on new artifact promotions one turn may make via create_artifact; re-designating "
         "identical bytes is free."
     ),
+    "artifacts.version_interval_s": (
+        "Seconds between two versions of one file registered from a background script; a "
+        "registration inside the interval is recorded when it ends, with the file as it is "
+        "then (the latest wins, nothing is dropped). 0 records every one. Default 5."
+    ),
     "artifacts.table_export_max_rows": (
         "Ceiling on the processed row count a table-export (current-view or full-dataset) "
         "request may reach; past it the export is refused with a typed 413 rather than "
@@ -383,9 +497,10 @@ KEY_NOTES: dict[str, str] = {
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."
     ),
-    "compaction.prompt_file": (
-        "Markdown template the compaction summarizer gets ({transcript} required; {focus}, "
-        "{files} optional); unset uses the packaged default. Read at each compaction."
+    "compaction.keep.working_state": (
+        "Keep the latest plan, todos and plan-mode note verbatim through a compaction and "
+        "offer them again after a mid-turn one (default true). Off only to measure what that "
+        "re-offer is worth: the summary alone then carries the working state."
     ),
     "compaction.keep.head": (
         "Whether a compaction keeps the current user question verbatim after the summary "
@@ -397,7 +512,12 @@ KEY_NOTES: dict[str, str] = {
     ),
     "compaction.keep.last_steps": (
         "ReAct steps of the latest turn a compaction keeps verbatim after the summary "
-        "(0 = none); raise to keep the newest steps exact."
+        "(default 1: the output the agent was using; 0 = none); raise to keep more."
+    ),
+    "compaction.keep.user_chars": (
+        "Characters of the person's own messages (requests and steers) a compaction keeps "
+        "verbatim, newest first (default 80000, about 20k tokens; 0 = only the open turn's "
+        "request)."
     ),
     "debug.level": (
         'Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high" for '
@@ -442,6 +562,10 @@ KEY_NOTES: dict[str, str] = {
     "gact.context_references.browse_limit_per_kind": (
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."
+    ),
+    "gact.context_references.evidence_sessions": (
+        "Most conversations one plan or evidence-source reference search reads (the most "
+        "recently active); past it the cut is reported as a typed degradation."
     ),
     "gact.context_references.max_hashable_bytes": (
         "Largest workspace file a context reference pins by sha256 digest (which reads every "
@@ -492,10 +616,6 @@ KEY_NOTES: dict[str, str] = {
     "gact.ledger_retention.a2ui_messages.max": (
         "Retention bound on one A2UI surface's message log; the oldest non-createSurface message "
         "is evicted first past it."
-    ),
-    "gact.ledger_retention.command_audit.max": (
-        "Max entries kept in the in-memory command-audit ledger before the oldest is FIFO-evicted; "
-        "raise for more in-memory audit history."
     ),
     "gact.ledger_retention.context_frames.max": (
         "Max per-session context-frame entries kept in memory before FIFO eviction; raise to "
@@ -561,6 +681,14 @@ KEY_NOTES: dict[str, str] = {
     "gact.resident_ledgers.sweep_interval_s": (
         "Seconds between the idle sweeps that release unused sessions from memory."
     ),
+    "gact.recall_index.rebuild_delay_s": (
+        "Seconds a conversation's transcript must be quiet before its recall search digest is "
+        "rebuilt; until then searches read that conversation's transcript instead."
+    ),
+    "gact.session_recall.max_sessions": (
+        "Most conversations one recall search reads (the most recently active); the response "
+        "names the cut when more were eligible."
+    ),
     "goal.judge_model": (
         "Legacy goal judge model override on the caller provider; Fleet goals selection takes "
         "precedence, including an explicit null to inherit the conversation model."
@@ -574,6 +702,11 @@ KEY_NOTES: dict[str, str] = {
         "Provider and model for the read-only CLIO Search assistant, as a provider_id/model_id "
         "mapping. Null inherits the current conversation model, then service defaults. "
         "CLIO_FLEET_SEARCH accepts JSON. Settings Fleet writes this choice independently of judges."
+    ),
+    "fleet.spotter": (
+        "Provider and model a SPOTTER watcher runs on when its session names none "
+        "(metadata.spotter_model), as a provider_id/model_id mapping. Null inherits the watched "
+        "session's model. CLIO_FLEET_SPOTTER accepts JSON. Settings Fleet writes this choice."
     ),
     "fleet.usage_poll_seconds": (
         "How old an account's usage reading may be before reading the fleet asks the provider "
@@ -609,20 +742,9 @@ KEY_NOTES: dict[str, str] = {
         "Override path for the trusted hook-fingerprint store; set to relocate where hook trust "
         "decisions persist."
     ),
-    "limits.agent_task_output_digest_chars": (
-        "Character bound above which a completed spawned child's full output is digested "
-        "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
-        "parent's wait_agent_tasks result, and above which get_task_result saves a result to "
-        "a file in the session's spill folder instead of returning it whole; raise to inline "
-        "larger child answers, lower to bound coordinator context growth sooner."
-    ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
-    ),
-    "limits.fs_read_bytes": (
-        "Byte cap on a single read_file tool call; raise to read larger files whole, lower to "
-        "bound memory and token cost."
     ),
     "limits.lm_call_s": (
         "Hard ceiling (seconds) an in-flight LM call is trusted as progress before the watchdog "
@@ -648,19 +770,15 @@ KEY_NOTES: dict[str, str] = {
         "Byte cap on one MCP content block's decoded binary payload (image/audio/resource) before "
         "it's elided; raise for larger images."
     ),
-    "limits.model_tool_result_chars": (
-        "Characters of a tool result shown to the model; a longer result is saved to the "
-        "session's tool-output folder and the agent gets this many head characters plus the "
-        "file path. Distinct from limits.tool_result_chars."
-    ),
     "limits.plan_review_chars": (
         "Character bound on saved plan content embedded in an approval record; raise for "
         "unusually large implementation plans, lower to bound review payloads."
     ),
     "limits.shell_default_output_bytes": (
         "Per-stream bytes of shell stdout/stderr returned inline when the caller specifies none; "
-        "larger output is spilled in full to .clio/tool-output/ and excerpted. Sized so the "
-        "result fits limits.tool_result_chars (#887)."
+        "larger output is spilled in full to .clio/tool-output/ and excerpted. The whole result "
+        "is also fitted to the room one result has in the model's context window "
+        "(tools.result_share)."
     ),
     "limits.shell_default_timeout_s": (
         "Seconds a shell command may run when the caller passes no timeout; 0 (default) means "
@@ -680,7 +798,8 @@ KEY_NOTES: dict[str, str] = {
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
-        "keep more result text visible in the transcript."
+        "keep more result text visible in the transcript. Not what the model is shown "
+        "(tools.result_share)."
     ),
     "limits.transient_provider_retry_delays": (
         "Comma-separated backoff delays (seconds) between retries of a transient provider error; "
@@ -705,6 +824,11 @@ KEY_NOTES: dict[str, str] = {
     "lm.claude_code_transport": (
         'Selects the Claude Code transport; "sdk" is the only supported value, kept as an '
         "explicit contract check, not a tuning knob."
+    ),
+    "lm.text_tool_protocol": (
+        'How a provider without native tools (Claude Code) writes tool calls: "invoke" '
+        "(default: <invoke> calls, the model's own call format, string arguments written "
+        'raw) or "json" (a fenced tool_calls JSON list).'
     ),
     "lm.codex_transport": (
         'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
@@ -738,8 +862,9 @@ KEY_NOTES: dict[str, str] = {
         "only if it itself causes a load failure."
     ),
     "lm.max_tokens": (
-        "Overrides the per-reply output token cap; raise for models needing longer completions, "
-        "else the provider/handshake default applies."
+        "Overrides the per-reply output token cap (on claude_code, the CLI's "
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS); set it to bound a runaway reply, else the provider "
+        "default applies."
     ),
     "lm.min_p": (
         "Sets the min-p sampling param (via extra_body on llama.cpp/LM Studio); tune for reasoning "
@@ -756,6 +881,10 @@ KEY_NOTES: dict[str, str] = {
     "lm.provider": (
         "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, codex, "
         "claude_code); change to switch which provider clio talks to."
+    ),
+    "lm.provider_options": (
+        "The selected provider's non-secret options (for example show_diffusion: on); the "
+        "model picker writes it, and an option the provider does not offer is refused at boot."
     ),
     "lm.stop_sequences": (
         "||-joined override for the DSPy trajectory-regurgitation stop sequences, sent whenever "
@@ -783,11 +912,19 @@ KEY_NOTES: dict[str, str] = {
         "Sets the OpenAI-standard top-p sampling parameter; tune for reasoning models needing "
         "fuller sampling than the temp-0 default."
     ),
+    "paths.allow_system_temp": (
+        "Keeps the platform temp dir (/tmp) in every session's write roots; turn off to confine "
+        "temporary files to each session's own scratch folder (paths.scratch_root)."
+    ),
     "paths.default_workspace": (
         "Absolute directory a fresh install's default workspace (ws_default) is rooted at, "
         "created if missing; unset uses the server's working directory at first start. It only "
         "seeds: an existing ws_default keeps its root (repoint it with PATCH "
         "/v1/workspaces/ws_default or the Workspaces page)."
+    ),
+    "paths.machine_name": (
+        "Name of this host as a folder segment under paths.scratch_root (default: the hostname); "
+        "set when several nodes share the root over NFS and their hostnames collide."
     ),
     "paths.model_catalog": (
         "Overrides the file path for the discovered-model catalog cache; set to relocate it off "
@@ -796,6 +933,14 @@ KEY_NOTES: dict[str, str] = {
     "paths.model_db": (
         "Overrides the file path for the writable per-model limits DB (context/output limit "
         "cache); set to relocate off the default data dir."
+    ),
+    "paths.scratch_retention_days": (
+        "Days a session's scratch folder is kept after the session's last activity before the "
+        "server-start sweep removes it; a deleted session's folder goes at once."
+    ),
+    "paths.scratch_root": (
+        "Root of the per-session scratch folders (<root>/<machine>/<session id>, each the "
+        "session's TMPDIR); default Agent state/scratch. Point at fast local disk on HPC."
     ),
     "paths.sessions": (
         "Full override path for the sessions.json registry file; unset defaults to "
@@ -936,13 +1081,13 @@ KEY_NOTES: dict[str, str] = {
         "Max session-open Claude Code SDK pre-connects (B2) pending at once; 0 disables "
         "session-open pre-connect entirely, raise for more sessions starting at once."
     ),
-    "providers.claude_code.stateful_capacity": (
-        "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
-        "running many concurrent stateful sessions."
-    ),
     "providers.claude_code.stream_idle_ttl_s": (
-        "Seconds a session's pooled Claude Code connection may sit idle before the next request "
-        "reaps it; lower to free idle connections sooner."
+        "Seconds a session's pooled Claude Code connection is kept between turns, so the next "
+        "turn sends only new messages; a connection is never reaped while its turn runs."
+    ),
+    "providers.copilot.session_idle_ttl_s": (
+        "Seconds an idle GitHub Copilot runtime entry is kept before the reaper closes it; an "
+        "entry whose session has a running turn is never reaped."
     ),
     "providers.native_image_url_allowlist": (
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
@@ -975,8 +1120,8 @@ KEY_NOTES: dict[str, str] = {
         "uploaded resources; unset leaves resources served as originals."
     ),
     "resources.list_max_records": (
-        "Resource rows one workspace listing returns before it reports truncation; raise for "
-        "workspaces holding many uploads, lower to keep tool results small."
+        "Resource rows one workspace listing returns when the call gives no limit; the result's "
+        "next_offset pages through the rest."
     ),
     "resources.max_bytes": (
         "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
@@ -1035,32 +1180,29 @@ KEY_NOTES: dict[str, str] = {
         "resources.max_bytes at 1 MiB/s (floor 60s) so a raised ceiling is not cut off mid-body."
     ),
     "resources.search_excerpt_chars": (
-        "Characters of each matching line returned by a bounded resource search; raise for more "
-        "context per hit, lower to shrink tool output."
+        "Characters of the excerpt around each resource search hit; a longer line reports its "
+        "length and the excerpt's char_offset, so workspace_resource_read reaches the rest."
     ),
     "resources.search_match_limit": (
-        "Matches one bounded resource search returns before reporting truncation; raise for "
-        "broader sweeps, lower to keep tool results small."
+        "Matches one resource search returns when the call gives no limit; the result's "
+        "next_offset pages through the rest."
     ),
     "resources.status_poll_failure_threshold": (
         "Consecutive failed converter status polls tolerated before the resource is marked failed "
         "with converter_status_unavailable; lower to give up on a vanished converter sooner."
-    ),
-    "resources.structure_node_max_bytes": (
-        "Byte ceiling on ONE structured node (a page, table, picture or text block) served from a "
-        "derived view; raise for documents with very large single nodes."
     ),
     "resources.text_preview_bytes": (
         "Byte ceiling on a text resource served inline through the preview route; raise to "
         "preview larger documents in a client."
     ),
     "resources.text_read_chars": (
-        "Characters returned by one bounded resource text read before truncation; raise to hand "
-        "the model more of a document per call."
+        "Characters one resource text read returns when the call gives no limit; offset and "
+        "next_offset reach the rest of the text."
     ),
     "resources.text_scan_bytes": (
-        "Byte ceiling on text CLIO will linearly scan for a resource search or direct read; raise "
-        "for larger plain-text inputs, lower to bound per-call CPU."
+        "Text size up to which a resource read scans to the end to report total_chars; larger "
+        "texts are still read and searched whole, and report total_chars once a page reaches "
+        "the end. Lower to bound per-read CPU."
     ),
     "resources.upload_chunk_bytes": (
         "Largest single resumable-upload chunk the server accepts, enforced while the body "
@@ -1156,13 +1298,184 @@ KEY_NOTES: dict[str, str] = {
         "Installed agent (marketplace/id) that runs as the SPOTTER standing watcher child "
         "session; change to point spotter-ai at a custom watcher agent."
     ),
+    "streams.push_interval_s": (
+        "Shortest gap in seconds between two announcements of one stream to the sessions "
+        "watching it; writes inside it are announced together with the latest state. "
+        "Default 0.1."
+    ),
     "system.release_manifest_url": (
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
     ),
-    "tools.circuit_breaker.failure_limit": (
-        "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
-        "warned at the limit and told why a call was blocked); 0 turns the breaker off."
+    "code.background_status_s": (
+        "Seconds between a background run_code script's status reports on its task row "
+        "(elapsed time, nested calls, memory); a display cadence, not a limit. Default 5."
+    ),
+    "code.notify_min_interval_s": (
+        "Minimum seconds between two wakes of one conversation by its background scripts' "
+        "task.notify; notifies inside the window arrive together at its end, never dropped. "
+        "Default 30."
+    ),
+    "code.background_record_window_s": (
+        "Seconds one counted record covers for a background run_code script's repeated "
+        "successful calls to one tool (errors and calls that asked are recorded on their own). "
+        "Default 60."
+    ),
+    "code.idle_minutes": (
+        "Minutes a run_code kernel keeps its variables without a script before it is stopped."
+    ),
+    "artifacts.index_page_items": (
+        "Ids per page of an artifact-index list (a session's transforms, an artifact's "
+        "uses); an append rewrites only the last page."
+    ),
+    "arc.core_threads": (
+        "Runtime threads of the clio-core daemon CLIO seeds; more threads give it more I/O "
+        "workers, so concurrent writes stop queueing on one. Read when the daemon starts."
+    ),
+    "arc.liveness.sample_after_s": (
+        "How long a pending clio-core call is waited for before the daemon's progress is first "
+        "measured; a stall is still decided a whole stall window after that."
+    ),
+    "tools.defer_builtins": (
+        "Whether built-in and plugin Python tools that do not declare defer are deferred "
+        "behind search_tools (named in the prompt, schemas loaded on demand); tools.never_defer "
+        "stays listed and a plugin keeps a tool listed with defer=False."
+    ),
+    "tools.deferral": (
+        "Whether tools may be deferred behind search_tools; off lists every tool (the "
+        "deferral ablation), recorded as tools_deferral_off in the trace."
+    ),
+    "tools.withheld": (
+        "Built-in tools withheld from every agent (comma-separated), recorded as "
+        "withheld_by_config; used for ablations such as run_code or the plan and todo tools."
+    ),
+    "tools.write_ahead": (
+        "Which MCP calls record their submission before they are sent: non_read_only "
+        "(read-only tools are sent at once and recorded with their result) or all."
+    ),
+    "tools.shell_poll_interval_ms": (
+        "Longest a shell command's end can go unseen: the status-poll ceiling its task "
+        "advertises (polls start at 20 ms and double up to it). Replies that change nothing "
+        "are recorded at most every 5 s, so a shorter ceiling does not add writes."
+    ),
+    "tools.per_server_concurrency": (
+        "Tool calls to one server that run at once, for a step's calls and a run_code "
+        "script's calls alike; the others wait their turn."
+    ),
+    "tools.defer_share": (
+        "Share of the model's context window (0-1) an MCP server's tool schemas may take before "
+        "its tools are deferred behind search_tools, when its plugin does not say; the smaller "
+        "of this and tools.defer_tokens applies."
+    ),
+    "tools.callers": (
+        "Who may call each tool, by tool name: direct (the model only), code (run_code "
+        "scripts only; the schema stays out of the prompt) or both. Overrides the plugin's "
+        "declaration; CLIO_TOOLS_CALLERS uses JSON. The plugin tools page writes this mapping."
+    ),
+    "tools.permissions": (
+        "The deployment's default permission per tool name: allow, ask or deny. Sits below "
+        "the person's permission rules and above the approval mode, and overrides the "
+        "plugin's declared default; CLIO_TOOLS_PERMISSIONS uses JSON."
+    ),
+    "tools.defer_tokens": (
+        "Schema tokens an MCP server's tools may take before they are deferred behind "
+        "search_tools, when its plugin does not say; the smaller of this and tools.defer_share "
+        "of the context window applies."
+    ),
+    "tools.call_workers": (
+        "Threads one step's tool calls, or one run_code script's calls, run on; "
+        "tools.per_server_concurrency still bounds the calls to each server."
+    ),
+    "tools.never_defer": (
+        "Tools never deferred behind search_tools whatever a plugin declares (the core loop); "
+        "an entry ending in * names a prefix, such as fs_*."
+    ),
+    "tools.result_share": (
+        "Share of the model's context window (0-1] one tool result may use before it is saved "
+        "to a file and the model gets its head; never more than the room left before "
+        "compaction. 0.125 is 25,000 tokens on a 200k window; also sizes file reads, searches, "
+        "shell output, task pages, mail per step and the offered plan."
+    ),
+    "tools.unknown_window_result_tokens": (
+        "Tokens of one tool result the model is shown when its context window is unknown (no "
+        "handshake or catalog entry); a longer result is saved to a file with its head."
+    ),
+    "tools.recall_result_chars": (
+        "Characters of a recall_context result shown inline (default 16000, about 4,000 "
+        "tokens); past it the whole result is saved to the session's tool-output folder and "
+        "the agent gets its head and the file to search and read on. A fixed size, not a "
+        "share of the window."
+    ),
+    "tools.full_result": (
+        "Native tools whose whole result reaches the model, never cut to the result size with "
+        "the rest saved to a file; a skill's procedure is the default."
+    ),
+    "tools.search_limit": (
+        "Tools a search_tools keyword search returns when the call names no limit."
+    ),
+    "tools.search_max": (
+        "The most tools one search_tools keyword search returns, whatever limit the call names."
+    ),
+    "tools.search_miss_names": (
+        "Deferred tool names a search_tools miss lists so the agent can search again by name; "
+        "the prompt entry names them all."
+    ),
+    "tools.instructions_chars": (
+        "Characters of an MCP server's own instructions used to describe a deferred server in "
+        "the prompt's listing, when its plugin gives no description; a shortened entry says "
+        "so, and search_tools returns the whole instructions with the server's tools."
+    ),
+    "code.max_script_chars": (
+        "Characters of a run_code script that a permission question shows the person."
+    ),
+    "code.max_output_bytes": (
+        "Bytes of one run_code script's printed output the kernel returns; the rest is cut "
+        "with a note. Read when a kernel starts."
+    ),
+    "code.start_timeout_s": (
+        "Seconds a run_code kernel has to start, or to take its tools, before it counts as failed."
+    ),
+    "code.poll_s": (
+        "Seconds between checks for cancellation and the time limit while a run_code script runs."
+    ),
+    "code.index_line_chars": (
+        "Longest line of the tools index in run_code's description; a server with more tools "
+        "is listed in part with a count of the rest."
+    ),
+    "code.covering_postures": (
+        "Approval modes in which approving a run_code script also covers the non-read tool "
+        "calls it makes; in other modes each such call asks."
+    ),
+    "fs.read_lines": (
+        "Most lines one fs_read_file call returns, and its default; a read also stops at the "
+        "result size and names the offset to continue from. Read when the fs server starts."
+    ),
+    "fs.read_line_chars": (
+        "Characters of one line fs_read_file returns; a longer line is cut with a marker "
+        "giving its full length."
+    ),
+    "fs.count_bytes": (
+        "File size above which fs_read_file stops counting lines once its range is filled, so "
+        "a read of a huge file does not scan all of it."
+    ),
+    "fs.search_max_bytes": (
+        "Largest ripgrep download, and executable in it, CLIO accepts when it installs its "
+        "managed ripgrep for the file search tools."
+    ),
+    "fs.search_timeout_s": (
+        "Seconds one file search or glob may run; a slower one returns what it found, marked "
+        "partial."
+    ),
+    "fs.search_line_chars": ("Characters of one matching line a content search returns."),
+    "hdf5.summary_attributes": (
+        "Attributes an @file.h5::/path reference summary carries, such as NX_class and units."
+    ),
+    "hdf5.summary_text_chars": (
+        "Characters of one text attribute in an HDF5 reference summary; a longer value is cut."
+    ),
+    "lm.sent_prompt_sessions": (
+        "Sessions whose last request to the model is kept in memory for the exact prompt "
+        "view; the least recently active is dropped first."
     ),
     "tools.file_policy.allow_symlinks": (
         "Whether tool file reads/writes may traverse symlinks; set true only if a workflow "
@@ -1173,8 +1486,9 @@ KEY_NOTES: dict[str, str] = {
         "temp dir); add a root to grant access."
     ),
     "tools.file_policy.max_file_size_bytes": (
-        "Byte-size cap (accepts K/M/G/T suffixes) on a file a read/write tool call may touch; "
-        "raise to allow larger files."
+        "Byte-size cap (accepts K/M/G/T suffixes) on a file a tool loads whole into memory "
+        "(edits, diff capture, image/PDF/document viewers); streaming readers (fs_read_file "
+        "ranges, fs_search) are exempt. Raise to allow larger whole-file loads."
     ),
     "tools.mcp.call_timeout_s": (
         "Runaway backstop seconds for one synchronous MCP tool call before it's abandoned; not the "

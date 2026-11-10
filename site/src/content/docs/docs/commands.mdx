@@ -1,0 +1,213 @@
+---
+title: "Commands and @ mentions"
+description: Run a command with /, bring in a subagent, workflow, flow or tool server with @, and write your own commands.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Capture from "../../../components/overview/Capture";
+import { captureImage } from "../../../lib/captures";
+import slashMenu from "../../../assets/captures/commands/slash-menu.png";
+import prompts from "../../../assets/captures/commands/slash-menu-prompts.png";
+import ambiguous from "../../../assets/captures/commands/slash-menu-same-name.png";
+import atPopover from "../../../assets/captures/commands/at-popover.png";
+import atTyped from "../../../assets/captures/commands/at-popover-typed.png";
+import notStarted from "../../../assets/captures/commands/summon-not-started.png";
+import chip from "../../../assets/captures/commands/chip-in-draft.png";
+import phone from "../../../assets/captures/commands/two-chips-phone.png";
+import summoned from "../../../assets/captures/commands/summoned-subagent.png";
+import summonedServer from "../../../assets/captures/commands/summoned-server.png";
+import promptSent from "../../../assets/captures/commands/mcp-prompt-sent.png";
+
+Type `/` in the message box to run a command, or `@` to bring a subagent, a workflow, a
+flow or a tool server into your message. Both menus list only what this conversation's
+agent has.
+
+## Run a command
+
+<Steps>
+
+1. Type `/`. The menu groups what you can run: **Commands**, then **Skills**, then each
+   tool server's prompts.
+
+2. Keep typing to narrow it, use the arrow keys to choose, and press Enter. Words after
+   the command are its arguments, for example `/component Button primary`.
+
+</Steps>
+
+<Capture client:visible image={await captureImage(slashMenu)}
+  alt="The / menu groups commands, skills and a tool server's prompts."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+Each row says where it comes from (a plugin, this workspace or your own folder) and
+what it takes. A row that cannot run says why in words: **Reserved name**,
+**Shadowed** or **Unavailable**. Hover the label for the reason.
+
+### Commands, skills and prompts
+
+- **Commands** run as a message to the agent: the command file's text, with your
+  arguments filled in, becomes what you sent. The built-in ones (`/clear`, `/goal`,
+  `/loop`, `/cron` and its alias `/schedule`, `/cache-stats` and `/dump-trace`) do
+  their job at once.
+- **Skills** load a skill for the agent before it reads your message, so it works from
+  that skill's procedure. Your message records that you loaded it. A skill marked
+  `user-invocable: false` is not listed; the agent can still load it when it needs it.
+- **Prompts** come from a tool server the agent is connected to, named
+  `/mcp__<server>__<prompt>`. Your words fill the prompt's arguments in order, the last
+  argument taking the rest. If a required argument is missing, the command says which
+  one. The fetched prompt becomes your message, with any image or document it includes;
+  open **Prompt … from …** under your message to read it. When a server adds a prompt
+  while you work, it appears in the menu the next time you type `/`.
+
+<Capture client:visible image={await captureImage(promptSent)}
+  alt="A sent /mcp__fixture-docs__show_figure command with its image and the opened prompt text"
+  caption="The prompt's text, the resource it named and the assistant message it included, opened under the message that sent it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(prompts)}
+  alt="A tool server's prompts listed under its own heading in the / menu."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+### When two commands share a name
+
+Two plugins can ship a command of the same name. The menu then lists both under their
+full names, such as `/commands-fixture:review-notes` and `/commands-clash:review-notes`,
+marked **Same name elsewhere**. Type the full name to run one; the short name alone is
+refused and the refusal names both.
+
+<Capture client:visible image={await captureImage(ambiguous)}
+  alt="Two plugins' commands of the same name, each listed under its full name."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Write your own commands
+
+A command is a Markdown file. Its name is the file name, and its text is what the agent
+receives:
+
+```markdown title=".clio/commands/standup.md"
+---
+description: Summarize what changed since yesterday.
+argument-hint: "<what you did>"
+---
+Write a three-line standup: yesterday, today, blockers. Yesterday: $ARGUMENTS
+```
+
+| Where the file goes | Who sees it | Full name |
+| --- | --- | --- |
+| `.clio/commands/` in the workspace | this workspace | `/project:<name>` |
+| `.claude/commands/` in the workspace | this workspace | `/project:<name>` |
+| `~/.config/clio-agent/commands/` | you, in every workspace | `/user:<name>` |
+| `~/.claude/commands/` | you, in every workspace | `/user:<name>` |
+| a plugin's `commands/` folder | conversations whose agent has the plugin | `/<plugin>:<name>` |
+
+- `$ARGUMENTS` is everything typed after the command; `$1`, `$2` and so on are its
+  words, and quotes keep words together.
+- A file in a subfolder keeps its name; the folder becomes its label in the menu.
+- When the same name exists in several of these folders, the first in the table wins and
+  the others are listed as **Shadowed**, naming the file that wins.
+- A built-in name, such as `goal`, is reserved: a file named `goal.md` is listed as
+  **Reserved name** and `/goal` still runs the built-in.
+- `agent: <subagent>` or `workflow: <workflow>` in the frontmatter asks for that subagent
+  or workflow, the same as writing `@<name>` in the message.
+- `model` and `allowed-tools` from Claude Code commands are read but not used. The menu
+  says **Some fields ignored**.
+
+<Aside>
+Plugins written for Claude Code install as they are: CLIO translates their commands,
+skills, subagents and hooks ([what maps](#plugins-written-for-claude-code)). A hook can stop a command before it runs; the refusal shows the hook's
+reason. See [Hooks](/docs/hooks/) and [Agents and plugins](/docs/agents-and-plugins/).
+</Aside>
+
+## Bring in a subagent, a workflow, a flow or a tool server with @
+
+<Steps>
+
+1. Type `@`. Your workspace's files are listed; **Agents** (the subagents this agent can
+   start), **Workflows** (with the inputs they take), **Flows** and **Tools** (its tool
+   servers) are collapsed, each with its count. Open one to browse it.
+
+2. Keep typing: every category shows what matches. Press Enter, and the name becomes a
+   chip in your message. You can add several.
+
+3. Send the message.
+
+</Steps>
+
+<Capture client:visible image={await captureImage(atPopover)}
+  alt="The @ menu with the workspace files listed and Agents, Workflows, Flows and Tools collapsed with their counts."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(atTyped)}
+  alt="The @ menu after typing @dr: a matching agent, the draft-review workflow, files and conversations."
+  caption="A few letters show the matches in every category."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(chip)}
+  alt="A subagent chip at the start of a message."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+- **A subagent, workflow or flow** you name is what you ask the agent to use for this
+  message. Nothing starts before the agent reads it: the agent writes the brief from
+  the whole conversation (so "the folder we talked about" becomes the folder's path),
+  sets what the work needs (a model, a workflow's inputs, a flow's options), and
+  starts it. Under your message you see **You asked for explore on this message**;
+  under the answer, **Started explore as you asked**, and the work appears with its
+  progress like any other, started by you. If the agent did not start it, the answer
+  says so: **explore was not started**, with the reason when a call was refused. The agent keeps every tool
+  while it works.
+- **A tool server** you name has its tools loaded for this message, so the agent can use
+  them straight away. Under your message: **You pointed this message at the hdf5
+  tools**.
+
+<Capture client:visible image={await captureImage(summoned)}
+  alt="An answer that reports what explore found, with the line Started explore as you asked under it."
+  caption="The agent wrote explore's brief from the conversation, waited for its report and used it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(notStarted)}
+  alt="A message with an @review chip that says never mind, a one-line answer, and the line review was not started."
+  caption="Nothing is forced: when the agent does not start what you asked for, the answer says so."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(summonedServer)}
+  alt="A message pointed at the fixture-docs tools, answered with two of its tools"
+  caption="The server's tools are loaded for the message, and the agent calls them without searching for them first."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+- Typing the full name also works: `@explore` as its own word becomes a chip when you
+  send. An address such as `bob@example.org` stays text.
+- A name the agent has no subagent or server for never becomes a chip; it is sent as
+  ordinary text.
+
+<Capture client:visible image={await captureImage(phone)}
+  alt="Two chips and the rest of the message wrapping on a phone."
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Plugins written for Claude Code
+
+CLIO installs a Claude Code plugin as it is, through a translation: an importer reads
+its files into CLIO's own plugin records, and a hook adapter runs its hooks on the same
+wire Claude Code uses. `clio-agent plugin check` names anything that has no CLIO
+counterpart instead of dropping it silently. The writing method in
+[Write a paper](/docs/papers/#write-with-a-method) is one such package, brought into
+CLIO.
+
+| In the Claude Code plugin | In CLIO | How it maps |
+| --- | --- | --- |
+| `commands/*.md` | `/` commands, `/<plugin>:<name>` | exactly, with `$ARGUMENTS` and `$1`, `$2` |
+| `skills/*/SKILL.md` | skills, also `/` commands | exactly |
+| `agents/*.md` | subagents | exactly; each tool it names maps by the table below |
+| `hooks/hooks.json` | hooks on the same events: `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `UserPromptExpansion`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` | exactly; another event is reported as unmapped |
+| `.mcp.json` | tool servers | exactly, with `${CLAUDE_PLUGIN_ROOT}` |
+| `Read`, `Glob`, `Edit`, `MultiEdit`, `Write` | the workspace file tools | exactly |
+| `Bash` | the shell tool | exactly |
+| `WebFetch`, `WebSearch` | the web tools | exactly |
+| `Task`, `Agent` | `spawn_agent_task` | exactly |
+| `Grep` | the workspace text search | in part: its regex, glob and files, content and count modes map; multiline mode and split `-A`/`-B` context do not, and `plugin check` says so |
+| another tool a subagent names | left out of that subagent | `plugin check` warns |
+| `model`, `allowed-tools`, `disable-model-invocation` in a command | read, not used | the menu says **Some fields ignored** |
+| `output-styles/`, `outputStyles`, `lspServers` | not used | `plugin check` warns |
+
+## Related
+
+- [Subagents](/docs/subagents/): what subagents are and how their work appears.
+- [Tool servers](/docs/mcp-servers/): connect the servers whose tools and prompts you use.
+- [Agents and plugins](/docs/agents-and-plugins/): where commands, skills and subagents come from.

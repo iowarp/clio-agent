@@ -37,7 +37,7 @@ from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.flow_restart import to_latest_flow_assignment
 from clio_agent.gact.native_work import now
 from clio_agent.gact.owner_loop import on_owner_loop
-from clio_agent.gact.session_input import input_delivery
+from clio_agent.gact.session_input import admission_trigger, input_delivery
 from clio_agent.gact.session_mail import WRITTEN_INPUT_KINDS, SessionMail, StagedInput
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import PrepareChild
@@ -110,10 +110,9 @@ class Conversations:
         self.recovery.on_ready = partial(conversation_recovery.on_core_ready, self)
 
     def signal_pending(self) -> None:
-        """Recheck indexed Core mail after readiness or policy changes."""
+        """Recheck indexed Core mail after readiness or policy changes (read off the loop)."""
         if self._loop is not None and not self._closing:
-            for sid in self.history.pending_sessions():
-                self.runner.signal(sid)
+            conversation_recovery.signal_pending_sessions(self, self._loop)
 
     def arm_deadline(self, handle: str, deadline: str | None) -> None:
         """Apply an already recorded explicit execution budget on the owner loop."""
@@ -282,9 +281,10 @@ class Conversations:
                                 expected_revision=item.revision,
                             )
                 staged = self.mail.stage(caller)
-                if not staged.items:
+                latest = self.history.latest_assignment(sid)
+                trigger = admission_trigger(sid, staged.items, latest)
+                if trigger is None:
                     return None
-                trigger = staged.items[0]
                 value = self.history.read_content(trigger.content)
                 input_text = (
                     value.get("text", "")

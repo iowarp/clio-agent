@@ -72,11 +72,14 @@ def _native_events(
                 "detail": "no ARC live event plane is installed; the native timeline is empty",
             }
         ]
+    from clio_agent.gact.task_event_merge import session_log_segments  # noqa: PLC0415
+
     events: list[dict[str, Any]] = []
     degradations: list[dict[str, str]] = []
     for session_id in session_ids:
         try:
-            segments = list(iterator(session_id))
+            # The whole log: a task event's one record is its lane (task_event_lane).
+            segments = list(session_log_segments(arc, session_id))
         except Exception as exc:  # noqa: BLE001 - one child must not fail the parent
             degradations.append(
                 {

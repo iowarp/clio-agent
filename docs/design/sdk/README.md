@@ -14,5 +14,7 @@ Design documents for replacing blueprints with Python-defined agents and plugins
 | [memory-ledger.md](memory-ledger.md) | Decisions and acceptance evidence for long-term memory |
 | [delegation-fork-science-plan.md](delegation-fork-science-plan.md) | Default delegation, agent forks, the science log, flow export and two published studies |
 | [delegation-fork-science-addendum-a.md](delegation-fork-science-addendum-a.md) | Addendum A: sources, data access and isolated workspaces |
+| [tool-calling-plan.md](tool-calling-plan.md) | Exploration tools, the fast explorer, progressive tool disclosure, `run_code` and the session plan |
+| [tool-calling-ledger.md](tool-calling-ledger.md) | Decisions, baselines and acceptance evidence for the tool-calling plan |
 
 These are exported from the shared design docs as of Oct 20, 2026. Edit them here from now on; the repository copy is the one the implementation follows.

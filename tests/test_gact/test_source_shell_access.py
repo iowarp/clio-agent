@@ -63,7 +63,7 @@ def test_approved_read_does_not_request_writable_folder(
     path = snapshot / "data.csv" if location in {"file", "reader"} else snapshot
     name = "fs_read_file" if location == "reader" else "shell_bash"
     args = (
-        {"filepath": str(path)}
+        {"path": str(path)}
         if location == "reader"
         else {"cwd": str(path)}
         if location == "cwd"
@@ -85,7 +85,7 @@ def test_edit_tools_still_reject_read_only_source(
 ) -> None:
     _, snapshot = source_paths
     with pytest.raises(FilePolicyError, match="read-only"):
-        requested_folders(name, {"filepath": str(snapshot / "data.csv")})
+        requested_folders(name, {"path": str(snapshot / "data.csv")})
 
 
 def test_other_workspace_and_source_ancestor_cannot_acquire_write_access(

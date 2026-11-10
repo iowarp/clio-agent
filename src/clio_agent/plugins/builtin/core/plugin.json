@@ -9,7 +9,7 @@
   "extensions": {
     "ai.iowarp.clio": {
       "catalogs": ["clio-workspace"],
-      "requires": ["fleet"]
+      "requires": ["fleet", "streaming"]
     }
   }
 }

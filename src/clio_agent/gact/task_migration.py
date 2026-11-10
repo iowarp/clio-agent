@@ -76,7 +76,10 @@ def migrate_history(app: Any) -> None:
     """Persist stable mappings, content and proven acknowledgements without execution."""
     history = app.state.task_history
     app.state.task_migration_issues = []
-    sessions = {session.id: session for session in app.state.sessions.list()}
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    every = app.state.sessions.select(PageQuery(archived=None))  # a migration reads all
+    sessions = {session.id: session for session in every}
     for session in sessions.values():
         if (
             session.status == "cancelled"

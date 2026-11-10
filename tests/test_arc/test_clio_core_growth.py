@@ -72,6 +72,7 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     config.write_text(
         _DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=31413,
+            core_threads=4,
             conf_dir=_cte_yaml_path(tmp_path / "conf"),
             ram_budget="1GB",
             file_tier=_cte_yaml_path(tmp_path / "storage.bin"),

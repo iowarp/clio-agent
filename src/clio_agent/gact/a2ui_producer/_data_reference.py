@@ -48,6 +48,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.a2ui_producer._live_sources import latest_artifact_id, record_binding
 from clio_agent.gact.a2ui_producer._refusal import refusal
 from clio_agent.platform_paths import win_extended_path
 
@@ -196,6 +197,16 @@ def _validate_mesh_source(
                         ),
                     )
     return None
+
+
+def _is_stream(app: "FastAPI", artifact_id: str) -> bool:
+    """Whether ``artifact_id`` is a stream (content in clio-core, no file to check)."""
+    from clio_schemas import ArtifactKind  # noqa: PLC0415
+
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    found = get_registry(app).get_by_artifact_id(artifact_id)
+    return found is not None and found[1].kind == ArtifactKind.STREAM
 
 
 def _resolve_artifact_path(
@@ -610,6 +621,7 @@ def validate_component_data_references(
     app: "FastAPI",
     components: list[dict[str, Any]],
     notes: list[dict[str, str]] | None = None,
+    bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Validate every ``dataUri``-carrying component's referenced dataset.
 
@@ -619,6 +631,9 @@ def validate_component_data_references(
             has already turned workspace paths into ``artifact://`` refs.
         notes: When given, gains one row per study source accepted without a
             column check because it has no rows yet (``study_source_empty``).
+        bindings: When given, gains one row per chart, table or map data source:
+            ``live`` for a study source or a named artifact at ``@latest`` (the view
+            follows it), ``pinned`` for an artifact id (one fixed version).
 
     Returns:
         ``None`` when every ``dataUri`` reference (if any) resolves and, for
@@ -639,17 +654,33 @@ def validate_component_data_references(
         )
         if not isinstance(name, str) or not isinstance(data_uri, str) or not data_uri:
             continue
+        component_id = str(component.get("id") or "")
         if data_uri.startswith("study://"):
             outcome = _validate_study_source(app, component, name, data_uri, notes)
             if outcome is not None:
                 return outcome
+            if name in _TABULAR_COMPONENTS:
+                record_binding(bindings, component_id, data_uri, "live")
             continue
-        artifact_id = _artifact_id_from_data_uri(data_uri)
+        latest = latest_artifact_id(app, data_uri, component_id)
+        if isinstance(latest, dict):
+            return latest
+        artifact_id = latest[0] if latest else _artifact_id_from_data_uri(data_uri)
         if artifact_id is None:
             # Malformed against the component's own dataUri pattern -- the
             # catalog's schema validator reports this, never duplicated here.
             continue
-        component_id = str(component.get("id") or "")
+        if name in _TABULAR_COMPONENTS:
+            record_binding(
+                bindings,
+                component_id,
+                data_uri,
+                "live" if latest else "pinned",
+                artifact_id=artifact_id,
+                **({"version": latest[1]} if latest else {}),
+            )
+        if _is_stream(app, artifact_id):
+            continue  # a stream's entries are read whole by the view; nothing to check here
         resolved = _resolve_artifact_path(app, artifact_id)
         if isinstance(resolved, dict):
             return resolved

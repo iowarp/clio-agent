@@ -9,6 +9,24 @@ from typing import Any
 _UNSUCCESSFUL = {"failed", "error", "cancelled", "interrupted", "denied"}
 
 
+def _child(handle: str) -> dict[str, str]:
+    """The waited task's name and, for a child agent, the model its session ran on."""
+    from clio_agent.gact.context import active_app  # noqa: PLC0415
+
+    app = active_app()
+    history = getattr(getattr(app, "state", None), "task_history", None)
+    task = history.task_snapshot(handle) if history is not None else None
+    if task is None:
+        return {"title": handle}
+    fields = {"title": str(task.label or handle)}
+    session_id = str(getattr(task.backend, "session", "") or "") if task.backend else ""
+    session = app.state.sessions.get(session_id) if session_id and app is not None else None
+    model = (getattr(session, "model", None) or {}) if session is not None else {}
+    if isinstance(model, dict) and model.get("model_id"):
+        fields["model"] = str(model["model_id"])
+    return fields
+
+
 def is_wait_task_tool(name: str) -> bool:
     """Whether ``name`` is the native wait whose result is a task snapshot."""
     return name == "wait_tasks"
@@ -84,9 +102,15 @@ def wait_start_presentation(args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _result_text(value: Any) -> str:
-    """Use returned text when available; retain structured results otherwise."""
+    """Use returned text when available; retain structured results otherwise.
+
+    A child agent's result is its run (``answer``, ``selected_expert``, ``tools_called``,
+    ...): its report is the ``answer``; the whole run stays in the technical details.
+    """
     if isinstance(value, str):
         return value
+    if isinstance(value, Mapping) and isinstance(value.get("answer"), str):
+        return value["answer"]
     if isinstance(value, Mapping) and isinstance(value.get("output"), str):
         return "\n".join(filter(None, (value["output"], str(value.get("error_reason") or ""))))
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
@@ -111,6 +135,9 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     rows = [row for row in outcomes if not row.get("error")]
     errors = [row for row in outcomes if row.get("error")]
     errors.extend(row for row in result.get("errors", []) if isinstance(row, Mapping))
+    # A batch that spawned and waited (spawn_agents_parallel wait=true) lists the
+    # children that never started by their position in the batch.
+    errors.extend(row for row in result.get("not_started", []) if isinstance(row, Mapping))
 
     def uncollected(row: Mapping[str, Any]) -> bool:
         return (
@@ -149,7 +176,7 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     for index, handle in enumerate(handles):
         error = next((row for row in errors if row.get("handle") == handle), None)
         row = next((row for row in rows if row.get("handle") == handle), None)
-        block: dict[str, Any] = {"id": f"wait-task-{index}", "type": "text"}
+        block: dict[str, Any] = {"id": f"wait-task-{index}", "type": "text", **_child(handle)}
         if error is not None:
             block.update(
                 label=f"{handle}: Could not collect",
@@ -212,7 +239,11 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
                     "id": f"wait-error-{index}",
                     "type": "text",
                     "severity": "error",
-                    "text": str(error.get("error") or error.get("message") or error),
+                    "text": (
+                        f"Child {int(error['index']) + 1} did not start: {error.get('error')}"
+                        if isinstance(error.get("index"), int)
+                        else str(error.get("error") or error.get("message") or error)
+                    ),
                 }
             )
     failed = sum(row.get("status") in _UNSUCCESSFUL for row in rows)

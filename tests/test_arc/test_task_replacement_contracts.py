@@ -278,11 +278,15 @@ def test_progress_replay_reads_immutable_assignment_content_once(
     restored = TaskHistory(arc)
     restored.restore()
     assert restored.task_snapshot(task.handle) == original
-    assert reads.count(original.description_reference) == 1
-    assert reads.count(details) == 1
+    # At most once, never per event; replaying the annotated lane (the events' one
+    # record) needs no assignment body at all.
+    assert reads.count(original.description_reference) <= 1
+    assert reads.count(details) <= 1
+    from clio_agent.gact.task_event_lane import session_task_events  # the events' one record
+
     observations = [
         event
-        for event in arc._live.iter_event_contents()
+        for _sid, event in session_task_events(arc, "owner")
         if event.get("event_type") == "task.observed"
     ]
     assert len(observations) == 32

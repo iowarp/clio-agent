@@ -1,8 +1,9 @@
 """Shared plumbing of the stateful engines (Codex direct sockets, Claude Code sessions).
 
-The conversation logic itself lives in
-:class:`clio_agent.lm.engines.conversations.ConversationRegistry` (typed messages, one
-kept provider conversation per agent scope). This module holds what every engine and
+Each engine keeps its conversations where they live (Codex in its direct engine,
+Claude Code on the pooled client that holds it:
+:mod:`clio_agent.providers.claude_code_conversation`); the shared keying and delta rule
+is :mod:`clio_agent.lm.engines.conversations`. This module holds what every engine and
 the agent loop share:
 
 * the typed reset-reason catalog (:data:`STATEFUL_RESET_REASONS`) -- a restart is a
@@ -61,6 +62,14 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
             "An ARC op (compact/delete) rewrote the History prefix, so the append-"
             "only invariant broke. The op is the one semantically-unavoidable prefix "
             "reset: the session is restarted with a full send."
+        ),
+    },
+    "conversation_cleared": {
+        "category": "stateful_reset",
+        "description": (
+            "Another conversation of this session was opened on the same Claude Code "
+            "client, which cleared the CLI's history (one client holds one conversation). "
+            "The next call of this one is a full send."
         ),
     },
     "session_evicted": {

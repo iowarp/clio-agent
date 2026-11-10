@@ -345,6 +345,13 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             entry.last_access = self._clock()
             return entry.messages
 
+    def peek_resident(self, sid: str) -> Optional[list["Message"]]:
+        """A resident ledger as is (no recency touch, no read), else ``None``."""
+
+        with self._lock:
+            entry = self._resident.get(sid)
+            return entry.messages if entry is not None else None
+
     def peek(self, sid: str) -> Optional[list["Message"]]:
         """Read a session's ledger without making it (or its ARC scopes) resident.
 
@@ -403,14 +410,6 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
                 self._arc_bytes -= entry.scopes.pop(scope, 0)
                 if not entry.scopes:
                     del self._arc[session_id]
-
-    def session_released(self, session_id: str) -> None:
-        """ARC dropped every cached scope of ``session_id``."""
-
-        with self._lock:
-            entry = self._arc.pop(session_id, None)
-            if entry is not None:
-                self._arc_bytes -= entry.nbytes
 
     def scope_touched(self, session_id: str) -> None:
         """A cached ARC scope of ``session_id`` was read."""

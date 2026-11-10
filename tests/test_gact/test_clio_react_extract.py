@@ -157,11 +157,11 @@ def test_a_submit_never_extracts(extract_config: Any) -> None:
 
 def test_the_extract_reads_the_agents_context_from_clio_core(extract_config: Any) -> None:
     """The extract sees exactly what the agent saw -- clio-core's context, including what
-    the harness recorded there (the tool-use note) -- not the loop's private step list."""
-    from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE
-
+    the harness recorded there (each step's call and result) -- not the loop's private
+    step list."""
     extract_config()
     script = [*_steps(4), _extracted(answer="Best found: 42.")]
     _pred, engine = _run(script, "question -> answer", max_iters=4)
 
-    assert TOOL_USE_NOTE[:60] in str(engine.requests[-1].messages)
+    sent = str(engine.requests[-1].messages)
+    assert all(f"look {i}" in sent for i in range(4))

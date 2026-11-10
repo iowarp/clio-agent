@@ -31,6 +31,7 @@ from clio_agent.arc.blob_frame import (
     stored_body,
     unframe,
 )
+from clio_agent.arc.chunk_records import ChunkFormatUnsupportedError, full_body, parse_chunk
 from clio_agent.arc.clio_core_config import effective_ram_cap
 from clio_agent.arc.lane_index import (
     INDEX_SCOPE,
@@ -57,6 +58,17 @@ def test_frame_round_trips_and_ignores_a_stale_tail() -> None:
     assert unframe("r", body.decode("ascii")) == data  # the binding may hand back str
 
 
+def test_a_chunk_record_blob_and_a_frame_are_never_mistaken_for_each_other() -> None:
+    """Segment-list chunks are raw append-only records (``arc/chunk_records.py``), every
+    other record keeps this frame: a chunk blob is not a frame (its magic byte is no
+    digit and no base64) and a framed body is not a chunk (typed, never misparsed)."""
+    chunk = full_body([])
+    with pytest.raises(BlobDecodeError):
+        unframe("chunk", chunk)
+    with pytest.raises(ChunkFormatUnsupportedError):
+        parse_chunk("record", stored_body(b"\x90"))
+
+
 def test_a_body_stored_before_the_frame_reads_whole() -> None:
     assert unframe("r", base64.b64encode(b"legacy record")) == b"legacy record"
 
@@ -74,26 +86,40 @@ def test_invalid_base64_is_typed_for_legacy_and_framed_blobs() -> None:
         assert caught.value.error_type == "clio_core_blob_invalid_base64"
 
 
-@pytest.mark.parametrize("as_text", [False, True])
+class _Done:
+    """A completed native future: ``wait`` gives the code, ``result`` the value."""
+
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def done(self) -> bool:
+        return True
+
+    def wait(self, _max_sec: float = -1.0) -> int:
+        return 0
+
+    def result(self, _max_sec: float = -1.0) -> Any:
+        return self._value
+
+
 @pytest.mark.parametrize("physically_truncated", [False, True])
-def test_get_distinguishes_stale_size_from_truncated_data(
-    as_text: bool, physically_truncated: bool
-) -> None:
+def test_get_distinguishes_stale_size_from_truncated_data(physically_truncated: bool) -> None:
     """Size metadata can lag intact bytes; genuinely missing bytes remain an error."""
     data = b"retained assignment observations" * 40
     stored = frame(data)
     stale_size = len(stored) - 16
     reads: list[int] = []
 
-    def read_blob(name: str, size: int, offset: int) -> bytes | str:
+    def read_blob(_tag_id: Any, name: str, size: int, offset: int) -> _Done:
         assert name == "record" and offset == 0
         reads.append(size)
         available = stored[:stale_size] if physically_truncated else stored
-        result = available[:size]
-        return result.decode("ascii") if as_text else result
+        return _Done(available[:size])
 
-    tag = SimpleNamespace(GetBlobSize=lambda name: stale_size, GetBlob=read_blob)
-    store = SimpleNamespace(_cte=SimpleNamespace(Tag=lambda name: tag), tag=lambda kind: kind)
+    client = SimpleNamespace(
+        AsyncGetBlobSize=lambda _tag_id, _name: _Done(stale_size), AsyncGetBlob=read_blob
+    )
+    store = SimpleNamespace(_client=client, _tag_ids=SimpleNamespace(get=lambda kind: 1))
     # Exercise the read algorithm independently of every separately covered RPC wrapper.
     read = cast(Any, inspect.unwrap(ClioCoreStore.get))
     if physically_truncated:

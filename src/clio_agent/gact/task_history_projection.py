@@ -322,6 +322,9 @@ def _project(
         ):
             _legacy_workflow(self, snapshot, lane.get("workflow"))
         self._session_tasks.setdefault(snapshot.owner.session_id, set()).add(snapshot.handle)
+        if snapshot.invocation_id:
+            key = (snapshot.owner.session_id, snapshot.invocation_id)
+            self._invocation_tasks.setdefault(key, set()).add(snapshot.handle)
         self._kind_tasks.setdefault(snapshot.kind, set()).add(snapshot.handle)
         self._human_tasks.setdefault(snapshot.owner.human_id, set()).add(snapshot.handle)
         if snapshot.resource_id is not None:

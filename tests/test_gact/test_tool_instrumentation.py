@@ -709,6 +709,14 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
             # Reads back compacted context; called with neither query nor ids on
             # purpose: a typed refusal, and the tool_call part must land anyway.
             "recall_context": {},
+            # Outside an agent loop there is no deferred catalog: it says nothing is
+            # deferred, and the tool_call part lands.
+            "search_tools": {"query": "select:cron_list"},
+            # Outside an agent step it refuses typed (code_no_agent) before any kernel.
+            "run_code": {"code": "print(1)"},
+            # The plan tools refuse typed without an active conversation; the part lands.
+            "plan_enter": {"reason": "check"},
+            "plan_update": {"status": "done"},
             # Phase 9: outside an agent loop it refuses typed
             # (draft_alternatives_refused); the tool_call part lands either way.
             "draft_alternatives": {"n": 2, "rubric": "short"},
@@ -756,6 +764,8 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
                 except Exception:
                     pass  # only tool_call/tool_result wire evidence is under test
                 exercised.append(name)
+            # plan_enter in the table really entered plan mode; the plain tool runs in edit.
+            app.state.sessions.update(sid, mode="edit")
             row_tool()
             exercised.append("plain_native")
 
@@ -1200,3 +1210,33 @@ def test_mcp_tool_without_a_declared_title_is_named_by_its_own_words() -> None:
 
     stamp_mcp_tool_title(call, SimpleNamespace(name="open_colab_browser_connection"))
     assert getattr(call, TITLE_ATTR) == "Open colab browser connection"
+
+
+def test_a_recorded_mcp_tool_keeps_its_servers_required_list() -> None:
+    """Recording rebuilds a tool around a new callable; an MCP tool must keep its server's
+    input schema, or every argument without a default becomes required (CLIO's optional
+    ``_clio_task_description`` was required on every fs, shell and web tool).
+    SABOTAGE: return a plain ``dspy.Tool`` in ``rebuilt_tool`` and this fails."""
+    from clio_agent.gact.agents.tool_recording import recording_tool
+    from clio_agent.tools.dspy_mcp_tool import MCPBoundTool, bind_input_contract
+    from clio_agent.tools.task_call_context import task_arguments
+
+    schema = {
+        "type": "object",
+        "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
+        "required": ["pattern"],
+    }
+
+    def glob(**kwargs: Any) -> str:
+        return ""
+
+    inner = bind_input_contract(
+        MCPBoundTool(
+            func=glob, name="fs_glob", desc="d", args=task_arguments(schema["properties"])
+        ),
+        schema,
+    )
+    recorded = recording_tool(inner)
+    params = recorded.format_as_litellm_function_call()["function"]["parameters"]
+    assert params["required"] == ["pattern"]
+    assert "_clio_task_description" in params["properties"]

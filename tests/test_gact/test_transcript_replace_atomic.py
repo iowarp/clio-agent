@@ -9,7 +9,7 @@ transcript intact -- in clio-core, in the live server, and after a restart.
 Everything here runs on a REAL clio-core store: ``ARCMemory(data_dir=...)`` opens this
 test's clio-core namespace, and a "restart" is a second ``build_app`` over the same
 session registry and the same namespace (a fresh ``ARCMemory``, cold reads). Failures
-are injected at the store's own ``put``, refusing ONE named record.
+are injected at the store's own ``put`` / ``put_at``, refusing ONE named record.
 
 SABOTAGE (recorded, run on real clio-core; each went RED, then was restored):
 
@@ -53,6 +53,10 @@ from clio_agent.gact.part_atoms import MESSAGE_PART_SCOPE, mint_message_part_ato
 from clio_agent.gact.session_store import _delete_session_messages, _replace_session_messages
 from clio_agent.gact.transcript_projection import on_ledger_replaced
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._compaction_summary import (
+    keep_open_request_only,
+    summary_lm,
+)
 
 from .test_post_messages import FakeClioAgent, _create_session
 
@@ -70,7 +74,11 @@ def file_off(monkeypatch: pytest.MonkeyPatch) -> None:
 class _CompactingAgent(FakeClioAgent):
     """The turn fake plus the two hooks the manual compaction calls."""
 
-    def _run_chat_agent(self, question: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         return "the summary"
 
     def _call_with_transient_provider_retries(self, _label: str, call: Callable[[], Any]) -> Any:
@@ -140,7 +148,7 @@ def _refuse_put(app: Any, monkeypatch: pytest.MonkeyPatch, record: str) -> list[
     """
 
     store = app.state.arc._segments._store
-    real_put = store.put
+    real_put, real_put_at = store.put, store.put_at
     refused: list[str] = []
 
     def put(kind: str, name: str, data: Any, **kwargs: Any) -> Any:
@@ -149,7 +157,14 @@ def _refuse_put(app: Any, monkeypatch: pytest.MonkeyPatch, record: str) -> list[
             raise RuntimeError(f"clio-core refused {name}")
         return real_put(kind, name, data, **kwargs)
 
+    def put_at(kind: str, name: str, data: Any, offset: int, **kwargs: Any) -> Any:
+        if name == record:  # a chunk record (whole, or appended at its end)
+            refused.append(name)
+            raise RuntimeError(f"clio-core refused {name}")
+        return real_put_at(kind, name, data, offset, **kwargs)
+
     monkeypatch.setattr(store, "put", put)
+    monkeypatch.setattr(store, "put_at", put_at)
     return refused
 
 
@@ -501,3 +516,9 @@ def test_legacy_file_mtime_cannot_rewrite_session_interaction_time(
     assert sessions.get("sess_legacy").last_interaction_at == "2026-08-01T00:00:00+00:00"
     assert ledger.stat().st_mtime == observed
     assert sessions.get("sess_no_file").last_interaction_at == "2026-08-01T00:00:00+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

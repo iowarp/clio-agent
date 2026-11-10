@@ -211,6 +211,21 @@ if (Test-Path $sitePkgs) {
   if (Test-Path -LiteralPath $benchDir) {
     Remove-Item -LiteralPath $benchDir -Recurse -Force -ErrorAction SilentlyContinue
   }
+  # Import and static libraries (.lib) are read only when linking a program, never when one
+  # runs (198 MB in 0.9.5.1, most of it iowarp_core's). Python's own python\libs is kept.
+  Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -eq '.lib' } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+  # Google's discovery documents for every Google API (107 MB in 0.9.5.1): CLIO builds
+  # only the Drive v3 client (gact/storage/drive_filesystem.py), read from this cache.
+  $discovery = Join-Path $sitePkgs 'googleapiclient\discovery_cache\documents'
+  if (Test-Path -LiteralPath $discovery) {
+    Get-ChildItem -LiteralPath $discovery -File | Where-Object { $_.Name -ne 'drive.v3.json' } |
+      ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+    if (-not (Test-Path -LiteralPath (Join-Path $discovery 'drive.v3.json'))) {
+      throw 'build-gact-runtime: googleapiclient has no drive.v3.json to keep'
+    }
+  }
   Get-ChildItem -LiteralPath $pyRoot -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match '[()\[\]]' } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }

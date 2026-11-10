@@ -1,6 +1,7 @@
-"""Doctor rows for the CTE cold tier's files: data occupancy and the metadata log.
+"""Doctor rows for the CTE data tier's files: data occupancy and the metadata log.
 
-The cold-tier directory holds two things that must not be added together:
+The generated config has one data tier, a file tier (the module keeps its older "cold
+tier" name, as do the row names and reason codes). Its directory holds two things that must not be added together:
 
 * the **data file** (``storage.bin_node0``). iowarp-core 2.3.2 allocates it at its full
   capacity on Linux before the first write, so its allocated blocks equal its capacity
@@ -110,7 +111,7 @@ def _measure(env: Mapping[str, str]) -> tuple[str, int, Path, ColdTierUsage] | N
 
 
 def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Warn when the cold tier's data files fill past a fraction of its capacity (#1001).
+    """Warn when the data tier's data files fill past a fraction of its capacity (#1001).
 
     Counts the data files only (the metadata log is :func:`probe_cte_metadata_log`). A
     data file allocated at the full capacity is preallocation, not occupancy, so it is
@@ -157,7 +158,7 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
                 name="cte_cold_tier_disk",
                 state=IntegrationState.SKIPPED,
                 summary=(
-                    f"CTE cold tier capacity is {capacity}. Its data files have "
+                    f"CTE data tier capacity is {capacity}. Its data files have "
                     f"{format_bytes(usage.data_logical)} logical size; that is reserved "
                     f"capacity, not current data usage ({why})."
                 ),
@@ -171,7 +172,7 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
             )
         ]
     summary = (
-        f"CTE cold tier data files have {format_bytes(allocated or 0)} allocated "
+        f"CTE data tier files have {format_bytes(allocated or 0)} allocated "
         f"({fraction:.0%} of its {capacity} capacity; warn at {warn_fraction:.0%}). "
         f"Their logical size is {format_bytes(usage.data_logical)}."
     )
@@ -180,11 +181,11 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
             IntegrationStatus(
                 name="cte_cold_tier_disk",
                 state=IntegrationState.DEGRADED,
-                summary=f"{summary} clio-core does not trim the cold tier yet (upstream-gated).",
+                summary=f"{summary} clio-core does not trim the data tier yet (upstream-gated).",
                 config_source="arc.cte.file_capacity, arc.cte.disk_warn_fraction",
                 next_action=(
                     "Reclaim space (archive/remove old workspace CTE data) or raise "
-                    "arc.cte.file_capacity. Automatic cold-tier trim is tracked upstream "
+                    "arc.cte.file_capacity. Automatic data-tier trim is tracked upstream "
                     "(clio-core)."
                 ),
                 fallback="cold-tier-grows-until-writes-fail (PutBlob rc=13)",

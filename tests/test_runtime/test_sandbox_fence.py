@@ -93,6 +93,30 @@ def _shell_confined(
 # --------------------------------------------------------------------------- #
 
 
+def _outside_roots(roots: list[Path] | tuple[Path, ...], name: str) -> Path:
+    """A path the process itself could write that lies outside every write root.
+
+    ``Path.home()`` is not that: the test runtime puts ``HOME`` inside the checkout, and
+    the checkout is a write root whenever it is an allowed root (the default policy, and
+    ``CLIO_ALLOWED_ROOTS=$TMPDIR:$PWD``). Without such a place the test cannot tell the
+    fence from ordinary file permissions, so it skips and says why.
+    """
+    import os
+    import pwd
+
+    resolved = [Path(root).resolve() for root in roots]
+    candidates = [Path(pwd.getpwuid(os.getuid()).pw_dir), Path("/var/tmp"), Path("/dev/shm")]
+    for directory in candidates:
+        directory = directory.resolve()
+        inside = any(directory == root or directory.is_relative_to(root) for root in resolved)
+        if directory.is_dir() and os.access(directory, os.W_OK) and not inside:
+            target = directory / f"{name}-{os.getpid()}.txt"
+            if target.exists():
+                target.unlink()
+            return target
+    pytest.skip("no writable directory outside the fence's write roots on this host")
+
+
 def _assert_mints_real_violation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -101,11 +125,23 @@ def _assert_mints_real_violation(
     mechanism: str,
     outside: Path,
 ) -> None:
-    """F7: feed the REAL fenced stderr through the observer + assert a real PolicyViolation."""
+    """F7: diagnose the REAL fenced stderr as the shell seam does (#1905), feed the result
+    through the observer, and assert a real PolicyViolation."""
     from fastapi import FastAPI
+
+    from clio_agent.runtime.sandbox_diagnosis import diagnose_boundary
 
     roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL, workspace_root=str(tmp_path))
     monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: roots)
+    diagnosis = diagnose_boundary(
+        exit_code=result.returncode,
+        stderr=result.stderr,
+        command=None,
+        cwd=tmp_path,
+        write_roots=roots,
+        mechanism=mechanism,
+    )
+    assert diagnosis is not None, result.stderr
     app = FastAPI()
     out = v.observe_policy_violations(
         app,
@@ -113,7 +149,11 @@ def _assert_mints_real_violation(
         tool_name="bash",
         args={},
         call_id="c1",
-        result={"stderr": result.stderr, "exit_code": result.returncode},
+        result={
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+            "boundary": diagnosis.to_payload(),
+        },
         workspace_id="ws",
         state=sandbox.SandboxResult(
             mechanism=mechanism, active=True, reason=sandbox.REASON_FENCE_ACTIVE
@@ -138,9 +178,8 @@ def _assert_mints_real_violation(
 def test_landlock_shell_out_of_root_write_denied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    outside = Path.home() / "clio_b2_ll_outside.txt"
-    if outside.exists():
-        outside.unlink()
+    roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL, workspace_root=str(tmp_path))
+    outside = _outside_roots(roots, "clio_b2_ll_outside")
     state = _landlock_state()
     confined = _shell_confined(state, f"echo bad > {outside}", tmp_path)
     result = _run(confined, cwd=tmp_path)
@@ -182,11 +221,9 @@ def test_landlock_out_of_root_rename_still_denied(tmp_path: Path) -> None:
     """F1 containment: REFER is granted only beneath the roots — an out-of-root reparent fails."""
     (tmp_path / "stage").mkdir()
     src = tmp_path / "stage" / "g.txt"
-    outside = Path.home() / "clio_b2_refer_escape.txt"
-    if outside.exists():
-        outside.unlink()
     state = _landlock_state()
     roots = sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=str(tmp_path))
+    outside = _outside_roots(roots, "clio_b2_refer_escape")
     code = (
         f"import os; open({str(src)!r},'w').write('x'); os.replace({str(src)!r}, {str(outside)!r})"
     )

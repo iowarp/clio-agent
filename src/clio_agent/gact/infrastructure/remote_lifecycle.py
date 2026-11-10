@@ -63,6 +63,8 @@ class RemoteLaunch:
     token: str
     keep_running: bool = False
     desktop_id: str = ""
+    #: The infrastructure target's name, for messages that say where the agent runs.
+    target_label: str = ""
 
 
 def start_owned_command(launch: RemoteLaunch) -> CommandSpec:
@@ -73,7 +75,7 @@ def start_owned_command(launch: RemoteLaunch) -> CommandSpec:
         + LAUNCHER_PRELUDE
         + _HELPERS
         + r"""
-export CLIO_PORT="$2" CLIO_DESKTOP_LAUNCH="$3"
+export CLIO_PORT="$2" CLIO_DESKTOP_LAUNCH="$3" CLIO_DEPLOYMENT_TARGET="${4:-}"
 # A second process may have taken the port since the initial claim. Never adopt
 # it implicitly or claim its ownership just because the launcher says healthy.
 port_busy "$port" && fail "Port $port became busy. Choose another port or reconnect."
@@ -86,7 +88,15 @@ say "Started Desktop-owned CLIO (pid $pid, $root, port $port)"
     )
     return CommandSpec(
         program="bash",
-        args=["-lc", script, "clio", launch.root, str(launch.port), launch.token],
+        args=[
+            "-lc",
+            script,
+            "clio",
+            launch.root,
+            str(launch.port),
+            launch.token,
+            launch.target_label,
+        ],
         timeout_seconds=120,
     )
 

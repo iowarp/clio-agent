@@ -26,6 +26,8 @@ def ssh_execute(
 ) -> SshCommandResult:
     """Run a remote shell command through an approved, host-verified SSH route.
 
+    Use it for remote commands: direct `ssh` in the local shell may be blocked by
+    its network fence, which approval or bypass mode does not lift.
     Use ssh_profile for an existing OpenSSH alias, such as ares. For a custom
     host or hops use ssh_route instead: {host: compute.example, jump_hosts:
     [login], user: scientist}; the shared route also supports port and

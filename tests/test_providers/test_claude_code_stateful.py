@@ -1,7 +1,6 @@
 """Kept Claude Code conversations (#901, the TTFT closer) on the engine.
 
-Pins the conversation registry (:class:`clio_agent.lm.engines.conversations.ConversationRegistry`,
-the Claude Code engine's instance) and the stateful scope plumbing
+Pins the conversation a pooled client holds (:mod:`clio_agent.providers.claude_code_conversation`) and the stateful scope plumbing
 (:mod:`clio_agent.providers.stateful_common`) on the REAL objects, then the live seam:
 the engine inside an agent loop sends call 1 in full and call 2 as only the new
 messages under the SAME SDK session id, through the real pooled transport.
@@ -17,14 +16,14 @@ Each load-bearing pin carries an inline SABOTAGE note.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from dspy.lm15 import Message, Request, TextPart, ThinkingPart, ToolCallPart, ToolResultPart
 
 from clio_agent.gact import context as gact_context
-from clio_agent.lm.engines.conversations import ConversationRegistry
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation, claude_code_engine
 from clio_agent.providers import stateful_common as st
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
@@ -33,10 +32,10 @@ from tests import _fake_claude_sdk as fake
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
     """Every test starts and ends with an empty conversation registry + client pool."""
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     _reset_sessions_for_tests()
     yield
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     _reset_sessions_for_tests()
 
 
@@ -56,14 +55,6 @@ def _step(i: int) -> tuple[Message, Message]:
 
 def _request(*messages: Message) -> Request:
     return Request(model="claude_code/haiku", messages=messages)
-
-
-def _key(scope: str) -> tuple[str, ...]:
-    return ("sess", scope, "haiku", "/w", "")
-
-
-def _open(reg: ConversationRegistry, scope: str, handle: str, *messages: Message) -> None:
-    reg.opened(_key(scope), handle, _request(*messages), "sys")
 
 
 # --------------------------------------------------------------------------- #
@@ -86,86 +77,115 @@ def test_reset_catalog_covers_the_declared_reasons() -> None:
         "session_evicted",
         "provider_error",
         "provider_compacted",
+        "conversation_cleared",
     }
 
 
 # --------------------------------------------------------------------------- #
-# 2. The bounded conversation registry.
+# 2. The conversation a pooled client holds (claude_code_conversation).
 # --------------------------------------------------------------------------- #
-def test_registry_first_call_then_delta_reuses_one_conversation() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    first = reg.plan(_key("s"), _request(HEAD), "sys")
-    assert (first.handle, first.reason, first.messages) == (None, "first_call", (HEAD,))
-    _open(reg, "s", "sid-1", HEAD)
+IDENTITY = ("haiku", "/w", "")
 
-    second = reg.plan(_key("s"), _request(HEAD, *_step(0)), "sys")
+
+def _entry() -> Any:
+    """What the planner reads and writes on a pooled entry."""
+    return SimpleNamespace(conversation=None, pending_reset=None)
+
+
+def _plan(entry: Any, *messages: Message, system: str = "sys") -> Any:
+    return claude_code_conversation.plan(entry, _request(*messages), system, IDENTITY, kept=True)
+
+
+def _open(entry: Any, handle: str, *messages: Message) -> None:
+    send = _plan(entry, *messages)
+    claude_code_conversation.record_sent(entry, send, handle, _request(*messages), "sys")
+
+
+def test_first_call_then_delta_continues_the_entrys_conversation() -> None:
+    entry = _entry()
+    first = _plan(entry, HEAD)
+    assert (first.handle, first.reason, first.messages) == (None, "first_call", (HEAD,))
+    claude_code_conversation.record_sent(entry, first, "sid-1", _request(HEAD), "sys")
+
+    second = _plan(entry, HEAD, *_step(0))
     assert second.handle == "sid-1"  # the SAME conversation across the delta run
-    assert second.messages == (_step(0)[1],)  # only what the SDK has not seen
+    assert second.messages == (_step(0)[1],)  # only what the CLI has not seen
     assert second.reason is None
 
 
-def test_registry_edited_history_restarts_typed() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    _open(reg, "s", "sid-1", HEAD)
-    send = reg.plan(_key("s"), _request(Message.user("different"), *_step(0)), "sys")
-    # SABOTAGE: compare only lengths in _new_messages -> this becomes a delta -> red.
+def test_an_edited_history_restarts_typed() -> None:
+    entry = _entry()
+    _open(entry, "sid-1", HEAD)
+    send = _plan(entry, Message.user("different"), *_step(0))
+    # SABOTAGE: compare only lengths in new_messages -> this becomes a delta -> red.
     assert (send.handle, send.reason) == (None, "prefix_mismatch")
-    assert reg.take_released() == ["sid-1"]
+    assert entry.conversation is None
 
 
-def test_registry_changed_system_prompt_is_not_a_delta() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    _open(reg, "s", "sid-1", HEAD)
-    send = reg.plan(_key("s"), _request(HEAD, *_step(0)), "another system")
+def test_a_changed_system_prompt_or_identity_is_not_a_delta() -> None:
+    entry = _entry()
+    _open(entry, "sid-1", HEAD)
+    send = _plan(entry, HEAD, *_step(0), system="another system")
     assert (send.handle, send.reason) == (None, "prefix_mismatch")
+    _open(entry, "sid-2", HEAD)
+    other = claude_code_conversation.plan(
+        entry, _request(HEAD, *_step(0)), "sys", ("sonnet", "/w", ""), kept=True
+    )
+    assert (other.handle, other.reason) == (None, "prefix_mismatch")
 
 
-def test_registry_equal_or_assistant_only_extensions_are_not_deltas() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    _open(reg, "s", "sid-1", HEAD)
+def test_equal_or_assistant_only_extensions_are_not_deltas() -> None:
+    entry = _entry()
+    _open(entry, "sid-1", HEAD)
     # The same messages again: nothing new to send.
-    assert reg.plan(_key("s"), _request(HEAD), "sys").reason == "prefix_mismatch"
-    _open(reg, "s", "sid-2", HEAD)
-    # Two assistant messages in a row: the second is not the SDK's own reply.
+    assert _plan(entry, HEAD).reason == "prefix_mismatch"
+    _open(entry, "sid-2", HEAD)
+    # Two assistant messages in a row: the second is not the CLI's own reply.
     assistant, _tool = _step(0)
-    send = reg.plan(_key("s"), _request(HEAD, assistant, assistant), "sys")
-    assert send.reason == "prefix_mismatch"
+    assert _plan(entry, HEAD, assistant, assistant).reason == "prefix_mismatch"
 
 
-def test_registry_reset_forces_full_even_on_a_valid_extension() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    _open(reg, "s", "sid-1", HEAD)
-    reg.reset(_key("s"), "provider_error")
-    send = reg.plan(_key("s"), _request(HEAD, *_step(0)), "sys")
-    # SABOTAGE: drop the pending-reset pop in plan() -> a delta -> red.
+def test_a_reset_forces_full_even_on_a_valid_extension() -> None:
+    entry = _entry()
+    _open(entry, "sid-1", HEAD)
+    claude_code_conversation.reset(entry, "provider_error")
+    send = _plan(entry, HEAD, *_step(0))
+    # SABOTAGE: drop the pending-reset read in plan() -> a delta -> red.
     assert (send.handle, send.reason) == (None, "provider_error")
 
 
-def test_registry_lru_eviction_releases_the_oldest_handle() -> None:
-    reg = ConversationRegistry(lambda: 1)
-    _open(reg, "A", "sid-A", HEAD)
-    _open(reg, "B", "sid-B", HEAD)  # capacity 1: A is evicted
-    assert reg.take_released() == ["sid-A"]
-    assert reg.plan(_key("A"), _request(HEAD, *_step(0)), "sys").handle is None
+def test_a_one_shot_call_is_full_and_never_kept() -> None:
+    entry = _entry()
+    send = claude_code_conversation.plan(entry, _request(HEAD), "sys", IDENTITY, kept=False)
+    assert (send.kept, send.handle, send.reason) == (False, None, None)
+    assert entry.conversation is None
 
 
-def test_registry_parallel_scopes_never_share_a_conversation() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    _open(reg, "A", "sid-A", HEAD)
-    _open(reg, "B", "sid-B", HEAD)
-    assert reg.plan(_key("A"), _request(HEAD, *_step(0)), "sys").handle == "sid-A"
-    assert reg.plan(_key("B"), _request(HEAD, *_step(0)), "sys").handle == "sid-B"
+def test_each_entry_holds_its_own_conversation() -> None:
+    a, b = _entry(), _entry()
+    _open(a, "sid-A", HEAD)
+    _open(b, "sid-B", HEAD)
+    assert _plan(a, HEAD, *_step(0)).handle == "sid-A"
+    assert _plan(b, HEAD, *_step(0)).handle == "sid-B"
 
 
-def test_registry_reset_session_drops_every_conversation_of_that_session() -> None:
-    reg = ConversationRegistry(lambda: 8)
-    _open(reg, "A", "sid-A", HEAD)
-    other = ("other-sess", "A", "haiku", "/w", "")
-    reg.opened(other, "sid-O", _request(HEAD), "sys")
-    reg.reset_session("sess", "session_evicted")
-
-    assert reg.plan(_key("A"), _request(HEAD, *_step(0)), "sys").reason == "session_evicted"
-    assert reg.plan(other, _request(HEAD, *_step(0)), "sys").handle == "sid-O"
+def test_replacing_a_conversation_returns_the_old_handle_for_its_cost_tally() -> None:
+    entry = _entry()
+    _open(entry, "sid-1", HEAD)
+    send = _plan(entry, Message.user("new head"))
+    replaced = claude_code_conversation.record_sent(
+        entry, send, "sid-2", _request(Message.user("new head")), "sys"
+    )
+    assert replaced is None  # plan() already forgot the old one on the mismatch
+    entry.conversation = None
+    _open(entry, "sid-3", HEAD)
+    send = _plan(entry, HEAD, *_step(0))
+    assert (
+        claude_code_conversation.record_sent(
+            entry, send, "ignored", _request(HEAD, *_step(0)), "sys"
+        )
+        is None
+    )  # a delta keeps its handle
 
 
 # --------------------------------------------------------------------------- #
@@ -189,17 +209,16 @@ def test_stateful_scopes_nest_and_restore() -> None:
 
 
 def test_an_arc_op_resets_every_conversation_the_forward_drove() -> None:
-    """``note_prefix_reset_for_active_scope`` (what compaction calls) reaches the engine.
+    """``note_prefix_reset_for_active_scope`` (what compaction calls) reaches the entry.
 
-    SABOTAGE: drop ``register_scope_registry`` from ``ConversationRegistry`` -> red.
+    SABOTAGE: drop ``register_scope_registry(_FORWARDS)`` -> red.
     """
-    reg = claude_code_engine._CONVERSATIONS
+    entry = _entry()
     assert st.note_prefix_reset_for_active_scope() is False  # a no-op off-scope
     with st.stateful_scope("fwd"):
-        reg.plan(_key("s"), _request(HEAD), "sys")  # the forward drives this key
-        _open(reg, "s", "sid-1", HEAD)
+        _open(entry, "sid-1", HEAD)  # the forward drives this entry
         assert st.note_prefix_reset_for_active_scope("ops_reset") is True
-        send = reg.plan(_key("s"), _request(HEAD, *_step(0)), "sys")
+        send = _plan(entry, HEAD, *_step(0))
     assert (send.handle, send.reason) == (None, "ops_reset")
 
 
@@ -253,16 +272,21 @@ async def test_a_failed_query_drops_the_conversation_typed(
     with pytest.raises(RuntimeError, match="boom"):
         await fake.drive(_request(HEAD, *_step(0)))
 
-    key = claude_code_engine.conversation_key("haiku", "/w", "")
-    send = claude_code_engine._CONVERSATIONS.plan(key, _request(HEAD, *_step(0)), "")
+    from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL
+
+    # The failed client is dead; its replacement starts over, typed with the failure.
+    entry = _STREAM_CLIENT_POOL.entry_for(session_id="sess-a")
+    send = claude_code_conversation.plan(
+        entry, _request(HEAD, *_step(0)), "", ("haiku", "/w", ""), kept=True
+    )
     assert (send.handle, send.reason) == (None, "provider_error")
 
 
 async def test_a_dropped_client_evicts_that_sessions_conversations(
     monkeypatch: pytest.MonkeyPatch, loop_scope: None
 ) -> None:
-    """A client drop (reap, release, dead transport) announces itself; the engine
-    resets that GACT session's conversations so no delta reaches a fresh subprocess."""
+    """A client drop (reap, release, dead transport) takes its conversation with it,
+    so no delta reaches a fresh subprocess."""
     from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL
 
     sdk = fake.install(monkeypatch)

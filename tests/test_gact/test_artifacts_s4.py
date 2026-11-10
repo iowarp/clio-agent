@@ -322,6 +322,61 @@ def test_chain_v1_created_v2_version_added_and_alias_moved(tmp_path):
     assert moved[0].payload["to_version"] == 2
 
 
+def test_a_second_version_is_confirmed_and_survives_the_orphan_recheck(tmp_path):
+    """A v2 index record is pending on the mint's event id until that event is
+    recorded. The version.added event carried a fresh id, so the record was never
+    confirmed, and once the grace passed the recheck undid the version as an orphan: a
+    live v2 disappeared about two minutes after it was minted (2026-11-04).
+
+    SABOTAGE: drop ``event_id=event_id`` from the ``emit_version_added`` call in
+    ``minting.mint_artifact_outcome``: the record keeps a pending mark and the recheck
+    drops v2.
+    """
+    import json
+
+    from clio_agent.gact.artifacts.minting import mint_artifact
+    from clio_agent.gact.artifacts.records import ArtifactKind, IdentityEvidence, Mechanism
+    from clio_agent.gact.artifacts.registry import ArtifactRegistry
+    from clio_agent.gact.artifacts.registry_store import StoreBackend, index_key
+
+    class _Store:
+        def __init__(self) -> None:
+            self.records: dict[str, bytes] = {}
+
+        def get(self, _kind: str, name: str) -> bytes | None:
+            return self.records.get(name)
+
+        def put(self, _kind: str, name: str, data: bytes) -> None:
+            self.records[name] = data
+
+        def delete(self, _kind: str, name: str) -> None:
+            self.records.pop(name, None)
+
+    app, sess, arc = _make_app(tmp_path)
+    recorded = lambda: {e.payload.get("event_id") for e in arc.events}  # noqa: E731
+    store = _Store()
+    backend = StoreBackend(store, event_check=lambda _sid, eid: eid in recorded())  # type: ignore[arg-type]
+    app.state.artifact_registry = ArtifactRegistry(backend=backend)
+    for n in (1, 2):
+        mint_artifact(
+            app,
+            sess.id,
+            name="shot.png",
+            workspace_id="ws1",
+            evidence=IdentityEvidence.hashed_at_use(sha256=f"{n:064x}", size_bytes=10 + n),
+            kind=ArtifactKind.IMAGE,
+            mechanism=Mechanism.HARNESS,
+            producer={"session_id": sess.id},
+        )
+    [added] = _events(arc, "artifact.version.added")
+    assert added.payload["version"] == 2
+    stored = json.loads(store.records[index_key("r", "ws1", "shot.png")])
+    assert stored["pending"] == {}  # both mints confirmed by their own events
+    # A cold reader past the grace (a restart) keeps both versions.
+    cold = StoreBackend(store, event_check=lambda _sid, _eid: False, grace_s=0)  # type: ignore[arg-type]
+    assert [v.version for v in cold.record("ws1", "shot.png").versions] == [1, 2]
+
+
 def test_dedup_same_bytes_twice_one_version_via_brain(tmp_path):
     app, sess, arc = _make_app(tmp_path)
     csv = tmp_path / "d.csv"

@@ -6,8 +6,66 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Upgrading from 0.9.5.1 or earlier
+
+**This release cannot open the data CLIO 0.9.5.1 or older saved.** Conversations,
+memory and artifacts kept in CLIO's store (clio-core) by 0.9.5.1, or by an earlier
+development build, do not show after the upgrade, and there is no converter. Files in
+your workspaces are not affected.
+
+- **The installer handles it.** `install.sh` and `install.ps1` check the store itself
+  before changing it. If 0.9.5.1 or older wrote it, they say so, show where it will be
+  kept, and ask "Move it aside now?" (yes by default). Without a terminal, or with
+  `--reset-old-data` (`-ResetOldData`), they move it and print what moved where. If
+  they cannot tell, they say so and move nothing unless you answer yes. If CLIO is
+  running, they move nothing and tell you to stop it and run the installer again.
+- **By hand**, for an upgrade made without the installer: stop CLIO (`clio stop`, or
+  quit CLIO Desktop), then run `clio reset-store` (or `clio-agent reset-store`).
+  `clio store-check` only says which version wrote your data. To do it without the
+  command, rename the `cte` folder in CLIO's data folder (for example to
+  `cte-before-<version>`) and any `sessions.json` the message names; `/v1/health`,
+  `clio-agent doctor` and `clio store-check` print the exact paths.
+- **Nothing is deleted.** The store is renamed on the same disk, to
+  `<data dir>/cte-before-<version>-<date>/hosts/<host>` (or beside the folder set as
+  `arc.cte.dir`); an old `sessions.json` conversation list, if there is one, is renamed
+  beside itself so the new store does not list conversations whose messages moved. If
+  a converter is ever written, the old data is still there; moved back, it opens
+  in CLIO 0.9.5.1 again.
+- **If CLIO starts on old data anyway**, it does not open it and writes nothing into
+  it: `/v1/health` and `clio-agent doctor` show an `arc_store_format` row (reason
+  `arc_store_format_old`) that says the data is from CLIO 0.9.5.1 or older and how to
+  move it aside, and the conversation list answers with the same message.
+  `clio-agent migrate` refuses such a store (exit 5).
+
+### Reconnect Google Drive after upgrading
+
+Drive sign-in has moved to a new Google client built into CLIO. If you connected
+Google Drive with 0.9.5.1 or earlier, you may need to sign in to Drive again: open
+**Connect data**, choose your Google account and select **Log in**. Your Drive
+sources keep their folders and settings and work again once you have signed in;
+nothing else needs to change. Distributors who set `CLIO_STORAGE_GOOGLE_CLIENT_ID` /
+`CLIO_STORAGE_GOOGLE_CLIENT_SECRET` are not affected.
+
+Google is still verifying the new client. Until it finishes, Drive sign-in works only
+for Google accounts the CLIO team has added; if Google refuses your sign-in, ask your
+CLIO contact to add your account.
+
+Known issue: on a fresh install with no conversations yet, attaching a newly connected
+Drive folder stops at "Choose a conversation to track this work"
+([iowarp/gact-tui#873](https://github.com/iowarp/gact-tui/issues/873)). Start a
+conversation first, then attach the folder. Signing in and existing Drive sources are
+not affected.
+
 ### Added
 
+- `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio
+  store-check` / `clio reset-store`): which CLIO wrote this machine's store, and moving
+  it aside unchanged. Exit status of `store-check`: 0 nothing to do, 3 CLIO is running,
+  4 the store would not open, 5 written by 0.9.5.1 or older, 6 cannot tell.
+- `GET /v1/health` and `clio-agent doctor` carry an `arc_store_format` row; a server
+  started on a store written by 0.9.5.1 or older refuses it typed
+  (`arc_store_format_old`), and session reads answer `503 transcript_not_ready` with
+  that reason and the same message.
 - The workspace file viewer opens HDF5 files: `GET /v1/workspaces/{wid}/h5grove/`
   `meta`, `attr`, `data`, `stats` and `paths` serve h5grove's API from clio-agent
   itself (new dependency `h5grove`), advertised as `x_clio_hdf5_viewer`. Files
@@ -16,6 +74,48 @@ TUI/HTTP surface aren't tracked here.
   virtual datasets are followed only into the workspace
   (`403 hdf5_link_outside_workspace`, `hdf5_virtual_source_outside_workspace`)
   (#1834).
+- `run_code(code, background=False, label="")`: the agent writes a Python script that
+  calls its own tools (`await tools.<group>.<tool>(...)`) in a persistent kernel and
+  reads only what it prints. Running a script is one approved action; its nested calls
+  are decided by the permission gate under the script's grant (covered in the
+  `code.covering_postures` modes; in `ask`, one question per script with the answer
+  `allow_script`, "Allow for the rest of this script"). A script keeps the approval mode
+  it was approved under. In plan mode it runs read-only where the sandbox enforces the
+  write fence, else it is refused with `code_plan_mode_unconfined`.
+- Background scripts: `run_code(background=True)` returns a task handle of kind `Code`
+  at once. The task row reports elapsed time, nested calls, memory and `task.progress`;
+  `task.notify` wakes the owning conversation at most once per
+  `code.notify_min_interval_s` (30 s), coalescing and never dropping messages. A script
+  outlives its turn and a child that started it; its questions never expire; a clean
+  shutdown settles it as cancelled with its output kept, and it is not resumed.
+- Streams, shipped as the builtin `streaming` plugin (required by `core`):
+  `open_stream`, `read_stream`, `stop_stream` and a `stream` kernel binding. A stream
+  is a workspace artifact `<name>.parquet` whose latest rows live in server memory,
+  saved as versions on open, every `flush_s`, at stop and at a clean shutdown. Views
+  bound to `artifact://<workspace>/<name>.parquet@latest` read it through
+  `GET /v1/streams/{id}`, `POST /v1/streams/{id}/table-query` and a watch lease
+  (`POST /v1/streams/{id}/watch`); `stream.updated` is announced only to watching
+  sessions. A view names a live file as `artifact://<workspace>/<name>@latest`; a
+  background script's file versions are paced by `artifacts.version_interval_s`.
+- Deferred tools: some tools are named in the prompt without their schemas and loaded
+  with `search_tools` (`tools.deferral`, `tools.defer_share`, `tools.defer_tokens`,
+  `tools.defer_builtins`, `tools.never_defer`). Plugins declare `defer`, `callers` and
+  `permission` on `tool` / `native_tool` and on `servers.<name>` in `plugin.json`, and
+  `kernel_bindings` with optional `host` modules (`sdk.host_call`).
+- Per-tool settings: `GET`/`PUT /v1/settings/tools` and
+  `POST /v1/settings/tools/rules/remove` back a plugin's Tools tab; deployments set
+  `tools.permissions` and `tools.callers`. A `deny` default removes the tool from the
+  agent (`tool_permission_deny`).
+- `recall_context(ids | query, limit)` returns the recorded steps a compaction replaced,
+  or matching earlier steps; results above `tools.recall_result_chars` (16,000) go to a
+  file the agent can search and read.
+- The session plan: `plan_enter`, `plan_update` (whole plan, one passage, or status
+  `done` / `abandoned`) and `plan_exit`, statuses `draft`, `approved`, `active`, `done`,
+  `abandoned`; the Work rail shows it, and `PUT /v1/sessions/{sid}/plan` saves the
+  person's edit, offered to the agent at its next step. A stale-plan note, an explore
+  suggestion, session facts and child-report instructions join the reminders.
+- Reminders are listed in Settings > Prompts and commands > Reminders, where each can
+  be switched off, edited and previewed; required ones cannot be switched off.
 
 ### Changed
 
@@ -25,6 +125,30 @@ TUI/HTTP surface aren't tracked here.
   `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
   Merged `workflow_state` follows definition order, with
   `workflow_state_conflict` rows when two steps set the same key differently.
+- **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
+  length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
+  for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
+  typed `arc_chunk_format_unsupported`, and its transcript answers
+  `503 messages_unavailable` with `cause: arc_store_format_old` and a message saying
+  what to do. Move the old store aside as described in
+  [Upgrading from 0.9.5.1 or earlier](#upgrading-from-0951-or-earlier).
+- The compaction prompt is part of CLIO core (`gact/compaction_prompt.md`). A value
+  still set for the removed `compaction.prompt_file` / `CLIO_COMPACTION_PROMPT_FILE`
+  fails the compaction with `compaction_prompt_invalid`. What a compaction keeps
+  verbatim is `compaction.keep.*`: the person's typed messages within `user_chars`
+  (80,000), the open request, the newest step, the plan and the todos; session facts
+  are offered again after it.
+- Permission questions no longer expire after 600 s: a question waits until it is
+  answered or its work is cancelled. An explicit deadline (`hooks.defer_timeout`) still
+  expires with `permission_request_timeout`.
+- The browser lets a navigation the person or the page makes load; before an agent
+  call reads or acts on a page whose host it may not use yet, it asks. A page is
+  blocked only for a refused scheme or a gate error.
+
+- CLIO Desktop requires macOS 15 or newer (was 14). iowarp-core 2.4.0, now required,
+  publishes macOS wheels for macOS 15 only; the installer, the bundle build
+  (`MACOSX_DEPLOYMENT_TARGET=15.0`) and the release startup checks moved with it.
+
 - `get_task_result` returns a result too big to inline as a file: `result` is
   `null`, `result_file` gives its path, size, media type and typed `reason`, and
   `result_excerpt` its beginning. The bound is
@@ -41,6 +165,16 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Windows protected execution qualifies on machines with a mapped network drive
+  or the OpenAI Codex app installed. The bundled Codex runtime moves to 0.167.0, and
+  native MXC requires 0.166.0 or later: earlier clients rejected CLIO's policy when
+  any mount could not be opened, and their legacy setup refresh failed while the
+  Codex app was running. A failed check now reports each backend's typed reason with
+  Codex's own error (`codex_mxc_launch_failed`, `codex_mxc_probe_timeout`, ...)
+  instead of `codex_enforcement_unverified` alone. A timeout is reported as itself,
+  not as a cleanup error. An explicit setup rechecks a cached failure. The installer
+  prints the failure without a Python traceback. The MXC receipt records the
+  installed Windows build.
 - An unreadable stored transcript answers `503 messages_unavailable` with a
   `cause` (`storage_unreachable`, retryable; `transcript_corrupt`, not) on both the
   full and paged message reads, instead of a 500 (#1805).

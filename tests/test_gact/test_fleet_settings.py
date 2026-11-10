@@ -41,7 +41,7 @@ def test_independent_choices_persist_and_inherit_exact_caller(
     set_config("providers.private_key", "private-test-value")
     current = fleet_settings()
     assert current["judges"] == dict.fromkeys(
-        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate")
+        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate", "explore")
     )
     caller, adapter = object(), object()
     for role in ("goals", "variants", "permissions"):
@@ -130,6 +130,36 @@ def test_search_model_is_separate_and_survives_legacy_judge_updates(
     assert legacy["search"] == saved["search"]
     reset = save_fleet_settings(FleetUpdate(revision=legacy["revision"], judges={}, search=None))
     assert reset["search"] is None
+
+
+def test_the_explore_note_is_set_from_fleet_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Fleet settings page turns the explore note on or off and sets its threshold;
+    both are stored in the note's reminder, which the loop reads. SABOTAGE: drop the
+    ``save_nudge_settings`` call in ``save_fleet_settings`` and this fails."""
+    from clio_agent import paths
+    from clio_agent.gact.explore_nudge import nudge_settings
+
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    current = fleet_settings()
+    assert current["explore_nudge"] == {"enabled": True, "after": 6}
+    saved = save_fleet_settings(
+        FleetUpdate(
+            revision=current["revision"],
+            judges={},
+            explore_nudge={"enabled": False, "after": 9},
+        )
+    )
+    assert saved["explore_nudge"] == {"enabled": False, "after": 9}
+    assert "delegation" not in read_config()
+    stored = (paths.user_config_dir() / "prompts").glob("clio.reminder.explore_nudge--*.md")
+    text = next(stored).read_text(encoding="utf-8")
+    assert "x_active: false" in text and "x_param_after: 9" in text
+    assert "x_overlay: true" in text and "{{explore_model}}" not in text  # shipped wording
+    assert nudge_settings() == {"enabled": False, "after": 9}
+    assert saved["revision"] != current["revision"]
 
 
 def test_spotter_default_is_its_own_slot_and_accepts_a_saved_server(

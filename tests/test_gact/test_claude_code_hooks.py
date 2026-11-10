@@ -32,7 +32,7 @@ def _envelope(path: str) -> HookEnvelope:
         session_id="sess_1",
         cwd="/work",
         tool_name="fs_write_file",
-        tool_input={"filepath": path, "content": "# Report\n"},
+        tool_input={"path": path, "content": "# Report\n"},
         payload={"is_error": False},
     )
 
@@ -49,7 +49,7 @@ def test_the_edit_envelope_uses_claude_codes_edit_keys() -> None:
         cwd="/work",
         tool_name="fs_edit_file",
         tool_input={
-            "filepath": "/work/a.py",
+            "path": "/work/a.py",
             "old_string": "x = 1",
             "new_string": "x = 2",
             "replace_all": False,

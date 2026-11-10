@@ -113,6 +113,45 @@ def test_claude_code_support_installs_the_sdk_into_the_active_runtime(
     ]
 
 
+def test_claude_code_install_forgets_a_selection_cached_before_it(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A ``claude_no_cli`` selection cached before Install must not outlive it.
+
+    Desktop regression: the provider panel's refresh cached ``claude_no_cli``,
+    Install succeeded, and every ``POST .../claude_code/auth`` then failed 502
+    ("Claude Code runtime is unavailable") until the backend restarted.
+    """
+    from clio_agent.providers.components import client_binary
+
+    python = tmp_path / "python"
+    python.touch()
+    monkeypatch.setattr(
+        dependencies, "claude_code_requirement", lambda: "claude-agent-sdk==0.2.179"
+    )
+    availability = iter((False, False, False, True))
+    monkeypatch.setattr(dependencies, "_module_available", lambda _name: next(availability))
+    monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: "uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    stale = client_binary.ClientSelection(None, "claude_no_cli")
+    bundled = client_binary.ClientBinary(
+        path=str(tmp_path / "claude"), version="2.1.0", source="bundled"
+    )
+    selections = iter((stale, client_binary.ClientSelection(bundled, "claude_installed_not_found")))
+    monkeypatch.setattr(client_binary, "_select_claude", lambda: next(selections))
+    client_binary.reset_client_cache()
+    assert client_binary.claude_client().reason == "claude_no_cli"
+
+    assert dependencies.ensure_claude_code_support(python_executable=str(python)) is True
+
+    assert client_binary.claude_client().client == bundled
+    client_binary.reset_client_cache()
+
+
 class TestResolveExtraRequirements:
     """The package spec a provider install can ever run comes from CLIO's own
     declared extras (``pyproject.toml``), read fresh off installed metadata --

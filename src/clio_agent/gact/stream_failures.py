@@ -20,6 +20,12 @@ from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     contains_codex_authentication_error,
 )
+from clio_agent.providers.copilot.errors import (
+    COPILOT_INSTALL_FAILED_MESSAGE,
+    COPILOT_SIGNED_OUT_MESSAGE,
+    contains_copilot_auth_required,
+    contains_copilot_dependency_error,
+)
 from clio_agent.providers.terminal_signal import find_terminal_signal, recover_message
 from clio_agent.providers.terminal_signal_catalog import TERMINAL_PROVIDER_SIGNALS
 
@@ -62,6 +68,8 @@ def cli_provider_stream_failure(exc: BaseException, *, provider_id: str) -> str 
     kind = _provider_runtime_kind(provider_id)
     if kind == "claude_code" and contains_claude_code_dependency_error(exc):
         return CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+    if kind == "copilot" and contains_copilot_dependency_error(exc):
+        return COPILOT_INSTALL_FAILED_MESSAGE
     return None
 
 
@@ -87,6 +95,8 @@ def provider_auth_failure(exc: BaseException, *, provider_id: str) -> str | None
         return CODEX_AUTHENTICATION_ERROR_MESSAGE
     if kind == "claude_code" and contains_claude_code_signed_out(exc):
         return CLAUDE_CODE_SIGNED_OUT_MESSAGE
+    if kind == "copilot" and contains_copilot_auth_required(exc):
+        return COPILOT_SIGNED_OUT_MESSAGE
     return None
 
 

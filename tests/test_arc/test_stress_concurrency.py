@@ -31,8 +31,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
+from clio_agent.arc.chunk_records import read_segments
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.schema import decode_segments
 from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import ARCStore, make_arc_store
@@ -87,8 +87,7 @@ def _all_persisted_segments(store: ARCStore, session_id: str, scope: str):
     """Decode the persisted record for (session_id, scope) straight from clio-core —
     bypassing the store's in-memory copy to prove durability / no torn writes."""
     name = SegmentStore._record_name(session_id, scope)
-    raw = store.get("segments", name)
-    return decode_segments(raw) if raw else []
+    return read_segments(store, session_id, scope, name)  # the raw chunk records
 
 
 def _assert_render_ordering(live) -> None:
@@ -551,15 +550,26 @@ def test_concurrent_insert_head_unique_orders(tmp_path):
 
 
 def test_per_scope_locks_are_distinct(tmp_path):
-    """Each (session, scope) gets its OWN lock; different scopes get different lock
-    objects (so they don't contend), and the same scope returns the same lock."""
+    """Each (session, scope) gets its OWN lock; different scopes get different locks
+    (so they don't contend), and the same scope resolves to the same lock."""
     ss = _fresh_store(tmp_path)
     la = ss._lock_for(SID, "agentA/x")
     la2 = ss._lock_for(SID, "agentA/x")
     lb = ss._lock_for(SID, "agentB/y")
     lc = ss._lock_for("other", "agentA/x")  # different session, same scope addr
-    assert la is la2
-    assert la is not lb and la is not lc and lb is not lc
+    assert la == la2
+    assert la != lb and la != lc and lb != lc
+    with la:
+        assert la2.acquire(blocking=False)  # the same re-entrant lock
+        la2.release()
+        held_elsewhere: list[bool] = []
+        t = threading.Thread(target=lambda: held_elsewhere.append(la2.acquire(blocking=False)))
+        t.start()
+        t.join()
+        assert held_elsewhere == [False]
+        assert lb.acquire(blocking=False) and lc.acquire(blocking=False)
+        lb.release()
+        lc.release()
 
 
 def test_different_scopes_do_not_serialize(tmp_path):
@@ -640,6 +650,133 @@ def test_concurrent_ops_with_release_and_clear_no_deadlock(tmp_path):
     live = ss.render(SID, "agentA/exp")
     _assert_render_well_formed(live)
     assert any(s.content.get("text") == "after" for s in live)
+
+
+def test_release_churn_never_splits_a_scope_lock(tmp_path):
+    """Scope locks leave the registry when their scope is released; a release racing
+    the scope's users must never let two threads hold two different locks for one
+    scope. Every worker holds the scope's lock (and writes under it, which caches the
+    scope) while a churner keeps releasing the session; an in-section counter proves
+    mutual exclusion. Once everything settles, a release leaves no lock behind."""
+    import time
+
+    ss = _fresh_store(tmp_path)
+    scopes = ["agentA/x", "agentB/y"]
+    inside = dict.fromkeys(scopes, 0)
+    guard = threading.Lock()
+    overlaps: list[str] = []
+    stop = threading.Event()
+
+    def worker(n: int) -> None:
+        i = 0
+        while not stop.is_set():
+            scope = scopes[(n + i) % len(scopes)]
+            with ss._lock_for(SID, scope):
+                with guard:
+                    inside[scope] += 1
+                    if inside[scope] != 1:
+                        overlaps.append(scope)
+                ss.append(SID, scope, "thought", {"text": f"{n}-{i}"}, step=i)
+                with guard:
+                    inside[scope] -= 1
+            i += 1
+
+    def churner() -> None:
+        while not stop.is_set():
+            ss.release(SID)
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [ex.submit(worker, n) for n in range(4)]
+        futs += [ex.submit(churner) for _ in range(2)]
+        time.sleep(1.5)
+        stop.set()
+        for f in futs:
+            f.result(timeout=30)
+
+    assert overlaps == [], f"two threads held two locks for one scope: {overlaps[:3]}"
+    ss.release(SID)
+    assert len(ss._scope_locks) == 0
+    assert not ss._loaded and not ss._generations
+
+
+def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path, monkeypatch):
+    """Working-set writers hold a partition writer lock, then lane chunk locks (chunks
+    roll every two atoms), and renderers build views from chunk locks, while other
+    threads release and clear: no deadlock; every message written renders from the live
+    store, from a fresh store over the same backend (render and raw lane reads) and
+    after a final release (a release racing a write once lost that write's chunk from
+    the stored index, or its atom from the live view: ``arc.fold_sessions``); and once
+    the session is released no scope, writer or index-loader lock is left for it."""
+    import time
+
+    from clio_agent.arc.working_set_fold import make_segment_store
+
+    monkeypatch.setenv("CLIO_ARC_WS_CHUNK_SEGMENTS", "2")
+    ss = make_segment_store(_cte_backend(), working_set_fold=True)
+    sessions = ["fold-a", "fold-b"]
+    stop = threading.Event()
+    written: dict[tuple[str, str], list[str]] = {}
+
+    def writer(sess: str, scope: str) -> None:
+        i = 0
+        texts = written.setdefault((sess, scope), [])
+        while not stop.is_set():
+            ss.append(sess, scope, "thought", {"text": f"{sess}-{scope}-{i}"}, step=i)
+            texts.append(f"{sess}-{scope}-{i}")
+            ss.render(sess, scope)
+            i += 1
+
+    def churner(sess: str) -> None:
+        while not stop.is_set():
+            ss.release(sess)
+
+    def clearer() -> None:
+        while not stop.is_set():
+            ss.clear()
+            time.sleep(0.01)
+
+    def renderer(sess: str) -> None:
+        # Builds a scope's view in whatever state a release just installed, racing
+        # the writer of that scope: the writer's atom must reach the live view too.
+        while not stop.is_set():
+            for scope in ("agentA", "agentB"):
+                ss.render(sess, scope)
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = [ex.submit(writer, s, sc) for s in sessions for sc in ("agentA", "agentB")]
+        futs += [ex.submit(churner, s) for s in sessions]
+        futs += [ex.submit(renderer, s) for s in sessions]
+        futs.append(ex.submit(clearer))
+        time.sleep(2.0)
+        stop.set()
+        for f in futs:
+            f.result(timeout=30)
+
+    def texts_of(atoms: list) -> list[str]:
+        return [s.content["text"] for s in atoms if "text" in s.content]
+
+    # The live store, without a release: every write folded into its current view.
+    for (sess, scope), texts in written.items():
+        assert texts_of(ss.render(sess, scope)) == texts, f"live {sess}/{scope}"
+    # A fresh store over the same backend sees exactly what the stored index lists.
+    fresh = make_segment_store(ss._store, working_set_fold=True)
+    for (sess, scope), texts in written.items():
+        assert texts_of(fresh.render(sess, scope)) == texts, f"fresh render {sess}/{scope}"
+        lane = [s for s in fresh.raw_lane_atoms(sess) if s.scope == scope]
+        assert texts_of(lane) == texts, f"fresh lane {sess}/{scope}"
+    for sess in sessions:
+        ss.release(sess)  # the next reads load the stored index and chunks afresh
+    for (sess, scope), texts in written.items():
+        assert texts_of(ss.render(sess, scope)) == texts, f"released {sess}/{scope}"
+        read = texts_of(ss.list_segments(sess, scope))
+        assert read == texts, f"{sess}/{scope}: {len(texts) - len(read)} lost"
+    for sess in sessions:
+        ss.render(sess, "agentA")
+        assert ss._scope_locks.keys(sess)  # cached again: its chunk locks stay
+    for sess in sessions:
+        ss.release(sess)
+    assert len(ss._scope_locks) == 0
+    assert not ss._loaded and not ss._generations and not ss._sessions
 
 
 def test_release_does_not_iterate_locator_dict_deterministic(tmp_path):

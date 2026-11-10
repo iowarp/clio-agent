@@ -15,12 +15,12 @@ def register_fleet_settings_routes(app: FastAPI) -> None:
 
     @app.get("/v1/settings/fleet")
     def get_fleet() -> dict[str, Any]:
-        return fleet_settings()
+        return fleet_settings(app)
 
     @app.patch("/v1/settings/fleet")
     def patch_fleet(update: FleetUpdate) -> dict[str, Any]:
         try:
-            return save_fleet_settings(update)
+            return save_fleet_settings(update, app)
         except ValueError as exc:
             raise HTTPException(409 if "changed" in str(exc) else 422, detail=str(exc)) from exc
         except (OSError, YAMLError) as exc:

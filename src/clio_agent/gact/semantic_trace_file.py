@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 from clio_agent.errors import ClioError
+from clio_agent.runtime.append_handles import AppendHandles
 
 if TYPE_CHECKING:
     from clio_agent.gact.semantic_events import SemanticEvent
@@ -47,6 +48,11 @@ class TraceWriteError(ClioError):
         )
 
 
+# Kept open per session trace (reopening per event was a tenth of the writer's time on
+# P7, 2026-11-02); a deleted session's trace is reopened, not written unlinked.
+_TRACE_HANDLES = AppendHandles()
+
+
 def _trace_writer_loop() -> None:
     while True:
         item = _TRACE_WRITE_QUEUE.get()
@@ -58,11 +64,7 @@ def _trace_writer_loop() -> None:
                 # Serialize HERE (off the turn loop): json.dumps of a full event
                 # (reasoning + tool results) is non-trivial CPU; doing it on the
                 # caller's event-loop thread destabilizes turns under the portal.
-                line = json.dumps(event.to_dict("full"), sort_keys=True)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as f:
-                    f.write(line)
-                    f.write("\n")
+                _TRACE_HANDLES.write(path, json.dumps(event.to_dict("full"), sort_keys=True))
             except Exception as exc:  # noqa: BLE001 - kept and raised by the backend (typed)
                 from clio_agent.runtime import trace  # noqa: PLC0415
 

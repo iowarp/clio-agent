@@ -119,7 +119,54 @@ def verify_claude_code() -> dict[str, Any]:
     }
 
 
-_VERIFIERS = {"codex": verify_codex, "claude_code": verify_claude_code}
+def verify_copilot() -> dict[str, Any]:
+    """Import the Copilot SDK, find its runtime, and re-read the account's model list.
+
+    This fresh process has no CLIO GitHub token source, so the read normally ends
+    signed out: that is the account's state and passes with its code. A runtime
+    that is missing or fails the exchange fails the update.
+    """
+    import copilot  # noqa: F401, PLC0415
+
+    from clio_agent.providers.copilot.errors import (  # noqa: PLC0415
+        contains_copilot_auth_required,
+        contains_copilot_dependency_error,
+    )
+    from clio_agent.providers.copilot.runtime import copilot_client  # noqa: PLC0415
+    from clio_agent.providers.model_discovery.copilot import (  # noqa: PLC0415
+        NO_ENABLED_MODELS_MESSAGE,
+        discover_copilot,
+    )
+
+    selection = copilot_client()
+    if selection.client is None:
+        return {
+            "ok": False,
+            "code": selection.reason,
+            "detail": "no GitHub Copilot runtime",
+            "client": selection.to_wire(),
+        }
+    result = discover_copilot()
+    failure = result.failed_reason or ""
+    if not failure:
+        code = "copilot_models_listed"
+    elif contains_copilot_auth_required(failure):
+        code = "copilot_signed_out"
+    elif failure == NO_ENABLED_MODELS_MESSAGE:
+        code = "copilot_zero_models"
+    elif contains_copilot_dependency_error(failure):
+        code = "copilot_runtime_missing"
+    else:
+        code = "copilot_exchange_failed"
+    return {
+        "ok": code in {"copilot_models_listed", "copilot_signed_out", "copilot_zero_models"},
+        "code": code,
+        "detail": failure or f"{len(result.discovered)} models",
+        "client": selection.to_wire(),
+    }
+
+
+_VERIFIERS = {"codex": verify_codex, "claude_code": verify_claude_code, "copilot": verify_copilot}
 
 
 def main(argv: list[str]) -> int:

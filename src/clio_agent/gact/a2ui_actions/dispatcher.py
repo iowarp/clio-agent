@@ -72,6 +72,7 @@ from clio_agent.gact.a2ui_capabilities import A2UICapabilitiesError, apply_clien
 from clio_agent.gact.events import Event
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
+from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, RetryTurnRequest
 
@@ -433,7 +434,7 @@ async def _deliver_permission(
 
     permission_id = str(context.get("permission_id") or "")
     decision = str(context.get("action") or "")
-    if decision not in {"allow", "deny", "allow_session", "allow_workspace"}:
+    if decision not in STANDARD_ANSWERS:
         failed = record.transition(
             state="failed", delivery="rejected", reason="validation_error", http_status=422
         )

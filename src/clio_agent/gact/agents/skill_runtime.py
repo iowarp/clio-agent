@@ -29,6 +29,7 @@ agent can produce surfaces. Nothing else is declared implicitly.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -63,6 +64,12 @@ _A2UI_PRODUCER_TOOL_NAMES = frozenset(
         "delete_a2ui_surface",
         "publish_dashboard_report",
     }
+)
+
+
+#: Set while a person's ``/<skill>`` command loads the skill: the load is theirs.
+LOADED_BY_PERSON: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "clio_skill_loaded_by_person", default=False
 )
 
 
@@ -227,10 +234,10 @@ def skills_prompt_block(runtime: SkillRuntime) -> str:
         return ""
     lines = [
         "## Skills available to you",
-        "These are procedures/rubrics you are expected to FOLLOW for the tasks they cover. "
-        "Choose relevant skills from their descriptions; the user need not name them. "
-        "Call load_skill for ordinary skills before applying them. Skills marked child-task "
-        "must be run with spawn_skill_task so delegation remains explicit and observable.",
+        "Each skill is a procedure for the tasks its description covers. Choose the "
+        "relevant ones yourself (the user need not name them): load an ordinary skill with "
+        "load_skill when you use it, and run one marked child-task with spawn_skill_task, "
+        "which keeps that delegation visible.",
     ]
     from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
         EFFECT_SPAWN_SUBAGENT,
@@ -444,10 +451,14 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     trace_id=_active_semantic_trace_id(),
                     status="completed",
                     summary=(
-                        f"{agent_id} loaded skill {skill_id}"
-                        + (f" file {bundled_file}" if bundled_file else "")
+                        f"{'the person' if LOADED_BY_PERSON.get() else agent_id} loaded skill "
+                        f"{skill_id}" + (f" file {bundled_file}" if bundled_file else "")
                     ),
-                    actor={"agent_id": agent_id, "role": "expert"},
+                    actor=(
+                        {"role": "person"}
+                        if LOADED_BY_PERSON.get()
+                        else {"agent_id": agent_id, "role": "expert"}
+                    ),
                     subject={"skill_id": skill_id, "scope": ref.scope},
                     payload=payload,
                 )
@@ -631,6 +642,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     return native_tool(
         load_skill,
         name="load_skill",
+        callers="direct",
         read_only=True,
         presentation=present_skill,
         presentation_start=starting_skill,
@@ -638,11 +650,11 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         title="Load skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
-            "(see 'Skills available to you'). Call BEFORE performing the task "
-            "the skill covers. Progressive disclosure: for a generated catalog "
+            "(see 'Skills available to you') when its description covers the task, "
+            "then follow it. Progressive disclosure: for a generated catalog "
             "skill, call with no file first (its index names every component "
             "plus a compact signature); then, only if the index alone is not "
-            "enough, load one or several component schemas in ONE call with "
+            "enough, load one or several component schemas in one call with "
             "file=<bundled path> or files=[<bundled path>, ...]. For a batch, "
             "put all paths in files; an additional file is included in the same batch. Each JSON "
             "fragment (file=...#/components/<Name>) comes back with the "
@@ -661,7 +673,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional: several bundled file paths to load in ONE call, "
+                    "Optional: several bundled file paths to load in one call, "
                     "each returned clearly separated and labelled. Any file argument "
                     "is included first; repeated paths are read only once."
                 ),
@@ -703,6 +715,7 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
     return native_tool(
         spawn_skill_task,
         name="spawn_skill_task",
+        callers="direct",
         presentation="specialized",
         # The skill-effect child launcher: gated on a declared skill's own
         # frontmatter, so "skills" fits better than the generic spawn/wait/

@@ -22,6 +22,7 @@ from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
 from clio_agent.arc.clio_core_indexer import indexer_block
+from clio_agent.arc.clio_core_threads import core_threads
 
 DEAD_PID = 1_999_999_999
 
@@ -58,6 +59,7 @@ def _legacy_store(home: Path, *, port: int | None = None) -> Path:
     (legacy / "cte.yaml").write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=port or _free_port(),
+            core_threads=core_threads(),  # current seeds: no thread upgrade
             conf_dir=(legacy / "conf").as_posix(),
             file_tier=(legacy / "storage.bin").as_posix(),
             file_capacity="50GB",

@@ -64,6 +64,7 @@ def build_set_loop_tool() -> Any:
     return native_tool(
         set_loop,
         name="set_loop",
+        callers="direct",
         presentation="loop_started",
         domain="autonomy",
         desc=set_loop.__doc__,

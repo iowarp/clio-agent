@@ -84,7 +84,7 @@ def build_run(root: Path, count: int = 2) -> tuple[list[dict[str, Any]], dict[st
                 {
                     "name": "fs_read_file",
                     "call_id": f"read-{number}",
-                    "args": {"filepath": str(previous)},
+                    "args": {"path": str(previous)},
                     "ok": True,
                     "cached": False,
                     "telemetry_source": "live_observer",

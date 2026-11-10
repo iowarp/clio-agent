@@ -25,6 +25,18 @@ from clio_agent.gact.spotter_clearance import (
 from clio_agent.gact.spotter_watcher import disarm_spotter_watcher, wake_on_parent_activity
 
 
+def _join_admission(app: Any, sid: str) -> None:
+    """Join ``sid``'s in-flight admission checks on the owner loop, where they run."""
+
+    async def join() -> None:
+        runner = app.state.turn_runner
+        while (pump := runner._pumps.get(sid)) is not None and not pump.done():
+            await asyncio.shield(pump)
+        assert not runner.busy(sid)
+
+    asyncio.run_coroutine_threadsafe(join(), app.state.conversations._loop).result(timeout=5)
+
+
 def test_progress_after_timed_out_poll_is_not_discarded(
     watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -169,6 +181,10 @@ def test_uncommitted_coalesced_evidence_holds_clearance(
 ) -> None:
     app, parent, child = watcher_world
     wake_on_parent_activity(app, parent, tool_name="fs_read_file")
+    # The first wake's mail wakes the watcher's admission, which reserves the watcher
+    # while it checks; a wake sampled in that window is rightly queued as a new mail
+    # (the watcher may be reading the first). Join that worker-free probe first.
+    _join_admission(app, child)
     wake_on_parent_activity(app, parent, tool_name="fs_read_file")
     assert len(app.state.task_history.pending_mail(child)) == 1
     assert (

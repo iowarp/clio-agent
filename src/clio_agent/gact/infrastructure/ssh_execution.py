@@ -17,7 +17,7 @@ from clio_agent.gact.storage.sftp import connect_route
 from clio_agent.tools.servers.shell_output import (
     StreamCapture,
     compose_output_fields,
-    shell_result_char_budget,
+    shell_result_room,
 )
 from clio_agent.tools.servers.shell_spill_store import new_call_id, spill_directory
 
@@ -157,5 +157,5 @@ def execute_ssh_command(
         base,
         captures,
         root=root,
-        budget=shell_result_char_budget(),
+        budget=shell_result_room(),
     )

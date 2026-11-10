@@ -467,7 +467,7 @@ async def request_shutdown(self: NativeTools) -> None:
                 for handle in self._custody - set(self._calls) - set(self._rpc)
                 if (task := self.history.task_snapshot(handle)) is not None
                 and task.terminal_at is None
-                and task.kind in {"Shell", "Download", "Indexing"}
+                and task.kind in {"Shell", "Download", "Indexing", "Code"}
                 and task.submission is not None
                 and (
                     task.backend is None

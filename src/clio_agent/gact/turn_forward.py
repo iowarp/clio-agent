@@ -167,6 +167,8 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     session_warmup.start_session_warmup(state.app, state.sid, trigger="turn_started")
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("agent.resolve")
     session_agent_id = _session_agent_id(state.sess)
+    timer = bringup_timing.timer_for_session(state.app, state.sid)
+    timer.start_phase("agent.resolution")
     resolution = await _run_turn_setup_off_loop(
         state,
         lambda: (
@@ -181,7 +183,8 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         turn_def, build_resolution = await _run_turn_setup_off_loop(
             state, lambda: turn_agent_def(state.app, state.sid, resolution)
         )
-    turn_def = withhold_session_tools(state.app, state.sid, turn_def, resolution, build_resolution)
+    timer.end_phase("agent.resolution")
+    turn_def = withhold_session_tools(state.app, state.sid, turn_def)
     dynamic_agent = apply_session_tool_allowlist(state.app, turn_def, session_id=state.sid)
     state.active_agent_id = dynamic_agent.id
     _ctx.set_primary_agent_id(state.active_agent_id)
@@ -246,7 +249,8 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             with _cancellation_checker(cancel_cb):
                 return build_agent_module(state.app.state.agent, dynamic_agent, build_resolution)
 
-        module = await _run_turn_setup_off_loop(state, build_module)
+        with timer.phase("agent.build"):
+            module = await _run_turn_setup_off_loop(state, build_module)
         built = list(getattr(module, "tools", None) or ())
         unlisted = unlisted_tool_names(dynamic_agent.metadata, (t.name for t in built))
         if unlisted:
@@ -285,6 +289,9 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # #1215 S5: agent resolution + module build are done; the LLM
     # request dispatch below is NOT part of agent.resolve.
     bringup_timing.timer_for_session(state.app, state.sid).end_phase("agent.resolve")
+    # The turn's bring-up ends as its model request is dispatched; a turn that
+    # fails before here is settled by the next turn's ``begin_turn``.
+    bringup_timing.finish_bringup(state.app, state.sid)
     llm_actor = {
         "agent_id": dynamic_agent.id,
         "agent_title": dynamic_agent.title,

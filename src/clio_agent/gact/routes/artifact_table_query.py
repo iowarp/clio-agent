@@ -389,7 +389,11 @@ def _table_query(
 
 
 def register_artifact_table_query_routes(app: FastAPI) -> None:
-    """Register the bounded tabular query endpoint used by data-backed charts."""
+    """Register the bounded tabular query endpoint used by data-backed charts, and the
+    stream reads that run the same pipeline over a stream's rows in memory."""
+    from clio_agent.gact.routes.streams import register_stream_routes  # noqa: PLC0415
+
+    register_stream_routes(app)
 
     # Eager, on the MAIN thread, at route-registration time (app startup) --
     # see `table_route_shared.import_table_engine_once` (#1551 review item

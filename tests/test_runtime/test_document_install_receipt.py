@@ -48,6 +48,17 @@ def test_metadata_digest_preserves_existing_receipts(tmp_path: Path) -> None:
     assert receipts._tree_metadata(tmp_path) == digest.hexdigest()
 
 
+def _ripgrep(cache: Path) -> Path:
+    """The test's stand-in ripgrep: a reused receipt checks recorded tools still exist,
+    so it must be a file this test owns, not a host path a runner may not have."""
+    return cache.parent / "rg"
+
+
+def _tectonic(cache: Path) -> Path:
+    """The test's stand-in Tectonic, owned by the test for the same reason as ripgrep."""
+    return cache.parent / "tectonic"
+
+
 @pytest.fixture
 def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, dict[str, Any]]:
     workspace = tmp_path / "workspace"
@@ -60,6 +71,8 @@ def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pa
     office = tmp_path / "office/program/soffice"
     uv = tmp_path / "uv"
     gh = tmp_path / "gh"
+    ripgrep = _ripgrep(cache)
+    tectonic = _tectonic(cache)
     interpreter = tmp_path / "interpreter"
     stack = tmp_path / "stack"
     for path in (
@@ -72,6 +85,8 @@ def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pa
         office,
         uv,
         gh,
+        ripgrep,
+        tectonic,
         interpreter,
         stack / "inventory.py",
     ):
@@ -225,6 +240,8 @@ def test_reuse_preserves_fresh_sandbox_check_and_workspace_bindings(
     monkeypatch.setattr(
         installer, "ensure_github_cli", lambda: Path(result["native_tools"]["gh"]["path"])
     )
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: _ripgrep(cache))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: _tectonic(cache))
     monkeypatch.setattr(installer, "prepare_existing_windows_fence", fence)
     monkeypatch.setattr(
         installer,
@@ -257,6 +274,8 @@ def test_missing_cache_repairs_with_full_preparation(
     monkeypatch.setattr(
         installer, "ensure_github_cli", lambda: Path(result["native_tools"]["gh"]["path"])
     )
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: _ripgrep(cache))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: _tectonic(cache))
     monkeypatch.setattr(
         installer,
         "prepare_existing_windows_fence",

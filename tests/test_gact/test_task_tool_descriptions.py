@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from mcp.types import Tool, ToolExecution
 
+import clio_agent
 from clio_agent.gact.agents.builders import _gateway_and_namespace_tools
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_spawn_skill_task_tool
 from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
@@ -22,10 +24,14 @@ from clio_agent.tools.servers.shell_server import (
 )
 from clio_agent.tools.task_descriptions import mcp_task_description
 
+_TASK_PROTOCOL = (
+    Path(clio_agent.__file__).parent / "plugins/builtin/core/skills/task-protocol/SKILL.md"
+)
+
 
 @pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
 def test_shell_description_explains_task_switch(windows: bool) -> None:
-    """Both real host declarations expose the task switch and its consequences."""
+    """Both host declarations name the task switch and point at where its mechanics live."""
     text = build_shell_tool_description(
         ShellEnvFacts(
             windows,
@@ -34,11 +40,26 @@ def test_shell_description_explains_task_switch(windows: bool) -> None:
             not windows,
         )
     )
-    assert "background=true" in text and "background=false" in text
-    assert "durable Shell task handle" in text
-    assert "query_tasks" in text and "observe_tasks" in text and "wait_tasks" in text
-    assert "cancel_tasks" in text and "wake" in text
-    assert "timeout_s" in text and "execution" in text
+    assert "background=true returns a Shell task handle" in text
+    assert "task-protocol skill" in text
+    # The mechanics moved out of every request into the skill, said once there.
+    assert "query_tasks" not in text and "cancel_tasks" not in text
+
+
+def test_task_protocol_skill_carries_the_background_mechanics() -> None:
+    """What the shell and connect descriptions no longer repeat is in the skill they cite."""
+    body = _TASK_PROTOCOL.read_text(encoding="utf-8")
+    for phrase in (
+        "Shell background=true returns immediately",
+        "Accepted background tasks continue",
+        "To cancel background work, call cancel_tasks explicitly",
+        "Indexing",
+        "wait_tasks",
+        "observe_tasks",
+        "get_task_result",
+        "query_tasks",
+    ):
+        assert phrase in body, phrase
 
 
 def test_shell_parameter_schema_explains_background_acceptance() -> None:
@@ -135,8 +156,7 @@ def test_connect_declaration_distinguishes_indexing_from_linked_status() -> None
     """Connect explains both accepted indexing and existing/sign-in connection status."""
     text = build_connected_data_connect_tool().desc
     assert "Indexing task handle" in text and "immediately" in text
-    assert "observe_tasks" in text and "wait_tasks" in text and "cancel_tasks" in text
-    assert "wake" in text and "Stop leaves accepted indexing running" in text
+    assert "task-protocol skill" in text
     assert "sign-in requirement returns its connection status directly" in text
 
 

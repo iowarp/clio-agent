@@ -186,8 +186,8 @@ def test_resource_link_uri_and_metadata_completeness():
     md = wire["metadata"]
     # Sabotage: drop OR add any key in resource_link_metadata -> this EXACT
     # set-equality goes red (the metadata lock — owner #966.9's 9 pinned keys plus
-    # the logical-identity pair workspace_id/name, and NOTHING else; SPEC §4.5
-    # documents all eleven). A superset would let undocumented drift pass.
+    # the logical-identity pair workspace_id/name and presentation, and NOTHING else;
+    # SPEC §4.5 documents all twelve). A superset would let undocumented drift pass.
     assert set(md) == {
         "artifact_id",
         "sha256",
@@ -200,7 +200,9 @@ def test_resource_link_uri_and_metadata_completeness():
         "mechanism",
         "workspace_id",
         "name",
+        "presentation",
     }
+    assert md["presentation"] == {}  # an ordinary file shows as its name
     assert md["workspace_id"] == "ws1"
     assert md["name"] == "plot.png"
     assert md["fetch_url"] == f"/v1/artifacts/{v.artifact_id}/bytes"

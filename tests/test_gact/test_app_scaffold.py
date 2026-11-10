@@ -89,11 +89,8 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert gaps["voice"]["advertised"] is False
     assert gaps["voice"]["client_behavior"] == "render_disabled"
     assert gaps["lsp"]["status"] == "unsupported"
-    assert gaps["optimizer_command"]["status"] == "unavailable"
-    assert gaps["optimizer_command"]["related_commands"] == ["/optimize"]
-    # #801: the gap row carries the shared reason code + #633 pointer.
-    assert gaps["optimizer_command"]["reason"] == "optimizer_not_implemented"
-    assert gaps["optimizer_command"]["tracking_issue"].endswith("/issues/633")
+    # /optimize and its capability-gap row are deleted (direct-summoning plan).
+    assert "optimizer_command" not in gaps
     # Landed capabilities.
     for flag in (
         "sessions",
@@ -159,7 +156,7 @@ def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
     body = resp.json()
     gaps = body["capability_gaps"]
 
-    assert set(gaps) >= {"voice", "lsp", "optimizer_command"}
+    assert set(gaps) >= {"voice", "lsp"}
     voice = gaps["voice"]
     assert voice["status"] == "unsupported"
     assert voice["advertised"] is False
@@ -172,21 +169,6 @@ def test_capability_gaps_endpoint_returns_disabled_future_capabilities(
         "use_files_and_diffs",
         "hide_or_disable_lsp_controls",
     ]
-
-    optimize = gaps["optimizer_command"]
-    assert optimize["status"] == "unavailable"
-    assert optimize["advertised"] is True
-    assert optimize["category"] == "deferred_command"
-    assert optimize["client_behavior"] == "render_disabled"
-    assert optimize["related_commands"] == ["/optimize"]
-    assert optimize["recovery_actions"] == [
-        "render_optimize_disabled",
-        "retry_after_optimizer_support_lands",
-    ]
-    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
-    assert optimize["reason"] == "optimizer_not_implemented"
-    assert optimize["tracking_issue"].endswith("/issues/633")
-    assert "633" in optimize["description"]
 
 
 def test_stubbed_routes_return_501_with_v0_2_envelope() -> None:

@@ -17,10 +17,11 @@ These plugins ship inside CLIO, in the `clio-builtin` marketplace, and are alway
 
 | Plugin | What it brings |
 |---|---|
-| `core` | Carried by every agent and never removable. Requires `fleet`. The `react` and `workflow` flows; the operating guidelines, rendering and task-lifecycle prompt fragments; the `planning` skill; the `clio-workspace` interactive catalog; and the conversation tools listed below. |
+| `core` | Carried by every agent and never removable. Requires `fleet` and `streaming`. The `react` and `workflow` flows; the operating guidelines, rendering and task-lifecycle prompt fragments; the `planning` skill; the `clio-workspace` interactive catalog; and the conversation tools listed below. |
 | `memory` | Long-term memory of the person, their projects and how they work, and recall of past conversations. Carried by the base `Agent`, and removable. |
 | `fleet` | The models work can run on and what each account has left. The `update-models` skill. |
 | `orchestration` | Requires `delegation`. The `run_flow` and `run_workflow` tools that start flows and workflows as background work, `make_plugin`, which writes a flow plugin the person can review and trust, the `council` and `arena` flows, and the `author-a-flow` skill. |
+| `streaming` | Required by `core`, so every agent has it. Streams: named tables whose newest rows a script writes many times a second and a dashboard shows live. The `open_stream`, `read_stream` and `stop_stream` tools, the `stream` [script binding](/docs/sdk/plugins/#script-bindings), the `live-status` skill and its prompt fragment. See [Watch something live](/docs/live-sources/). |
 
 ## Flows
 
@@ -47,6 +48,8 @@ The `clio` marketplace is installed by default and trusted at install.
 | `ssh` | Run commands on a configured remote host over SSH. | `shell` |
 | `slurm` | Submit Slurm batch jobs, record their ids, wait in bounded steps, and read a failed job's output before resubmitting (skill). | `shell` |
 | `web` | Fetch web pages and search the web (tool server). | |
+| `browser` | The shared browser: open, read and act on web pages from a script, shown to you in the side panel. See [Use the browser](/docs/browser/). | |
+| `marimo` | Start a marimo notebook, open it in the shared browser, and work in its live Python session. Not in any agent by default. | `shell` |
 | `delegation` | Start general subagents: any installed agent, or one of this agent's defined subagents, with a task prompt. | |
 | `visuals` | Interactive analysis, dashboards, diagrams, 3D geometry, and rendered visual review in the side panel. | |
 | `connected-data` | Connect research data sources and work with the National Data Platform and knowledge stores. | |
@@ -106,7 +109,7 @@ These carry one agent's mission and are rarely useful elsewhere: `factorio` (wit
 
 | Agent | Name | Builds on | Adds |
 |---|---|---|---|
-| `clio/standard` | CLIO | `Agent` | `workspace`, `shell`, `web`, `documents`, `visuals`, `connected-data`, `delegation`, `orchestration` |
+| `clio/standard` | CLIO | `Agent` | `workspace`, `shell`, `web`, `documents`, `visuals`, `connected-data`, `delegation`, `orchestration`, `browser` |
 | `clio/science` | CLIO Science | `standard` | `scientific-method` |
 | `clio/factorio` | Factorio | `science` | `manufacturing`, `abaqus`, `morphorm`, `slurm`, `factorio` |
 | `clio/earthscope` | EarthScope | `science` | `earthscope`, `geodesy`, `geo`, `ndp` |
@@ -125,9 +128,10 @@ Each tool belongs to one plugin. Require that plugin to give your plugin or suba
 
 | Plugin | Tools |
 |---|---|
-| `core` | `query_tasks`, `observe_tasks`, `wait_tasks`, `cancel_tasks`, `get_task_result`, `send_agent_message`, `pause_agent`, `resume_agent`, `restart_agent`, `ask_user`, `plan_exit`, `write_todos`, `create_artifact`, `raise_alert_card`, `recall_context`, `load_skill`, `set_goal`, `wait_for`, `goal_status`, `set_loop`, `loop_wakeup`, `cron_create`, `cron_list`, `cron_delete`, `workspace_resource_list`, `workspace_resource_inspect`, `workspace_resource_wait`, `workspace_resource_read`, `workspace_resource_search`, `workspace_resource_structure` |
+| `core` | `query_tasks`, `observe_tasks`, `wait_tasks`, `cancel_tasks`, `get_task_result`, `send_agent_message`, `pause_agent`, `resume_agent`, `restart_agent`, `ask_user`, `plan_enter`, `plan_update`, `plan_exit`, `write_todos`, `create_artifact`, `raise_alert_card`, `recall_context`, `load_skill`, `search_tools`, `run_code`, `set_goal`, `wait_for`, `goal_status`, `set_loop`, `loop_wakeup`, `cron_create`, `cron_list`, `cron_delete`, `workspace_resource_list`, `workspace_resource_inspect`, `workspace_resource_wait`, `workspace_resource_read`, `workspace_resource_search`, `workspace_resource_structure` |
 | `memory` | `memory_search`, `memory_read`, `create_memory`, `update_memory`, `forget_memory`, `propose_memory_change`, `session_search`, `session_read_summary`, `session_read_context_frame` |
 | `fleet` | `list_models`, `usage`, `refresh_provider_models` |
+| `streaming` | `open_stream`, `read_stream`, `stop_stream` |
 | `orchestration` | `run_flow`, `run_workflow`, `make_plugin` |
 | `workspace` | `fs_read_file`, `fs_list_directory`, `fs_search_text`, `fs_write_file`, `fs_edit_file`, `view_image` |
 | `shell` | `shell_bash`, `prepare_execution_runtime` |

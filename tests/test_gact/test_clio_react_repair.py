@@ -72,7 +72,7 @@ def _run(agent: ClioReAct, *steps: Reply) -> tuple[dspy.Prediction, ScriptedEngi
 def _step_results(pred: dspy.Prediction, step: int) -> list[Any]:
     """The step's tool results: messages are the tool-use note and the head, then
     (assistant, tool) per step."""
-    tool_message = pred.messages[3 + 2 * step]
+    tool_message = pred.messages[2 + 2 * step]
     assert tool_message.role == "tool"
     return list(tool_message.parts)
 
@@ -131,7 +131,7 @@ def test_prediction_carries_the_loop_messages() -> None:
     messages."""
     pred, _ = _run(_build(_WsSig), _submit_step("done", answer="A", workflow_state={"k": 1}))
 
-    _note, head, step, results = pred.messages
+    head, step, results = pred.messages
     assert (head.role, head.parts[0].text) == ("user", "q")
     assert step.role == "assistant"
     assert step.parts[0].text == "done"

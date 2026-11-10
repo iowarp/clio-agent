@@ -45,6 +45,7 @@ from clio_agent.gact.attention.transcript_map import (
     anchor_texts,
     block_stats,
     heat_runs,
+    token_starts,
     transcript_texts,
 )
 
@@ -370,6 +371,7 @@ def explain_selection(
                     count > 0 for count in reduction.retained_steps[a.token_lo : a.token_hi]
                 ),
                 "display_runs": heat_runs(a, encoded, mass, values=token_intensities),
+                "token_starts": token_starts(a, encoded),
             }
             for a, score, intensity in zip(anchors, block_scores, intensities, strict=True)
         ],

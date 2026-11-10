@@ -213,3 +213,58 @@ async def test_native_cancel_waits_for_body_cleanup(
             assert settled.status == "cancelled" and settled.settlement == "confirmed"
         finally:
             release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real native roots and Core must settle before the case exits.
+async def test_native_work_sizes_its_result_to_the_room_recorded_at_its_call(
+    arc: ARCMemory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native shell runs apart from the agent loop that called it, so it cannot measure
+    the caller's context window; the room measured at the call is recorded in the
+    submission's execution limits and pinned for the body. SABOTAGE: drop
+    ``pinned_room(room)`` in ``NativeWork.run`` and the body measures an unknown window."""
+    from clio_agent.gact.task_history import TaskHistory
+    from clio_agent.tools.result_room import ResultRoom, result_room, room_limits
+
+    configure_roots(monkeypatch)
+    history = TaskHistory(arc)
+    owner = await asyncio.to_thread(owning_assignment, history)
+    native = NativeTools(
+        history, lambda _context: None, CoreRecovery(history), admission=lambda _task: None
+    )
+    seen: list[ResultRoom] = []
+
+    @native.roots["shell"].server.tool(name="sized", task=TaskConfig(mode="required"))
+    async def sized(_clio_submission: str) -> dict[str, str]:
+        async def body(context: SubmissionContext, evidence: WorkEvidence) -> dict[str, str]:
+            evidence.acquiring_effects()
+            seen.append(result_room())
+            evidence.confirm_cleanup()
+            return {"value": "sized"}
+
+        return await native.work["shell"].run(_clio_submission, "sized", {}, body)
+
+    caller = ResultRoom(tokens=8_000, chars=32_000, reason="window_share", window=64_000)
+    async with native:
+        for invocation, limits in (("recorded", room_limits(caller)), ("unrecorded", {})):
+            receipt = await native.submit(
+                "shell",
+                "sized",
+                {},
+                kind="Shell",
+                owner=owner,
+                invocation_id=invocation,
+                workspace=str(tmp_path),
+                permissions={},
+                confinement={},
+                attribution={},
+                execution_limits=limits,
+                description="Size a result",
+            )
+            settled = await native.await_settlement(receipt["handle"])
+            assert settled.status == "completed"
+    assert seen[0] == caller
+    assert seen[1].reason == "tool_result_window_unknown"

@@ -11,7 +11,9 @@ from uuid import uuid4
 from clio_agent.arc.task_types import QuestionDefinition, TaskOwner
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.child_report_fit import report_room
 from clio_agent.gact.off_loop import join_off_loop
+from clio_agent.gact.read_only_outcomes import outcomes_recorded
 from clio_agent.gact.task_access import TaskAccess
 from clio_agent.gact.task_tool_collection import collected as _collected
 from clio_agent.gact.tool_observation import CollectedTaskResult
@@ -89,6 +91,7 @@ def _tool(
         title=name.replace("_", " ").capitalize(),
         domain="tasks",
         read_only=read,
+        callers="direct",  # task, spawn and question controls are steps of the agent
     )
 
 
@@ -110,6 +113,7 @@ def build_task_tools() -> list[Any]:
         message_before: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        await outcomes_recorded(app)  # read-only calls' records, written behind replies
         value = await join_off_loop(
             app.state.task_operations.query,
             caller,
@@ -140,6 +144,7 @@ def build_task_tools() -> list[Any]:
         artifact_id: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        await outcomes_recorded(app)
         value = await app.state.task_operations.observe(
             caller,
             tasks,
@@ -161,10 +166,11 @@ def build_task_tools() -> list[Any]:
         interrupt_on_mail: bool = True,
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_operations.wait(
-            caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
-        )
-        return await app.state.task_history.io.run(_collected, app, caller, value)
+        with report_room():
+            value = await app.state.task_operations.wait(
+                caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
+            )
+            return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def cancel_tasks(tasks: str | list[str]) -> dict[str, Any]:
         app, caller = _runtime()
@@ -174,10 +180,11 @@ def build_task_tools() -> list[Any]:
         handle: str, cursor: str | None = None, select: list[str] | None = None
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_history.io.run(
-            app.state.task_operations.result, caller, handle, cursor, select
-        )
-        return await app.state.task_history.io.run(_collected, app, caller, value)
+        with report_room():
+            value = await app.state.task_history.io.run(
+                app.state.task_operations.result, caller, handle, cursor, select
+            )
+            return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def send_agent_message(
         target: str, message: str, reply_to: str | None = None

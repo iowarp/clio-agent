@@ -349,7 +349,7 @@ agent. User agents are addressed as `user/<id>`.
 A native marketplace is a folder (or git repository) with:
 
 ```text
-ai.iowarp.clio/marketplace.json   # {"name": ..., "description": ...}
+ai.iowarp.clio/marketplace.json   # {"name", "description", optional "plugins": [pinned git packages]}
 plugins/<id>/plugin.json ...      # one Agent Plugins package per folder
 agents/*.py                       # Agent classes
 ```
@@ -357,6 +357,12 @@ agents/*.py                       # Agent classes
 Agents are addressed as `<marketplace>/<id>`; a bare id works when it is
 unambiguous (the default marketplace wins a tie), and `@<range>` constrains the
 version. A single plugin folder can also be installed as its own marketplace.
+
+A package kept in another repository is listed in the index's `plugins`, pinned by
+commit in the same source shape a Claude Code marketplace uses:
+`{"name": "wtfp", "source": {"source": "git-subdir", "url": "https://github.com/o/r",
+"path": "clio-plugin", "sha": "<commit>"}}`. An unpinned source is
+`plugin_source_unpinned` and is not followed.
 
 The store lives at `<config>/plugins/` (override with `plugins.store_root` or
 `CLIO_PLUGIN_STORE`): `state.json` (marketplaces, records, pending updates,
@@ -417,8 +423,8 @@ source given special treatment:
 | `.claude-plugin/plugin.json` `dependencies` | Only dependencies and no content: a pack. Dependencies on a plugin with content: hard requirements |
 | `.mcp.json` | MCP servers; `${CLAUDE_PLUGIN_ROOT}` becomes `${PLUGIN_ROOT}` |
 | `skills/` | Skills, unchanged |
-| `hooks/hooks.json` | Command hooks on `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact`. Another event is the warning `hook_event_unmapped`; a matcher naming unmappable tools is `hook_matcher_unmapped`; a non-command hook is `hook_type_unsupported`. `codex.json`, `opencode.js` and similar files are ignored |
-| `agents/*.md` | Defined subagents. `tools` map through the table below and add the providing plugin; an unmappable tool is the error `tool_unmapped` and the subagent is skipped. `model:` and `effort:` become preferences |
+| `hooks/hooks.json` | Command hooks on `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `UserPromptExpansion` (matched on `plugin:command`), `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact`. Another event is the warning `hook_event_unmapped`; a matcher naming unmappable tools is `hook_matcher_unmapped`; a non-command hook is `hook_type_unsupported`. `codex.json`, `opencode.js` and similar files are ignored |
+| `agents/*.md` | Defined subagents. `tools` map through the table below and add the providing plugin; an unmappable tool is the warning `tool_unmapped` and only that tool is left out. `model:` and `effort:` become preferences |
 | `commands/*.md` | Commands |
 
 Tool mapping: `Read` → `fs_read_file`, `Glob` → `fs_list_directory`, `Grep` →

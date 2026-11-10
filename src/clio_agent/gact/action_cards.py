@@ -313,22 +313,14 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         severity: str = "warning",
         stub_actions: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
-        """Raise a notification/action card into YOUR PARENT session's transcript.
+        """Raise a notification card into your parent session's transcript.
 
-        Use this when you (a spawned child agent) discover something your parent
-        session's user should see WITHOUT waiting for you to finish and be waited
-        on — e.g. an anomaly or a blocking finding. ``severity`` is ``warning`` (the
-        card only informs the person) or ``danger``: from SPOTTER's watcher, a danger
-        card also puts the watched session in quarantine (it stops until the person
-        lifts it). The card always carries a "Discuss" action that focuses your task
-        in the parent's UI. Pass ``stub_actions`` as
-        ``[{"id", "label", "reason"}, ...]`` for future actions you want the UI to
-        show but not yet wire (rendered disabled, with ``reason`` as the tooltip);
-        bare strings (``["address", "remove"]``) work too as a shorthand.
-
-        Only callable from a SPAWNED CHILD session (one with a live parent
-        AgentTask) — calling this from a top-level/unspawned session returns a
-        typed error instead of silently doing nothing.
+        Use it, as a spawned child agent, for something your parent's user should
+        see before you finish: an anomaly or a blocking finding. ``severity`` is
+        ``warning`` (the card informs) or ``danger`` (from SPOTTER's watcher it also
+        quarantines the watched session until the person lifts it). ``stub_actions``
+        lists future actions shown disabled: ``[{"id", "label", "reason"}, ...]`` or
+        bare strings. A session without a live parent assignment gets a typed error.
         """
 
         app = _ctx.active_app()
@@ -419,6 +411,7 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
     return native_tool(
         raise_alert_card,
         name="raise_alert_card",
+        callers="direct",
         presentation="specialized",
         domain="alerts",
         desc=raise_alert_card.__doc__,

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 from clio_agent.gact.artifacts.cas import IngestedIdentity
 from clio_agent.gact.artifacts.provenance.native import NativeArtifactStore
+from clio_agent.gact.artifacts.records import Custody
 
 if TYPE_CHECKING:
     from clio_schemas import ArtifactVersion
@@ -95,7 +96,7 @@ def harness_write_artifact_identity(
     except OSError:
         if not in_hand_sha:
             raise
-        from clio_agent.gact.artifacts.records import Custody, IdentityEvidence
+        from clio_agent.gact.artifacts.records import IdentityEvidence
 
         return IngestedIdentity(
             evidence=IdentityEvidence.hashed_at_use(
@@ -156,8 +157,21 @@ def resolve_owned_artifact_or_raise(
     not a fall-through: raise the caller-built typed 409
     ``artifact_store_unavailable`` (``error`` is the route's HTTPException
     factory — kept a seam so this module never imports route machinery).
+    A stream (custody ``clio-core``) has no file at all: its content is read through
+    its stream route, so the refusal names that route.
     """
 
+    if version.custody == Custody.CLIO_CORE:
+        stream_id = str((version.producer or {}).get("stream_id") or "")
+        raise error(
+            status_code=409,
+            error="artifact_is_stream",
+            message="a stream's content is read through its stream route",
+            details={
+                "artifact_id": version.artifact_id,
+                "content_path": f"/v1/streams/{stream_id}/content",
+            },
+        )
     owned = resolve_owned_artifact_path(app, version, workspace_root=workspace_root)
     if owned is not None:
         return owned

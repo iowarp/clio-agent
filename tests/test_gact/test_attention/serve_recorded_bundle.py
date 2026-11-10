@@ -36,6 +36,7 @@ import uvicorn
 from clio_agent.gact.app import build_app
 from clio_agent.gact.attention import routes
 from clio_agent.gact.attention.lm_calls import LmCall, lm_calls_from_jsonl
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.types import Message
 from tests.test_gact.test_attention._support import FakeFlowcept
 
@@ -91,7 +92,8 @@ def main() -> None:
         # A child (SPOTTER) is listed on its own: its delegation record is not replayed.
         of = f" of {parent}" if parent else ""
         title = f"{original.get('title') or original['id']} (replay {original['id']}{of})"
-        session = next((s for s in app.state.sessions.list() if s.title == title), None)
+        known = app.state.sessions.select(PageQuery(archived=None))
+        session = next((s for s in known if s.title == title), None)
         if session is None:
             session = app.state.sessions.create(workspace_id="ws_default", title=title)
         messages = [Message.model_validate(row) for row in export.get("messages") or []]

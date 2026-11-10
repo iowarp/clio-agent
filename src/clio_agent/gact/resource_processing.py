@@ -46,20 +46,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _structure_node_max_bytes() -> int:
-    """Byte ceiling on ONE structured node served back from a derived view."""
-
-    return max(
-        1024,
-        conf.resolve(
-            "resources.structure_node_max_bytes",
-            env="CLIO_RESOURCE_STRUCTURE_NODE_MAX_BYTES",
-            default=2 * 1024 * 1024,
-            cast=conf.as_int,
-        ),
-    )
-
-
 def _derivative_name_max_chars() -> int:
     return max(
         16,
@@ -381,9 +367,8 @@ class ResourceProcessingStore:
             value = values[index]
         else:
             raise IndexError(index)
-        encoded = json.dumps(value, ensure_ascii=False).encode("utf-8")
-        if len(encoded) > _structure_node_max_bytes():
-            raise ValueError("structured node exceeds the bounded response limit")
+        # Served whole: the structure is already in memory, and a large node reaching
+        # the model goes through the model lane's own result bound.
         return value
 
     def derivative_path(

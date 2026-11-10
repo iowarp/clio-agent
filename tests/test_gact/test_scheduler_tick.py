@@ -78,16 +78,24 @@ def test_fired_schedule_is_registered_and_cancellable(
     gets caught by the ``in_flight_turns`` poll.
     """
 
+    import clio_agent.gact.scheduler_runtime as scheduler_runtime
+
     app, client, sid = _make(tmp_path, _SlowAgent(sleep_s=1.0), request)
     app.state.schedules.add(session_id=sid, cron="* * * * *", question="scheduled q")
+    # One occurrence: a test fired late in a wall-clock minute would otherwise see the
+    # tick's boundary-aligned second iteration rightly fire this every-minute cron again.
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    monkeypatch.setattr(scheduler_runtime, "_seconds_until_next_minute", lambda _now: 3600.0)
 
     async def drive() -> None:
         tick = asyncio.create_task(_scheduler_tick(app))
         try:
             # The first tick iteration runs immediately and fires the
-            # always-due schedule.
+            # always-due schedule. Committing its input waits for the turn's tool
+            # surface and ledger rehydration, which a loaded parallel runner can hold
+            # for seconds, so the wait is bounded by the commitment, not a 3s guess.
             loop = asyncio.get_running_loop()
-            deadline = loop.time() + 3.0
+            deadline = loop.time() + 30.0
             while loop.time() < deadline:
                 if (
                     app.state.turn_runner.busy(sid)
@@ -159,7 +167,7 @@ def test_fired_schedule_is_registered_and_cancellable(
             with contextlib.suppress(asyncio.CancelledError):
                 await tick
 
-    asyncio.run_coroutine_threadsafe(drive(), app.state.mcp_app_loop).result(timeout=5.0)
+    asyncio.run_coroutine_threadsafe(drive(), app.state.mcp_app_loop).result(timeout=60.0)
 
 
 def test_tick_scan_error_is_logged_not_swallowed(

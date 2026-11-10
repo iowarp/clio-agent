@@ -51,7 +51,9 @@ def _events(app: FastAPI, sid: str) -> tuple[list[dict[str, Any]], str]:
         live, "iter_session_event_segments", None
     )
     if callable(iterator):
-        for segment in iterator(sid):
+        from clio_agent.gact.task_event_merge import session_log_segments  # noqa: PLC0415
+
+        for segment in session_log_segments(app.state.arc, sid):  # task events: their lane
             event = semantic_event_from_events_content(
                 segment.content, session_id=sid, turn_id=str(segment.turn_id or "")
             ).to_dict("full")

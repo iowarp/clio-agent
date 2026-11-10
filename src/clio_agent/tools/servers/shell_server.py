@@ -25,6 +25,7 @@ from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.runtime.sandbox_diagnosis import diagnose_confined
 from clio_agent.tools.builtin_annotations import (
     _BASH_ANNOTATIONS,
 )
@@ -33,7 +34,6 @@ from clio_agent.tools.builtin_annotations import (
 )
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers.shell_commands import (
-    SCRIPT_FILE_GUIDANCE,
     command_length_error,
     is_command_length_exception,
     windows_launch_error,
@@ -46,10 +46,9 @@ from clio_agent.tools.servers.shell_output import (
     StreamCapture,
     compose_output_fields,
     read_process_stream,
-    shell_result_char_budget,
+    shell_result_room,
 )
 from clio_agent.tools.servers.shell_spill_store import (
-    SPILL_DIRNAME,
     active_session_id,
     new_call_id,
     spill_directory,
@@ -100,7 +99,6 @@ class ShellLimits:
     max_command_chars: int
     default_output_bytes: int  # per stream, inline, when the caller passes none
     max_output_bytes: int  # per stream, the most a caller may request inline
-    result_chars: int  # encoded-result budget (the tighter downstream bound)
 
 
 def resolve_shell_limits() -> ShellLimits:
@@ -113,12 +111,12 @@ def resolve_shell_limits() -> ShellLimits:
       can reject smaller commands, particularly cmd/.cmd/.bat at 8,191 characters.
       Quoting and wrapper arguments also count. Programs belong in workspace
       script files; the native launch string is checked separately.
-    * ``shell_default_output_bytes`` 8,192 per stream (was 16,384). The result
-      must fit the downstream 12,000-character tool-result bounds or it gets
-      rewrapped into a truncated JSON-in-JSON preview (#887); 16 KiB made that
-      the norm for default-sized output. Larger output spills to a file.
-    * ``shell_max_output_bytes`` 131,072: the per-call ceiling. The encoded
-      result is still held under ``result_chars``; the rest is in the spill file.
+    * ``shell_default_output_bytes`` 32,768 per stream, about the 30,000 characters
+      of output Claude Code's shell returns. Larger output spills to a file.
+    * ``shell_max_output_bytes`` 131,072: the per-call ceiling (memory holds twice
+      this per stream). Either way the encoded result is fitted to the room one
+      result has in the model's context window (:func:`shell_result_room`); the
+      rest is in the spill file.
     """
 
     return ShellLimits(
@@ -131,7 +129,7 @@ def resolve_shell_limits() -> ShellLimits:
         default_output_bytes=conf.resolve(
             "limits.shell_default_output_bytes",
             env="CLIO_SHELL_DEFAULT_OUTPUT_BYTES",
-            default=8 * 1024,
+            default=32 * 1024,
             cast=conf.as_int,
         ),
         max_output_bytes=conf.resolve(
@@ -140,7 +138,6 @@ def resolve_shell_limits() -> ShellLimits:
             default=128 * 1024,
             cast=conf.as_int,
         ),
-        result_chars=shell_result_char_budget(),
     )
 
 
@@ -344,20 +341,19 @@ def _detect_shell_env() -> ShellEnvFacts:
 
 
 def _limits_text(limits: ShellLimits) -> str:
-    """Model-facing statement of the effective limits and the spill behaviour."""
+    """Model-facing statement of the effective limits (#1487).
+
+    How to continue after a spill is said in the spill record itself
+    (:data:`~clio_agent.tools.servers.shell_output.SPILL_NOTE`), and how to work
+    around a launcher limit in the ``command_too_long`` error, where each arises.
+    """
 
     return (
-        f"Limits: CLIO accepts up to {limits.max_command_chars} command characters, but native "
-        "shells/launchers can impose smaller bounds, even below this budget. "
-        f"{SCRIPT_FILE_GUIDANCE} stdout and stderr each return inline up to "
-        f"max_output_bytes (default {limits.default_output_bytes}, at most "
-        f"{limits.max_output_bytes}) and the whole result stays under "
-        f"{limits.result_chars} characters. Output beyond that is not lost: the complete "
-        f"stream is saved in the workspace's Agent-managed ``{SPILL_DIRNAME}/`` directory (one "
-        "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
-        "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
-        "`stdout_spill` gives the file path, total_bytes, total_lines, and a tail excerpt. "
-        "Read or grep that file instead of re-running the command."
+        f"stdout and stderr each return inline up to max_output_bytes (default "
+        f"{limits.default_output_bytes}, at most {limits.max_output_bytes}) within the room one "
+        "result has in your context window; the complete stream of a longer output is saved to "
+        f"a file the result names. CLIO accepts up to {limits.max_command_chars} command "
+        "characters; native shells and launchers can impose smaller limits."
     )
 
 
@@ -366,32 +362,23 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
 
     Pure function of its inputs so the per-platform content is unit-pinnable
     (#898): the Windows text carries an explicit 'do NOT assume WSL exists' and
-    the POSIX text does not; both steer tabular/CSV work to the pandas MCP tool.
-    The limits sentence is generated from ``limits`` (default: the effective
-    :data:`_SHELL_LIMITS`), never hand-written numbers (#1487).
+    the POSIX text does not. The limits sentence is generated from ``limits``
+    (default: the effective :data:`_SHELL_LIMITS`), never hand-written numbers
+    (#1487). Situational guidance lives where its situation arises: background
+    task mechanics in the core ``task-protocol`` skill, the working directory,
+    timeout and access rules on their arguments, the launcher-limit recipe in the
+    ``command_too_long`` error and the spill explanation in the spill record.
     """
     limits_text = _limits_text(limits or _SHELL_LIMITS)
     task_text = (
-        "For remote commands, use ssh_execute when available with the shared SSH profile "
-        "or jump route. Direct ssh in this local shell may be blocked by its network fence; "
-        "approval/bypass does not disable that fence. "
-        "For files outside permitted folders, declare access_paths and access_reason so CLIO "
-        "asks the user before execution. Include source and destination for moves. "
-        "Already approved downloaded source inputs can be read at their returned paths "
-        "without access_paths. Those paths stay read-only; save derivatives in the workspace. "
-        "By default background=false waits for command completion. Set background=true to "
-        "return a durable Shell task handle as soon as the command starts, before completion. "
-        "Continue independent work; use query_tasks, observe_tasks, wait_tasks, get_task_result "
-        "or cancel_tasks with the handle. Results arrive at the next model iteration or wake "
-        "you when idle. Conversation Stop leaves accepted background work running. A positive "
-        "timeout_s remains an execution limit. Set timeout_s=0 for no per-command deadline; "
-        "omitting it uses the configured default. An operator ceiling may still apply. "
+        "background=true returns a Shell task handle as soon as the command starts; the "
+        "task-protocol skill covers handles, Stop and cancellation. "
     )
     tools = ", ".join(_POSIX_TEXT_TOOLS)
     tools_line = (
-        f"POSIX text tools ({tools}) ARE available on this host's PATH."
+        f"POSIX text tools ({tools}) are available on this host's PATH."
         if facts.posix_text_tools
-        else f"POSIX text tools ({tools}) are NOT available on this host's PATH."
+        else f"POSIX text tools ({tools}) are not available on this host's PATH."
     )
     if facts.is_windows:
         is_bash = facts.shell_label.lower().startswith("bash")
@@ -403,34 +390,23 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
             else "The tool invokes cmd.exe with /d /s /c. "
         )
         return (
-            f"Run ONE local shell command on a {facts.system_label} host and return "
+            f"Run one local shell command per call on a {facts.system_label} host and return "
             f"stdout, stderr, and exit code. Commands execute under {facts.shell_label} "
-            f"semantics{' (this is NOT a bash/POSIX shell)' if not is_bash else ''}. "
+            f"semantics{' (not a bash/POSIX shell)' if not is_bash else ''}. "
             f"{invocation}"
             f"{tools_line} "
-            "Do NOT assume WSL exists: do not invoke `wsl`, `wsl bash -c`, or POSIX "
-            "pipelines to reach cut/sed/awk/grep â€” on a WSL-less host they fail, and the "
-            "first `wsl` call boots a utility VM that stays resident holding gigabytes. "
+            "WSL may not exist here, so reach for neither `wsl`, `wsl bash -c` nor POSIX "
+            "pipelines for cut/sed/awk/grep: on a host without WSL they fail, and the first "
+            "`wsl` call boots a utility VM that stays resident holding gigabytes. "
             "Paths use Windows conventions (drive letters, backslashes) unless the bash "
-            "backend is active. For tabular, "
-            "CSV, or columnar work (column selection, filtering, joins) use the pandas "
-            "MCP tool when available instead of shell text pipelines — it is portable and "
-            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS "
-            "or an approved downloaded source directory. "
-            "A command can retrieve public HTTPS data when network policy permits; "
-            "inspect its returned status and output before concluding access failed. "
+            "backend is active. "
             f"{task_text}{limits_text}"
         )
     return (
-        f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
+        f"Run one local shell command per call on a {facts.system_label} host and return stdout, "
         f"stderr, and exit code. Commands execute under {facts.shell_label}. "
         f"{tools_line} "
-        "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
-        "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
-        "when available over ad-hoc text pipelines. The working directory must be inside "
-        "CLIO_ALLOWED_ROOTS or an approved downloaded source directory. "
-        "A command can retrieve public HTTPS data when network policy permits; "
-        "inspect its returned status and output before concluding access failed. "
+        "Paths use POSIX conventions (forward slashes). "
         f"{task_text}{limits_text}"
     )
 
@@ -446,6 +422,10 @@ def _log_shell_phase(
 ) -> float:
     """Log wall time for one call stage without adding command contents to diagnostics."""
     finished = time.perf_counter()
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    elapsed = round((finished - started) * 1000, 3)
+    stream_audit("shell.phase", call=call_id, phase=phase, outcome=outcome, ms=elapsed)
     logger.info(
         "shell_phase call=%s phase=%s outcome=%s elapsed_ms=%.3f",
         call_id,
@@ -460,8 +440,18 @@ def _log_shell_phase(
 async def bash(
     ctx: Context,
     command: str,
-    cwd: str | None = None,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    cwd: Annotated[
+        str | None,
+        Field(
+            description="Working directory, inside CLIO_ALLOWED_ROOTS or an approved downloaded source directory."
+        ),
+    ] = None,
+    timeout_s: Annotated[
+        float,
+        Field(
+            description="Seconds before the command is stopped; 0 means no per-command deadline. Omitted uses the configured default; an operator ceiling may still apply."
+        ),
+    ] = _DEFAULT_TIMEOUT_S,
     max_output_bytes: int = _SHELL_LIMITS.default_output_bytes,
     background: Annotated[
         bool,
@@ -472,7 +462,7 @@ async def bash(
     access_paths: Annotated[
         list[str] | None,
         Field(
-            description="Files or folders needing additional permission. Already approved downloaded source paths do not need this for reads and remain read-only. CLIO asks for folder access before running. Include both source and destination for a move."
+            description="Files or folders outside the permitted folders this command reads or writes (for a move, both source and destination); CLIO asks the person to approve them before it runs. Approved downloaded sources need none for reads."
         ),
     ] = None,
     access_reason: Annotated[
@@ -613,7 +603,7 @@ async def execute_shell(
             run_env.pop(internal_credential, None)
         # Secrets meant for plugin servers (``${CLIO_SECRET_*}``) never reach the shell.
         run_env = {k: v for k, v in run_env.items() if not k.startswith("CLIO_SECRET_")}
-        # Prepared scratch is already inside this workspace's writable territory.
+        # Prepared scratch (the session's own folder) is already writable territory.
         run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
         from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
 
@@ -738,15 +728,27 @@ async def execute_shell(
                             for reader in readers
                         ):
                             cleanup.confirm_cleanup()
-                    base = {
-                        "command": command,
+                    # The command is not echoed back: the caller wrote it, and it is in
+                    # the call (L1: 35.6k of 84.9k shell result characters were the echo).
+                    # The person's terminal view shows it from the call's arguments.
+                    base: dict[str, Any] = {
                         "cwd": str(safe_cwd),
                         "exit_code": None if timed_out else process.returncode,
                         "timed_out": timed_out,
                         "timeout_s": timeout,
                     }
+                    # #1905: why the fence refused, against the roots it was given.
+                    err = captures[1]
+                    if boundary := diagnose_confined(
+                        confined.result,
+                        exit_code=base["exit_code"],
+                        stderr=err.full_text() + "\n" + err.tail_excerpt(8192),
+                        command=command,
+                        cwd=safe_cwd,
+                    ):
+                        base["boundary"] = boundary  # budgeted with the output below
                     result = compose_output_fields(
-                        base, captures, root=spill_root, budget=shell_result_char_budget()
+                        base, captures, root=spill_root, budget=shell_result_room()
                     )
         if result is None:
             raise RuntimeError("Shell exited without confirmed process-tree settlement")

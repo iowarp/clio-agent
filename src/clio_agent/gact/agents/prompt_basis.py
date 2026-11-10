@@ -16,7 +16,9 @@ A change can reach the model three ways (``PATCH /v1/sessions/{sid}/agent``
   the change: removed plugins stay in the prompt and the model is asked not to use
   them; an added plugin's instructions travel in the note, its skills load now, and
   its tools are introduced there (name, arguments, description) and run if called,
-  though the request's tool list keeps only what the cached prompt had.
+  though the request's tool list keeps only what the cached prompt had. The note's
+  wording is the reminder ``clio.reminder.plugin_change`` and its ``plugin_change_*``
+  pieces.
 
 Hooks always follow the pinned resolution. The tools that run, the skills
 ``load_skill`` accepts and the MCP servers a session mounts are the union of both,
@@ -37,6 +39,16 @@ PROMPT_BASIS_KEY = "agent_prompt_basis"
 APPLY_MODES = ("now", "compact", "note")
 #: The injection source of the note that tells the model about a change.
 PLUGIN_CHANGE_SOURCE = "plugin_change"
+#: Tools a deferred MCP server added mid-session (``tools/list_changed``), named by the
+#: plugin-change note until the prompt is rebuilt and its deferred entry names them (TD11).
+DEFERRED_ADDED_KEY = "deferred_tools_added"
+
+
+def _say(piece: str, app: Any = None, session_id: str = "", **variables: Any) -> str | None:
+    """One piece of the change note (``None``: the person switched that piece off)."""
+    from clio_agent import injections  # noqa: PLC0415
+
+    return injections.render(piece, variables, app=app, session_id=session_id)
 
 
 def _metadata(app: Any, session_id: str) -> Mapping[str, Any]:
@@ -67,11 +79,41 @@ def hold_basis(app: Any, session_id: str, previous_digest: str) -> None:
         app.state.sessions.update(session_id, metadata_patch={PROMPT_BASIS_KEY: previous_digest})
 
 
-def settle_basis(app: Any, session_id: str) -> None:
-    """The prompt catches up with the pinned resolution (apply now, or a compaction)."""
+def settle_basis(app: Any, session_id: str, *, promote_loaded: bool = True) -> None:
+    """The prompt catches up with the pinned resolution (apply now, or a compaction).
 
+    With ``promote_loaded``, tools loaded with ``search_tools`` since the last rebuild
+    join the tool list too. A compaction passes False: it keeps the cached system prompt
+    and tool list, so listing them there changed the tool list at the next turn's start
+    and cost a second whole-prompt cache write (34k tokens on L1P). A loaded tool stays
+    callable and named among the deferred tools either way.
+    """
+
+    from clio_agent.gact.search_tools import promote_loaded_tools  # noqa: PLC0415
+
+    if promote_loaded:
+        promote_loaded_tools(app, session_id)
     if _metadata(app, session_id).get(PROMPT_BASIS_KEY):
         app.state.sessions.update(session_id, metadata_patch={PROMPT_BASIS_KEY: ""})
+    if _metadata(app, session_id).get(DEFERRED_ADDED_KEY):
+        app.state.sessions.update(session_id, metadata_patch={DEFERRED_ADDED_KEY: []})
+
+
+def note_deferred_added_in_turn(session_id: str, names: Iterable[str]) -> None:
+    """:func:`note_deferred_tools_added` for the turn's app (a live refresh mid-step)."""
+    from clio_agent.gact import context  # noqa: PLC0415
+
+    app = context.active_app()
+    if app is not None and session_id:
+        note_deferred_tools_added(app, session_id, names)
+
+
+def note_deferred_tools_added(app: Any, session_id: str, names: Iterable[str]) -> None:
+    """Record tools a deferred server added, for the next plugin-change note."""
+    known = [str(n) for n in _metadata(app, session_id).get(DEFERRED_ADDED_KEY) or ()]
+    merged = sorted({*known, *names})
+    if merged != sorted(known):
+        app.state.sessions.update(session_id, metadata_patch={DEFERRED_ADDED_KEY: merged})
 
 
 def pending_change(basis: Resolution, current: Resolution) -> dict[str, Any]:
@@ -163,12 +205,9 @@ def with_tool_introductions(
             for name, spec in (getattr(tool, "args", None) or {}).items()
         )
         lines.append(f"- {tool.name}({args}): {str(getattr(tool, 'desc', '') or '').strip()}")
-    if not lines:
+    section = _say("plugin_change_tool_introductions", tools="\n".join(lines)) if lines else None
+    if not section:
         return injections
-    section = (
-        "New tools you can call now, though they are not in your tool list until the next "
-        "compaction:\n" + "\n".join(lines)
-    )
     return [
         (source, f"{text}\n{section}" if source == PLUGIN_CHANGE_SOURCE else text)
         for source, text in injections
@@ -190,24 +229,28 @@ def plugin_change_note(app: Any, session_id: str) -> str:
         session_resolution,
     )
 
+    added_tools = [str(n) for n in _metadata(app, session_id).get(DEFERRED_ADDED_KEY) or ()]
+    where = {"app": app, "session_id": session_id}
+    tools_line = (
+        _say("plugin_change_deferred_tools", **where, tools=", ".join(added_tools)) or ""
+        if added_tools
+        else ""
+    )
     if not _metadata(app, session_id).get(PROMPT_BASIS_KEY):
-        return ""
+        return tools_line
     try:
         current = session_resolution(app, session_id)
         basis = basis_resolution(app, session_id, current)
     except SessionAgentUnavailable:
-        return ""
+        return tools_line
     change = pending_change(basis, current)
     if not change["pending"]:
-        return ""
-    lines = ["The person changed this conversation's plugins."]
+        return tools_line
+    lines: list[str | None] = [_say(PLUGIN_CHANGE_SOURCE, **where)]
     if change["removed"]:
-        lines.append(
-            f"Removed: {', '.join(change['removed'])}. Do not use their tools or follow "
-            "their instructions, even though they still appear above."
-        )
+        lines.append(_say("plugin_change_removed", **where, plugins=", ".join(change["removed"])))
     for plugin_id in change["added"]:
-        lines.append(f"Added: {plugin_id}.")
+        lines.append(_say("plugin_change_added", **where, plugin=plugin_id))
         lines += [
             fragment["text"].strip()
             for section in current.prompt.get("sections") or ()
@@ -216,14 +259,17 @@ def plugin_change_note(app: Any, session_id: str) -> str:
         ]
     skills = [row for row in current.skills if row["id"] in set(change["skills_now"])]
     if skills:
-        lines.append("Skills you can load now with load_skill:")
+        lines.append(_say("plugin_change_skills", **where))
         lines += [f"- {row['id']}: {row.get('description', '')}".rstrip(": ") for row in skills]
-    lines.append("Your system prompt will include these changes after the next compaction.")
-    return "\n".join(lines)
+    lines += [tools_line, _say("plugin_change_footer", **where)]
+    return "\n".join(line for line in lines if line)
 
 
 __all__ = [
     "APPLY_MODES",
+    "DEFERRED_ADDED_KEY",
+    "note_deferred_added_in_turn",
+    "note_deferred_tools_added",
     "PLUGIN_CHANGE_SOURCE",
     "PROMPT_BASIS_KEY",
     "basis_resolution",

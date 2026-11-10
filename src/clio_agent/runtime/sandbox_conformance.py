@@ -39,11 +39,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The three wrapped agent-driven spawn seams (routed through wrap_confined).
+# The wrapped agent-driven spawn seams (routed through wrap_confined).
 SEAM_TRANSPORT_FOR = "transport_for"
 SEAM_TRANSPORT_FROM_SPEC = "transport_from_spec"
 SEAM_SHELL = "shell"
-WRAPPED_SEAMS: tuple[str, ...] = (SEAM_TRANSPORT_FOR, SEAM_TRANSPORT_FROM_SPEC, SEAM_SHELL)
+#: The run_code kernel (gact/code_mode/kernels.py), with the shell's profile and roots.
+SEAM_CODE_KERNEL = "code_kernel"
+WRAPPED_SEAMS: tuple[str, ...] = (
+    SEAM_TRANSPORT_FOR,
+    SEAM_TRANSPORT_FROM_SPEC,
+    SEAM_SHELL,
+    SEAM_CODE_KERNEL,
+)
 
 # The three verifiably-excluded seams (#974.5) + their typed exclusion reasons.
 SEAM_CTE_DAEMON = "cte_daemon"

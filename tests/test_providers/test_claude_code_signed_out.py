@@ -22,7 +22,7 @@ from dspy.lm15 import ServerError
 from dspy.utils.exceptions import is_retryable_lm_error
 
 from clio_agent.gact.agents.clio_react import ClioReAct
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_errors import (
     CLAUDE_CODE_SIGNED_OUT_MESSAGE,
@@ -43,10 +43,10 @@ _NOT_LOGGED_IN = "Not logged in · Please run /login"
 def _clean_pool() -> Iterator[None]:
     """A clean client pool and conversation registry per test."""
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def _error_result(result: str, *, api_error_status: int | None = None) -> fake.ResultMessage:

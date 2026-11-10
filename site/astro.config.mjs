@@ -2,13 +2,19 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
+import sitemap from '@astrojs/sitemap';
 import tailwindcss from '@tailwindcss/vite';
+import { copyFile } from 'node:fs/promises';
 import starlightLinksValidator from 'starlight-links-validator';
 
 // Public site for CLIO, served by GitHub Pages at clio.iowarp.ai.
 // The overview (/) is a Starlight splash page so the header, search, and
 // theme switch are the same on every page. Guides and examples live under
 // /docs/. Older tutorial URLs redirect there; drafts appear only in `pnpm dev`.
+
+// Client-side redirect pages under src/pages that must not be listed as content.
+const SITEMAP_EXCLUDED_PATHS = ['/docs/memory-and-evidence/'];
+
 export default defineConfig({
 	site: 'https://clio.iowarp.ai',
 	trailingSlash: 'ignore',
@@ -94,9 +100,13 @@ export default defineConfig({
 							],
 						},
 						{ label: 'Answer a question', slug: 'docs/questions' },
+						{ label: 'Use the browser', slug: 'docs/browser' },
+						{ label: 'Scripts and background work', slug: 'docs/scripts' },
+						{ label: 'Watch something live', slug: 'docs/live-sources' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
 						{ label: 'Flows and workflows', slug: 'docs/flows' },
 						{ label: 'Subagents', slug: 'docs/subagents' },
+						{ label: 'Commands and @ mentions', slug: 'docs/commands' },
 						{ label: 'Science log', slug: 'docs/science-log' },
 						{ label: 'Models and usage', slug: 'docs/models-and-usage' },
 						{ label: 'Updates during a conversation', slug: 'docs/injections' },
@@ -110,6 +120,8 @@ export default defineConfig({
 					items: [
 						{ label: 'Check answers and sources', slug: 'docs/evidence' },
 						{ label: 'Open and edit documents', slug: 'docs/working-with-files' },
+						{ label: 'Comment on results', slug: 'docs/comments' },
+						{ label: 'Write a paper', slug: 'docs/papers' },
 						{ label: 'Explore charts and dashboards', slug: 'docs/dashboards' },
 						{ label: 'Compare alternative answers', slug: 'docs/best-of-n' },
 						{ label: 'Save and share your work', slug: 'docs/exports' },
@@ -191,6 +203,18 @@ export default defineConfig({
 				},
 			],
 		}),
+		// Registering the sitemap here replaces Starlight's default one, so
+		// redirect-only alias pages can be left out of it.
+		sitemap({ filter: (page) => !SITEMAP_EXCLUDED_PATHS.some((path) => page.endsWith(path)) }),
+		// GitHub Pages cannot redirect /sitemap.xml, so publish the index there too.
+		{
+			name: 'clio-sitemap-alias',
+			hooks: {
+				'astro:build:done': async ({ dir }) => {
+					await copyFile(new URL('sitemap-index.xml', dir), new URL('sitemap.xml', dir));
+				},
+			},
+		},
 		react(),
 	],
 	vite: {

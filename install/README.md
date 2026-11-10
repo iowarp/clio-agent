@@ -8,7 +8,7 @@ For Desktop downloads and guided setup, start at **[clio.iowarp.ai](https://clio
 ## Linux / macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 ```
 
 Installs to `~/.local/share/clio-agent/app` (macOS: `~/Library/Application
@@ -18,12 +18,25 @@ Support/clio-agent/data/app`; override via `CLIO_PREFIX`), drops a `clio` launch
 ## Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 ```
 
 Installs to `$HOME\AppData\Local\clio-agent\data\app`, drops `clio.cmd` + `clio.ps1`
 into `$HOME\AppData\Local\Microsoft\WindowsApps` (already on PATH on
 Windows 10/11).
+
+## Upgrading from 0.9.5.1 or earlier
+
+This release cannot open the conversations, memory and artifacts CLIO 0.9.5.1 or older
+saved in its store. The installer checks the store before changing it: if 0.9.5.1 or
+older wrote it, it says so and asks **Move it aside now? [Y/n]**. Without a terminal, or
+with `--reset-old-data` (`-ResetOldData` on Windows), it moves it and prints what moved
+where. If it cannot tell, it moves nothing unless you answer yes. Nothing is deleted:
+the store is renamed to `<data dir>/cte-before-<version>-<date>`, on the same disk, so
+it can be moved back or converted later.
+
+Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
+`clio reset-store`. `clio store-check` only reports which version wrote your data.
 
 ## What gets installed (default: release mode)
 
@@ -87,7 +100,7 @@ roots, or select its public tag with the complete installer's `--version` option
 | `install.sh --dev --source` | source at `develop` |
 
 ```sh
-URL=https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh
+URL=https://clio.iowarp.ai/install.sh
 curl -fsSL $URL | bash                          # latest stable release
 curl -fsSL $URL | bash -s -- --dev              # latest release, betas included
 curl -fsSL $URL | bash -s -- --source           # main, from source
@@ -100,7 +113,7 @@ cd clio-agent && ./install/install.sh --source
 ```
 
 ```powershell
-$u = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1'
+$u = 'https://clio.iowarp.ai/install.ps1'
 & ([scriptblock]::Create((irm $u))) --dev --source   # same options; -Dev -Source work too
 ```
 

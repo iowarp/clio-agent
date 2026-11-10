@@ -6,6 +6,8 @@
 #   install.ps1 --dev --source   source at `develop`
 #   install.ps1 -Desktop         the desktop app, bundled with its agent (x64 setup;
 #                                runs under emulation on ARM); -Dev/-Version pick the release
+#   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
+#                                (this release cannot open it; it is kept, never deleted)
 #
 # -Source/-Dev/-Version/-Ref are the same options. From a URL:
 #   & ([scriptblock]::Create((irm <url>/install.ps1))) --dev
@@ -24,6 +26,10 @@
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk, which
+# makes a large download many times slower than the network (the desktop setup took
+# 10-15 minutes). Large files go through Save-ClioDownload, which shows curl's own meter.
+$ProgressPreference = 'SilentlyContinue'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
@@ -54,9 +60,16 @@ function Stop-OfficePrepare {
     }
     $script:OfficeProc = $null
 }
-function Die  ($m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m"  -ForegroundColor Red; exit 1 }
+# Run as a file (-File, CI), the installer exits with its status. Run from a URL
+# (`irm ... | iex`, or a script block) it has no file, and `exit` would close the
+# user's PowerShell window and the error with it: it throws or returns instead.
+function Exit-Installer ([int]$code) {
+    if ($PSCommandPath) { exit $code }
+    if ($code -ne 0) { throw "CLIO installer stopped (exit $code)" }
+}
+function Die  ($m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m"  -ForegroundColor Red; Exit-Installer 1 }
 # DieWith CODE MESSAGE: Die, keeping the failed command's exit status.
-function DieWith ([int]$code, $m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m" -ForegroundColor Red; exit $code }
+function DieWith ([int]$code, $m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m" -ForegroundColor Red; Exit-Installer $code }
 function Have ($cmd) { return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue) }
 function RunNative($cmd, [string[]]$cmdArgs) {
     & $cmd @cmdArgs
@@ -106,12 +119,66 @@ function Get-ClioReleaseTag([string]$Version) {
     throw "No GitHub release tag for package version: $Version"
 }
 
+# Save-ClioDownload URI FILE: the large downloads (the desktop setup, the web UI).
+# curl.exe ships with Windows 10 1803 and later; it retries, resumes a cut transfer and
+# shows its own progress. Without it, Invoke-WebRequest (progress bar off, above).
+function Save-ClioDownload([string]$Uri, [string]$OutFile) {
+    # Resume only within this download: a file left by an earlier run may be another version.
+    Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($curl) {
+        & $curl.Source --fail --location --retry 5 --retry-delay 2 --retry-connrefused --continue-at - --output $OutFile $Uri
+        if ($LASTEXITCODE -ne 0) { throw "download failed (curl.exe exit $LASTEXITCODE): $Uri" }
+    } else {
+        Say 'curl.exe not found; downloading with Invoke-WebRequest'
+        Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile
+    }
+}
+
+# ConvertFrom-ClioReleaseTag TAG: the package version a release tag names, and how it
+# sorts; $null for a tag that is not a CLIO release. v0.9.5.1 is stable; v0.9.5-beta.8(.1)
+# is 0.9.5b8(.post1); v0.10.0a1 and v0.10.0rc1 are themselves.
+function ConvertFrom-ClioReleaseTag([string]$Tag) {
+    if ($Tag -notmatch '^v([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)(?:-beta\.([0-9]+)(?:\.([0-9]+))?|(a|rc)([0-9]+))?$') { return $null }
+    $base = [version]$Matches[1]
+    if ($Matches[2]) {
+        $text = "$($Matches[1])b$($Matches[2])" + $(if ($Matches[3]) { ".post$($Matches[3])" } else { '' })
+        $pre = @(2, [int]$Matches[2], [int]('0' + $Matches[3]))
+    } elseif ($Matches[4]) {
+        $text = "$($Matches[1])$($Matches[4])$($Matches[5])"
+        $pre = @($(if ($Matches[4] -eq 'a') { 1 } else { 3 }), [int]$Matches[5], 0)
+    } else {
+        $text = $Matches[1]
+        $pre = @(4, 0, 0)
+    }
+    $key = '{0:D6}.{1:D6}.{2:D6}.{3:D6}-{4}.{5:D6}.{6:D6}' -f $base.Major, $base.Minor, $base.Build, [Math]::Max($base.Revision, 0), $pre[0], $pre[1], $pre[2]
+    return [pscustomobject]@{ Tag = $Tag; Version = $text; Stable = ($pre[0] -eq 4); Key = $key }
+}
+
+# Resolve-ClioRelease DEV: the release to install from the published GitHub Releases
+# (PyPI can hold strays that never became a release). Stable: the highest stable
+# version. -Dev: the most recently published release, whatever its version says (an
+# old alpha can sort above the newest beta). Drafts are never listed.
+function Resolve-ClioRelease([bool]$Dev) {
+    $releases = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100'
+    $found = @(foreach ($r in $releases) {
+        if ($r.draft) { continue }
+        $v = ConvertFrom-ClioReleaseTag ([string]$r.tag_name)
+        if (-not $v -or (-not $Dev -and -not $v.Stable)) { continue }
+        $v | Add-Member -NotePropertyName Published -NotePropertyValue ([string]$r.published_at) -PassThru
+    })
+    if ($found.Count -eq 0) { return $null }
+    if ($Dev) { return ($found | Sort-Object Published, Key -Descending | Select-Object -First 1) }
+    return ($found | Sort-Object Key -Descending | Select-Object -First 1)
+}
+
 $OptSource = $false
 $OptDev = $false
 $OptVersion = ''
 $OptRef = ''
 $OptDesktop = $false
 $OptDownloadOnly = ''
+$OptResetOldData = $false
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch -Regex ([string]$args[$i]) {
         '^(--source|-Source)$' { $OptSource = $true; continue }
@@ -122,7 +189,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^--ref=' { $OptRef = ([string]$args[$i]).Substring(6); continue }
         '^(--desktop|-Desktop)$' { $OptDesktop = $true; continue }
         '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
-        default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; exit 2 }
+        '^(--reset-old-data|-ResetOldData)$' { $OptResetOldData = $true; continue }
+        default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; Exit-Installer 2 }
     }
 }
 if (-not $OptVersion -and $env:CLIO_VERSION) { $OptVersion = $env:CLIO_VERSION }
@@ -142,12 +210,8 @@ function Install-ClioDesktop {
     $repo = 'https://github.com/iowarp/clio-agent'
     if ($OptVersion) {
         $tag = Get-ClioReleaseTag $OptVersion
-    } elseif ($OptDev) {
-        # The most recently published release, pre-releases included (drafts are not listed).
-        $tag = (Invoke-RestMethod 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=30' |
-            Where-Object { $_.tag_name -like 'v*' -and -not $_.draft } | Select-Object -First 1).tag_name
     } else {
-        $tag = (Invoke-RestMethod 'https://api.github.com/repos/iowarp/clio-agent/releases/latest').tag_name
+        $tag = (Resolve-ClioRelease $OptDev).Tag
     }
     if (-not $tag) { Die 'Could not find a CLIO release on GitHub.' }
     $version = $tag -replace '^v', ''
@@ -158,7 +222,7 @@ function Install-ClioDesktop {
     try {
         Say "Downloading CLIO Desktop $tag ($asset)"
         $installer = Join-Path $scratch $asset
-        Invoke-WebRequest "$repo/releases/download/$tag/$asset" -OutFile $installer -UseBasicParsing
+        Save-ClioDownload "$repo/releases/download/$tag/$asset" $installer
         $manifest = (Invoke-WebRequest "$repo/releases/download/$tag/$checksums" -UseBasicParsing).Content
         if ($manifest -is [byte[]]) { $manifest = [Text.Encoding]::UTF8.GetString($manifest) }
         # GitHub replaces spaces in asset names with dots; older checksum manifests
@@ -189,7 +253,8 @@ function Install-ClioDesktop {
 }
 if ($OptDesktop) {
     Install-ClioDesktop
-    exit 0
+    Exit-Installer 0
+    return
 }
 if ($OptDownloadOnly) { Die '-DownloadOnly goes with -Desktop' }
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
@@ -379,6 +444,16 @@ try {
 $Venv = Join-Path $Prefix 'clio-agent\.venv'
 $Src = $null
 $ClioVersion = $null
+# The CLIO this install replaces, named if the data check below cannot tell.
+$PreviousVersion = $null
+$PreviousPython = Join-Path $Venv 'Scripts\python.exe'
+if (Test-Path $PreviousPython) {
+    try {
+        $PreviousVersion = (& $PreviousPython -c "from importlib.metadata import version; print(version('clio-agent'))").Trim()
+    } catch {
+        $PreviousVersion = $null
+    }
+}
 
 if ($OptSource) {
     $AppDir = Join-Path $Prefix 'clio-agent'
@@ -439,35 +514,10 @@ if ($OptSource) {
             $PackageVersion = "$($Matches[1])b$($Matches[2])"
         }
     } else {
-        # The published GitHub Releases are the release list (PyPI can hold strays that
-        # never became a release). The default takes the highest stable version; -Dev the
-        # most recently published release, pre-releases included.
-        $which = if ($OptDev) { 'any' } else { 'stable' }
         Say "Resolving the latest $(if ($OptDev) { 'release' } else { 'stable release' })"
-        $releases = Invoke-WebRequest -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100'
-        $code = @'
-import json, re, sys
-from packaging.version import InvalidVersion, Version
-found = []
-for release in json.load(sys.stdin):
-    if release.get("draft"):
-        continue
-    tag = release.get("tag_name", "")
-    match = re.fullmatch(r"v(\d+\.\d+\.\d+(?:\.\d+)?)-beta\.(\d+)(?:\.(\d+))?", tag)
-    text = (f"{match[1]}b{match[2]}" + (f".post{match[3]}" if match[3] else "")) if match else tag[1:]
-    try:
-        version = Version(text)
-    except InvalidVersion:
-        continue
-    if sys.argv[1] == "stable" and version.is_prerelease:
-        continue
-    found.append((release.get("published_at") or "", version))
-# Stable: the highest stable version. --dev: the most recently published release,
-# whatever its version says (an old alpha can sort above the newest beta).
-print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
-'@
-        $PackageVersion = ($releases.Content | & uv run --quiet --no-project --python 3.13 --with packaging python -c $code $which).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $PackageVersion) { Die 'could not read the clio-agent releases from GitHub' }
+        $release = Resolve-ClioRelease $OptDev
+        if (-not $release) { Die 'could not read the clio-agent releases from GitHub' }
+        $PackageVersion = $release.Version
     }
     $tag = Get-ClioReleaseTag $PackageVersion
     $LockDir = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-lock-" + [guid]::NewGuid())
@@ -522,17 +572,78 @@ if (Test-Path $VenvPython) {
     }
 }
 
+# ---------- data an older CLIO wrote: moved aside, never deleted ------
+# This release cannot open what CLIO 0.9.5.1 or older stored. `store-check` reads the
+# store itself and says so in plain words (exit 5: written by 0.9.5.1 or older; 6 or
+# 4: cannot tell; 3: CLIO is running). Old data is moved aside after a yes (without
+# asking with -ResetOldData or when no console can ask); data whose writer cannot be
+# told is moved only after a yes. `reset-store --yes` renames it, keeping every byte.
+function Test-CanAsk {
+    try {
+        return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+    } catch {
+        return $false
+    }
+}
+function Read-YesNo([string]$Question, [string]$Default) {
+    $answer = Read-Host $Question
+    if (-not $answer) { $answer = $Default }
+    return @('y', 'yes') -contains $answer.Trim().ToLower()
+}
+function Move-OldDataAside {
+    & $VenvPython -m clio_agent.gact.store_reset_command reset --yes
+    $moved = $LASTEXITCODE
+    if ($moved -ne 0) {
+        Warn "Your data was not moved (exit $moved, the reason is above). CLIO reports it when it starts; 'clio reset-store' moves it later."
+    }
+}
+function Invoke-OldDataCheck {
+    & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.gact.store_reset_command') else 3)"
+    if ($LASTEXITCODE -ne 0) { return }  # a release before the check: its store is its own
+    Say 'Checking which CLIO version wrote your data'
+    & $VenvPython -m clio_agent.gact.store_reset_command check
+    $checkStatus = $LASTEXITCODE
+    if ($checkStatus -eq 0) { return }
+    if ($checkStatus -eq 3) {
+        Warn "CLIO is running, so your data was not checked. This release cannot open data written by CLIO 0.9.5.1 or older: stop CLIO ('clio stop', or quit CLIO Desktop) and run this installer again, or run 'clio reset-store' if CLIO says your data is from an older version."
+        return
+    }
+    if ($checkStatus -eq 5) {
+        if ($OptResetOldData) {
+            Say 'Moving it aside (-ResetOldData)'
+        } elseif (Test-CanAsk) {
+            if (-not (Read-YesNo 'Move it aside now? [Y/n]' 'y')) {
+                Warn "Your data was left in place. CLIO $InstalledClioVersion cannot open it and says so when it starts. To move it later: 'clio stop', then 'clio reset-store'."
+                return
+            }
+        } else {
+            Say 'No console to ask on: moving it aside (pass -ResetOldData to say so explicitly)'
+        }
+    } else {
+        Warn 'The installer cannot tell whether your data must be moved aside, so it does not move it on its own.'
+        if ($PreviousVersion) { Say "The CLIO this install replaced was $PreviousVersion." }
+        if (-not ((Test-CanAsk) -and (Read-YesNo 'Move it aside anyway? [y/N]' 'n'))) {
+            Warn "Your data was left in place. If CLIO says it was written by CLIO 0.9.5.1 or older, stop CLIO and run 'clio reset-store'."
+            return
+        }
+    }
+    Move-OldDataAside
+}
+Invoke-OldDataCheck
+
 # ---------- upgrade the store: migrations run here, never at boot ------
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
 $DocFlags = @('--setup-protected-execution')
-& $VenvPython -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.gact.store_migrate_command") else 3)'
+& $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.gact.store_migrate_command') else 3)"
 if ($LASTEXITCODE -eq 0) {
     Say 'Migrating the CLIO store (clio-agent migrate)'
     & $VenvPython -m clio_agent.gact.store_migrate_command
     $MigrateStatus = $LASTEXITCODE
     if ($MigrateStatus -eq 3) {
         Warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')"
+    } elseif ($MigrateStatus -eq 5) {
+        Warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside"
     } elseif ($MigrateStatus -ne 0) {
         Warn "clio-agent migrate failed (exit $MigrateStatus, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'"
     }
@@ -542,7 +653,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Complete-OfficePrepare
-& $VenvPython -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)'
+& $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.runtime.document_install') else 3)"
 if ($LASTEXITCODE -eq 0) {
     Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
     $docArgs = @('-m', 'clio_agent.runtime.document_install') + $DocFlags
@@ -596,7 +707,7 @@ if (-not $OptSource) {
     $webUrl = "https://github.com/iowarp/clio-agent/releases/download/$tag/clio-web-$webver.zip"
     $webZip = Join-Path $Prefix 'clio-web.zip'
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri $webUrl -OutFile $webZip -ErrorAction Stop
+        Save-ClioDownload $webUrl $webZip
         $webTmp = Join-Path $Prefix '_webtmp'
         $webDir = Join-Path $Prefix 'clio-agent\web'
         RemoveTree $webTmp

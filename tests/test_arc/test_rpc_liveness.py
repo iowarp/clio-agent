@@ -209,8 +209,10 @@ def test_real_rpc_error_propagates_and_is_not_a_stall():
 
 
 class _StallingCte:
-    """A fake ``clio_cte_core_ext`` whose Tag.GetBlobSize STALLS on the first store op,
-    then (after the store reconnect swaps it out) a healthy replacement is used."""
+    """A fake ``clio_cte_core_ext`` whose blocking ``Tag(kind)`` lookup STALLS.
+
+    A read's size and body are GIL-free async RPCs; its one blocking native call is
+    resolving an uncached kind's tag id, which therefore runs on the stall watch."""
 
     def __init__(self, stall: _StallingCall) -> None:
         self._stall = stall
@@ -219,9 +221,9 @@ class _StallingCte:
         stall = self._stall
 
         class _Tag:
-            def GetBlobSize(self, name):  # noqa: N802
+            def GetTagId(self):  # noqa: N802
                 stall()  # blocks on the first invocation
-                return 0
+                return 1
 
         return _Tag()
 
@@ -446,8 +448,8 @@ def test_stall_watch_pool_is_bounded_and_reused():
 
 
 class _ZombieCte:
-    """A zombie ``clio_cte_core_ext``: ``GetBlobSize`` HANGS until released; after
-    ``heal()`` it returns 0 (a healthy daemon that answers the RPC-level probe)."""
+    """A zombie ``clio_cte_core_ext``: the blocking tag lookup HANGS until released;
+    after ``heal()`` it answers (a healthy daemon that answers the RPC-level probe)."""
 
     def __init__(self) -> None:
         self._healthy = threading.Event()
@@ -463,14 +465,11 @@ class _ZombieCte:
         outer = self
 
         class _Tag:
-            def GetBlobSize(self, name):  # noqa: N802 - native API shape
+            def GetTagId(self):  # noqa: N802 - native API shape
                 if outer._healthy.is_set():
-                    return 0  # healthy: the probe/op answers immediately
+                    return 1  # healthy: the lookup answers immediately
                 outer._release.wait(10.0)  # zombie: hang until abandoned + released
                 raise RuntimeError("released after abandonment (never observed)")
-
-            def GetTagId(self):  # noqa: N802 - native API shape
-                return 1
 
         return _Tag()
 
@@ -487,9 +486,19 @@ class _ZombieCte:
             def wait(self, _max_sec: float = -1.0) -> int:
                 return 0 if outer._healthy.is_set() else 1
 
+        class _NotFound:
+            def done(self) -> bool:
+                return True
+
+            def wait(self, _max_sec: float = -1.0) -> int:
+                return 1  # GetBlobSize's "no such blob"
+
         class _Client:
             def AsyncTagQuery(self, _regex, _max, _query):  # noqa: N802 - native API shape
                 return _Future()
+
+            def AsyncGetBlobSize(self, _tag_id, _name):  # noqa: N802 - native API shape
+                return _NotFound()
 
         return _Client()
 

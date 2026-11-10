@@ -1,6 +1,7 @@
 """Independent, durable model choices for CLIO's judges, search assistant, the
-long-term memory background pass (``memory_extract``, ``memory_consolidate``) and
-the server-default SPOTTER watcher model (``spotter``)."""
+long-term memory background pass (``memory_extract``, ``memory_consolidate``), the
+fast ``explore`` subagent (``Prefers(role="explore")``) and the server-default SPOTTER
+watcher model (``spotter``)."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf
 from clio_agent.user_config_document import (
@@ -18,13 +19,16 @@ from clio_agent.user_config_document import (
     write_document,
 )
 
-JudgeRole = Literal["goals", "variants", "permissions", "memory_extract", "memory_consolidate"]
+JudgeRole = Literal[
+    "goals", "variants", "permissions", "memory_extract", "memory_consolidate", "explore"
+]
 ROLES: tuple[JudgeRole, ...] = (
     "goals",
     "variants",
     "permissions",
     "memory_extract",
     "memory_consolidate",
+    "explore",
 )
 
 
@@ -53,6 +57,15 @@ class JudgeModel(BaseModel):
     model_id: str
 
 
+class ExploreNudge(BaseModel):
+    """The explore note (:mod:`clio_agent.gact.explore_nudge`): on or off, and after how
+    many reading calls. Stored in the reminder ``clio.reminder.explore_nudge``."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    after: int = Field(ge=0)
+
+
 class FleetUpdate(BaseModel):
     """Optimistic settings update, preserving unrelated configuration."""
 
@@ -60,18 +73,17 @@ class FleetUpdate(BaseModel):
     revision: str
     judges: dict[JudgeRole, JudgeModel | None]
     search: JudgeModel | None = None
+    explore_nudge: ExploreNudge | None = None
     #: The model a SPOTTER watcher runs on when its session names none
     #: (``metadata.spotter_model``); null inherits the watched session's model.
     spotter: JudgeModel | None = None
 
 
-def _model_setting(key: str, env: str) -> dict[str, Any] | None:
-    raw = conf.resolve(
-        key,
-        env=env,
-        default=None,
-        cast=lambda value: json.loads(value) if isinstance(value, str) else value,
-    )
+def _json(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _model_choice(raw: Any) -> dict[str, Any] | None:
     return JudgeModel.model_validate(raw).model_dump() if raw else None
 
 
@@ -82,31 +94,51 @@ def _known_account(provider_id: str) -> bool:
     return account_provider(provider_id) is not None
 
 
-def fleet_settings() -> dict[str, Any]:
-    """Read effective choices without exposing credentials."""
+def fleet_settings(app: Any = None) -> dict[str, Any]:
+    """Read effective choices without exposing credentials (``app``: whose prompt store
+    holds the explore reminder; the user's own when omitted)."""
     raw = _judge_choices()
     judges = {
         role: JudgeModel.model_validate(value).model_dump() if value is not None else None
         for role in ROLES
         for value in [raw.get(role)]
     }
-    search = _model_setting("fleet.search", "CLIO_FLEET_SEARCH")
-    spotter = _model_setting("fleet.spotter", "CLIO_FLEET_SPOTTER")
+    # Literal keys, so the configuration reference finds both knobs.
+    search = _model_choice(
+        conf.resolve("fleet.search", env="CLIO_FLEET_SEARCH", default=None, cast=_json)
+    )
+    from clio_agent.gact.explore_nudge import nudge_settings  # noqa: PLC0415
+
+    nudge = nudge_settings(app)
+    spotter = _model_choice(
+        conf.resolve("fleet.spotter", env="CLIO_FLEET_SPOTTER", default=None, cast=_json)
+    )
     # An unset SPOTTER default leaves the revision every earlier client computed.
     revision = hashlib.sha256(
         json.dumps(
-            {"judges": judges, "search": search, **({"spotter": spotter} if spotter else {})},
+            {
+                "judges": judges,
+                "search": search,
+                "explore_nudge": nudge,
+                **({"spotter": spotter} if spotter else {}),
+            },
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    return {"revision": revision, "judges": judges, "search": search, "spotter": spotter}
+    return {
+        "revision": revision,
+        "judges": judges,
+        "search": search,
+        "explore_nudge": nudge,
+        "spotter": spotter,
+    }
 
 
-def save_fleet_settings(update: FleetUpdate) -> dict[str, Any]:
+def save_fleet_settings(update: FleetUpdate, app: Any = None) -> dict[str, Any]:
     """Save only the changed roles under the shared configuration lock."""
     with USER_CONFIG_LOCK:
         conf.reload()
-        if update.revision != fleet_settings()["revision"]:
+        if update.revision != fleet_settings(app)["revision"]:
             raise ValueError("Fleet settings changed; reload before saving")
         for choice in [*update.judges.values(), update.search, update.spotter]:
             if choice and (not choice.model_id.strip() or not _known_account(choice.provider_id)):
@@ -128,8 +160,12 @@ def save_fleet_settings(update: FleetUpdate) -> dict[str, Any]:
             fleet["spotter"] = update.spotter.model_dump() if update.spotter else None
         document["fleet"] = fleet
         write_document(path, document)
+        if update.explore_nudge is not None:
+            from clio_agent.gact.explore_nudge import save_nudge_settings  # noqa: PLC0415
+
+            save_nudge_settings(update.explore_nudge.enabled, update.explore_nudge.after, app)
         conf.reload()
-        return fleet_settings()
+        return fleet_settings(app)
 
 
 def judge_route(role: JudgeRole, caller: Any, adapter: Any = None) -> tuple[Any, Any]:

@@ -85,7 +85,7 @@ def test_cmf_python_refuses_a_launcher_command_naming_another_host(
     ssh = tmp_path / "ssh"
     ssh.write_bytes(b"")
     monkeypatch.setattr(
-        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        "clio_agent.runtime.macos_clt.shutil.which",
         lambda value: str(ssh) if value == "ssh" else None,
     )
 
@@ -104,7 +104,7 @@ def test_cmf_python_refuses_a_single_token_remote_launcher(
     launcher = tmp_path / "docker"
     launcher.write_bytes(b"")
     monkeypatch.setattr(
-        "clio_agent.gact.artifacts.provenance.cmf.shutil.which",
+        "clio_agent.runtime.macos_clt.shutil.which",
         lambda value: str(launcher) if value == "docker" else None,
     )
 

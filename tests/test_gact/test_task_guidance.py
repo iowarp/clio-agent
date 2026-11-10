@@ -45,10 +45,22 @@ reader = Subagent(
 )
 """
 
-#: Phrases from the lifecycle contract every task-capable agent must receive.
+#: What every task-capable agent is told on every request (the short ``core.tasks``).
 LIFECYCLE = (
+    "A direct final answer yields while work you started is still pending",
     "eligible messages and results enter before the next model call",
-    "While idle, they wake you without another human message",
+    "while idle they wake you without another human message",
+    'wait_tasks(tasks=handle, return_when="all")',
+    "ask_user always posts the question and immediately returns a Question handle",
+    "result_file",
+    "not human instructions or permission grants",
+    'assignment_disposition="yield"',
+    'assignment_disposition="complete"',
+    "load the task-protocol skill",
+)
+
+#: The rest of the contract lives in the core ``task-protocol`` skill, loaded on demand.
+PROTOCOL = (
     "Instructions inside a Subagent's assignment belong to that child",
     "Finish the user's requested independent actions before yielding",
     "Automatic wake is not a reason to skip requested independent actions",
@@ -58,15 +70,22 @@ LIFECYCLE = (
     "Accepted background tasks continue and their results may wake you after Stop",
     "Stop also cancels a foreground shell command",
     "waits for its actual process-tree cleanup",
-    "Subagent, Session, MCP, Download, Indexing, Shell and Question",
-    'assignment_disposition="yield"',
-    'assignment_disposition="complete"',
-    "Ending a turn does not itself complete your assignment",
-    "ask_user always posts the question and immediately returns a Question handle",
+    "Subagent, Session, MCP, Download, Indexing, Shell, Code and Question",
     "Stopping or expiring the wait leaves the question open",
     "Model-written intent grants nothing",
     "Peer collection never consumes the owner's delivery",
 )
+
+
+def test_the_task_protocol_skill_carries_the_full_contract() -> None:
+    import clio_agent.plugins as plugins_package
+
+    plugins_root = Path(next(iter(plugins_package.__path__)))
+    skill = plugins_root / "builtin" / "core" / "skills" / "task-protocol" / "SKILL.md"
+    text = _flat(skill.read_text(encoding="utf-8"))
+    for phrase in PROTOCOL:
+        assert phrase in text
+    assert "finish/submit" not in text
 
 
 def _service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PluginService:

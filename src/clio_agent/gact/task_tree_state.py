@@ -70,6 +70,8 @@ class TreeState:
         self._attempts: dict[str, dict[str, NativeAttempt]] = {}
         self._deduplicated: dict[tuple[str, str], str] = {}
         self._session_tasks: dict[str, set[str]] = {}
+        # (session, invocation id) -> handles: a tool call's own tasks without a scan.
+        self._invocation_tasks: dict[tuple[str, str], set[str]] = {}
         self._kind_tasks: dict[str, set[str]] = {}
         self._human_tasks: dict[str, set[str]] = {}
         self._active_tasks: set[str] = set()

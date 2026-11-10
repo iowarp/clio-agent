@@ -29,6 +29,7 @@ from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
     Fact,
     ModelCapabilities,
+    StreamShape,
     ThinkingMechanism,
     ThinkingSpec,
 )
@@ -199,6 +200,11 @@ class EffectiveCapabilities:
     #: shown beside -- never instead of -- what this endpoint charges.
     catalog_pricing: Decision[TokenPricing] = field(
         default_factory=lambda: _unknown("no catalog list price")
+    )
+    #: How the model streams when its intermediate steps are requested
+    #: (``append``/``snapshot``; a model-record fact).
+    stream_shape: Decision[StreamShape] = field(
+        default_factory=lambda: _unknown("no source states a stream shape")
     )
 
 
@@ -569,6 +575,9 @@ def combine_capabilities(
         ),
         catalog_pricing=_single(
             model.catalog_pricing if model else None, "model", "no catalog list price"
+        ),
+        stream_shape=_single(
+            model.stream_shape if model else None, "model", "no source states a stream shape"
         ),
     )
 

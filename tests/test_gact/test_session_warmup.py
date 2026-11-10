@@ -207,7 +207,7 @@ class _LeasingAgent:
     def __init__(self) -> None:
         self.leases: list[str] = []
 
-    def lease_workspace_fleet(self, root: str) -> Any:
+    def lease_workspace_fleet(self, root: str, *, wait: bool = True) -> Any:
         from contextlib import contextmanager
 
         @contextmanager

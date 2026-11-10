@@ -37,16 +37,20 @@ name)`` at once can race on the version number (reported in the design doc).
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import hashlib
 import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.arc.batch_put import PutRecord
 from clio_agent.errors import ClioError
+from clio_agent.gact.artifacts.index_puts import INDEX_PUT_SINK, IndexPut
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry_backend import AliasKey, BoundedSet, PendingWrite
 
@@ -70,6 +74,25 @@ STORE_ERRORS: tuple[type[BaseException], ...] = (ClioError, RuntimeError, OSErro
 
 #: ``(session_id, event_id) -> True`` (event found) / ``False`` (absent) / ``None`` (unreadable).
 EventCheck = Callable[[str, str], Optional[bool]]
+
+
+@functools.cache
+def _page_items() -> int:
+    """Ids per page of an appended list (``artifacts.index_page_items``; see ``_append``).
+
+    Readers take pages of any length, so changing it never strands written lists.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    value = conf.resolve(
+        "artifacts.index_page_items",
+        env="CLIO_ARTIFACTS_INDEX_PAGE_ITEMS",
+        default=256,
+        cast=conf.as_int,
+    )
+    if value < 1:
+        raise ValueError(f"artifacts.index_page_items must be at least 1, not {value}")
+    return value
 
 
 def index_key(prefix: str, *parts: str) -> str:
@@ -119,6 +142,7 @@ class StoreBackend:
         self._cache_entries = cache_entries
         self._grace_s = grace_s
         self._inflight: dict[str, list[str]] = {}
+        self._behind: Optional[Callable[[Callable[[], None]], None]] = None
         self.seen_event_ids: Any = BoundedSet(_SEEN_EVENT_IDS)
         #: The last typed read/write degrade (for diagnostics/tests); ``None`` when clean.
         self.last_degrade: Optional[dict[str, Any]] = None
@@ -145,14 +169,53 @@ class StoreBackend:
 
     def _write(self, key: str, value: Any) -> None:
         self._remember(key, value)
+        put = IndexPut(self, key, encode(_persistable(value)))
+        sink = INDEX_PUT_SINK.get()
+        if self._behind is not None:
+            self._behind(put)  # in order on the caller's writer; the cache answers reads
+        elif sink is not None:
+            sink.append(put)  # sent with the writer turn's other confirms (index_puts)
+        else:
+            put()
+
+    def _put(self, key: str, raw: bytes) -> None:
         try:
-            self._store.put(ARTIFACT_INDEX_KIND, key, encode(_persistable(value)))
+            self._store.put(ARTIFACT_INDEX_KIND, key, raw)
         except STORE_ERRORS as exc:
             self._degrade("artifact_index_write_failed", key, exc)
             self._on_write_failure()
 
+    def _put_many(self, items: list[tuple[str, bytes]]) -> None:
+        try:
+            self._store.put_many(ARTIFACT_INDEX_KIND, [PutRecord(k, raw) for k, raw in items])
+        except STORE_ERRORS as exc:
+            self._degrade("artifact_index_write_failed", ",".join(k for k, _ in items), exc)
+            self._on_write_failure()
+
+    @contextmanager
+    def writes_behind(
+        self, defer: Optional[Callable[[Callable[[], None]], None]]
+    ) -> Iterator[None]:
+        """Within this block, hand each put to ``defer`` (an ordered writer) instead.
+
+        The caller holds the registry lock, so the block's writes are queued in the
+        order the cache took them; ``None`` writes through as usual.
+        """
+        self._behind = defer
+        try:
+            yield
+        finally:
+            self._behind = None
+
     def _delete(self, key: str) -> None:
         self._cache.pop(key, None)
+        remove = functools.partial(self._remove, key)
+        if self._behind is not None:
+            self._behind(remove)
+        else:
+            remove()
+
+    def _remove(self, key: str) -> None:
         try:
             self._store.delete(ARTIFACT_INDEX_KIND, key)
         except STORE_ERRORS as exc:
@@ -170,10 +233,40 @@ class StoreBackend:
             self._cache.move_to_end(key)
         return cached
 
+    # An appended list is written in pages of _page_items() ids: ``key`` is page 0, page i
+    # is ``key~i`` and ``key~n`` holds ``{"pages": n}`` (absent: one page). Rewriting the
+    # whole list per append made a session's transform list O(n^2): on P7 every call
+    # re-encoded and put 2,000 ids (2026-11-02).
+    def _page_count(self, key: str) -> int:
+        cached = self._cache.get(key + "~n")
+        if cached is None:
+            loaded = self._read(key + "~n")
+            pages = loaded.get("pages") if isinstance(loaded, dict) else None
+            cached = {"pages": pages if isinstance(pages, int) and pages > 0 else 1}
+            self._remember(key + "~n", cached)
+        return int(cached["pages"])
+
     def _append(self, key: str, item: str) -> None:
-        items = self._list(key)
-        if item not in items:
-            self._write(key, [*items, item])
+        pages = self._page_count(key)
+        page = key if pages == 1 else f"{key}~{pages - 1}"
+        items = self._list(page)
+        if item in items:
+            return
+        if len(items) >= _page_items():
+            pages, items = pages + 1, []
+            page = f"{key}~{pages - 1}"
+            self._write(key + "~n", {"pages": pages})  # first: a lost page reads as empty
+        self._write(page, [*items, item])
+
+    def _members(self, key: str) -> list[str]:
+        """An appended list's items across its pages, first appearance kept."""
+        pages = self._page_count(key)
+        items = [
+            item
+            for index in range(pages)
+            for item in self._list(key if index == 0 else f"{key}~{index}")
+        ]
+        return list(dict.fromkeys(items))
 
     def _body(self, key: str, decode: Callable[[dict[str, Any]], dict[str, Any]]) -> Any:
         """A cached-or-loaded record body (rechecking any stale pending entries)."""
@@ -213,7 +306,21 @@ class StoreBackend:
                 self._write(key, body)
 
     def _recheck(self, key: str, body: dict[str, Any]) -> Any:
-        """Resolve pending entries older than the grace against the event log."""
+        """Resolve pending entries older than the grace against the event log.
+
+        A read inside a route runs on the server loop, which may not wait on a store
+        write (``arc.loop_guard``): there the rewrite goes to a worker instead (the
+        cache answers meanwhile), so the repair is not lost to ``LoopThreadStoreWrite``.
+        """
+        outer = self._behind
+        if outer is None:
+            self._behind = _loop_writer()
+        try:
+            return self._resolve_pending(key, body)
+        finally:
+            self._behind = outer
+
+    def _resolve_pending(self, key: str, body: dict[str, Any]) -> Any:
         pending = body.get("pending") or {}
         changed = False
         for event_id, info in list(pending.items()):
@@ -309,13 +416,13 @@ class StoreBackend:
     def workspace_records(self, workspace_id: str) -> list[ArtifactRecord]:
         """Every record in ``workspace_id``, in creation order."""
         records = (
-            self.record(workspace_id, name) for name in self._list(index_key("w", workspace_id))
+            self.record(workspace_id, name) for name in self._members(index_key("w", workspace_id))
         )
         return [record for record in records if record is not None]
 
     def all_records(self) -> list[ArtifactRecord]:
         """Every record of every workspace (introspection; walks the small workspace list)."""
-        return [r for ws in self._list(WORKSPACES_KEY) for r in self.workspace_records(ws)]
+        return [r for ws in self._members(WORKSPACES_KEY) for r in self.workspace_records(ws)]
 
     def locate(self, artifact_id: str) -> Optional[tuple[ArtifactRecord, ArtifactVersion]]:
         """The ``(record, version)`` carrying ``artifact_id``, or ``None``."""
@@ -334,7 +441,7 @@ class StoreBackend:
         """Versions whose ``producer.session_id`` is one of ``session_ids``."""
         found: list[tuple[ArtifactRecord, ArtifactVersion]] = []
         for sid in session_ids:
-            for artifact_id in self._list(index_key("p", sid)):
+            for artifact_id in self._members(index_key("p", sid)):
                 hit = self.locate(artifact_id)
                 if hit is not None and str(hit[1].producer.get("session_id") or "") == sid:
                     found.append(hit)
@@ -350,9 +457,17 @@ class StoreBackend:
 
     # ---- transforms --------------------------------------------------------
 
-    def transform(self, call_id: str) -> Optional[Any]:
-        """The TransformRecord for ``call_id``, or ``None``."""
-        body = self._body(index_key("t", call_id), _decode_transform)
+    def transform(self, call_id: str, *, cached_only: bool = False) -> Optional[Any]:
+        """The TransformRecord for ``call_id``, or ``None``.
+
+        ``cached_only`` answers from this process's cache: for a call id minted here,
+        clio-core cannot hold a record this process did not write.
+        """
+        key = index_key("t", call_id)
+        if cached_only:
+            body = self._cache.get(key)
+            return None if body is None else body["transform"]
+        body = self._body(key, _decode_transform)
         return None if body is None else body["transform"]
 
     def add_transform(self, record: Any, *, pending: Optional[PendingWrite] = None) -> None:
@@ -375,16 +490,16 @@ class StoreBackend:
 
     def session_transforms(self, session_id: str) -> list[Any]:
         """TransformRecords produced in ``session_id``, in record order."""
-        found = self._transforms(self._list(index_key("s", session_id)))
+        found = self._transforms(self._members(index_key("s", session_id)))
         return [t for t in found if t.session_id == session_id]
 
     def generating(self, artifact_id: str) -> list[Any]:
         """TransformRecords with a generated edge on ``artifact_id``, in record order."""
-        return self._transforms(self._list(index_key("g", artifact_id)))
+        return self._transforms(self._members(index_key("g", artifact_id)))
 
     def using(self, artifact_id: str) -> list[Any]:
         """TransformRecords with a used edge on ``artifact_id``, in record order."""
-        return self._transforms(self._list(index_key("u", artifact_id)))
+        return self._transforms(self._members(index_key("u", artifact_id)))
 
     def all_transforms(self) -> list[Any]:
         """Not served: no record lists every transform (query by session or artifact)."""
@@ -513,6 +628,20 @@ def _arc(app: "FastAPI") -> Any:
     from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
 
     return getattr(app.state, "arc", None) or _PROCESS_ARC
+
+
+def _loop_writer() -> Optional[Callable[[Callable[[], None]], None]]:
+    """Hand a write to a worker when this thread runs the server loop, else ``None``."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
+
+    def off_loop(put: Callable[[], None]) -> None:
+        schedule_off_loop(put, label="artifact_index_recheck")
+
+    return off_loop
 
 
 def index_store(app: "FastAPI") -> Optional["ARCStore"]:

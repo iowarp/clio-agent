@@ -41,11 +41,14 @@ from clio_agent.gact.runtime.grant_resolver import (
     _VALID_KINDS as VALID_KINDS,  # kind enumeration owner (B4 #1057 — validate at the boundary)
 )
 from clio_agent.gact.runtime.grant_resolver import (
+    KIND_BROWSER_CERTIFICATE,
+    KIND_BROWSER_HOST,
     KIND_DOMAIN,
     migrate_priorities,
     next_append_priority,
     resolve,
 )
+from clio_agent.gact.runtime.permission_actions import POLICY_ACTIONS
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -53,12 +56,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PERMISSION_POLICY_SCOPES = {"session", "workspace"}
-_PERMISSION_POLICY_ACTIONS = {"allow", "allow_session", "allow_workspace", "deny", "ask"}
+_PERMISSION_POLICY_ACTIONS = set(POLICY_ACTIONS)
 
 #: The request kind on a pending-row for a deny-mode egress prompt (B5 #979.5). It rides the
 #: SAME interactive permission gate as a destructive tool call — a new request KIND, not a new
 #: gate (⚑ #974.8) — so ``allow_workspace`` derives a sticky ``host_pattern`` policy below.
 NETWORK_EGRESS_REQUEST_KIND = "network_egress"
+#: The request kind of the browser's per-host question (browser plan BR8). Its sticky answer
+#: is a ``browser_host`` row, not a ``domain`` row: browsing a site with the person's sign-ins
+#: is a different grant from a sandboxed process reaching a host.
+BROWSER_HOST_REQUEST_KIND = KIND_BROWSER_HOST
+#: Host rows whose explicit kind validation keeps (never stamped ``domain``).
+_BROWSER_HOST_KINDS = frozenset({KIND_BROWSER_HOST, KIND_BROWSER_CERTIFICATE})
 
 
 def _permission_host_from_args(args: Mapping[str, Any]) -> str:
@@ -76,7 +85,7 @@ def _permission_host_from_args(args: Mapping[str, Any]) -> str:
 def _permission_path_from_args(args: Mapping[str, Any]) -> str:
     """Return the first file path a tool call targets, for policy path matching."""
 
-    for key in ("filepath", "path", "output_path", "target_path"):
+    for key in ("path", "output_path", "target_path"):
         value = args.get(key)
         if isinstance(value, str) and value:
             return value
@@ -153,7 +162,13 @@ def _validate_permission_policies(
                 }
             )
 
-        for field in ("scope_id", "tool_name_pattern", "path_pattern", "host_pattern"):
+        for field in (
+            "scope_id",
+            "tool_name_pattern",
+            "path_pattern",
+            "host_pattern",
+            "fingerprint",
+        ):
             value = policy.get(field)
             if value is not None and not isinstance(value, str):
                 policy_has_errors = True
@@ -218,8 +233,12 @@ def _validate_permission_policies(
         # bleed into a ``kind="tool"`` resolve). This self-heals the persisted shape on the next
         # flush; ``grant_resolver._kind_admitted`` is the belt-and-suspenders match-time guard for
         # any un-normalized in-memory row.
+        # An explicit browser host kind keeps its kind: rewriting it to ``domain`` turned a
+        # saved browser grant into a process-egress row on the next load, where the browser's
+        # resolve no longer found it (browser addendum B).
         if str(policy.get("host_pattern") or ""):
-            policy["kind"] = KIND_DOMAIN
+            if str(policy.get("kind") or "").strip() not in _BROWSER_HOST_KINDS:
+                policy["kind"] = KIND_DOMAIN
             policy.pop("tool_name_pattern", None)
         clean.append(policy)
     return clean, errors
@@ -308,6 +327,15 @@ def _append_permission_policy_from_resolution(
         # ``"*"`` glob was the fleet-egress kind-bleed vector).
         policy["host_pattern"] = host
         policy["kind"] = KIND_DOMAIN
+        policy.pop("tool_name_pattern", None)
+        return _appended(app, policy)
+    if str(row.get("kind") or "") == BROWSER_HOST_REQUEST_KIND:
+        host = _permission_host_from_args(args)
+        if not host:
+            logger.warning("browser host policy skipped reason=browser_grant_missing_host")
+            return None
+        policy["host_pattern"] = host
+        policy["kind"] = KIND_BROWSER_HOST
         policy.pop("tool_name_pattern", None)
         return _appended(app, policy)
     path = _permission_path_from_args(args)

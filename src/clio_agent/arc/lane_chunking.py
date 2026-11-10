@@ -45,6 +45,13 @@ discards that key, which gives the invalidation a zero-extra-RPC signal for free
 stale cursor (its chunk erased out from under it) is detected without touching the
 store again, so the next append safely recovers instead of silently writing past a hole
 (the reviewer risk this module is built to close first).
+
+Sealed chunks: an append is one put at the chunk's stored end offset
+(:mod:`~clio_agent.arc.chunk_records`). An append whose put failed or timed out may
+still land later, so its chunk is sealed (:func:`seal_chunk`): the next append of the
+lane rolls to a fresh chunk instead of writing at an offset the late put would
+overwrite. A sealed chunk that holds no committed segment is not rolled past (that
+would open a hole in the dense prefix); its next write is a whole rewrite.
 """
 
 from __future__ import annotations
@@ -55,6 +62,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from weakref import WeakKeyDictionary
 
+from clio_agent.arc.chunk_records import dedupe
 from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
@@ -94,6 +102,11 @@ _CURSORS_LOCK = threading.Lock()
 _CURSORS: "WeakKeyDictionary[SegmentStore, dict[tuple[str, str], _LaneCursor]]" = (
     WeakKeyDictionary()
 )
+# Chunks no append may extend again in this process (see the module docstring). A leaf
+# lock: taken under a scope lock (sealing) or under ``_CURSORS_LOCK`` (the roll check),
+# never while acquiring either, so it adds no lock-order edge.
+_SEALED_LOCK = threading.Lock()
+_SEALED: "WeakKeyDictionary[object, set[tuple[str, str]]]" = WeakKeyDictionary()
 
 
 # --------------------------------------------------------------------------- #
@@ -234,6 +247,9 @@ def lane_segments(
         base: The lane's base scope.
         include_tombstoned: Include tombstoned segments (replay / provenance reads).
 
+    An exact duplicate record (a late append that landed after its chunk was abandoned
+    and the segment was written again) is dropped (:func:`~clio_agent.arc.chunk_records.dedupe`).
+
     Returns:
         The concatenated segment list, sorted by ``logical_time`` (append order).
     """
@@ -244,7 +260,7 @@ def lane_segments(
         else:
             out.extend(s for s in segs if s.status == "live")
     out.sort(key=lambda s: s.logical_time)
-    return out
+    return dedupe(out)
 
 
 def lane_has_segments(store: "SegmentStore", session_id: str, base: str) -> bool:
@@ -325,18 +341,51 @@ def chunk_for_append(store: "SegmentStore", session_id: str, base: str, *, capac
     Returns:
         The scope to append this ONE segment into.
     """
+    return chunks_for_append(store, session_id, base, 1, capacity=capacity)[0]
+
+
+def chunks_for_append(
+    store: "SegmentStore", session_id: str, base: str, count: int, *, capacity: int
+) -> list[str]:
+    """Reserve ``count`` consecutive slots (:func:`chunk_for_append`), one chunk scope each.
+
+    One cursor step for the batch: reserving them one by one would re-recover the
+    cursor for a chunk not yet stored (absent from ``_loaded`` until its put) and
+    count it short.
+    """
     key = _cursor_key(session_id, base)
+    placed: list[str] = []
     with _CURSORS_LOCK:
         store_cursors = _CURSORS.setdefault(store, {})
         cur = store_cursors.get(key)
         if cur is None or (session_id, chunk_scope(base, cur.index)) not in store._loaded:
-            index, count = recover_writer(store, session_id, base)
-            cur = _LaneCursor(index=index, count=count)
-        if cur.count >= capacity:
-            cur = _LaneCursor(index=cur.index + 1, count=0)
-        cur.count += 1
+            index, stored = recover_writer(store, session_id, base)
+            cur = _LaneCursor(index=index, count=stored)
+        for _slot in range(count):
+            if cur.count >= capacity or (cur.count and _sealed(store, session_id, base, cur.index)):
+                cur = _LaneCursor(index=cur.index + 1, count=0)
+            cur.count += 1
+            placed.append(chunk_scope(base, cur.index))
         store_cursors[key] = cur
-        return chunk_scope(base, cur.index)
+    return placed
+
+
+def _sealed(store: "SegmentStore", session_id: str, base: str, index: int) -> bool:
+    with _SEALED_LOCK:
+        return (session_id, chunk_scope(base, index)) in _SEALED.get(store, ())
+
+
+def seal_chunk(store: object, session_id: str, scope: str) -> None:
+    """Never append to ``scope`` again in this process: its last append failed and may
+    still land, so the lane's next append rolls to a fresh chunk (module docstring).
+
+    Args:
+        store: The session's segment store.
+        session_id: Owning session.
+        scope: The chunk (any scope; only a chunk-family member is ever rolled past).
+    """
+    with _SEALED_LOCK:
+        _SEALED.setdefault(store, set()).add((session_id, scope))
 
 
 def forget_cursor(store: "SegmentStore", session_id: str, base: str) -> None:
@@ -414,6 +463,10 @@ def drop_lane(store: "SegmentStore", session_id: str, base: str) -> int:
             dropped += store.drop_scope(session_id, scope)
     dropped += sum(store.drop_scope(session_id, scope) for scope, _segs in reversed(walk))
     forget_cursor(store, session_id, base)
+    with _SEALED_LOCK:  # the erased chunks are gone; a new family starts unsealed
+        sealed = _SEALED.get(store)
+        if sealed:
+            sealed -= {k for k in sealed if k[0] == session_id and is_chunk_of(base, k[1])}
     return dropped
 
 
@@ -421,6 +474,7 @@ __all__ = [
     "ATOM_LANE_CHUNK_GAP",
     "LANE_CHUNK_CURSOR_RESET",
     "chunk_for_append",
+    "chunks_for_append",
     "chunk_index",
     "chunk_scope",
     "drop_lane",
@@ -430,4 +484,5 @@ __all__ = [
     "lane_scopes",
     "lane_segments",
     "recover_writer",
+    "seal_chunk",
 ]

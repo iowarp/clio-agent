@@ -22,13 +22,21 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.documents.confined_tools import run_confined
+from clio_agent.gact.documents.latex.paper_artifact import DESIGNATION as PAPER_DESIGNATION
+from clio_agent.gact.documents.latex.paper_artifact import mint_paper, paper_name
+from clio_agent.gact.documents.latex.rendition import (
+    LatexRenditionError,
+    build_rendition,
+    is_latex,
+    sources_current,
+)
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.document_stack.process import (
     DocumentError,
     find_native,
     inherit_parent_access,
     office_convert,
-    run,
     scratch_root,
 )
 from clio_agent.runtime.sandbox import SandboxCompositionError
@@ -103,29 +111,12 @@ def _find_executable(*names: str) -> str | None:
 
 def _run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> None:
     try:
-        root = _RENDER_WORKSPACE.get()
-        env = None
-        confined = None
-        if root is not None:
-            from clio_agent.runtime import sandbox
-
-            confined = sandbox.wrap_confined(
-                command[0],
-                command[1:],
-                write_roots=sandbox.effective_write_roots(
-                    sandbox.PROFILE_SHELL, workspace_root=str(root)
-                ),
-                net_policy=sandbox.NET_DENY,
-                profile=sandbox.PROFILE_SHELL,
-                pdeathsig=False,
-            )
-            command = [confined.command, *confined.args]
-            env = {**os.environ, **confined.env_overlay}
-        try:
-            run(command, cwd=cwd, timeout=timeout_seconds, env=env)
-        finally:
-            if confined is not None:
-                confined.release()
+        run_confined(
+            command,
+            cwd=cwd,
+            workspace_root=_RENDER_WORKSPACE.get(),
+            timeout_seconds=timeout_seconds,
+        )
     except (DocumentError, SandboxCompositionError) as exc:
         raise RenditionError(str(exc)) from exc
 
@@ -134,25 +125,10 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
     suffix = source.suffix.lower()
     if suffix == ".pdf":
         return source, "identity"
-    if suffix == ".tex":
-        tectonic = _find_executable("tectonic")
-        if tectonic is not None:
-            _run(
-                [
-                    tectonic,
-                    "--only-cached",
-                    "--keep-logs",
-                    "--outdir",
-                    str(output_dir),
-                    str(source),
-                ],
-                cwd=source.parent,
-            )
-            output = output_dir / f"{source.stem}.pdf"
-            if not output.is_file():
-                raise RenditionError("tectonic completed without producing a PDF")
-            return output, "tectonic"
-    if suffix in {".md", ".markdown", ".html", ".htm", ".tex"}:
+    if suffix in {".tex", ".ltx"}:
+        # LaTeX renders through the one project build (latex.rendition), never here.
+        raise RenditionError("LaTeX sources render through the project build")
+    if suffix in {".md", ".markdown", ".html", ".htm"}:
         pandoc = _find_executable("pandoc")
         if pandoc is not None:
             output = output_dir / f"{source.stem}.pdf"
@@ -194,18 +170,25 @@ def find_pdf_rendition(
 ) -> RenditionResult | None:
     """Find a retained PDF bound to this exact source version and checksum."""
     registry = get_registry(app)
-    candidate = registry.get(record.workspace_id, f"{record.name}.v{version.version}.pdf")
+    workspace_root = _workspace_root(app, record.workspace_id)
+    designation = "document-rendition"
+    name = f"{record.name}.v{version.version}.pdf"
+    if is_latex(record.name) and version.path:
+        # A LaTeX source's PDF is its paper: one record for the project, a version per build.
+        designation = PAPER_DESIGNATION
+        name = paper_name(workspace_root, Path(version.path))
+    candidate = registry.get(record.workspace_id, name)
     if candidate is None:
         return None
-    workspace_root = _workspace_root(app, record.workspace_id)
     from clio_agent.gact.artifacts.cas import CASStore
 
     for derived in reversed(candidate.versions):
         producer = derived.producer
         if (
-            producer.get("designation") != "document-rendition"
+            producer.get("designation") != designation
             or producer.get("source_artifact_id") != version.artifact_id
             or producer.get("source_sha256") != version.sha256
+            or not sources_current(version, producer)
         ):
             continue
         retained = CASStore(workspace_root).blob_path(derived.sha256) if derived.sha256 else None
@@ -300,7 +283,33 @@ def _render_pdf(
         return RenditionResult(
             existing.record, existing.version, existing.converter, workspace_path=target
         )
-    prepared = _prepared_pdf(workspace_root, version)
+    prepared = None if is_latex(record.name) else _prepared_pdf(workspace_root, version)
+    if is_latex(record.name):
+        token = _RENDER_WORKSPACE.set(workspace_root)
+        try:
+            converter, latex_producer = build_rendition(
+                version, workspace_root=workspace_root, target=target
+            )
+        except LatexRenditionError as exc:
+            raise RenditionError(str(exc)) from exc
+        finally:
+            _RENDER_WORKSPACE.reset(token)
+        try:
+            paper, minted = mint_paper(
+                app,
+                session_id,
+                entry_record=record,
+                entry_version=version,
+                workspace_root=workspace_root,
+                target=target,
+                converter=converter,
+                build=latex_producer,
+            )
+        except RuntimeError as exc:
+            raise RenditionError(str(exc)) from exc
+        return RenditionResult(
+            record=paper, version=minted.version, converter=converter, workspace_path=target
+        )
     if prepared is not None:
         rendered, prepared_hash = prepared
         _copy_preview(rendered, target, prepared_hash)

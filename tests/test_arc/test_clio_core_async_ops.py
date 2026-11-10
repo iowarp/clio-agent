@@ -10,19 +10,30 @@ import pytest
 
 from clio_agent.arc import clio_core_async_ops as ops
 
+#: ``ready_after`` this large: the task never completes (a stuck or gone daemon).
+_NEVER = 10**9
+
 
 class _Future:
+    """The native contract (iowarp-core 2.4): ``wait(max_sec)`` blocks, GIL released,
+    until the task completes or ``max_sec`` elapses, then returns its code or ``None``."""
+
     def __init__(self, code: int = 0, ready_after: int = 0) -> None:
         self.code = code
         self.polls = 0
+        self.waits = 0
         self.ready_after = ready_after
 
     def done(self) -> bool:
         self.polls += 1
         return self.polls > self.ready_after
 
-    def wait(self, max_sec: float = -1.0) -> int:
-        assert self.polls > self.ready_after, "wait() on an unfinished Future can block forever"
+    def wait(self, max_sec: float = -1.0) -> int | None:
+        self.waits += 1
+        if self.ready_after >= _NEVER:
+            time.sleep(max(0.0, max_sec))
+            return None
+        self.polls = max(self.polls, self.ready_after)  # it completes during the wait
         return self.code
 
 
@@ -60,9 +71,10 @@ class _SlowFuture:
     def done(self) -> bool:
         return time.monotonic() >= self.ready_at
 
-    def wait(self, max_sec: float = -1.0) -> int:
-        assert self.done(), "wait() on an unfinished Future can block forever"
-        return self.code
+    def wait(self, max_sec: float = -1.0) -> int | None:
+        until = self.ready_at if max_sec < 0 else min(self.ready_at, time.monotonic() + max_sec)
+        time.sleep(max(0.0, until - time.monotonic()))
+        return self.code if self.done() else None
 
 
 def _daemon(monkeypatch: pytest.MonkeyPatch, read: Any) -> None:
@@ -82,10 +94,15 @@ def _working() -> Any:
     return read
 
 
-def test_await_future_polls_until_done() -> None:
+def test_await_future_blocks_in_the_native_wait_until_done() -> None:
+    """A pending put is waited for in ``Future.wait`` (GIL released), not by waking to
+    poll ``done()``: each wake retook the interpreter lock from the agent's own threads.
+
+    SABOTAGE: drop the ``wait`` call in ``_polled.done_within`` and the future is polled
+    (``waits`` stays 0)."""
     future = _Future(ready_after=3)
     assert ops.await_future(future, op_name="put") is future
-    assert future.polls == 4
+    assert future.waits == 1
 
 
 @pytest.mark.parametrize("operation", ["put", "delete", "tag_query"])
@@ -110,6 +127,36 @@ def test_fast_native_reply_needs_no_daemon_discovery_or_configuration_reads(
     future = SimpleNamespace(done=lambda: clock[0] >= 0.0005)
     assert ops.await_future(future, op_name=operation) is future
     assert 0 < clock[0] <= 0.001
+
+
+def test_a_reply_within_the_sample_window_takes_no_progress_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A put a busy daemon answers in 30 ms is polled, not measured.
+
+    The baseline sample (pidfile and ``/proc`` reads) was taken after a 1 ms miss, so it
+    ran on most puts while the daemon was busy (P7, 2026-11-02). SABOTAGE: poll for
+    1 ms before sampling again and ``daemon_work`` is called.
+    """
+    from clio_agent.arc import daemon_progress
+
+    clock = [0.0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    def unexpected() -> Any:
+        pytest.fail("A reply inside the sample window measured the daemon's progress")
+
+    monkeypatch.setattr(ops, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(daemon_progress, "daemon_work", unexpected)
+    ops._sample_after_s.cache_clear()
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_SAMPLE_AFTER_S", "0.1")
+    try:
+        future = SimpleNamespace(done=lambda: clock[0] >= 0.03)
+        assert ops.await_future(future, op_name="put") is future
+    finally:
+        ops._sample_after_s.cache_clear()
 
 
 def test_clear_submits_independent_deletes_before_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -210,7 +257,7 @@ def test_a_future_whose_daemon_made_no_progress_ends_typed(
     monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.1")
     _daemon(monkeypatch, lambda: 5.0)
     with pytest.raises(ops.ClioCoreFutureTimeout) as info:
-        ops.await_future(_Future(ready_after=10**9), op_name="put")
+        ops.await_future(_Future(ready_after=_NEVER), op_name="put")
     assert info.value.reason == "no_progress"
     assert info.value.op_name == "put"
     assert isinstance(info.value, TimeoutError)
@@ -236,7 +283,7 @@ def test_a_timed_out_put_is_neither_reissued_nor_recorded_lost(
     class _HungClient(_Client):
         def AsyncPutBlob(self, tag_id: Any, name: str, data: bytes, off: int = 0) -> _Future:  # noqa: N802
             self.puts.append((tag_id, name, data))
-            return _Future(ready_after=10**9)
+            return _Future(ready_after=_NEVER)
 
     store = SimpleNamespace(_client=_HungClient(), _tag_ids=ops.TagIds(_Cte()))
     with pytest.raises(ops.ClioCoreFutureTimeout):

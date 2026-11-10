@@ -71,6 +71,22 @@ def _path_candidate(value: str) -> str | None:
     return None
 
 
+#: The suffix that asks for a live binding: ``data/status.csv@latest``.
+_LATEST_SUFFIX = "@latest"
+
+
+def _live_path(path: str, key: str) -> tuple[str, bool]:
+    """``(path, live)``: a ``dataUri`` path ending in ``@latest`` names its file, live.
+
+    Any other property keeps the path as written: only a data source follows a file's
+    versions.
+    """
+
+    if key.lower() != "datauri" or not path.endswith(_LATEST_SUFFIX):
+        return path, False
+    return path[: -len(_LATEST_SUFFIX)], True
+
+
 class _Exporter:
     """Resolve and mint path literals for ONE producer call (memoized per path)."""
 
@@ -117,7 +133,7 @@ class _Exporter:
         )
 
     def mint(
-        self, resolved: Path, *, raw: str, component_id: str, prop: str
+        self, resolved: Path, *, raw: str, component_id: str, prop: str, live: bool = False
     ) -> str | dict[str, Any]:
         """Mint (or dedup onto) the artifact for ``resolved``; return its reference."""
 
@@ -168,10 +184,16 @@ class _Exporter:
                 "version": version.version,
             }
             self._minted[resolved] = cached
-        self.exported.append(
-            {"component_id": component_id, "property": prop, "path": raw, **cached}
-        )
-        return str(cached["uri"])
+        entry = {"component_id": component_id, "property": prop, "path": raw, **cached}
+        if live:
+            from urllib.parse import quote  # noqa: PLC0415
+
+            # The view follows the file: a named reference at its latest version, so a
+            # later version of the same file reaches it without the view being rebuilt.
+            entry["uri"] = f"artifact://{self.workspace_id}/{quote(str(cached['name']))}@latest"
+        entry["binding"] = "live" if live else "pinned"
+        self.exported.append(entry)
+        return str(entry["uri"])
 
     def walk(self, value: Any, component_id: str) -> dict[str, Any] | None:
         """Rewrite path literals in ``value`` in place; return a refusal to stop."""
@@ -204,10 +226,13 @@ class _Exporter:
                 path = _path_candidate(item)
                 if path is None:
                     continue
+                path, live = _live_path(path, key)
                 resolved = self.resolve(item, path)
                 if isinstance(resolved, dict):
                     return resolved
-                reference = self.mint(resolved, raw=item, component_id=component_id, prop=key)
+                reference = self.mint(
+                    resolved, raw=item, component_id=component_id, prop=key, live=live
+                )
                 if isinstance(reference, dict):
                     return reference
                 value[key] = reference
@@ -232,7 +257,9 @@ def export_workspace_paths(
         ``(components, report)`` -- a rewritten deep copy plus the result fields
         to merge into the tool result: ``exported_artifacts`` (one entry per
         exported property ``{component_id, property, path, artifact_id, uri,
-        name, version}``) and ``external_urls`` / ``external_url_notice`` (one
+        name, version, binding}``; ``binding`` is ``live`` for a ``dataUri`` path
+        written with ``@latest``, whose ``uri`` is then the named reference
+        ``artifact://<workspace>/<name>@latest``, and ``pinned`` otherwise) and ``external_urls`` / ``external_url_notice`` (one
         entry per admitted external URL ``{component_id, property, url,
         host}``), each present only when non-empty -- or a typed refusal dict.
     """

@@ -188,7 +188,11 @@ def register_memory_document_routes(app: FastAPI) -> None:
         )
 
         def load(service: MemoryService) -> tuple[list[dict[str, Any]], str | None]:
-            legacy = legacy_run_rows(app.state.sessions.list(), service.store)
+            from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+            # Only the sessions the index marks with a memory pass are read.
+            ran = app.state.sessions.select(PageQuery(archived=None, memory_runs=True))
+            legacy = legacy_run_rows(ran, service.store)
             return load_run_rows(service.store, limit=limit, cursor=cursor, extra_rows=legacy)
 
         try:

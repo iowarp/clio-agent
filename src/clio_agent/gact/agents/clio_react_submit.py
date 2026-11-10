@@ -55,6 +55,9 @@ def submit_tool(signature: Any) -> ClioNativeTool:
             validated[name] = pydantic.TypeAdapter(field.annotation).validate_python(value)
         return SubmittedOutputs(validated, disposition)
 
+    from clio_agent.tools.tool_settings import CALLERS_ATTR, CALLERS_DIRECT
+
+    setattr(submit, CALLERS_ATTR, CALLERS_DIRECT)  # finishing is a step of the agent
     return ClioNativeTool(
         submit,
         name="submit",

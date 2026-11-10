@@ -317,7 +317,11 @@ def test_content_bodies_do_not_enter_the_semantic_event_fold(arc: ARCMemory) -> 
     """Large output and private answers remain referenced content rather than event rows."""
     history = TaskHistory(arc)
     item = history.record_mail(mail(history, "private-body"))
-    events = list(arc._live.iter_event_contents())
+    # A task event's one record is its lane; the ``_events`` log does not repeat it.
+    from clio_agent.gact.task_event_lane import session_task_events
+
+    assert list(arc._live.iter_event_contents()) == []
+    events = [content for _sid, content in session_task_events(arc, "owner")]
     assert len(events) == 1
     assert events[0]["event_type"] == "session.mail.accepted"
     assert history.read_content(item.content) == {"text": "private-body"}

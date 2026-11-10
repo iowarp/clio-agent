@@ -90,7 +90,7 @@ def verify_transcript(
             read = work[0]
             observed = result(read)
             if (
-                Path(read["args"]["filepath"]).resolve() != (workspace / previous).resolve()
+                Path(read["args"]["path"]).resolve() != (workspace / previous).resolve()
                 or Path(observed.get("path", "")).resolve() != (workspace / previous).resolve()
                 or observed.get("truncated") is not False
                 or hashlib.sha256(observed.get("content", "").encode()).hexdigest()

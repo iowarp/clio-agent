@@ -45,6 +45,7 @@ from clio_agent.gact.permission_gate import resolve_permission
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.grant_resolver import migrate_priorities
 from clio_agent.gact.runtime.grants import GRANTOR_USER
+from clio_agent.gact.runtime.permission_actions import offered
 from clio_agent.gact.runtime.permission_policies import (
     _PERMISSION_POLICY_ACTIONS,
     _PERMISSION_POLICY_SCOPES,
@@ -152,14 +153,15 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
         action = body.get("action") or ""
         if row.get("kind") == "folder_access" and action not in row.get("actions", []):
             raise HTTPException(status_code=422, detail="Choose Deny or Allow for workspace")
-        if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
+        if not offered(row, action):
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="internal_error",
                         message=(
-                            "action must be one of allow, deny, allow_session, allow_workspace"
+                            "action must be one this question offers: allow, deny, "
+                            "allow_session, allow_workspace, or one listed in its actions"
                         ),
                         recoverable=True,
                     )

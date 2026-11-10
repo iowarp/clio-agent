@@ -42,6 +42,8 @@ from h5grove.content import (
 from h5grove.encoders import encode
 from h5grove.utils import NotFoundError, QueryArgumentError, hdf_path_join, parse_slice
 
+from clio_agent import conf
+
 MAX_LINK_HOPS = 32
 
 
@@ -278,16 +280,31 @@ def _paths(walk: _Walk, path: str) -> list[str]:
     return names
 
 
-#: Attributes a reference summary carries, and how long one text value may be.
-SUMMARY_ATTRIBUTES = 20
-SUMMARY_TEXT_CHARS = 200
+def summary_attributes() -> int:
+    """Attributes a reference summary carries (``hdf5.summary_attributes``, at least 0)."""
+    value = conf.resolve(
+        "hdf5.summary_attributes", env="CLIO_HDF5_SUMMARY_ATTRIBUTES", default=20, cast=conf.as_int
+    )
+    if value < 0:
+        raise ValueError(f"hdf5.summary_attributes must be at least 0, not {value}")
+    return value
+
+
+def summary_text_chars() -> int:
+    """How long one text attribute in a reference summary may be (at least 2)."""
+    value = conf.resolve(
+        "hdf5.summary_text_chars", env="CLIO_HDF5_SUMMARY_TEXT_CHARS", default=200, cast=conf.as_int
+    )
+    if value < 2:
+        raise ValueError(f"hdf5.summary_text_chars must be at least 2, not {value}")
+    return value
 
 
 def object_summary(target: Path, roots: Roots, locator: str) -> dict[str, Any]:
     """What one object in ``target`` is, for an ``@file.h5::/path`` reference.
 
     Kind, shape and dtype (or child count for a group) plus up to
-    :data:`SUMMARY_ATTRIBUTES` short attributes such as ``NX_class`` and ``units``.
+    :func:`summary_attributes` short attributes such as ``NX_class`` and ``units``.
     No data is read; the agent reads values with the hdf5 tools.
     """
 
@@ -311,7 +328,8 @@ def object_summary(target: Path, roots: Roots, locator: str) -> dict[str, Any]:
 
 def _short_attributes(attrs: h5py.AttributeManager) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for name in list(attrs.keys())[:SUMMARY_ATTRIBUTES]:
+    text_chars = summary_text_chars()
+    for name in list(attrs.keys())[: summary_attributes()]:
         try:
             value = attrs[name]
         except (OSError, TypeError, ValueError):  # an unreadable attribute type
@@ -325,7 +343,7 @@ def _short_attributes(attrs: h5py.AttributeManager) -> dict[str, Any]:
             value = value.item()
         if isinstance(value, bytes):
             value = value.decode("utf-8", "replace")
-        if isinstance(value, str) and len(value) > SUMMARY_TEXT_CHARS:
-            value = value[: SUMMARY_TEXT_CHARS - 1] + "…"
+        if isinstance(value, str) and len(value) > text_chars:
+            value = value[: text_chars - 1] + "…"
         out[name] = value if isinstance(value, (str, int, float, bool, list)) else str(value)
     return out

@@ -270,13 +270,13 @@ jobs:
         run: |
           function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
           $release = Join-Path $env:RUNNER_TEMP "install.ps1"
-          Rec --name "script: fresh install" -- pwsh -NoProfile -File $release
-          Rec --name "script: start" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" start
-          Rec --name "script: stop" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" stop
-          Rec --name "script: re-run over an install" -- pwsh -NoProfile -File $release
-          Rec --kill-after 20 --name "script: interrupted after 20s" -- pwsh -NoProfile -File $release
-          Rec --name "script: re-run after interruption" -- pwsh -NoProfile -File $release
-          Rec --name "script: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+          Rec --name "script: fresh install" -- powershell -NoProfile -ExecutionPolicy Bypass -File $release
+          Rec --name "script: start" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" start
+          Rec --name "script: stop" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" stop
+          Rec --name "script: re-run over an install" -- powershell -NoProfile -ExecutionPolicy Bypass -File $release
+          Rec --kill-after 20 --name "script: interrupted after 20s" -- powershell -NoProfile -ExecutionPolicy Bypass -File $release
+          Rec --name "script: re-run after interruption" -- powershell -NoProfile -ExecutionPolicy Bypass -File $release
+          Rec --name "script: uninstall" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
       - name: From source (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
@@ -288,11 +288,24 @@ jobs:
           CLIO_REF: ${{ github.head_ref || github.ref_name }}
         run: |
           function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
-          Rec --name "source: fresh install" -- pwsh -NoProfile -File install/install.ps1
-          Rec --name "source: start" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" start
-          Rec --name "source: stop" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" stop
-          Rec --name "source: re-run over an install" -- pwsh -NoProfile -File install/install.ps1
-          Rec --name "source: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+          Rec --name "source: fresh install" -- powershell -NoProfile -ExecutionPolicy Bypass -File install/install.ps1
+          Rec --name "source: start" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" start
+          Rec --name "source: stop" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" stop
+          Rec --name "source: re-run over an install" -- powershell -NoProfile -ExecutionPolicy Bypass -File install/install.ps1
+          Rec --name "source: uninstall" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+      # Windows PowerShell 5.1 is what `irm ... | iex` runs in on a stock Windows; pwsh 7
+      # passes native arguments differently and hid #1913. The desktop download is the
+      # largest thing a user fetches, so its lookup, download and checksum run on every
+      # pull request, in both shells, against the install budget.
+      - name: Desktop download (Windows PowerShell 5.1 and pwsh)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
+          $dl = Join-Path $env:RUNNER_TEMP 'clio-desktop-dl'
+          Rec --name "desktop: download (Windows PowerShell 5.1)" -- powershell -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 -Desktop -DownloadOnly (Join-Path $dl 'ps51')
+          Rec --name "desktop: download (pwsh)" -- pwsh -NoProfile -File install/install.ps1 -Desktop -DownloadOnly (Join-Path $dl 'pwsh')
+          Remove-Item -LiteralPath $dl -Recurse -Force -ErrorAction SilentlyContinue
       - name: Report
         if: always()
         shell: bash

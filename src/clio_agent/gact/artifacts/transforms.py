@@ -397,9 +397,13 @@ def record_transform(
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
     # P3.1 (#1038): the CROSS-JOB contributing set — every workspace sharing this
-    # job's root_path — computed here (the caller HAS ``app``) and threaded into the
-    # detector so it keeps its acyclic position. ``None`` → same-workspace-only.
-    allowed_workspace_ids = contributing_workspace_ids(app, workspace_id)
+    # job's root_path — built here (the caller HAS ``app``) and threaded into the
+    # detector so it keeps its acyclic position. ``None`` → same-workspace-only. It
+    # resolves every workspace root, so the detector builds it only once a file is
+    # used (P7, 2026-11-02: on every call it was a third of transform recording).
+    def allowed_workspace_ids() -> set[str] | None:
+        return contributing_workspace_ids(app, workspace_id)
+
     used_scan = (
         EdgeScan(used_edges, [])
         if used_edges is not None
@@ -490,8 +494,11 @@ def record_transform(
         candidates=candidates,
         notes=notes,
     )
-    # Index record first (pending), then the event that confirms it (crash-safe order).
-    get_registry(app).record_transform(record)
+    # Index record first (pending), then the event that confirms it (crash-safe order):
+    # both on the session's ordered highway writer when it is on.
+    from clio_agent.gact.highway_writer import operation_queue  # noqa: PLC0415
+
+    get_registry(app).record_transform(record, fresh=True, write_behind=operation_queue(app, sid))
     _emit_transform_recorded(app, sid, record, turn_id=turn_id, trace_id=trace_id)
     return record
 
@@ -586,6 +593,9 @@ def observe_tool_transform(
             call_started_at=started,
             result=result,
         )
+        from clio_agent.gact.artifacts.observer_bridge import take_call_outputs  # noqa: PLC0415
+
+        minted = [*minted, *take_call_outputs(call_id)]  # minted by the tool itself
         # The MODEL lane's half of designation: publish this call's registry-resolved
         # artifact ids so the execution boundary can merge them into the result the
         # model reads back (the wire lane already carries them as artifact.created +
@@ -644,6 +654,18 @@ def observe_tool_transform(
             turn_id=turn_id,
             trace_id=trace_id,
             started_at=started,
+        )
+        # A confirmed sandbox block asks the person with the folder-access card (#1905).
+        from clio_agent.gact.sandbox_folder_offer import offer_blocked_folders  # noqa: PLC0415
+
+        offer_blocked_folders(
+            app,
+            sid,
+            tool_name=tool_name,
+            args=effective_args,
+            call_id=call_id,
+            result=result,
+            workspace_id=workspace_id,
         )
         return record
     except Exception as exc:  # noqa: BLE001 — a live provenance record must never break a turn

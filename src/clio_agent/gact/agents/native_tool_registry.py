@@ -19,11 +19,16 @@ reason, never dropped silently.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
+#: ``tools.withheld`` unset: nothing is withheld.
+_NONE: Sequence[str] = ()
+
 from clio_agent.gact.agents import toolset_inventory
+from clio_agent.gact.browser.tools import BROWSER_TOOLS
 from clio_agent.gact.science_log.tools import SCIENCE_LOG_TOOLS
+from clio_agent.gact.streams.tools import STREAM_TOOLS
 from clio_agent.gact.task_declarations import (
     TASK_COMPATIBILITY_ALIASES,
     TASK_TOOL_NAMES,
@@ -95,6 +100,8 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.action_cards import build_raise_alert_card_tool  # noqa: PLC0415
     from clio_agent.gact.artifacts.proposals import build_create_artifact_tool  # noqa: PLC0415
     from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool  # noqa: PLC0415
+    from clio_agent.gact.browser.tools import BUILDERS as BROWSER_BUILDERS  # noqa: PLC0415
+    from clio_agent.gact.code_mode.tool import build_run_code_tool  # noqa: PLC0415
     from clio_agent.gact.document_tools import (  # noqa: PLC0415
         build_prepare_document_runtime_tool,
         build_prepare_document_tool,
@@ -113,6 +120,11 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_goal_wait_tool,
         build_set_goal_tool,
     )
+    from clio_agent.gact.latex_tools import (  # noqa: PLC0415
+        build_latex_build_tool,
+        build_latex_locate_tool,
+        build_latex_outline_tool,
+    )
     from clio_agent.gact.loop_control import build_set_loop_tool  # noqa: PLC0415
     from clio_agent.gact.memory.tool_builders import BUILDERS as MEMORY_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.plan_mode import build_plan_exit_tool  # noqa: PLC0415
@@ -122,6 +134,11 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.search_assistant import (  # noqa: PLC0415
         build_clio_search_read_tool,
         build_clio_search_tool,
+    )
+    from clio_agent.gact.search_tools import build_search_tools_tool  # noqa: PLC0415
+    from clio_agent.gact.session_plan import (  # noqa: PLC0415
+        build_plan_enter_tool,
+        build_plan_update_tool,
     )
     from clio_agent.gact.session_recall_tools import (  # noqa: PLC0415
         build_session_context_frame_tool,
@@ -145,6 +162,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_connected_data_status_tool,
         build_connected_data_write_tool,
     )
+    from clio_agent.gact.streams.tools import BUILDERS as STREAM_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.todos import build_write_todos_tool  # noqa: PLC0415
     from clio_agent.gact.view_image_tool import build_view_image_tool  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import build_view_pdf_tool  # noqa: PLC0415
@@ -160,6 +178,10 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "write_todos": lambda: build_write_todos_tool(agent_def),
         "raise_alert_card": lambda: build_raise_alert_card_tool(agent_def),
         "recall_context": build_recall_context_tool,
+        "search_tools": build_search_tools_tool,
+        "run_code": build_run_code_tool,
+        "plan_enter": build_plan_enter_tool,
+        "plan_update": build_plan_update_tool,
         "loop_wakeup": build_loop_wakeup_tool,
         "set_loop": build_set_loop_tool,
         "set_goal": build_set_goal_tool,
@@ -173,11 +195,16 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "prepare_document_runtime": build_prepare_document_runtime_tool,
         "prepare_execution_runtime": build_prepare_execution_runtime_tool,
         "prepare_document": build_prepare_document_tool,
+        "latex_build": build_latex_build_tool,
+        "latex_outline": build_latex_outline_tool,
+        "latex_locate": build_latex_locate_tool,
         "ssh_execute": build_ssh_execute_tool,
         "clio_search": build_clio_search_tool,
         "clio_search_read": build_clio_search_read_tool,
         **MEMORY_BUILDERS,
         **SCIENCE_LOG_BUILDERS,
+        **BROWSER_BUILDERS,
+        **STREAM_BUILDERS,
         "session_search": lambda: build_session_search_tool(agent_def),
         "session_read_summary": lambda: build_session_summary_tool(agent_def),
         "session_read_context_frame": lambda: build_session_context_frame_tool(agent_def),
@@ -211,6 +238,10 @@ _SINGLE_NAMES = frozenset(
         "write_todos",
         "raise_alert_card",
         "recall_context",
+        "search_tools",
+        "run_code",
+        "plan_enter",
+        "plan_update",
         "loop_wakeup",
         "set_loop",
         "set_goal",
@@ -224,6 +255,9 @@ _SINGLE_NAMES = frozenset(
         "prepare_document_runtime",
         "prepare_execution_runtime",
         "prepare_document",
+        "latex_build",
+        "latex_outline",
+        "latex_locate",
         "ssh_execute",
         "clio_search",
         "clio_search_read",
@@ -250,6 +284,8 @@ _SINGLE_NAMES = frozenset(
         "make_plugin",
         *_A2UI_PRODUCERS,
         *SCIENCE_LOG_TOOLS,
+        *BROWSER_TOOLS,
+        *STREAM_TOOLS,
     }
 )
 
@@ -323,6 +359,15 @@ def _pick(tools: Iterable[Any], wanted: set[str]) -> dict[str, Any]:
     return {tool.name: tool for tool in tools if tool.name in wanted}
 
 
+def configured_withheld() -> frozenset[str]:
+    """Native tools withheld from every agent (``tools.withheld``; empty by default)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return frozenset(
+        conf.resolve("tools.withheld", env="CLIO_TOOLS_WITHHELD", default=_NONE, cast=conf.as_csv)
+    )
+
+
 def build_native_tools(
     agent_def: Any,
     requested: Iterable[str],
@@ -358,6 +403,8 @@ def build_native_tools(
 
     for name, reason in withheld_memory_tools(wanted).items():
         withheld.setdefault(name, reason)  # memory off, a read-only session, recall off
+    for name in wanted & configured_withheld():  # tools.withheld, e.g. an ablation
+        withheld.setdefault(name, "withheld_by_config")
     wanted -= set(withheld)
     available: dict[str, Any] = {}
     if wanted & TASK_TOOL_NAMES:

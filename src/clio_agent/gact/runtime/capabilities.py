@@ -38,11 +38,6 @@ from clio_agent.errors import (
     MCP_RESULT_DOWNGRADED_TO_COMPLETE,
     MCP_WIRE_CANCELLATION_UNAVAILABLE,
 )
-from clio_agent.optimizer.stub import (
-    OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
-    OPTIMIZER_NOT_IMPLEMENTED_REASON,
-    OPTIMIZER_TRACKING_ISSUE,
-)
 
 _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "native_model_inputs_dropped": {
@@ -60,6 +55,19 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "The turn carried native image/PDF model inputs but the executing agent's "
             "forward accepts no such parameter, so they were not delivered to the model. "
             "The text still streamed; the attachment did not ride the request."
+        ),
+    },
+    "diffusion_stream_shape_mismatch": {
+        "category": "stream_shape_mismatch",
+        # The text still streamed live (as canvases); what degraded is the stream's
+        # SHAPE -- a diffusing request answered in a shape the snapshot lane cannot own.
+        "synthetic_posthoc": False,
+        "live_streaming": True,
+        "recovery_actions": ["turn_show_diffusion_off", "check_the_model_stream_shape", "retry"],
+        "description": (
+            "The model was asked to stream its diffusion steps as whole snapshots but "
+            "answered with appended deltas (the concatenated text is kept) or streamed "
+            "tool calls across steps (the calls the stream assembled are kept)."
         ),
     },
     "sync_execution_path": {
@@ -155,24 +163,6 @@ _CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
         "client_behavior": "render_disabled",
         "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
         "related_endpoints": ["/v1/lsp/*"],
-    },
-    "optimizer_command": {
-        # #801: SPEC §3.3.1 capability-gap row — /optimize stays advertised as
-        # a planned research surface while carrying the uniform structured
-        # not-implemented stub (reason code + #633 pointer).
-        "status": "unavailable",
-        "advertised": True,
-        "category": "deferred_command",
-        "reason": OPTIMIZER_NOT_IMPLEMENTED_REASON,
-        "tracking_issue": OPTIMIZER_TRACKING_ISSUE,
-        "description": OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
-        "client_behavior": "render_disabled",
-        "recovery_actions": [
-            "render_optimize_disabled",
-            "retry_after_optimizer_support_lands",
-        ],
-        "related_commands": ["/optimize"],
-        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
     },
 }
 

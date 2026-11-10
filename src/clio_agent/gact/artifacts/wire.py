@@ -69,6 +69,8 @@ _MIME_BY_SUFFIX: dict[str, str] = {
 }
 
 #: Fallback mime per kind when the path suffix is unrecognised.
+#: A stream artifact's type: its content is read through ``/v1/streams/{id}/content``.
+STREAM_MIME = "application/vnd.clio.stream+json"
 _MIME_BY_KIND: dict[ArtifactKind, str] = {
     ArtifactKind.IMAGE: "image/png",
     ArtifactKind.DATASET: "application/octet-stream",
@@ -77,6 +79,7 @@ _MIME_BY_KIND: dict[ArtifactKind, str] = {
     ArtifactKind.CONFIG: "text/plain",
     ArtifactKind.MODEL: "application/octet-stream",
     ArtifactKind.OTHER: "application/octet-stream",
+    ArtifactKind.STREAM: STREAM_MIME,
 }
 
 
@@ -153,10 +156,12 @@ def resource_link_metadata(
     ``{artifact_id, sha256, size_bytes, kind, version, custody, fetch_url,
     producer_activity_id, mechanism}`` — PLUS the logical identity pair
     ``{workspace_id, name}`` the part's ``uri``/``name`` already encode but which a
-    client keying off ``metadata`` alone would otherwise have to re-parse. Exactly
-    these eleven keys (SPEC §4.5 documents all eleven; the test locks the set with
+    client keying off ``metadata`` alone would otherwise have to re-parse, and
+    ``presentation``. Exactly
+    these twelve keys (SPEC §4.5 documents all twelve; the test locks the set with
     equality, not a superset). ``producer_activity_id`` is the producing ``call_id``
-    (the S5 TransformRecord key) or empty for non-tool mints.
+    (the S5 TransformRecord key) or empty for non-tool mints. ``presentation`` is what a
+    client shows the artifact as (:func:`presentation_for`): a paper's title and type.
     """
     return {
         "artifact_id": version.artifact_id,
@@ -170,7 +175,34 @@ def resource_link_metadata(
         "mechanism": version.mechanism.value,
         "workspace_id": workspace_id,
         "name": name,
+        "presentation": presentation_for(version),
     }
+
+
+#: Producer fields a card needs to name and place a scientific document.
+_DOCUMENT_FIELDS = ("document_type", "venue", "page_count", "format")
+
+
+def presentation_for(version: ArtifactVersion) -> dict[str, Any]:
+    """What a client shows an artifact as, beyond its file name: designation and title.
+
+    A scientific document (a paper) adds its type, venue, page count and the artifact ids of
+    its members, so a client can show the paper by its title and leave its sources inside it.
+    Empty for an ordinary file.
+    """
+    producer = version.producer or {}
+    designation = str(producer.get("designation") or "")
+    title = str(producer.get("title") or "")
+    if designation != "scientific-document":
+        return {"designation": designation, "title": title} if title else {}
+    found: dict[str, Any] = {"designation": designation, "title": title}
+    found.update({key: producer[key] for key in _DOCUMENT_FIELDS if producer.get(key)})
+    found["members"] = [
+        str(item["artifact_id"])
+        for item in producer.get("members") or []
+        if isinstance(item, dict) and item.get("artifact_id")
+    ]
+    return found
 
 
 def resource_link_part(

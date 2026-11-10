@@ -191,6 +191,80 @@ def _probe_codex_sdk(config: LMProviderConfig, source: str, auth_mode: str) -> I
     )
 
 
+def _probe_copilot(config: LMProviderConfig, source: str, auth_mode: str) -> IntegrationStatus:
+    """Probe GitHub Copilot: the SDK, a runtime to spawn, and a verified model list.
+
+    Sign-in is CLIO's GitHub account, which lives in the server's vault; this
+    probe reads only the model list a signed-in check recorded.
+    """
+    details: dict[str, Any] = {"provider": "copilot", "model": config.model, "transport": "sdk"}
+
+    def row(state: IntegrationState, summary: str, next_action: str, **extra: Any) -> Any:
+        return IntegrationStatus(
+            name="lm_provider",
+            state=state,
+            summary=summary,
+            config_source=source,
+            next_action=next_action,
+            endpoint=config.api_base,
+            auth_mode=auth_mode,
+            details={**details, **extra},
+            required=True,
+        )
+
+    install = "Install GitHub Copilot support from Models, then check the provider."
+    if importlib.util.find_spec("copilot") is None:
+        from clio_agent.providers.copilot.errors import (  # noqa: PLC0415
+            COPILOT_NOT_INSTALLED_MESSAGE,
+        )
+
+        return row(
+            IntegrationState.UNAVAILABLE,
+            COPILOT_NOT_INSTALLED_MESSAGE,
+            install,
+            reason="sdk_package_absent",
+            sdk_package="copilot",
+        )
+    from clio_agent.providers import model_discovery  # noqa: PLC0415
+    from clio_agent.providers.copilot.errors import (  # noqa: PLC0415
+        COPILOT_RUNTIME_MISSING_MESSAGE,
+    )
+    from clio_agent.providers.copilot.runtime import copilot_client  # noqa: PLC0415
+
+    selection = copilot_client()
+    if selection.path is None:
+        return row(
+            IntegrationState.UNAVAILABLE,
+            COPILOT_RUNTIME_MISSING_MESSAGE,
+            install,
+            reason=selection.reason,
+        )
+    try:
+        overlay = model_discovery.overlay_models_wire(config.provider_id or "copilot", "copilot")
+    except model_discovery.OverlayMalformedError as exc:
+        return row(
+            IntegrationState.UNAVAILABLE,
+            f"GitHub Copilot model catalog is invalid: {exc}",
+            "Check GitHub Copilot in Models to re-read the account's models.",
+            runtime_path=selection.path,
+            reason="overlay_malformed",
+        )
+    if not (overlay and overlay.get("models") and not overlay.get("staleness")):
+        return row(
+            IntegrationState.DEGRADED,
+            "GitHub Copilot is installed but has not been verified.",
+            "Sign in to GitHub in CLIO and check GitHub Copilot in Models.",
+            runtime_path=selection.path,
+            reason="auth_check_required",
+        )
+    return row(
+        IntegrationState.READY,
+        "GitHub Copilot models verified for CLIO's GitHub sign-in.",
+        "No action required.",
+        runtime_path=selection.path,
+    )
+
+
 def _which_cli(binary: str) -> str | None:
     """Resolve a CLI binary on PATH, honouring the Windows ``.cmd`` launcher shim.
 
@@ -238,6 +312,8 @@ def probe_cli_transport(
         if codex_variant == "sdk":
             return _probe_codex_sdk(config, source, auth_mode)
         return _probe_codex_direct(config, source, auth_mode)
+    if config.provider == "copilot":
+        return _probe_copilot(config, source, auth_mode)
 
     parsed = urlparse(config.api_base)
     transport = parsed.netloc or parsed.path.lstrip("/") or "cli"

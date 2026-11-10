@@ -27,6 +27,12 @@ from clio_agent.tools.tool_presentation import present_mcp_result
 
 logger = logging.getLogger(__name__)
 
+#: Tools whose calls run a script. The script's own tool calls are recorded under the
+#: script call's invocation id (so they nest under it), which makes them claim that
+#: invocation too; none of them is the script call's execution, so these calls are never
+#: joined to a task. A background script's own task is reached through its receipt.
+_SCRIPT_TOOLS = frozenset({"run_code"})
+
 _STATES = {
     "accepted": "pending",
     "queued": "pending",
@@ -59,7 +65,9 @@ def own_execution_tasks(
     caller = TaskCaller(session_id, principal, human_action=True)
     access = TaskAccess(history, caller)
     result: dict[str, tuple[TaskSnapshot, ...]] = {}
-    for handle in history.session_handles(session_id):
+    # Indexed by invocation: scanning every session task per call grew with the session
+    # (P7, 2026-11-02: 2,000 tasks scanned at each of 2,000 completions).
+    for handle in history.invocation_handles(session_id, invocation_ids):
         task = history.task_snapshot(handle)
         if (
             task is None
@@ -101,12 +109,19 @@ def _result_presentation(
     args = arguments if isinstance(arguments, Mapping) else {}
     # Task custody retains the server's local tool name. Reconstruct the declared
     # gateway identity rather than guessing result semantics from display labels.
-    name = f"{task.backend.server}_{task.tool}" if task.backend.server else task.tool
+    # A native root (``clio-shell``/``bash``) is CLIO's own placement, not a gateway
+    # mount: its declared identity is the invocation's own tool name (``shell_bash``).
+    if task.backend.owner == "native" and tool.get("name"):
+        name = str(tool["name"])
+    else:
+        name = f"{task.backend.server}_{task.tool}" if task.backend.server else task.tool
     presentation = present_mcp_result(name, args, result)
     return result, presentation
 
 
-def _diagnostic(message: str, *, failed: bool = False) -> dict[str, Any]:
+def _diagnostic(message: str, *, failed: bool = False, uncertain: bool = False) -> dict[str, Any]:
+    """The execution's status as a block: an error when it failed, a warning when its
+    outcome is uncertain (the row reads Unknown), information otherwise."""
     return {
         "summary": "",
         "blocks": [
@@ -115,9 +130,22 @@ def _diagnostic(message: str, *, failed: bool = False) -> dict[str, Any]:
                 "type": "text",
                 "label": "Execution status",
                 "text": message,
-                "severity": "error" if failed else "info",
+                "severity": "error" if failed else "warning" if uncertain else "info",
             }
         ],
+    }
+
+
+def _with_request(tool: Mapping[str, Any], diagnostic: dict[str, Any]) -> dict[str, Any]:
+    """The call's own view (its request: a script, a command, a query) with the
+    execution's status added, so a problem never hides what was asked."""
+    original = tool.get("presentation")
+    if not isinstance(original, Mapping) or not original.get("blocks"):
+        return diagnostic
+    return {
+        **{key: value for key, value in original.items() if key != "status"},
+        "summary": original.get("summary") or "",
+        "blocks": [*original["blocks"], *diagnostic["blocks"]],
     }
 
 
@@ -134,13 +162,14 @@ def project_execution(
             accepted = None
         if accepted is not None and accepted.get("handle") != task.handle:
             mismatch = "The submission receipt and execution record name different tasks."
+            view = _with_request(tool, _diagnostic(mismatch, uncertain=True))
             return {
                 **tool,
                 "state": "unknown",
                 "execution_problem": "submission_task_mismatch",
                 "error": mismatch,
-                "presentation": _diagnostic(mismatch, failed=True),
-            }, _diagnostic(mismatch, failed=True)
+                "presentation": view,
+            }, view
     state = _STATES[task.status]
     result: Any = None
     error: str | None = None
@@ -156,12 +185,14 @@ def project_execution(
                 type(problem).__name__,
             )
             state, error = "unknown", "The recorded execution result could not be decoded."
-            presentation = _diagnostic(error, failed=True)
+            presentation = _with_request(tool, _diagnostic(error, uncertain=True))
         else:
             error = structured_tool_result_error(result)
             if error and state == "succeeded":
                 state = "failed"
-            if state == "failed" and not error:
+            # A presenter that declared the failure from the reply's own facts (a shell's
+            # exit code and output) has explained it; the task's last progress line has not.
+            if state == "failed" and not error and presentation.get("status") != "failed":
                 error = task.progress.message or "The execution owner reported failure."
                 presentation["blocks"].extend(_diagnostic(error, failed=True)["blocks"])
             presentation["status"] = state
@@ -178,7 +209,9 @@ def project_execution(
         )
         if task.cancellation_requested_at and task.terminal_at is None:
             message = "Cancellation requested; settlement is not yet confirmed. " + message
-        presentation = _diagnostic(message, failed=state in {"failed", "unknown"})
+        presentation = _with_request(
+            tool, _diagnostic(message, failed=state == "failed", uncertain=state == "unknown")
+        )
     original_presentation = tool.get("presentation") or {}
     if original_presentation.get("action") and not presentation.get("action"):
         presentation["action"] = original_presentation["action"]
@@ -249,10 +282,11 @@ def join_task_executions(
     app: Any, session_id: str, tools: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     """Rebuild operation views from the same owned task records on every read."""
-    matches = own_execution_tasks(app, session_id, {str(tool["id"]) for tool in tools})
+    joinable = {str(tool["id"]) for tool in tools if tool.get("name") not in _SCRIPT_TOOLS}
+    matches = own_execution_tasks(app, session_id, joinable)
     result = []
     for tool in tools:
-        tasks = matches.get(str(tool["id"]), ())
+        tasks = matches.get(str(tool["id"]), ()) if str(tool["id"]) in joinable else ()
         if len(tasks) == 1:
             entity, _presentation = project_execution(app.state.task_history, tool, tasks[0])
             result.append(entity)
@@ -280,6 +314,8 @@ def execution_presentation(
     result_sha256: str | None = None,
 ) -> dict[str, Any] | None:
     """Resolve task-owned presentation pages through the same authorized join."""
+    if name in _SCRIPT_TOOLS:
+        return None
     matches = own_execution_tasks(app, session_id, {call_id}).get(call_id, ())
     if len(matches) != 1:
         return None
@@ -300,6 +336,8 @@ def completion_execution(
 ) -> dict[str, Any] | None:
     """Join a live RPC completion to its current execution using recorded call context."""
     call_id = str(payload.get("call_id") or "")
+    if str(payload.get("tool") or "") in _SCRIPT_TOOLS:
+        return None
     tasks = own_execution_tasks(app, session_id, {call_id}).get(call_id, ())
     if not tasks:
         return None

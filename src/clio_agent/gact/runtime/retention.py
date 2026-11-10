@@ -1,7 +1,6 @@
 """In-memory ledger retention bounds for the GACT server (#770 Wave-C C3).
 
-Several of the server's in-memory ledgers (``command_audit``,
-``session_recall_audit``, ``context_frames``, ``file_changes``, ``permissions``,
+Several of the server's in-memory ledgers (``session_recall_audit``, ``context_frames``, ``file_changes``, ``permissions``,
 ``turn_attempts``, ``shared_tokens``) were append-only and grew unbounded for
 the life of the process. This module gives each a *bound* plus a **structured
 eviction reason** so a drop is never silent -- mirroring the ``stream_fallback``
@@ -12,7 +11,7 @@ Two eviction shapes are supported:
 
 * **FIFO** (``is_terminal is None``): the oldest entry is evicted first once the
   ledger exceeds ``max_entries``. Used for pure audit trails where every row is
-  equal (``command_audit``, ``session_recall_audit``, per-session ``context_frames`` and
+  equal (``session_recall_audit``, per-session ``context_frames`` and
   ``file_changes``).
 * **terminal-first** (``is_terminal`` set): while the ledger exceeds the *soft*
   ``max_entries`` the oldest **terminal** row (resolved / applied / rejected /
@@ -253,11 +252,6 @@ def build_ledger_bounds() -> dict[str, LedgerBound]:
     """
 
     return {
-        "command_audit": LedgerBound(
-            max_entries=_resolve_positive_int(
-                "gact.ledger_retention.command_audit.max", "CLIO_LEDGER_COMMAND_AUDIT_MAX", 2000
-            )
-        ),
         "session_recall_audit": LedgerBound(
             max_entries=_resolve_positive_int(
                 "gact.ledger_retention.session_recall_audit.max",

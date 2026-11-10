@@ -11,7 +11,7 @@ Both return edges and typed notes in an :class:`EdgeScan`, including deliberate 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
@@ -208,7 +208,7 @@ def detect_used_edges(
     turn_id: str,
     trace_id: str,
     call_started_at: Optional[float] = None,
-    allowed_workspace_ids: Optional[set[str]] = None,
+    allowed_workspace_ids: Optional[set[str]] | Callable[[], Optional[set[str]]] = None,
     call_id: str = "",
     tool_name: str = "",
     allow_external_inputs: bool = False,
@@ -356,6 +356,8 @@ def detect_used_edges(
             evidence = compute_identity(resolved)
         except OSError:
             continue
+        if callable(allowed_workspace_ids):  # resolved once, only when a file is used
+            allowed_workspace_ids = allowed_workspace_ids()
         match = registry.find_version_by_path(
             workspace_id, resolved, allowed_workspace_ids=allowed_workspace_ids
         )
@@ -649,6 +651,10 @@ def detect_authority_edges(
         return EdgeScan(_relay_fetch_edges(structured), [])
     if short in _NDP_DETAILS_TOOLS:
         return EdgeScan(_catalog_resource_edges(structured), [])
+    if short.startswith("browser_"):  # a screenshot or download names its page (BR15)
+        from clio_agent.gact.browser.provenance import page_source_edges  # noqa: PLC0415
+
+        return EdgeScan(page_source_edges(short, structured), [])
     if short in _NDP_SEARCH_TOOLS:
         hits = _count_catalog_hits(structured)
         notes = (

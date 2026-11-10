@@ -129,3 +129,48 @@ def test_a_denying_hook_stops_the_command_with_its_reason(
     result, accepted = _submit(monkeypatch, HookOutcome(decision="deny", reason="not now"))
     assert accepted == []
     assert result["result"] == {"type": "refused", "reason": "hook_denied", "message": "not now"}
+
+
+def test_a_native_plugins_hooks_file_runs_on_claude_codes_wire(tmp_path: Path) -> None:
+    """A native package's ``hooks/hooks.json`` is read by the same mapper (PC2)."""
+
+    from clio_agent.plugins.loader import load_plugin
+    from tests.test_plugins.helpers import plugin
+
+    hooks = {
+        "hooks": {
+            "UserPromptExpansion": [
+                {
+                    "matcher": "^paper:write-section$",
+                    "hooks": [{"type": "command", "command": "node ${PLUGIN_ROOT}/guard.js arm"}],
+                }
+            ],
+            "PreToolUse": [
+                {
+                    "matcher": "Write|Edit",
+                    "hooks": [
+                        {"type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/guard.js check"}
+                    ],
+                }
+            ],
+        }
+    }
+    root = plugin(tmp_path, "paper", files={"hooks/hooks.json": json.dumps(hooks), "guard.js": ""})
+    record = load_plugin(root, trusted=True)
+    expansion, pre_tool = record.hooks
+    assert expansion.event == USER_PROMPT_EXPANSION and expansion.dialect == "claude-code"
+    assert expansion.args == (f"{root}/guard.js", "arm")
+    assert pre_tool.event == "PreToolUse" and pre_tool.tools  # mapped onto CLIO tool names
+    assert pre_tool.args == (f"{root}/guard.js", "check")
+
+
+def test_the_sdk_declares_a_prompt_expansion_hook() -> None:
+    from clio_agent.sdk.hooks import HOOK_EVENTS, hook
+
+    assert HOOK_EVENTS["prompt_expansion"] == USER_PROMPT_EXPANSION
+
+    @hook("prompt_expansion")
+    def guard(event: Any) -> None:
+        return None
+
+    assert guard is not None

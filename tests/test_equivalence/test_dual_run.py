@@ -82,3 +82,33 @@ def test_dual_run_detects_a_surface_divergence(_two_tmp, monkeypatch) -> None:
         assert report.divergence.reason == "drop_detection"
     else:
         pytest.skip("turn.started not present in this build's SSE stream")
+
+
+def test_the_routing_decision_reaches_the_wire_before_the_answer(tmp_path, monkeypatch) -> None:
+    """The highway writer records and publishes ``routing.decision`` behind the turn; a
+    slow writer must not let the answer's ``message.created`` overtake it (the dual-run
+    equivalence diverged at this point under load).
+
+    SABOTAGE: drop the ``flush_session`` after the decision in ``finalize_turn`` -> the
+    answer message is published first -> red."""
+    import time
+
+    from clio_agent.gact.highway_writer import HighwayWriter
+
+    original = HighwayWriter._record
+
+    def slow(self, batch):  # type: ignore[no-untyped-def]
+        time.sleep(0.3)
+        return original(self, batch)
+
+    monkeypatch.setattr(HighwayWriter, "_record", slow)
+    events, _rows = DR._capture_gact_surfaces(DR.WriterConfig(label="slow"), tmp_path)
+    order = [
+        "routing" if (e.payload or {}).get("event_type") == "routing.decision" else "answer"
+        for e in events
+        if (
+            e.type == "semantic.event" and (e.payload or {}).get("event_type") == "routing.decision"
+        )
+        or (e.type == "message.created" and (e.payload or {}).get("role") == "assistant")
+    ]
+    assert order == ["routing", "answer"]

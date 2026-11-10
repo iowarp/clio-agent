@@ -3,9 +3,10 @@
 clio-core holds everything. A compaction changes only the MODEL's context view of one
 agent scope: the live segments :func:`~clio_agent.gact.compaction_policy.
 post_compaction_context` picks are replaced (``summarize_segments``, a recorded op) by
-one summary that renders first, ahead of what the policy keeps verbatim (by default the
-current user question). Every replaced step stays in clio-core, searchable and
-recallable byte-exact (``recall_context``).
+one summary that renders first, ahead of what the policy keeps verbatim (by default
+every message the person typed within ``compaction.keep.user_chars``, the newest step
+and the latest working state). Every replaced step stays in clio-core, searchable, and
+``recall_context`` returns the text it recorded.
 
 Both triggers run :func:`compact_session_context`: ``POST /v1/sessions/{sid}/compact``
 (``trigger="manual"``; the context panel passes ``?scope=``) and the threshold check
@@ -17,7 +18,8 @@ same forward: the next ones are a typed skip with one ``notice``
 Per compacted scope:
 
 1. ``compaction.started`` (highway semantic event, served to the UI);
-2. the summary (one LM call over what is replaced);
+2. the summary (one LM call: the agent's next request, or the scope's context between
+   turns, with the compaction prompt appended);
 3. the record, written durably where it happened (:mod:`clio_agent.gact.
    compaction_record`): mid-turn a summarization injection in the open turn's
    assistant message at this step boundary, between turns its own row;
@@ -25,6 +27,10 @@ Per compacted scope:
    retracts the record;
 5. ``compaction.completed`` -- or ``compaction.failed`` for any failure after
    ``started`` (always paired), then the typed :class:`CompactionError`.
+
+A manual compaction holds the session's slot (409 ``session_busy`` while a turn runs),
+and a fold marks the scope's stored usage estimated (:mod:`~clio_agent.gact.
+compaction_session`).
 """
 
 from __future__ import annotations
@@ -35,19 +41,28 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
+from clio_agent import injections
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.compaction_policy import keep_policy, post_compaction_context
+from clio_agent.gact.compaction_policy import (
+    keep_policy,
+    post_compaction_context,
+    transcript_rows,
+)
+from clio_agent.gact.compaction_session import compaction_slot, usage_after_fold
+from clio_agent.gact.compaction_summarizer import Summarize
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
 from clio_agent.gact.runtime.context_tokens import _estimate_text_tokens
 from clio_agent.gact.runtime.globals import _active_semantic_turn_id, _emit_semantic_event
 from clio_agent.gact.summarization_record import (
+    COMPACTION_FAILED_SOURCE,
+    COMPACTION_SKIPPED_SOURCE,
     failure_notice_part,
-    recall_line,
     skipped_notice_part,
     summarization_part,
+    summary_text,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime.stream_audit import stream_audit
@@ -62,6 +77,7 @@ __all__ = [
     "AutoCompactionGuard",
     "CompactionError",
     "compact_session_context",
+    "compaction_limit",
     "maybe_autocompact",
 ]
 
@@ -73,17 +89,19 @@ SKIP_NO_TOKEN_COUNT = "no_token_count"
 #: threshold, so another one would summarize little more than the summary again.
 SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION = "above_threshold_after_compaction"
 
-#: The plain-language ``notice`` of that skip, written once per forward.
-ABOVE_THRESHOLD_NOTICE = (
-    "Context is still near the limit after summarizing; continuing without "
-    "summarizing again this turn."
-)
+
+def __getattr__(name: str) -> str:
+    """``ABOVE_THRESHOLD_NOTICE``: the wording of that skip's ``notice`` (written once per
+    forward), now the reminder ``clio.reminder.compaction_skipped``."""
+    if name == "ABOVE_THRESHOLD_NOTICE":
+        found = injections.injection(COMPACTION_SKIPPED_SOURCE)
+        return found.text if found is not None else ""
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 #: Audit reasons (``stream_audit`` stage names double as the reason).
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
 AUDIT_AUTO_SKIPPED = "compaction.auto_skipped"
-
-_BOUNDED_CHARS = 300
 
 
 class CompactionError(Exception):
@@ -144,11 +162,6 @@ def _skip(sid: str, reason: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _bounded(text: str, limit: int = _BOUNDED_CHARS) -> str:
-    text = text or ""
-    return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
 def _context_file_inventory(app: Any, sid: str) -> str:
     """Render stable facts for files attached outside the message ledger."""
     registry = getattr(app.state, "context_files", {}) or {}
@@ -159,11 +172,11 @@ def _context_file_inventory(app: Any, sid: str) -> str:
         path = str(row.get("display_path") or row.get("path") or "").strip()
         if not path:
             continue
-        facts = [f"path={_bounded(path)}"]
+        facts = [f"path={path}"]
         for key in ("mode", "size", "language"):
             value = row.get(key)
             if value not in (None, ""):
-                facts.append(f"{key}={_bounded(str(value))}")
+                facts.append(f"{key}={value}")
         rows.append("- " + "; ".join(facts))
     return "\n".join(sorted(rows))
 
@@ -176,11 +189,13 @@ def _message_lines(message: Any) -> list[str]:
         if kind in ("TextPart", "ThinkingPart") and part.text.strip():
             lines.append(f"{role}: {part.text.strip()}")
         elif kind == "ToolCallPart":
-            lines.append(f"{role}: tool call: {part.name}({_bounded(str(dict(part.input)))})")
+            # Whole: what is summarized was the model's context, so it fits a window, and
+            # a summary built from cut evidence loses what the agent found.
+            lines.append(f"{role}: tool call: {part.name}({dict(part.input)})")
         elif kind == "ToolResultPart":
             status = "error" if part.is_error else "ok"
             text = "".join(getattr(p, "text", "") for p in part.content)
-            lines.append(f"TOOL: tool result: {part.name} {status}: {_bounded(text)}")
+            lines.append(f"TOOL: tool result: {part.name} {status}: {text}")
         elif kind in ("ImagePart", "DocumentPart"):
             lines.append(f"{role}: [attached {kind.removesuffix('Part').lower()}]")
     return lines
@@ -197,7 +212,8 @@ class _ScopePlan:
 
     scope: str
     summarize: tuple[str, ...]
-    kept_turns: frozenset[str]
+    folded_rows: frozenset[tuple[str, str]]  # (turn, role) rows with folded segments
+    kept_rows: frozenset[tuple[str, str]]  # rows with segments kept verbatim
     transcript: str
 
 
@@ -224,36 +240,47 @@ def _scopes(app: Any, sid: str, scope: str) -> list[str]:
 
 def _plan(app: Any, sid: str, scope: str, open_turn: str) -> _ScopePlan | None:
     """What the policy summarizes in ``scope`` (``None``: nothing to compact)."""
-    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react_record import fold_steps  # noqa: PLC0415
+    from clio_agent.gact.agents.context_errors import (  # noqa: PLC0415
         ContextFoldError,
-        fold_steps,
+        ContextReadError,
     )
+    from clio_agent.gact.agents.context_reader import model_context_segments  # noqa: PLC0415
 
     live = list(app.state.arc.render_working_set(sid, scope))
-    decision = post_compaction_context(live, open_turn_id=open_turn, policy=keep_policy())
-    replaced = [s for s in live if s.id in set(decision.summarize)]
-    if not replaced or (len(replaced) == 1 and replaced[0].kind == "summary"):
-        return None
-    try:
-        from clio_agent.gact.agents.context_reader import model_context_segments
-
-        rendered = model_context_segments(
-            replaced, getattr(app.state, "task_history", None), sid, scope
+    history = getattr(app.state, "task_history", None)
+    read = history.read_content if history is not None else None
+    try:  # the budget measures a confirmed input's content, not its reference
+        decision = post_compaction_context(
+            live, open_turn_id=open_turn, policy=keep_policy(), read_content=read
         )
+        replaced = [s for s in live if s.id in set(decision.summarize)]
+        if not replaced or all(s.kind == "summary" for s in replaced):
+            return None
+        rendered = model_context_segments(replaced, history, sid, scope)
         lines = [line for m in fold_steps(rendered) for line in _message_lines(m)]
-    except ContextFoldError as exc:
+    except (ContextFoldError, ContextReadError) as exc:
         raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
     if not lines:
         return None
-    kept = frozenset(s.turn_id for s in live if s.id in set(decision.keep))
-    return _ScopePlan(scope, decision.summarize, kept, "\n".join(lines))
+    folded = transcript_rows(live, decision.summarize)
+    kept = transcript_rows(live, decision.keep)
+    # The summarizer reads the agent's own context; these lines feed the exact-evidence
+    # index computed by code and the pre-compact hook's size.
+    return _ScopePlan(scope, decision.summarize, folded, kept, "\n".join(lines))
 
 
-def _covered_rows(app: Any, sid: str, open_turn: str, kept_turns: frozenset[str]) -> list[str]:
-    """The transcript rows the summary stands in for in a summarizer prompt."""
+def _covered_rows(app: Any, sid: str, open_turn: str, plan: _ScopePlan) -> list[str]:
+    """The transcript rows the summary stands in for in a summarizer prompt: each row
+    some of whose segments it folded and none of which stay verbatim."""
     rows = model_context_messages(list(app.state.messages.get(sid, [])))
-    skip = set(kept_turns) | {open_turn}
-    return [m.id for m in rows if (getattr(m, "turn_id", "") or m.id) not in skip]
+    keys = (((getattr(m, "turn_id", "") or m.id), _role(m), m.id) for m in rows)
+    covered = plan.folded_rows - plan.kept_rows
+    return [i for t, r, i in keys if (t, r) in covered and t != open_turn]
+
+
+def _role(row: Any) -> str:
+    return "user" if getattr(row, "role", "") == "user" else "assistant"
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +295,7 @@ def compact_session_context(
     trigger: Literal["manual", "auto"],
     focus: str = "",
     scope: str = "",
+    summarize: Summarize | None = None,
 ) -> dict[str, Any]:
     """Compact ``sid``'s agent context. Blocking, off-loop only (store RPCs, LM calls).
 
@@ -278,6 +306,9 @@ def compact_session_context(
         focus: Optional user-supplied focus instructions (manual only).
         scope: The agent scope to compact; ``""`` means the running scope inside a
             turn, else every agent scope of the session (one compaction each).
+        summarize: The running loop's summarizer (the auto trigger), which continues
+            the loop's own request; ``None`` reads each scope's context once and asks
+            the session's model (:mod:`clio_agent.gact.compaction_summarizer`).
 
     Returns:
         ``{session_id, compacted, compactions: [...]}``, one entry per compacted scope
@@ -285,7 +316,8 @@ def compact_session_context(
         ``part_id``, ``replaced_count``, ``summary``); ``reason`` on a typed skip.
 
     Raises:
-        CompactionError: session not found (404), History mode (409), no clio-core
+        CompactionError: session not found (404), History mode (409), a manual
+            compaction while a turn runs (409 ``session_busy``), no clio-core
             context (503), a fold-unreadable context (409), no LM agent (503), the LM
             call failed (502) or the record / fold could not be written (500).
     """
@@ -304,24 +336,27 @@ def compact_session_context(
         )
     from clio_agent.gact.agents.prompt_basis import settle_basis  # noqa: PLC0415
 
-    open_turn = _open_turn_id(app, sid)
-    scopes = _scopes(app, sid, scope)
-    skipped = ""
-    if not any(app.state.arc.render_working_set(sid, s) for s in scopes):
-        skipped = SKIP_NO_LIVE_CONTEXT
-    plans = [] if skipped else [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p]
-    if not skipped and not plans:
-        skipped = SKIP_NOTHING_NEW
-    if skipped:
-        # Asked to compact with nothing to fold: no cached history is worth keeping,
-        # so plugin changes held as a note join the prompt now.
-        if trigger == "manual":
-            settle_basis(app, sid)
-        return _skip(sid, skipped)
-    done = [_compact_scope(app, sid, plan, trigger, focus, open_turn) for plan in plans]
-    # The cache restarts here anyway: plugin changes held as a note join the prompt.
-    settle_basis(app, sid)
-    return {"session_id": sid, "compacted": True, "compactions": done}
+    with compaction_slot(app, sid, trigger):  # manual: 409 session_busy while a turn runs
+        open_turn = _open_turn_id(app, sid)
+        scopes = _scopes(app, sid, scope)
+        skipped = ""
+        if not any(app.state.arc.render_working_set(sid, s) for s in scopes):
+            skipped = SKIP_NO_LIVE_CONTEXT
+        plans = [] if skipped else [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p]
+        if not skipped and not plans:
+            skipped = SKIP_NOTHING_NEW
+        if skipped:
+            # Asked to compact with nothing to fold: no cached history is worth keeping,
+            # so plugin changes held as a note join the prompt now.
+            if trigger == "manual":
+                settle_basis(app, sid)
+            return _skip(sid, skipped)
+        done = [_compact_scope(app, sid, p, trigger, focus, open_turn, summarize) for p in plans]
+        usage_after_fold(app, sid, [p.scope for p in plans])  # its stored usage is stale
+        # The history's cache restarts here: plugin changes held as a note join the prompt.
+        # Loaded tools stay off the list, which keeps the cached system prompt and tools.
+        settle_basis(app, sid, promote_loaded=False)
+        return {"session_id": sid, "compacted": True, "compactions": done}
 
 
 def _event(app: Any, sid: str, kind: str, turn_id: str, payload: dict[str, Any]) -> None:
@@ -340,7 +375,13 @@ def _event(app: Any, sid: str, kind: str, turn_id: str, payload: dict[str, Any])
 
 
 def _compact_scope(
-    app: Any, sid: str, plan: _ScopePlan, trigger: str, focus: str, open_turn: str
+    app: Any,
+    sid: str,
+    plan: _ScopePlan,
+    trigger: str,
+    focus: str,
+    open_turn: str,
+    summarize: Summarize | None,
 ) -> dict[str, Any]:
     """Compact one scope: started, summary, record, fold, completed (or failed)."""
     base = {
@@ -352,7 +393,7 @@ def _compact_scope(
     }
     _event(app, sid, "started", open_turn, base)
     try:
-        result = _summarize_record_fold(app, sid, plan, trigger, focus, base)
+        result = _summarize_record_fold(app, sid, plan, trigger, focus, base, summarize)
     except CompactionError as exc:
         _failed(app, sid, base, exc)
         raise
@@ -370,14 +411,20 @@ def _failed(app: Any, sid: str, base: dict[str, Any], exc: CompactionError) -> N
     in the same event and raised typed with both causes."""
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
+    error = {"code": exc.error, "message": exc.message}
+    text = injections.render(
+        COMPACTION_FAILED_SOURCE, {"error": exc.message}, app=app, session_id=sid
+    )
+    if text is None:  # switched off (traced): the event alone records the failure
+        _event(app, sid, "failed", base["turn_id"], {**base, "error": error, "part_id": ""})
+        return
     notice = failure_notice_part(
-        f"Summarizing the context failed, so it was left as it was. {exc.message}",
+        text,
         code=exc.error,
         compaction_id=base["compaction_id"],
         trigger=base["trigger"],
         agent_id=base["scope"],
     )
-    error = {"code": exc.error, "message": exc.message}
     try:
         message_id, part_id = write_notice(app, sid, notice)
     except Exception as notice_exc:  # noqa: BLE001 - reported failed, raised typed below
@@ -394,7 +441,13 @@ def _failed(app: Any, sid: str, base: dict[str, Any], exc: CompactionError) -> N
 
 
 def _summarize_record_fold(
-    app: Any, sid: str, plan: _ScopePlan, trigger: str, focus: str, base: dict[str, Any]
+    app: Any,
+    sid: str,
+    plan: _ScopePlan,
+    trigger: str,
+    focus: str,
+    base: dict[str, Any],
+    summarize: Summarize | None,
 ) -> dict[str, Any]:
     from clio_agent.gact.compaction_record import RecordWriteError, write_record  # noqa: PLC0415
     from clio_agent.gact.hooks import dispatch_pre_compact  # noqa: PLC0415
@@ -410,15 +463,15 @@ def _summarize_record_fold(
             "trigger": trigger,
         },
     )
-    summary = _summary(app, sid, plan.transcript, focus)
+    summary = _summary(app, sid, plan, focus, summarize)
     search_enabled = context_search_available(app.state.arc)
-    text = f"{summary}\n\n{recall_line(base['compaction_id'], search_enabled=search_enabled)}"
+    text = summary_text(summary, base["compaction_id"], search_enabled=search_enabled)
     part = summarization_part(
         text,
         trigger=trigger,
         compaction_id=base["compaction_id"],
         derived_from=plan.summarize,
-        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan.kept_turns),
+        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan),
         agent_id=plan.scope,
     )
     try:
@@ -437,7 +490,7 @@ def _summarize_record_fold(
     }
 
 
-def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
+def _summary(app: Any, sid: str, plan: _ScopePlan, focus: str, summarize: Summarize | None) -> str:
     agent = getattr(app.state, "agent", None)
     if agent is None:
         raise CompactionError(
@@ -448,29 +501,16 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
         render_compaction_prompt,
     )
 
-    try:  # read from the configured file at every compaction (no restart, no fallback)
+    try:  # the core template, read at every compaction
         prompt = render_compaction_prompt(
-            transcript, focus=focus, files=_context_file_inventory(app, sid)
+            focus=focus, files=_context_file_inventory(app, sid), app=app, session_id=sid
         )
     except CompactionPromptError as exc:
         raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
-
-    from clio_agent.gact.compaction_lm import pinned_summary_lm  # noqa: PLC0415
-    from clio_agent.providers.stateful_common import outside_stateful_scope  # noqa: PLC0415
-
-    try:  # a pinned session is summarised by its own model (F011c)
-        summary_lm = pinned_summary_lm(app, sid)
-    except Exception as exc:  # noqa: BLE001 - re-raised typed, never another model
-        raise CompactionError(
-            502, "pinned_model_unresolved", f"session model could not be resolved: {exc!r}"
-        ) from exc
+    ask = summarize or _scope_summarize(app, sid, plan.scope, agent)
 
     def _call() -> str:
-        # Not a step of the agent's conversation (auto compaction runs inside its
-        # forward): never continue or replace the agent's kept provider conversation.
-        with outside_stateful_scope():
-            pinned = {"lm": summary_lm} if summary_lm is not None else {}
-            return str(agent._run_chat_agent(prompt, "", **pinned) or "")
+        return ask(prompt)
 
     retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
     try:
@@ -485,8 +525,30 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
         raise CompactionError(
             502, "empty_summary", "the summary LM returned no text; nothing was compacted"
         )
-    evidence_index = _compact_exact_evidence_index(transcript)
+    evidence_index = _compact_exact_evidence_index(plan.transcript)
     return summary.strip() + (f"\n\n{evidence_index}" if evidence_index else "")
+
+
+def _scope_summarize(app: Any, sid: str, scope: str, agent: Any) -> Summarize:
+    """The summarizer outside a loop, on the session's pinned model or the host's."""
+    from clio_agent.gact.compaction_lm import pinned_summary_lm  # noqa: PLC0415
+    from clio_agent.gact.compaction_summarizer import scope_summarizer  # noqa: PLC0415
+    from clio_agent.providers.stateful_common import outside_stateful_scope  # noqa: PLC0415
+
+    try:  # a pinned session is summarised by its own model (F011c)
+        summary_lm = pinned_summary_lm(app, sid)
+    except Exception as exc:  # noqa: BLE001 - re-raised typed, never another model
+        raise CompactionError(
+            502, "pinned_model_unresolved", f"session model could not be resolved: {exc!r}"
+        ) from exc
+    ask = scope_summarizer(app, sid, scope, summary_lm or agent._main_lm)
+
+    def summarize(prompt: str) -> str:
+        # Not a step of any agent's conversation: never continue or replace one.
+        with outside_stateful_scope():
+            return ask(prompt)
+
+    return summarize
 
 
 def _fold(
@@ -558,22 +620,43 @@ class AutoCompactionGuard:
     """One ReAct forward's auto-compaction state (the loop owns one per forward).
 
     After an auto compaction the next step's model call measures what is left (system
-    prompt, tools, summary, the question kept verbatim). When that is still over the
-    threshold, compacting again cannot get under it: every later step would summarize
-    the summary and restart a stateful provider's session. So the guard stops auto
-    compaction for the rest of the forward; manual compaction is unaffected.
+    prompt, tools, summary, the recent steps kept verbatim). When that is still over the
+    threshold, compacting at the threshold again cannot get under it: every later step
+    would summarize the summary and restart a stateful provider's session. So that
+    measurement becomes the forward's floor, and the next auto compaction waits until
+    the context fills the threshold's share of the room left above the floor
+    (:func:`compaction_limit`). Stopping auto compaction instead let a long turn grow
+    past one compaction until the window ran out (H5, 2026-11-03: 58k after the
+    compaction, then 159k with no second one). Manual compaction is unaffected.
 
     Attributes:
         compaction_id: The last auto compaction of this forward (``""``: none yet).
         awaiting_measurement: That compaction's result is not measured yet (the next
             step boundary reads the first model call made after it).
-        above_threshold: The measured context stayed over the threshold after it; the
-            forward does not auto-compact again.
+        floor: Prompt tokens measured right after that compaction when they were still
+            over the threshold (``0``: it got under, the plain threshold applies).
+        noticed: The person was told once that the context stayed over the threshold.
+        summarize: Writes the checkpoint as a continuation of the loop's own request
+            (:func:`~clio_agent.gact.compaction_summarizer.loop_summarizer`).
     """
 
+    summarize: Summarize
     compaction_id: str = ""
     awaiting_measurement: bool = False
-    above_threshold: bool = False
+    floor: int = 0
+    noticed: bool = False
+
+
+def compaction_limit(window: int, threshold: float, floor: int) -> float:
+    """Prompt tokens at which auto compaction runs: the threshold, or above ``floor``.
+
+    With no floor it is ``threshold * window``. With one (what compaction left was
+    already over that), it is ``floor + threshold * (window - floor)``: the threshold
+    applied to the room still free above what compaction cannot remove.
+    """
+    if floor <= 0:
+        return threshold * window
+    return floor + threshold * max(window - floor, 0)
 
 
 def maybe_autocompact(guard: AutoCompactionGuard) -> None:
@@ -588,10 +671,10 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     unfolded. With no measured count yet in this binding, the previous turn's durable
     per-scope usage stands in (subscription providers bind a fresh LM per turn).
     History mode has no compaction; no active app is an audited skip. When the first
-    measurement after an auto compaction is still over the threshold, every later
-    crossing in the forward is an audited skip
-    (:data:`SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION`) and the first one writes a
-    ``notice`` saying so.
+    measurement after an auto compaction is still over the threshold, it becomes the
+    forward's floor (:class:`AutoCompactionGuard`): the next auto compaction runs at
+    :func:`compaction_limit`, each crossing below that is an audited skip
+    (:data:`SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION`), and a ``notice`` says so once.
     """
     from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
     from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
@@ -616,28 +699,32 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     if not window or not last:
         stream_audit(AUDIT_AUTO_SKIPPED, reason=SKIP_NO_TOKEN_COUNT, session_id=session)
         return
-    over = (last / window) >= threshold
     if guard.awaiting_measurement:
         guard.awaiting_measurement = False
-        guard.above_threshold = over
-        if over:
+        guard.floor = last if last >= threshold * window else 0
+        if guard.floor and not guard.noticed:
+            guard.noticed = True
             _notice_above_threshold(app, session, scope, guard.compaction_id)
-    if not over:
-        return
-    if guard.above_threshold:
-        stream_audit(
-            AUDIT_AUTO_SKIPPED,
-            reason=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
-            session_id=session,
-            scope=scope,
-            prompt_tokens=last,
-            context_window=window,
-            threshold=threshold,
-            compaction_id=guard.compaction_id,
-        )
+    limit = compaction_limit(window, threshold, guard.floor)
+    if last < limit:
+        if guard.floor and last >= threshold * window:
+            stream_audit(
+                AUDIT_AUTO_SKIPPED,
+                reason=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
+                session_id=session,
+                scope=scope,
+                prompt_tokens=last,
+                context_window=window,
+                threshold=threshold,
+                floor=guard.floor,
+                next_at=int(limit),
+                compaction_id=guard.compaction_id,
+            )
         return
     try:
-        result = compact_session_context(app, session, trigger="auto", scope=scope)
+        result = compact_session_context(
+            app, session, trigger="auto", scope=scope, summarize=guard.summarize
+        )
     except CompactionError as exc:
         stream_audit(AUDIT_AUTO_FAILED, session_id=session, error=exc.error, message=exc.message)
         raise AutoCompactionFailedError(exc, session) from exc
@@ -647,12 +734,16 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
 
 
 def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) -> None:
-    """Record, once per forward, that auto compaction stops (a ``notice`` the model is
-    never told). A notice that cannot be written fails the turn typed."""
+    """Record, once per forward, that the next auto compaction waits above the floor (a
+    ``notice`` the model is never told). A notice that cannot be written fails the turn
+    typed."""
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
+    text = injections.render(COMPACTION_SKIPPED_SOURCE, {}, app=app, session_id=sid)
+    if text is None:  # switched off (traced): the audit still records each skip
+        return
     notice = skipped_notice_part(
-        ABOVE_THRESHOLD_NOTICE,
+        text,
         code=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
         compaction_id=compaction_id,
         agent_id=scope,
@@ -663,7 +754,7 @@ def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) 
         error = CompactionError(
             500,
             "compaction_skip_unrecorded",
-            f"auto compaction stopped but its notice could not be written: {exc!r}",
+            f"auto compaction waits above its floor but its notice could not be written: {exc!r}",
             {"compaction_id": compaction_id, "scope": scope},
             recoverable=False,
         )

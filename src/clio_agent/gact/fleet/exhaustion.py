@@ -1,7 +1,7 @@
 """When a usage window runs out: say whose choice the model was and what else can run.
 
 A plan-limit or credit rejection already arrives as a typed provider error
-(``claude_code_plan_limit``, ``codex_plan_limit``). This adds
+(``claude_code_plan_limit``, ``codex_plan_limit``, ``copilot_plan_limit``). This adds
 ``details.model_exhausted``: the model, when its window resets, who chose it,
 and the connected models that can run now. There is never an automatic switch:
 
@@ -22,7 +22,7 @@ from clio_agent.providers.usage.snapshot import epoch_iso
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-PLAN_LIMIT_REASONS = frozenset({"claude_code_plan_limit", "codex_plan_limit"})
+PLAN_LIMIT_REASONS = frozenset({"claude_code_plan_limit", "codex_plan_limit", "copilot_plan_limit"})
 
 
 def model_exhausted(app: "FastAPI", sid: str, details: dict[str, Any]) -> dict[str, Any] | None:

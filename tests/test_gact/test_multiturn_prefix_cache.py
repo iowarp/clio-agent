@@ -270,3 +270,36 @@ def test_system_message_is_a_byte_prefix_across_turns(
     prefix_2 = module2.program.signature.instructions + "\n\n" + module2.system_prompt
     assert prefix_2.startswith(prefix_1)
     assert prefix_1 == prefix_2  # no-compaction same-agent: exact, not just prefix
+
+
+def test_sessions_in_different_workspaces_share_the_system_prompt(
+    monkeypatch: pytest.MonkeyPatch, world: SimpleNamespace
+) -> None:
+    """Two sessions in different workspaces get the same system prompt, and each
+    session's own facts ride the conversation as the ``session_facts`` injection.
+
+    The Claude CLI caches the system prompt as one block, so any per-session text in it
+    (workspace root, scratch folder) means no cache reads across sessions.
+    SABOTAGE: add the workspace context back to ``system_prompt`` and this fails.
+    """
+    from clio_agent.gact import plan_mode, session_plan, todos, working_state
+    from clio_agent.gact.agents import composition
+
+    _patch_runtime(monkeypatch)
+    facts = iter(["Active workspace root: /ws/one", "Active workspace root: /ws/two"] * 2)
+    monkeypatch.setattr(
+        composition, "_runtime_active_workspace_context", lambda app, session_id="": next(facts)
+    )
+    first = _build(world).system_prompt
+    second = _build(world).system_prompt
+    assert first == second
+    assert "Active workspace root" not in first
+
+    monkeypatch.setattr(plan_mode, "plan_mode_reminder", lambda *a, **k: "")
+    monkeypatch.setattr(session_plan, "take_person_edit", lambda *a, **k: "")
+    monkeypatch.setattr(session_plan, "plan_injection", lambda *a, **k: "")
+    monkeypatch.setattr(todos, "todo_recitation", lambda *a, **k: "")
+    injected = working_state.working_state_injections(None, world.sid, None)
+    assert injected[0][0] == working_state.SESSION_FACTS_SOURCE
+    assert injected[0][1].startswith("Active workspace root: /ws/")
+    assert working_state.SESSION_FACTS_SOURCE in working_state.WORKING_STATE_SOURCES

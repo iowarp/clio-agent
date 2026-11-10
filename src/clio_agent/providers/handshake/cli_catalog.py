@@ -131,6 +131,12 @@ def _thinking_fact_for(provider_kind: str, raw: dict[str, Any]) -> Fact[Thinking
         )
 
         return claude_code_dialect.build_thinking_spec(raw)
+    if provider_kind == "copilot":
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            copilot as copilot_dialect,
+        )
+
+        return copilot_dialect.build_thinking_spec(raw)
     return unknown()
 
 
@@ -185,6 +191,9 @@ class CliCatalogHandshake(NoOpHandshake):
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
+                    # Copilot list_models' own supports.reasoning_effort flag
+                    # (absent for every other provider: unknown, never False).
+                    "reasoning_effort_supported": m.get("reasoning_effort_supported"),
                     # Claude Code CLI per-model effort evidence (initialize response).
                     "supported_effort_levels": list(m.get("supported_effort_levels") or []),
                     "cli_values": list(m.get("cli_values") or []),
@@ -481,4 +490,52 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
         ]
 
 
-__all__ = ["CodexCatalogHandshake", "ClaudeCodeCatalogHandshake", "CliCatalogHandshake"]
+class CopilotCatalogHandshake(CliCatalogHandshake):
+    """GitHub Copilot handshake gated by CLIO's GitHub sign-in and a fresh model list."""
+
+    async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
+        """Reject synthetic readiness until GitHub is signed in and ``list_models`` answered."""
+
+        del client
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+        from clio_agent.providers.copilot.auth import signed_in  # noqa: PLC0415
+        from clio_agent.providers.copilot.errors import (  # noqa: PLC0415
+            COPILOT_NOT_INSTALLED_MESSAGE,
+            COPILOT_SIGNED_OUT_MESSAGE,
+        )
+
+        if importlib.util.find_spec("copilot") is None:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.UNREACHABLE,
+                auth=AuthState.MISSING,
+                error=COPILOT_NOT_INSTALLED_MESSAGE,
+            )
+        if not await asyncio.to_thread(signed_in):
+            return ConnectivityResult(
+                connectivity=ConnectivityState.SKIPPED,
+                auth=AuthState.MISSING,
+                error=COPILOT_SIGNED_OUT_MESSAGE,
+            )
+        try:
+            overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)
+        except model_discovery.OverlayMalformedError as exc:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.UNREACHABLE,
+                auth=AuthState.DEFERRED,
+                error=f"GitHub Copilot model catalog is invalid: {exc}",
+            )
+        if overlay and overlay.get("models") and not overlay.get("staleness"):
+            return ConnectivityResult(connectivity=ConnectivityState.OK, auth=AuthState.OK)
+        return ConnectivityResult(
+            connectivity=ConnectivityState.SKIPPED,
+            auth=AuthState.DEFERRED,
+            error="GitHub is signed in but the Copilot model list has not been read yet.",
+        )
+
+
+__all__ = [
+    "ClaudeCodeCatalogHandshake",
+    "CliCatalogHandshake",
+    "CodexCatalogHandshake",
+    "CopilotCatalogHandshake",
+]

@@ -24,6 +24,7 @@ from clio_agent.arc.task_types import (
     TaskAlias,
     TaskSnapshot,
 )
+from clio_agent.gact.task_history_group import after_commit
 from clio_agent.gact.task_index_records import (
     display_open_row,
     handle_row,
@@ -76,14 +77,19 @@ def displayed(item: MailItem) -> bool:
 
 
 def _close(history: TaskHistory, name: str) -> None:
-    try:
-        history.index.delete_open(name)
-    except Exception as error:
-        logger.exception(
-            "Task boundary reason=task_open_close_deferred record=%s error_type=%s",
-            name,
-            type(error).__name__,
-        )
+    """Delete an open record after the event that closes it (in a group: once confirmed)."""
+
+    def close() -> None:
+        try:
+            history.index.delete_open(name)
+        except Exception as error:
+            logger.exception(
+                "Task boundary reason=task_open_close_deferred record=%s error_type=%s",
+                name,
+                type(error).__name__,
+            )
+
+    after_commit(history, close)
 
 
 # ---- tasks and trees ---------------------------------------------------------

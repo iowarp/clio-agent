@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.hooks.wire import record_hook_reason
 from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.runtime.permission_actions import allows
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 
 if TYPE_CHECKING:
@@ -64,7 +65,7 @@ def defer_timeout_s() -> float:
 
     **Thread-occupancy tradeoff (documented, deliberate):** a within-session PreToolUse
     defer parks the tool-executor thread on a ``threading.Event`` for up to this bound,
-    exactly as the interactive gate parks it for ~600s. The bound is LONG (so a human
+    while the interactive gate parks it until the person answers. The bound is LONG (so a human
     can take their time) but never infinite — an unresolved defer is released and DENIED
     fail-safe (:data:`hook_defer_timeout`), never silently auto-approved and never a
     thread pinned forever. The cross-restart path (which releases the thread entirely
@@ -248,7 +249,7 @@ def park_pretool_defer(
         return decision
 
     action = str(row.get("action", "deny") or "deny")
-    if action in {"allow", "allow_session", "allow_workspace"}:
+    if allows(action):
         _stash_resolution_intercept(row)
         return "allow"
 

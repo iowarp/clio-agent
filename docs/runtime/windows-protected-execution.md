@@ -6,16 +6,20 @@ been verified, including commands that only query a public website.
 
 ## Installation and recovery
 
-CLIO bundles Codex 0.162.1 and prefers native Microsoft Execution Containers
-(MXC) after a real policy check succeeds. MXC needs neither extra Windows
+CLIO bundles Codex 0.167.0 and prefers native Microsoft Execution Containers
+(MXC) after a real policy check succeeds. MXC needs Codex 0.166.0 or later; see
+[Mounts and an installed Codex app](#mounts-and-an-installed-codex-app). MXC needs neither extra Windows
 accounts nor administrator setup or recursive permission grants. An OS build
 number alone does not establish support. CLIO requires allowed workspace writes
 and source reads, denied outside/source writes and credential reads (including
 descendants), and denied direct external network access before selecting it.
 
 The result is reused only while the client file identity/version, machine and
-Windows update match. Unsupported results are also cached; explicit **Set up
-protected execution** rechecks native policy, including a previously failed check. Commands use strict MXC selection
+Windows build and update match. The build comes from the registry: Python's
+`platform_version` reports 26100 on a 26200 system. Unsupported results are also
+cached for normal startup. An explicit setup (the installer, **Set up protected
+execution**, `clio sandbox setup`) rechecks a previously failed result, because the
+machine may have changed without a new client or build; a verified result is reused. Commands use strict MXC selection
 and managed requirements. A command failure never triggers a backend switch.
 
 When MXC is unavailable, the managed Codex Python distribution contains the main client. CLIO completes
@@ -74,9 +78,43 @@ The legacy verifier first requires an actual child write inside its allowed fold
 then requires a nonzero exit and an absent output file outside that folder.
 A launcher failure or a missing output by itself never qualifies the fence.
 
-Verification uses file witnesses and discards subprocess output. This avoids
-waiting for pipe handles inherited by Codex's background ACL helpers while
-keeping the existing 60-second verification limit.
+Verification uses file witnesses. Codex's stderr goes to a temporary file, not a
+pipe, so waiting never depends on handles inherited by Codex's background ACL
+helpers. A failed check keeps the end of that stderr: the MXC receipt stores it
+as `detail`, and the setup result and installer message quote it with each
+backend's reason (`codex_mxc_launch_failed`, `codex_mxc_probe_timeout`,
+`codex_mxc_unverified`, `codex_enforcement_unverified`). At the deadline (30 s for
+MXC, 60 s for the legacy check) the whole probe process tree is killed before its
+temporary folders are removed, so the timeout is what gets reported. A failed
+installer step prints its message without a Python traceback.
+
+## Mounts and an installed Codex app
+
+Two Codex 0.162.1 defects stopped installation on ordinary machines (a lab laptop
+with a mapped `Z:` share and the OpenAI Codex app, November 2026):
+
+- **A mount the sandbox cannot open rejected MXC.** CLIO's profile reads `:root`
+  and denies credential paths. Codex 0.162.1 ran MXC's object normalizer over every
+  expanded volume. It could not open the mapped share, and because denied paths were
+  present it rejected the whole policy, whether the share was connected or not.
+  Codex 0.166.0 removed that preflight and leaves network volumes out of the
+  implicit read grant unless the working directory is on one.
+- **The Codex app's running runtime broke the legacy setup refresh.** Every
+  refresh walks `%LOCALAPPDATA%\OpenAI\Codex\runtimes` and grants the sandbox
+  group read/execute. Version 0.162.1 opened each file with `MAXIMUM_ALLOWED`, which
+  a running `.exe` (the app's `node_repl.exe`) refuses with a sharing violation, so
+  the refresh failed before the test command started. Codex 0.166.0 requests that
+  access for directories only.
+
+CLIO shares the user's real `CODEX_HOME` with the Codex app on purpose. The
+`codexsandbox*` accounts are machine-wide and their encrypted passwords live in
+`CODEX_HOME\.sandbox`. Setup with another home would give the same accounts new
+passwords and break the app's stored credentials. Keep the bundled client at
+least as new as the Codex app is likely to be, because both write the same setup
+state.
+
+A locked BitLocker volume is a fixed drive, so 0.166.0's network-volume filter
+does not exclude it. It has not been qualified.
 
 ## Recorded source qualification
 

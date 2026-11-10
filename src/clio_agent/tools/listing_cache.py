@@ -342,6 +342,12 @@ def load_listing(
         _drop(f"undecodable:{type(exc).__name__}")
         return None
 
+    if isinstance(entry.get("instructions"), str):
+        from clio_agent.tools.mcp_server_instructions import (  # noqa: PLC0415
+            record_instructions,
+        )
+
+        record_instructions(namespace, entry["instructions"])
     task_capable = entry.get("task_capable")
     source = entry.get("task_capability_source")
     era = entry.get("task_capability_era")
@@ -405,6 +411,12 @@ def store_listing(
             identity = server_identity(command, args)
             if identity is not None:
                 entry["server_identity"] = identity
+            from clio_agent.tools.mcp_server_instructions import (  # noqa: PLC0415
+                instructions_for,
+            )
+
+            if instructions := instructions_for(namespace):
+                entry["instructions"] = instructions
             if task_capable is not None:
                 entry["task_capable"] = task_capable
                 entry["task_capability_source"] = source

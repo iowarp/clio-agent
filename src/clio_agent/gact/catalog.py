@@ -1,4 +1,4 @@
-"""Skills, commands, and tool/agent catalog loading for the GACT server.
+"""Skills and tool/agent catalog loading for the GACT server.
 
 Extracted from ``clio_agent.gact.app`` (#714) as a behavior-preserving move.
 These helpers discover on-disk skills and command-recipe files and flatten the
@@ -9,152 +9,13 @@ helpers: none of them read the app's request-scoped contextvars.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from pathlib import Path
 from typing import Any, cast
 
 # SKILL.md discovery/parsing is owned by gact.skills (#917); since #918 skills
 # no longer materialize as agents — only the frontmatter parser is shared here.
-from clio_agent.gact.skills import _parse_skill_frontmatter
 from clio_agent.gact.types import AgentDef, Tool, ToolDomain
-from clio_agent.plugins.command_text import expand_plugin_text
 
 logger = logging.getLogger(__name__)
-
-
-def _load_command_files_from_disk(
-    *,
-    home: Path | None = None,
-    cwd: Path | None = None,
-    extra_roots: list[tuple[Path, str, dict[str, Any]]] | None = None,
-) -> list[dict[str, Any]]:
-    """Discover CLIO/Claude-compatible Markdown command recipe files."""
-    import os
-
-    rows: dict[str, dict[str, Any]] = {}
-    roots: list[tuple[Path, str, dict[str, Any]]] = [
-        (root, source, {})
-        for root, source in _command_search_roots(home or Path.home(), cwd or Path(os.getcwd()))
-    ]
-    roots.extend(extra_roots or [])
-    for root, source, extra_metadata in roots:
-        if not root.exists() or not root.is_dir():
-            continue
-        for md in sorted(root.glob("*.md"), key=lambda path: str(path).lower()):
-            try:
-                text = md.read_text(encoding="utf-8")
-            except Exception:  # noqa: BLE001 - unreadable skill markdown skipped
-                continue
-            meta, body = _parse_skill_frontmatter(text)
-            if extra_metadata.get("command_scope") == "plugin":
-                # A plugin's command names its own files; resolve them for the model.
-                body = expand_plugin_text(body, md.parent.parent)
-            command_id = _normalize_file_command_id(meta, md)
-            if not command_id:
-                continue
-            description = str(meta.get("description") or "").strip()
-            if not description:
-                for line in body.splitlines():
-                    line = line.strip()
-                    if line:
-                        description = line[:240]
-                        break
-
-            status = str(meta.get("status") or "available").strip() or "available"
-            disabled_reason = str(
-                meta.get("disabled_reason") or meta.get("disabled-reason") or ""
-            ).strip()
-            shell_fields = ("shell", "exec", "run", "command_line", "command-line")
-            if any(key in meta for key in shell_fields):
-                status = "unsupported"
-                disabled_reason = disabled_reason or (
-                    "direct local shell execution is not supported by CLIO user commands"
-                )
-
-            enabled = _truthy_command_field(meta.get("enabled"), status == "available")
-            if status != "available":
-                enabled = False
-            # Empty names the session's agent; otherwise one of its defined subagents.
-            agent_id = str(
-                meta.get("agent")
-                or meta.get("agent_id")
-                or meta.get("target_agent")
-                or meta.get("target-agent")
-                or ""
-            ).strip()
-            command = {
-                "id": command_id,
-                "title": str(meta.get("title") or command_id).strip(),
-                "description": description,
-                "source": "user",
-                "status": status,
-                "enabled": enabled,
-                "error": str(
-                    meta.get("error") or ("not_supported" if status == "unsupported" else "")
-                ),
-                "disabled_reason": disabled_reason,
-                "agent_id": agent_id,
-                "agent_source": "command_file",
-                "command_path": md.as_posix(),
-                "command_source": source,
-                "invocation": (
-                    "agent"
-                    if _truthy_command_field(
-                        meta.get("agent-invocable", meta.get("agent_invocable")),
-                        False,
-                    )
-                    else "user"
-                ),
-                "user_invocable": _truthy_command_field(
-                    meta.get("user-invocable", meta.get("user_invocable")),
-                    True,
-                ),
-                "agent_invocable": _truthy_command_field(
-                    meta.get("agent-invocable", meta.get("agent_invocable")),
-                    False,
-                ),
-                "argument_hint": str(meta.get("argument-hint") or meta.get("argument_hint") or ""),
-                "arguments": meta.get("arguments") or [],
-                "prompt_template": body,
-                "prompt_profile": str(
-                    meta.get("prompt-profile") or meta.get("prompt_profile") or ""
-                ),
-                **extra_metadata,
-            }
-            rows.setdefault(command_id, command)
-    return list(rows.values())
-
-
-def _command_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
-    """Return command roots in precedence order; first matching id wins."""
-    import os  # noqa: PLC0415
-
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    return [
-        (paths.workspace_config_path(cwd, "commands"), "clio_workspace"),
-        (cwd / ".claude" / "commands", "claude_workspace"),
-        (paths.user_config_dir_for(home, os.environ) / "commands", "clio_user"),
-        (home / ".claude" / "commands", "claude_user"),
-    ]
-
-
-def _normalize_file_command_id(meta: Mapping[str, Any], path: Path) -> str:
-    raw = meta.get("slash_id") or meta.get("slash-id") or meta.get("name") or path.stem
-    value = str(raw or "").strip()
-    if not value:
-        return ""
-    return value if value.startswith("/") else f"/{value}"
-
-
-def _truthy_command_field(value: Any, default: bool) -> bool:
-    if value in (None, ""):
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
-    return bool(value)
 
 
 def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:

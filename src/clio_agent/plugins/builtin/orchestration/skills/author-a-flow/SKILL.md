@@ -1,7 +1,7 @@
 ---
 name: author-a-flow
 title: Write and deploy a new flow
-description: Write a reusable flow (a new orchestration pattern such as a debate, a tournament or a check-and-retry loop) as a plugin with the CLIO SDK and hand it to the person with make_plugin. Use when a workflow or the existing flows cannot express the pattern.
+description: Use when no workflow or existing flow can express an orchestration pattern (a debate, a tournament, a check-and-retry loop), to write it as a reusable flow plugin and hand it over with make_plugin.
 ---
 
 # Write and deploy a new flow

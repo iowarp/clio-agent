@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,6 +25,8 @@ from clio_agent.runtime.document_runtime import (
 )
 from clio_agent.runtime.execution_environment import publish_environment
 from clio_agent.runtime.github_cli import ensure_github_cli
+from clio_agent.runtime.ripgrep import ensure_ripgrep
+from clio_agent.runtime.tectonic import ensure_tectonic
 
 
 def prepare_protected_execution(
@@ -74,10 +78,24 @@ def prepare_managed_packages(
         report("GitHub command-line tool is ready.")
         return github
 
+    def prepare_ripgrep() -> Path:
+        report("Preparing and checking ripgrep for file search...")
+        ripgrep = ensure_ripgrep()
+        report("ripgrep is ready.")
+        return ripgrep
+
+    def prepare_tectonic() -> Path:
+        report("Preparing and checking Tectonic for LaTeX builds...")
+        tectonic = ensure_tectonic()
+        report("Tectonic is ready.")
+        return tectonic
+
     with package_preparation.preparing(cache_root):
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-install") as workers:
             office_job = workers.submit(prepare_office)
             github_job = workers.submit(prepare_github)
+            ripgrep_job = workers.submit(prepare_ripgrep)
+            tectonic_job = workers.submit(prepare_tectonic)
             result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
             if result["javascript"]["status"] != "ready":
                 raise DocumentRuntimeError(
@@ -85,6 +103,8 @@ def prepare_managed_packages(
                 )
             office = office_job.result()
             github = github_job.result()
+            ripgrep = ripgrep_job.result()
+            tectonic = tectonic_job.result()
         result["native_tools"]["soffice"] = {"status": "available", "path": office}
         result["capabilities"]["office_render_recalculate"] = "available"
         result["native_tools"]["gh"] = {
@@ -92,6 +112,8 @@ def prepare_managed_packages(
             "path": str(github),
             "authentication": "clio_account",
         }
+        result["native_tools"]["rg"] = {"status": "available", "path": str(ripgrep)}
+        result["native_tools"]["tectonic"] = {"status": "available", "path": str(tectonic)}
     return result
 
 
@@ -157,8 +179,55 @@ def prune_after_install() -> dict[str, Any]:
     return {"status": "pruned", "freed_bytes": pruned.bytes_freed, "evicted": pruned.count}
 
 
+def collect_snapshots_after_install() -> dict[str, Any]:
+    """Remove superseded marketplace snapshots at the end of an install or upgrade.
+
+    Gated like the MCP cache prune: skipped with a typed reason while a peer clio
+    process (a running server, which may read a snapshot) is alive; ``clio-agent doctor
+    --gc`` collects the same snapshots on demand.
+    """
+    from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
+    from clio_agent.plugins.snapshot_gc import collect_superseded_snapshots  # noqa: PLC0415
+    from clio_agent.runtime.disk_gc import live_peer_clio_processes  # noqa: PLC0415
+
+    if list(live_peer_clio_processes()):
+        return {"status": "skipped", "reason": "marketplace_snapshots_skipped_live"}
+    try:
+        collected = collect_superseded_snapshots(plugin_store_root())
+    except (OSError, ValueError) as error:
+        return {"status": "failed", "reason": "marketplace_snapshot_gc_failed", "error": str(error)}
+    return {
+        "status": "collected",
+        "freed_bytes": collected.bytes_freed,
+        "removed": len(collected.removed),
+        "kept": collected.kept,
+    }
+
+
+def _report_warnings() -> None:
+    """Send CLIO's warnings to stderr, where Desktop and the installers keep them.
+
+    Without a handler Python prints only bare messages of WARNING and above, losing
+    their logger and the typed ``reason=`` they carry.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    owner = logging.getLogger("clio_agent")
+    owner.addHandler(handler)
+    owner.setLevel(logging.WARNING)
+
+
 def main() -> None:
-    """Run the shared installer step; an incomplete setup exits unsuccessfully."""
+    """Run the installer step; a failed step exits 1 with its message, not a traceback."""
+    _report_warnings()
+    try:
+        _main()
+    except DocumentRuntimeError as error:
+        print(f"CLIO runtime setup failed: {error}", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
+
+
+def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=paths.user_data_dir() / "workspace")
     parser.add_argument(
@@ -212,6 +281,7 @@ def main() -> None:
     if not args.reuse_installed:
         # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
         summary["mcp_cache"] = prune_after_install()
+        summary["marketplace_snapshots"] = collect_snapshots_after_install()
     print(json.dumps(summary), flush=True)
 
 

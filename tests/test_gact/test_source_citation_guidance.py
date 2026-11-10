@@ -56,3 +56,26 @@ def test_rendering_syntax_remains_available_without_a_resolved_workspace(
     text = _composed_prompt()
     assert "Response presentation:" in text
     assert "inline LaTeX uses $$x^2$$" in text
+
+
+def test_the_write_roots_line_names_the_workspace_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Outside a tool call the policy holds only the configured roots (by default the
+    # server's folder); the prompt must still name the session's workspace first.
+    from clio_agent.tools.file_policy import FileAccessPolicy
+
+    workspace_root = tmp_path / "work"
+    workspace_root.mkdir()
+    configured = [str(root) for root in FileAccessPolicy.from_env().allowed_roots]
+    assert str(workspace_root.resolve()) not in configured
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_workspace_catalog_cwd",
+        lambda app, *, session_id: workspace_root,
+    )
+    text = _runtime_active_workspace_context(FastAPI(), session_id="session")
+    line = next(row for row in text.splitlines() if row.startswith("Writes are only permitted"))
+    roots = line.removeprefix("Writes are only permitted under: ").rstrip(".").split(", ")
+    assert roots[0] == str(workspace_root.resolve())
+    assert set(configured) <= set(roots)
+    assert not any("clio-agent/workspaces" in root for root in roots)

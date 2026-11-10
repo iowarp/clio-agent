@@ -4,8 +4,7 @@ Research-pending (#801 owner decision; tracked in
 https://github.com/iowarp/clio-agent/issues/633): the optimizer vertical is
 kept as planned research — state-of-the-art optimization semantics over the
 per-turn invocation corpus — but no optimization run is wired today. Every
-user-facing entry point (the gact ``/optimize`` command, the
-``optimizer_command`` capability-gap row, the ``--tune`` CLI hook) returns
+user-facing entry point (the ``--tune`` CLI hook) returns
 the uniform structured not-implemented payload from
 :mod:`clio_agent.optimizer.stub`. The live piece is :class:`MetricsAggregator`,
 which feeds ``/metrics``.

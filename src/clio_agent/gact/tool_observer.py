@@ -19,10 +19,10 @@ from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
+from clio_agent.gact.call_effects import pop_previous_content, record_call_effects
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
-from clio_agent.gact.file_changes import pop_previous_content, record_file_change
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -70,6 +70,7 @@ _OBSERVER_CALL_IDS: ContextVar[str | None] = ContextVar("observer_call_id", defa
 _OBSERVER_CALL_T0: ContextVar[float | None] = ContextVar("observer_call_started", default=None)
 
 
+from clio_agent.gact.tool_call_nesting import live_call_metadata, nested_call_fields
 from clio_agent.gact.tool_event_identity import (
     _tool_call_event_key as _tool_call_event_key,
 )
@@ -553,6 +554,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "telemetry_source": "live_observer",
                 **representation_fields,
                 **tool_title_fields,
+                **nested_call_fields(),
             }
             _emit_semantic_event(
                 app,
@@ -594,12 +596,7 @@ def _make_tool_observer(app: "FastAPI"):
                     step_id=thought_step_id,
                     head=raw_step_thought[:120],
                 )
-            call_metadata = {
-                "started_at": _iso_from_epoch(started_at),
-                "stream_source": "live",
-                "telemetry_source": "live_observer",
-                **({"thought_step_id": thought_step_id} if thought_step_id else {}),
-            }
+            call_metadata = live_call_metadata(_iso_from_epoch(started_at), thought_step_id)
             # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
             # -- never a hardcoded tool name in this generic path.
             metadata_resolver = tool_call_metadata_resolver(name)
@@ -692,11 +689,11 @@ def _make_tool_observer(app: "FastAPI"):
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
+                **nested_call_fields(),  # a script's call nests under it from any first event
             }
-            # Append to the per-session ledger FIRST -- before the (potentially
-            # I/O-bound, e.g. durable-trace-writing) semantic emit + live parts --
-            # so the turn handler's post-forward drain never races a slow emit and
-            # drops tools_called from the assistant message metadata.
+            # Append to the per-session ledger FIRST -- before the (potentially I/O-bound)
+            # semantic emit + live parts -- so the turn handler's post-forward drain never
+            # races a slow emit and drops tools_called from the assistant message metadata.
             ledger = getattr(app.state, "tool_call_ledger", None)
             if ledger is not None and not completed_after_cancel:
                 ledger.setdefault(sid, []).append(
@@ -777,7 +774,7 @@ def _make_tool_observer(app: "FastAPI"):
                         ),
                     )
                 # A write that ran is on disk even if the turn was cancelled meanwhile.
-                record_file_change(app, sid, name, call_id, error, result, prev, invoking_expert)
+                record_call_effects(app, sid, name, call_id, error, result, prev, invoking_expert)
         return None
 
     return observe

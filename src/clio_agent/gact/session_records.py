@@ -12,7 +12,9 @@ every other record lives in (ARC kind ``session_records``; no other store):
   title, created and interaction times) kept in :data:`INDEX_BUCKETS` bucket
   records (``index/<nn>``, a session's bucket fixed by a hash of its id). A change
   that moves an indexed column also rewrites its one bucket, about 1/64th of the
-  index. The process holds the index in memory (a few hundred bytes per session,
+  index. The columns added since live beside each bucket in ``columns/<nn>``,
+  which an older CLIO does not read (:mod:`~clio_agent.gact.session_index_columns`).
+  The process holds the index in memory (a few hundred bytes per session,
   loaded with :data:`INDEX_BUCKETS` reads when the store is bound), ordered by
   recency, so every view is a query on it: a rail page after a keyset cursor
   (:meth:`SessionRecords.page`), a conversation's tree (:meth:`SessionRecords.family`),
@@ -48,7 +50,7 @@ import time
 import zlib
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import astuple, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -57,7 +59,15 @@ from sortedcontainers import SortedList
 from clio_agent import conf
 from clio_agent.arc.batch_put import PutRecord
 from clio_agent.errors import ClioError
-from clio_agent.gact.session_kind import session_kind
+from clio_agent.gact.session_index_columns import (
+    EXTENSION_STALE_REASON,
+    RecordColumns,
+    base_values,
+    decode_bucket,
+    encode_bucket,
+    extension_name,
+    record_columns,
+)
 from clio_agent.gact.transcript_file import TranscriptNotReadyError
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -96,26 +106,11 @@ class InvalidCursorError(ValueError):
 
 
 class SessionRecordsNotReadyError(TranscriptNotReadyError):
-    """The session records' clio-core store is still attaching (a retryable 503)."""
+    """The session records' clio-core store is still attaching (a retryable 503), or
+    was refused at boot with a typed ``reason`` the message explains."""
 
-    def __init__(self, detail: str) -> None:
-        super().__init__("", NOT_BOUND_REASON, detail)
-
-
-@dataclass(frozen=True)
-class RecordColumns:
-    """The indexed facts of one session (everything else lives in its record)."""
-
-    id: str
-    workspace_id: str
-    parent_session_id: str
-    kind: str
-    archived: bool
-    created_at: str
-    recent_at: str
-    interaction_known: bool
-    status: str = ""
-    title: str = ""
+    def __init__(self, detail: str, reason: str = NOT_BOUND_REASON) -> None:
+        super().__init__("", reason, detail)
 
 
 @dataclass(frozen=True)
@@ -132,6 +127,11 @@ class PageQuery:
     statuses: Optional[frozenset[str]] = None
     #: Case-insensitive substring of the title.
     search: Optional[str] = None
+    #: Only sessions with an active goal or loop / an open execution gate.
+    autonomous: Optional[bool] = None
+    gated: Optional[bool] = None
+    model_selected: Optional[bool] = None
+    memory_runs: Optional[bool] = None
     limit: int = 50
     cursor: Optional[str] = None
 
@@ -145,6 +145,10 @@ class PageQuery:
             and (self.ids is None or row.id in self.ids)
             and (not self.parent_session_id or row.parent_session_id == self.parent_session_id)
             and (not self.search or self.search.casefold() in row.title.casefold())
+            and (self.autonomous is None or row.autonomous == self.autonomous)
+            and (self.gated is None or row.gated == self.gated)
+            and (self.model_selected is None or row.model_selected == self.model_selected)
+            and (self.memory_runs is None or row.memory_runs == self.memory_runs)
         )
 
 
@@ -308,11 +312,16 @@ class SessionRecords:
         self._writer = _Writer(self._memory, inline=True)
         self._bound = threading.Event()
         self._expected = False
+        #: ``(reason, message)`` once boot refused the store (it will never bind).
+        self._refused: Optional[tuple[str, str]] = None
         self._columns: dict[str, RecordColumns] = {}
         self._recent: SortedList = SortedList()  # (recent_at, id)
         self._created: SortedList = SortedList()  # (created_at, id)
         self._children: dict[str, set[str]] = {}
         self._buckets: dict[str, set[str]] = {}
+        #: Rows whose extension columns were not loaded (indexed before they existed,
+        #: or their bucket rewritten by an older CLIO): the column migration fills them.
+        self._unfilled: set[str] = set()
 
     # ---- binding ------------------------------------------------------------
 
@@ -321,9 +330,18 @@ class SessionRecords:
         """Whether the records live in a clio-core store (not only in memory)."""
         return self._bound.is_set()
 
+    @property
+    def readable(self) -> bool:
+        """Whether a read returns now instead of waiting for the store to attach."""
+        return not self._expected or self._bound.is_set() or self._refused is not None
+
     def expect_store(self) -> None:
         """Announce that a clio-core store will be bound: reads wait for it."""
         self._expected = True
+
+    def refuse_store(self, reason: str, message: str) -> None:
+        """Boot refused the store (typed ``reason``): reads fail at once with ``message``."""
+        self._refused = (reason, message)
 
     def bind(self, store: Any) -> None:
         """Move the records into ``store`` and load its index (off the server loop)."""
@@ -334,26 +352,43 @@ class SessionRecords:
             carried = dict(self._memory.data)
             self._writer = _Writer(store)
             for number in range(INDEX_BUCKETS):
-                raw = store.get(KIND, f"{_BUCKET}{number:02d}")
-                for values in json.loads(raw).values() if raw else ():
-                    self._index(RecordColumns(*values))
+                bucket = f"{_BUCKET}{number:02d}"
+                self._load(store.get(KIND, bucket), store.get(KIND, extension_name(bucket)))
+            if self._unfilled:
+                # Read as defaults until the session_record_columns migration fills them.
+                stream_audit(
+                    EXTENSION_STALE_REASON, reason=EXTENSION_STALE_REASON, rows=len(self._unfilled)
+                )
+                logger.warning(
+                    "session index rows without their extension columns reason=%s rows=%d",
+                    EXTENSION_STALE_REASON,
+                    len(self._unfilled),
+                )
             if carried:
                 # Records written before the store was bound (normally none).
-                for name, raw in carried.items():
-                    if name.startswith(_BUCKET):
-                        for values in json.loads(raw).values():
-                            self._index(RecordColumns(*values))
                 buckets = {name for name in carried if name.startswith(_BUCKET)}
-                rows = {name: raw for name, raw in carried.items() if name.startswith(_ROW)}
-                self._writer.submit(
-                    {**rows, **{bucket: self._bucket_body(bucket) for bucket in buckets}}
-                )
+                for bucket in buckets:
+                    self._load(carried[bucket], carried.get(extension_name(bucket)))
+                changes: dict[str, Optional[bytes]] = {
+                    name: raw for name, raw in carried.items() if name.startswith(_ROW)
+                }
+                for bucket in buckets:
+                    changes.update(self._bucket_bodies(bucket))
+                self._writer.submit(changes)
                 self._memory.data.clear()
             self._bound.set()
+
+    def _load(self, base: Optional[bytes], extension: Optional[bytes]) -> None:
+        rows, unfilled = decode_bucket(base, extension)
+        for row in rows:
+            self._index(row)
+        self._unfilled |= unfilled
 
     def _ready(self) -> None:
         if not self._expected or self._bound.is_set():
             return
+        if self._refused is not None:
+            raise SessionRecordsNotReadyError(self._refused[1], self._refused[0])
         if _on_server_loop():
             raise SessionRecordsNotReadyError(
                 "Conversations are stored in clio-core, which is still attaching. Retry shortly."
@@ -379,6 +414,7 @@ class SessionRecords:
         self._buckets.setdefault(bucket_of(row.id), set()).add(row.id)
 
     def _unindex(self, session_id: str) -> None:
+        self._unfilled.discard(session_id)
         old = self._columns.pop(session_id, None)
         if old is None:
             return
@@ -391,10 +427,10 @@ class SessionRecords:
             if not siblings:
                 self._children.pop(old.parent_session_id, None)
 
-    def _bucket_body(self, bucket: str) -> bytes:
-        members = sorted(self._buckets.get(bucket, ()))
-        rows = {sid: list(astuple(self._columns[sid])) for sid in members}
-        return json.dumps(rows, separators=(",", ":")).encode()
+    def _bucket_bodies(self, bucket: str) -> dict[str, Optional[bytes]]:
+        """Both records of ``bucket``: ``index/<nn>`` and its ``columns/<nn>``."""
+        rows = (self._columns[sid] for sid in self._buckets.get(bucket, ()))
+        return dict(encode_bucket(bucket, rows, self._unfilled))
 
     # ---- records ------------------------------------------------------------
 
@@ -404,13 +440,79 @@ class SessionRecords:
         self._ready()
         with self._lock:
             old = self._columns.get(columns.id)
+            was_unfilled = columns.id in self._unfilled
             self._index(columns)
             changes: dict[str, Optional[bytes]] = {_ROW + columns.id: body.encode()}
-            if old != columns:
+            if old != columns or was_unfilled:
                 bucket = bucket_of(columns.id)
-                changes[bucket] = self._bucket_body(bucket)
+                bodies = self._bucket_bodies(bucket)
+                if old is not None and base_values(old) == base_values(columns):
+                    bodies.pop(bucket)  # only extension columns moved: index/<nn> stands
+                changes.update(bodies)
             ticket = self._writer.submit(changes)
         self._settle(ticket)
+
+    def reindex(self, rows: Iterable[RecordColumns], attempted: Iterable[str] = ()) -> int:
+        """Rewrite the index columns of stored sessions (records untouched); returns
+        how many changed. Each touched bucket is written once. Every ``attempted`` id
+        is filled afterwards: one whose record could not be read (reported by its
+        reader) keeps the columns it has instead of staying owed."""
+
+        self._ready()
+        changed = 0
+        with self._lock:
+            buckets: set[str] = set()
+            for columns in rows:
+                if columns.id not in self._columns:
+                    continue
+                if self._columns[columns.id] != columns:
+                    self._index(columns)
+                    changed += 1
+                elif columns.id not in self._unfilled:
+                    continue
+                self._unfilled.discard(columns.id)
+                buckets.add(bucket_of(columns.id))
+            for sid in attempted:
+                if sid in self._unfilled:
+                    self._unfilled.discard(sid)
+                    buckets.add(bucket_of(sid))
+            if not buckets:
+                return 0
+            changes: dict[str, Optional[bytes]] = {}
+            for bucket in sorted(buckets):
+                changes.update(self._bucket_bodies(bucket))
+            ticket = self._writer.submit(changes)
+        self._settle(ticket)
+        return changed
+
+    def unfilled_ids(self) -> list[str]:
+        """The rows whose extension columns are not loaded (no record is read)."""
+        with self._lock:
+            return sorted(self._unfilled)
+
+    def columns(self, query: PageQuery) -> list[RecordColumns]:
+        """The index columns of every session matching ``query`` (no record is read)."""
+
+        with self._lock:
+            return [self._columns[sid] for sid in self.select(query)]
+
+    def totals(self) -> dict[str, Any]:
+        """Session counts by status and the summed counters, from the index alone."""
+
+        self._ready()
+        with self._lock:
+            rows = list(self._columns.values())
+        by_status: dict[str, int] = {}
+        for row in rows:
+            by_status[row.status] = by_status.get(row.status, 0) + 1
+        return {
+            "total": len(rows),
+            "by_status": by_status,
+            "messages": sum(row.message_count for row in rows),
+            "tokens_input": sum(row.tokens_input for row in rows),
+            "tokens_output": sum(row.tokens_output for row in rows),
+            "cost_usd": sum(row.cost_usd for row in rows),
+        }
 
     def delete(self, session_id: str) -> None:
         """Remove one session's record and its index entry."""
@@ -419,9 +521,7 @@ class SessionRecords:
         with self._lock:
             self._unindex(session_id)
             bucket = bucket_of(session_id)
-            ticket = self._writer.submit(
-                {_ROW + session_id: None, bucket: self._bucket_body(bucket)}
-            )
+            ticket = self._writer.submit({_ROW + session_id: None, **self._bucket_bodies(bucket)})
         self._settle(ticket)
 
     def _settle(self, ticket: int) -> None:
@@ -574,13 +674,15 @@ class SessionRecords:
                 tree.update(dict.fromkeys(frontier))
         return [*tree, *(sid for sid in chain if sid not in tree)]
 
-    def related_ids(self, family_of: str = "") -> list[str]:
+    def related_ids(self, family_of: str = "", waiting: Iterable[str] = ()) -> list[str]:
         """``family_of``'s tree (:meth:`family`); without it, the sessions waiting on a
-        person (:data:`WAITING_ON_PERSON`) and every ancestor of them."""
+        person (:data:`WAITING_ON_PERSON`, plus ``waiting``: sessions with an open request
+        that parks no turn, such as a sandbox folder card) and every ancestor of them."""
 
         if family_of:
             return self.family(family_of)
-        return self.ancestors(self.select(PageQuery(archived=None, statuses=WAITING_ON_PERSON)))
+        by_status = self.select(PageQuery(archived=None, statuses=WAITING_ON_PERSON))
+        return self.ancestors(dict.fromkeys([*by_status, *waiting]))
 
     # ---- legacy import (the session_records_import store migration) -------
 
@@ -623,7 +725,8 @@ class SessionRecords:
                 self._index(record_columns(session))
                 changes[_ROW + session.id] = json.dumps(payload, sort_keys=True).encode()
                 buckets.add(bucket_of(session.id))
-            changes.update({bucket: self._bucket_body(bucket) for bucket in buckets})
+            for bucket in buckets:
+                changes.update(self._bucket_bodies(bucket))
             ticket = self._writer.submit(changes) if changes else 0
         if ticket and not self._writer.wait(ticket, _WRITE_WAIT_SECONDS):
             raise TimeoutError(f"{WRITE_FAILED_REASON}: the legacy import did not land")
@@ -635,24 +738,6 @@ class SessionRecords:
             sessions=imported,
         )
         return {"sessions": imported}
-
-
-def record_columns(session: Any) -> RecordColumns:
-    """The indexed columns of ``session`` (the views' filters and recency)."""
-
-    return RecordColumns(
-        id=session.id,
-        workspace_id=session.workspace_id,
-        parent_session_id=session.parent_session_id,
-        kind=session_kind(session),
-        archived=bool(session.archived),
-        created_at=session.created_at,
-        # The recency the wire shows (protocol.v3.session.session_to_v3).
-        recent_at=session.last_interaction_at or session.created_at,
-        interaction_known=bool(session.last_interaction_at),
-        status=str(session.status or ""),
-        title=str(session.title or ""),
-    )
 
 
 def cache_capacity() -> int:

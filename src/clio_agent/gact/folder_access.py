@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact import permission_timeout
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.runtime.check_scope import checked
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 if TYPE_CHECKING:
@@ -49,14 +50,15 @@ def bind_folder_gate(app: FastAPI, gate: Callable[..., str]) -> Callable[..., st
     return grounded
 
 
+@checked
 def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
     """Return denied folders for declared built-in path arguments, without reading files."""
     paths: list[tuple[str, bool]] = []
     if name in {"fs_read_file", "fs_write_file", "fs_edit_file"}:
-        value = args.get("filepath")
+        value = args.get("path")
         if isinstance(value, str) and value:
             paths.append((value, False))
-    elif name in {"fs_list_directory", "fs_search_text"}:
+    elif name in {"fs_list_directory", "fs_search_text", "fs_glob"}:
         value = args.get("path") or "."
         if isinstance(value, str) and value:
             paths.append((value, Path(value).expanduser().is_dir()))
@@ -86,6 +88,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
             "fs_read_file",
             "fs_list_directory",
             "fs_search_text",
+            "fs_glob",
             "shell_bash",
         }
         policy._check_connected_storage(path, field="path", write=not reads_source)
@@ -154,8 +157,8 @@ def request_folder_access(
             "workspace_id": wid,
             "operation": name,
             "command": str(args.get("command") or ""),
-            "paths": [str(args["filepath"])]
-            if "filepath" in args
+            "paths": [str(args["path"])]
+            if "path" in args
             else list(args.get("access_paths") or []),
             "cwd": str(args.get("cwd") or getattr(session, "workspace_root", "") or ""),
             "reason": str(

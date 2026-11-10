@@ -83,11 +83,18 @@ def quarantine_session(
     trace.event("SPOTTER", "spotter_quarantine_started session=%s part=%s", sid, part_id)
     if sess is not None:
         _publish(app, sid, sess, "spotter_quarantine_started")
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.errors import ClioError  # noqa: PLC0415
     from clio_agent.gact.routes.session_cancellation import cancel_session_state  # noqa: PLC0415
 
     try:
         cancel_session_state(app, None, sid)
-    except Exception as exc:  # noqa: BLE001 - the hold stands even if the stop fails
+    except (HTTPException, ValueError, RuntimeError, OSError, ClioError) as exc:
+        # The hold stands even if the stop fails: the session is gone (HTTPException
+        # 404), its task is no longer controllable (TaskAccessDenied, a ValueError), the
+        # application loop is closed or this turn was stopped (RuntimeError), or the
+        # store refused the write (OSError, ClioError).
         logger.warning("spotter_quarantine_stop_failed session=%s error=%s", sid, exc)
     return True
 
@@ -107,7 +114,36 @@ def lift_quarantine(app: "FastAPI", sid: str) -> dict[str, Any] | None:
     return lifted
 
 
+def register_quarantine_routes(app: "FastAPI") -> None:
+    """Register ``POST /v1/sessions/{sid}/spotter/quarantine/lift``: the person lifts it."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    @app.post("/v1/sessions/{sid}/spotter/quarantine/lift")
+    async def lift_spotter_quarantine(sid: str) -> dict[str, Any]:
+        """Returns the lifted record. 404 for an unknown session; 409 when no quarantine
+        is active (already lifted, or never raised)."""
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(status_code=404, detail="Session unavailable")
+        lifted = await app.state.task_history.io.run(lift_quarantine, app, sid)
+        if lifted is None:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="spotter_quarantine_not_active",
+                        message="This session is not in quarantine.",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"session_id": sid, "quarantine": lifted}
+
+
 __all__ = [
+    "register_quarantine_routes",
     "QUARANTINE_KEY",
     "QUARANTINE_MESSAGE",
     "QUARANTINE_REASON",

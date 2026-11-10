@@ -60,7 +60,7 @@ def test_gate_asks_in_default_mode_and_allows_in_auto_edits(
     with TestClient(app) as client:
         sid = workspace_session(client, root, approval_mode="ask")
         gate = _make_permission_gate(app)
-        args = {"filepath": str(root / "a.txt"), "content": "x"}
+        args = {"path": str(root / "a.txt"), "content": "x"}
         decision: list[str] = []
 
         def _call() -> None:
@@ -166,10 +166,10 @@ def test_claude_code_write_guard_receives_the_write_and_its_deny_blocks_it(
     target.write_text("original\n", encoding="utf-8")
     agent = WritingAgent()
     agent.calls = [
-        ("fs_write_file", {"filepath": str(target), "content": "clobbered\n"}),
+        ("fs_write_file", {"path": str(target), "content": "clobbered\n"}),
         (
             "fs_edit_file",
-            {"filepath": str(target), "old_string": "original", "new_string": "edited"},
+            {"path": str(target), "old_string": "original", "new_string": "edited"},
         ),
     ]
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -220,7 +220,7 @@ def test_hook_deny_reaches_the_gate_decision(tmp_path: Path, root: Path) -> None
             sid = workspace_session(client, root, approval_mode="bypass")
             with _gact_app_context(app), _tool_session_context(sid):
                 decision = _make_permission_gate(app)(
-                    "fs_write_file", {"filepath": str(root / "x"), "content": "y"}
+                    "fs_write_file", {"path": str(root / "x"), "content": "y"}
                 )
     finally:
         install_global_dispatcher(None)
@@ -252,8 +252,8 @@ def test_writes_are_recorded_as_applied_diffs_and_undo_restores(tmp_path: Path, 
         tmp_path,
         root,
         [
-            ("fs_edit_file", {"filepath": str(edited), "old_string": "beta", "new_string": "B"}),
-            ("fs_write_file", {"filepath": str(created), "content": "fresh\n"}),
+            ("fs_edit_file", {"path": str(edited), "old_string": "beta", "new_string": "B"}),
+            ("fs_write_file", {"path": str(created), "content": "fresh\n"}),
         ],
     )
     try:
@@ -271,6 +271,10 @@ def test_writes_are_recorded_as_applied_diffs_and_undo_restores(tmp_path: Path, 
         assert {d["message_id"] for d in diffs} == {assistant["id"]}
         assert {d["part_id"] for d in diffs} == {p["id"] for p in parts}
         assert "+B" in diffs[0]["unified_diff"]
+        # A created file's tool result carries no diff (the model wrote the content), but
+        # the person sees the whole new file as added lines, on the part and the row.
+        assert diffs[1]["unified_diff"].splitlines()[-1] == "+fresh"
+        assert parts[1]["unified_diff"] == diffs[1]["unified_diff"]
         # The previous text never rides a wire or the tool-call ledger.
         assert "previous_content" not in json.dumps(diffs)
         assert "_clio_previous_content" not in json.dumps(assistant)
@@ -306,7 +310,7 @@ def test_undo_refuses_when_the_file_changed_since_the_write(tmp_path: Path, root
     target = root / "data.txt"
     target.write_text("one\n", encoding="utf-8")
     app, client, sid, _assistant, _agent = _run_writes(
-        tmp_path, root, [("fs_write_file", {"filepath": str(target), "content": "two\n"})]
+        tmp_path, root, [("fs_write_file", {"path": str(target), "content": "two\n"})]
     )
     try:
         [row] = client.get(f"/v1/sessions/{sid}/diffs").json()["diffs"]
@@ -330,7 +334,7 @@ def test_undo_unavailable_when_the_previous_content_was_too_large(
     target = root / "big.txt"
     target.write_text("x" * (UNDO_CAPTURE_MAX_BYTES + 1), encoding="utf-8")
     app, client, sid, _assistant, _agent = _run_writes(
-        tmp_path, root, [("fs_write_file", {"filepath": str(target), "content": "small\n"})]
+        tmp_path, root, [("fs_write_file", {"path": str(target), "content": "small\n"})]
     )
     try:
         [row] = client.get(f"/v1/sessions/{sid}/diffs").json()["diffs"]

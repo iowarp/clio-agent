@@ -91,7 +91,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code
+      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code --extra copilot
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/mcp_mem_attribution.py
       # Formatting is checked, never rewritten by CI: drift fails the job and the
       # author runs `uv run ruff format src/ tests/ scripts/` locally.
@@ -108,6 +108,14 @@ jobs:
         run: uv run python scripts/check_no_class_in_function.py
       - name: "guard: no delegation-summary vocabulary (baseline 0) (#880)"
         run: uv run python scripts/check_no_summaries.py
+      # The marketplace this clio-agent carries (the pinned external/clio-agent-marketplace)
+      # must install against it: every plugin loads and every agent resolves, so a tool,
+      # skill or fragment a plugin declares exists in this checkout.
+      - name: "plugin check: the pinned marketplace"
+        if: matrix.python-version == '3.14'
+        env:
+          CLIO_PLUGIN_STORE: ${{ runner.temp }}/clio-plugin-store
+        run: uv run clio-agent plugin check external/clio-agent-marketplace
       - name: "guard: no settle/synthesis routing vocabulary (baseline 0) (#948)"
         run: uv run python scripts/check_no_settle_vocabulary.py
       - name: "guard: no elicitationId residue (baseline 0) (SEP-2577, C1-S4 #1284)"
@@ -165,11 +173,17 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code
+      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code --extra copilot
       # These provider contracts must execute against the locked real SDK,
       # rather than silently importorskip in the regular regression matrix.
       - name: Require the Claude SDK provider contract dependency
         run: uv run python -c "import claude_agent_sdk"
+      # The file search and glob tools run the pinned ripgrep, which package preparation
+      # installs ahead of time (clio_agent.runtime.ripgrep). The runner has none, and unit
+      # tests may not download it (tests/_network_guard.py), so prepare it here the same
+      # way: verified official bytes, then on PATH for the suite.
+      - name: Install the pinned ripgrep the file search tools run
+        run: dirname "$(uv run python -m clio_agent.runtime.ripgrep)" >> "$GITHUB_PATH"
       # Coverage flags are explicit here on purpose: pyproject addopts is empty so
       # local pytest runs stay lean (iowarp/clio-agent#773). Each shard records
       # branch coverage; the coverage job below combines the shards and checks the
@@ -296,5 +310,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --extra dev --extra optimizers --extra claude-code
+      - run: uv sync --extra dev --extra optimizers --extra claude-code --extra copilot
       - run: uv run python -B scripts/run_tests.py -m concurrency -n 4 --dist loadfile --count 3 -p no:cacheprovider -rs

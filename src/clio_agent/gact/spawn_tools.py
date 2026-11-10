@@ -7,6 +7,7 @@ same path flows use. No agent-only wait or cancel catalog lives here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,59 @@ from clio_agent.gact.task_declarations import _STRING, _runtime, _tool
 from clio_agent.tools.task_call_context import TASK_CALL
 
 logger = logging.getLogger(__name__)
+
+
+async def spawn_child(
+    app: Any,
+    caller: Any,
+    agent: str,
+    task: str,
+    invocation: str,
+    *,
+    input_task_ids: list[str] | None = None,
+    strategy: dict[str, Any] | None = None,
+    model: str = "",
+    name: str = "",
+    concurrency: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Start ``agent`` on ``task`` for ``caller``: the spawn tools' path, and the person's.
+
+    Only who ``caller`` is differs between the two: the spawn tools resolve the calling
+    agent, a person's summons name the conversation they wrote in (``metadata`` then
+    says the person started it).
+    """
+    from clio_agent.gact.assignment_evidence import select_assignment_evidence
+
+    target = str(agent or "").strip() or "self"
+    if not isinstance(name, str):
+        raise ValueError("name must be a string")
+    child_name = name.strip()
+    session_metadata: dict[str, Any] = dict(metadata or {})
+    if child_name:
+        session_metadata["subagent_name"] = child_name
+    if target == "self":
+        # A copy of the caller runs react, never the caller's selected flow (D14).
+        session_metadata["agent_flow"] = {"id": "react", "options": {}}
+    pins = await app.state.task_history.io.run(
+        select_assignment_evidence, app.state.task_history, caller, input_task_ids
+    )
+    result = await app.state.conversations.spawn(
+        caller,
+        task,
+        target,
+        invocation,
+        inference_concurrency=concurrency,
+        strategy=strategy,
+        launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
+        session_metadata=session_metadata or None,
+        model=str(model or "").strip(),
+    )
+    return {
+        **result,
+        **({"task_id": result["handle"]} if "handle" in result else {}),
+        **accepted_model(app, result),
+    }
 
 
 def build_spawn_runtime_tools(
@@ -54,37 +108,31 @@ def build_spawn_runtime_tools(
         model: str = "",
         name: str = "",
     ) -> dict[str, Any]:
+        from clio_agent.gact import summon  # noqa: PLC0415
+
         local_placement(placement)
         app, caller = _runtime()
-        from clio_agent.gact.assignment_evidence import select_assignment_evidence
-
-        target = str(agent or "").strip() or "self"
-        if not isinstance(name, str):
-            raise ValueError("name must be a string")
-        child_name = name.strip()
-        metadata: dict[str, Any] = {"subagent_name": child_name} if child_name else {}
-        if target == "self":
-            # A copy of the caller runs react, never the caller's selected flow (D14).
-            metadata["agent_flow"] = {"id": "react", "options": {}}
-        pins = await app.state.task_history.io.run(
-            select_assignment_evidence, app.state.task_history, caller, input_task_ids
-        )
-        result = await app.state.conversations.spawn(
-            caller,
-            task,
-            target,
-            invocation,
-            inference_concurrency=concurrency,
-            strategy=strategy,
-            launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
-            session_metadata=metadata or None,
-            model=str(model or "").strip(),
-        )
-        return {
-            **result,
-            **({"task_id": result["handle"]} if "handle" in result else {}),
-            **accepted_model(app, result),
-        }
+        # A subagent the person @-named this turn: the person is recorded as its starter.
+        claimed = summon.claim(summon.SUBAGENT, str(agent or "").strip())
+        try:
+            result = await spawn_child(
+                app,
+                caller,
+                agent,
+                task,
+                invocation,
+                input_task_ids=input_task_ids,
+                strategy=strategy,
+                model=model,
+                name=name,
+                concurrency=concurrency,
+                metadata=summon.child_metadata(claimed) or None,
+            )
+        except Exception as error:
+            summon.started(claimed, {"error": str(error)})
+            raise
+        summon.started(claimed, result)
+        return result
 
     async def spawn_agent_task(
         task: str,
@@ -109,34 +157,42 @@ def build_spawn_runtime_tools(
     async def spawn_agents_parallel(
         spawns: list[dict[str, Any]],
         placement: str | None = None,
+        wait: bool = False,
     ) -> dict[str, Any]:
         local_placement(placement)
         maximum = limits.get("max_items", 0)
         if not spawns or maximum and len(spawns) > maximum:
             raise ValueError("Spawn batch is empty or exceeds its declared item budget")
         invocation = TASK_CALL.get().invocation_id or uuid4().hex
-        outcomes = []
-        for index, assignment in enumerate(spawns):
+
+        async def one(index: int, assignment: dict[str, Any]) -> dict[str, Any]:
             try:
-                outcomes.append(
-                    await prepare_and_spawn(
-                        assignment.get("agent") or "",
-                        assignment["task"],
-                        placement,
-                        assignment.get("input_task_ids"),
-                        assignment.get("strategy"),
-                        invocation + ":" + str(index),
-                        assignment.get("model") or "",
-                        assignment.get("name") or "",
-                    )
+                return await prepare_and_spawn(
+                    assignment.get("agent") or "",
+                    assignment["task"],
+                    placement,
+                    assignment.get("input_task_ids"),
+                    assignment.get("strategy"),
+                    invocation + ":" + str(index),
+                    assignment.get("model") or "",
+                    assignment.get("name") or "",
                 )
             except Exception as error:
                 logger.exception(
                     "Task boundary reason=group_member_control_failed error_type=%s",
                     type(error).__name__,
                 )
-                outcomes.append({"index": index, "error": str(error)})
-        return {"spawned": outcomes, "outcomes": outcomes}
+                return {"index": index, "error": str(error)}
+
+        # The children start together; each keeps its own index, handle and error.
+        outcomes = list(
+            await asyncio.gather(*(one(i, assignment) for i, assignment in enumerate(spawns)))
+        )
+        if not wait:
+            return {"spawned": outcomes, "outcomes": outcomes}
+        from clio_agent.gact.spawn_batch_wait import wait_for_batch  # noqa: PLC0415
+
+        return await wait_for_batch(outcomes)
 
     async def fork(note: str, title: str | None = None) -> dict[str, Any]:
         from clio_agent.gact.agent_fork import fork_caller  # noqa: PLC0415
@@ -187,7 +243,9 @@ def build_spawn_runtime_tools(
         "description": (
             "The model the child runs on: account/model or a model id from list_models. "
             "Empty: the child's own preference, else your model. A model that cannot run "
-            "the child is refused with the reason."
+            "the child is refused with the reason. If you use explore or another search "
+            "child, prefer a fast, cheap model for performance and speed (list_models "
+            "marks them fast)."
         ),
     }
     tools = [
@@ -210,7 +268,7 @@ def build_spawn_runtime_tools(
                 "strategy": strategy_schema,
                 "model": model_schema,
             },
-            "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
+            "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Delegate work that can run in parallel and reading you need only the conclusion of: what you read yourself stays in your context for the rest of the task, while a child returns only its report. A child also costs time of its own: it starts fresh, works on its own model (named in the result), and ends by writing its report, which you then read and answer from; a search you can finish in a few wide steps, or with one run_code script, is usually faster done yourself. Do a lookup whose file you already know yourself. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
         )
     ]
     tools.append(
@@ -219,6 +277,12 @@ def build_spawn_runtime_tools(
             "spawn_agents_parallel",
             {
                 "placement": _STRING,
+                "wait": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "true: return once every child has finished, with each "
+                    "child's report in this result, whole (saved to a file only if it would not fit your context).",
+                },
                 "spawns": {
                     "type": "array",
                     "minItems": 1,
@@ -246,7 +310,7 @@ def build_spawn_runtime_tools(
                     },
                 },
             },
-            "Accept several child assignments and return their Subagent handles with independent errors. Native inference budgets apply only to model calls. Use shared observation or waiting across the returned handles.",
+            "Start several child assignments at once, such as one explore child per area of a survey, and return their Subagent handles with independent errors; with wait=true, return when all have finished, with each child's report. Native inference budgets apply only to model calls. Without wait, use shared observation or waiting across the returned handles.",
         )
     )
     tools.append(

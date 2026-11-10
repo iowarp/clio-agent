@@ -29,7 +29,12 @@ from clio_agent.providers.capabilities.accessor import clear_cache
 def _reset(monkeypatch: pytest.MonkeyPatch) -> Any:
     invalidation.clear_all()
     clear_cache()
-    for name in ("CLIO_LM_PROVIDER", "CLIO_LM_MODEL", "CLIO_LM_API_BASE"):
+    for name in (
+        "CLIO_LM_PROVIDER",
+        "CLIO_LM_MODEL",
+        "CLIO_LM_API_BASE",
+        "CLIO_LM_PROVIDER_OPTIONS",
+    ):
         monkeypatch.delenv(name, raising=False)
     yield
     invalidation.clear_all()
@@ -138,6 +143,72 @@ def test_switching_provider_replaces_the_previous_selection_keys(
     assert lm["claude_code_transport"] == "sdk"
     assert "codex_transport" not in lm
     assert "api_base" not in lm  # preset default applies
+
+
+def test_a_provider_option_set_in_the_picker_survives_a_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Show diffusion lived only in memory: every restart turned it off without a word.
+    from clio_agent.gact.providers.selection_store import (  # noqa: PLC0415
+        persist_lm_selection,
+    )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-not-persisted")
+    bound = SimpleNamespace(
+        provider="openai",
+        provider_id="openrouter",
+        model="inception/mercury-3",
+        provider_options={"show_diffusion": "on"},
+    )
+    assert persist_lm_selection(bound, requested_api_base="").persisted
+    assert _user_config()["lm"]["provider_options"] == {"show_diffusion": "on"}
+
+    conf.reload()
+    restored = load_config_from_env()
+    assert restored.provider_id == "openrouter"
+    assert restored.model == "inception/mercury-3"
+    assert restored.provider_options == {"show_diffusion": "on"}
+
+
+def test_a_saved_option_the_provider_does_not_offer_is_refused_at_boot() -> None:
+    from clio_agent.gact.providers.selection_store import (  # noqa: PLC0415
+        persist_lm_selection,
+    )
+
+    bound = SimpleNamespace(
+        provider="openai",
+        provider_id="vllm",
+        model="served-model",
+        provider_options={"show_diffusion": "on"},
+    )
+    assert persist_lm_selection(bound, requested_api_base="http://127.0.0.1:1/v1").persisted
+
+    conf.reload()
+    with pytest.raises(ValueError, match="show_diffusion"):
+        load_config_from_env()
+
+
+def test_a_bind_without_provider_options_clears_the_saved_ones(
+    tmp_path: Path, stub_bind: None
+) -> None:
+    from clio_agent.gact.providers.selection_store import (  # noqa: PLC0415
+        persist_lm_selection,
+    )
+
+    openrouter = SimpleNamespace(
+        provider="openai",
+        provider_id="openrouter",
+        model="inception/mercury-3",
+        provider_options={"show_diffusion": "on"},
+    )
+    assert persist_lm_selection(openrouter, requested_api_base="").persisted
+    assert _user_config()["lm"]["provider_options"] == {"show_diffusion": "on"}
+
+    vllm = SimpleNamespace(
+        provider="openai", provider_id="vllm", model="served-model", provider_options={}
+    )
+    assert persist_lm_selection(vllm, requested_api_base="").persisted
+    assert "provider_options" not in _user_config()["lm"]
 
 
 def test_an_unwritable_config_is_a_typed_reason_not_a_silent_loss(

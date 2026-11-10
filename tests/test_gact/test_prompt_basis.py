@@ -124,22 +124,32 @@ def test_compact_with_nothing_to_fold_applies_the_change_at_once(
 
 
 def test_a_completed_compaction_settles_a_held_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A compaction settles a held plugin change but leaves loaded tools off the list:
+    it keeps the cached system prompt and tools, and listing them changed the tool list
+    at the next turn, a second whole-prompt cache write (L1P). SABOTAGE: promote them
+    at compaction and ``promote_loaded`` is True."""
     from clio_agent.gact import compaction
 
-    settled: list[str] = []
-    monkeypatch.setattr(prompt_basis, "settle_basis", lambda app, sid: settled.append(sid))
+    settled: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        prompt_basis,
+        "settle_basis",
+        lambda app, sid, promote_loaded=True: settled.append((sid, promote_loaded)),
+    )
     sessions = SimpleNamespace(get=lambda sid: object())
     app = SimpleNamespace(state=SimpleNamespace(sessions=sessions, arc=object()))
     monkeypatch.setattr(compaction.history_mode, "active", lambda: False)
     monkeypatch.setattr(compaction, "_open_turn_id", lambda app, sid: "")
     monkeypatch.setattr(compaction, "_scopes", lambda app, sid, scope: ["main"])
     app.state.arc = SimpleNamespace(render_working_set=lambda sid, scope: ["segment"])
-    monkeypatch.setattr(compaction, "_plan", lambda app, sid, scope, turn: object())
+    monkeypatch.setattr(
+        compaction, "_plan", lambda app, sid, scope, turn: SimpleNamespace(scope=scope)
+    )
     monkeypatch.setattr(compaction, "_compact_scope", lambda *args: {"compaction_id": "c1"})
 
     result = compaction.compact_session_context(app, "sess_1", trigger="auto")
 
-    assert result["compacted"] is True and settled == ["sess_1"]
+    assert result["compacted"] is True and settled == [("sess_1", False)]
 
 
 def test_apply_mode_is_validated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

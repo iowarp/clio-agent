@@ -226,7 +226,6 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
         tools=[row["name"] for row in resolution.tools],
         skills=[row["id"] for row in resolution.skills],
         # An agent may invoke exactly the commands its plugins ship.
-        commands=[row["id"] for row in resolution.commands],
         parameters=parameters,
         metadata=metadata,
         tier=2 if agent.get("kind") == "subagent" else 1,
@@ -240,10 +239,18 @@ def session_agent_def(app: Any, session_id: str) -> AgentDef:
     is withheld at build time; its prompt fragment leaves with it (memory ledger MD8).
     """
 
+    from clio_agent.plugins.compose_final import final_prompt_text  # noqa: PLC0415
+
     resolution = session_resolution(app, session_id)
-    agent_def = withhold_session_tools(
-        app, session_id, resolution_agent_def(resolution), resolution
+    agent_def = withhold_session_tools(app, session_id, resolution_agent_def(resolution))
+    withheld = session_withheld_tools(app, session_id, resolution.tool_names)
+    prompt = final_prompt_text(
+        agent_def.system_prompt,
+        resolution.prompt,
+        [name for name in resolution.tool_names if name not in withheld],
+        delegated=session_is_delegated(app, session_id),
     )
+    agent_def = agent_def.model_copy(update={"system_prompt": prompt})
     return apply_session_tool_allowlist(app, agent_def, session_id=session_id)
 
 
@@ -269,24 +276,17 @@ def session_is_delegated(app: Any, session_id: str) -> bool:
     return session is not None and session_kind(session) == "agent"
 
 
-def withhold_session_tools(
-    app: Any, session_id: str, agent_def: AgentDef, *resolutions: Resolution
-) -> AgentDef:
-    """``agent_def`` without the memory tools this session may not have, and their
-    prompt fragments (memory ledger MD8), and without the fragments scoped to the
-    other kind of session (``when.session``). ``resolutions`` composed its prompt.
+def withhold_session_tools(app: Any, session_id: str, agent_def: AgentDef) -> AgentDef:
+    """``agent_def`` without the memory tools this session may not have (memory ledger
+    MD8). Their prompt fragments go when the builder composes the prompt for the final
+    tools (:mod:`clio_agent.gact.agents.agent_prompt`), as do the fragments scoped to the
+    other kind of session (``when.session``).
     """
-    from clio_agent.plugins.compose import prompt_text_without  # noqa: PLC0415
-
     withheld = set(session_withheld_tools(app, session_id, agent_def.tools))
-    delegated = session_is_delegated(app, session_id)
-    prompt = agent_def.system_prompt
-    for resolution in resolutions:
-        prompt = prompt_text_without(prompt, resolution.prompt, withheld, delegated=delegated)
-    if not withheld and prompt == agent_def.system_prompt:
+    if not withheld:
         return agent_def
     tools = [name for name in agent_def.tools if name not in withheld]
-    return agent_def.model_copy(update={"system_prompt": prompt, "tools": tools})
+    return agent_def.model_copy(update={"tools": tools})
 
 
 def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentDef | None:

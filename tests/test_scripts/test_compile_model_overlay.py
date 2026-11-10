@@ -32,7 +32,7 @@ def test_real_seed_files_all_validate_against_the_schema() -> None:
     schema = c._load_schema(c.OVERLAY_SCHEMA_PATH)
     validator = Draft202012Validator(schema)
     files = c._family_files()
-    assert len(files) == 20
+    assert len(files) == 21
     for path in files:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         errors = list(validator.iter_errors(raw))

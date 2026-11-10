@@ -91,8 +91,11 @@ def create_test_runtime(
         "XDG_STATE_HOME": state_dir / "xdg",
         "XDG_CONFIG_HOME": state_dir / "config",
         "XDG_DATA_HOME": state_dir / "data",
-        "LOCALAPPDATA": state_dir / "local",
-        "APPDATA": state_dir / "roaming",
+        # The profile keeps Windows' own layout: the Known Folder API resolves AppData from
+        # USERPROFILE and refuses a folder that does not exist, so a program asking for it
+        # (Tectonic, through the `directories` crate) finds it under the test's profile.
+        "LOCALAPPDATA": state_dir / "home" / "AppData" / "Local",
+        "APPDATA": state_dir / "home" / "AppData" / "Roaming",
         "HOME": state_dir / "home",
         "USERPROFILE": state_dir / "home",
         "CLIO_USER_DIR": state_dir / "clio",

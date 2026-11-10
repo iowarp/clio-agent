@@ -1,40 +1,52 @@
 """``policy_violation`` provenance — the #966 ``gap`` node's enforced-tier variant (#976/B2).
 
 On the honest floor (#966/B1) an out-of-root write SUCCEEDS and is recorded as a ``gap``
-version (mechanism ``none``, actor unknown). B2 activates OS write-fences (srt / Landlock),
-so the SAME attempt now surfaces differently and MORE precisely:
+version (mechanism ``none``, actor unknown). B2 activates OS write-fences, so the SAME
+attempt now surfaces differently and MORE precisely:
 
-* the fence DENIED the write (the shell/tool result carries an ``EROFS``/``EACCES`` from the
-  fenced child, or a designated out-of-root path is absent post-call) → a typed
-  ``policy_violation`` (``prevented``): attributed to the child/tool ``call_id``, the path,
-  the call window and the DENYING mechanism — never silently a gap;
-* a fenced platform still OBSERVES an out-of-root change (the fence was escaped) →
-  ``policy_violation(detected)`` — worse than prevented, and recorded as such.
+* the fence DENIED the write → a typed ``policy_violation`` (``prevented``): attributed to the
+  child/tool ``call_id``, the path, the call window and the DENYING mechanism — never silently
+  a gap. The denial is read from the ONE sandbox-boundary diagnosis
+  (:mod:`clio_agent.runtime.sandbox_diagnosis`, #1905) the confined seam attached to its
+  result as ``boundary`` (the shell, ``run_code``), checked against the roots that seam gave
+  its fence. A confined stdio MCP server cannot attach one, so for a call such a server
+  served (``resolve_serving_child_id``) and that failed, the diagnosis is made here from its
+  error text with the recomputed fleet roots, at ``possible`` confidence, and published for
+  the model's observation of that call. An in-process tool is not fenced, so its denial is
+  never one;
+* a designated out-of-root output path is absent post-call → ``prevented``; present and
+  provably fresh → ``detected`` (the fence was escaped) — worse than prevented, and recorded
+  as such.
 
 The mint logic lives HERE (the artifacts owner package); :mod:`clio_agent.runtime.sandbox`
 only exposes the resolved state. Violations are DURABLE-ONLY this slice — emitted as the
 trace-only ``artifact.policy_violation`` event (registered in
-``semantic_events.SSE_TRACE_ONLY_EVENT_TYPES``) and appended to a bounded per-app ledger;
-the SSE listing / lineage-node projection waits for B5's SPEC rider.
-
-VIOLATION MAPPING (owner note #974 spike): a bwrap denial surfaces as ``EROFS``
-("Read-only file system"), NOT ``PermissionError`` — so this catches errno **EROFS + EACCES**;
-B3 (#977) adds the Windows srt ACL/WFP denial **WinError 5 / ERROR_ACCESS_DENIED** (a separate
-namespace from POSIX errno). The signal fires ONLY when a fence is active, so the floor never
-mints a violation (its out-of-root write is an honest gap, as before).
+``semantic_events.SSE_TRACE_ONLY_EVENT_TYPES``) and appended to a bounded per-app ledger.
+The signal fires ONLY when a fence is active, so the floor never mints a violation (its
+out-of-root write is an honest gap, as before).
 """
 
 from __future__ import annotations
 
-import errno
 import logging
-import os
-import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, ConfigDict
+
+from clio_agent.runtime.sandbox_diagnosis import (
+    KIND_WRITE_DENIED,
+    BoundaryDiagnosis,
+    diagnose_boundary,
+    hedged,
+    nearest_existing_parent,
+    publish_call_boundary,
+    result_boundary,
+    result_text,
+    within_roots,
+    write_denied_message,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -49,8 +61,6 @@ POLICY_VIOLATION_EVENT = "artifact.policy_violation"
 VIOLATION_PREVENTED = "prevented"  # the fence blocked the out-of-root write
 VIOLATION_DETECTED = "detected"  # the fence was escaped — a change happened anyway
 
-#: The write-denial errnos a fence surfaces (owner note #974 spike). WinError 5 is B3's.
-_DENIAL_ERRNOS: dict[int, str] = {errno.EROFS: "EROFS", errno.EACCES: "EACCES"}
 #: Bounded ledger cap (a pathological session cannot grow it unboundedly).
 _LEDGER_MAX = 256
 
@@ -72,119 +82,18 @@ class PolicyViolation(BaseModel):
     session_id: str = ""
     turn_id: str = ""
     workspace_id: str = ""
-    errno_name: str = ""  # EROFS / EACCES when sourced from a result errno; "" otherwise
+    errno_name: str = ""  # the diagnosis' denial signature (EROFS / EACCES / ...); "" otherwise
     signal: str = (
         ""  # how it was detected: "result_errno" | "designated_path_absent" | "detected_change"
     )
     started_at: str = ""  # the call window (start / end ISO)
     ended_at: str = ""
     detail: str = ""  # a bounded evidence snippet (e.g. the stderr line)
-    next_action: str = ""  # the grant affordance (B5 #979.6) — a request the MODEL may make
+    next_action: str = ""  # the diagnosis' message: the folder and the retry the MODEL may make
 
     def to_payload(self) -> dict[str, Any]:
         """The durable ``artifact.policy_violation`` payload."""
         return self.model_dump()
-
-
-def _grant_affordance(workspace_id: str, path: str) -> str:
-    """The grant affordance a ``policy_violation`` carries (B5 #979.6).
-
-    The model retries with explicit access paths and a reason; the permission
-    service asks the user. It must never call the grants API to approve itself.
-    """
-    parent = ""
-    if path:
-        try:
-            parent = str(Path(path).parent)
-        except (OSError, ValueError):
-            parent = path
-    target = parent or path or "the out-of-root directory"
-    return (
-        f"This write was blocked by the workspace write-fence. To request access, retry the "
-        f"shell call with access_paths=['{target}'] and access_reason explaining why it is "
-        f"needed. CLIO asks the user before executing it. If declined, use permitted files "
-        f"or explain an alternative. Never call the workspace grants API to approve yourself."
-    )
-
-
-# --------------------------------------------------------------------------- #
-# errno signal — parse a fenced child's OS write-denial out of a tool result.  #
-# --------------------------------------------------------------------------- #
-
-_ERRNO_BRACKET = {code: re.compile(rf"\[Errno {code}\]") for code in _DENIAL_ERRNOS}
-#: strerror text form (``/bin/sh`` prints this, not the ``[Errno N]`` bracket).
-_ERRNO_STRERROR = {code: os.strerror(code).lower() for code in _DENIAL_ERRNOS}
-#: Windows write-denial (B3, #977): srt's ACL/WFP fence surfaces ERROR_ACCESS_DENIED
-#: (WinError 5) — a separate namespace from POSIX errno, caught via the ``[WinError 5]``
-#: bracket a Python child prints and the "access is denied" strerror text a shell prints.
-_DENIAL_WINERRORS: dict[int, str] = {5: "ERROR_ACCESS_DENIED"}
-_WINERROR_BRACKET = {code: re.compile(rf"\[WinError {code}\]") for code in _DENIAL_WINERRORS}
-_WINERROR_STRERROR: dict[int, str] = {5: "access is denied"}
-#: Best-effort path extractors from a denial message, spanning the common shell/tool forms:
-#: coreutils/sh ("cannot create /p:"), bash redirect ("bash: line 1: /p: Read-only file
-#: system"), and Python OSError ("[Errno 30] ...: '/p'"). Ordered most-specific first.
-_PATH_PATTERNS = [
-    re.compile(r"cannot (?:create|touch|open|write to) (?:directory )?(\S+?):", re.IGNORECASE),
-    re.compile(r"line \d+: (\S+?): (?:read-only file system|permission denied)", re.IGNORECASE),
-    re.compile(r": '([^']+)'"),
-    re.compile(r': "([^"]+)"'),
-]
-
-
-def _walk_strings(obj: Any, *, _depth: int = 0) -> list[str]:
-    """Collect the string leaves of a (possibly nested) tool result, bounded in depth."""
-    if _depth > 6:
-        return []
-    if isinstance(obj, str):
-        return [obj]
-    out: list[str] = []
-    if isinstance(obj, dict):
-        for value in obj.values():
-            out.extend(_walk_strings(value, _depth=_depth + 1))
-    elif isinstance(obj, (list, tuple)):
-        for item in obj:
-            out.extend(_walk_strings(item, _depth=_depth + 1))
-    return out
-
-
-def _extract_path(text: str) -> str:
-    for pattern in _PATH_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return match.group(1)
-    return ""
-
-
-def write_denial_from_result(result: Any) -> Optional[dict[str, Any]]:
-    """Return a write-denial ``{errno, errno_name, path, detail}`` from a tool result, or ``None``.
-
-    Scans the result's string leaves for a fenced child's ``EROFS``/``EACCES`` signal — the
-    Python ``[Errno N]`` bracket form OR the OS ``strerror`` text a shell prints (e.g.
-    "Read-only file system") — plus the Windows ``WinError 5`` / "access is denied" form the
-    srt ACL/WFP fence surfaces (B3, #977). Reality-surfacing (an OS errno/winerror in a tool
-    result), NOT a prose/routing heuristic — the caller only calls this when a fence is active,
-    so a normal permission error on the floor never becomes a violation.
-    """
-    for text in _walk_strings(result):
-        lowered = text.lower()
-        for code, name in _DENIAL_ERRNOS.items():
-            if _ERRNO_BRACKET[code].search(text) or _ERRNO_STRERROR[code] in lowered:
-                return {
-                    "errno": code,
-                    "errno_name": name,
-                    "path": _extract_path(text),
-                    "detail": text.strip()[:400],
-                }
-        for code, name in _DENIAL_WINERRORS.items():
-            if _WINERROR_BRACKET[code].search(text) or _WINERROR_STRERROR[code] in lowered:
-                return {
-                    "errno": None,
-                    "winerror": code,
-                    "errno_name": name,
-                    "path": _extract_path(text),
-                    "detail": text.strip()[:400],
-                }
-    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -214,11 +123,12 @@ def observe_policy_violations(
     PRECISION OVER RECALL (#966.10 — a false attribution is worse than a missed one). Both
     signals require the denied path to be PROVEN out-of-root before a mint:
 
-    * the result carries a fenced child's ``EROFS``/``EACCES`` AND a non-empty extracted path
-      that is OUTSIDE the effective write roots → ``prevented``. An in-root denial (srt's
-      mandatory ``.git/hooks`` protection), a read EACCES on an in-root file, or a bare
-      "permission denied" phrase with NO extractable path (SSH publickey) is a typed debug
-      skip (``violation_signal_unattributed``), never a fabricated out-of-root violation;
+    * the call's sandbox-boundary diagnosis (the ``boundary`` its confined seam attached, or
+      the one made here for a confined stdio MCP server's failed call) names write-denied
+      ``paths`` outside the territory → one ``prevented`` per path, carrying the diagnosis'
+      signature and message. A diagnosis with no path (a bare "permission denied", SSH
+      publickey) or for elevation is a typed debug skip (``violation_signal_unattributed``),
+      never a fabricated out-of-root violation; an in-root denial has no diagnosis at all;
     * a designated output path OUTSIDE the territory — absent post-call → ``prevented``;
       present AND provably fresh within the call window → ``detected``. Without a call window
       (``started_at is None``) a PRESENT file is NEVER upgraded to ``detected`` (F5) — a typed
@@ -228,66 +138,161 @@ def observe_policy_violations(
     if resolved is None or not resolved.active:
         return []
     mechanism = str(resolved.mechanism)
+    from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
+        grounded_output_paths,
+        result_declared_paths,
+    )
+
+    boundary = result_boundary(result) or _served_call_boundary(
+        app, call_id=call_id, result=result, workspace_id=workspace_id, mechanism=mechanism
+    )
+    designated = {**grounded_output_paths(args), **result_declared_paths(result)}
+    if boundary is None and not designated:
+        # Nothing to place against the write territory: resolving it (every root through
+        # the filesystem) was most of the observer's own time on a read-only call burst.
+        return []
     started_iso = _iso(started_at)
     ended_iso = _iso(time.time())
-    roots = _effective_roots(app, workspace_id)
     violations: list[PolicyViolation] = []
 
-    denial = write_denial_from_result(result)
-    if denial is not None:
-        dpath = str(denial.get("path") or "")
-        if dpath and not _within_roots(Path(dpath), roots):
-            violations.append(
-                PolicyViolation(
-                    kind=VIOLATION_PREVENTED,
-                    mechanism=mechanism,
-                    path=dpath,
-                    call_id=call_id,
-                    tool=tool_name,
-                    session_id=sid,
-                    turn_id=turn_id,
-                    workspace_id=workspace_id,
-                    errno_name=str(denial.get("errno_name") or ""),
-                    signal="result_errno",
-                    started_at=started_iso,
-                    ended_at=ended_iso,
-                    detail=str(denial.get("detail") or ""),
-                    next_action=_grant_affordance(workspace_id, dpath),
-                )
+    if boundary is not None and boundary.kind == KIND_WRITE_DENIED and boundary.paths:
+        violations.extend(
+            PolicyViolation(
+                kind=VIOLATION_PREVENTED,
+                mechanism=boundary.mechanism or mechanism,
+                path=path,
+                call_id=call_id,
+                tool=tool_name,
+                session_id=sid,
+                turn_id=turn_id,
+                workspace_id=workspace_id,
+                errno_name=boundary.signature,
+                signal="result_errno",
+                started_at=started_iso,
+                ended_at=ended_iso,
+                next_action=boundary.message,
             )
-        else:
-            # In-root (mandatory protection / DAC read) or path-less denial: the fence did NOT
-            # prove an out-of-root WRITE, so attributing one would be false provenance.
-            logger.debug(
-                "policy violation skipped reason=violation_signal_unattributed errno=%s "
-                "path=%r in_root=%s tool=%s",
-                denial.get("errno_name"),
-                dpath,
-                bool(dpath and _within_roots(Path(dpath), roots)),
-                tool_name,
-            )
-
-    violations.extend(
-        _designated_out_of_root_violations(
-            app,
-            sid,
-            tool_name=tool_name,
-            args=args,
-            result=result,
-            call_id=call_id,
-            workspace_id=workspace_id,
-            turn_id=turn_id,
-            mechanism=mechanism,
-            roots=roots,
-            started_at=started_at,
-            started_iso=started_iso,
-            ended_iso=ended_iso,
+            for path in boundary.paths
         )
-    )
+    elif boundary is not None:
+        # A path-less or elevation diagnosis: the fence did NOT prove an out-of-root WRITE,
+        # so attributing one would be false provenance.
+        logger.debug(
+            "policy violation skipped reason=violation_signal_unattributed kind=%s "
+            "signature=%s tool=%s",
+            boundary.kind,
+            boundary.signature,
+            tool_name,
+        )
+
+    if designated:
+        violations.extend(
+            _designated_out_of_root_violations(
+                app,
+                sid,
+                tool_name=tool_name,
+                designated=designated,
+                call_id=call_id,
+                workspace_id=workspace_id,
+                turn_id=turn_id,
+                mechanism=mechanism,
+                roots=_effective_roots(app, workspace_id),
+                started_at=started_at,
+                started_iso=started_iso,
+                ended_iso=ended_iso,
+            )
+        )
 
     for violation in violations:
         _mint_policy_violation(app, sid, violation, turn_id=turn_id, trace_id=trace_id)
     return violations
+
+
+def _served_call_boundary(
+    app: "FastAPI", *, call_id: str, result: Any, workspace_id: str, mechanism: str
+) -> Optional[BoundaryDiagnosis]:
+    """Diagnose a failed call a confined stdio MCP server served, and publish it for the
+    model's observation of that call (#1905).
+
+    ``None`` for a result that is not an error, or a call no confined child served (an
+    in-process tool is not fenced). See :func:`_diagnose_served`.
+    """
+    if not (isinstance(result, dict) and (result.get("isError") or result.get("is_error"))):
+        return None
+    diagnosis = _diagnose_served(
+        app,
+        call_id=call_id,
+        text=result_text(result),
+        workspace_id=workspace_id,
+        mechanism=mechanism,
+    )
+    if diagnosis is not None:
+        publish_call_boundary(call_id, diagnosis)
+    return diagnosis
+
+
+def raised_call_boundary(error_text: str) -> Optional[BoundaryDiagnosis]:
+    """The diagnosis for the running call when it RAISED (FastMCP raises a server's error
+    result, so the observer never sees its text); the execution boundary notes its message
+    on the error. ``None`` off a turn, on the floor, or for a call no confined child served.
+
+    Never raises: it runs on the failing call's own error path, whose error must stand.
+    """
+    from clio_agent.gact.artifacts.minting import _session_workspace_id  # noqa: PLC0415
+    from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import _resolve_tool_session  # noqa: PLC0415
+
+    app = _active_app()
+    state = _current_sandbox_state()
+    if app is None or state is None or not state.active:
+        return None
+    try:
+        sid, _session = _resolve_tool_session(app)
+        return _diagnose_served(
+            app,
+            call_id=observer_call_id(),
+            text=error_text,
+            workspace_id=_session_workspace_id(app, sid) if sid else "",
+            mechanism=str(state.mechanism),
+        )
+    except (OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
+        logger.warning(
+            "boundary diagnosis skipped reason=raised_call_boundary_failed error=%r", exc
+        )
+        return None
+
+
+def _active_app() -> Optional["FastAPI"]:
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    return _ctx.active_app()
+
+
+def _diagnose_served(
+    app: "FastAPI", *, call_id: str, text: str, workspace_id: str, mechanism: str
+) -> Optional[BoundaryDiagnosis]:
+    """A confined stdio MCP server's error, diagnosed at ``possible`` confidence.
+
+    A long-lived server has no per-call roots, so its error text is checked against the
+    recomputed fleet territory (:func:`_effective_roots`, the roots its spawn was given,
+    plus grants since). ``None`` for a call no confined child served.
+    """
+    from clio_agent.gact.artifacts.ingest_edges import resolve_serving_child_id  # noqa: PLC0415
+
+    if not resolve_serving_child_id(app, call_id):
+        return None
+    from clio_agent.gact.artifacts.minting import _workspace_root  # noqa: PLC0415
+
+    diagnosis = diagnose_boundary(
+        exit_code=None,
+        stderr=text,
+        command=None,
+        cwd=_workspace_root(app, workspace_id),
+        write_roots=_effective_roots(app, workspace_id),
+        mechanism=mechanism,
+        seam="tool",
+    )
+    return hedged(diagnosis) if diagnosis is not None else None
 
 
 def _effective_roots(app: "FastAPI", workspace_id: str) -> tuple[Path, ...]:
@@ -306,8 +311,7 @@ def _designated_out_of_root_violations(
     sid: str,
     *,
     tool_name: str,
-    args: dict[str, Any],
-    result: Any,
+    designated: dict[str, str],
     call_id: str,
     workspace_id: str,
     turn_id: str,
@@ -325,16 +329,10 @@ def _designated_out_of_root_violations(
     a violation. Without a call window a present out-of-root file is NEVER called ``detected``
     (F5) — escape is unproven, so it is a typed skip.
     """
-    from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
-        grounded_output_paths,
-        result_declared_paths,
-    )
-
-    designated = {**grounded_output_paths(args), **result_declared_paths(result)}
     out: list[PolicyViolation] = []
     for raw_path in designated.values():
         path = Path(raw_path)
-        if _within_roots(path, roots):
+        if within_roots(path, roots):
             continue  # inside the write territory — a normal deliverable, not a violation
         if not _safe_is_file(path):
             kind, signal = VIOLATION_PREVENTED, "designated_path_absent"
@@ -362,24 +360,12 @@ def _designated_out_of_root_violations(
                 signal=signal,
                 started_at=started_iso,
                 ended_at=ended_iso,
-                next_action=_grant_affordance(workspace_id, str(path)),
+                next_action=write_denied_message(
+                    (nearest_existing_parent(str(path)),), seam="tool"
+                ),
             )
         )
     return out
-
-
-def _within_roots(path: Path, roots: tuple[Path, ...]) -> bool:
-    try:
-        resolved = path.expanduser().resolve(strict=False)
-    except OSError:
-        resolved = path
-    for root in roots:
-        try:
-            resolved.relative_to(root.resolve(strict=False))
-            return True
-        except (ValueError, OSError):
-            continue
-    return False
 
 
 def _safe_is_file(path: Path) -> bool:
@@ -488,5 +474,5 @@ __all__ = [
     "PolicyViolation",
     "observe_policy_violations",
     "policy_violations",
-    "write_denial_from_result",
+    "raised_call_boundary",
 ]

@@ -162,7 +162,10 @@ class QuestionEvents:
 
     def _replay_gates(self) -> None:
         history = self.app.state.task_history
-        for session in self.app.state.sessions.list():
+        from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+        # The index names the sessions with an open execution gate: only those are read.
+        for session in self.app.state.sessions.select(PageQuery(archived=None, gated=True)):
             gate = session.metadata.get("execution_gate")
             task = history.task_snapshot(gate) if isinstance(gate, str) and gate else None
             if task is not None and task.kind == "Question" and task.terminal_at is not None:

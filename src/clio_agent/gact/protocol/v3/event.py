@@ -197,6 +197,11 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
             if payload.get("presentation") is not None
             else {}
         ),
+        **(
+            {"parent_call_id": str(payload["parent_call_id"])}
+            if payload.get("parent_call_id")
+            else {}
+        ),
     }
     return _Projection("tool.upserted", projected, entity_id)
 
@@ -265,6 +270,11 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
         ),
         "duration_ms": payload.get("duration_ms"),
         **({"error": str(payload["error"])} if payload.get("error") else {}),
+        **(
+            {"parent_call_id": str(payload["parent_call_id"])}
+            if payload.get("parent_call_id")
+            else {}
+        ),
     }
     return _Projection("tool.upserted", projected, entity_id)
 

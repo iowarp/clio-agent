@@ -1,6 +1,7 @@
-"""#1844: a subagent result too big to return whole is saved to a file, not paged.
+"""#1844: a subagent result that cannot fit its parent's context is saved to a file.
 
-The parent gets the file's path and size and the result's beginning; the file holds
+There is no fixed size: the parent's room (its context window less what it carries)
+decides (:mod:`clio_agent.gact.child_report_fit`). The parent gets the file's path and size and the result's beginning; the file holds
 the exact result; the session owns it; old cursors still read their pages.
 """
 
@@ -12,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.gact import child_report_fit
 from clio_agent.gact.agents.native_presenters import native_presentation
 from clio_agent.gact.session_tool_output import delete_session_tool_output
 from clio_agent.gact.task_access import TaskCaller
@@ -21,17 +23,22 @@ from clio_agent.gact.task_result_spill import (
     TASK_RESULT_SAVED_REASON,
     saved_result_block,
 )
-from tests._config_layer import set_config
 from tests.test_gact.test_flow_tool_evidence import _tool
 from tests.test_gact.test_permission_evidence import world as world
 
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "tight_room")
 
-#: About 200 KB of JSON once encoded, far past the default 8,000-character bound.
+#: About 200 KB of JSON once encoded, far past the room the fixture leaves.
 BIG = {
     "blob": "é🚀x" * 70_000,
     "workflow_state": {"delivery": {"path": "D:/out/report.md", "status": "verified"}},
 }
+
+
+@pytest.fixture
+def tight_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parent with room for about 10k tokens of reports."""
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(10_000))
 
 
 def _read(client: Any, sid: str, handle: str, **params: Any) -> dict[str, Any]:
@@ -88,21 +95,39 @@ def test_a_small_selection_of_a_large_result_comes_back_inline(
     assert "result_file" not in page and page["next_cursor"] is None
 
 
-def test_the_threshold_comes_from_the_config_file(request: pytest.FixtureRequest) -> None:
+def test_a_result_that_fits_the_parents_room_comes_back_whole(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No fixed size: with room for it, a 200 KB result is returned whole.
+    SABOTAGE: restore a fixed character bound in ``result_page`` and this fails."""
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(1_000_000))
     app, client, sid, root = request.getfixturevalue("world")
     task = _tool(app, root, BIG)
-    set_config("limits.agent_task_output_digest_chars", 1_000_000)
 
     page = _read(client, sid, task.handle)
 
     assert page["result"] == BIG and "result_file" not in page
 
 
+def test_a_long_report_is_saved_as_readable_text(request: pytest.FixtureRequest) -> None:
+    """A child's multi-line report is written as it reads, beside the exact JSON, and the
+    parent is pointed at it. SABOTAGE: drop ``_text_fields`` and this fails."""
+    app, client, sid, root = request.getfixturevalue("world")
+    report = "\n".join(f"- `module_{i}.py:{i}` does thing {i}" for i in range(4_000))
+    task = _tool(app, root, {"answer": report, "status": "done"})
+
+    saved = _read(client, sid, task.handle)["result_file"]
+
+    text = Path(saved["text_files"]["answer"])
+    assert text.suffix == ".md" and text.read_text(encoding="utf-8") == report
+    assert saved["read_with"] == f'fs_read_file(path="{text}", offset=1)'
+    assert json.loads(Path(saved["path"]).read_text(encoding="utf-8"))["answer"] == report
+
+
 def test_an_old_cursor_still_reads_its_pages(request: pytest.FixtureRequest) -> None:
     """Version-1 cursors from earlier releases sit in committed history."""
     app, client, sid, root = request.getfixturevalue("world")
     task = _tool(app, root, BIG)
-    set_config("limits.agent_task_output_digest_chars", 50_000)
     caller = TaskCaller(session_id=sid, human_id=root.owner.human_id)
     cursor: str | None = result_cursor(caller.session_id, task.handle, task.result, "task_result")
     pieces: list[str] = []

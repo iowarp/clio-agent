@@ -25,6 +25,22 @@ from tests.test_gact.spotter_records import watcher_world as watcher_world
 
 
 @pytest.fixture
+def no_session_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No ``session_facts`` injection: for tests that pin a turn's exact parts.
+
+    The session's facts (workspace root, write roots, scratch folder) ride the
+    conversation as an injection (``gact/working_state.py``) that names this run's
+    temp paths; tests of other behaviour pin transcripts without it. The injection
+    itself is tested in ``test_multiturn_prefix_cache`` and ``test_compaction_visible``.
+    """
+    from clio_agent.gact.agents import composition
+
+    monkeypatch.setattr(
+        composition, "_runtime_active_workspace_context", lambda app, session_id="": ""
+    )
+
+
+@pytest.fixture
 def tool_declaration_scope() -> Iterator[None]:
     """Restore the caller context when testing declaration producers directly."""
     from clio_agent.gact.agents.tool_instrumentation import _DECLARED_STRUCTURED_CONTENT

@@ -25,9 +25,10 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
-from clio_agent.gact import boot_timing, store_migrations
+from clio_agent.gact import boot_timing, store_format_boot, store_migrations
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
+from clio_agent.gact.documents.models import ANCHOR_PROFILES, DOCUMENT_PROFILES
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
@@ -409,7 +410,10 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # stays fast even on a cold psutil box (the cheap reaper + child_processes
         # rows were already collected inline).
         integrations = (
-            integrations + _folded_orphan_scan_rows(app) + store_migrations.health_rows(app)
+            integrations
+            + _folded_orphan_scan_rows(app)
+            + store_migrations.health_rows(app)
+            + store_format_boot.health_rows(app)
         )
         report = RuntimeReport(integrations=integrations)
 
@@ -519,33 +523,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_child_activity_projection=CHILD_ACTIVITY_PROJECTION_CAPABILITY,
                 x_clio_document_artifacts={
                     "protocol_version": "0.1.0",
-                    "profiles": [
-                        "markdown",
-                        "pdf",
-                        "latex",
-                        "html-static",
-                        "ooxml-word",
-                        "ooxml-sheet",
-                        "ooxml-slides",
-                        "odf-text",
-                        "odf-sheet",
-                        "odf-slides",
-                    ],
-                    "anchors": [
-                        "text-quote",
-                        "pdf-quad",
-                        "dom",
-                        "sheet-range",
-                        "slide-shape",
-                        "native-comment",
-                        "source-map",
-                    ],
+                    "profiles": list(DOCUMENT_PROFILES),
+                    "anchors": list(ANCHOR_PROFILES),
                     "review_parts": True,
+                    "comment_sessions": True,
                     "floating_comments": True,
                     "immutable_revisions": True,
                     "native_working_copies": True,
                     "native_comment_trigger": "@clio",
-                    "embedded_editors": ["onlyoffice", "collabora"],
                     "static_html_scripts": "blocked",
                     "executable_html_transition": "live-web",
                 },
@@ -659,21 +644,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         uptime = max(0, int(time.time() - app.state.started_at))
 
-        all_sessions = app.state.sessions.list()
-        by_status: dict[str, int] = {}
-        active = 0
-        for s in all_sessions:
-            by_status[s.status] = by_status.get(s.status, 0) + 1
-            if s.status in {"running", "idle"}:
-                active += 1
-
-        # #770 C3: the all-time message total is each session's persisted
-        # message_count; the by-role counts and the iowarp/clio-agent#655 per-tool
-        # + overall "tool_call" latency buckets are this process's running counters
-        # (app.state.metrics_counters), so a poll never re-walks history and boot
-        # never replays it.
+        # The session counts and the all-time message / token / cost totals are summed
+        # from the session index's columns (no session record is read); the by-role
+        # counts and the iowarp/clio-agent#655 per-tool + overall "tool_call" latency
+        # buckets are this process's running counters (app.state.metrics_counters), so
+        # a poll never re-walks history and boot never replays it.
+        totals = app.state.sessions.index.totals()
+        by_status: dict[str, int] = totals["by_status"]
+        active = by_status.get("running", 0) + by_status.get("idle", 0)
         counters = app.state.metrics_counters
-        message_total = sum(s.message_count for s in all_sessions)
+        message_total = totals["messages"]
         role_counts = counters.role_counts()
         latencies = {
             key: _latency_stat(list(vals)) for key, vals in counters.latency_samples.items()
@@ -683,14 +663,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # session's cumulative counters.
         from clio_agent.gact.types import MetricsCost, MetricsTokens  # noqa: PLC0415
 
-        tokens_input = sum(s.tokens_input for s in all_sessions)
-        tokens_output = sum(s.tokens_output for s in all_sessions)
-        cost_total = sum(s.cost_usd for s in all_sessions)
+        tokens_input = totals["tokens_input"]
+        tokens_output = totals["tokens_output"]
+        cost_total = totals["cost_usd"]
 
         return Metrics(
             uptime_s=uptime,
             sessions=MetricsSessions(
-                total=len(all_sessions),
+                total=totals["total"],
                 active=active,
                 by_status=by_status,
             ),

@@ -3,27 +3,34 @@
 Prompt files are Markdown with flat YAML-like frontmatter:
 
 ---
-id: clio.chat
-title: Chat prompt
-profile: heavy
-provider: anthropic
-model: claude-sonnet-4-5
+id: clio.reminder.plan_stale
+title: Mention a plan that has not been updated
+x_kind: reminder
+x_variables: path, steps
+x_param_steps: 25
 ---
-Prompt body...
+The plan ({{path}}) has not been updated in {{steps}} steps...
 
 The parser is intentionally small and dependency-free. It supports the
 frontmatter shapes CLIO needs for prompt/profile selection without making YAML
 execution semantics part of the trusted prompt path.
+
+The built-in prompts are core's injections (the reminders, ``clio.reminder.<name>``;
+:func:`builtin_prompt_definitions`). A person's copy of a reminder is one of two kinds:
+
+* a **text edit**: the whole prompt with its own body, as before;
+* a **settings overlay** (``x_overlay: true``, no body): only the switch (``x_active``)
+  and the settings (``x_param_<name>``) that differ from the shipped ones. The text
+  stays the shipped one, so a later release's wording reaches the person. Saving a
+  reminder whose text is the shipped text, or with no text, writes an overlay.
 """
 
 from __future__ import annotations
 
 import hashlib
-import inspect
 import os
 import re
 from dataclasses import dataclass, field
-from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -77,12 +84,13 @@ class ResolvedPrompt:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+#: The id prefix of core's injections (``clio_agent.injections.declarations.PREFIX``).
+REMINDER_PREFIX = "clio.reminder."
 _RENDER_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 _ALLOWED_RENDER_PLACEHOLDERS = {
     "agents.available_tree",
     "agents.available_flat",
     "tools.available",
-    "commands.agent_invocable",
     "memory.policy_summary",
     "permissions.policy_summary",
     "provider.current",
@@ -108,146 +116,23 @@ def default_prompt_sources(
     ]
 
 
-def _builtin_profile_policies() -> dict[str, str]:
-    """Load built-in profile policy text from packaged Markdown files."""
-
-    rows: dict[str, str] = {}
-    try:
-        root = resources.files("clio_agent.prompt_packs.builtin") / "profiles"
-        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
-            parsed = parse_prompt_text(
-                (root / name).read_text(encoding="utf-8"),
-                scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/profiles/{name}",
-                fallback_id=name.removesuffix(".md"),
-            )
-            profile = next(iter(parsed.profiles.values()), None)
-            if profile is not None:
-                rows[parsed.id] = profile.text
-    except Exception:  # noqa: BLE001 - prompt parse failure yields an empty mapping
-        return {}
-    return rows
-
-
-def _builtin_alignment_requirements() -> dict[str, tuple[str, ...]]:
-    """Load built-in prompt-family requirements from packaged Markdown files."""
-
-    rows: dict[str, tuple[str, ...]] = {}
-    try:
-        root = resources.files("clio_agent.prompt_packs.builtin") / "requirements"
-        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
-            parsed = parse_prompt_text(
-                (root / name).read_text(encoding="utf-8"),
-                scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/requirements/{name}",
-                fallback_id=name.removesuffix(".md"),
-            )
-            profile = next(iter(parsed.profiles.values()), None)
-            if profile is None:
-                continue
-            rows[parsed.id] = tuple(
-                line.strip()[2:].strip()
-                for line in profile.text.splitlines()
-                if line.strip().startswith("- ")
-            )
-    except Exception:  # noqa: BLE001 - prompt parse failure yields an empty mapping
-        return {}
-    return rows
-
-
 def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
-    """Return built-in CLIO prompt definitions loaded from package data."""
+    """The built-in prompts: core's injections (``clio_agent.injections``), so a person
+    can switch one off, edit it or override it per workspace or session on the Prompts
+    page. They ship in the core plugin (``plugins/builtin/core/ai.iowarp.clio/
+    injections``), used verbatim."""
+    from clio_agent.injections.declarations import core_dir  # noqa: PLC0415
 
     rows: dict[str, PromptDefinition] = {}
-    alignment_requirements = _builtin_alignment_requirements()
-
-    def add(prompt_id: str, title: str, text: str, *, description: str = "") -> None:
-        cleaned = inspect.cleandoc(text or "").strip()
-        profiles = _aligned_builtin_profiles(prompt_id, cleaned)
-        rows[prompt_id] = PromptDefinition(
-            id=prompt_id,
-            title=title,
-            description=description,
-            default_profile="default",
-            profiles=profiles,
+    for path in sorted(core_dir().glob("*.md")):
+        parsed = parse_prompt_text(
+            path.read_text(encoding="utf-8"),
             scope="builtin",
-            source_path=f"package://clio_agent.prompt_packs.builtin/{prompt_id}.md",
-            metadata={
-                "source": "packaged_prompt_file",
-                "alignment": "public_reference_matrix",
-                "references": "PROMPT_ALIGNMENT_REFERENCE_MATRIX.md",
-                "requirements": list(alignment_requirements.get(prompt_id, ())),
-                "profiles": list(profiles),
-            },
+            source_path=f"package://clio_agent.plugins.builtin/core/ai.iowarp.clio/injections/{path.name}",
+            fallback_id=path.name.removesuffix(".md"),
         )
-
-    try:
-        root = resources.files("clio_agent.prompt_packs.builtin")
-        prompt_files = [(path, path.name) for path in root.iterdir() if path.name.endswith(".md")]
-        runtime_root = root / "runtime"
-        if runtime_root.is_dir():
-            prompt_files.extend(
-                (path, f"runtime/{path.name}")
-                for path in runtime_root.iterdir()
-                if path.name.endswith(".md")
-            )
-        for path, source_name in sorted(prompt_files, key=lambda item: item[1]):
-            name = path.name
-            text = path.read_text(encoding="utf-8")
-            parsed = parse_prompt_text(
-                text,
-                scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/{source_name}",
-                fallback_id=name.removesuffix(".md"),
-            )
-            base_profile = next(iter(parsed.profiles.values()), None)
-            add(parsed.id, parsed.title or parsed.id, base_profile.text if base_profile else "")
-            rows[parsed.id].description = parsed.description
-            rows[parsed.id].source_path = parsed.source_path
-            rows[parsed.id].metadata.update(parsed.metadata)
-    except Exception as exc:  # pragma: no cover - defensive import guard  # noqa: BLE001 - import failure surfaced as an error prompt to the user
-        text = (
-            "CLIO built-in prompt files could not be imported. Check packaged "
-            f"prompt resources before running prompt alignment. Error: {type(exc).__name__}"
-        )
-        add("clio.chat", "Chat agent", text, description="fallback import-error prompt")
-        rows["clio.chat"].enabled = False
-        rows["clio.chat"].validation_errors.append(text)
-
+        rows[parsed.id] = parsed
     return rows
-
-
-def _aligned_builtin_profiles(prompt_id: str, base_text: str) -> dict[str, PromptProfile]:
-    """Return CLIO's aligned built-in prompt profiles for one prompt family."""
-
-    base = base_text.strip()
-    alignment_requirements = _builtin_alignment_requirements()
-    profile_policies = _builtin_profile_policies()
-    requirements = "\n".join(f"- {item}" for item in alignment_requirements.get(prompt_id, ()))
-    family_block = f"\n\nPrompt-family requirements:\n{requirements}" if requirements else ""
-    profiles: dict[str, PromptProfile] = {}
-    for name, policy in profile_policies.items():
-        profile_text = "\n\n".join(
-            part
-            for part in (
-                base,
-                inspect.cleandoc(policy).strip(),
-                family_block.strip(),
-            )
-            if part
-        )
-        profiles[name] = PromptProfile(
-            name=name,
-            text=profile_text,
-            scope="builtin",
-            checksum=_checksum(profile_text),
-            metadata={
-                "alignment": "public_reference_matrix",
-                "behavior_profile": name,
-                "prompt_family": prompt_id,
-            },
-        )
-    return profiles
 
 
 class PromptRegistry:
@@ -324,7 +209,9 @@ class PromptRegistry:
         resolved = self.resolve(prompt_id, profile=profile)
         if resolved is None:
             return None
-        rendered_text, used, errors = render_prompt_text(resolved.text, context or {})
+        rendered_text, used, errors = render_prompt_text(
+            resolved.text, context or {}, declared_variables(resolved.metadata)
+        )
         metadata = dict(resolved.metadata)
         metadata["render"] = {
             "placeholders_used": used,
@@ -357,6 +244,13 @@ class PromptRegistry:
         clean_profile = _validate_profile(profile or "default")
         self.write_root.mkdir(parents=True, exist_ok=True)
         path = self.write_root / f"{clean_id}--{clean_profile}.md"
+        if clean_id.startswith(REMINDER_PREFIX):
+            shipped = self._builtins().get(clean_id)
+            row = shipped.profiles.get(clean_profile) if shipped is not None else None
+            if not text.strip() or (row is not None and text.strip() == row.text.strip()):
+                return self._save_settings(clean_id, clean_profile, path, metadata or {})
+        elif not text.strip():
+            raise ValueError(f"prompt text is empty: {clean_id}")
         frontmatter: dict[str, Any] = {
             "id": clean_id,
             "profile": clean_profile,
@@ -373,10 +267,39 @@ class PromptRegistry:
                 if _is_frontmatter_scalar(value):
                     frontmatter[f"x_{key}"] = str(value)
         path.write_text(_render_prompt_file(frontmatter, text), encoding="utf-8")
-        row = self.get(clean_id)
-        if row is None:  # pragma: no cover - save then read should normally succeed
+        saved = self.get(clean_id)
+        if saved is None:  # pragma: no cover - save then read should normally succeed
             raise ValueError(f"prompt was not saved: {clean_id}")
-        return row
+        return saved
+
+    def _save_settings(
+        self, prompt_id: str, profile: str, path: Path, metadata: dict[str, Any]
+    ) -> PromptDefinition:
+        """Write a reminder's settings overlay: the switch and settings that differ from the
+        shipped ones. With none left, the person's copy at this scope is removed."""
+        shipped = self._builtins().get(prompt_id)
+        defaults: dict[str, Any] = {}
+        if shipped is not None:
+            defaults.update(shipped.metadata)
+            row = shipped.profiles.get(profile)
+            defaults.update(row.metadata if row is not None else {})
+        settings = {
+            key: _frontmatter_text(value)
+            for key, value in metadata.items()
+            if (key == "active" or key.startswith("param_"))
+            and _is_frontmatter_scalar(value)
+            and str(value).strip().lower() != str(defaults.get(key, "")).strip().lower()
+        }
+        if settings.get("active") == "true" and "active" not in defaults:
+            settings.pop("active")  # on is the default of a reminder that does not say
+        if not settings:
+            path.unlink(missing_ok=True)
+        else:
+            frontmatter: dict[str, Any] = {"id": prompt_id, "profile": profile, "x_overlay": "true"}
+            frontmatter.update({f"x_{key}": value for key, value in settings.items()})
+            path.write_text(_render_prompt_file(frontmatter, ""), encoding="utf-8")
+        # A plugin's reminder has no shipped row here: back to its declared settings.
+        return self.get(prompt_id) or PromptDefinition(id=prompt_id, profiles={})
 
     def reload(self) -> dict[str, Any]:
         """Clear cached packaged prompts and return a fresh registry summary."""
@@ -445,10 +368,15 @@ def parse_prompt_text(
     if not _PROFILE_RE.fullmatch(profile_name):
         errors.append("invalid profile; use letters, numbers, underscores, and hyphens")
         profile_name = "default"
-    if not body.strip():
+    overlay = str(meta.get("x_overlay") or "").strip().lower() == "true"
+    if not body.strip() and not overlay:
         errors.append("prompt body is empty")
-    placeholder_errors = _placeholder_validation_errors(body)
-    errors.extend(placeholder_errors)
+    if overlay:
+        pass  # settings only: there is no body to validate
+    elif str(meta.get("x_kind", meta.get("kind")) or "").strip() == "reminder":
+        errors.extend(_injection_validation_errors(body, declared_variables(meta)))
+    else:
+        errors.extend(_placeholder_validation_errors(body, declared_variables(meta)))
     title = str(meta.get("title") or prompt_id).strip()
     description = str(meta.get("description") or "").strip()
     provider = str(meta.get("provider") or meta.get("default_provider") or "").strip()
@@ -468,7 +396,7 @@ def parse_prompt_text(
         title=title,
         description=description,
         default_profile=str(meta.get("default_profile") or profile_name).strip() or profile_name,
-        profiles={profile_name: profile},
+        profiles={} if overlay else {profile_name: profile},
         scope=scope,
         source_path=source_path,
         enabled=not errors,
@@ -535,6 +463,16 @@ def _merge_definition(base: PromptDefinition, override: PromptDefinition) -> Pro
             invalid_sources.append(override.source_path)
         if invalid_sources:
             merged.metadata["invalid_sources"] = invalid_sources
+        return merged
+    if override.metadata.get("overlay"):
+        # Settings only: the text, title and description stay as they were; the row
+        # names where the person's settings are (each profile keeps its text's source).
+        settings = {k: v for k, v in override.metadata.items() if k != "overlay"}
+        settings["settings_scope"] = override.scope
+        merged.scope, merged.source_path = override.scope, override.source_path
+        merged.metadata.update(settings)
+        for profile in merged.profiles.values():
+            profile.metadata.update(settings)
         return merged
     if override.title:
         merged.title = override.title
@@ -629,28 +567,57 @@ def _metadata_from_frontmatter(meta: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _frontmatter_text(value: Any) -> str:
+    return ("true" if value else "false") if isinstance(value, bool) else str(value)
+
+
 def _is_frontmatter_scalar(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool))
 
 
-def _placeholder_validation_errors(text: str) -> list[str]:
-    unknown = sorted(
-        {
-            name
-            for name in _RENDER_PLACEHOLDER_RE.findall(text)
-            if name not in _ALLOWED_RENDER_PLACEHOLDERS
-        }
-    )
+def declared_variables(meta: dict[str, Any]) -> frozenset[str]:
+    """A reminder's declared variables (``x_variables``, comma-separated): the only
+    placeholders its body may use (docs/design/sdk/reminders.md). ``meta`` is the raw
+    frontmatter (``x_`` keys) or a definition's metadata (prefix stripped)."""
+    kind = meta.get("x_kind", meta.get("kind"))
+    if str(kind or "").strip() != "reminder":
+        return frozenset()
+    raw = meta.get("x_variables", meta.get("variables")) or ""
+    items = raw if isinstance(raw, list) else str(raw).split(",")
+    return frozenset(str(item).strip() for item in items if str(item).strip())
+
+
+def _injection_validation_errors(text: str, declared: frozenset[str]) -> list[str]:
+    """An injection's body is a sandboxed Jinja template: valid syntax, and only its
+    declared variables and the session state (``clio_agent.injections.events.STATE``)."""
+    from clio_agent.injections.events import STATE  # noqa: PLC0415
+    from clio_agent.injections.template import InjectionTemplateError, names_used  # noqa: PLC0415
+
+    try:
+        unknown = sorted(names_used(text) - declared - STATE)
+    except InjectionTemplateError as exc:
+        return [exc.problem]
     return [f"unknown render placeholder: {name}" for name in unknown]
 
 
-def render_prompt_text(text: str, context: dict[str, str]) -> tuple[str, list[str], list[str]]:
+def _placeholder_validation_errors(text: str, declared: frozenset[str] = frozenset()) -> list[str]:
+    allowed = declared or _ALLOWED_RENDER_PLACEHOLDERS
+    unknown = sorted({name for name in _RENDER_PLACEHOLDER_RE.findall(text) if name not in allowed})
+    return [f"unknown render placeholder: {name}" for name in unknown]
+
+
+def render_prompt_text(
+    text: str, context: dict[str, str], declared: frozenset[str] = frozenset()
+) -> tuple[str, list[str], list[str]]:
+    """Fill ``{{name}}`` placeholders; ``declared`` replaces the system-prompt allowlist
+    (a reminder's own variables)."""
     used: list[str] = []
     errors: list[str] = []
+    allowed = declared or _ALLOWED_RENDER_PLACEHOLDERS
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
-        if name not in _ALLOWED_RENDER_PLACEHOLDERS:
+        if name not in allowed:
             errors.append(f"unknown render placeholder: {name}")
             return match.group(0)
         used.append(name)

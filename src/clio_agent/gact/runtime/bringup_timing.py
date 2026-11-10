@@ -1,4 +1,11 @@
-"""Typed session first-turn bring-up phase timing recorder (iowarp/clio-agent#1215).
+"""Typed turn bring-up phase timing recorder (iowarp/clio-agent#1215).
+
+Every turn brings its agent up again (resolution, module build), so every turn is
+timed from the moment its background task starts until its model request is
+dispatched; ``turn`` numbers them per session (1 is the session's first turn, whose
+window also covers ``session.create``). Turn 1 alone was measured until 2026-11:
+multi-turn chains then showed 0.5 to 2.7 s between a request and its model call on
+turns with nothing to do, none of it visible.
 
 "Slow to set up new agents" was an owner PERCEPTION with zero measurement
 behind it. Turn-level latency was already closed by #891 (lm_streaming 89.9%
@@ -163,6 +170,7 @@ class BringupSummary:
     """
 
     session_id: str
+    turn: int
     total_ms: float
     attributed_ms: float
     unattributed_ms: float
@@ -183,6 +191,7 @@ class BringupSummary:
 
         return {
             "session_id": self.session_id,
+            "turn": self.turn,
             "total_ms": round(self.total_ms, 3),
             "attributed_ms": round(self.attributed_ms, 3),
             "attributed_pct": pct(self.attributed_ms),
@@ -212,7 +221,7 @@ class _OpenSpan:
 
 
 class BringupTimer:
-    """Records one session's first-turn bring-up phases (#1215).
+    """Records one turn's bring-up phases (#1215).
 
     Not thread-safe by design: bring-up for one session is one sequential
     call chain (session.create -> turn.accept -> enrichment ->
@@ -221,8 +230,11 @@ class BringupTimer:
     externally rather than share a single instance across threads.
     """
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, turn: int = 1) -> None:
         self.session_id = session_id
+        self.turn = turn
+        #: Set by :meth:`BringupTimerRegistry.begin_turn`: the timer's turn has started.
+        self.turn_started = False
         self._t0 = time.perf_counter()
         self._stack: list[_OpenSpan] = []
         self._closed: list[PhaseRecord] = []
@@ -311,6 +323,7 @@ class BringupTimer:
         stream_audit(
             "bringup.phase",
             session_id=self.session_id,
+            turn=self.turn,
             phase=span.name,
             depth=span.depth,
             elapsed_ms=round(elapsed_ms, 3),
@@ -380,6 +393,7 @@ class BringupTimer:
         unattributed_ms = total_ms - attributed_ms
         return BringupSummary(
             session_id=self.session_id,
+            turn=self.turn,
             total_ms=total_ms,
             attributed_ms=attributed_ms,
             unattributed_ms=unattributed_ms,
@@ -415,14 +429,13 @@ class BringupTimer:
 
 
 class _NullBringupTimer:
-    """No-op stand-in for a session whose bring-up has already settled.
+    """No-op stand-in once a turn's bring-up has settled.
 
-    Once :meth:`BringupTimerRegistry.finish` runs for a session (its first
-    turn is done), every LATER call to :func:`timer_for_session` for that
-    same session_id returns this singleton instead of ``None`` -- so every
-    seam call site can call ``start_phase``/``end_phase``/``phase`` UNCONDITIONALLY,
-    with no ``if timer is not None`` guard, and stay a genuine one-liner. This
-    is expected on every turn after the first, not an error.
+    After :meth:`BringupTimerRegistry.finish` (the turn's model request is
+    dispatched), a later :func:`timer_for_session` for that session returns this
+    singleton until :func:`begin_turn` opens the next turn's timer -- so every
+    seam call site can call ``start_phase``/``end_phase``/``phase``
+    UNCONDITIONALLY and stay a one-liner.
     """
 
     def start_phase(self, name: str) -> None:
@@ -454,42 +467,61 @@ class BringupTimerRegistry:
     def __init__(self, *, max_entries: int = 256) -> None:
         self._lock = threading.Lock()
         self._timers: "OrderedDict[str, BringupTimer]" = OrderedDict()
-        # Sessions whose bring-up has already settled (finish() ran) — a
-        # LATER get() for these returns the null timer, never a fresh one
-        # (bring-up is a FIRST-TURN-ONLY concept; turn 2+ must not silently
-        # start measuring a whole new "bring-up" for an already-warm session).
-        self._settled: set[str] = set()
+        # Turns timed so far per session (bounded with the timers): a timer is
+        # created only for a session's first turn (by ``session.create`` or its
+        # first ``begin_turn``) or by ``begin_turn``; between turns the null timer
+        # answers, so a late seam call never opens a stray window.
+        self._turns: "OrderedDict[str, int]" = OrderedDict()
         self._max_entries = max_entries
 
     def get_or_create(self, session_id: str) -> "BringupTimer | _NullBringupTimer":
         with self._lock:
-            if session_id in self._settled:
-                return _NULL_TIMER
             timer = self._timers.get(session_id)
-            if timer is None:
-                timer = BringupTimer(session_id=session_id)
-                self._timers[session_id] = timer
-                self._evict_over_cap_locked()
-            else:
+            if timer is not None:
                 self._timers.move_to_end(session_id)
-            return timer
+                return timer
+            if session_id in self._turns:
+                return _NULL_TIMER
+            return self._create_locked(session_id)
+
+    def begin_turn(self, session_id: str) -> "BringupTimer":
+        """The timer for a turn that is starting now.
+
+        A timer whose turn already started and never settled (a failed turn) is
+        settled first, with its open phases force-closed and named; a timer holding
+        only ``session.create`` is the first turn's and is kept.
+        """
+        with self._lock:
+            stale = self._timers.get(session_id)
+            if stale is not None and stale.turn_started:
+                del self._timers[session_id]
+            else:
+                stale = None
+            timer = self._timers.get(session_id) or self._create_locked(session_id)
+            timer.turn_started = True
+        if stale is not None:
+            stale.finish()
+        return timer
+
+    def _create_locked(self, session_id: str) -> "BringupTimer":
+        turn = self._turns.pop(session_id, 0) + 1
+        self._turns[session_id] = turn
+        while len(self._turns) > self._max_entries * 4:
+            self._turns.popitem(last=False)
+        timer = BringupTimer(session_id=session_id, turn=turn)
+        self._timers[session_id] = timer
+        self._evict_over_cap_locked()
+        return timer
 
     def finish(self, session_id: str) -> Optional[BringupSummary]:
         """Settle + evict ``session_id``'s timer, returning its summary.
 
-        ``None`` when bring-up was never started for this session (a normal
-        no-op: the session predates this instrumentation, or its bring-up
-        already settled and was evicted by an earlier ``finish()`` call --
-        idempotent, safe to call from more than one seam). A never-started
-        session is NOT marked settled here -- only a genuinely-timed session
-        graduates to the null-timer path, so a stray/defensive finish() call
-        can never pre-emptively block that session's real first-turn timer.
+        ``None`` when no timer is open (idempotent, safe to call from more than
+        one seam).
         """
 
         with self._lock:
             timer = self._timers.pop(session_id, None)
-            if timer is not None:
-                self._settled.add(session_id)
         if timer is None:
             return None
         return timer.finish()
@@ -497,7 +529,6 @@ class BringupTimerRegistry:
     def _evict_over_cap_locked(self) -> None:
         while len(self._timers) > self._max_entries:
             evicted_sid, evicted_timer = self._timers.popitem(last=False)
-            self._settled.add(evicted_sid)
             if not evicted_timer.is_finished:
                 # An LRU-capped registry evicting a still-open timer is a real
                 # anomaly (bring-up should settle in seconds) -- settle it so
@@ -515,6 +546,13 @@ def timer_for_session(app: "FastAPI", session_id: str) -> "BringupTimer | _NullB
     turn). The only import a seam call site needs."""
 
     return _registry(app).get_or_create(session_id)
+
+
+def begin_turn(app: "FastAPI", session_id: str) -> "BringupTimer":
+    """Open the timer for ``session_id``'s turn that is starting now (see
+    :meth:`BringupTimerRegistry.begin_turn`)."""
+
+    return _registry(app).begin_turn(session_id)
 
 
 def finish_bringup(app: "FastAPI", session_id: str) -> Optional[BringupSummary]:
@@ -539,5 +577,6 @@ __all__ = [
     "BringupTimerRegistry",
     "PhaseRecord",
     "timer_for_session",
+    "begin_turn",
     "finish_bringup",
 ]

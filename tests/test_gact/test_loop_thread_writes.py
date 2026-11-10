@@ -33,6 +33,10 @@ from clio_agent.arc.loop_guard import (
 from clio_agent.gact.app import build_app
 from clio_agent.gact.goal import GoalJudgement, dispatch_goal_at_finalize
 from clio_agent.gact.part_atoms import load_message_part_atoms
+from tests._compaction_summary import (
+    keep_open_request_only,
+    summary_lm,
+)
 
 from .conftest import complete_turn, settle_turn_slot
 from .test_post_messages import FakeClioAgent, _create_session
@@ -150,7 +154,7 @@ def test_compact_folds_the_arc_working_set_off_the_loop(
     reset_guard_hits()
     agent = FakeClioAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    agent._run_chat_agent = lambda prompt, _ctx: "compact summary"  # the summarise step
+    agent._main_lm = summary_lm(lambda _seen: "compact summary")  # the summarise step
     arc = app.state.arc
     scope = "scope_probe"
 
@@ -221,3 +225,9 @@ def test_pre_model_stop_preserves_confirmed_user_input_off_loop(
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert any(row["id"] == identity for row in messages)
     assert _write_hits() == []
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)
