@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 
 from clio_agent import conf
+from clio_agent.file_urls import file_url_path
 from clio_agent.gact.attention.byte_source import LocalFile
 from clio_agent.gact.attention.contract import AttentionRecord
 from clio_agent.gact.attention.reasons import AttentionUnavailable
@@ -58,7 +59,8 @@ def uri_path(uri: str) -> str:
 def locate(record: AttentionRecord, files_dir: str | None = None) -> LocalFile:
     """Where ``record``'s file is: in place, else under the local copy."""
     node_path = uri_path(record.uri)
-    original = Path(node_path)
+    # A node's own share is never reached for (shares=False); a drive URI maps to its drive.
+    original = file_url_path(record.uri, shares=False) or Path(node_path)
     if original.is_file():
         return LocalFile(original)
     root = configured_files_dir() if files_dir is None else files_dir

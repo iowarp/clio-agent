@@ -42,7 +42,6 @@ import sys
 import tempfile
 import threading
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -51,6 +50,7 @@ from typing import Any, Literal
 
 import httpx
 
+from clio_agent.file_urls import file_url_path
 from clio_agent.providers.components.pypi import RELEASES, ReleaseLookup, WheelFile
 from clio_agent.providers.components.registry import ProviderComponents, components_for
 from clio_agent.runtime import package_overlay
@@ -148,7 +148,9 @@ def download_wheel(wheel: WheelFile, directory: Path) -> Path:
     parsed = urllib.parse.urlparse(wheel.url)
     try:
         if parsed.scheme == "file":
-            source = Path(urllib.request.url2pathname(parsed.path))
+            source = file_url_path(wheel.url)
+            if source is None:
+                raise OSError(f"not a local file URL: {wheel.url}")
             with source.open("rb") as src, target.open("wb") as dst:
                 for chunk in iter(lambda: src.read(1 << 20), b""):
                     digest.update(chunk)
