@@ -442,11 +442,16 @@ def _linked_file(service: StorageService, record: SourceRecord, relative: str) -
             current = adapter.metadata(relative)
         else:
             current = next((row for row in adapter.entries() if row.path == relative), None)
-        unchanged = current is not None and current.revision == selected.revision
         # Size is compared only when both index entries report one: native Drive exports
         # have no size, and indexes written before that was modeled stored 0 for them.
-        if not unchanged or (
-            current.size is not None and selected.size is not None and current.size != selected.size
+        if (
+            current is None
+            or current.revision != selected.revision
+            or (
+                current.size is not None
+                and selected.size is not None
+                and current.size != selected.size
+            )
         ):
             raise ValueError("This linked file changed. Refresh the folder before opening it")
         if os.path.isfile(win_extended_path(destination)):

@@ -133,6 +133,8 @@ def materialize(
             os.makedirs(win_extended_path(destination.parent), exist_ok=True)
             digest = hashlib.sha256()
             file_bytes = 0
+            # Globus reports exact sizes; a truncated or grown read is a failed transfer.
+            globus_size = entry.size if source.provider == "globus" else None
             with (
                 adapter.open_read(entry) as reader,
                 open(win_extended_path(destination), "xb") as writer,
@@ -140,7 +142,7 @@ def materialize(
                 while chunk := reader.read(1024 * 1024):
                     check_cancel(store, operation.id)
                     file_bytes += len(chunk)
-                    if source.provider == "globus" and file_bytes > entry.size:
+                    if globus_size is not None and file_bytes > globus_size:
                         raise ValueError(
                             "Source file size changed during transfer; retry the transfer"
                         )
@@ -159,7 +161,7 @@ def materialize(
                         progress_published_at = current_time
                 writer.flush()
                 os.fsync(writer.fileno())
-            if source.provider == "globus" and file_bytes != entry.size:
+            if globus_size is not None and file_bytes != globus_size:
                 raise ValueError("Source file was truncated during transfer; retry the transfer")
             hashes[entry.path] = digest.hexdigest()
             if entry.sha256 and hashes[entry.path] != entry.sha256:
