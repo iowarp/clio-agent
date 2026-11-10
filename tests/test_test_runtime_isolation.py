@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import ModuleType
 
+import psutil
 import pytest
 
 from tests._test_runtime_isolation import (
@@ -223,3 +227,48 @@ def test_cleanup_removes_readonly_snapshot_directories(tmp_path: Path) -> None:
         directory.chmod(0o555)
     cleanup_test_runtime(runtime.root, runtime.parent, retry_delay_seconds=0)
     assert not runtime.root.exists()
+
+
+def _launcher() -> ModuleType:
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_tests.py"
+    spec = importlib.util.spec_from_file_location("clio_run_tests_launcher", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _is_zombie(pid: int) -> bool:
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.ZombieProcess:
+        return True
+    except psutil.NoSuchProcess:
+        return False
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows has no zombie processes")
+def test_launcher_names_an_exited_child_nobody_reaped() -> None:
+    """An unreaped child is a leak by its spawner; the error says which one."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])  # noqa: S603 - fixed argv
+    try:
+        deadline = time.monotonic() + 20
+        while not _is_zombie(child.pid):
+            assert time.monotonic() < deadline, "child never exited"
+            time.sleep(0.05)
+        survivors = _launcher().active_children()
+        assert f"pid={child.pid} status=zombie" in "; ".join(survivors), survivors
+    finally:
+        child.wait(timeout=10)
+
+
+def test_launcher_names_a_child_that_is_still_running() -> None:
+    child = subprocess.Popen(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", "import time; time.sleep(60)"]
+    )
+    try:
+        survivors = _launcher().active_children()
+        assert any(entry.startswith(f"pid={child.pid} ") for entry in survivors), survivors
+    finally:
+        child.kill()
+        child.wait(timeout=10)
