@@ -54,6 +54,15 @@ records `web mcp not declared reason=launcher_missing`.
   step is an ordinary operation in Infrastructure > SearXNG, where you can also
   install, start, stop, check status and logs, verify, uninstall and delete its
   data yourself.
+* **A failed first-run install is retried.** A later boot installs it again, after
+  a wait that starts at 5 minutes and doubles with each consecutive failed install
+  (at most a day). Until then Infrastructure shows the failure and the next retry
+  time; installing it yourself does not wait.
+* **The port.** CLIO's own install uses `search.searxng.port` (`18890`). When
+  that shipped default is already taken by another program (another CLIO's
+  SearXNG, say), it installs on the next free port instead and records it on the
+  deployment, which is where CLIO's search reads it. A port you set yourself is
+  never moved.
 * **What gets installed.** SearXNG at the commit CLIO Web Search pins
   (`e8e710e42a3ab2bce27d1f97e51d8d4ccaa80871`), downloaded as that commit's
   source archive (an archive that is not that commit is refused), in its own uv

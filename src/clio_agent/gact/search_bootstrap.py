@@ -7,17 +7,25 @@ when it is installed but not running -- unless the person's last action on it wa
 stop, uninstall or delete it. Every step is an ordinary infrastructure operation, so
 it is visible (and cancellable) in Infrastructure like one the person started.
 
-A recorded SearXNG whose installation is missing (an install that failed) is not
-started: a start can only fail with "install first", once per boot. Boot records
-``auto_start_skipped`` on the service record instead, and the person installs it
-from Infrastructure.
+A recorded SearXNG whose installation is missing (an install that failed) is installed
+again on a later boot, after a backoff that doubles with each consecutive failed
+install (:data:`INSTALL_RETRY_BASE_SECONDS` up to :data:`INSTALL_RETRY_MAX_SECONDS`), so
+a failure that keeps recurring is not repeated on every boot. While it waits, boot
+records ``auto_start_skipped`` on the service record with the next retry time.
+
+CLIO's own installs use the shipped default port unless another process already
+listens on it; then they choose the next free loopback port. The install records that
+port in the deployment's configuration (which search resolves) and its receipt. A port
+the person configured is never moved.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from clio_agent.gact.infrastructure.models import (
@@ -36,6 +44,13 @@ from clio_agent.search.settings import (
 logger = logging.getLogger(__name__)
 
 LOCAL_TARGET = "local"
+#: Delay before boot retries a failed install; doubles per consecutive failure.
+INSTALL_RETRY_BASE_SECONDS = 5 * 60
+INSTALL_RETRY_MAX_SECONDS = 24 * 60 * 60
+#: The shipped ``search.searxng.port``: the only port CLIO moves when it is taken.
+DEFAULT_PORT = SearchSettings().port
+#: How far past the default port CLIO looks for a free one.
+PORT_SEARCH_SPAN = 100
 #: The person's own decisions that auto-start must respect.
 _DECLINED = frozenset({"stop", "uninstall", "delete_data"})
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
@@ -149,11 +164,19 @@ def _last_action(runtime: Any) -> str:
 
 
 async def _run(
-    runtime: Any, action: Literal["install", "start", "stop"], poll_seconds: float
+    runtime: Any,
+    action: Literal["install", "start", "stop"],
+    poll_seconds: float,
+    configuration: dict[str, str] | None = None,
 ) -> str:
     row = runtime.start_action(
         SERVICE_ID,
-        ServiceActionRequest(target_id=LOCAL_TARGET, action=action, variant_id=VARIANT_ID),
+        ServiceActionRequest(
+            target_id=LOCAL_TARGET,
+            action=action,
+            variant_id=VARIANT_ID,
+            configuration=configuration or {},
+        ),
         initiator="clio",
     )
     state = await _finish(runtime, row.id, poll_seconds)
@@ -167,6 +190,78 @@ async def _run(
             (getattr(final, "error", None) or "no error recorded") if final else "unknown",
         )
     return state
+
+
+def _port_taken(port: int) -> bool:
+    """Whether anything on this host listens on, or holds, loopback ``port``."""
+
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            return True
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
+def _install_port(settings: SearchSettings) -> int:
+    """The port CLIO's own install uses: the configured one, or a free one when the
+    shipped default is taken by another process."""
+
+    wanted = settings.port
+    if wanted != DEFAULT_PORT or not _port_taken(wanted):
+        return wanted
+    for port in range(wanted + 1, min(wanted + PORT_SEARCH_SPAN, 65535) + 1):
+        if not _port_taken(port):
+            logger.warning(
+                "local SearXNG port %s is taken by another process; installing on port %s",
+                wanted,
+                port,
+            )
+            return port
+    logger.warning("local SearXNG found no free port near %s; installing on it anyway", wanted)
+    return wanted
+
+
+def _parse_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _install_retry_at(runtime: Any) -> tuple[int, datetime | None]:
+    """Consecutive failed installs of the local SearXNG, and when the next may run.
+
+    A succeeded install ends the streak; a cancelled one (CLIO shut down mid-install)
+    neither counts nor ends it.
+    """
+
+    failures = 0
+    newest: datetime | None = None
+    for row in runtime.store.operations():  # newest first
+        if (
+            row.service_id != SERVICE_ID
+            or row.target_id != LOCAL_TARGET
+            or row.action not in {"install", "reinstall"}
+            or row.state not in {"succeeded", "failed"}
+        ):
+            continue
+        if row.state == "succeeded":
+            break
+        failures += 1
+        if newest is None:
+            newest = _parse_time(str(row.updated_at))
+    if newest is None:
+        return 0, None
+    delay = min(INSTALL_RETRY_BASE_SECONDS * 2 ** (failures - 1), INSTALL_RETRY_MAX_SECONDS)
+    return failures, newest + timedelta(seconds=delay)
+
+
+async def _install(runtime: Any, settings: SearchSettings, poll_seconds: float) -> str:
+    port = _install_port(settings)
+    return await _run(runtime, "install", poll_seconds, {"port": str(port)})
 
 
 def _started_by_clio(runtime: Any) -> bool:
@@ -232,7 +327,7 @@ async def ensure_local_searxng(
     """Install and/or start the local SearXNG when the configuration asks for it.
 
     Returns what happened: ``not_selected``, ``auto_install_off``, ``declined``,
-    ``incompatible``, ``running``, ``not_installed``, ``started``, ``install_failed``
+    ``incompatible``, ``running``, ``install_deferred``, ``started``, ``install_failed``
     or ``start_failed``.
     """
 
@@ -255,19 +350,33 @@ async def ensure_local_searxng(
     record = runtime.store.service(LOCAL_TARGET, SERVICE_ID)
     if record is None:
         logger.info("installing CLIO's private SearXNG (first run, search.backend=local_searxng)")
-        if await _run(runtime, "install", poll_seconds) != "succeeded":
+        if await _install(runtime, chosen, poll_seconds) != "succeeded":
             return "install_failed"
     elif (missing := _missing_installation(record)) is not None:
-        # Retrying the install every boot would repeat the same failure; the person
-        # installs it from Infrastructure, which clears this note.
-        logger.warning("local SearXNG not started reason=not_installed: %s", missing)
-        runtime.store.update_service(
-            LOCAL_TARGET,
-            SERVICE_ID,
-            state="not_installed",
-            auto_start_skipped=AutoStartSkip(reason="not_installed", detail=missing),
+        failures, retry_at = _install_retry_at(runtime)
+        if retry_at is not None and datetime.now(UTC) < retry_at:
+            # Retrying on every boot would repeat a recurring failure back to back.
+            detail = f"{missing} Retrying after {retry_at.isoformat(timespec='seconds')}."
+            logger.warning(
+                "local SearXNG install deferred failures=%s retry_at=%s: %s",
+                failures,
+                retry_at.isoformat(timespec="seconds"),
+                missing,
+            )
+            runtime.store.update_service(
+                LOCAL_TARGET,
+                SERVICE_ID,
+                state="not_installed",
+                auto_start_skipped=AutoStartSkip(reason="not_installed", detail=detail),
+            )
+            return "install_deferred"
+        logger.warning(
+            "retrying CLIO's private SearXNG install (previous failures=%s): %s",
+            failures,
+            missing,
         )
-        return "not_installed"
+        if await _install(runtime, chosen, poll_seconds) != "succeeded":
+            return "install_failed"
     state = await _run(runtime, "start", poll_seconds)
     return "started" if state == "succeeded" else "start_failed"
 
