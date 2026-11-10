@@ -210,6 +210,42 @@ def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
     return inventory
 
 
+def _built_for_this_interpreter(environment: Path) -> bool:
+    """Whether a cached venv still derives from the interpreter running Clio.
+
+    The cache key covers the Python version and lock files, not the installation path. A
+    macOS app first opened translocated (from the DMG, Downloads or a quarantined copy),
+    then moved to /Applications, leaves a venv whose ``home`` no longer exists, or one
+    that silently keeps using an older copy of the app that still exists.
+    """
+    try:
+        lines = (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return True  # Nothing recorded to compare; the import probe still verifies it.
+    recorded = next(
+        (
+            value.strip()
+            for key, _, value in (line.partition("=") for line in lines)
+            if key.strip() == "home"
+        ),
+        "",
+    )
+    if not recorded:
+        return True
+    try:
+        home = Path(recorded).resolve(strict=True)
+    except OSError:
+        return False
+    base = Path(sys.base_prefix)
+    current = {
+        Path(sys.executable).resolve().parent,
+        Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent,
+        base.resolve(),
+        (base / "bin").resolve(),
+    }
+    return home in current
+
+
 def _python_runtime(
     cache: Path, uv: str, *, discovery_only: bool = False
 ) -> tuple[Path, dict[str, Any]]:
@@ -219,7 +255,16 @@ def _python_runtime(
         shutil.copyfile(STACK_ROOT / name, project / name)
     environment = cache / "python"
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    repair = python.is_file()
+    repair = python.is_file() and _built_for_this_interpreter(environment)
+    if not repair and os.path.lexists(environment):
+        # A dangling or foreign base cannot be repaired in place: ``uv venv`` refuses an
+        # existing directory, and reusing it would keep another installation's Python.
+        try:
+            shutil.rmtree(environment)
+        except OSError as error:
+            raise DocumentRuntimeError(
+                f"Could not replace the stale document environment at {environment}: {error}"
+            ) from error
 
     def probe() -> dict[str, Any]:
         return _probe(python, discovery_only=True) if discovery_only else _probe(python)
