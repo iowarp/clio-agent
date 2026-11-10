@@ -29,6 +29,7 @@ from clio_agent.gact.context_references import (
     _failure,
     _resolve_part_sync,
 )
+from clio_agent.gact.message_context_tokens import estimate_text_tokens
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import _ContextFileAccessError
 from clio_agent.gact.types import ErrorInfo, Message, Part
@@ -268,6 +269,37 @@ def _delivery_error_info(exc: ContextReferenceError | OSError) -> ErrorInfo:
     )
 
 
+def _delivered_block_tokens(part: Part, resolved: Mapping[str, Any]) -> int:
+    """Estimate the block the model receives for one reference, not the referenced object.
+
+    A binary workspace file or a metadata-only artifact is delivered as a short
+    path/metadata block, so its byte size says nothing about prompt size; only an
+    inline text file sends its (capped) bytes.
+    """
+
+    delivery = resolved.get("delivery")
+    if not isinstance(delivery, Mapping):
+        return 0
+    mode = delivery.get("mode")
+    try:
+        if part.ref_kind in SUMMARY_REFERENCE_KINDS or "summary" in delivery:
+            return estimate_text_tokens(_summary_block(part, resolved, stale=False))
+        if mode == "inline_text":
+            size = delivery.get("size_bytes")
+            size = size if isinstance(size, int) and size > 0 else 0
+            sent = min(size, _CTX_MAX_BYTES)
+            suffix = f"\n... ({size - sent} more bytes truncated)" if size > sent else ""
+            header = (
+                f"### {part.ref_kind}: {part.label} [{part.ref_id}@{part.revision}]\n```\n\n```"
+            )
+            return max(1, (len(header) + sent + len(suffix)) // 4)
+        if part.ref_kind == "workspace_file" and mode == "workspace_path":
+            return estimate_text_tokens(_workspace_path_block(part, resolved))
+        return estimate_text_tokens(_metadata_block(part, resolved))
+    except (KeyError, TypeError):
+        return estimate_text_tokens(json.dumps(dict(delivery), sort_keys=True, default=str))
+
+
 def context_reference_frame_items(message: Message) -> list[dict[str, Any]]:
     """Return provenance-bearing frame rows for resolved context-reference parts."""
 
@@ -276,19 +308,21 @@ def context_reference_frame_items(message: Message) -> list[dict[str, Any]]:
         if part.type != "context_ref":
             continue
         resolved = part.metadata.get("context_reference", {})
+        if not isinstance(resolved, Mapping):
+            resolved = {}
         delivery = resolved.get("delivery", {})
-        size_bytes = delivery.get("size_bytes", 0)
-        if isinstance(size_bytes, int) and size_bytes > 0:
-            tokens = min(size_bytes, _CTX_MAX_BYTES) // 4
-        else:
-            tokens = len(json.dumps(delivery.get("summary", {}), sort_keys=True)) // 4
         rows.append(
             {
                 "kind": "context_ref",
                 "source_id": part.ref_id,
+                "display_path": str(
+                    (isinstance(delivery, Mapping) and delivery.get("workspace_path"))
+                    or part.label
+                    or part.ref_id
+                ),
                 "included": True,
                 "reason": "structured_context_reference",
-                "tokens_estimated": tokens,
+                "tokens_estimated": _delivered_block_tokens(part, resolved),
                 "metadata": {
                     "ref_kind": part.ref_kind,
                     "label": part.label,
