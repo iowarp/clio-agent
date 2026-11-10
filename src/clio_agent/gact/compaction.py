@@ -35,7 +35,9 @@ compaction_session`).
 
 from __future__ import annotations
 
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -79,6 +81,7 @@ __all__ = [
     "compact_session_context",
     "compaction_limit",
     "maybe_autocompact",
+    "note_system_prompt",
 ]
 
 #: Skip reasons: ``compact_session_context`` returns ``{"compacted": False, "reason": ...}``.
@@ -283,6 +286,45 @@ def _role(row: Any) -> str:
     return "user" if getattr(row, "role", "") == "user" else "assistant"
 
 
+def _kept_rows(app: Any, sid: str, plan: _ScopePlan) -> list[str]:
+    """The transcript rows the agent still sees verbatim beside the summary: each row
+    some of whose segments the policy keeps."""
+    rows = model_context_messages(list(app.state.messages.get(sid, [])))
+    keys = (((getattr(m, "turn_id", "") or m.id), _role(m), m.id) for m in rows)
+    return [i for t, r, i in keys if (t, r) in plan.kept_rows]
+
+
+# ---------------------------------------------------------------------------
+# The system prompt in force, per agent scope (the record names it).
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPTS: OrderedDict[tuple[str, str], str] = OrderedDict()
+_SYSTEM_PROMPTS_LOCK = threading.Lock()
+_SYSTEM_PROMPTS_MAX = 256
+
+
+def note_system_prompt(session_id: str, scope: str, text: str) -> None:
+    """Remember the system prompt an agent loop of ``scope`` in ``session_id`` sends.
+
+    A compaction record names it, so a reader sees what the agent was told when its
+    history was summarized. Process memory only, bounded: after a restart a scope's
+    prompt is known again once its agent runs, and a record written before then has
+    none.
+    """
+    if not session_id or not text:
+        return
+    with _SYSTEM_PROMPTS_LOCK:
+        _SYSTEM_PROMPTS[(session_id, scope)] = text
+        _SYSTEM_PROMPTS.move_to_end((session_id, scope))
+        while len(_SYSTEM_PROMPTS) > _SYSTEM_PROMPTS_MAX:
+            _SYSTEM_PROMPTS.popitem(last=False)
+
+
+def _system_prompt_in_force(session_id: str, scope: str) -> str:
+    with _SYSTEM_PROMPTS_LOCK:
+        return _SYSTEM_PROMPTS.get((session_id, scope), "")
+
+
 # ---------------------------------------------------------------------------
 # The one operation.
 # ---------------------------------------------------------------------------
@@ -313,7 +355,10 @@ def compact_session_context(
     Returns:
         ``{session_id, compacted, compactions: [...]}``, one entry per compacted scope
         (``compaction_id``, ``scope``, ``trigger``, ``turn_id``, ``message_id``,
-        ``part_id``, ``replaced_count``, ``summary``); ``reason`` on a typed skip.
+        ``part_id``, ``replaced_count`` (context segments), ``summarized_message_count``,
+        ``compacted_message_ids``, ``kept_message_ids``, ``summary``); ``reason`` on a
+        typed skip. ``compaction.completed`` carries the same entry without ``summary``;
+        the record's metadata also names the system prompt in force.
 
     Raises:
         CompactionError: session not found (404), History mode (409), a manual
@@ -466,12 +511,16 @@ def _summarize_record_fold(
     summary = _summary(app, sid, plan, focus, summarize)
     search_enabled = context_search_available(app.state.arc)
     text = summary_text(summary, base["compaction_id"], search_enabled=search_enabled)
+    compacted = _covered_rows(app, sid, base["turn_id"], plan)
+    kept = _kept_rows(app, sid, plan)
     part = summarization_part(
         text,
         trigger=trigger,
         compaction_id=base["compaction_id"],
         derived_from=plan.summarize,
-        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan),
+        compacted_message_ids=compacted,
+        kept_message_ids=kept,
+        system_prompt=_system_prompt_in_force(sid, plan.scope),
         agent_id=plan.scope,
     )
     try:
@@ -485,7 +534,11 @@ def _summarize_record_fold(
         **base,
         "message_id": message_id,
         "part_id": part_id,
+        # Context segments replaced; the transcript messages they stand for follow.
         "replaced_count": len(plan.summarize),
+        "summarized_message_count": len(compacted),
+        "compacted_message_ids": compacted,
+        "kept_message_ids": kept,
         "summary": text,
     }
 

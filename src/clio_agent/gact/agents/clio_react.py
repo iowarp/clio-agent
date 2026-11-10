@@ -334,6 +334,9 @@ class _Loop:
         self.arc, self.session, self.scope = record.arc_scope()
         if self.arc is None:
             raise NoContextStoreError()
+        from clio_agent.gact.compaction import note_system_prompt  # noqa: PLC0415
+
+        note_system_prompt(self.session, self.scope, self.system)
         self.recorder = record.StepRecorder(
             self.arc,
             self.session,

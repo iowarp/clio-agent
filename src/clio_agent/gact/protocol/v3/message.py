@@ -17,7 +17,7 @@ from clio_agent.gact.protocol.v3.artifact_projection import artifact_entity
 from clio_agent.gact.protocol.v3.summon_presentation import summon_presentation
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
-from clio_agent.gact.summarization_record import legacy_compaction_block
+from clio_agent.gact.summarization_record import WIRE_METADATA_KEYS, legacy_compaction_block
 from clio_agent.gact.tool_result_presentation import project_presentation, recorded_presentation
 
 if TYPE_CHECKING:
@@ -36,6 +36,13 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     """Return a typed mapping view for untrusted wire values."""
 
     return value if isinstance(value, Mapping) else {}
+
+
+def _wire_value(value: Any) -> str | list[str]:
+    """A record metadata value as the wire types it: a list of ids, or text."""
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return str(value)
 
 
 def _list(value: Any) -> list[Any]:
@@ -305,6 +312,9 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     if part_type == "injection":
         # Harness data the agent was given (plan reminder, todos, a path hint, ...):
         # clients render it as what it is, never as model or user text.
+        # A compaction record's metadata: what it summarized and kept, and the system
+        # prompt in force (clio-schemas InjectionMetadata; other keys stay server-side).
+        record = {k: _wire_value(metadata[k]) for k in WIRE_METADATA_KEYS if k in metadata}
         return {
             "id": part_id,
             "type": "injection",
@@ -316,6 +326,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
             # An injection made inside a variant try (e.g. Refine advice) belongs to that tab.
             **{k: metadata[k] for k in ("variants_id", "try_index") if k in metadata},
+            **({"metadata": record} if record else {}),
             **common,
         }
     if part_type == "notice":
