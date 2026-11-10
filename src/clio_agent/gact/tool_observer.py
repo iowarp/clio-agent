@@ -54,6 +54,7 @@ from clio_agent.gact.tool_observer_parts import completed_tool_metadata, complet
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
+from clio_agent.runtime.lm_activity import in_live_chunk_order
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.mcp_results import content_blocks_for_wire
 from clio_agent.tools.result_errors import structured_tool_result_error
@@ -278,12 +279,16 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if transcript is not None:
         # #767 PR1: append through the single-writer ledger — it closes its own
         # open text, mints ids, and publishes message.part.added itself.
-        # Each phase owns one row; the terminal return remains a later event.
-        if part.type == "expert_handoff":
-            transcript.upsert_delegation_part(part)
-        else:
-            transcript.append_part(part)
-        _mirror_transcript_state(app, sid, transcript)
+        # Each phase owns one row; the terminal return remains a later event. The row
+        # lands behind the step's streamed text still queued, never inside it.
+        def append() -> None:
+            if part.type == "expert_handoff":
+                transcript.upsert_delegation_part(part)
+            else:
+                transcript.append_part(part)
+            _mirror_transcript_state(app, sid, transcript)
+
+        in_live_chunk_order(append)
         return
     msg_id = _ensure_live_assistant_message(app, sid)
     live_parts = getattr(app.state, "live_assistant_parts", None)
@@ -340,9 +345,13 @@ def _append_live_assistant_part_once(
         # never closes streamed text — the boundary close runs only when the key is fresh.
         if transcript.has_part_key(key):
             return False
-        appended = transcript.append_part_once(key, part)
-        _mirror_transcript_state(app, sid, transcript)
-        return appended is not None
+
+        def append() -> bool:
+            appended = transcript.append_part_once(key, part)
+            _mirror_transcript_state(app, sid, transcript)
+            return appended is not None
+
+        return in_live_chunk_order(append)
 
     live_keys = getattr(app.state, "live_assistant_part_keys", None)
     if live_keys is None:

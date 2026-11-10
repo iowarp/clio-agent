@@ -55,6 +55,7 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key
+from clio_agent.lm.engines.invoke_calls import text_tool_protocol
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
@@ -271,6 +272,8 @@ class AsyncClaudeCodeEngine:
             _reset(entry, send)
         elif turn.provider_compacted:
             reset_conversation(entry, "provider_compacted")
+        elif turn.overran:
+            reset_conversation(entry, "reply_past_calls")
         elif replaced := record_sent(entry, send, session_id, request, system):
             _forget_costs([replaced])  # the conversation it replaced is over
         for out in closing:
@@ -341,7 +344,10 @@ class _Turn:
         # The CLI compacted its own session (``compact_boundary``): its context no longer
         # matches clio-core's, so the conversation is reset after this call.
         self.provider_compacted = False
-        self._splitter = StreamSplitter()
+        # The model wrote on past its call block; the CLI's history holds the invented rest.
+        self.overran = False
+        invoke = text_tool_protocol() == "invoke"
+        self._splitter = StreamSplitter(available_tools if invoke else ())
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
         self._held = ""  # streamed text held back while it could still be non-progress
@@ -526,6 +532,20 @@ class _Turn:
                 self.model,
                 call_id,
                 dropped,
+                len(split.calls),
+            )
+        if split.overrun:
+            # Written past the call block, before any result existed (invented results,
+            # prose about them, more calls): never run or shown. On the record.
+            self.overran = True
+            logger.info(
+                "provider reply text dropped past call block reason=reply_past_calls "
+                "model=%s call_id=%s chars=%d invented_results=%s later_calls=%d calls=%d",
+                self.model,
+                call_id,
+                len(split.overrun),
+                "[tool results]" in split.overrun or "<function_results>" in split.overrun,
+                split.overrun.count("<invoke "),
                 len(split.calls),
             )
         for index, call in enumerate(split.calls):
