@@ -362,6 +362,7 @@ def _javascript_runtime(
             ValueError,
             KeyError,
             TypeError,
+            AttributeError,
             tarfile.TarError,
         ) as exc:
             # The registry install below is the same pinned version; only slower.

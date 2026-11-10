@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import http.client
 import sys
 import urllib.request
 from pathlib import Path
@@ -86,7 +87,7 @@ def remote_size(url: str) -> int:
         request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - https pins
             return int((response.headers.get("Content-Range") or "/0").rsplit("/", 1)[1])
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return 0
 
 

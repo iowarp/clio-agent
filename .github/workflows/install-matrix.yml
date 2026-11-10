@@ -38,6 +38,11 @@ on:
       scale:
         description: 'Reference store sizes to measure (space separated)'
         default: '1 4'
+      signed_run:
+        description: >-
+          A clio-bundles run with signed_macos_artifact: the desktop-install job installs
+          its notarized .app.aar instead of the published release
+        default: ''
 
 permissions:
   contents: read
@@ -379,8 +384,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
+      # A signed build's Apple archive (dispatch input); macOS only.
+      SIGNED_RUN: ${{ inputs.signed_run || '' }}
     defaults:
       run:
         shell: bash
@@ -398,12 +406,29 @@ jobs:
           if grep -Eq "$pattern" <<<"$files"; then echo "run=true"; else echo "run=false"; fi >> "$GITHUB_OUTPUT"
       - uses: astral-sh/setup-uv@v5
         if: steps.scope.outputs.run == 'true'
+      # On a pull request or schedule this installs the newest published release, so
+      # it measures this branch's install.sh against the assets that release has. A
+      # dispatch with signed_run installs that build's notarized Apple archive instead.
       - name: install.sh --desktop --progress json (scratch directory)
         if: steps.scope.outputs.run == 'true' && runner.os == 'macOS'
         continue-on-error: true
         run: |
-          CLIO_DESKTOP_DIR="$RUNNER_TEMP/Applications" bash install/install.sh --desktop --progress json \
-            > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
+          package=()
+          if [ -n "$SIGNED_RUN" ]; then
+            gh run download "$SIGNED_RUN" -R "${{ github.repository }}" \
+              -n clio-desktop-aarch64-apple-darwin-bundled-signed -D "$RUNNER_TEMP/signed"
+            aar="$(ls "$RUNNER_TEMP"/signed/*-bundled.app.aar)"
+            sha="$(awk -v n="$(basename "$aar")" '$2 == n || $2 == "*" n { print $1 }' \
+              "$RUNNER_TEMP"/signed/SHA256SUMS.aarch64-apple-darwin.bundled.txt)"
+            package=(--desktop-package "$aar" --desktop-sha256 "$sha")
+          fi
+          CLIO_DESKTOP_DIR="$RUNNER_TEMP/Applications" bash install/install.sh --desktop "${package[@]}" \
+            --progress json > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
+      - name: Gatekeeper accepts the installed signed build
+        if: steps.scope.outputs.run == 'true' && runner.os == 'macOS' && env.SIGNED_RUN != ''
+        run: |
+          spctl --assess --type execute -vv "$RUNNER_TEMP/Applications/CLIO Desktop.app" 2>&1 \
+            | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
       - name: install.sh --desktop --progress json (deb)
         if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
         continue-on-error: true
@@ -464,10 +489,13 @@ jobs:
           tail -n 40 "$RUNNER_TEMP/install.log" || true
       - name: Enforce the step budgets
         if: always() && steps.scope.outputs.run == 'true'
-        run: >-
-          uv run --no-project --python 3.14 python scripts/ci/check_budgets.py
-          --install-events "$RUNNER_TEMP/install-events.jsonl"
-          --os "$RUNNER_OS" --job "desktop-install-$RUNNER_OS" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          # A local signed package (macOS) has no download step to require.
+          job="desktop-install-$RUNNER_OS"
+          [ -z "$SIGNED_RUN" ] || [ "$RUNNER_OS" != macOS ] || job=desktop-package
+          uv run --no-project --python 3.14 python scripts/ci/check_budgets.py \
+            --install-events "$RUNNER_TEMP/install-events.jsonl" \
+            --os "$RUNNER_OS" --job "$job" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.run == 'true'
         with:

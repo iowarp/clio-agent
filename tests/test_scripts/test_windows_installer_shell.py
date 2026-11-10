@@ -69,7 +69,7 @@ def test_large_downloads_resume_through_curl() -> None:
 
 def test_desktop_hands_the_plan_downloads_to_the_setup() -> None:
     script = (ROOT / "install/install.ps1").read_text(encoding="utf-8")
-    body = script[script.index("function Install-ClioDesktop") :]
+    body = script[script.index("function Install-ClioDesktopRelease") :]
     body = body[: body.index("\n}\n")]
     assert "install-plan.$triple.bundled.txt" in body
     assert "$env:CLIO_INSTALL_DOWNLOADS = $downloads" in body

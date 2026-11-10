@@ -713,8 +713,9 @@ jobs:
           fi
           # install.sh and install.ps1 fetch the first launch's downloads (LibreOffice,
           # pnpm) alongside the app; SHA256SUMS below authenticates the plan. Windows
-          # runners name the interpreter python.
-          if [ "${{ matrix.variant }}" = "bundled" ]; then
+          # runners name the interpreter python. A rebuild of a tag older than the plan
+          # script has none to publish.
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ -f scripts/release_install_plan.py ]; then
             py="$(command -v python3 || command -v python)"
             "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
