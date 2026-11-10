@@ -25,7 +25,7 @@ from clio_agent.runtime import sandbox_codex_mxc as mxc
 
 root = Path(sys.argv[1])
 verified = sys.argv[2] == 'True'
-mxc.sys = SimpleNamespace(platform='win32')
+mxc.sys = SimpleNamespace(platform='win32', executable='python.exe', base_prefix='C:\\Python')
 mxc._receipt_path = lambda: root / 'receipt.json'
 mxc._identity = lambda binary, version='': {'binary': binary, 'version': version}
 
@@ -42,7 +42,11 @@ mxc.prepare_mxc('codex.exe', '0.167.0', probe=probe)
 def receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Use a local receipt and a test-only executable identity on every CI platform."""
     path = tmp_path / "receipt.json"
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
     monkeypatch.setattr(mxc, "_receipt_path", lambda: path)
     monkeypatch.setattr(
         mxc, "_identity", lambda binary, version="": {"binary": binary, "version": version}
