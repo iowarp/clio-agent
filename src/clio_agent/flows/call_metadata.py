@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.flows.values import _plain
-
 if TYPE_CHECKING:
     from clio_agent.flows.context import FlowCall
 
@@ -19,6 +17,9 @@ def child_session_metadata(call: "FlowCall", depth: int, run_id: str) -> dict[st
     ``react`` flow, not its selected flow, so a flow's helpers never re-enter it (a
     flow recurses via ``ctx.call(<flow>)``).
     """
+
+    # flows.values imports dspy; gact.app reaches this module and must not load it.
+    from clio_agent.flows.values import _plain  # noqa: PLC0415
 
     metadata: dict[str, Any] | None = None
     if call.kind == "flow":
@@ -50,6 +51,24 @@ def child_session_metadata(call: "FlowCall", depth: int, run_id: str) -> dict[st
     return metadata
 
 
+def active_workflow_step() -> dict[str, Any] | None:
+    """The workflow step the active session was spawned as, if this turn is one.
+
+    The flow records that on the child as ``workflow_step_of``. A repair call is
+    not a step, so it does not carry the marker.
+    """
+
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    app = gact_context.active_app()
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    if sessions is None:
+        return None
+    session = sessions.get(gact_context.active_session_id())
+    step = (getattr(session, "metadata", None) or {}).get("workflow_step_of")
+    return dict(step) if isinstance(step, dict) else None
+
+
 def child_model(app: Any, handle: str) -> str:
     """``account/model`` the child of task ``handle`` runs on, or ``""`` when unknown."""
 
@@ -61,4 +80,4 @@ def child_model(app: Any, handle: str) -> str:
     return ""
 
 
-__all__ = ["child_model", "child_session_metadata"]
+__all__ = ["active_workflow_step", "child_model", "child_session_metadata"]

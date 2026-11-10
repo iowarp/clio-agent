@@ -119,6 +119,12 @@ not affected.
 
 ### Changed
 
+- `max_concurrency` caps how many of a workflow's steps are in flight
+  (`0` means no step cap; model-call admission is separate),
+  and `timeout_s` is that step's deadline. A deadline is offered to editors as
+  `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
+  Merged `workflow_state` follows definition order, with
+  `workflow_state_conflict` rows when two steps set the same key differently.
 - **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
   length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
   for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
