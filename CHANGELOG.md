@@ -216,7 +216,15 @@ not affected.
   what to install when there is none. It checks out the recorded submodules with git
   plumbing when that git has no `git submodule` command, as with the git bundled in
   CLIO Desktop.
-
+- NDP no longer points at a dead backend. With `NDP_API_URL` unset, CLIO's
+  built-in NDP catalog advertised `http://155.101.6.191:8003` as its Endpoint,
+  which was never public and no longer answers. It now advertises the public
+  catalog, `https://nationaldataplatform.org/catalog`, which already served its
+  searches. Pelican, OSDF and S3 resources now fail at once with the setting to
+  add, instead of timing out against that host. Sources attached under the old
+  default stay valid.
+- The workbench file tree shows file sizes for local workspaces too. Uploads and
+  remote sources already reported them; local folder listings left them out.
 - NDP and EarthScope work without their MCP servers. The agents told the model it
   could search the National Data Platform, but CLIO withheld the search tools until
   a dataset or Endpoint was already attached, and EarthScope's skill needed the
