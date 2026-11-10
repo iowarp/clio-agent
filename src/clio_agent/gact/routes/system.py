@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
-from clio_agent.gact import boot_timing, store_format_boot, store_migrations
+from clio_agent.gact import boot_timing, capabilities_snapshot, store_format_boot, store_migrations
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.conversation_projection import model_context_messages
@@ -74,7 +74,6 @@ from clio_agent.gact.types import (
     SessionMemoryStats,
     TransportFlags,
 )
-from clio_agent.gact.version_info import build_version_info
 from clio_agent.runtime.package_preparation import probe_managed_packages
 from clio_agent.runtime.status import (
     IntegrationState,
@@ -436,12 +435,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/capabilities", response_model=Capabilities)
     async def capabilities(request: Request) -> Capabilities | JSONResponse:
+        # Plugin-store-backed inputs come from a snapshot refreshed on a dedicated
+        # thread; everything below is in-memory, so the probe answers on the loop
+        # without queueing behind the shared worker pool.
+        inputs = await capabilities_snapshot.resolve(app)
         bearer_enabled = bool(getattr(app.state, "bearer_token", None))
         history = getattr(app.state, "task_history", None)
         task_store_durable = history is not None and not history.requires_recovery
         response = Capabilities(
             contract_version=CONTRACT_VERSION,
-            versions=build_version_info(),
+            versions=inputs.versions,
             backend=BackendInfo(
                 name="clio-agent-gact",
                 version=GACT_BACKEND_VERSION,
@@ -563,16 +566,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
         )
-        # Catalog discovery may initialize installed plugin snapshots. Keep all
-        # filesystem work off the request loop so health/SSE remain responsive.
-        return await run_off_loop(
-            project_for_request,
+        return project_for_request(
             request,
             v3=lambda: JSONResponse(
                 content=capabilities_to_v3(
                     app,
                     response.capabilities,
                     replay_retention=app.state.bus.history_capacity,
+                    a2ui_capabilities=inputs.a2ui_capabilities,
+                    versions=inputs.versions,
+                    input_degradations=inputs.degradations,
                 )
             ),
             v2=lambda: response,

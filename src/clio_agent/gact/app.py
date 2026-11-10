@@ -676,6 +676,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(_scheduler_tick(app))
         app.state.scheduler_task = task
 
+    from clio_agent.gact import capabilities_snapshot  # noqa: PLC0415
+
+    # Collect the capabilities snapshot now, so the first probe already finds it.
+    capabilities_snapshot.start(app)
     server_boot.start(app)  # clio-core attach + first doctor pass, both off-loop (typed rows)
     from clio_agent.gact import highway_writer, task_runtime
 

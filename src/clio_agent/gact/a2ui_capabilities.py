@@ -344,6 +344,22 @@ def agent_capabilities(app: "FastAPI", session_id: str | None) -> dict[str, Any]
         registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
         installed = registry.installed() if registry else []
         ids = list(dict.fromkeys(entry.catalog_id for entry in installed))
+    return _official_capabilities(ids)
+
+
+def builtin_agent_capabilities(app: "FastAPI") -> dict[str, Any]:
+    """The server-wide capability object over the builtin catalogs only.
+
+    Needs no plugin-store I/O. ``GET /v1/capabilities`` serves it, with a typed
+    degradation, only until the first installed-catalog snapshot is collected.
+    """
+
+    registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
+    builtin = registry.builtin() if registry else []
+    return _official_capabilities(list(dict.fromkeys(entry.catalog_id for entry in builtin)))
+
+
+def _official_capabilities(ids: list[str]) -> dict[str, Any]:
     model = A2UIAgentCapabilities.model_validate(
         {"v0.9": {"supportedCatalogIds": ids, "acceptsInlineCatalogs": False}}
     )

@@ -55,6 +55,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.local_server_store import with_saved_address
 from clio_agent.gact.model_selection import surrogate_selection_error
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.providers import response_settings
 from clio_agent.gact.providers.bind_configuration import prepare_bind_configuration
 from clio_agent.gact.providers.config import (
@@ -280,7 +281,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         and decide whether to surface a "Login" affordance.
         """
 
-        return {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]}
+        # Each row probes credentials, model overlays and saved addresses on disk;
+        # keep that I/O off the event loop so it cannot stall every other request.
+        return await run_off_loop(
+            lambda: {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]}
+        )
 
     # GET /v1/providers/{provider_id} is registered after the literal
     # /v1/providers/lm route so the LM configuration endpoint keeps
@@ -452,7 +457,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         await reprobe_for_provider_list(app)
-        return _lm_provider_info()
+        # The preset rows read provider credentials and overlays from disk.
+        return await run_off_loop(_lm_provider_info)
 
     async def _apply_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
         """Reconfigure the LM in-place. Rebuilds DSPy + the

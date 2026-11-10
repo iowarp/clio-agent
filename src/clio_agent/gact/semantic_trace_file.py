@@ -50,6 +50,39 @@ class TraceWriteError(ClioError):
         )
 
 
+class _WriteProgress:
+    """Sequence watermark over the shared writer queue (FIFO, one consumer).
+
+    ``flush`` waits for the writes enqueued BEFORE it was called, not for the queue to
+    be empty: ``Queue.join`` waits for every session's writes, including ones enqueued
+    after the call, so a reader starved while any turn kept streaming token deltas.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._enqueued = 0
+        self._written = 0
+
+    def put(self, item: "tuple[Path, SemanticEvent]") -> None:
+        # Counted under the same lock as the put, so the count order is the queue order.
+        with self._cond:
+            _TRACE_WRITE_QUEUE.put(item)
+            self._enqueued += 1
+
+    def written(self) -> None:
+        with self._cond:
+            self._written += 1
+            self._cond.notify_all()
+
+    def wait_through_enqueued(self) -> None:
+        with self._cond:
+            target = self._enqueued
+            self._cond.wait_for(lambda: self._written >= target)
+
+
+_TRACE_WRITE_PROGRESS = _WriteProgress()
+
+
 # Kept open per session trace (reopening per event was a tenth of the writer's time on
 # P7, 2026-11-02); a deleted session's trace is reopened, not written unlinked.
 _TRACE_HANDLES = AppendHandles()
@@ -74,6 +107,8 @@ def _trace_writer_loop() -> None:
                 _TRACE_WRITE_FAILURES.setdefault(path, f"{type(exc).__name__}: {exc}")
         finally:
             _TRACE_WRITE_QUEUE.task_done()
+            if item is not None:
+                _TRACE_WRITE_PROGRESS.written()
 
 
 def _ensure_trace_writer() -> None:
@@ -99,10 +134,10 @@ class FileSemanticTraceBackend:
 
     ``emit`` serializes the FULL event on the caller (cheap CPU) then enqueues to
     the shared writer thread, so the turn event loop is never blocked by file I/O
-    (the trace is ON by default). ``flush`` blocks until the queue drains
-    (tests/readers); ``close`` drains too (the shared daemon writer lives for the
-    process). The durable trace always captures the FULL event; redaction/capping
-    is a per-consumer projection applied elsewhere, never here.
+    (the trace is ON by default). ``flush`` blocks until every event enqueued before
+    it is written (tests/readers); ``close`` drains the whole queue (the shared daemon
+    writer lives for the process). The durable trace always captures the FULL event;
+    redaction/capping is a per-consumer projection applied elsewhere, never here.
     """
 
     name = "file"
@@ -130,11 +165,11 @@ class FileSemanticTraceBackend:
         path = self._path_for(event)
         if path in _TRACE_WRITE_FAILURES:
             raise TraceWriteError(path, _TRACE_WRITE_FAILURES[path])
-        _TRACE_WRITE_QUEUE.put((path, event))
+        _TRACE_WRITE_PROGRESS.put((path, event))
 
     def flush(self) -> None:
-        """Block until all enqueued events have been written; raise a write that failed."""
-        _TRACE_WRITE_QUEUE.join()
+        """Block until events enqueued before this call are written; raise a failed write."""
+        _TRACE_WRITE_PROGRESS.wait_through_enqueued()
         for path, cause in list(_TRACE_WRITE_FAILURES.items()):
             if path == self.path or self.path in path.parents:
                 raise TraceWriteError(path, cause)

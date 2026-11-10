@@ -120,6 +120,10 @@ async def close_request_owners(app: "FastAPI") -> None:
     from clio_agent.gact import shutdown_budget  # noqa: PLC0415
 
     shutdown_budget.begin(app)
+    from clio_agent.gact import capabilities_snapshot  # noqa: PLC0415
+
+    # A request-only owner: its refresher thread must not outlive the server.
+    await asyncio.to_thread(capabilities_snapshot.stop, app)
     if getattr(app.state, "server_boot", False):
         from clio_agent.gact import search_bootstrap  # noqa: PLC0415
 
