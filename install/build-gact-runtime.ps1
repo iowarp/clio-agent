@@ -256,6 +256,20 @@ if (Test-Path $sitePkgs) {
       if (Test-Path $td) { Remove-Item -LiteralPath $td -Recurse -Force -ErrorAction SilentlyContinue }
     }
   }
+  # Files no run of CLIO reads (about 1,100 in 0.9.5.1): every one is another file
+  # to write, scan for malware and sign on install. Nested test suites (numpy's
+  # alone is about 490), the C/C++ headers for compiling against numpy or pyarrow,
+  # and the stdlib's IDLE and turtle demos. Same list in build-gact-runtime.sh.
+  # Type stubs (.pyi) stay: globus_sdk reads its own at import, and griffe
+  # merges them into FastMCP tool docs.
+  Get-ChildItem -LiteralPath $sitePkgs -Recurse -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -in @('tests', 'test') -and $_.Parent.FullName -ne $sitePkgs -and $_.Parent.Parent.FullName -ne $sitePkgs } |
+    Sort-Object { $_.FullName.Length } |
+    ForEach-Object { if (Test-Path -LiteralPath $_.FullName) { Remove-Item -LiteralPath $_.FullName -Recurse -Force } }
+  foreach ($unread in @('pyarrow\include', 'numpy\_core\include', '..\idlelib', '..\turtledemo')) {
+    $unreadDir = Join-Path $sitePkgs $unread
+    if (Test-Path -LiteralPath $unreadDir) { Remove-Item -LiteralPath $unreadDir -Recurse -Force }
+  }
   # *.dist-info/RECORD is KEPT: the desktop upgrades this runtime in place
   # with `uv pip install`, and without RECORD uv cannot uninstall the old
   # version -- stale modules and duplicate metadata survive the upgrade.
