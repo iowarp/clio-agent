@@ -35,6 +35,7 @@ from clio_agent.providers.components.updater import (
     verify_provider_in_child,
 )
 from clio_agent.providers.support_record import record_support
+from clio_agent.runtime import package_overlay
 
 
 def _error(status: int, code: str, message: str) -> HTTPException:
@@ -52,6 +53,7 @@ def live_update_environment() -> UpdateEnvironment:
         python=sys.executable,
         verify_provider=verify_provider_in_child,
         record_support=record_support,
+        package_overlay=package_overlay.overlay_for(sys.executable),
     )
 
 

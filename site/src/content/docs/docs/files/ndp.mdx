@@ -212,12 +212,14 @@ the data live.
 
 ## Ask the agent
 
-You can ask the agent to connect an existing Endpoint using its URL and saved
-SSH route, or select data through **Attach > NDP**. Operational NDP tools load
-after the workspace has a connected dataset or visible saved Endpoint. A saved
-NDP login alone does not attach data. Disconnecting the last dataset or
-hiding/removing the last Endpoint removes its operational tools on the next turn;
-retained downloads stay available as files.
+Choose the **NDP** agent (or add the `ndp` plugin to another agent) to let the
+agent search the NDP catalog itself; search needs no attached dataset, sign-in or
+MCP server. You can also ask it to connect an existing Endpoint using its URL and
+saved SSH route, or select data through **Attach > NDP**. Endpoint operations,
+requests and uploads load after the workspace has a connected dataset or visible
+saved Endpoint. A saved NDP login alone does not attach data. Disconnecting the
+last dataset or hiding/removing the last Endpoint removes those operational tools
+on the next turn; retained downloads stay available as files.
 
 See [scientific questions for NDP](/docs/examples/ndp-science/) for snow, fire,
 habitat and hydrology investigations that start from an ordinary research request.

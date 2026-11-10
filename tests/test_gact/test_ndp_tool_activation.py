@@ -1,4 +1,7 @@
-"""NDP schemas follow owned workspace connections, not global sign-in state."""
+"""NDP operation schemas follow owned workspace connections, not global sign-in state.
+
+Catalog discovery and Endpoint connection need no connection: claiming them is the opt-in.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +31,11 @@ from tests.test_gact.test_source_connect_runtime import bound as bound_fixture
 
 peer = peer_fixture
 bound = bound_fixture
-NDP_SETUP = {"connected_data_ndp_endpoint_connect"}
+NDP_SETUP = {
+    "connected_data_search_ndp",
+    "connected_data_ndp_organizations",
+    "connected_data_ndp_endpoint_connect",
+}
 NDP_TOOLS = {
     "connected_data_search_ndp",
     "connected_data_ndp_organizations",
@@ -78,7 +85,7 @@ def _source(service: StorageService, root: Path, workspace_id: str = "ws_default
     )
 
 
-def test_unrelated_workspace_has_no_ndp_model_schemas_or_credential_reads(
+def test_unrelated_workspace_has_only_ndp_discovery_and_setup_without_credential_reads(
     bound: tuple[StorageService, Any, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, _, upstream = bound
