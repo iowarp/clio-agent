@@ -227,6 +227,14 @@ The same model is in the design document; it is repeated here so this plan reads
     `mcp_prepare_provision_path_too_long`. MCP build roots (`paths.mcp_build_cache_dir()`) move
     to `%LOCALAPPDATA%\clio-m\<hash>` when the CLIO cache path is longer than 48 characters
     (#1992); `owner.txt` there names the cache it serves.
+  - The same deep-home rule covers first-run provisioning beyond MCP builds. A new plugin
+    store (`paths.plugin_store_dir()`) goes to `%LOCALAPPDATA%\clio-p\<hash>` when
+    `<config>\plugins` is longer than 80 characters, so the default marketplace can be
+    cloned and its agents installed. Managed services on this machine
+    (`paths.service_data_root()`, for example SearXNG) go to `%LOCALAPPDATA%\clio-s\<hash>`
+    when the data root is longer than 72 characters. A store or `services` folder that
+    already exists at the long root stays where it is. Plugin git fetches pass
+    `core.longpaths`, and JSONL logs such as the semantic trace open extended-length paths.
   - `gact/mcp_readiness.py` starts a cold server once: the first start connects directly
     (`mcp_prepare_first_start_direct`) and lists over that connection.
   - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while
