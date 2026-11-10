@@ -16,7 +16,7 @@ import time
 import msgspec
 import pytest
 
-from clio_agent.arc import clio_core_attach, runtime_stop, storage
+from clio_agent.arc import clio_core_attach, runtime_ownership, runtime_stop, storage
 from clio_agent.arc import clio_core_daemon_version as daemon_version
 from clio_agent.arc.clio_core_config import host_key
 from clio_agent.arc.memory import ARCMemory
@@ -187,10 +187,13 @@ def test_runtime_alive_detects_listener():
 
 
 def test_ensure_runtime_daemon_connects_when_already_up(monkeypatch, tmp_path):
-    """If a runtime is already listening, connect-or-spawn must NOT spawn."""
+    """If this home's runtime is already listening, connect-or-spawn must NOT spawn."""
     _isolate_clio_home(monkeypatch, tmp_path)
     monkeypatch.setattr(storage, "_resolve_runtime_port", lambda _cfg: 4321)
     monkeypatch.setattr(storage, "_runtime_alive", lambda _port: True)
+    # The listener is this home's own daemon; another home's is never adopted
+    # (runtime_ownership, covered in test_runtime_ownership.py).
+    monkeypatch.setattr(runtime_ownership, "daemon_ownership", lambda _port, *, listening: "owned")
 
     def fail_spawn(*a, **k):  # pragma: no cover - asserts it is never called
         raise AssertionError("spawned a daemon when one was already running")

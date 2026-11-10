@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.arc import clio_core_attach, runtime_stop, storage
+from clio_agent.arc import clio_core_attach, runtime_ownership, runtime_stop, storage
 from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase, attach_state_snapshot
 from clio_agent.arc.clio_core_daemon_version import (
     CLIO_CORE_CONFIG_ADOPTED_FROM_DAEMON,
@@ -87,13 +87,16 @@ def _fresh_records():
 
 @pytest.fixture
 def machine(monkeypatch, tmp_path) -> Path:
-    """An isolated per-machine state dir with a daemon already listening."""
+    """An isolated per-machine state dir with this home's daemon already listening."""
     state = tmp_path / "state"
     state.mkdir()
     monkeypatch.setenv("CLIO_RUNTIME_STATE_DIR", str(state))
     monkeypatch.setattr(storage, "_client_registered", False)
     monkeypatch.setattr(runtime_stop, "_runtime_shutdown_requested", False)
     monkeypatch.setattr(storage, "_runtime_alive", lambda _port: True)
+    # The listener is this state directory's own daemon: a listener it does not own is
+    # never adopted (runtime_ownership), and these tests are about adopting ours.
+    monkeypatch.setattr(runtime_ownership, "daemon_ownership", lambda _port, *, listening: "owned")
 
     def no_spawn(*_a: object, **_k: object) -> None:  # pragma: no cover - asserts never called
         raise AssertionError("spawned a second daemon while one was running")

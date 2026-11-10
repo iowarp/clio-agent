@@ -101,7 +101,7 @@ class DaemonRecycleOutcome:
     """The typed result of a :func:`maybe_recycle_idle_daemon` call (never silent)."""
 
     recycled: bool
-    reason: str  # "disabled" | "no_daemon" | "not_critical" | "live_clients_present" | "recycled"
+    reason: str  # "disabled" | "no_daemon" | "not_owned" | "not_critical" | "live_clients_present" | "recycled"
     before_rss_bytes: Optional[int] = None
     live_client_count: Optional[int] = None
     pid: Optional[int] = None
@@ -477,6 +477,9 @@ def maybe_recycle_idle_daemon(
         snapshot = collect_daemon_memory_snapshot(env=env, config_path=config_path)
     if snapshot is None:
         return DaemonRecycleOutcome(recycled=False, reason="no_daemon")
+    if snapshot.pid_source == "port_scan":
+        # Found by port, not by this home's pidfile: another home's daemon, never stopped.
+        return DaemonRecycleOutcome(recycled=False, reason="not_owned", pid=snapshot.pid)
 
     status = classify_daemon_rss(snapshot.rss_bytes)
     if status != "critical":
