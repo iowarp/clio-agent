@@ -164,8 +164,27 @@ def test_drive_reuses_library_reads_and_existing_export_formats(
     entries = {row.path: row for row in folder.entries()}
     assert not calls
     assert set(entries) == {"data.txt", "Report.pdf"}
+    # A Google Doc has no Drive size until it is exported: unknown, never "0 bytes".
+    assert (entries["data.txt"].size, entries["Report.pdf"].size) == (4, None)
     with folder.open_read(entries["data.txt"]) as reader:
         assert reader.read() == b"data"
     with folder.open_read(entries["Report.pdf"]) as reader:
         assert reader.read() == b"%PDF-test"
     assert calls == ["read:text", "export:doc"]
+
+
+def test_unknown_size_files_stay_readable_and_are_listed_without_a_size(tmp_path: Path) -> None:
+    """Index entries whose provider reported no size (Google Docs) or a legacy 0 still open."""
+    service, record, _, _ = local_source(tmp_path)
+    linked = link_folder(service, record)
+    manifest = service.store.get("manifest", linked.linked_manifest_id, Manifest)
+    for entry in manifest.entries:
+        if entry.path == "a.txt":
+            entry.size = None
+    service.store.put("manifest", manifest.id, manifest)
+    entries, _ = connected_file_entries(service, "w", 100)
+    unknown = next(row for row in entries if row["path"].endswith("/a.txt"))
+    known = next(row for row in entries if row["path"].endswith("/b.txt"))
+    assert "size" not in unknown  # the Files UI schema allows a missing size, not null
+    assert known["size"] == len(b"second file")
+    assert linked_file(service, linked, "a.txt").read_bytes() == b"first file"

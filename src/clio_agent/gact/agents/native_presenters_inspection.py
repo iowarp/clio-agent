@@ -448,6 +448,9 @@ def source_opened(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, 
         return _view("File available for analysis", blocks, row, subject="resource")
     entries = row.get("entries") or []
     for index, entry in enumerate(entries):
+        if entry.get("kind") == "file" and entry.get("size") is None:
+            # Google Docs and other exports have no size until they are read.
+            entry = {**entry, "size": "unknown until read"}
         blocks.append(
             _facts(
                 f"entry-{index}",
