@@ -434,7 +434,41 @@ changes cut what still ran in series.
 
 Expected, with the 71.1 s link: about 3 s saved by (e1), the Office tail and Node prepare
 overlapping the app download by (g), and 2.6 s by (d). Together with (a), the Node
-entitlements in #1978, that is about 52–55 s. Live measurement on the Mac mini is pending.
+entitlements in #1978, that is about 52–55 s.
+
+Measured live on the Mac mini (12 headless installs alternating A = develop and
+B = (g)+(d)+(e1), app archive from a mirror held to 10.7 MB/s, LibreOffice from upstream,
+isolated `HOME`; runs that overlapped other traffic excluded): median total **63.3 s → 59.4
+s**; download 45.2 → 42.3, install 3.0 → 0.0, prepare 15.0 → 17.0 (now also waiting for
+Office).
+
+- **(e3) Playwright's Node.js on first browser use.** The `playwright` wheel carries the
+  official Node.js binary its driver runs on (`playwright/driver/node`, 122 MB raw, 28 MB
+  LZMA in the `.aar`), needed only when the agent first opens a browser.
+  `install/stage_playwright_node.py`, run by both `build-gact-runtime.sh` and `.ps1`,
+  finds the byte-identical binary in the nodejs.org release archive, fails the build if it
+  differs, writes `playwright/driver/clio-node.json` (archive URL and SHA-256 from
+  `SHASUMS256.txt`, binary SHA-256 from the hash-locked wheel) and deletes the binary and
+  its `RECORD` line. `gact/browser/driver.py` fetches the archive on first browser use
+  (browser tools and HTML rendering), checks size, both hashes and `node --version`, and
+  moves the result into `<cache>/browser/node-<version>-<hash>` in one rename, so a failed
+  or interrupted fetch leaves nothing that looks installed. Like Chromium's first-use
+  download, the fetch outlives the action and answers `browser_runtime_preparing` with
+  bytes so far ("first use only: 12 of 28 MB"); it tries 3 times and then answers
+  `browser_runtime_install_failed`, and the next browser use starts over. Playwright is
+  pointed at the binary through its own `PLAYWRIGHT_NODEJS_PATH`, which a person's own
+  setting overrides. The same code runs on macOS, Linux and Windows. The macOS binary is
+  signed by the Node.js Foundation with hardened runtime and the JIT entitlements, so the
+  fetched copy runs as is; #1978's signing script picks entitlements by content, so one
+  file fewer to sign needs no change there.
+
+  Windows finding: `build-gact-runtime.ps1` deleted every `*.exe` under site-packages except
+  Codex and iowarp-core, which removed `playwright\driver\node.exe` and nothing restored it,
+  so Windows bundles had no browser driver at all (from reading the build, not run on
+  Windows). Staging runs before that sweep, so Windows now fetches it on first use too.
+
+  Expected: 28 MB less to download (about 1.5 s at the 18 MB/s of the 71.1 s run, 2.6 s
+  on the 10.7 MB/s A/B mirror) and 122 MB less to unpack.
 
 ## Side findings
 

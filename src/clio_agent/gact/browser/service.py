@@ -243,6 +243,13 @@ class BrowserService:
         if self._playwright is None:
             from playwright.async_api import async_playwright  # noqa: PLC0415 - lazy (install)
 
+            from clio_agent.gact.browser import driver  # noqa: PLC0415
+
+            # A desktop bundle fetches Playwright's Node.js on first use; like Chromium's
+            # download it outlives the action and answers browser_runtime_preparing.
+            await asyncio.get_running_loop().run_in_executor(
+                None, driver.driver_for_action, settings.action_timeout_s() / 2
+            )
             self._playwright = await async_playwright().start()
         return self._playwright
 
