@@ -280,6 +280,8 @@ def start(app: Any) -> None:
         except (OSError, RuntimeError, ValueError, KeyError) as exc:
             logger.error("local SearXNG preparation failed reason=bootstrap_error: %r", exc)
             return
-        logger.info("local SearXNG preparation outcome=%s", outcome)
+        # WARNING so the outcome reaches the default boot log, where web search is
+        # otherwise silent until it is used.
+        logger.warning("local SearXNG preparation outcome=%s", outcome)
 
     app.state.search_bootstrap_task = asyncio.get_running_loop().create_task(_prepare())
