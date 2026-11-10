@@ -7,13 +7,39 @@
 # setup imports APPLE_CERTIFICATE (base64 .p12) and Apple's Developer ID G2
 # intermediate into a throwaway keychain, then requires
 # `security find-identity -v -p codesigning` to list APPLE_SIGNING_IDENTITY as
-# a valid identity of APPLE_TEAM_ID. Every Apple credential a release needs
+# a valid identity of APPLE_TEAM_ID and the notary service to accept the Apple
+# Account credentials before the build starts. Every Apple credential a release needs
 # must be present: a macOS release is never built ad hoc or unnotarized.
 set -euo pipefail
 
 G2_URL="https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"
 G2_SHA256="f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a"
 KEYCHAIN="${RUNNER_TEMP:?}/clio-signing.keychain-db"
+
+# Ask Apple's notary service to authenticate before the long build, and say which
+# credential looks wrong without printing any of them.
+check_notary_credentials() {
+  local name value
+  for name in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+    value="$(printenv "$name")"
+    if [ "$value" != "$(printf '%s' "$value" | tr -d '[:space:]')" ]; then
+      echo "::warning::$name contains whitespace or a newline"
+    fi
+  done
+  [[ "$APPLE_ID" == *@*.* ]] || echo "::warning::APPLE_ID is not an Apple Account email address"
+  [[ "$APPLE_PASSWORD" =~ ^[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}$ ]] \
+    || echo "::warning::APPLE_PASSWORD is not shaped like an app-specific password (xxxx-xxxx-xxxx-xxxx)"
+  [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || echo "::warning::APPLE_TEAM_ID is not a 10-character team ID"
+
+  local output
+  if ! output="$(xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" --output-format json 2>&1)"; then
+    echo "$output" >&2
+    echo "::error::Apple's notary service rejected APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID; use an app-specific password from account.apple.com for an Apple Account in team APPLE_TEAM_ID" >&2
+    exit 1
+  fi
+  echo "Notary service accepted the Apple Account credentials."
+}
 
 setup() {
   local missing=() name
@@ -67,6 +93,7 @@ setup() {
     exit 1
   fi
   echo "CLIO_SIGNING_KEYCHAIN=$KEYCHAIN" >>"${GITHUB_ENV:?}"
+  check_notary_credentials
 }
 
 cleanup() {

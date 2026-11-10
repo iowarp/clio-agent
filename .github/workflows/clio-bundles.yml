@@ -86,14 +86,14 @@ jobs:
         id: matrix
         run: |
           set -euo pipefail
-          if [ "$SIGNED_MACOS_ARTIFACT" = true ]; then
-            value=$(jq -c '.variant = ["bundled"] | .target = ["aarch64-apple-darwin"] | del(.exclude) |
-              .include |= map(select(.target == "aarch64-apple-darwin"))' \
-              .github/desktop-bundle-matrix.json)
-          elif [ "$REBUILD_BUNDLED" = true ]; then
+          if [ "$REBUILD_BUNDLED" = true ]; then
             value=$(jq -c '.variant = ["bundled"] |
               .target -= ["aarch64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"] |
               . as $matrix | .include |= map(select(.target as $target | $matrix.target | index($target)))' \
+              .github/desktop-bundle-matrix.json)
+          elif [ "$SIGNED_MACOS_ARTIFACT" = true ]; then
+            value=$(jq -c '.variant = ["bundled"] | .target = ["aarch64-apple-darwin"] | del(.exclude) |
+              .include |= map(select(.target == "aarch64-apple-darwin"))' \
               .github/desktop-bundle-matrix.json)
           else
             value=$(jq -c . .github/desktop-bundle-matrix.json)
