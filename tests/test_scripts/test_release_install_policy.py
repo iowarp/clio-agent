@@ -242,6 +242,11 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         assert "PYTHONDONTWRITEBYTECODE" in script[script.index("runtime manifest") :], (
             relative_path
         )
+        # The lazily imported stdlib and the real launch's third-party imports (#1979);
+        # the launch-path boot needs runtime.json, so it runs after the manifest.
+        assert "--stdlib" in script[compile_step:relocation_proof], relative_path
+        assert "--launch-path" in script[compile_step:relocation_proof], relative_path
+        assert script.index("runtime manifest") < compile_step, relative_path
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path

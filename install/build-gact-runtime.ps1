@@ -343,22 +343,6 @@ Invoke-Native -Exe $pyBin -Args @('-I', '-B', $wheelBuilder, '--stack', $documen
 Write-Host "[build-gact-runtime] preparing matching Windows execution helpers"
 Invoke-Native -Exe $pyBin -Args @('-I', '-B', '-c', 'from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers; print(ensure_bundled_codex_windows_helpers())')
 
-# Prepare the real startup import graph in the release image, not on the
-# user's first launch. Compiling the entire distribution is both wasteful and
-# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
-# some optional provider paths exceed Windows' legacy path limit.
-Write-Host "[build-gact-runtime] compiling portable startup bytecode"
-$precompiler = Join-Path $checkout 'install/precompile_runtime.py'
-Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot, '--package', 'clio_agent', '--package', 'clio_kit', '--package', 'clio_schemas')
-$compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
-if ($compiled -eq 0) {
-  throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
-}
-Write-Host "[build-gact-runtime] prepared $compiled bytecode files"
-
-$sizeAfter = Get-DirSizeMB $Out
-Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
-
 # --- 4. generic runtime manifest ----------------------------------------
 # env reaches every child the server starts from this runtime: a helper that runs
 # the bundled python without -B would otherwise write .pyc into the install.
@@ -369,6 +353,24 @@ $manifest = @{
 } | ConvertTo-Json -Compress -Depth 4
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"
+
+# Prepare the real launch's bytecode in the release image, not on the user's
+# first launch: the startup graph, the first-party packages, the standard
+# library, and every module a real boot of this image imports (--launch-path
+# boots it, so it runs after runtime.json exists). Compiling all of
+# site-packages is both wasteful and invalid: some optional provider paths
+# exceed Windows' legacy path limit.
+Write-Host "[build-gact-runtime] compiling portable startup bytecode"
+$precompiler = Join-Path $checkout 'install/precompile_runtime.py'
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot, '--package', 'clio_agent', '--package', 'clio_kit', '--package', 'clio_schemas', '--stdlib', '--launch-path')
+$compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
+if ($compiled -eq 0) {
+  throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
+}
+Write-Host "[build-gact-runtime] prepared $compiled bytecode files"
+
+$sizeAfter = Get-DirSizeMB $Out
+Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 5. portability proof on the real object ----------------------------
 # A venv would leave a pyvenv.cfg pinning the build host's interpreter;
