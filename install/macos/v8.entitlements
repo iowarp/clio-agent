@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Hardened-runtime entitlements for other executables that embed V8
-  (playwright/driver/node, codex_cli_bin/bin/codex-code-mode-host).
+  Hardened-runtime entitlements for any other runtime executable that embeds V8,
+  found by content (macos_sign_runtime.embeds_v8). The macOS runtime ships none
+  today: Playwright's Node is fetched on first use, already signed by nodejs.org
+  with allow-jit, and the Codex helpers are dropped (build-gact-runtime.sh).
 -->
 <plist version="1.0">
 <dict>
