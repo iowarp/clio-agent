@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from clio_agent.gact.local_server_store import saved_address_for_preset
 from clio_agent.gact.provider_catalog import probe_api_key
@@ -20,7 +20,9 @@ from clio_agent.providers.dependencies import (
     ProviderDependencyInstallError,
     ProviderExtraNotInstallableError,
     ensure_provider_support,
+    provider_support_installable,
 )
+from clio_agent.providers.install_jobs import INSTALLS, InstallJob
 
 
 def _install_failure_copy(provider_kind: str) -> tuple[str, str]:
@@ -52,6 +54,9 @@ _INSTALL_SUCCESS_INSTRUCTIONS: dict[str, str] = {
     "claude_code": "Claude Code support is installed. Check the provider to verify sign-in.",
     "copilot": "GitHub Copilot support is installed. Sign in to GitHub to use Copilot.",
 }
+
+#: The job error of a provider whose extra declares no packages (the blocking POST's 405).
+_NOTHING_TO_INSTALL = "provider_has_no_install"
 
 Readiness = Callable[..., tuple[str, str, bool, str]]
 
@@ -225,7 +230,7 @@ def register_provider_catalog_routes(
         return wire
 
     @app.post("/v1/providers/{provider_id}/install")
-    async def install_provider_support(provider_id: str) -> dict[str, Any]:
+    async def install_provider_support(provider_id: str, wait: bool = True) -> Any:
         """Install the optional runtime support a provider's own extra declares.
 
         Dispatched by provider KIND through :func:`ensure_provider_support` --
@@ -234,36 +239,90 @@ def register_provider_catalog_routes(
         (never this request), runs with the active backend interpreter, and
         re-checking the provider afterward is the caller's job (the picker
         and Settings both re-run their check on a successful install).
+
+        The install is a background job (:mod:`clio_agent.providers.install_jobs`)
+        that survives the request: ``wait=false`` answers 202 with the job at
+        once, and ``GET /v1/providers/{id}/install`` reads it from any view.
+        A click while the provider's install runs joins that job, never a
+        second install. The default ``wait=true`` keeps the original answer
+        (200 with ``installed``, or the typed 503) for callers that block.
         """
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
         if preset is None:
             raise HTTPException(status_code=404, detail=f"unknown provider: {provider_id}")
-
-        try:
-            installed = await asyncio.to_thread(ensure_provider_support, preset.provider)
-        except ProviderExtraNotInstallableError as exc:
+        if not provider_support_installable(preset.provider):
             raise HTTPException(
                 status_code=405,
                 detail=f"provider '{provider_id}' has no installable runtime support",
-            ) from exc
-        except ProviderDependencyInstallError as exc:
-            error, message = _install_failure_copy(preset.provider)
+            )
+
+        def _failure_copy(exc: BaseException) -> tuple[str, str]:
+            if isinstance(exc, ProviderExtraNotInstallableError):
+                return _NOTHING_TO_INSTALL, f"{preset.label} has no installable runtime support."
+            if isinstance(exc, ProviderDependencyInstallError):
+                return _install_failure_copy(preset.provider)
+            return "provider_install_crashed", f"CLIO could not install {preset.label}: {exc}"
+
+        def _finished(job: InstallJob) -> None:
+            invalidate_provider(app, preset.id)
+
+        job, _started = INSTALLS.start(
+            preset.id,
+            preset.provider,
+            lambda: ensure_provider_support(preset.provider),
+            success_instructions=_INSTALL_SUCCESS_INSTRUCTIONS.get(
+                preset.provider, "Support is installed. Check the provider to verify sign-in."
+            ),
+            failure_copy=_failure_copy,
+            on_finish=_finished,
+        )
+        if not wait:
+            return JSONResponse(status_code=202, content=job.to_wire())
+
+        await job.wait_async()
+        if job.error_code == _NOTHING_TO_INSTALL:
+            raise HTTPException(
+                status_code=405,
+                detail=f"provider '{provider_id}' has no installable runtime support",
+            )
+        if job.state == "failed":
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error=error,
-                        message=message,
-                        details={"diagnostic": str(exc)},
+                        error=job.error_code,
+                        message=job.error,
+                        details={"diagnostic": job.diagnostic},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
-            ) from exc
-        instructions = _INSTALL_SUCCESS_INSTRUCTIONS.get(
-            preset.provider, "Support is installed. Check the provider to verify sign-in."
-        )
-        return {"provider_id": preset.id, "installed": installed, "instructions": instructions}
+            )
+        return {
+            "provider_id": preset.id,
+            "installed": job.installed,
+            "instructions": job.instructions,
+        }
+
+    @app.get("/v1/providers/{provider_id}/install")
+    async def provider_install_job(provider_id: str) -> dict[str, Any]:
+        """The provider's latest support install job: running, done or failed."""
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        if preset is None:
+            raise HTTPException(status_code=404, detail=f"unknown provider: {provider_id}")
+        job = INSTALLS.job(preset.id)
+        if job is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="provider_install_not_found",
+                        message=f"no support install has run for {provider_id}",
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return job.to_wire()
 
     @app.get("/v1/providers/{provider_id}/handshake")
     async def provider_handshake(

@@ -4,6 +4,9 @@
   (``restoring`` -> ``restored`` | ``failed`` with a typed error), whether a
   pass is running, and any install that could not be recorded (that support
   would not survive the next update).
+* ``GET /v1/providers/support/installs`` -- every provider's latest support
+  install job (``queued`` -> ``installing`` -> ``done`` | ``failed``), so any
+  view can show installs started elsewhere and still running.
 * ``POST /v1/providers/support/restore`` -- plan again against the running
   environment and restore what is still missing (the retry); 409 while a pass
   is running.
@@ -19,6 +22,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.providers.install_jobs import INSTALLS
 from clio_agent.providers.support_record import last_record_failure
 from clio_agent.providers.support_restore import RESTORER
 
@@ -39,6 +43,15 @@ def register_provider_support_routes(app: FastAPI) -> None:
     async def provider_support_restores() -> dict[str, Any]:
         """The latest restore of every provider's recorded support."""
         return _restores_wire()
+
+    @app.get("/v1/providers/support/installs")
+    async def provider_support_installs() -> dict[str, Any]:
+        """Every provider's latest support install, and whether any is still running."""
+        jobs = INSTALLS.jobs()
+        return {
+            "running": any(job.running for job in jobs),
+            "installs": [job.to_wire() for job in jobs],
+        }
 
     @app.post("/v1/providers/support/restore", status_code=202)
     async def restore_provider_support() -> dict[str, Any]:

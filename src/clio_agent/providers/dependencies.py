@@ -399,6 +399,11 @@ _PROVIDER_INSTALLERS: Mapping[str, Callable[..., bool]] = {
 }
 
 
+def provider_support_installable(provider_kind: str) -> bool:
+    """Whether CLIO has an installer for ``provider_kind``'s runtime support."""
+    return provider_kind in _PROVIDER_INSTALLERS
+
+
 def ensure_provider_support(provider_kind: str, *, python_executable: str | None = None) -> bool:
     """Install the optional runtime support ``provider_kind`` declares, if any.
 
