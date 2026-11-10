@@ -15,6 +15,7 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
+from clio_agent.flows.call_metadata import active_workflow_step
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
@@ -406,9 +407,6 @@ def _agent_signature(
     )
     # A workflow child hands state to the fold. The field stays off for an
     # ordinary turn, and an agent that sets workflow_state false keeps it off.
-    # Imported here: flows.values imports dspy, which gact.app defers.
-    from clio_agent.flows.call_metadata import active_workflow_step  # noqa: PLC0415
-
     if active_workflow_step() is not None and structured.get("workflow_state") is not False:
         structured["workflow_state"] = True
 

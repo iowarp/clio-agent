@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.flows.values import _plain
-
 if TYPE_CHECKING:
     from clio_agent.flows.context import FlowCall
 
@@ -19,6 +17,9 @@ def child_session_metadata(call: "FlowCall", depth: int, run_id: str) -> dict[st
     ``react`` flow, not its selected flow, so a flow's helpers never re-enter it (a
     flow recurses via ``ctx.call(<flow>)``).
     """
+
+    # flows.values imports dspy; gact.app reaches this module and must not load it.
+    from clio_agent.flows.values import _plain  # noqa: PLC0415
 
     metadata: dict[str, Any] | None = None
     if call.kind == "flow":
