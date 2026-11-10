@@ -477,6 +477,75 @@ def test_desktop_test_package_refusals_install_nothing(
     assert not (tmp_path / "Applications").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the Linux shell installer")
+@pytest.mark.parametrize("proxy", [False, True])
+def test_deb_dependencies_are_fetched_in_parallel_into_a_private_cache(
+    tmp_path: Path, proxy: bool
+) -> None:
+    """apt's serial dependency download is replaced by parallel fetches it then checks."""
+    calls = tmp_path / "calls.txt"
+    mirrors = tmp_path / "apt-mirrors.txt"
+    mirrors.write_text("# list\nhttp://mirror.invalid/ubuntu/\tpriority:1\nhttp://other.invalid/\n")
+    uris = "\n".join(
+        [
+            f"'mirror+file:{mirrors}/pool/main/w/webkit/libwebkit_2.52_amd64.deb'"
+            " libwebkit_2.52_amd64.deb 2500000 SHA256:aa",
+            "'http://archive.invalid/ubuntu/pool/main/o/orc/liborc_1%3a0.4_amd64.deb'"
+            " liborc_1%3a0.4_amd64.deb 285000 SHA256:bb",
+            "'file:/tmp/ignored.deb' ignored.deb 1 SHA256:cc",
+        ]
+    )
+    proxy_line = 'Acquire::http::Proxy "http://proxy.invalid:3128";' if proxy else ""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "uname": 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi',
+        "id": "echo 1000",
+        "sudo": '"$@"',
+        "apt-config": f"echo 'APT::Architecture \"amd64\";'; echo '{proxy_line}'",
+        "apt-get": f"""case " $* " in
+  *" --print-uris "*) cat <<'URIS'
+{uris}
+URIS
+  ;;
+  *) echo "apt-get $*" >> "$TEST_CALLS" ;;
+esac""",
+        "curl": """out=""; url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac
+done
+echo "curl $url" >> "$TEST_CALLS"; echo deb > "$out\"""",
+    }
+    for name, contents in commands.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env = dict(os.environ)
+    env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", TEST_CALLS=str(calls), TMPDIR=str(tmp_path))
+    package = tmp_path / "CLIO.Desktop_0.9.6_amd64.deb"
+    package.write_bytes(b"test build")
+    digest = hashlib.sha256(package.read_bytes()).hexdigest()
+
+    result = _run_installer(["--desktop-package", str(package), "--desktop-sha256", digest], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = calls.read_text().splitlines()
+    install = next(line for line in log if line.startswith("apt-get "))
+    assert install.endswith(str(package))
+    if proxy:
+        assert not any(line.startswith("curl") for line in log)
+        assert "Dir::Cache::Archives" not in install
+        return
+    assert sorted(line for line in log if line.startswith("curl")) == [
+        "curl http://archive.invalid/ubuntu/pool/main/o/orc/liborc_1%3a0.4_amd64.deb",
+        "curl http://mirror.invalid/ubuntu/pool/main/w/webkit/libwebkit_2.52_amd64.deb",
+    ]
+    assert "Fetching 2 system packages CLIO Desktop needs (3 MB), 8 at a time" in result.stdout
+    archives = install.split("Dir::Cache::Archives=")[1].split()[0]
+    assert archives.endswith("/apt/")
+    assert log.index(install) > max(i for i, line in enumerate(log) if line.startswith("curl"))
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
 def test_desktop_test_package_url_needs_a_checksum(tmp_path: Path) -> None:
     env, calls = _package_fakes(tmp_path)

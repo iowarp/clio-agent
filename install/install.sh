@@ -538,13 +538,54 @@ prepare_desktop() {
   fi
 }
 
+# A mirror+file: source names a file of mirrors; the first one serves the download.
+apt_mirror_uri() {  # URI -> an http(s) URI, or nothing
+  local uri="$1" list base
+  case "$uri" in
+    http://*|https://*) printf '%s' "$uri"; return ;;
+    mirror+file:/*) ;;
+    *) return 0 ;;
+  esac
+  list="${uri#mirror+file:}"
+  while [ ! -f "$list" ] && [ "$list" != "${list%/*}" ]; do list="${list%/*}"; done
+  [ -f "$list" ] || return 0
+  base="$(awk '$1 ~ /^https?:\/\// { print $1; exit }' "$list")"
+  [ -z "$base" ] || printf '%s/%s' "${base%/}" "${uri#mirror+file:"$list"/}"
+}
+
+# apt fetches the desktop's system libraries (WebKitGTK, GStreamer: ~70 packages on a
+# system without them) one at a time from one mirror, where one slow response stalls the
+# rest. They are fetched 8 at a time into a private archive directory instead, a stalled
+# transfer restarting; apt then checks each against its signed index (size and hash)
+# and fetches any that are missing or wrong itself. Behind an apt proxy apt does it all.
+apt_prefetch() {  # SUDO PACKAGE DIR
+  local sudo="$1" package="$2" dir="$3" uri name size rest url count=0 bytes=0
+  mkdir -p "$dir/partial"
+  apt-config dump > "$dir/config" 2>/dev/null || true
+  ! grep -qiE '^Acquire::[a-z]+::Proxy "[^"]' "$dir/config" || return 1
+  $sudo apt-get install -y -qq --print-uris "$package" 2>/dev/null > "$dir/uris" || return 1
+  while read -r uri name size rest; do
+    url="$(apt_mirror_uri "${uri//\'/}")"
+    [ -n "$url" ] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]] || continue
+    printf '%s %s\n' "$dir/$name" "$url"
+    size="${size//[^0-9]/}"; count=$(( count + 1 )); bytes=$(( bytes + ${size:-0} ))
+  done < "$dir/uris" > "$dir/fetch"
+  [ "$count" -gt 0 ] || return 0
+  say "Fetching $count system packages CLIO Desktop needs ($(megabytes "$bytes") MB), 8 at a time"
+  # shellcheck disable=SC2016
+  xargs -P 8 -n 2 sh -c 'curl -fsSL --connect-timeout 10 --speed-limit 50000 --speed-time 10 --retry 3 \
+      -o "$0.part" "$1" && mv "$0.part" "$0" || rm -f "$0.part"; exit 0' < "$dir/fetch"
+}
+
 install_desktop_linux() {
-  local package="$1" sudo="" out=1
+  local package="$1" sudo="" out=1 archives=()
   [ "$PROGRESS_JSON" = 0 ] || out=2
   [ "$(id -u)" = 0 ] || { have sudo || die "installing $package needs root; run as root or install sudo"; sudo=sudo; }
   case "$package" in
     *.deb)
-      if have apt-get; then $sudo apt-get install -y "$package" >&"$out" || die "apt-get could not install $package"
+      if have apt-get; then
+        ! apt_prefetch "$sudo" "$package" "$DESKTOP_SCRATCH/apt" || archives=(-o "Dir::Cache::Archives=$DESKTOP_SCRATCH/apt/")
+        $sudo apt-get install -y ${archives[@]+"${archives[@]}"} "$package" >&"$out" || die "apt-get could not install $package"
       else $sudo dpkg -i "$package" >&"$out" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
     *.rpm)
       if have dnf; then $sudo dnf install -y "$package" >&"$out" || die "dnf could not install $package"
