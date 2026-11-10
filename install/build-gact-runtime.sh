@@ -249,23 +249,6 @@ test -n "$DOCUMENT_STACK"
 "$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/build_document_wheels.py" \
   --stack "$DOCUMENT_STACK" --out "$OUT/document-wheels" --uv "$(command -v uv)"
 
-# Prepare the real startup import graph in the release image, not on the
-# user's first launch. Compiling the entire distribution is both wasteful and
-# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
-# some optional provider paths exceed Windows' legacy path limit.
-echo "[build-gact-runtime] compiling portable startup bytecode"
-"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
-  --python-root "$OUT/python" --package clio_agent --package clio_kit --package clio_schemas
-COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
-if [ "${COMPILED:-0}" -eq 0 ]; then
-  echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
-  exit 1
-fi
-echo "[build-gact-runtime] prepared $COMPILED bytecode files"
-
-SIZE_AFTER="$(dir_size_mb "$OUT")"
-echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
-
 # --- 4. generic runtime manifest ----------------------------------------
 # `source` names the commit this runtime was built from and whether it is a
 # release tag: a CLIO built from any other commit deploys that commit to remote
@@ -283,6 +266,26 @@ cat >"$OUT/runtime.json" <<EOF
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
+
+# Prepare the real launch's bytecode in the release image, not on the user's
+# first launch: the startup graph, the first-party packages, the standard
+# library, and every module a real boot of this image imports (--launch-path
+# boots it, so it runs after runtime.json exists). Compiling all of
+# site-packages is both wasteful and invalid: some optional provider paths
+# exceed Windows' legacy path limit.
+echo "[build-gact-runtime] compiling portable startup bytecode"
+"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
+  --python-root "$OUT/python" --package clio_agent --package clio_kit --package clio_schemas \
+  --stdlib --launch-path
+COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
+if [ "${COMPILED:-0}" -eq 0 ]; then
+  echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
+  exit 1
+fi
+echo "[build-gact-runtime] prepared $COMPILED bytecode files"
+
+SIZE_AFTER="$(dir_size_mb "$OUT")"
+echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
 
 # The one-shot upgrade repair writes a fingerprint marker next to Python.
 # Prepare it in the ORIGINAL image before macOS seals the app; booting only

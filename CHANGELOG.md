@@ -201,7 +201,10 @@ not affected.
 - macOS Desktop: nothing writes into the signed app bundle at runtime (bytecode,
   caches and installs go to `~/Library`). The bundled runtime is precompiled in
   full and slimmed, and its Mach-O files are listed for signing.
-- macOS: the Codex-based sandbox finds the bundled `codex` binary. When no write
+- Desktop bundles on all three OSes ship bytecode for the whole standard library and
+  for every module the server loads while starting and serving its API, so no
+  launch recompiles them in memory (about 1,500 modules, 1.4 s of CPU per launch,
+  +34 MB).- macOS: the Codex-based sandbox finds the bundled `codex` binary. When no write
   fence is available, `clio start` warns and asks for confirmation on a terminal,
   and `GET /v1/system/sandbox` reports `active`, a typed `reason`, a message and
   the next step for the UI's start-up banner.

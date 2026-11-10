@@ -88,3 +88,34 @@ def test_named_packages_are_compiled_whole_inside_the_runtime_only(
     assert not Path(importlib.util.cache_from_source(str(elsewhere / "__init__.py"))).exists()
     with pytest.raises(RuntimeError, match="not an importable package"):
         compiler.precompile_packages(python_root, ["_clio_no_such_pkg"])
+
+
+def test_launch_path_compiles_only_loaded_sources_inside_the_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Modules the booted server loaded ship bytecode; extensions and outside files do not."""
+    script = Path(__file__).resolve().parents[2] / "install/precompile_runtime.py"
+    spec = importlib.util.spec_from_file_location("_precompile_launch_path", script)
+    assert spec and spec.loader
+    compiler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(compiler)
+    python_root = tmp_path / "runtime"
+    loaded = python_root / "site-packages" / "uvicorn" / "loops" / "auto.py"
+    loaded.parent.mkdir(parents=True)
+    loaded.write_text("value = 1\n", encoding="utf-8")
+    extension = loaded.with_name("_speedups.so")
+    extension.write_bytes(b"")
+    outside = tmp_path / "outside.py"
+    outside.write_text("value = 2\n", encoding="utf-8")
+    recorded = [str(loaded), str(extension), str(outside), str(python_root / "gone.py")]
+    monkeypatch.setattr(compiler, "_boot_and_read_api", lambda home, timeout: recorded)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    assert compiler.precompile_launch_path(python_root) == 1
+
+    bytecode = Path(importlib.util.cache_from_source(str(loaded))).read_bytes()
+    assert struct.unpack_from("<I", bytecode, 4)[0] == 3  # CHECKED_HASH
+    assert not Path(importlib.util.cache_from_source(str(outside))).exists()
+    monkeypatch.setattr(compiler, "_boot_and_read_api", lambda home, timeout: [])
+    with pytest.raises(RuntimeError, match="recorded no loaded modules"):
+        compiler.precompile_launch_path(python_root)
