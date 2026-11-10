@@ -598,7 +598,9 @@ def provision_codex_windows(
 
     if elevated:
         if not allow_elevation:
-            return setup_required("Windows protected execution requires its one-time account setup.")
+            return setup_required(
+                "Windows protected execution requires its one-time account setup."
+            )
         if failed := elevate_setup():
             return failed
 
