@@ -2,13 +2,19 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
+import sitemap from '@astrojs/sitemap';
 import tailwindcss from '@tailwindcss/vite';
+import { copyFile } from 'node:fs/promises';
 import starlightLinksValidator from 'starlight-links-validator';
 
 // Public site for CLIO, served by GitHub Pages at clio.iowarp.ai.
 // The overview (/) is a Starlight splash page so the header, search, and
 // theme switch are the same on every page. Guides and examples live under
 // /docs/. Older tutorial URLs redirect there; drafts appear only in `pnpm dev`.
+
+// Client-side redirect pages under src/pages that must not be listed as content.
+const SITEMAP_EXCLUDED_PATHS = ['/docs/memory-and-evidence/'];
+
 export default defineConfig({
 	site: 'https://clio.iowarp.ai',
 	trailingSlash: 'ignore',
@@ -197,6 +203,18 @@ export default defineConfig({
 				},
 			],
 		}),
+		// Registering the sitemap here replaces Starlight's default one, so
+		// redirect-only alias pages can be left out of it.
+		sitemap({ filter: (page) => !SITEMAP_EXCLUDED_PATHS.some((path) => page.endsWith(path)) }),
+		// GitHub Pages cannot redirect /sitemap.xml, so publish the index there too.
+		{
+			name: 'clio-sitemap-alias',
+			hooks: {
+				'astro:build:done': async ({ dir }) => {
+					await copyFile(new URL('sitemap-index.xml', dir), new URL('sitemap.xml', dir));
+				},
+			},
+		},
 		react(),
 	],
 	vite: {
