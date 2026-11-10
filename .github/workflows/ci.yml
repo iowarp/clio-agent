@@ -31,6 +31,22 @@ jobs:
       - name: Exercise real owned workers without application or Core builds
         run: uv run --no-project --with pytest --with pytest-asyncio --with pytest-timeout --managed-python --python 3.14 python -m pytest --confcutdir=tests/test_native_services tests/test_native_services -q -rs
 
+  runtime-log-pump-windows:
+    # The clio-core log pump (#1983) runs on the Windows desktop too: a detached pump
+    # behind a pipe, rotating a file a reader may hold open. The main suite runs only
+    # on Linux, so its cap, rotation, flood record and breakaway spawn run here.
+    name: clio-core log pump (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.14 --extra dev
+      - name: Cap, rotate and flood-detect the daemon log on Windows
+        run: uv run python -B scripts/run_tests.py tests/test_arc/test_runtime_log_flood.py tests/test_arc/test_runtime_spawn_breakaway.py -q -rs
+
   filesystem-contract:
     # The contract checker is private and needs CLIO_NAMESPACES_READ_TOKEN,
     # which GitHub does not give to pull requests from forks. Skip it there
