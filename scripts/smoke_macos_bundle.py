@@ -32,7 +32,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -167,7 +167,14 @@ def use_web_search(port: int, token: str) -> None:
     deadline = time.monotonic() + 300
     record: dict[str, object] | None = None
     while time.monotonic() < deadline:
-        inventory = get_json(f"http://127.0.0.1:{port}/v1/infrastructure/inventory", token)
+        try:
+            inventory = get_json(f"http://127.0.0.1:{port}/v1/infrastructure/inventory", token)
+        except HTTPError as error:
+            # The server answers 503 "starting" until its boot work settles.
+            if error.code != 503:
+                raise
+            time.sleep(3)
+            continue
         record = find_record(inventory, "local:searxng")
         observation = record.get("observation") if record else None
         if isinstance(observation, dict) and observation.get("serving"):

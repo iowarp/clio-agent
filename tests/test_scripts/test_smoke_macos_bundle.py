@@ -116,6 +116,34 @@ def test_find_record_walks_the_inventory_to_the_searxng_row() -> None:
     assert smoke.find_record(inventory, "local:missing") is None
 
 
+def test_web_search_waits_through_the_starting_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    serving = {
+        "id": "local:searxng",
+        "observation": {"serving": True},
+        "configuration": {"port": 1},
+    }
+    answers: list[object] = [
+        smoke.HTTPError("inventory", 503, "starting", None, None),  # type: ignore[arg-type]
+        {"services": [serving]},
+        {"results": [{}]},
+    ]
+    urls: list[str] = []
+
+    def get_json(url: str, token: str | None = None) -> object:
+        urls.append(url)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(smoke, "get_json", get_json)
+    monkeypatch.setattr(smoke.time, "sleep", lambda _seconds: None)
+    smoke.use_web_search(2, "token")
+
+    assert urls[-1] == "http://127.0.0.1:1/search?q=python&format=json"
+    assert not answers
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="quarantine is a macOS xattr")
 def test_quarantine_marks_files_and_links_without_following_them(tmp_path: Path) -> None:
     app = tmp_path / "CLIO Desktop.app"
