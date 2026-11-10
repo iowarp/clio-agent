@@ -34,6 +34,60 @@
       "budget": "install < 180 s",
       "measured": "desktop job; runs on schedule and on request only"
     },
+    "desktop install (macOS): resolve": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "release lookup < 30 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install"
+      ]
+    },
+    "desktop install (macOS): download": {
+      "seconds": 120,
+      "ok": true,
+      "budget": "download (streamed and unpacked on macOS) < 120 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install"
+      ]
+    },
+    "desktop install (macOS): verify": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "integrity check < 30 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install"
+      ]
+    },
+    "desktop install (macOS): install": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "place the app < 60 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install"
+      ]
+    },
+    "desktop install (macOS): prepare": {
+      "seconds": 150,
+      "ok": true,
+      "budget": "first-run prepare < 150 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install"
+      ]
+    },
+    "desktop install (macOS): total": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install"
+      ]
+    },
     "source: start": {
       "seconds": 90,
       "ok": true,

@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import io
 import logging
+import os
 import platform
 import shutil
 import ssl
@@ -84,6 +85,29 @@ def asset() -> tuple[str, str, str]:
     name = f"LibreOffice_{VERSION}_{suffix}"
     url = f"https://download.documentfoundation.org/libreoffice/stable/{VERSION}/{directory}/{name}"
     return url, name, checksum
+
+
+INSTALLER_DOWNLOADS = "CLIO_INSTALL_DOWNLOADS"
+
+
+def installer_download(name: str, checksum: str) -> Path | None:
+    """The installer's concurrent download of this exact file, when it has one.
+
+    ``install.sh --desktop`` fetches LibreOffice while the app downloads and names the
+    folder in ``CLIO_INSTALL_DOWNLOADS``; only a file whose bytes match the pin counts.
+    """
+    folder = os.environ.get(INSTALLER_DOWNLOADS, "")
+    if not folder or Path(name).name != name:
+        return None
+    candidate = Path(folder) / name
+    try:
+        if not candidate.is_file() or candidate.is_symlink():
+            return None
+        with candidate.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError:
+        return None
+    return candidate if digest == checksum else None
 
 
 def executable(root: Path) -> Path | None:
@@ -237,6 +261,8 @@ def _extract(archive: Path, root: Path) -> None:
                     str(archive),
                     "-readonly",
                     "-nobrowse",
+                    # The image's SHA-256 is already pinned and checked; skip a second full read.
+                    "-noverify",
                     "-mountpoint",
                     str(mount),
                 ],
@@ -337,17 +363,22 @@ def ensure_office(root: Path) -> str:
         if archive.is_file():
             with archive.open("rb") as stream:
                 cached = hashlib.file_digest(stream, "sha256").hexdigest() == checksum
+        source = archive
         if not cached:
-            partial = archive.with_suffix(archive.suffix + ".part")
-            _download(url, partial, checksum)
-            partial.replace(archive)
+            prefetched = installer_download(name, checksum)
+            if prefetched is not None:
+                source = prefetched
+            else:
+                partial = archive.with_suffix(archive.suffix + ".part")
+                _download(url, partial, checksum)
+                partial.replace(archive)
         with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
             staging = Path(temporary)
             inherit_parent_access(staging)
             image = staging / "image"
             image.mkdir()
             try:
-                _extract(archive, image)
+                _extract(source, image)
                 if office_compat.supported():
                     office_compat.prepare(image, download=_download, deb_data=_deb_data)
                 inherit_parent_access(image)

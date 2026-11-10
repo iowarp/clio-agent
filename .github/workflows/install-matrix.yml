@@ -14,6 +14,8 @@ on:
     branches: [develop, main, 'claude/**']
     paths:
       - 'install/**'
+      - 'src/clio_agent/runtime/document_runtime.py'
+      - 'src/clio_agent/runtime/document_stack/office.py'
       - 'src/clio_agent/gact/app.py'
       - 'src/clio_agent/gact/server_boot.py'
       - 'src/clio_agent/gact/task_runtime.py'
@@ -36,6 +38,11 @@ on:
       scale:
         description: 'Reference store sizes to measure (space separated)'
         default: '1 4'
+      signed_run:
+        description: >-
+          A clio-bundles run with signed_macos_artifact: the desktop-install job installs
+          its notarized .app.aar instead of the published release
+        default: ''
 
 permissions:
   contents: read
@@ -364,6 +371,99 @@ jobs:
           path: timings.jsonl
           if-no-files-found: ignore
 
+  # install.sh --desktop from this checkout against the latest release, into a scratch
+  # directory: each shared step (resolve, download, verify, install, prepare) and the
+  # total are held to their budgets. Pull requests run it only when they change the
+  # installers, the first-run prepare they hand downloads to, or these budgets.
+  desktop-install:
+    name: Desktop install steps (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNED_RUN: ${{ inputs.signed_run || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide whether this change touches the desktop install
+        id: scope
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(gh api --paginate 'repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files' -q '.[].filename')"
+          pattern='^(install/|src/clio_agent/runtime/document_runtime\.py$|src/clio_agent/runtime/document_stack/office\.py$|scripts/ci/(check_budgets\.py|install_budgets\.json)$|scripts/smoke_desktop_package\.py$|\.github/workflows/install-matrix\.yml$)'
+          if grep -Eq "$pattern" <<<"$files"; then echo "run=true"; else echo "run=false"; fi >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v5
+        if: steps.scope.outputs.run == 'true'
+      # On a pull request or schedule this installs the newest published release, so
+      # it measures this branch's install.sh against the assets that release has. A
+      # dispatch with signed_run installs that build's notarized Apple archive instead.
+      - name: install.sh --desktop --progress json (scratch directory)
+        if: steps.scope.outputs.run == 'true'
+        continue-on-error: true
+        run: |
+          package=()
+          if [ -n "$SIGNED_RUN" ]; then
+            gh run download "$SIGNED_RUN" -R "${{ github.repository }}" \
+              -n clio-desktop-aarch64-apple-darwin-bundled-signed -D "$RUNNER_TEMP/signed"
+            aar="$(ls "$RUNNER_TEMP"/signed/*-bundled.app.aar)"
+            sha="$(awk -v n="$(basename "$aar")" '$2 == n || $2 == "*" n { print $1 }' \
+              "$RUNNER_TEMP"/signed/SHA256SUMS.aarch64-apple-darwin.bundled.txt)"
+            package=(--desktop-package "$aar" --desktop-sha256 "$sha")
+          fi
+          CLIO_DESKTOP_DIR="$RUNNER_TEMP/Applications" bash install/install.sh --desktop "${package[@]}" \
+            --progress json > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
+      - name: Gatekeeper accepts the installed signed build
+        if: steps.scope.outputs.run == 'true' && env.SIGNED_RUN != ''
+        run: |
+          spctl --assess --type execute -vv "$RUNNER_TEMP/Applications/CLIO Desktop.app" 2>&1 \
+            | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
+      # The installed app's first launch (on what the install prepared) and a returning
+      # one: a faster install must not move work into the first launch.
+      - name: First and second launch of the installed app
+        if: steps.scope.outputs.run == 'true'
+        continue-on-error: true
+        run: |
+          app="$RUNNER_TEMP/Applications/CLIO Desktop.app"
+          for run in first second; do
+            uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
+              "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$run" \
+              --agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent" || true
+          done
+      - name: Report
+        if: always() && steps.scope.outputs.run == 'true'
+        run: |
+          {
+            echo "## install.sh --desktop on macOS"
+            echo '```'
+            grep -v '"event":"progress"' "$RUNNER_TEMP/install-events.jsonl" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n 40 "$RUNNER_TEMP/install.log" || true
+      - name: Enforce the step budgets
+        if: always() && steps.scope.outputs.run == 'true'
+        run: |
+          # A local signed package has no download step to require.
+          job=desktop-install
+          [ -z "$SIGNED_RUN" ] || job=desktop-package
+          python3 scripts/ci/check_budgets.py --install-events "$RUNNER_TEMP/install-events.jsonl" \
+            --os macOS --job "$job" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.run == 'true'
+        with:
+          name: desktop-install-macos
+          path: |
+            ${{ runner.temp }}/install-events.jsonl
+            ${{ runner.temp }}/install.log
+            ${{ runner.temp }}/evidence-*/
+          if-no-files-found: ignore
+
   desktop:
     name: Desktop package (${{ matrix.os }})
     # The published installers: meaningful once a release carries the change under test.
@@ -441,7 +541,8 @@ jobs:
           for run in first second; do
             rec --name "desktop: $run launch to ready, then quit" -- uv run --no-project --python 3.14 --with psutil \
               scripts/smoke_desktop_package.py "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 \
-              --evidence-dir "$RUNNER_TEMP/evidence-$run"
+              --evidence-dir "$RUNNER_TEMP/evidence-$run" \
+              --agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent"
           done
           rec --name "desktop: uninstall (remove the app)" -- rm -rf "$app"
       - name: Report

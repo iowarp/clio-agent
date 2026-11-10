@@ -6,6 +6,9 @@
 #   install.ps1 --dev --source   source at `develop`
 #   install.ps1 -Desktop         the desktop app, bundled with its agent (x64 setup;
 #                                runs under emulation on ARM); -Dev/-Version pick the release
+#   install.ps1 -Desktop -Progress json
+#                                the same, reporting each install step (resolve, download,
+#                                verify, install) and a summary as JSON lines on stdout
 #   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
 #                                (this release cannot open it; it is kept, never deleted)
 #
@@ -24,6 +27,7 @@
 #   CLIO_INSTALLER_REF pin launcher scripts   (default: the installed release's tag)
 #   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.11.1)
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
+#   CLIO_INSTALL_PROGRESS human | json        (default: human; -Desktop only)
 
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk, which
@@ -31,8 +35,13 @@ $ErrorActionPreference = 'Stop'
 # 10-15 minutes). Large files go through Save-ClioDownload, which shows curl's own meter.
 $ProgressPreference = 'SilentlyContinue'
 
-function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
-function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
+# -Progress json keeps stdout for its events, so messages go to stderr instead.
+$ProgressJson = $false
+function Write-ClioLine([string]$text, [string]$color) {
+    if ($script:ProgressJson) { [Console]::Error.WriteLine($text) } else { Write-Host $text -ForegroundColor $color }
+}
+function Say  ($m) { Write-ClioLine "==> $m" Green }
+function Warn ($m) { Write-ClioLine "!! $m" Yellow }
 # The legacy TUI is frozen and unsupported; no TUI payload is installed.
 $OfficeProc = $null
 $OfficeLog = $null
@@ -67,9 +76,48 @@ function Exit-Installer ([int]$code) {
     if ($PSCommandPath) { exit $code }
     if ($code -ne 0) { throw "CLIO installer stopped (exit $code)" }
 }
-function Die  ($m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m"  -ForegroundColor Red; Exit-Installer 1 }
+function Die  ($m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-ClioLine "xx $m" Red; Complete-ClioRun $false $m; Exit-Installer 1 }
 # DieWith CODE MESSAGE: Die, keeping the failed command's exit status.
-function DieWith ([int]$code, $m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m" -ForegroundColor Red; Exit-Installer $code }
+function DieWith ([int]$code, $m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-ClioLine "xx $m" Red; Complete-ClioRun $false $m; Exit-Installer $code }
+
+# The desktop install's shared steps (install.sh has the same): resolve, download, verify,
+# install. Each step's time is reported; -Progress json writes one JSON object per line
+# on stdout ({"event":"step",...} and a final {"event":"summary",...}). The NSIS setup
+# prepares the bundled agent itself, inside the install step.
+$RunClock = $null
+$StepClock = $null
+$StepName = ''
+$StepTimes = [ordered]@{}
+$RunBytes = 0
+function Format-ClioSeconds([double]$s) { return ([math]::Round($s, 1)).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) }
+function Write-ClioEvent($record) {
+    if ($script:ProgressJson) { [Console]::Out.WriteLine(($record | ConvertTo-Json -Compress -Depth 4)) }
+}
+function Start-ClioStep([string]$name) {
+    if ($script:StepName) {
+        $seconds = Format-ClioSeconds $script:StepClock.Elapsed.TotalSeconds
+        $script:StepTimes[$script:StepName] = [double]$seconds
+        Write-ClioEvent ([ordered]@{ event = 'step'; step = $script:StepName; state = 'end'; seconds = [double]$seconds })
+    }
+    $script:StepName = $name
+    $script:StepClock = [Diagnostics.Stopwatch]::StartNew()
+    if (-not $script:RunClock) { $script:RunClock = [Diagnostics.Stopwatch]::StartNew() }
+    if ($name) { Write-ClioEvent ([ordered]@{ event = 'step'; step = $name; state = 'begin' }) }
+}
+function Complete-ClioRun([bool]$ok, [string]$err = '') {
+    if (-not $script:RunClock) { return }
+    $failed = $script:StepName
+    if ($ok) { Start-ClioStep '' } else { $script:StepName = '' }
+    $total = [double](Format-ClioSeconds $script:RunClock.Elapsed.TotalSeconds)
+    $script:RunClock = $null
+    if ($ok) {
+        Write-ClioEvent ([ordered]@{ event = 'summary'; ok = $true; seconds = $script:StepTimes; total = $total; bytes = $script:RunBytes })
+        $parts = @($script:StepTimes.GetEnumerator() | ForEach-Object { "$($_.Key) $(Format-ClioSeconds $_.Value) s" })
+        Say "Done in $(Format-ClioSeconds $total) s ($($parts -join ', '))."
+    } else {
+        Write-ClioEvent ([ordered]@{ event = 'summary'; ok = $false; step = $failed; error = $err; seconds = $script:StepTimes; total = $total; bytes = $script:RunBytes })
+    }
+}
 function Have ($cmd) { return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue) }
 function RunNative($cmd, [string[]]$cmdArgs) {
     & $cmd @cmdArgs
@@ -196,6 +244,7 @@ $OptRef = ''
 $OptDesktop = $false
 $OptDownloadOnly = ''
 $OptResetOldData = $false
+$OptProgress = if ($env:CLIO_INSTALL_PROGRESS) { $env:CLIO_INSTALL_PROGRESS } else { 'human' }
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch -Regex ([string]$args[$i]) {
         '^(--source|-Source)$' { $OptSource = $true; continue }
@@ -207,6 +256,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^(--desktop|-Desktop)$' { $OptDesktop = $true; continue }
         '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
         '^(--reset-old-data|-ResetOldData)$' { $OptResetOldData = $true; continue }
+        '^(--progress|-Progress)$' { $i++; $OptProgress = [string]$args[$i]; continue }
+        '^--progress=' { $OptProgress = ([string]$args[$i]).Substring(11); continue }
         default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; Exit-Installer 2 }
     }
 }
@@ -214,6 +265,8 @@ if (-not $OptVersion -and $env:CLIO_VERSION) { $OptVersion = $env:CLIO_VERSION }
 if ($env:CLIO_REF -and -not $OptRef) { $OptSource = $true; $OptRef = $env:CLIO_REF }
 if ($OptSource -and $OptVersion) { Die '--version pins a release; use --ref <tag or commit> with --source' }
 if (-not $OptSource -and $OptRef) { Die '--ref pins source; add --source' }
+if ($OptProgress -notin @('human', 'json')) { Die "--progress takes human or json, not '$OptProgress'" }
+$ProgressJson = $OptProgress -eq 'json'
 
 # ---------- desktop app (-Desktop) ------------------------------------
 # The released desktop setup carries its own agent, so -Desktop needs no Python, uv or
@@ -225,6 +278,17 @@ function Install-ClioDesktop {
     if (-not [Environment]::Is64BitOperatingSystem) { Die 'CLIO Desktop requires 64-bit Windows.' }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $repo = 'https://github.com/iowarp/clio-agent'
+    # A throw (a failed download or lookup) ends the run with a summary, as Die does.
+    try {
+        Install-ClioDesktopRelease $repo
+    } catch {
+        Complete-ClioRun $false $_.Exception.Message
+        throw
+    }
+}
+
+function Install-ClioDesktopRelease([string]$repo) {
+    Start-ClioStep 'resolve'
     if ($OptVersion) {
         $tag = Get-ClioReleaseTag $OptVersion
     } else {
@@ -237,9 +301,12 @@ function Install-ClioDesktop {
     $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ("clio-desktop-" + [Guid]::NewGuid().ToString('N'))))
     New-Item -ItemType Directory -Path $scratch | Out-Null
     try {
+        Start-ClioStep 'download'
         Say "Downloading CLIO Desktop $tag ($asset)"
         $installer = Join-Path $scratch $asset
         Save-ClioDownload "$repo/releases/download/$tag/$asset" $installer
+        $script:RunBytes = (Get-Item -LiteralPath $installer).Length
+        Start-ClioStep 'verify'
         $manifest = (Invoke-WebRequest "$repo/releases/download/$tag/$checksums" -UseBasicParsing).Content
         if ($manifest -is [byte[]]) { $manifest = [Text.Encoding]::UTF8.GetString($manifest) }
         # GitHub replaces spaces in asset names with dots; older checksum manifests
@@ -256,14 +323,17 @@ function Install-ClioDesktop {
             $verified = Join-Path $OptDownloadOnly $asset
             Copy-Item -LiteralPath $installer -Destination $verified
             Say "Verified download: $verified"
+            Complete-ClioRun $true
             return
         }
         # The installer's own pages ask for the model provider and infrastructure, so it runs
         # with its window rather than silently.
+        Start-ClioStep 'install'
         Say 'Opening the CLIO Desktop installer...'
         $setup = Start-Process -FilePath $installer -Wait -PassThru
         if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup did not finish (exit $($setup.ExitCode))" }
         Say 'CLIO Desktop installed. Open it from the Start menu.'
+        Complete-ClioRun $true
     } finally {
         Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }

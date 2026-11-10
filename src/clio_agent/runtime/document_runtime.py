@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
+import tempfile
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -29,6 +32,27 @@ from clio_agent.runtime.execution_environment import (
 
 STACK_ROOT = Path(__file__).resolve().parent / "document_stack"
 PNPM_VERSION = "12.9.1"
+# pnpm 12 is a JavaScript wrapper that runs a native binary from its per-host
+# `@pnpm/exe.*` package. These are the SHA-256 digests of their registry tarballs,
+# so the installer's concurrent download of them can stand in for `npm install`
+# (install.sh lists them in the release's install plan).
+PNPM_PACKAGES = {
+    "pnpm": "44c80447645c2a1d8da9308d3efedcec6ca2db4579183abcb15d8a90a88277d4",
+    "@pnpm/exe.darwin-arm64": "456316d4cfa8b50b86224613f7f4eca591d970b07ab2f3b6d479724460845d94",
+    "@pnpm/exe.linux-x64": "9581c9b2571491f9e00c841cb29864cc3bf96e66f82d55ef5bad70f8f06d1808",
+    "@pnpm/exe.linux-arm64": "90530afe00c62fefd1f09d1a9b0aea058d28fd0862eeb2231de9151ffa36d291",
+}
+
+
+def pnpm_tarball(name: str) -> str:
+    """The registry's file name for one pinned pnpm package tarball."""
+    return f"{name.rsplit('/', 1)[-1]}-{PNPM_VERSION}.tgz"
+
+
+def _pnpm_host_package() -> str:
+    machine = platform.machine().lower()
+    architecture = {"aarch64": "arm64", "x86_64": "x64", "amd64": "x64"}.get(machine, machine)
+    return f"@pnpm/exe.{sys.platform}-{architecture}"
 
 
 class DocumentRuntimeError(RuntimeError):
@@ -276,6 +300,42 @@ def _pnpm_command(package: Path, node: str, env: dict[str, str]) -> Path:
     return pnpm
 
 
+def _unpack_package(archive: Path, target: Path) -> None:
+    """Unpack one npm tarball's ``package/`` as ``target``, replacing what was there."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".unpack-", dir=target.parent) as temporary:
+        staging = Path(temporary)
+        with tarfile.open(archive, "r:gz") as source:
+            source.extractall(staging, filter="data")
+        unpacked = staging / "package"
+        if not (unpacked / "package.json").is_file():
+            raise DocumentRuntimeError(f"{archive.name} has no npm package")
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+        unpacked.rename(target)
+
+
+def _installer_pnpm(package: Path) -> bool:
+    """Unpack pnpm and its native binary from the installer's downloads, offline."""
+    from clio_agent.runtime.document_stack.office import installer_download
+
+    host = _pnpm_host_package()
+    if host not in PNPM_PACKAGES:
+        return False
+    archives = {
+        name: installer_download(pnpm_tarball(name), PNPM_PACKAGES[name]) for name in ("pnpm", host)
+    }
+    if any(archive is None for archive in archives.values()):
+        return False
+    modules = package.parent
+    for name, archive in archives.items():
+        assert archive is not None
+        _unpack_package(archive, modules / name)
+    return True
+
+
 def _javascript_runtime(
     cache: Path,
     workspace: Path,
@@ -287,10 +347,27 @@ def _javascript_runtime(
     tools = Path(node_path(str(cache / "javascript-tools")))
     package = tools / "node_modules" / "pnpm"
     env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
+    pnpm: Path | None = None
     try:
         pnpm = _pnpm_command(package, node, env)
     except (DocumentRuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError):
         tools.mkdir(parents=True, exist_ok=True)
+        try:
+            if _installer_pnpm(package):
+                pnpm = _pnpm_command(package, node, env)
+        except (
+            DocumentRuntimeError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            tarfile.TarError,
+        ) as exc:
+            # The registry install below is the same pinned version; only slower.
+            if progress is not None:
+                progress(f"The downloaded pnpm could not be used ({exc}); fetching it instead...")
+    if pnpm is None:
         node_root = Path(node).parent
         if node_root.name == "bin":
             node_root = node_root.parent

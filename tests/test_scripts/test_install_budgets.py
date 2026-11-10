@@ -15,6 +15,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 
@@ -59,8 +61,83 @@ def test_every_budget_names_its_limit_and_what_was_measured() -> None:
 def test_the_user_budgets_are_the_limits() -> None:
     assert BUDGETS["startup"]["startup-x1.json"]["task_runtime_ready_s"]["max"] == 30
     assert BUDGETS["desktop"]["backend_ready_seconds"]["max"] == 60
-    installs = [row for name, row in BUDGETS["timings"].items() if "install" in name]
+    installs = [
+        row
+        for name, row in BUDGETS["timings"].items()
+        if "install" in name and not name.startswith("desktop install (")
+    ]
     assert installs and all(row["seconds"] == 180 for row in installs)
+    assert BUDGETS["timings"]["desktop install (macOS): total"]["seconds"] == 180
+
+
+def _events(*steps: tuple[str, float], ok: bool = True, failed: str = "") -> list[dict]:
+    events: list[dict[str, Any]] = []
+    for name, seconds in steps:
+        events.append({"event": "step", "step": name, "state": "begin"})
+        events.append({"event": "step", "step": name, "state": "end", "seconds": seconds})
+    total = round(sum(seconds for _, seconds in steps), 1)
+    summary = {"event": "summary", "ok": ok, "seconds": dict(steps), "total": total}
+    if not ok:
+        events.append({"event": "step", "step": failed, "state": "begin"})
+        summary |= {"step": failed, "error": "download failed"}
+    return [*events, summary]
+
+
+_MAC_STEPS = ("resolve", "download", "verify", "install", "prepare", "total")
+
+
+def test_each_desktop_install_step_is_held_to_its_budget() -> None:
+    events = _events(
+        ("resolve", 0.5), ("download", 54.9), ("verify", 0.0), ("install", 61.0), ("prepare", 45.1)
+    )
+    rows = budgets_check.install_event_rows(events, "macOS")
+    verdicts = {
+        row[1]: row[-1]
+        for row in budgets_check.check_timings(rows, BUDGETS["timings"], "desktop-install")
+    }
+    assert set(verdicts) == {f"desktop install (macOS): {step}" for step in _MAC_STEPS}
+    assert verdicts["desktop install (macOS): install"] == (
+        "FAIL: budget 'place the app < 60 s' exceeded: measured 61.0 s, limit 60 s"
+    )
+    assert verdicts["desktop install (macOS): download"] == "ok"
+    assert verdicts["desktop install (macOS): total"] == "ok"
+
+
+def test_a_failed_desktop_install_fails_its_step_and_the_unrun_steps() -> None:
+    events = _events(("resolve", 0.4), ok=False, failed="download")
+    rows = budgets_check.install_event_rows(events, "macOS")
+    verdicts = {
+        row[1]: row[-1]
+        for row in budgets_check.check_timings(rows, BUDGETS["timings"], "desktop-install")
+    }
+    assert verdicts["desktop install (macOS): resolve"] == "ok"
+    assert "the step failed" in verdicts["desktop install (macOS): download"]
+    assert "the step failed" in verdicts["desktop install (macOS): total"]
+    for step in ("verify", "install", "prepare"):
+        assert "not measured" in verdicts[f"desktop install (macOS): {step}"]
+    assert budgets_check.check_timings([], BUDGETS["timings"], "desktop-install")
+
+
+def test_the_macos_desktop_install_runs_on_installer_pull_requests() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "install-matrix.yml").read_text("utf-8")
+    )
+    paths = workflow[True]["pull_request"]["paths"]
+    for path in (
+        "install/**",
+        "src/clio_agent/runtime/document_runtime.py",
+        "src/clio_agent/runtime/document_stack/office.py",
+    ):
+        assert path in paths
+    job = workflow["jobs"]["desktop-install"]
+    assert "if" not in job and job["runs-on"].startswith("macos")
+    script = "\n".join(step.get("run", "") for step in job["steps"])
+    assert 'install/install.sh --desktop "${package[@]}"' in script
+    assert "--progress json" in script
+    assert 'CLIO_DESKTOP_DIR="$RUNNER_TEMP/' in script
+    assert "--install-events" in script and "job=desktop-install" in script
+    # A dispatch can install a signed build's Apple archive instead of the release.
+    assert "--desktop-package" in script and "source=Notarized Developer ID" in script
 
 
 def test_a_step_within_its_budget_passes_and_an_unbudgeted_step_is_report_only() -> None:

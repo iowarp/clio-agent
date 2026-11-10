@@ -82,6 +82,8 @@ def write_manifest(runtime: Path, manifest: dict[str, Any]) -> None:
         "path",
         "checksum",
         "rewritten-checksum",
+        "codesigned-from-foreign",
+        "codesigned-from-malformed",
     ],
 )
 def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: str) -> None:
@@ -101,6 +103,8 @@ def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: s
         entry["source_hash"] = None if damage == "null-source" else "sha256:" + "0" * 64
     elif damage == "path":
         entry["filename"] = "../escape.whl"
+    elif damage.startswith("codesigned-from"):
+        entry["codesigned_from"] = "0" * 64 if damage.endswith("foreign") else "not-a-digest"
     else:
         wheel = runtime / "document-wheels" / entry["filename"]
         wheel.write_bytes(b"damaged")
@@ -110,6 +114,21 @@ def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: s
     with pytest.raises(ValueError, match="Bundled document wheel"):
         bundled_wheel_requirements(runtime, stack, project)
     assert not (project / "bundled-requirements.txt").exists()
+
+
+def test_accepts_macos_codesigned_wheel_that_records_its_locked_download(tmp_path: Path) -> None:
+    """A release that signs native wheel members keeps the locked digest as provenance."""
+    runtime, stack, project, manifest = wheel_bundle(tmp_path)
+    entry = manifest["packages"][0]
+    wheel = runtime / "document-wheels" / entry["filename"]
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("clio_offline_fixture_native.txt", "re-signed member stand-in\n")
+    signed = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    entry["codesigned_from"], entry["sha256"] = entry["sha256"], signed
+    write_manifest(runtime, manifest)
+    requirements = bundled_wheel_requirements(runtime, stack, project)
+    assert requirements is not None
+    assert f"--hash=sha256:{signed}" in requirements.read_text(encoding="utf-8")
 
 
 def test_unbundled_development_environment_keeps_frozen_sync(tmp_path: Path) -> None:

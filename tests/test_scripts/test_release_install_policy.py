@@ -390,6 +390,16 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     stage_step = bundles[stage_idx:stage_end_idx]
     assert "-iname '*.sig'" in stage_step
     assert "-name '*.app.tar.gz'" in stage_step
+    assert "-name '*.app.aar'" in stage_step
+    assert 'base="${base%.app.aar}-bundled.app.aar"' in stage_step
+    assert "scripts/release_install_plan.py" in stage_step
+    assert "install-plan.${{ matrix.target }}.bundled.txt" in stage_step
+    plan_idx = stage_step.index("release_install_plan.py")
+    assert plan_idx < stage_step.index("SHA256SUMS.${{ matrix.target }}")  # sums cover the plan
+    # The archive is made from the stapled app and verified like the updater payload.
+    archive_idx = bundles.index("name: Archive the stapled macOS app")
+    assert bundles.index("name: Notarize and staple the macOS DMG") < archive_idx
+    assert archive_idx < bundles.index("name: Verify macOS release signatures") < stage_idx
     assert "-maxdepth 2 -type f" in stage_step  # never sweep deb work files or runtime internals
     assert "find \"$stage\" -type f -name '*-bundled.*' ! -name '*.sig' -print0" in stage_step
     assert 'base="${base//$tauri_version/$release_version}"' in stage_step
@@ -439,7 +449,26 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
         if any("github_release.py ensure" in str(step.get("run", "")) for step in job["steps"])
     ]
     assert creators == ["release"]
-    assert jobs["release"]["if"] == "github.event_name == 'push' || inputs.rebuild_bundled"
+    assert jobs["release"]["if"] == (
+        "github.event_name == 'push' || inputs.rebuild_bundled || inputs.signed_macos_artifact"
+    )
+
+    # A signed macOS artifact build never creates, uploads to or publishes a release.
+    ensure = next(
+        step
+        for step in jobs["release"]["steps"]
+        if "github_release.py ensure" in str(step.get("run", ""))
+    )
+    assert ensure["if"] == "${{ !inputs.signed_macos_artifact }}"
+    for name in ("web", "installers"):
+        assert "signed_macos_artifact" not in str(jobs[name].get("if", "")), name
+    desktop_upload = next(
+        step
+        for step in jobs["desktop"]["steps"]
+        if "upload_release_assets.sh" in str(step.get("run", ""))
+    )
+    assert desktop_upload["if"] == "${{ !inputs.signed_macos_artifact }}"
+    assert jobs["release-check"]["if"] == "always() && !inputs.signed_macos_artifact"
 
     # Every job that uploads waits for the creator (no concurrent create race).
     uploaders = [
@@ -456,6 +485,8 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
         "group": (
             "clio-bundles-${{ inputs.tag || github.ref_name }}"
             "${{ inputs.allow_pending_macos && '-beta-macos-exception' || '' }}"
+            "${{ inputs.signed_macos_artifact && "
+            "format('-signed-artifact-{0}', github.ref_name) || '' }}"
         ),
         "cancel-in-progress": False,
     }
@@ -542,7 +573,10 @@ def test_bundle_repair_keeps_product_source_frozen_and_selects_only_missing_plat
     assert set(matrix["target"]) == expected
     assert {entry["target"] for entry in matrix["include"]} == expected
     desktop = workflow["jobs"]["desktop"]
-    assert desktop["steps"][0]["with"]["ref"] == "${{ env.RELEASE_TAG }}"
+    # Only the artifact-only signing build uses the dispatch commit; a repair builds the tag.
+    assert desktop["steps"][0]["with"]["ref"] == (
+        "${{ inputs.signed_macos_artifact && github.sha || env.RELEASE_TAG }}"
+    )
     tooling = desktop["steps"][1]
     assert tooling["with"]["ref"] == "${{ github.sha }}"
     assert tooling["with"]["path"] == ".release-operations"
@@ -551,7 +585,9 @@ def test_bundle_repair_keeps_product_source_frozen_and_selects_only_missing_plat
         for step in desktop["steps"]
         if step.get("name") == "Verify bundled runtime matches uv.lock"
     )
-    upload = desktop["steps"][-1]["run"]
+    upload = next(
+        step["run"] for step in desktop["steps"] if step.get("name") == "Upload to draft release"
+    )
     assert 'gh release upload "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY"' in upload
     assert "--clobber" not in upload
 
@@ -868,3 +904,36 @@ def test_container_channel_recovery_cannot_rebuild_versioned_images() -> None:
             assert step["with"]["flavor"] == "latest=false"
     runner = recovery["steps"][-1]
     assert '--version "$STABLE_VERSION" --expected-latest "$EXPECTED_LATEST"' in runner["run"]
+
+
+def test_signed_macos_artifact_builds_only_the_bundled_apple_silicon_leg() -> None:
+    """The artifact-only Developer ID build selects one leg and checks out the dispatch ref."""
+    workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
+    select = next(
+        step["run"] for step in workflow["jobs"]["release"]["steps"] if step.get("id") == "matrix"
+    )
+    branch = select.split('elif [ "$SIGNED_MACOS_ARTIFACT" = true ]; then', 1)[1]
+    match = re.search(r"value=\$\(jq -c '(.*?)' \\", branch, flags=re.DOTALL)
+    assert match is not None
+    jq = shutil.which("jq")
+    assert jq is not None
+    result = subprocess.run(
+        [jq, "-c", match[1], str(ROOT / ".github/desktop-bundle-matrix.json")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    matrix = json.loads(result.stdout)
+    assert matrix["variant"] == ["bundled"]
+    assert matrix["target"] == ["aarch64-apple-darwin"]
+    assert [entry["target"] for entry in matrix["include"]] == ["aarch64-apple-darwin"]
+    assert matrix["include"][0]["os"].startswith("macos-")
+    desktop = workflow["jobs"]["desktop"]
+    assert desktop["environment"] == (
+        "${{ startsWith(matrix.os, 'macos') && 'release-mac-signing' || '' }}"
+    )
+    assert desktop["steps"][0]["with"]["ref"] == (
+        "${{ inputs.signed_macos_artifact && github.sha || env.RELEASE_TAG }}"
+    )

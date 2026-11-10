@@ -119,6 +119,12 @@ not affected.
 
 ### Changed
 
+- **macOS releases are Developer ID signed and notarized.** CLIO Desktop for macOS,
+  its sidecar and every binary in the bundled runtime (including native modules in the
+  offline document wheels) are signed with CLIO's Developer ID, hardened runtime and a
+  secure timestamp. The DMG and the app are notarized and stapled, so a downloaded DMG
+  opens without an "Open Anyway" step. A release whose signing, notarization or
+  Gatekeeper check fails is not published.
 - `max_concurrency` caps how many of a workflow's steps are in flight
   (`0` means no step cap; model-call admission is separate),
   and `timeout_s` is that step's deadline. A deadline is offered to editors as

@@ -409,3 +409,78 @@ def test_app_copy_uses_ditto_and_falls_back_without_it(
     )
     office._copy_app_bundle(source, target)
     assert (target / "Contents").is_dir() and len(calls) == 1
+
+
+@pytest.mark.parametrize("state", ["valid", "tampered", "symlink", "path", "unset"])
+def test_installer_download_counts_only_the_pinned_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    import hashlib
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    real = folder / "real.dmg"
+    real.write_bytes(b"office")
+    checksum = hashlib.sha256(b"office").hexdigest()
+    name = "real.dmg"
+    if state == "tampered":
+        real.write_bytes(b"other")
+    elif state == "symlink":
+        (folder / "link.dmg").symlink_to(real)
+        name = "link.dmg"
+    elif state == "path":
+        name = "../downloads/real.dmg"
+    if state != "unset":
+        monkeypatch.setenv(office.INSTALLER_DOWNLOADS, str(folder))
+    else:
+        monkeypatch.delenv(office.INSTALLER_DOWNLOADS, raising=False)
+    expected = real if state == "valid" else None
+    assert office.installer_download(name, checksum) == expected
+
+
+def test_installer_download_replaces_the_network_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    folder = tmp_path / "installer"
+    folder.mkdir()
+    prefetched = folder / "LibreOffice.dmg"
+    prefetched.write_bytes(b"office image")
+    checksum = hashlib.sha256(b"office image").hexdigest()
+    monkeypatch.setenv(office.INSTALLER_DOWNLOADS, str(folder))
+    monkeypatch.setattr(
+        office, "asset", lambda: ("https://example.invalid/o", prefetched.name, checksum)
+    )
+    monkeypatch.setattr(office, "_download", lambda *a: pytest.fail("fetched from network"))
+    monkeypatch.setattr(office.office_compat, "supported", lambda: False)
+    monkeypatch.setattr(office, "_verify_office", lambda *a, **kw: None)
+    extracted: list[Path] = []
+
+    def extract(archive: Path, image: Path) -> None:
+        extracted.append(archive)
+        program = image / "LibreOffice.app/Contents/MacOS/soffice"
+        program.parent.mkdir(parents=True)
+        program.write_text("")
+        program.chmod(0o755)
+
+    monkeypatch.setattr(office, "_extract", extract)
+    monkeypatch.setattr(office, "executable", lambda root: next(root.rglob("soffice"), None))
+    root = tmp_path / "runtime" / "office"
+    assert office.ensure_office(root).endswith("soffice")
+    assert extracted == [prefetched]
+    assert prefetched.read_bytes() == b"office image"
+
+
+def test_macos_image_attach_skips_the_redundant_verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(office.platform, "system", lambda: "Darwin")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(office, "run", lambda command, **_: commands.append(command) or "")
+    monkeypatch.setattr(office, "_copy_app_bundle", lambda source, target: None)
+    root = tmp_path / "image"
+    root.mkdir()
+    office._extract(tmp_path / "office.dmg", root)
+    assert commands[0][:2] == ["/usr/bin/hdiutil", "attach"]
+    assert "-noverify" in commands[0]
