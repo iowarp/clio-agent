@@ -260,6 +260,12 @@ the only tool path. Worked example: **GitHub Copilot**
   `uv.lock`) and register it in `providers/dependencies.py`
   (`PROVIDER_SUPPORT` and an `ensure_<kind>_support` that stages any
   runtime at install time; a turn never downloads).
+  Install only through `_ensure_dependency` (and updates only through
+  `components/updater.py`): on a sealed desktop runtime they write to the
+  package overlay (`runtime/package_overlay.py`), never into the app
+  bundle. A child that runs the SDK's own module (such as Copilot's
+  `download-runtime`) must use `package_overlay.module_command` so it
+  sees the overlay.
 - If the SDK must move forward between CLIO releases, add it to
   `providers/components/registry.py` **and**
   `USER_UPDATABLE_COMPONENTS` in `scripts/check_bundle_matches_lock.py`
