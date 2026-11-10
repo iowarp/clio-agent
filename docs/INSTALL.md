@@ -227,8 +227,8 @@ Source installs require a new or explicitly emptied program directory; an
 existing checkout is never erased automatically. Uninstall retains Agent data,
 state, and unknown files. `--purge` / `-Purge` additionally removes the resolved
 Agent config directory, including saved credentials; custom config roots require
-explicit manual removal. `--purge-caches` (POSIX) removes the resolved Agent cache
-root, `--purge-data` (POSIX) removes the resolved Agent data and state roots (refusing
+explicit manual removal. `--purge-caches` / `-PurgeCaches` removes the resolved Agent
+cache root, `--purge-data` / `-PurgeData` removes the resolved Agent data and state roots (refusing
 custom roots, and keeping them while a clio-core daemon runs), and `--desktop` (macOS)
 removes CLIO Desktop.app and its caches and logs.
 
