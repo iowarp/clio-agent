@@ -88,7 +88,8 @@ def active_work(app: Any, sessions: list[Any]) -> dict[str, list[str]]:
     """``{session id: [active task handles]}`` for each session with work in flight.
 
     Mirrors the session-delete guard: a running turn (the turn runner's slot) or an
-    active task tree (delegations, background scripts).
+    active task tree (delegations, background scripts). An admission check that has
+    not admitted a turn is not work (``TurnRunner.working``).
     """
     busy: dict[str, list[str]] = {}
     runner = getattr(app.state, "turn_runner", None)
@@ -99,7 +100,7 @@ def active_work(app: Any, sessions: list[Any]) -> dict[str, list[str]]:
             if history is not None
             else []
         )
-        if handles or (runner is not None and runner.busy(session.id)):
+        if handles or (runner is not None and runner.working(session.id)):
             busy[session.id] = handles
     return busy
 
