@@ -383,6 +383,7 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
         starting = pidfile_live_pid(_daemon_pidfile())
         with runtime_stop.kill_spawned_daemon_on_failure():
             if starting is None:
+                # Stopgap for clio-core#1355; removal tracked in iowarp/clio-agent#2038.
                 core_control_port.hold_control_port(port)
                 _spawn_runtime_daemon(iowarp_core, config_path, log_level)
                 _wait_for_daemon_start(port, state)

@@ -20,7 +20,7 @@ socket raises no firewall prompt.
 
 Skipped when ``CLIO_BIND_ADDR`` names a non-loopback address (a hand-authored multi-node
 hostfile needs the channel). Remove once the pinned clio-core binds the channel to
-``CLIO_BIND_ADDR``.
+``CLIO_BIND_ADDR``; the removal checklist is iowarp/clio-agent#2038.
 """
 
 from __future__ import annotations
