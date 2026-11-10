@@ -39,8 +39,12 @@ if (Test-Path -LiteralPath $AgentPython) {
     if ($LASTEXITCODE -eq 0 -and $ResolvedState) { $ClioState = $ResolvedState.Trim() }
     $ResolvedConfig = & $AgentPython -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>$null
     if ($LASTEXITCODE -eq 0 -and $ResolvedConfig) { $ClioConfig = $ResolvedConfig.Trim() }
-    $ResolvedPort = & $AgentPython -m clio_agent.server_port 2>$null
-    if ($LASTEXITCODE -eq 0 -and $ResolvedPort) { $Port = [int]"$ResolvedPort".Trim() }
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under 'Stop'.
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $ResolvedPort = & $AgentPython -m clio_agent.server_port 2>$null } finally { $ErrorActionPreference = $SavedPreference }
+    $ParsedPort = 0
+    if ($LASTEXITCODE -eq 0 -and [int]::TryParse("$ResolvedPort".Trim(), [ref]$ParsedPort)) { $Port = $ParsedPort }
 }
 $PidFile = Join-Path $ClioState 'clio-server.pid'
 if (-not (Test-Path -LiteralPath $PidFile)) { $PidFile = Join-Path $Prefix 'clio-server.pid' }

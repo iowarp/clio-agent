@@ -572,6 +572,8 @@ def test_release_macos_gate_can_read_and_recheck_draft_assets() -> None:
     assert boot["run"].count('gh release download "$RELEASE_TAG"') == 2
     assert "shasum -a 256 --check" in boot["run"]
     assert "smoke_macos_bundle.py" in boot["run"]
+    # #1979: the release DMG must survive --prepare-runtime, web search and Office.
+    assert "--exercise" in boot["run"]
 
     # PyYAML's YAML 1.1 loader interprets the unquoted Actions key `on` as True.
     triggers = workflow.get("on", workflow.get(True))

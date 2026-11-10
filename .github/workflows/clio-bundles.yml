@@ -769,7 +769,7 @@ jobs:
       matrix:
         os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -794,7 +794,7 @@ jobs:
           spctl --assess --type execute -vv "$RUNNER_TEMP/CLIO Desktop.app" 2>&1 \
             | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
           uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled \
-            --quarantine --macho-list "$RUNNER_TEMP/gact-runtime-macho.json"
+            --exercise --quarantine --macho-list "$RUNNER_TEMP/gact-runtime-macho.json"
       - name: Publish the runtime's Mach-O inventory for signing
         if: always()
         uses: actions/upload-artifact@v4

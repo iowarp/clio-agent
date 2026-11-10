@@ -725,8 +725,8 @@ macos_git_placeholder() {
 source_git() {
   local candidate app
   if [ -n "${CLIO_GIT:-}" ]; then
-    [ -x "$CLIO_GIT" ] && printf '%s' "$CLIO_GIT"
-    return
+    if [ -x "$CLIO_GIT" ]; then printf '%s' "$CLIO_GIT"; fi
+    return 0
   fi
   candidate="$(command -v git 2>/dev/null || true)"
   if [ -n "$candidate" ] && ! macos_git_placeholder "$candidate"; then
@@ -735,8 +735,10 @@ source_git() {
   fi
   for app in "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app" "/Applications/CLIO Desktop.app"; do
     candidate="$app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
-    [ -x "$candidate" ] && { printf '%s' "$candidate"; return; }
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
   done
+  # No git: an empty answer, not a failure, so `set -e` reaches the guidance below.
+  return 0
 }
 
 if [ "$OPT_SOURCE" = 1 ]; then
