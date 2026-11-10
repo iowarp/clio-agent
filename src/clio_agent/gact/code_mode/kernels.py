@@ -175,7 +175,10 @@ class Kernel:
         )
         confined = sandbox.wrap_confined(
             python,
-            ["-I", str(_MAIN), str(max_output_bytes())],
+            # -I ignores PYTHONUTF8, so UTF-8 mode is asked for on the command line:
+            # otherwise a Windows kernel prints through cp1252 and a script fails on
+            # the first non-ASCII character a tool returns.
+            ["-I", "-X", "utf8", str(_MAIN), str(max_output_bytes())],
             write_roots=self.write_roots,
             net_policy=sandbox.NET_ALLOW_RECORD,
             profile=sandbox.PROFILE_SHELL,
