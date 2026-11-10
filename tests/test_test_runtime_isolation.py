@@ -248,16 +248,16 @@ def _is_zombie(pid: int) -> bool:
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows has no zombie processes")
-def test_launcher_does_not_count_an_exited_unreaped_child_as_active() -> None:
-    """A zombie (e.g. a log pump that exited at EOF) must not retain the run's state."""
+def test_launcher_names_an_exited_child_nobody_reaped() -> None:
+    """An unreaped child is a leak by its spawner; the error says which one."""
     child = subprocess.Popen([sys.executable, "-c", "pass"])  # noqa: S603 - fixed argv
     try:
         deadline = time.monotonic() + 20
         while not _is_zombie(child.pid):
             assert time.monotonic() < deadline, "child never exited"
             time.sleep(0.05)
-        survivors = _launcher().active_children(grace_s=0)
-        assert not any(entry.startswith(f"pid={child.pid} ") for entry in survivors)
+        survivors = _launcher().active_children()
+        assert f"pid={child.pid} status=zombie" in "; ".join(survivors), survivors
     finally:
         child.wait(timeout=10)
 
@@ -267,7 +267,7 @@ def test_launcher_names_a_child_that_is_still_running() -> None:
         [sys.executable, "-c", "import time; time.sleep(60)"]
     )
     try:
-        survivors = _launcher().active_children(grace_s=0)
+        survivors = _launcher().active_children()
         assert any(entry.startswith(f"pid={child.pid} ") for entry in survivors), survivors
     finally:
         child.kill()

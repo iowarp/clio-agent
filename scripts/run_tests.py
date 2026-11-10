@@ -9,36 +9,29 @@ from __future__ import annotations
 import os
 import runpy
 import sys
-import time
 from pathlib import Path
 
-#: How long teardown waits for children that are already exiting (a log pump at EOF).
-CHILD_EXIT_GRACE_S = 10.0
 
+def active_children() -> list[str]:
+    """Describe this process's remaining descendants for the teardown error.
 
-def active_children(grace_s: float = CHILD_EXIT_GRACE_S) -> list[str]:
-    """Describe descendants still running after ``grace_s``; exited (zombie) ones are not.
-
-    psutil reports a zombie as running, but it has exited and holds no state. It must
-    not block cleanup, and reaping it here would steal a status its Popen still owns.
+    An exited but unreaped child (zombie) is listed too: its spawner leaked it.
     """
     import psutil  # noqa: PLC0415
 
-    deadline = time.monotonic() + grace_s
-    while True:
-        survivors: list[str] = []
-        for child in psutil.Process().children(recursive=True):
-            try:
-                if child.status() == psutil.STATUS_ZOMBIE:
-                    continue
-                survivors.append(f"pid={child.pid} name={child.name()} cmd={child.cmdline()}")
-            except psutil.NoSuchProcess:
+    survivors: list[str] = []
+    for child in psutil.Process().children(recursive=True):
+        try:
+            if not child.is_running():
                 continue
-            except psutil.Error as exc:
-                survivors.append(f"pid={child.pid} ({exc.__class__.__name__})")
-        if not survivors or time.monotonic() >= deadline:
-            return survivors
-        time.sleep(0.2)
+            survivors.append(f"pid={child.pid} status={child.status()} cmd={child.cmdline()}")
+        except psutil.ZombieProcess:
+            survivors.append(f"pid={child.pid} status=zombie (exited, never reaped)")
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as exc:
+            survivors.append(f"pid={child.pid} ({exc.__class__.__name__})")
+    return survivors
 
 
 def main() -> None:
@@ -67,8 +60,8 @@ def main() -> None:
             survivors = active_children()
             if survivors:
                 raise RuntimeError(
-                    "Test children remain active; state retained at "
-                    f"{runtime.root}: " + "; ".join(survivors)
+                    f"Test children remain active; state retained at {runtime.root}: "
+                    + "; ".join(survivors)
                 )
             cleanup_test_runtime(runtime.root, runtime.parent)
 
