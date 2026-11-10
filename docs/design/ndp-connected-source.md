@@ -76,11 +76,14 @@ An empty term is still sent as a required `terms` parameter. Catalog errors are
 reported with their real HTTP status. Searches showing more than 500 datasets
 ask the user to refine the query rather than silently implying completeness.
 
-The shared built-in `work-with-ndp` skill is discovered by the default agent;
-agents declaring `connect-data` also receive it through the existing skill
-resolver, preserving workspace overrides and specialist scopes. Root agents get
-`connected_data_ndp_organizations` and `connected_data_search_ndp`. To connect a
-server-observed result they use the ordinary `connected_data_connect` tool:
+The `work-with-ndp` skill ("Working with NDP") belongs to the marketplace `ndp`
+plugin, which the `ndp` agent carries and other agents can add; the default
+`standard` agent does not claim NDP tools. Agents carrying the plugin get
+`connected_data_ndp_organizations` and `connected_data_search_ndp` in every
+workspace: catalog discovery needs no attached dataset, saved Endpoint, sign-in
+or MCP server. The clio-kit `ndp` MCP server is an optional `run_code`
+(`callers: "code"`) extra. To connect a server-observed result they use the
+ordinary `connected_data_connect` tool:
 
 ```json
 {"provider":"ndp","root":"<dataset-id>","label":"<dataset-title>",
