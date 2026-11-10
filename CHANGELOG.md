@@ -39,17 +39,16 @@ your workspaces are not affected.
 
 ### Reconnect Google Drive after upgrading
 
-CLIO now signs in to Google Drive with a new built-in Google registration (a Desktop
-app client in Google Cloud project `clio-514220`), replacing the previous one. Google
-sign-ins saved by 0.9.5.1 or earlier belong to the old registration and stop
-refreshing: open **Connect data**, choose your Google account and select **Log in**
-again. Your Drive sources keep their folders and settings and work again once you
-have signed in; nothing else needs to change. Distributors who set
-`CLIO_STORAGE_GOOGLE_CLIENT_ID` / `CLIO_STORAGE_GOOGLE_CLIENT_SECRET` are not affected.
+Drive sign-in has moved to a new Google client built into CLIO. If you connected
+Google Drive with 0.9.5.1 or earlier, you may need to sign in to Drive again: open
+**Connect data**, choose your Google account and select **Log in**. Your Drive
+sources keep their folders and settings and work again once you have signed in;
+nothing else needs to change. Distributors who set `CLIO_STORAGE_GOOGLE_CLIENT_ID` /
+`CLIO_STORAGE_GOOGLE_CLIENT_SECRET` are not affected.
 
-The new registration is still in Google's **Testing** mode, so only Google accounts
-on its test-user list can sign in. Ship it in test builds only; hold the public
-release until Google verifies the registration for production.
+Google is still verifying the new client. Until it finishes, Drive sign-in works only
+for Google accounts the CLIO team has added; if Google refuses your sign-in, ask your
+CLIO contact to add your account.
 
 Known issue: on a fresh install with no conversations yet, attaching a newly connected
 Drive folder stops at "Choose a conversation to track this work"
