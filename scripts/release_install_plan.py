@@ -1,7 +1,7 @@
 """Write a desktop release's install plan: what the first launch would download.
 
-``install.sh --desktop`` fetches these files while the app downloads and hands them to
-``clio-desktop --prepare-runtime`` (``CLIO_INSTALL_DOWNLOADS``), which uses each one
+``install.sh --desktop`` and ``install.ps1 -Desktop`` fetch these files while the app
+downloads and hand them to ``clio-desktop --prepare-runtime`` (``CLIO_INSTALL_DOWNLOADS``), which uses each one
 only when its bytes match the app's own pin. One line per file, readable by bash 3.2:
 
     kind sha256 bytes name url
@@ -30,6 +30,8 @@ TARGETS = {
     "x86_64-apple-darwin": (("Darwin", "x86_64"), "darwin-x64"),
     "x86_64-unknown-linux-gnu": (("Linux", "x86_64"), "linux-x64"),
     "aarch64-unknown-linux-gnu": (("Linux", "aarch64"), "linux-arm64"),
+    # The bundled Windows setup is x64 only (it runs under emulation on ARM).
+    "x86_64-pc-windows-msvc": (("Windows", "x86_64"), "win32-x64"),
 }
 
 

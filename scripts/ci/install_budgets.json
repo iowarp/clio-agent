@@ -40,7 +40,7 @@
       "budget": "release lookup < 30 s",
       "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
       "required_in": [
-        "desktop-install"
+        "desktop-install-macOS"
       ]
     },
     "desktop install (macOS): download": {
@@ -49,7 +49,7 @@
       "budget": "download (streamed and unpacked on macOS) < 120 s",
       "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
       "required_in": [
-        "desktop-install"
+        "desktop-install-macOS"
       ]
     },
     "desktop install (macOS): verify": {
@@ -58,7 +58,7 @@
       "budget": "integrity check < 30 s",
       "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
       "required_in": [
-        "desktop-install"
+        "desktop-install-macOS"
       ]
     },
     "desktop install (macOS): install": {
@@ -67,7 +67,7 @@
       "budget": "place the app < 60 s",
       "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
       "required_in": [
-        "desktop-install"
+        "desktop-install-macOS"
       ]
     },
     "desktop install (macOS): prepare": {
@@ -76,7 +76,7 @@
       "budget": "first-run prepare < 150 s",
       "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
       "required_in": [
-        "desktop-install"
+        "desktop-install-macOS"
       ]
     },
     "desktop install (macOS): total": {
@@ -85,7 +85,106 @@
       "budget": "install < 180 s",
       "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
       "required_in": [
-        "desktop-install"
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (Linux): resolve": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "release lookup < 30 s",
+      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): download": {
+      "seconds": 120,
+      "ok": true,
+      "budget": "download (the package and the plan's files at once) < 120 s",
+      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): verify": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "integrity check < 30 s",
+      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): install": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "install the package (apt/dnf) < 60 s",
+      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): prepare": {
+      "seconds": 150,
+      "ok": true,
+      "budget": "first-run prepare < 150 s",
+      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): total": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Windows): resolve": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "release lookup < 30 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): download": {
+      "seconds": 120,
+      "ok": true,
+      "budget": "download (the setup and the plan's files at once) < 120 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): verify": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "integrity check < 30 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): install": {
+      "seconds": 150,
+      "ok": true,
+      "budget": "setup, including its own first-run prepare < 150 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): total": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "required_in": [
+        "desktop-install-Windows"
       ]
     },
     "source: start": {

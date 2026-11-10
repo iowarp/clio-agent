@@ -227,6 +227,27 @@ manifest_sha() {
 file_sha() {
   if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
+sha_stream() {
+  if have sha256sum; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi
+}
+
+# fetch_hashed URL FILE [curl options]: download URL to FILE, hashing the bytes as they
+# arrive (FILE.sha), so verifying needs no second pass over the file. An interrupted
+# download starts again once, from the beginning (curl cannot rewind into the hash).
+fetch_hashed() {
+  local url="$1" file="$2" attempt status
+  shift 2
+  for attempt in 1 2; do
+    rm -f "$file" "$file.sha"
+    curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$@" "$url" \
+      | tee "$file" | sha_stream > "$file.sha" && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
+    [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ] || [ "${status[2]}" != 0 ] || return 0
+    [ "$attempt" = 2 ] || [ "${status[0]}" = 22 ] || continue
+    break
+  done
+  rm -f "$file" "$file.sha"
+  return 1
+}
 
 is_sha() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
 
@@ -288,11 +309,11 @@ fetch_plan() {  # TAG MANIFEST TRIPLE -> the plan file, or nothing
 
 prefetch() {  # SHA NAME URL: a failure only means the app fetches it itself later
   local file="$DESKTOP_SCRATCH/downloads/$2"
-  if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$3" -o "$file.part" 2>/dev/null \
-     && [ "$(file_sha "$file.part")" = "$1" ]; then
+  if fetch_hashed "$3" "$file.part" 2>/dev/null && [ "$(cat "$file.part.sha")" = "$1" ]; then
     mv "$file.part" "$file"
+    rm -f "$file.part.sha"
   else
-    rm -f "$file.part"
+    rm -f "$file.part" "$file.part.sha"
     warn "could not fetch $2 ahead of time; the app downloads it while preparing"
   fi
 }
@@ -449,7 +470,7 @@ install_desktop() {
       say "Downloading CLIO Desktop $tag ($asset)"
       DESKTOP_APP_FILE="$DESKTOP_SCRATCH/$asset"
       start_monitor
-      curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -D "$DESKTOP_SCRATCH/app.headers" "$url" -o "$DESKTOP_APP_FILE" \
+      fetch_hashed "$url" "$DESKTOP_APP_FILE" -D "$DESKTOP_SCRATCH/app.headers" \
         || die "could not download $asset from release $tag" ;;
   esac
   finish_downloads
@@ -457,7 +478,7 @@ install_desktop() {
   case "$asset" in
     *.aar|*.tar.gz) [ "$(cat "$DESKTOP_SCRATCH/app.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed"
       rm -f "$DESKTOP_APP_FILE" ;;
-    *) [ "$(file_sha "$DESKTOP_APP_FILE")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
+    *) [ "$(cat "$DESKTOP_APP_FILE.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
   esac
   if [ -n "$OPT_DOWNLOAD_ONLY" ]; then
     mkdir -p "$OPT_DOWNLOAD_ONLY"

@@ -58,8 +58,25 @@ def test_large_downloads_resume_through_curl() -> None:
     body = body[: body.index("\n}\n")]
     for flag in ("--retry", "--continue-at -", "--fail", "--location"):
         assert flag in body
-    assert 'Save-ClioDownload "$repo/releases/download/$tag/$asset" $installer' in script
     assert "Save-ClioDownload $webUrl $webZip" in script
+    # The desktop's downloads run at once, each a curl.exe that retries and resumes.
+    body = script[script.index("function Save-ClioDownloads") :]
+    body = body[: body.index("\n}\n")]
+    for flag in ("--retry", "--continue-at -", "--fail", "--location"):
+        assert flag in body
+    assert "Save-ClioDownloads $items $total" in script
+
+
+def test_desktop_hands_the_plan_downloads_to_the_setup() -> None:
+    script = (ROOT / "install/install.ps1").read_text(encoding="utf-8")
+    body = script[script.index("function Install-ClioDesktop") :]
+    body = body[: body.index("\n}\n")]
+    assert "install-plan.$triple.bundled.txt" in body
+    assert "$env:CLIO_INSTALL_DOWNLOADS = $downloads" in body
+    assert "$env:CLIO_INSTALL_DOWNLOADS = $previousDownloads" in body
+    # Hashed as the bytes arrive: verify compares, it does not read the setup again
+    # unless that inline hash disagrees.
+    assert "$installer.Sha -ne $expected -and" in body
 
 
 def test_install_ps1_never_exits_a_window_it_was_pasted_into() -> None:
