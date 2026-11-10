@@ -442,8 +442,6 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
             stopped making progress.
     """
 
-    import shutil  # noqa: PLC0415
-
     from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher  # noqa: PLC0415
     from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
         acquire_launcher_cache_lock,
@@ -461,7 +459,9 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     if bundled is not None:
         plan = bundled_provision_plan(bundled)
     else:
-        resolved = shutil.which(str(spec.command))
+        from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+
+        resolved = real_which(str(spec.command))
         if not resolved:
             raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
         plan = provision_plan(spec, resolved)
