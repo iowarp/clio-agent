@@ -40,10 +40,17 @@ def resolved_locations(target: InfrastructureTarget, facts: TargetFacts) -> Host
         raise ValueError(
             "The host reported an invalid storage root. Inspect it again or choose a storage root."
         )
+    services = module.join(root, "services")
+    if not paths.service_data and not paths.root and not target.install_root and module is ntpath:
+        from clio_agent.gact.infrastructure.service_paths import (  # noqa: PLC0415 - cycle
+            local_service_root,
+        )
+
+        services = module.join(local_service_root(root), "services")
     return HostStorageLocations(
         root=root,
         models=paths.models or module.join(root, "models"),
-        service_data=paths.service_data or module.join(root, "services"),
+        service_data=paths.service_data or services,
         captures=paths.captures or module.join(root, "captures"),
         temporary=paths.temporary or module.join(root, "tmp"),
     )
