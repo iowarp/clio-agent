@@ -9,6 +9,7 @@ on:
       - 'uv.lock'
       - 'external/gact-tui'
       - 'scripts/smoke_desktop_package.py'
+      - 'scripts/ci/runtime_bytecode_audit.py'
       - '.github/workflows/desktop-bundle-smoke.yml'
   workflow_dispatch: {}
 
@@ -114,6 +115,12 @@ jobs:
           packages=(external/gact-tui/desktop/src-tauri/target/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           sudo dpkg -i "${packages[0]}"
+          # Record the shipped bytecode before any launch can add to it (#1979).
+          manifest="$(dpkg -L "$(dpkg-deb -f "${packages[0]}" Package)" | awk '/\/gact-runtime\/runtime\.json$/ && !n++')"
+          test -n "$manifest"
+          echo "CLIO_INSTALLED_RUNTIME=$(dirname "$manifest")" >> "$GITHUB_ENV"
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py snapshot \
+            --runtime "$(dirname "$manifest")" --out "$RUNNER_TEMP/runtime-audit/before.json"
           # DEB has no managed-package post-install hook. Its first launch also
           # owns Office download (600s) and extraction (300s), unlike a warm
           # startup or the Windows launch after NSIS has prepared those files.
@@ -171,6 +178,11 @@ jobs:
             install_kind = 'fresh_ci_install'
           } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-timing.json" -Encoding utf8
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+          # NSIS has already run --prepare-runtime; record the bytecode before any launch (#1979).
+          $runtimeDir = Join-Path $installDir 'data/bundled-runtime/gact-runtime'
+          if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir 'runtime.json'))) { throw "No prepared runtime at $runtimeDir" }
+          "CLIO_INSTALLED_RUNTIME=$runtimeDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py snapshot --runtime $runtimeDir --out "$env:RUNNER_TEMP/runtime-audit/before.json"
           uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log" --agent-home "$installDir/data/clio-agent"
       - name: Measure subsequent Windows startup with the same managed packages
         if: runner.os == 'Windows'
@@ -178,6 +190,21 @@ jobs:
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
           uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence-repeat" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log" --agent-home "$installDir/data/clio-agent"
+      - name: Audit installed runtime bytecode and the clio-core log (Linux)
+        if: always() && runner.os == 'Linux' && env.CLIO_INSTALLED_RUNTIME != ''
+        shell: bash
+        run: |
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py report \
+            --runtime "$CLIO_INSTALLED_RUNTIME" --snapshot "$RUNNER_TEMP/runtime-audit/before.json" \
+            --log-root "$RUNNER_TEMP/startup-evidence/agent" --out "$RUNNER_TEMP/runtime-audit/report.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+      - name: Audit installed runtime bytecode and the clio-core log (Windows)
+        if: always() && runner.os == 'Windows' && env.CLIO_INSTALLED_RUNTIME != ''
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py report --runtime $env:CLIO_INSTALLED_RUNTIME --snapshot "$env:RUNNER_TEMP/runtime-audit/before.json" --log-root "$installDir/data/clio-agent" --out "$env:RUNNER_TEMP/runtime-audit/report.json" --summary $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Collect Windows installer diagnostics even before first launch
         if: always() && runner.os == 'Windows'
         shell: pwsh
@@ -222,5 +249,6 @@ jobs:
             ${{ runner.temp }}/installer-timeout-processes.json
             ${{ runner.temp }}/installer-timing.json
             ${{ runner.temp }}/startup-evidence-repeat/
+            ${{ runner.temp }}/runtime-audit/report.json
           if-no-files-found: warn
           retention-days: 7
