@@ -12,19 +12,17 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+
+from clio_agent.file_urls import file_url_path
 
 __all__ = ["file_url", "local_path", "readable_roots", "refusal", "url_for"]
 
 
 def local_path(url: str) -> Path | None:
-    """The local path a ``file:`` URL names, or ``None`` for another scheme or a remote host."""
+    """The local path a ``file:`` URL names (a Windows drive or UNC share included), or
+    ``None`` for another scheme or a host this OS cannot open."""
 
-    parts = urlsplit(url)
-    if parts.scheme.lower() != "file" or parts.netloc not in ("", "localhost"):
-        return None
-    path = unquote(parts.path)
-    return Path(path) if path.startswith("/") else None
+    return file_url_path(url)
 
 
 def file_url(path: Path) -> str:
@@ -59,8 +57,14 @@ def refusal(app: Any, session_id: str, url: str) -> str:
     path = local_path(url)
     if path is None:
         return "browser_file_url_invalid"
+    roots = readable_roots(app, session_id)
+    # Resolving a UNC path connects to its server: only one a readable root lives on.
+    if path.drive.startswith(("\\\\", "//")) and not any(
+        path.drive.lower() == root.drive.lower() for root in roots
+    ):
+        return "browser_file_outside_roots"
     resolved = path.resolve(strict=False)
-    for root in readable_roots(app, session_id):
+    for root in roots:
         if resolved == root or root in resolved.parents:
             return ""
     return "browser_file_outside_roots"

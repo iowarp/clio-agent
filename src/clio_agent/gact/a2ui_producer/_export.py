@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
+from clio_agent.file_urls import file_url_path
 from clio_agent.gact.a2ui_catalogs.media_sources import (
     external_url_notice,
     insecure_url_detail,
@@ -63,7 +64,8 @@ def _path_candidate(value: str) -> str | None:
     parts = urlsplit(stripped)
     scheme = parts.scheme.lower()
     if scheme == "file":
-        return url2pathname(parts.path)
+        local = file_url_path(stripped)
+        return str(local) if local is not None else url2pathname(parts.path)
     if not scheme:
         return stripped
     if len(scheme) == 1 and stripped[1:3] in (":\\", ":/"):
