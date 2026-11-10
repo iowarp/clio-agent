@@ -270,12 +270,19 @@ async def release_runtime_after_drain(
         return "not_owned"
 
     from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
+    from clio_agent.gact import shutdown_budget  # noqa: PLC0415
 
     # Session writes made on the loop land before clio-core is released (bounded).
     sessions = getattr(app.state, "sessions", None)
     if sessions is not None and not await asyncio.to_thread(sessions.flush, 30.0):
         logger.error("runtime.release_after_drain reason=session_records_unflushed")
-    await asyncio.to_thread(release_runtime_client)
+    # The daemon stop fits inside the shutdown budget, so a slow daemon is stopped by
+    # its owner instead of outliving a process the budget watchdog ended.
+    ceiling_s = shutdown_budget.daemon_stop_ceiling(app)
+    if ceiling_s is None:
+        await asyncio.to_thread(release_runtime_client)
+    else:
+        await asyncio.to_thread(release_runtime_client, ceiling_s=ceiling_s)
     logger.info(
         "runtime.release_after_drain outcome=released owner=%s",
         getattr(app.state, "managed_shutdown_owner", None),

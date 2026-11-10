@@ -35,6 +35,30 @@ def test_an_embedded_or_test_app_is_never_bounded() -> None:
     assert shutdown_budget.begin(_app(server=False)) is None
 
 
+def test_the_daemon_stop_is_unbounded_until_the_budget_is_armed() -> None:
+    assert shutdown_budget.daemon_stop_ceiling(_app()) is None
+
+
+def test_the_daemon_stop_leaves_room_for_its_kill_inside_the_budget() -> None:
+    app = _app()
+    app.state.shutdown_deadline = time.monotonic() + 20.0
+    ceiling = shutdown_budget.daemon_stop_ceiling(app)
+    assert ceiling is not None
+    assert 20.0 - shutdown_budget.DAEMON_KILL_RESERVE_S - 1.0 < ceiling
+    assert ceiling <= 20.0 - shutdown_budget.DAEMON_KILL_RESERVE_S
+    app.state.shutdown_deadline = time.monotonic() + 1.0  # almost spent: a short attempt
+    assert shutdown_budget.daemon_stop_ceiling(app) == 1.0
+
+
+def test_arming_records_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIO_SHUTDOWN_BUDGET_S", "30")
+    app = _app()
+    done = shutdown_budget.begin(app, exit_process=lambda _code: None)
+    assert done is not None
+    done.set()
+    assert app.state.shutdown_deadline > time.monotonic() + 29
+
+
 def test_a_stop_past_its_budget_ends_the_process_with_its_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
