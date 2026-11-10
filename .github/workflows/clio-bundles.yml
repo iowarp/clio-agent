@@ -306,6 +306,12 @@ jobs:
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: ./install/pack-gact-runtime.ps1
+      # The deb and rpm carry one archive instead of the runtime's ~32,000 files; their
+      # postinst (install/linux-package) verifies and unpacks it, root-owned.
+      - name: Pack embedded clio-agent runtime (Linux)
+        if: matrix.variant == 'bundled' && runner.os == 'Linux'
+        shell: bash
+        run: bash install/pack-gact-runtime.sh
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
@@ -483,6 +489,14 @@ jobs:
             ));
             config.bundle = merge(config.bundle ?? {}, windowsPack.bundle);
           }
+          // The Linux deb and rpm ship the runtime as the same archive and unpack it in
+          // their maintainer scripts (install/linux-package).
+          if (process.env.RUNNER_OS === "Linux") {
+            const { linuxPackageBundle } = require(
+              `${process.env.GITHUB_WORKSPACE}/install/linux-package/tauri-overlay.cjs`,
+            );
+            config.bundle = linuxPackageBundle(config.bundle ?? {}, variant);
+          }
           // CLIO-branded installers use the CLIO release identity. GACT keeps
           // its independent package version for its own releases and diagnostics.
           config.version = tauriVersion;
@@ -550,6 +564,15 @@ jobs:
               || { echo "::error::runtime pack manifest missing"; exit 1; }
             jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]' "$cfg" >/dev/null \
               || { echo "::error::Windows bundle still enumerates the exploded runtime"; exit 1; }
+          fi
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" = "Linux" ]; then
+            for f in gact-runtime.tar.zst gact-runtime.pack.json gact-runtime.unpack.sh; do
+              [ -f "desktop/src-tauri/$f" ] || { echo "::error::Linux runtime pack: $f missing"; exit 1; }
+            done
+            jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json", "gact-runtime.unpack.sh"]
+              and ([.bundle.linux.deb, .bundle.linux.rpm] | all(.postInstallScript and .preRemoveScript
+                and .postRemoveScript and (.depends | index("zstd"))))' "$cfg" >/dev/null \
+              || { echo "::error::Linux bundle lacks the runtime archive or its maintainer scripts"; exit 1; }
           fi
           # Tauri only WARNS when the private key does not match the overlay's
           # pubkey, yet every client would reject the resulting signatures at

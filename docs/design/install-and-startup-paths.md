@@ -98,8 +98,9 @@ Workarounds used: Git Bash and Go first on PATH when launching the app;
 1. **Five entry points, with OS-specific scripts each** (`.ps1`/`.sh`/native).
    Fixes and optimizations apply to one path and miss the others.
 2. **The fast path is narrow.** The packed runtime (`gact-runtime.tar.zst`,
-   `runtime_pack.rs`) is `cfg(windows)`-only. Linux bundles deb/rpm only (no
-   bundled AppImage); macOS bundles Apple Silicon only.
+   `runtime_pack.rs`) is `cfg(windows)`-only in the desktop. Linux deb/rpm ship the
+   same archive and unpack it in their maintainer scripts (`install/linux-package`);
+   Linux bundles deb/rpm only (no bundled AppImage); macOS bundles Apple Silicon only.
 3. **Desktop and CLI installs are separate** and can leave two backends.
 4. **Source-build mode is a second implementation** of the install, with its own
    Python version, reinstall behavior, and prerequisites (git, go, bash).
