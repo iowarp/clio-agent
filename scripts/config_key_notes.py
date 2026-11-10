@@ -387,6 +387,10 @@ KEY_NOTES: dict[str, str] = {
         "How long (seconds) a stopping clio-core daemon may make no progress (CPU and I/O "
         "flat) before it is killed; keep it inside the desktop supervisor's 30 s window."
     ),
+    "arc.liveness.stop_ack_s": (
+        "How long (seconds) a clio-core daemon may keep serving its port after clio_run stop "
+        "before the request counts as lost and the daemon is sent SIGTERM (POSIX)."
+    ),
     "arc.namespace": (
         "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
         "bare tags. Set to keep two deployments on one clio-core apart."

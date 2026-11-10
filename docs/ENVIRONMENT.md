@@ -43,6 +43,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LIVENESS_RETRIES` | `arc.liveness.retries` | int | `3` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_SAMPLE_AFTER_S` | `arc.liveness.sample_after_s` | float | `0.1` | `src/clio_agent/arc/clio_core_async_ops.py` |
 | `CLIO_ARC_LIVENESS_STALL_AFTER_S` | `arc.liveness.stall_after_s` | float | `30.0` | `src/clio_agent/arc/rpc_liveness.py` |
+| `CLIO_ARC_LIVENESS_STOP_ACK_S` | `arc.liveness.stop_ack_s` | float | `3.0` | `src/clio_agent/arc/runtime_stop.py` |
 | `CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S` | `arc.liveness.stop_no_progress_s` | float | `15.0` | `src/clio_agent/arc/runtime_stop.py` |
 | `CLIO_ARC_LSM_COMPACTION_THRESHOLD` | `arc.lsm_compaction_threshold` | int | `5` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
