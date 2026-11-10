@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for any other runtime executable that embeds V8,
+  found by content (macos_sign_runtime.embeds_v8). The macOS runtime ships none
+  today: Playwright's Node is fetched on first use, already signed by nodejs.org
+  with allow-jit, and the Codex helpers are dropped (build-gact-runtime.sh).
+-->
+<plist version="1.0">
+<dict>
+  <!-- V8 reserves its code range with MAP_JIT; without this it aborts at startup
+       with "Failed to reserve virtual memory for CodeRange". -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+</dict>
+</plist>
