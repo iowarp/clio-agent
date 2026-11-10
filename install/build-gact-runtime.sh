@@ -185,6 +185,16 @@ if [ -d "$SITE_PKGS" ]; then
   # in-package tests/ trees in vendored deps (clio_agent ships none)
   find "$SITE_PKGS" -mindepth 2 -maxdepth 2 -type d \( -name tests -o -name test \) \
     -exec rm -rf {} + 2>/dev/null || true
+  # Files no run of CLIO reads (about 1,100 in 0.9.5.1): every one is another file
+  # to write, scan for malware and sign on install. Nested test suites (numpy's
+  # alone is about 490), the C/C++ headers for compiling against numpy or pyarrow,
+  # and the stdlib's IDLE and turtle demos. Same list in build-gact-runtime.ps1.
+  # Type stubs (.pyi) stay: globus_sdk reads its own at import, and griffe
+  # merges them into FastMCP tool docs.
+  find "$SITE_PKGS" -mindepth 3 -type d \( -name tests -o -name test \) -prune \
+    -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$SITE_PKGS/pyarrow/include" "$SITE_PKGS/numpy/_core/include"
+  rm -rf "$(dirname "$SITE_PKGS")/idlelib" "$(dirname "$SITE_PKGS")/turtledemo"
   # *.dist-info/RECORD is KEPT: the desktop upgrades this runtime in place
   # with `uv pip install`, and without RECORD uv cannot uninstall the old
   # version — stale modules and duplicate metadata survive the upgrade.
