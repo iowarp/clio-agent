@@ -97,6 +97,15 @@ def test_backend_requires_the_module_port_and_token(tmp_path: Path) -> None:
     assert smoke.backend_connection(process) is None
 
 
+def test_backend_skips_a_descendant_it_cannot_read(tmp_path: Path) -> None:
+    process = backend(tmp_path)
+    process.cmdline.side_effect = psutil.AccessDenied(123)
+    assert smoke.backend_connection(process) is None
+    process.cmdline.side_effect = None
+    process.environ.side_effect = psutil.AccessDenied(123)
+    assert smoke.backend_connection(process) is None
+
+
 def test_runtime_cannot_be_replaced_with_a_development_interpreter(tmp_path: Path) -> None:
     process = backend(tmp_path)
     assert smoke.require_bundled_python(process) == str((tmp_path / "runtime/python").resolve())

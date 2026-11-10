@@ -45,7 +45,7 @@ import logging
 import os
 import re
 import socket
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,7 +83,7 @@ def host_key() -> str:
     return _HOST_KEY_UNSAFE.sub("-", label).strip("-") or "localhost"
 
 
-def runtime_state_dir() -> Path:
+def runtime_state_dir(*, create: bool = True) -> Path:
     """Return the directory holding THIS machine's clio-core runtime bookkeeping.
 
     This is where the connect-or-spawn lifecycle keeps its coordination state: the
@@ -98,12 +98,16 @@ def runtime_state_dir() -> Path:
     this at its own directory, and its spawn lock / pidfile / registry / last-one-out
     stop all move coherently with it. The directory is created if absent.
 
-    Returns the state directory, creating it if absent.
+    ``create=False`` is for read-only probes (the flood monitor's background poll):
+    they must not resurrect a state directory that its owner has already removed.
+
+    Returns the state directory, creating it if absent unless ``create`` is false.
     """
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
     if override:
         state = Path(override).expanduser()
-        state.mkdir(parents=True, exist_ok=True)
+        if create:
+            state.mkdir(parents=True, exist_ok=True)
         return state
     from clio_agent import paths  # noqa: PLC0415
 
@@ -119,7 +123,8 @@ def runtime_state_dir() -> Path:
     if legacy.exists() and not state.exists():
         logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
         state = legacy
-    state.mkdir(parents=True, exist_ok=True)
+    if create:
+        state.mkdir(parents=True, exist_ok=True)
     return state
 
 
@@ -178,6 +183,41 @@ compose:
 # 1GB of ram, and whatever you want of <disk>" — the budget IS the ceiling.
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
 _DEFAULT_CTE_CORE_PORT = 9413
+
+# clio-core binds its RPC servers on every interface (0.0.0.0) unless
+# ``CLIO_BIND_ADDR`` names an address. CLIO's runtime is single-node and serves only
+# this machine's own processes, so it is pinned to loopback; an explicit value
+# (for a hand-authored multi-node hostfile) is respected. Only clio-core child
+# environments are pinned; the server's own ``os.environ`` is left alone.
+# Known gap: clio-core's control channel (port base+2, ``ControlChannelLoop`` in
+# ``context-runtime/src/ipc_manager.cc``) binds ``tcp://*`` and ignores this
+# variable; it needs an upstream iowarp/clio-core fix.
+CORE_BIND_ADDR_ENV = "CLIO_BIND_ADDR"
+CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
+
+
+def pin_loopback_bind(env: MutableMapping[str, str]) -> None:
+    """Bind the clio-core runtime started or attached under ``env`` to loopback.
+
+    The daemon, its ``stop`` command and the native preflight must agree, so every
+    child environment that reaches clio-core goes through here.
+    """
+    if not env.get(CORE_BIND_ADDR_ENV):
+        env[CORE_BIND_ADDR_ENV] = CORE_LOOPBACK_BIND_ADDR
+
+
+# clio-core keeps runtime state that the config does not name (bdev perf stats,
+# for one) under ``CLIO_STORAGE_ROOT``, which defaults to ~/.clio. Children get
+# this machine's runtime state directory instead, so the state stays with
+# CLIO's own data and is removed with it. An explicit value is respected.
+CORE_STORAGE_ROOT_ENV = "CLIO_STORAGE_ROOT"
+
+
+def pin_core_child_env(env: MutableMapping[str, str]) -> None:
+    """Prepare ``env`` for a clio-core child: loopback bind and a CLIO-owned storage root."""
+    pin_loopback_bind(env)
+    if not env.get(CORE_STORAGE_ROOT_ENV):
+        env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
 
 
 # The path suffix identifying a ram data tier (hand-authored or older configs; the

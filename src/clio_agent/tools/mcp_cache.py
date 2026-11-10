@@ -73,7 +73,7 @@ def _mcp_uv_cache_dir() -> Path:
 
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-    return paths.user_cache_dir() / "mcp-uv-cache"
+    return paths.mcp_build_cache_dir() / "mcp-uv-cache"
 
 
 # uv builds ephemeral ``uvx``/``uv run --with`` environments under this subtree (the ``v*``

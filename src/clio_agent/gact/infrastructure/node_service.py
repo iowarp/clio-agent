@@ -567,9 +567,7 @@ def worker(root: Path, action: str, generation: str) -> None:
             "--no-config",
             "--project",
             str(root / "environment"),
-            "--python",
-            str(manifest.get("python_version", "3.12")),
-            *(["--managed-python"] if os.name == "nt" else []),
+            *platform_helper().uv_python_arguments(manifest),
             *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     else:

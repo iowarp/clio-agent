@@ -42,7 +42,7 @@ def kit_cache_root(environment: dict[str, str] | None = None) -> Path:
     from clio_agent import paths  # noqa: PLC0415 - resolved per call (tests move it)
 
     configured = (environment or os.environ).get("CLIO_KIT_CACHE_DIR", "")
-    return Path(configured) if configured else paths.user_cache_dir() / "mcp-runtime"
+    return Path(configured) if configured else paths.mcp_build_cache_dir() / "mcp-runtime"
 
 
 def remove_stale_environments(cache_root: Path) -> list[str]:

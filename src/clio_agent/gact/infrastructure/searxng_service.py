@@ -34,7 +34,7 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.storage import resolved_locations
-from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+from clio_agent.gact.infrastructure.supervised_service import service_python, supervised_plan
 from clio_agent.search.settings import (
     API_KEY_ENGINES,
     SearchSettings,
@@ -291,11 +291,14 @@ def searxng_plan(
                     f"PUT /v1/search/engine-keys/{engine}, or remove it from the engines"
                 )
             secret_env[engine_key_variable(engine)] = key
+    requires, interpreter = service_python(facts)
     manifest: dict[str, Any] = {
+        **interpreter,
         "service": SERVICE_ID,
         "definition_version": DEFINITION_VERSION,
         "project": (
-            '[project]\nname="clio-searxng"\nversion="0.0.0"\nrequires-python=">=3.12,<3.13"\n'
+            '[project]\nname="clio-searxng"\nversion="0.0.0"\n'
+            f'requires-python="{requires}"\n'
             "dependencies=" + json.dumps(list(SEARXNG_REQUIREMENTS)) + "\n"
         ),
         "launcher": Path(__file__).with_name("searxng_launch.py").read_text(encoding="utf-8"),

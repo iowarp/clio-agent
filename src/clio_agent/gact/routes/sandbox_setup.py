@@ -36,7 +36,7 @@ from clio_agent.gact.sandbox_setup import (
 )
 from clio_agent.gact.sandbox_setup_progress import setup_progress
 from clio_agent.runtime import sandbox_cli
-from clio_agent.runtime.sandbox_doctor import probe_sandbox
+from clio_agent.runtime.sandbox_doctor import probe_sandbox, sandbox_acknowledgement
 
 
 def current_platform() -> str:
@@ -62,13 +62,17 @@ def sandbox_row_wire(row: Any) -> dict[str, Any]:
     """Project the ``sandbox`` doctor row for the wire, ONE shape for every route.
 
     The shared health projection has no sandbox-specific fields, so every body that carries the
-    row (GET, the 409/501 refusals and the setup verdict) adds the same three desktop-panel
+    row (GET, the 409/501 refusals and the setup verdict) adds the same desktop-panel
     conveniences: ``setup_in_progress`` (the setup lock), ``reason`` (the typed reason token
-    lifted out of ``details``) and ``codex_source`` (``bundled``/``path``/``None``). A single
+    lifted out of ``details``), ``codex_source`` (``bundled``/``path``/``None``) and the
+    start-up acknowledgement verdict from
+    :func:`~clio_agent.runtime.sandbox_doctor.sandbox_acknowledgement` (``active``,
+    ``resolved``, ``mechanism``, ``acknowledgement_required``, ``warning``). A single
     projection means the client never sees a row that lacks a field another route emits.
     """
 
     wire = integration_to_wire(row).model_dump()
+    wire.update(sandbox_acknowledgement(row))
     details = row.details if isinstance(row.details, dict) else {}
     codex_details = details.get("codex")
     wire["setup_in_progress"] = setup_in_progress()

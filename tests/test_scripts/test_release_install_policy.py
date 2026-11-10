@@ -232,6 +232,16 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         relocation_proof = script.index("portability proof on the real object")
         assert compile_step < relocation_proof, relative_path
         assert "precompile_runtime.py" in script, relative_path
+        # Lazily imported first-party modules would otherwise compile on every launch,
+        # and the runtime's children must not write bytecode into the install (#1979).
+        for package in ("clio_agent", "clio_kit", "clio_schemas"):
+            assert re.search(rf"--package['\"]?,? ['\"]?{package}\b", script), (
+                relative_path,
+                package,
+            )
+        assert "PYTHONDONTWRITEBYTECODE" in script[script.index("runtime manifest") :], (
+            relative_path
+        )
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path
@@ -380,6 +390,16 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     stage_step = bundles[stage_idx:stage_end_idx]
     assert "-iname '*.sig'" in stage_step
     assert "-name '*.app.tar.gz'" in stage_step
+    assert "-name '*.app.aar'" in stage_step
+    assert 'base="${base%.app.aar}-bundled.app.aar"' in stage_step
+    assert "scripts/release_install_plan.py" in stage_step
+    assert "install-plan.${{ matrix.target }}.bundled.txt" in stage_step
+    plan_idx = stage_step.index("release_install_plan.py")
+    assert plan_idx < stage_step.index("SHA256SUMS.${{ matrix.target }}")  # sums cover the plan
+    # The archive is made from the stapled app and verified like the updater payload.
+    archive_idx = bundles.index("name: Archive the stapled macOS app")
+    assert bundles.index("name: Notarize and staple the macOS DMG") < archive_idx
+    assert archive_idx < bundles.index("name: Verify macOS release signatures") < stage_idx
     assert "-maxdepth 2 -type f" in stage_step  # never sweep deb work files or runtime internals
     assert "find \"$stage\" -type f -name '*-bundled.*' ! -name '*.sig' -print0" in stage_step
     assert 'base="${base//$tauri_version/$release_version}"' in stage_step
@@ -588,6 +608,8 @@ def test_release_macos_gate_can_read_and_recheck_draft_assets() -> None:
     assert boot["run"].count('gh release download "$RELEASE_TAG"') == 2
     assert "shasum -a 256 --check" in boot["run"]
     assert "smoke_macos_bundle.py" in boot["run"]
+    # #1979: the release DMG must survive --prepare-runtime, web search and Office.
+    assert "--exercise" in boot["run"]
 
     # PyYAML's YAML 1.1 loader interprets the unquoted Actions key `on` as True.
     triggers = workflow.get("on", workflow.get(True))

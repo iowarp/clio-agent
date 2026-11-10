@@ -54,8 +54,17 @@ Windows on ARM runs the same x64 installer through emulation.
 
 2. Open the disk image and drag **CLIO Desktop** into **Applications**.
 
-3. Open **CLIO Desktop**. The app is ad-hoc signed, so macOS may ask once: open
-   **System Settings → Privacy & Security** and choose **Open Anyway**.
+3. Open **CLIO Desktop**. The app is ad-hoc signed, not notarized, so the first time
+   you open a copy downloaded in a browser, macOS says it cannot verify the app.
+   Choose **Done** (not **Move to Trash**). On macOS 15 and newer, Control-click →
+   **Open** no longer skips this check. Instead:
+   1. Open **System Settings → Privacy & Security** and scroll to **Security**.
+   2. Next to "CLIO Desktop was blocked to protect your Mac", choose **Open Anyway**,
+      then enter your password.
+   3. Choose **Open Anyway** again in the dialog that follows.
+
+   macOS remembers the approval for this copy. The terminal installer downloads with
+   `curl`, which adds no quarantine flag, so this prompt does not appear for it.
 
 </Steps>
 

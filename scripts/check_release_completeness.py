@@ -80,6 +80,12 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     ("lite macOS updater sig (x86_64)", r"x86_64-apple-darwin\.app\.tar\.gz\.sig$"),
     ("lite AppImage sig (x86_64 Linux)", r"_amd64\.AppImage\.sig$"),
     ("lite AppImage sig (aarch64 Linux)", r"_aarch64\.AppImage\.sig$"),
+    # install.sh --desktop: the notarized Apple archive it installs first, and the
+    # plan of first-launch downloads it fetches alongside the app.
+    ("bundled macOS Apple archive (aarch64)", r"aarch64-apple-darwin-bundled\.app\.aar$"),
+    ("install plan (aarch64 macOS)", r"^install-plan\.aarch64-apple-darwin\.bundled\.txt$"),
+    ("install plan (x86_64 Linux)", r"^install-plan\.x86_64-unknown-linux-gnu\.bundled\.txt$"),
+    ("install plan (aarch64 Linux)", r"^install-plan\.aarch64-unknown-linux-gnu\.bundled\.txt$"),
     ("Tauri update manifest (bundled)", r"^latest\.json$"),
     ("Tauri update manifest (lite)", r"^latest-lite\.json$"),
     # The TUI is frozen; releases ship Desktop and Web.
@@ -105,6 +111,8 @@ MACOS_DESKTOP_LABELS: frozenset[str] = frozenset(
         "lite dmg (x86_64 macOS)",
         "bundled macOS updater bundle (aarch64)",
         "bundled macOS updater sig (aarch64)",
+        "bundled macOS Apple archive (aarch64)",
+        "install plan (aarch64 macOS)",
         "lite macOS updater bundle (aarch64)",
         "lite macOS updater sig (aarch64)",
         "lite macOS updater bundle (x86_64)",

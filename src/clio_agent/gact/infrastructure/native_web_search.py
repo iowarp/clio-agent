@@ -22,7 +22,11 @@ from clio_agent.gact.infrastructure.searxng_service import (
     searxng_settings,
 )
 from clio_agent.gact.infrastructure.service_paths import service_directory
-from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+from clio_agent.gact.infrastructure.supervised_service import (
+    PINNED_PYTHON,
+    service_python,
+    supervised_plan,
+)
 from clio_agent.search.settings import API_KEY_ENGINES
 
 REVISION = "306806e9c9a8ba11ec67aa3896bdf3d29a9768bd"
@@ -102,16 +106,18 @@ def native_web_plan(
         *SEARXNG_REQUIREMENTS,
         f"clio-web-search{extra} @ git+https://github.com/iowarp/clio-web-search.git@{REVISION}",
     ]
+    # The documents extra (docling) is not validated on CLIO's Python: it keeps the pin.
+    requires, interpreter = (PINNED_PYTHON, {}) if documents else service_python(facts)
     manifest: dict[str, Any] = {
+        **interpreter,
         "service": "web_search",
         "definition_version": PROFILE,
         "port": port,
         "health_path": "/readyz",
         "arguments": [],
         "installation_bytes": (8 if documents else 2) * 1024**3,
-        "project": '[project]\nname="clio-native-web-search"\nversion="0.0.0"\nrequires-python=">=3.12,<3.13"\ndependencies='
-        + json.dumps(dependencies)
-        + "\n",
+        "project": '[project]\nname="clio-native-web-search"\nversion="0.0.0"\n'
+        f'requires-python="{requires}"\ndependencies=' + json.dumps(dependencies) + "\n",
         "launcher": "from native_web_search_hook import main\nimport sys\nsys.argv=['launch','serve']\nmain()\n",
         "files": files,
         "post_install": "native_web_search_hook.py",

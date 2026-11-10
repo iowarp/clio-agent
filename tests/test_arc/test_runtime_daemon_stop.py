@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.arc import runtime_stop, storage
+from clio_agent.arc import runtime_ownership, runtime_stop, storage
 from clio_agent.arc.clio_core_liveness import (
     SOCKET_PROBE_UNAVAILABLE_REASON,
     runtime_socket_status,
@@ -43,6 +43,19 @@ def fake_iowarp_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> types.S
     return fake
 
 
+@pytest.fixture()
+def own_the_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stop under test is of a daemon this home started.
+
+    ``stop_runtime_daemon`` runs ``clio_run stop`` only for a daemon this state
+    directory owns (``runtime_ownership.stop_guard``); these tests exercise that clean-stop
+    sequence, so the guard passes. Unowned and foreign-listener stops are covered in
+    ``test_runtime_ownership.py``.
+    """
+    monkeypatch.setattr(runtime_ownership, "stop_guard", lambda _port: "owned")
+
+
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_runtime_daemon_uses_spawn_helpers(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -81,6 +94,7 @@ def test_stop_runtime_daemon_uses_spawn_helpers(
     assert env[lib_var].split(os.pathsep)[0] == fake_iowarp_core.get_lib_dir()
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -111,6 +125,7 @@ def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
     assert any("launcher_not_found" in record.getMessage() for record in caplog.records)
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_runtime_daemon_reaps_helper_as_soon_as_runtime_is_down(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -156,6 +171,7 @@ def test_stop_stall_budget_fits_desktop_supervisor_window() -> None:
     assert runtime_stop._DEFAULT_STOP_NO_PROGRESS_S < 30.0
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_outcome_reports_clean_stop(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -176,6 +192,7 @@ def test_stop_outcome_reports_clean_stop(
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_outcome_reports_stall_kill(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -216,6 +233,7 @@ def test_stop_outcome_reports_stall_kill(
     assert killed == [True]
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_helper_exiting_while_the_daemon_still_stops_is_not_a_kill(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -246,6 +264,7 @@ def test_a_helper_exiting_while_the_daemon_still_stops_is_not_a_kill(
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -288,6 +307,7 @@ def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_daemon_making_no_progress_is_killed_loudly(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -314,6 +334,7 @@ def test_a_daemon_making_no_progress_is_killed_loudly(
     assert killed == [True]
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,

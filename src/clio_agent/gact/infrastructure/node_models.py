@@ -451,7 +451,9 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
                     "--project",
                     str(folder),
                     "--python",
-                    "3.12",
+                    # A downloaded Python on macOS runs install_name_tool, a Command Line
+                    # Tools stub there: this controller's interpreter serves instead.
+                    sys.executable if sys.platform == "darwin" else "3.12",
                     str(worker),
                     "--worker",
                     str(receipt),

@@ -178,6 +178,11 @@ def _local_children(
                     }
                     if is_directory and workspace_read_redaction_reason(Path(relative)):
                         row["redacted"] = "sandbox_child_cache"
+                    if not is_directory:
+                        try:
+                            row["size"] = child.stat().st_size
+                        except OSError:
+                            pass
                     yield row
                 except OSError:
                     continue

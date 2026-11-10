@@ -2,6 +2,7 @@
 # Notarize the release DMG and prove what a macOS user receives is release-signed.
 #
 #   bash scripts/macos_release_notarize.sh notarize-dmg BUNDLE_DIR
+#   bash scripts/macos_release_notarize.sh archive-app BUNDLE_DIR
 #   bash scripts/macos_release_notarize.sh verify BUNDLE_DIR bundled|lite
 #
 # BUNDLE_DIR is Tauri's target/<triple>/release/bundle. `tauri build` has
@@ -9,9 +10,13 @@
 # and stapled it before packing the DMG and the updater .app.tar.gz (APPLE_ID,
 # APPLE_PASSWORD and APPLE_TEAM_ID in its environment). notarize-dmg signs the
 # DMG with a secure timestamp, notarizes it and staples its ticket; the DMG's
-# bytes change, so checksums are computed afterwards. verify checks the app,
-# the DMG, every runtime Mach-O and the app extracted from the updater payload,
-# whose minisign signature must still verify against the brand key.
+# bytes change, so checksums are computed afterwards. archive-app packs the same
+# stapled app as an Apple Archive (<App>.app.aar), which install.sh unpacks while
+# it downloads; the archive itself carries no ticket, the app inside it does (as
+# in the updater payload), and curl-delivered files are not quarantined. verify
+# checks the app, the DMG, every runtime Mach-O and the app extracted from the
+# updater payload and from the Apple Archive; the updater payload's minisign
+# signature must still verify against the brand key.
 set -euo pipefail
 
 : "${APPLE_SIGNING_IDENTITY:?}" "${APPLE_TEAM_ID:?}"
@@ -53,6 +58,16 @@ notarize_dmg() {
   xcrun stapler validate "$dmg"
 }
 
+# LZMA: about a quarter smaller than the updater's gzip, and unpacked faster than
+# it downloads.
+archive_app() {
+  local macos="$1/macos" app
+  app="$(one '*.app' "$macos")"
+  rm -f "$app.aar"
+  aa archive -a lzma -d "$macos" -subdir "$(basename "$app")" -o "$app.aar"
+  ls -l "$app.aar"
+}
+
 # Release identity, hardened runtime and a secure timestamp on one signed path.
 check_code() {
   local path="$1" details
@@ -88,10 +103,11 @@ check_app() {
 }
 
 verify() {
-  local root="$1" variant="$2" app dmg payload extracted assessment dmg_details
+  local root="$1" variant="$2" app dmg payload archive extracted assessment dmg_details
   app="$(one '*.app' "$root/macos")"
   dmg="$(one '*.dmg' "$root/dmg")"
   payload="$(one '*.app.tar.gz' "$root/macos")"
+  archive="$(one '*.app.aar' "$root/macos")"
 
   echo "== app"
   check_app "$app" "$variant"
@@ -116,13 +132,22 @@ verify() {
     "$REPO/scripts/verify_tauri_update_signature.py" --config "$BRAND_CONFIG" \
     "$payload" "$payload.sig"
   rm -rf "$extracted"
+
+  echo "== Apple Archive (install.sh)"
+  mkdir -p "$extracted"
+  aa extract -d "$extracted" -i "$archive"
+  [ "$(find "$extracted" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1 ] \
+    || { echo "::error::$archive must hold only $(basename "$app")" >&2; exit 1; }
+  check_app "$extracted/$(basename "$app")" "$variant"
+  rm -rf "$extracted"
 }
 
 case "${1:-}" in
   notarize-dmg) notarize_dmg "${2:?bundle dir}" ;;
+  archive-app) archive_app "${2:?bundle dir}" ;;
   verify) verify "${2:?bundle dir}" "${3:?bundled or lite}" ;;
   *)
-    echo "usage: $0 notarize-dmg BUNDLE_DIR | verify BUNDLE_DIR bundled|lite" >&2
+    echo "usage: $0 notarize-dmg BUNDLE_DIR | archive-app BUNDLE_DIR | verify BUNDLE_DIR bundled|lite" >&2
     exit 2
     ;;
 esac

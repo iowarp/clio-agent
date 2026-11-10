@@ -11,12 +11,15 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from clio_agent.gact.storage import ndp_discovery_client as catalog_client
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
 from clio_agent.runtime.fresh_loop import run_in_new_loop
+
+# Former built-in Endpoint API default. It never was a public service and no longer answers.
+_RETIRED_DEFAULT_API_URL = "http://155.101.6.191:8003"
 
 
 class NDPEndpoint(StorageModel):
@@ -28,6 +31,24 @@ class NDPEndpoint(StorageModel):
     server: Literal["local", "global"] = "local"
     authenticated: bool = False
     catalog_url: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def retire_default_api_url(cls, data: Any) -> Any:
+        """Keep selections saved under the old built-in default bound to the public catalog."""
+        if (
+            isinstance(data, dict)
+            and data.get("id") == "ndp"
+            and str(data.get("url", "")).rstrip("/") == _RETIRED_DEFAULT_API_URL
+            and str(data.get("catalog_url", "")).rstrip("/") == PUBLIC_CATALOG_URL
+        ):
+            return {**data, "url": PUBLIC_CATALOG_URL}
+        return data
+
+    @property
+    def has_api(self) -> bool:
+        """Whether an NDP Endpoint API sits behind this catalog (Pelican, S3, account roles)."""
+        return self.url != self.catalog_url
 
     @field_validator("catalog_url")
     @classmethod
@@ -100,7 +121,7 @@ class NDPCatalog:
 
     @staticmethod
     def endpoints() -> list[NDPEndpoint]:
-        """Load operator-owned endpoints; public discovery keeps the existing client's default."""
+        """Load operator-owned endpoints; without one, the public catalog is the only default."""
         raw = os.environ.get("CLIO_STORAGE_NDP_ENDPOINTS", "")
         if raw:
             try:
@@ -116,12 +137,11 @@ class NDPCatalog:
             ):
                 raise ValueError("Authenticated NDP Endpoints require HTTPS")
             return endpoints
-        client = catalog_client.NDPClient()
         return [
             NDPEndpoint(
                 id="ndp",
                 name="NDP catalog",
-                url=client.base_url,
+                url=catalog_client.configured_api_url() or PUBLIC_CATALOG_URL,
                 server="global",
                 catalog_url=PUBLIC_CATALOG_URL,
             )

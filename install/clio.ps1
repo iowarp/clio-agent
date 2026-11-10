@@ -23,7 +23,7 @@
 #
 # Environment overrides:
 #   CLIO_PREFIX   install root      (default: $HOME\AppData\Local\clio)
-#   CLIO_PORT     server port       (default: 17800)
+#   CLIO_PORT     server port       (default: gact.port in config.yaml, else 17800)
 #   CLIO_BIN_DIR  launcher location (default: ...\WindowsApps)
 param(
     [Parameter(Position = 0)]
@@ -54,6 +54,17 @@ if (Test-Path -LiteralPath $AgentPython) {
     $ClioState = (& $AgentPython -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())').Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Agent state directory' }
     New-Item -ItemType Directory -Path $ClioState -Force | Out-Null
+    # gact.port in CLIO's config.yaml, else CLIO_PORT, else 17800. Releases from
+    # before gact.port existed fail this lookup and keep the value above. Windows
+    # PowerShell 5.1 turns any native stderr into a terminating error under 'Stop',
+    # even when redirected, so a bad gact.port must not take down every command.
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $Lookup = @(& $AgentPython -m clio_agent.server_port 2>&1) } finally { $ErrorActionPreference = $SavedPreference }
+    $ResolvedPort = ($Lookup | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join ''
+    $ParsedPort = 0
+    if ($LASTEXITCODE -eq 0 -and [int]::TryParse("$ResolvedPort".Trim(), [ref]$ParsedPort)) { $Port = $ParsedPort }
+    elseif ("$Lookup" -notmatch 'No module named') { Write-Host "!! cannot read gact.port from CLIO's config; using CLIO_PORT or 17800" -ForegroundColor Yellow }
 }
 $PidFile   = Join-Path $ClioState 'clio-server.pid'
 $ServerLog = Join-Path $ClioState 'clio-server.log'

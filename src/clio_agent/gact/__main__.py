@@ -19,11 +19,15 @@ from __future__ import annotations
 from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
 from clio_agent.gact.runtime_bytecode_repair import repair_bundled_runtime_bytecode
 from clio_agent.runtime.console_encoding import ensure_utf8_console
+from clio_agent.runtime.execution_environment import protect_bundled_runtime
 
 if __name__ == "__main__":
     # First: the sidecar's stdout/stderr are pipes opened in the locale code
     # page on Windows; every later print/log line must encode as UTF-8.
     ensure_utf8_console()
+    # The signed bundle is read-only: no child may compile into it, whether or
+    # not the supervisor applied runtime.json's PYTHONDONTWRITEBYTECODE.
+    protect_bundled_runtime()
     start_desktop_boot_heartbeat()
     # Before ANY dependency import: an in-place-upgraded bundled runtime can
     # still hold the previous release's unchecked bytecode.

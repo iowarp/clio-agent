@@ -272,6 +272,8 @@ def effective_write_roots(
         from clio_agent.tools.mcp_config import _mcp_uv_cache_dir  # noqa: PLC0415 - avoid cycle
 
         _add(_mcp_uv_cache_dir())
+        # A deep home's MCP builds sit under a short root outside the cache (WinError 206).
+        _add(paths.mcp_build_cache_dir())
         for cache in _platform_tool_cache_dirs():
             _add(cache)
 

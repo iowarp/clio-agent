@@ -255,7 +255,9 @@ def _no_real_provider_dependency_install(request, monkeypatch):
         return
     from clio_agent.providers import dependencies as _dependencies
 
-    def _refuse(_python_executable: str, requirements: list[str]) -> list[str]:
+    def _refuse(
+        _python_executable: str, requirements: list[str], **_placement: object
+    ) -> list[str]:
         raise _dependencies.ProviderDependencyInstallError(
             f"real dependency installs are disabled in tests: {', '.join(requirements)}"
         )

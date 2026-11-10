@@ -37,6 +37,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
+from clio_agent.arc.clio_core_config import pin_core_child_env
 from clio_agent.arc.clio_core_liveness import (
     _resolve_runtime_port,
     _runtime_alive,
@@ -96,7 +97,13 @@ def _daemon_process_alive(pid: int | None, recorded_create_time: float | None) -
 
 
 StopPath = Literal[
-    "clean_stop", "stall_kill", "helper_failed_kill", "launcher_missing_kill", "error_kill"
+    "clean_stop",
+    "stall_kill",
+    "helper_failed_kill",
+    "launcher_missing_kill",
+    "error_kill",
+    "not_owned",
+    "foreign_listener_kill",
 ]
 
 
@@ -309,11 +316,33 @@ def stop_runtime_daemon(
     ``_runtime_launcher_path`` and the shared-library env var (``PATH`` /
     ``DYLD_LIBRARY_PATH`` / ``LD_LIBRARY_PATH``) from ``_dynamic_library_env_var``,
     so the clean stop works on every platform the spawn does (issue #765).
+
+    Only a daemon this state directory started is stopped (:mod:`runtime_ownership`):
+    ``clio_run stop`` reaches whatever daemon serves the port, so it is skipped when no
+    daemon of ours runs (``not_owned``) or another user's or home's daemon holds the
+    port (``foreign_listener_kill``: our own pidfile daemon alone is killed).
     """
-    from clio_agent.arc import storage  # noqa: PLC0415 - lazy: storage imports this module
+    from clio_agent.arc import runtime_ownership, storage  # noqa: PLC0415 - import cycle
+
+    guard = runtime_ownership.stop_guard(_resolve_runtime_port(config_path))
+    if guard != "owned":
+        logger.warning(
+            "clio-core daemon stop skipped (reason=%s guard=%s): %s",
+            runtime_ownership.DAEMON_NOT_OWNED,
+            guard,
+            "no daemon this home started is running"
+            if guard == "not_owned"
+            else "another home's daemon holds the port; killing only this home's daemon",
+        )
+        if guard == "foreign_listener":
+            storage._kill_daemon_pidfile()
+        with contextlib.suppress(OSError):
+            storage._daemon_pidfile().unlink()
+        path: StopPath = "not_owned" if guard == "not_owned" else "foreign_listener_kill"
+        return StopOutcome(stopped=False, path=path)
 
     stopped = False
-    path: StopPath = "error_kill"
+    path = "error_kill"
     try:
         parts = storage._daemon_pidfile().read_text(encoding="utf-8").split()
     except OSError:
@@ -345,6 +374,7 @@ def stop_runtime_daemon(
             env.setdefault("CTP_LOG_LEVEL", log_level)
             if config_path:
                 env["CLIO_SERVER_CONF"] = config_path
+            pin_core_child_env(env)
             runtime_port = _resolve_runtime_port(config_path)
             stop_process = subprocess.Popen(  # noqa: S603 - fixed launcher path
                 [exe, "stop"],

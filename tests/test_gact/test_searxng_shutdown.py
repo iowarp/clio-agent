@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -65,3 +66,58 @@ async def test_shutdown_stops_the_searxng_clio_started(monkeypatch: pytest.Monke
     monkeypatch.setattr(search_bootstrap, "_run", run)
     assert await search_bootstrap.stop_started(app) == "stopped"
     assert stopped == ["stop"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_clios_start_cancels_it_and_stops_what_it_launched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starting = _op("start", "clio", "1", state="running")
+    cancelled: list[str] = []
+
+    async def cancel(operation_id: str) -> None:
+        cancelled.append(operation_id)
+
+    runtime = SimpleNamespace(store=SimpleNamespace(operations=lambda: [starting]), cancel=cancel)
+    store = SimpleNamespace(service=lambda *_: None)
+
+    async def boot_forever() -> None:
+        await asyncio.sleep(3600)
+
+    boot = asyncio.get_running_loop().create_task(boot_forever())
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            infrastructure_runtime=runtime,
+            infrastructure_store=store,
+            search_bootstrap_task=boot,
+        )
+    )
+    stopped: list[str] = []
+
+    async def run(_runtime: object, action: str, _poll: float) -> str:
+        stopped.append(action)
+        return "succeeded"
+
+    monkeypatch.setattr(search_bootstrap, "_run", run)
+    assert await search_bootstrap.stop_started(app) == "stopped"
+    assert cancelled == [starting.id]
+    assert stopped == ["stop"]
+    with pytest.raises(asyncio.CancelledError):
+        await boot
+
+
+@pytest.mark.asyncio
+async def test_shutdown_with_nothing_running_or_in_flight_stops_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(_op("start", "clio", "1", state="failed"))
+    store = SimpleNamespace(service=lambda *_: SimpleNamespace(state="stopped"))
+    app = SimpleNamespace(
+        state=SimpleNamespace(infrastructure_runtime=runtime, infrastructure_store=store)
+    )
+
+    async def run(*_args: object) -> str:
+        raise AssertionError("no stop expected")
+
+    monkeypatch.setattr(search_bootstrap, "_run", run)
+    assert await search_bootstrap.stop_started(app) == "not_running"

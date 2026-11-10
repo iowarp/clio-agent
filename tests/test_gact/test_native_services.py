@@ -626,8 +626,13 @@ def test_plain_launcher_survives_vllm_spawning_its_engine_core(tmp_path: Path) -
     assert result.stdout.split() == ["served", "0"], result.stderr
 
 
-def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> None:
+def test_service_worker_exposes_its_environment_tools_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """vLLM's flashinfer JIT runs ``ninja`` from the service venv (live: FileNotFoundError)."""
+    monkeypatch.setitem(
+        node_service.worker_environment.__globals__, "clt_free_tools", lambda root: ""
+    )
     env = node_service.worker_environment(
         tmp_path,
         {"environment": {"VLLM_CPU_KVCACHE_SPACE": "4"}},

@@ -15,9 +15,34 @@ from clio_agent.gact.infrastructure import (
     process_group,
     reuse,
 )
-from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec, OwnedResource
+from clio_agent.gact.infrastructure.models import (
+    CommandResult,
+    CommandSpec,
+    OwnedResource,
+    TargetFacts,
+)
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.service_observation import parse_observation
+
+#: A service environment's Python on a remote or Windows host: a pinned, tested minor.
+PINNED_PYTHON = ">=3.12,<3.13"
+
+
+def runs_on_clio_python(facts: TargetFacts) -> bool:
+    """A local Linux or macOS service builds its environment on CLIO's own interpreter.
+
+    The bundled runtime's Python then serves it, and uv downloads no second one (on
+    macOS that download runs ``install_name_tool``, a Command Line Tools stub).
+    Remote hosts keep the pinned minor, and Windows keeps uv-managed Python.
+    """
+    return facts.target_id == "local" and facts.os in {"linux", "macos"}
+
+
+def service_python(facts: TargetFacts) -> tuple[str, dict[str, str]]:
+    """The project's ``requires-python`` and the manifest entries that pick the interpreter."""
+    if runs_on_clio_python(facts):
+        return ">=3.12", {"interpreter": "clio"}
+    return PINNED_PYTHON, {}
 
 
 def supervised_plan(

@@ -180,7 +180,11 @@ Remove-Item -LiteralPath $constraints -Force -ErrorAction SilentlyContinue
 $runtimeBin = Join-Path $Out 'bin'
 New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
 Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uv.exe') -Force
-Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
+# uvx.exe is uv's shim that runs the sibling uv as `uv tool run`; a renamed uv
+# copy still behaves as plain uv.
+$uvx = Join-Path (Split-Path -Parent $uv.Source) 'uvx.exe'
+if (-not (Test-Path -LiteralPath $uvx -PathType Leaf)) { throw "uvx.exe shim missing beside $($uv.Source)" }
+Copy-Item -LiteralPath $uvx -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
 
 # CLIO installs marketplace plugins with git, which a fresh Windows machine does
 # not have. Ship Git for Windows' MinGit (relocatable by design; entry point
@@ -338,7 +342,7 @@ Invoke-Native -Exe $pyBin -Args @('-I', '-B', '-c', 'from clio_agent.runtime.cod
 # some optional provider paths exceed Windows' legacy path limit.
 Write-Host "[build-gact-runtime] compiling portable startup bytecode"
 $precompiler = Join-Path $checkout 'install/precompile_runtime.py'
-Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot)
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot, '--package', 'clio_agent', '--package', 'clio_kit', '--package', 'clio_schemas')
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
@@ -349,8 +353,13 @@ $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent') } |
-  ConvertTo-Json -Compress
+# env reaches every child the server starts from this runtime: a helper that runs
+# the bundled python without -B would otherwise write .pyc into the install.
+$manifest = @{
+  schema = 1
+  exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent')
+  env = @{ PYTHONDONTWRITEBYTECODE = '1' }
+} | ConvertTo-Json -Compress -Depth 4
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"
 

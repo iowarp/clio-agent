@@ -8,7 +8,7 @@ and never imports gact server code.
 
 Example:
     >>> from clio_agent.client import ClioClient
-    >>> with ClioClient("http://127.0.0.1:8100") as client:
+    >>> with ClioClient("http://127.0.0.1:17800") as client:
     ...     if not client.capabilities().supports("sessions"):
     ...         raise RuntimeError("backend has no session surface")
     ...     sess = client.sessions.create(title="demo")
@@ -48,7 +48,8 @@ from clio_agent.client.types import (
 
 logger = logging.getLogger("clio_agent.client")
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8100"
+# CLIO's product default port (``gact.port``); the client never reads server configuration.
+DEFAULT_BASE_URL = "http://127.0.0.1:17800"
 
 PermissionAction = Literal["allow", "deny", "allow_session", "allow_workspace", "allow_script"]
 
@@ -64,7 +65,7 @@ class ClioClient:
 
     Args:
         base_url: The backend origin (clio's default bind is
-            ``http://127.0.0.1:8100``).
+            ``http://127.0.0.1:17800``; ``gact.port`` changes it).
         timeout: Per-request timeout in seconds for plain REST calls.
             SSE streams use ``stream_read_timeout`` for reads instead
             (heartbeats arrive at least every 15 s, so the default of

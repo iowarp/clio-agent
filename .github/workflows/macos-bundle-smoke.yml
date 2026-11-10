@@ -71,7 +71,7 @@ jobs:
       matrix:
         os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -86,4 +86,5 @@ jobs:
           hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
           ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
           hdiutil detach "$RUNNER_TEMP/clio-image"
-          uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+          uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled \
+            --exercise --quarantine --macho-list "$RUNNER_TEMP/gact-runtime-macho.json"

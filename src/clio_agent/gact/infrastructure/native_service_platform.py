@@ -132,10 +132,83 @@ def worker_environment(
         TMP=str(tmp),
         HF_HOME=str(root / "cache/huggingface"),
         PATH=os.pathsep.join(
-            item for item in (str(python_path(root).parent), env.get("PATH", "")) if item
+            item
+            for item in (str(python_path(root).parent), clt_free_tools(root), env.get("PATH", ""))
+            if item
         ),
     )
     return env
+
+
+#: Where macOS keeps ``install_name_tool`` when a developer toolchain is installed.
+_MACOS_TOOLCHAINS = (
+    "/Library/Developer/CommandLineTools/usr/bin",
+    "/var/db/xcode_select_link/usr/bin",
+    "/var/db/xcode_select_link/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+)
+
+
+def clt_free_tools(root: Path) -> str:
+    """On a Mac without the Command Line Tools, a directory that shadows their stubs, else "".
+
+    uv patches every Python it downloads with ``install_name_tool``. Without the
+    Command Line Tools, ``/usr/bin/install_name_tool`` is a stub that opens the
+    "Install Command Line Developer Tools" dialog. The stand-in fails instead, so uv
+    warns and keeps the interpreter unpatched, which matters only for compiling
+    extensions, and that needs the Command Line Tools anyway.
+    """
+    if sys.platform != "darwin" or any(
+        os.path.isfile(os.path.join(item, "install_name_tool")) for item in _MACOS_TOOLCHAINS
+    ):
+        return ""
+    tools = root / "cache/clt-free-bin"
+    stand_in = tools / "install_name_tool"
+    if not stand_in.is_file():
+        tools.mkdir(parents=True, exist_ok=True)
+        stand_in.write_text(
+            "#!/bin/sh\necho 'clio: install_name_tool needs the Command Line Tools;"
+            " the library is left as it is' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        stand_in.chmod(0o755)
+    return str(tools)
+
+
+def durable_interpreter(executable: str | None = None) -> bool:
+    """CLIO's interpreter stays where it is, so a service environment can be built on it.
+
+    Not one inside a disk image or behind App Translocation (both vanish), nor
+    Microsoft Store Python (its activation broker escapes the worker's job).
+    """
+    executable = executable if executable is not None else sys.executable
+    if not executable:
+        return False
+    folded = executable.replace("\\", "/").casefold()
+    if "/apptranslocation/" in folded or "windowsapps" in folded:
+        return False
+    if folded.startswith("/volumes/"):
+        volume = "/".join(executable.replace("\\", "/").split("/")[:3])
+        return os.access(volume, os.W_OK)
+    return True
+
+
+def uv_python_arguments(manifest: dict[str, Any]) -> list[str]:
+    """The interpreter ``uv sync`` builds a service environment on.
+
+    A manifest with ``"interpreter": "clio"`` (a local service whose dependencies
+    support CLIO's Python) reuses the interpreter running this controller: no second
+    Python is downloaded. Otherwise, and when that interpreter is not durable, the
+    manifest's ``python_version``; macOS and Windows take it uv-managed, because their
+    system ``python3`` can be the Command Line Tools stub or Microsoft Store Python.
+    """
+    if manifest.get("interpreter") == "clio" and durable_interpreter():
+        return ["--python", sys.executable, "--no-python-downloads"]
+    managed = os.name == "nt" or sys.platform == "darwin"
+    return [
+        "--python",
+        str(manifest.get("python_version", "3.12")),
+        *(["--managed-python"] if managed else []),
+    ]
 
 
 def is_link(path: Path) -> bool:

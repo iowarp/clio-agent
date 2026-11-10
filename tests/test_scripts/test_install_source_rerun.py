@@ -167,3 +167,35 @@ def test_changes_inside_a_submodule_refuse_the_rerun(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "external/sub" in result.stderr
     assert (clone / "external/sub/tool.txt").read_text() == "my work\n"
+
+
+def _git_without_submodule(tmp_path: Path) -> dict[str, str]:
+    """A git like CLIO Desktop's bundled one: its exec path has no git-submodule script."""
+    exec_path = Path(_git("--exec-path", cwd=tmp_path))
+    bare = tmp_path / "git-core"
+    bare.mkdir()
+    for entry in exec_path.iterdir():
+        if entry.name != "git-submodule":
+            (bare / entry.name).symlink_to(entry)
+    return {"GIT_EXEC_PATH": str(bare)}
+
+
+def test_a_git_without_submodule_checks_out_the_recorded_submodules(tmp_path: Path) -> None:
+    origin = _origin_with_submodule(tmp_path)
+    clone = tmp_path / "prefix" / "clio-agent"
+    recorded = _git("rev-parse", "HEAD:external/sub", cwd=origin)
+    streamed = tmp_path / "streamed" / "install.sh"
+    streamed.parent.mkdir()
+    shutil.copy(ROOT / "install/install.sh", streamed)
+    env = _git_without_submodule(tmp_path)
+
+    first, _ = run_installer(tmp_path, "--source", script=streamed, real_git=True, env=env)
+    assert first.returncode == STOP, first.stdout + first.stderr
+    assert _git("rev-parse", "HEAD", cwd=clone / "external/sub") == recorded
+    assert (clone / "external/sub/tool.txt").read_text() == "tool\n"
+
+    _git("-c", "user.email=t@example.com", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "elsewhere", cwd=clone / "external/sub")  # fmt: skip
+    again, _ = run_installer(tmp_path, "--source", script=streamed, real_git=True, env=env)
+    assert again.returncode == STOP, again.stdout + again.stderr
+    assert _git("rev-parse", "HEAD", cwd=clone / "external/sub") == recorded

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import tempfile
 import zipfile
@@ -17,6 +18,7 @@ from clio_agent.gact.artifacts.storage import (
     resolve_owned_artifact_path,
     resolve_workspace_state_artifact_path,
 )
+from clio_agent.gact.routes.workspace_file_policy import is_internal_workspace_file_directory
 from clio_agent.gact.session_export_recorded_read import recorded_read_bytes
 from clio_agent.gact.session_export_viewer import write_archive_review
 from clio_agent.platform_paths import path_is_within, win_extended_path
@@ -27,6 +29,12 @@ if TYPE_CHECKING:
 
 ExportMode = Literal["transcript", "effects", "full"]
 _EXCLUDED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".clio"})
+# CLIO service storage (``.clio-*``, including the sandbox child credential cache).
+_EXCLUDED_DIR_PATTERNS = (".clio-*",)
+_EXTENDED_PREFIX = "\\\\?\\"
+_UNC_EXTENDED_PREFIX = "\\\\?\\UNC\\"
+_CHUNK_BYTES = 1024 * 1024
+_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 
 
 def build_session_export(
@@ -155,8 +163,124 @@ def _is_link(path: Path) -> bool:
     )
 
 
-def _walk_error(error: OSError) -> None:
-    raise error
+def _display_path(path: Path) -> str:
+    r"""Report a path in its ordinary form, without the win32 ``\\?\`` prefix."""
+    text = str(path)
+    if text.startswith(_UNC_EXTENDED_PREFIX):
+        return "\\\\" + text[len(_UNC_EXTENDED_PREFIX) :]
+    return text.removeprefix(_EXTENDED_PREFIX)
+
+
+def _unreadable(path: Path, error: OSError, reason: str = "unreadable_file") -> dict[str, Any]:
+    code = getattr(error, "winerror", None) or error.errno
+    label = f"{type(error).__name__} {code}" if code else type(error).__name__
+    return {
+        "path": _display_path(path),
+        "reason": reason,
+        "error": f"{label}: {error.strerror or error}",
+    }
+
+
+def _is_excluded_directory(name: str) -> bool:
+    return name in _EXCLUDED_DIRS or is_internal_workspace_file_directory(name)
+
+
+def _snapshot_workspace_file(archive: zipfile.ZipFile, source: Path, name: str) -> dict[str, Any]:
+    """Return the archived entry, or the omission for a file that cannot be read stably.
+
+    Bytes are spooled first so an unreadable or changing file never leaves a
+    partial ZIP entry. Only source-side errors become omissions; a failure to
+    write the spool or the archive still fails the export.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    with tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORY_BYTES) as spool:
+        try:
+            before = source.stat()
+            stream = source.open("rb")
+        except OSError as error:
+            return _unreadable(source, error)
+        with stream:
+            while True:
+                try:
+                    chunk = stream.read(_CHUNK_BYTES)
+                except OSError as error:
+                    return _unreadable(source, error)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+                spool.write(chunk)
+        try:
+            after = source.stat()
+        except OSError as error:
+            return _unreadable(source, error)
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or (
+            size != after.st_size
+        ):
+            return {"path": _display_path(source), "reason": "changed_during_export"}
+        spool.seek(0)
+        with archive.open(name, "w", force_zip64=True) as target:
+            shutil.copyfileobj(spool, target, _CHUNK_BYTES)
+    return {"archive_path": name, "bytes": size, "sha256": digest.hexdigest()}
+
+
+def _snapshot_workspace_folder(
+    archive: zipfile.ZipFile, manifest: dict[str, Any], root: Path, prefix: str
+) -> None:
+    """Copy one workspace folder at export time; an unreadable path is declared, never fatal.
+
+    On Windows the walk uses extended-length paths so files beyond MAX_PATH are
+    read rather than skipped. Links are recorded, never followed, and a file that
+    resolves outside its root still fails the export.
+    """
+    walk_root = Path(win_extended_path(root))
+    omissions: list[dict[str, Any]] = manifest["omissions"]
+
+    def unreadable_directory(error: OSError) -> None:
+        location = Path(error.filename) if error.filename else walk_root
+        omissions.append(_unreadable(location, error, "unreadable_directory"))
+
+    for directory, dirs, files in os.walk(
+        walk_root, followlinks=False, onerror=unreadable_directory
+    ):
+        base = Path(directory)
+        for name in list(dirs):
+            candidate = base / name
+            excluded = _is_excluded_directory(name)
+            try:
+                linked = not excluded and _is_link(candidate)
+            except OSError as error:
+                dirs.remove(name)
+                omissions.append(_unreadable(candidate, error, "unreadable_directory"))
+                continue
+            if excluded or linked:
+                dirs.remove(name)
+                omissions.append(
+                    {
+                        "path": _display_path(candidate),
+                        "reason": "excluded_directory" if excluded else "link_not_followed",
+                    }
+                )
+        for name in files:
+            source = base / name
+            try:
+                if _is_link(source):
+                    omissions.append({"path": _display_path(source), "reason": "link_not_followed"})
+                    continue
+                if not stat.S_ISREG(source.stat().st_mode):
+                    omissions.append({"path": _display_path(source), "reason": "not_regular_file"})
+                    continue
+                resolved = source.resolve()
+            except OSError as error:
+                omissions.append(_unreadable(source, error))
+                continue
+            if not path_is_within(resolved, walk_root):
+                raise ValueError(f"workspace file escaped its root: {_display_path(source)}")
+            result = _snapshot_workspace_file(
+                archive, source, f"{prefix}/{source.relative_to(walk_root).as_posix()}"
+            )
+            (omissions if "reason" in result else manifest["files"]).append(result)
 
 
 def include_tool_outputs(
@@ -217,7 +341,9 @@ def build_archive(
 
     Effects includes exact recorded versions and consumed inputs. Full adds each
     registered source folder at export time. Links are recorded, never followed.
-    A read failure or a changed hash fails the download, rather than shipping bad bytes.
+    A recorded artifact's read failure or changed hash fails the download, rather
+    than shipping bad bytes. A workspace snapshot path that cannot be read, or
+    that changes while it is read, is declared in ``omissions`` instead.
     """
     registry = get_registry(app)
     ids, transforms = _effects(app, transcript) if mode != "transcript" else (set(), [])
@@ -233,7 +359,9 @@ def build_archive(
         "workspace_folders": [],
         "omissions": [],
         "workspace_snapshot": "export_time" if mode == "full" else "not_included",
-        "excluded_directories": sorted(_EXCLUDED_DIRS) if mode == "full" else [],
+        "excluded_directories": [*sorted(_EXCLUDED_DIRS), *_EXCLUDED_DIR_PATTERNS]
+        if mode == "full"
+        else [],
     }
     fd, raw_path = tempfile.mkstemp(prefix="clio-session-export-", suffix=".zip")
     os.close(fd)
@@ -366,44 +494,16 @@ def build_archive(
                         manifest["workspace_folders"].append(
                             {"workspace_id": wid, "source_path": str(root), "archive_path": prefix}
                         )
-                        if not root.is_dir():
-                            raise OSError(f"workspace folder unavailable: {root}")
-                        for directory, dirs, files in os.walk(
-                            root, followlinks=False, onerror=_walk_error
-                        ):
-                            base = Path(directory)
-                            for name in list(dirs):
-                                candidate = base / name
-                                if name in _EXCLUDED_DIRS or _is_link(candidate):
-                                    dirs.remove(name)
-                                    manifest["omissions"].append(
-                                        {
-                                            "path": str(candidate),
-                                            "reason": "excluded_directory"
-                                            if name in _EXCLUDED_DIRS
-                                            else "link_not_followed",
-                                        }
-                                    )
-                            for name in files:
-                                source = base / name
-                                if _is_link(source):
-                                    manifest["omissions"].append(
-                                        {"path": str(source), "reason": "link_not_followed"}
-                                    )
-                                    continue
-                                if not stat.S_ISREG(source.stat().st_mode):
-                                    manifest["omissions"].append(
-                                        {"path": str(source), "reason": "not_regular_file"}
-                                    )
-                                    continue
-                                if not source.resolve().is_relative_to(root):
-                                    raise ValueError(f"workspace file escaped its root: {source}")
-                                entry = _write_file(
-                                    archive,
-                                    source,
-                                    f"{prefix}/{source.relative_to(root).as_posix()}",
-                                )
-                                manifest["files"].append(entry)
+                        if not Path(win_extended_path(root)).is_dir():
+                            manifest["omissions"].append(
+                                {
+                                    "workspace_id": wid,
+                                    "path": str(root),
+                                    "reason": "workspace_folder_unavailable",
+                                }
+                            )
+                            continue
+                        _snapshot_workspace_folder(archive, manifest, root, prefix)
             for name, data in {
                 "transcript.json": json.dumps(transcript, ensure_ascii=False, indent=2).encode(),
                 **{
@@ -444,7 +544,7 @@ def build_archive(
                         }
                     )
             readme = (
-                "Extract this ZIP and open index.html for offline review. transcript.json contains the raw recorded history, including children, tools and loaded skill content. traces/ holds the full semantic events and skills/ holds the recorded loaded bodies. manifest.json maps original IDs and paths to portable payloads and checksums. Effects contains recorded artifact versions and consumed inputs; Full also contains current workspace source folders, excluding the listed runtime/VCS directories and links. Missing historical records and unavailable versions are declared, never reconstructed from today's skill packages. Importing transcript.json into CLIO restores messages/context references; the archive is a review record, not an executable replay or automatic workspace restore.\n"
+                "Extract this ZIP and open index.html for offline review. transcript.json contains the raw recorded history, including children, tools and loaded skill content. traces/ holds the full semantic events and skills/ holds the recorded loaded bodies. manifest.json maps original IDs and paths to portable payloads and checksums. Effects contains recorded artifact versions and consumed inputs; Full also contains current workspace source folders, excluding the listed runtime/VCS directories and links; workspace paths that could not be read, or changed while being read, are listed in manifest.json omissions. Missing historical records and unavailable versions are declared, never reconstructed from today's skill packages. Importing transcript.json into CLIO restores messages/context references; the archive is a review record, not an executable replay or automatic workspace restore.\n"
             ).encode()
             archive.writestr("README.txt", readme)
             manifest["files"].append(

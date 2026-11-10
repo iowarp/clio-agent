@@ -79,6 +79,11 @@ class Integration(BaseModel):
     endpoint: Optional[str] = None
     required: bool = True
     reason: Optional[str] = None  # typed row reason, e.g. clio_core_starting (additive)
+    # Sandbox row only (None elsewhere): whether agent tools are OS-fenced now, whether the
+    # user must acknowledge running without a fence, and the banner text when they must.
+    active: Optional[bool] = None
+    acknowledgement_required: Optional[bool] = None
+    warning: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

@@ -2,15 +2,26 @@
 #
 # Undoes install.ps1: stops the server, removes the launcher, and
 # removes known application payloads. Pass -Purge to also remove Agent
-# configuration. Data, state, and other products are retained.
+# configuration. Data, state, caches, and other products are retained unless
+# their scope is named, as in uninstall.sh.
 #
 #   Flags:
-#     -Yes     skip the confirmation prompt (non-interactive)
-#     -Purge   also remove Agent configuration (including stored credentials)
+#     -Yes          skip the confirmation prompt (non-interactive)
+#     -Purge        also remove Agent configuration (including stored credentials)
+#     -PurgeCaches  also remove the Agent cache root (document runtime, LibreOffice,
+#                   tool caches; default %LOCALAPPDATA%\clio-agent\cache). It is
+#                   rebuilt on the next launch.
+#     -PurgeData    also remove the Agent data and state roots: conversations,
+#                   workspaces, memory, the clio-core store, service environments
+#                   and a source install's clone. This cannot be undone. Kept while
+#                   a clio-core daemon is running.
+#
+#   Remove everything:  -Purge -PurgeCaches -PurgeData
+#   CLIO Desktop is removed from Settings > Apps (its own uninstaller).
 #
 #   Environment overrides (must match the install):
 #     CLIO_PREFIX   install root      (default: $HOME\AppData\Local\clio)
-#     CLIO_PORT     server port       (default: 17800)
+#     CLIO_PORT     server port       (default: gact.port in config.yaml, else 17800)
 #     CLIO_BIN_DIR  launcher location (default: ...\WindowsApps)
 #
 # Self-relaunch: the uninstaller copies itself to a temp file and
@@ -19,6 +30,8 @@
 param(
     [switch]$Yes,
     [switch]$Purge,
+    [switch]$PurgeCaches,
+    [switch]$PurgeData,
     [switch]$Relaunched
 )
 
@@ -31,14 +44,39 @@ if (-not $env:CLIO_PREFIX -and -not $env:CLIO_AGENT_HOME -and -not $env:CLIO_AGE
 if ($env:CLIO_PORT)    { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR) { $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 
+# The native Agent roots, as clio_agent.paths resolves them without an installed Agent.
+function Get-AgentRoot([string]$Role) {
+    $direct = [Environment]::GetEnvironmentVariable("CLIO_AGENT_$($Role.ToUpper())_DIR")
+    if ($direct) { return $direct }
+    if ($env:CLIO_AGENT_HOME) { return Join-Path $env:CLIO_AGENT_HOME $Role }
+    if ($env:CLIO_USER_DIR) { if ($Role -eq 'config') { return $env:CLIO_USER_DIR }; return Join-Path $env:CLIO_USER_DIR $Role }
+    if ($Role -eq 'config') { return Join-Path $env:APPDATA 'clio-agent\config' }
+    return Join-Path $env:LOCALAPPDATA "clio-agent\$Role"
+}
 $ClioState   = $Prefix
-$ClioConfig  = Join-Path $HOME '.config\clio-agent'
+$ClioConfig  = Get-AgentRoot 'config'
+$ClioCache   = Get-AgentRoot 'cache'
+$ClioData    = Get-AgentRoot 'data'
+$DataState   = Get-AgentRoot 'state'
+$HostState   = Join-Path $env:LOCALAPPDATA 'clio-agent\state'
 $AgentPython = Join-Path $Prefix 'clio-agent\.venv\Scripts\python.exe'
 if (Test-Path -LiteralPath $AgentPython) {
     $ResolvedState = & $AgentPython -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())' 2>$null
     if ($LASTEXITCODE -eq 0 -and $ResolvedState) { $ClioState = $ResolvedState.Trim() }
     $ResolvedConfig = & $AgentPython -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>$null
     if ($LASTEXITCODE -eq 0 -and $ResolvedConfig) { $ClioConfig = $ResolvedConfig.Trim() }
+    if ($PurgeCaches -or $PurgeData) {
+        $Resolved = & $AgentPython -c 'from clio_agent.paths import host_state_dir, user_cache_dir, user_data_dir, user_state_dir; print(user_cache_dir()); print(user_data_dir()); print(user_state_dir()); print(host_state_dir())' 2>$null
+        if ($LASTEXITCODE -eq 0 -and @($Resolved).Count -eq 4) {
+            $ClioCache, $ClioData, $DataState, $HostState = @($Resolved | ForEach-Object { $_.Trim() })
+        }
+    }
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under 'Stop'.
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $ResolvedPort = & $AgentPython -m clio_agent.server_port 2>$null } finally { $ErrorActionPreference = $SavedPreference }
+    $ParsedPort = 0
+    if ($LASTEXITCODE -eq 0 -and [int]::TryParse("$ResolvedPort".Trim(), [ref]$ParsedPort)) { $Port = $ParsedPort }
 }
 $PidFile = Join-Path $ClioState 'clio-server.pid'
 if (-not (Test-Path -LiteralPath $PidFile)) { $PidFile = Join-Path $Prefix 'clio-server.pid' }
@@ -49,6 +87,22 @@ if ($Purge) {
     $ResolvedConfig = [IO.Path]::GetFullPath($ClioConfig).TrimEnd('\', '/')
     if ($ResolvedConfig -notmatch '[\\/]clio-agent([\\/]config)?$') {
         throw "Refusing to purge a custom config root: $ResolvedConfig. Remove its contents explicitly after review."
+    }
+}
+if ($PurgeCaches) {
+    $ClioCache = [IO.Path]::GetFullPath($ClioCache).TrimEnd('\', '/')
+    if ($ClioCache -notmatch '[\\/]clio-agent([\\/]cache)?$') {
+        throw "Refusing to purge a custom cache root: $ClioCache. Remove its contents explicitly after review."
+    }
+}
+$PurgeDataDirs = @()
+if ($PurgeData) {
+    foreach ($dir in @($ClioData, $DataState)) {
+        $full = [IO.Path]::GetFullPath($dir).TrimEnd('\', '/')
+        if ($full -notmatch '[\\/]clio-agent([\\/](data|state))?$') {
+            throw "Refusing to purge a custom data or state root: $full. Remove it explicitly after review."
+        }
+        if ($PurgeDataDirs -notcontains $full) { $PurgeDataDirs += $full }
     }
 }
 
@@ -62,6 +116,8 @@ if (-not $Relaunched) {
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tmp, '-Relaunched')
     if ($Yes)   { $argList += '-Yes' }
     if ($Purge) { $argList += '-Purge' }
+    if ($PurgeCaches) { $argList += '-PurgeCaches' }
+    if ($PurgeData) { $argList += '-PurgeData' }
     & powershell @argList
     $code = $LASTEXITCODE
     Remove-Item $tmp -ErrorAction SilentlyContinue
@@ -78,6 +134,16 @@ if ($Purge) {
     Write-Host "  clio config:     $ClioConfig  (will be removed)"
 } else {
     Write-Host "  clio config:     $ClioConfig  (kept; pass -Purge to remove)"
+}
+if ($PurgeCaches) {
+    Write-Host "  clio caches:     $ClioCache  (-PurgeCaches)"
+} else {
+    Write-Host "  clio caches:     $ClioCache  (kept; pass -PurgeCaches to remove)"
+}
+if ($PurgeData) {
+    foreach ($dir in $PurgeDataDirs) { Write-Host "  clio data:       $dir  (-PurgeData: conversations, workspaces, memory)" }
+} else {
+    Write-Host "  clio data:       $ClioData  (kept; pass -PurgeData to remove)"
 }
 Write-Host ""
 
@@ -133,13 +199,44 @@ if (Test-Path $Prefix) {
         Warn "Retained user data and unknown files in $Prefix."
     }
 }
+# A live clio-core daemon still has the store open; its pid is recorded per host.
+function Get-CoreDaemonPid {
+    foreach ($pidFile in @(Get-ChildItem -Path (Join-Path $HostState 'core-hosts\*\clio-runtime.pid') -File -ErrorAction SilentlyContinue)) {
+        $first = "$(Get-Content -LiteralPath $pidFile.FullName -ErrorAction SilentlyContinue | Select-Object -First 1)".Trim().Split()[0]
+        $corePid = 0
+        if ([int]::TryParse("$first", [ref]$corePid) -and (Get-Process -Id $corePid -ErrorAction SilentlyContinue)) { return $corePid }
+    }
+    return $null
+}
 if ($Purge) {
     if (Test-Path -LiteralPath $ResolvedConfig) { Say "Removing $ResolvedConfig"; Remove-Item -LiteralPath $ResolvedConfig -Recurse -Force }
     # gact owns its own configuration; retain it.
+}
+if ($PurgeData) {
+    $corePid = Get-CoreDaemonPid
+    if ($corePid) {
+        Warn "The clio-core daemon (pid $corePid) is running; kept $($PurgeDataDirs -join ', ')."
+    } else {
+        foreach ($dir in $PurgeDataDirs) {
+            if (Test-Path -LiteralPath $dir) {
+                Say "Removing $dir"
+                Remove-Item -LiteralPath $dir -Recurse -Force
+                $parent = Split-Path -Parent $dir
+                if ((Split-Path -Leaf $parent) -eq 'clio-agent' -and -not (Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+}
+if ($PurgeCaches -and (Test-Path -LiteralPath $ClioCache)) {
+    Say "Removing $ClioCache"
+    Remove-Item -LiteralPath $ClioCache -Recurse -Force
 }
 
 Say "CLIO uninstalled."
 if (-not $Purge -and (Test-Path $ClioConfig)) {
     Write-Host "  Agent config kept ($ClioConfig) - re-run with -Purge to remove"
+}
+if (-not $PurgeCaches -and (Test-Path -LiteralPath $ClioCache)) {
+    Write-Host "  Agent caches kept ($ClioCache) - re-run with -PurgeCaches to remove"
 }
 exit 0

@@ -277,7 +277,7 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
         # Desktop launches clio-kit with its bundled interpreter, not the user's
         # unrelated uv environments. Recursing those global trees at every boot
         # can take minutes and grants access to runtimes this Desktop never uses.
-        cache = os.environ.get("CLIO_KIT_CACHE_DIR") or paths.user_cache_dir() / "mcp-runtime"
+        cache = os.environ.get("CLIO_KIT_CACHE_DIR") or paths.mcp_build_cache_dir() / "mcp-runtime"
         return [
             ("bundled_runtime", str(bundled), True),
             ("clio_kit_cache", str(cache), True),

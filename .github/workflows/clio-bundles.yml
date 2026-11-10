@@ -596,7 +596,18 @@ jobs:
         run: >-
           bash scripts/macos_release_notarize.sh notarize-dmg
           "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
-      # Gatekeeper's view of the app, the DMG and the app the updater delivers.
+      # install.sh streams this archive and unpacks it while it downloads; the
+      # stapled app inside carries the notarization ticket.
+      - name: Archive the stapled macOS app
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          bash scripts/macos_release_notarize.sh archive-app
+          "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+      # Gatekeeper's view of the app, the DMG, the app the updater delivers and
+      # the app install.sh unpacks.
       - name: Verify macOS release signatures
         if: runner.os == 'macOS'
         env:
@@ -628,7 +639,8 @@ jobs:
           # Compute one built artifact's staged filename: normalize the tauri
           # build-metadata version back to the public release version,
           # disambiguate the otherwise-unversioned macOS updater bundle
-          # (<App>.app.tar.gz[.sig], the SAME name from every darwin target)
+          # (<App>.app.tar.gz[.sig], the SAME name from every darwin target,
+          # and install.sh's <App>.app.aar)
           # by target triple, then (bundled variant only) insert the
           # `-bundled` token before the TRUE extension -- handling the
           # compound `.app.tar.gz` suffix and its detached `.sig` specially
@@ -642,11 +654,13 @@ jobs:
             case "$base" in
               *.app.tar.gz.sig) base="${base%.app.tar.gz.sig}-${{ matrix.target }}.app.tar.gz.sig" ;;
               *.app.tar.gz)     base="${base%.app.tar.gz}-${{ matrix.target }}.app.tar.gz" ;;
+              *.app.aar)        base="${base%.app.aar}-${{ matrix.target }}.app.aar" ;;
             esac
             if [ "${{ matrix.variant }}" = "bundled" ]; then
               case "$base" in
                 *.app.tar.gz.sig) base="${base%.app.tar.gz.sig}-bundled.app.tar.gz.sig" ;;
                 *.app.tar.gz)     base="${base%.app.tar.gz}-bundled.app.tar.gz" ;;
+                *.app.aar)        base="${base%.app.aar}-bundled.app.aar" ;;
                 *.sig)
                   local inner iext istem
                   inner="${base%.sig}"
@@ -665,7 +679,7 @@ jobs:
             printf '%s\n' "$base"
           }
           if [ -d "$root" ]; then
-            find "$root" -maxdepth 2 -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' -o -iname '*.sig' -o -name '*.app.tar.gz' \) -print0 |
+            find "$root" -maxdepth 2 -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' -o -iname '*.sig' -o -name '*.app.tar.gz' -o -name '*.app.aar' \) -print0 |
               while IFS= read -r -d '' f; do
                 cp "$f" "$stage/$(stage_name "$f")"
               done
@@ -700,6 +714,14 @@ jobs:
               echo "::error::payload assert: bundled variant staged no *-bundled.* artifact"
               exit 1
             fi
+          fi
+          # install.sh fetches the first launch's downloads (LibreOffice, pnpm)
+          # alongside the app; SHA256SUMS below authenticates the plan. A rebuild
+          # of a tag older than the plan script has none to publish.
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" != "Windows" ] \
+             && [ -f scripts/release_install_plan.py ]; then
+            python3 scripts/release_install_plan.py --target "${{ matrix.target }}" \
+              --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
           fi
           # Cross-platform checksum: Linux has both, macOS has only `shasum`,
           # Windows git-bash has only `sha256sum`. Prefer sha256sum, else shasum.
@@ -753,7 +775,7 @@ jobs:
       matrix:
         os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -777,7 +799,16 @@ jobs:
           hdiutil detach "$RUNNER_TEMP/clio-image"
           spctl --assess --type execute -vv "$RUNNER_TEMP/CLIO Desktop.app" 2>&1 \
             | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
-          uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+          uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled \
+            --exercise --quarantine --macho-list "$RUNNER_TEMP/gact-runtime-macho.json"
+      - name: Publish the runtime's Mach-O inventory for signing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gact-runtime-macho-${{ matrix.os }}
+          path: ${{ runner.temp }}/gact-runtime-macho.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   release-check:
     name: release completeness
