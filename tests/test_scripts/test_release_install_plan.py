@@ -69,11 +69,14 @@ def test_windows_plan_prefetches_the_msi_and_native_pnpm(tmp_path: Path) -> None
         plan.main(["--target", "x86_64-pc-windows-msvc", "--output", str(out), "--no-sizes"]) == 0
     )
     lines = [line.split() for line in out.read_text().splitlines()]
+    assert lines[0] == ["capability", office.INSTALLER_PLAN_CAPABILITY]
+    lines = lines[1:]
     assert [(line[0], line[3]) for line in lines] == [
         ("office", f"LibreOffice_{office.VERSION}_Win_x86-64.msi"),
         ("npm", f"pnpm-{document_runtime.PNPM_VERSION}.tgz"),
         ("npm", f"exe.win32-x64-{document_runtime.PNPM_VERSION}.tgz"),
     ]
+    assert all(len(line) == 5 and line[2] == "0" for line in lines)
 
 
 def test_windows_host_package_has_a_pin(monkeypatch) -> None:
