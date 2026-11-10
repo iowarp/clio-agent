@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,14 +139,59 @@ def _copy_tree(source: Path, target: Path) -> None:
         # Another install of the same content finished first: its copy is identical.
 
 
-def builtin_records() -> list[PluginRecord]:
-    """Plugins that ship inside clio-agent itself (trusted like any pip package)."""
+#: The built-in records last loaded, with the (root, file stamp) they were loaded from.
+_BUILTIN_LOADED: tuple[tuple[str, str], tuple[PluginRecord, ...]] | None = None
+#: When the stamp was last taken; built-ins change only in a dev checkout, so the
+#: tree walk runs at most once per this many seconds.
+_BUILTIN_RECHECK_S = 2.0
+_builtin_checked_at = 0.0
 
+
+def builtin_records() -> list[PluginRecord]:
+    """Plugins that ship inside clio-agent itself (trusted like any pip package).
+
+    Loading hashes and parses every built-in file; every catalog read (each MCP
+    listing, agent resolution and doctor pass) needs them. They are loaded again
+    only when the tree's file metadata (:func:`source_stamp`) moves, checked at most
+    every :data:`_BUILTIN_RECHECK_S`.
+    """
+
+    global _BUILTIN_LOADED, _builtin_checked_at
+    loaded = _BUILTIN_LOADED
+    now = time.monotonic()
+    if (
+        loaded is not None
+        and loaded[0][0] == str(BUILTIN_ROOT)
+        and now - _builtin_checked_at < _BUILTIN_RECHECK_S
+    ):
+        return list(loaded[1])
+    if not BUILTIN_ROOT.is_dir():
+        return []
+    key = (str(BUILTIN_ROOT), source_stamp(BUILTIN_ROOT))
+    if loaded is not None and loaded[0] == key:
+        _builtin_checked_at = now
+        return list(loaded[1])
     records = []
-    for child in sorted(BUILTIN_ROOT.iterdir()) if BUILTIN_ROOT.is_dir() else []:
+    for child in sorted(BUILTIN_ROOT.iterdir()):
         if (child / "plugin.json").is_file():
             records.append(load_plugin(child, marketplace=BUILTIN_MARKETPLACE, trusted=True))
+    _BUILTIN_LOADED = (key, tuple(records))
+    _builtin_checked_at = now
     return records
+
+
+@dataclass
+class _StateView:
+    """One parsed ``state.json`` revision and what readers derived from it (read-only)."""
+
+    revision: tuple[int, int, int]
+    state: dict[str, Any]
+    installed: tuple[PluginRecord, ...] | None = None
+    specs: dict[str, AgentSpec] | None = None
+
+
+#: The latest :class:`_StateView` per ``state.json`` path, shared by every store on it.
+_STATE_VIEWS: dict[str, _StateView] = {}
 
 
 class PluginStore:
@@ -201,6 +247,23 @@ class PluginStore:
             return (0, 0, 0)
         return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
+    def _view(self) -> _StateView:
+        """The parsed state for readers, parsed again only when :meth:`revision` moves.
+
+        Shared and read-only: writers start from :meth:`read_state`, a private copy.
+        """
+
+        revision = self.revision()
+        key = str(self.state_path)
+        view = _STATE_VIEWS.get(key)
+        if view is not None and view.revision == revision and revision != (0, 0, 0):
+            return view
+        # A write between the stat and the read stores newer content under the older
+        # revision; the next read sees the newer revision and parses again.
+        view = _StateView(revision, self.read_state())
+        _STATE_VIEWS[key] = view
+        return view
+
     # ---------------------------------------------------------------- reading
     def marketplaces(self) -> dict[str, dict[str, Any]]:
         return dict(self.read_state()["marketplaces"])
@@ -208,8 +271,12 @@ class PluginStore:
     def records(self) -> list[PluginRecord]:
         """Every usable plugin record: built-ins first, then installed ones."""
 
-        state = self.read_state()
-        installed = [PluginRecord.from_dict(row) for row in state["plugins"].values()]
+        view = self._view()
+        installed = view.installed
+        if installed is None:
+            installed = view.installed = tuple(
+                PluginRecord.from_dict(row) for row in view.state["plugins"].values()
+            )
         return [*builtin_records(), *installed]
 
     def pending(self) -> list[PluginRecord]:
@@ -218,14 +285,19 @@ class PluginStore:
     def trusted(self, record: PluginRecord) -> bool:
         if record.marketplace == BUILTIN_MARKETPLACE:
             return True
-        market = self.read_state()["marketplaces"].get(record.marketplace) or {}
+        market = self._view().state["marketplaces"].get(record.marketplace) or {}
         if not market.get("trusted"):
             return False
         return (market.get("trusted_digests") or {}).get(record.id) == record.executable_digest
 
     def agent_specs(self) -> dict[str, AgentSpec]:
-        state = self.read_state()
-        return {key: AgentSpec.from_dict(value) for key, value in state["agents"].items()}
+        view = self._view()
+        specs = view.specs
+        if specs is None:
+            specs = view.specs = {
+                key: AgentSpec.from_dict(value) for key, value in view.state["agents"].items()
+            }
+        return dict(specs)
 
     def user_agents(self) -> dict[str, UserAgent]:
         base = self.root / "user-agents"

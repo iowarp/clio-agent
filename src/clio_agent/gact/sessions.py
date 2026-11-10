@@ -277,6 +277,11 @@ class SessionStore:
         self._cache_cap = cache_capacity()
         self._lifecycle_observer: Callable[[str, Session], None] | None = None
         self._initializing: set[str] = set()
+        # Bumped by every row write/forget (under ``self._lock``); ``_written`` keeps
+        # each session's latest stamp so an unlocked row read can tell whether a
+        # write raced it (:meth:`_load_rows`).
+        self._write_stamp = 0
+        self._written: dict[str, int] = {}
 
     # ---- lifecycle ----------------------------------------------------
 
@@ -326,6 +331,40 @@ class SessionStore:
                 rows.append(held)
         return rows
 
+    def _load_rows(self, ids: "builtins.list[str]") -> "builtins.list[Session]":
+        """:meth:`_sessions` without holding ``self._lock`` across the store reads.
+
+        The bodies are read (one clio-core read each) and decoded unlocked, so a
+        burst of list requests does not queue every other session read and write
+        behind its store round trips. Rows are adopted under the lock: a row someone
+        holds wins, and a body whose session was written or forgotten after the read
+        began is read again under the lock, so a stale body never replaces a write.
+        """
+
+        with self._lock:
+            stamp = self._write_stamp
+            missing = [
+                sid for sid in ids if (self._cache.get(sid) or self._identity.get(sid)) is None
+            ]
+        bodies = self._records.bodies_for(missing) if missing else {}
+        decoded = {sid: self._decode(sid, body) for sid, body in bodies.items()}
+        with self._lock:
+            rows: builtins.list[Session] = []
+            for sid in ids:
+                held = self._cache.get(sid) or self._identity.get(sid)
+                if held is None:
+                    if self._written.get(sid, 0) > stamp:
+                        held = self._row(sid)
+                    elif (held := decoded.get(sid)) is not None:
+                        self._identity[sid] = held
+                if held is not None:
+                    rows.append(held)
+            return rows
+
+    def _mark_written(self, sid: str) -> None:
+        self._write_stamp += 1
+        self._written[sid] = self._write_stamp
+
     def bind_store(self, store: Any) -> None:
         """Keep the records in ``store`` (clio-core) from now on (off the server loop)."""
         self._records.bind(store)
@@ -350,6 +389,7 @@ class SessionStore:
 
     def _persist(self, session: Session) -> None:
         """Write this one session's record; on failure the next read reloads it."""
+        self._mark_written(session.id)
         try:
             self._records.put(record_columns(session), json.dumps(asdict(session), sort_keys=True))
         except BaseException:
@@ -358,6 +398,7 @@ class SessionStore:
         self._remember(session)
 
     def _forget(self, sid: str) -> None:
+        self._mark_written(sid)
         self._cache.pop(sid, None)
         self._identity.pop(sid, None)
 
@@ -584,22 +625,19 @@ class SessionStore:
         """One page newest interaction first, the next cursor, the total (bad cursor:
         :class:`~clio_agent.gact.session_records.InvalidCursorError`)."""
 
-        with self._lock:
-            ids, next_cursor, total = self._records.page(query)
-            return self._sessions(ids), next_cursor, total
+        ids, next_cursor, total = self._records.page(query)
+        return self._load_rows(ids), next_cursor, total
 
     def select(self, query: PageQuery) -> "builtins.list[Session]":
         """Every session matching ``query`` (no paging), newest created first."""
 
-        with self._lock:
-            return self._sessions(self._records.select(query))
+        return self._load_rows(self._records.select(query))
 
     def related(
         self, *, family_of: str = "", waiting: Iterable[str] = ()
     ) -> "builtins.list[Session]":
         """``family_of``'s tree, else who waits on a person (:meth:`SessionRecords.related_ids`)."""
-        with self._lock:
-            return self._sessions(self._records.related_ids(family_of, waiting))
+        return self._load_rows(self._records.related_ids(family_of, waiting))
 
     def import_legacy(self) -> dict[str, Any]:
         """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""
@@ -607,8 +645,9 @@ class SessionStore:
 
     def ids(self, query: PageQuery | None = None) -> "builtins.list[str]":
         """Every session id (matching ``query``), from the index: no row is read."""
-        with self._lock:
-            return self._records.ids() if query is None else self._records.select(query)
+        # The index has its own lock; holding the row lock too would queue this
+        # behind every row read and write.
+        return self._records.ids() if query is None else self._records.select(query)
 
     @property
     def index(self) -> SessionRecords:
@@ -624,8 +663,7 @@ class SessionStore:
     def child_ids_by_parent(self) -> dict[str, "builtins.list[str]"]:
         """``{parent id: [child ids]}`` from the parent column, without reading rows."""
 
-        with self._lock:
-            return self._records.child_ids_by_parent()
+        return self._records.child_ids_by_parent()  # the index's own lock (see ids)
 
     def most_recent(self) -> Optional[Session]:
         """The newest created session, or ``None``."""

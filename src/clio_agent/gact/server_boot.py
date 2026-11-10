@@ -124,6 +124,9 @@ async def close_request_owners(app: "FastAPI") -> None:
 
     # A request-only owner: its refresher thread must not outlive the server.
     await asyncio.to_thread(capabilities_snapshot.stop, app)
+    from clio_agent.gact import shared_result  # noqa: PLC0415
+
+    shared_result.close_all(app)  # polled-route collections (health, MCP inventory)
     if getattr(app.state, "server_boot", False):
         from clio_agent.gact import search_bootstrap  # noqa: PLC0415
 
@@ -269,6 +272,26 @@ async def process_arc_off_loop(app: "FastAPI") -> Any:
     return await asyncio.shield(task)
 
 
+def start_openapi_warm(app: "FastAPI") -> None:
+    """Build the OpenAPI schema on a thread so no ``/openapi.json`` read builds it on the loop.
+
+    FastAPI builds the schema for its first reader inside the async route and keeps
+    it. For this route table that takes seconds of loop time, during which every other
+    request waits (a 5.6 s stall for all 32 flooders under a mixed flood). A read that
+    arrives before this finishes builds it as before.
+    """
+
+    async def _warm() -> None:
+        from clio_agent.gact import boot_timing  # noqa: PLC0415
+
+        try:
+            await boot_timing.timed(app, "openapi_schema", asyncio.to_thread(app.openapi))
+        except Exception as exc:  # noqa: BLE001 - the first reader builds it instead
+            logger.warning("openapi schema warm failed reason=openapi_warm_failed error=%r", exc)
+
+    app.state.openapi_warm_task = asyncio.get_running_loop().create_task(_warm())
+
+
 def start(app: "FastAPI") -> None:
     """Start the boot ARC construction, first doctor pass and support restore (real server).
 
@@ -291,9 +314,10 @@ def start(app: "FastAPI") -> None:
 
     search_bootstrap.start(app)  # first-run private SearXNG (search.backend=local_searxng)
     from clio_agent.gact.routes import health_boot  # noqa: PLC0415 - routes import this module
-    from clio_agent.gact.routes.system import collect_health_report  # noqa: PLC0415
+    from clio_agent.gact.routes.system import collect_boot_health_report  # noqa: PLC0415
 
-    health_boot.start_boot_collection(app, collect_health_report)
+    health_boot.start_boot_collection(app, collect_boot_health_report)
+    start_openapi_warm(app)
     from clio_agent.gact import session_scratch_sweep  # noqa: PLC0415
 
     session_scratch_sweep.start(app)  # stale per-session scratch folders (TD56)

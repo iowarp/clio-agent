@@ -421,6 +421,7 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
 
     builtins: list[tuple[str, Any]] = [("fs", fs_server), ("shell", shell_server)]
+    builtin_servers = {id(server) for _namespace, server in builtins}
     declared = list(namespace_proxies(gw).items())
     for namespace, server in (*builtins, *declared):
         spec = specs.get(namespace)
@@ -429,8 +430,13 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
         if cacheable and spec is not None:
             listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
         live = listed is None
+        # An in-process built-in spawns no process, so there is no chain to wait out.
+        # The wait's descendant snapshots scan the whole process table, and a server's
+        # concurrent children (other routes' probes, a turn's tools) would read as
+        # this listing's chain for up to its 10 s timeout.
+        spawns = not (spec is None and id(server) in builtin_servers)
         if live:
-            before = _descendant_pids()
+            before = _descendant_pids() if spawns else frozenset()
             try:
                 # Declared servers list through a LISTING-OWNED transport
                 # (finding 1); only the in-process built-ins use the shared
@@ -460,12 +466,14 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
                     namespace,
                     exc,
                 )
-                _await_spawned_exit(before)
+                if spawns:
+                    _await_spawned_exit(before)
                 continue
             # The chain must be DEAD before the next namespace spawns — loop
             # exit kills stdio children, but termination is asynchronous and
             # an overlapping corpse still holds its RSS.
-            _await_spawned_exit(before)
+            if spawns:
+                _await_spawned_exit(before)
             if cacheable and spec is not None:
                 # #1281 F3: persist the capability THIS live listing just
                 # recorded (record_definitive_capability, inside

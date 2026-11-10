@@ -25,7 +25,13 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
-from clio_agent.gact import boot_timing, capabilities_snapshot, store_format_boot, store_migrations
+from clio_agent.gact import (
+    boot_timing,
+    capabilities_snapshot,
+    shared_result,
+    store_format_boot,
+    store_migrations,
+)
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.conversation_projection import model_context_messages
@@ -34,7 +40,6 @@ from clio_agent.gact.message_context_tokens import (
     TOKEN_ESTIMATE_METHOD,
     estimate_message_context_tokens,
 )
-from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
 from clio_agent.gact.providers.boot_selection import explicit_lm_provider
@@ -57,6 +62,7 @@ from clio_agent.gact.runtime.constants import (
     GACT_BACKEND_VERSION,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
+from clio_agent.gact.shared_result import SharedResults
 from clio_agent.gact.summarization_record import row_summarization
 from clio_agent.gact.types import (
     AuthInfo,
@@ -318,6 +324,49 @@ def collect_health_report(app: FastAPI) -> RuntimeReport:
     )
 
 
+#: A report this young is served as is; an older one is refreshed by one collection
+#: while polls keep getting it, up to HEALTH_STALE_S.
+HEALTH_FRESH_S = 10.0
+HEALTH_STALE_S = 30.0
+
+
+def _health_results(app: FastAPI) -> SharedResults[RuntimeReport]:
+    return shared_result.for_app(
+        app, "health_report", fresh_s=HEALTH_FRESH_S, stale_s=HEALTH_STALE_S, max_entries=1
+    )
+
+
+def _health_key(app: FastAPI) -> tuple[int, str]:
+    """The inputs a report depends on that change in-process: the agent and its LM bind."""
+
+    return (
+        id(getattr(app.state, "agent", None)),
+        repr(getattr(app.state, "lm_config", None)),
+    )
+
+
+def collect_boot_health_report(app: FastAPI) -> RuntimeReport:
+    """The boot doctor collection; its report answers the first polls after boot."""
+
+    key = _health_key(app)
+    report = collect_health_report(app)
+    _health_results(app).prime(key, report)
+    return report
+
+
+async def shared_health_report(app: FastAPI) -> RuntimeReport:
+    """The doctor report for ``/v1/health``: one collection shared by concurrent polls.
+
+    Each collection runs the whole doctor (about 1 s idle, far more under load). Polls
+    within :data:`HEALTH_FRESH_S` of a collection reuse it; after that, one refresh
+    runs on the owner's own thread while polls get the previous report, so a burst of
+    polls never runs a burst of doctors. A changed agent or LM bind waits for a new
+    collection.
+    """
+
+    return await _health_results(app).get(_health_key(app), lambda: collect_health_report(app))
+
+
 def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the read-only system/observability routes on ``app``.
 
@@ -342,10 +391,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         file_policy, api, clio_core) instead of the old hand-rolled five.
 
         ``api_state=READY`` reports the API in-process — the probe must never
-        re-HTTP this very endpoint. The collection runs in
-        a worker thread so the gateway/backend probes never block the event loop,
-        and never triggers an LM handshake (a polled endpoint must not block on
-        OAuth/model discovery); the LM handshake is folded in from cache only.
+        re-HTTP this very endpoint. Concurrent polls share one collection, run on
+        its own thread so the gateway/backend probes never block the event loop
+        (:func:`shared_health_report`), and never trigger an LM handshake (a polled
+        endpoint must not block on OAuth/model discovery); the LM handshake is
+        folded in from cache only.
 
         overall_status uses the engine's required-row rollup, mapped to the wire's
         ready/degraded/unavailable so the 503-on-``unavailable`` contract holds.
@@ -357,9 +407,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         try:
             # While the boot collection runs, answer at once (health_boot); else collect.
             pending = health_boot.pending_report(app)
-            report = (
-                pending if pending is not None else await run_off_loop(collect_health_report, app)
-            )
+            report = pending if pending is not None else await shared_health_report(app)
             integrations = list(report.integrations)
         except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
             # No silent fallback (cleanup ground rule): a probe engine failure is
