@@ -48,6 +48,11 @@ class _ProviderWorker:
             flush_note=str(getattr(provider, "flush_note", "") or ""),
         )
         self._lock = threading.Lock()
+        # Watermark for flush(): wait for events submitted BEFORE the call, never for an
+        # idle queue (Queue.join starves a reader while a turn keeps emitting).
+        self._progress = threading.Condition()
+        self._submitted = 0
+        self._processed = 0
         self._closed = False
         self._thread = threading.Thread(
             target=self._run,
@@ -70,7 +75,10 @@ class _ProviderWorker:
                 self.health.last_error = "provider worker is closed"
             return ProviderReceipt.FAILED
         try:
-            self.queue.put_nowait(event)
+            # Counted under the same lock as the put, so the count order is the queue order.
+            with self._progress:
+                self.queue.put_nowait(event)
+                self._submitted += 1
         except queue.Full:
             with self._lock:
                 self.health.overflow += 1
@@ -154,6 +162,9 @@ class _ProviderWorker:
                         )
             finally:
                 self.queue.task_done()
+                with self._progress:
+                    self._processed += 1
+                    self._progress.notify_all()
 
     def flush(self) -> None:
         """Block until every accepted event is processed AND, per this
@@ -171,7 +182,9 @@ class _ProviderWorker:
         response or skip the rest of ``ProvenanceDispatcher.flush()``'s
         loop).
         """
-        self.queue.join()
+        with self._progress:
+            target = self._submitted
+            self._progress.wait_for(lambda: self._processed >= target)
         try:
             self.provider.flush()
         except Exception as exc:  # noqa: BLE001 - a raising flush must not crash the caller or skip siblings

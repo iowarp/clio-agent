@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Annotated, Any
 
+import pydantic_core
 from fastapi import FastAPI, HTTPException, Query
-from starlette.concurrency import run_in_threadpool
+from fastapi.responses import Response
 
 from clio_agent import conf
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.provenance.child_projection import project_child_execution
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.provenance.protocol import ExecutionProvenanceReader
@@ -165,13 +169,13 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
             },
         }
 
-    @app.get("/v1/sessions/{sid}/provenance/execution")
+    @app.get("/v1/sessions/{sid}/provenance/execution", response_model=dict[str, Any])
     async def get_execution_provenance(
         sid: str,
         provider: str = "native",
         include_children: bool = True,
         limit: Annotated[int, Query(ge=1, le=10000)] = 2000,
-    ) -> dict[str, Any]:
+    ) -> Response:
         if app.state.sessions.get(sid) is None:
             raise _typed_error(
                 status_code=404,
@@ -180,70 +184,107 @@ def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
                 details={"session_id": sid},
             )
         selected = provider.strip().lower() or "native"
-        child_ids = _child_session_ids(app, sid) if include_children else []
-        backend = getattr(app.state, "semantic_trace_backend", None)
-        flush = getattr(backend, "flush", None)
-        if callable(flush):
-            await run_in_threadpool(flush)
+        # One hop on the provenance pool for the whole read: flush, journal read,
+        # projection AND JSON encoding. Each separate hop queued behind every other
+        # sync route on the shared pool, and encoding a multi-megabyte result held
+        # the event loop.
+        return await run_off_loop(
+            _execution_response,
+            app,
+            sid,
+            selected,
+            include_children=include_children,
+            limit=limit,
+            executor=_provenance_executor(),
+        )
 
-        if selected == "native":
-            reader_method = getattr(backend, "reader", None)
-            reader = reader_method("jsonl") if callable(reader_method) else None
-            # JSONL is the native provider's durable, complete view. ARC may
-            # already have released older event segments after the downstream
-            # durability receipt, so returning ARC merely because it still has
-            # *some* rows produces a silently truncated timeline. Use ARC only
-            # when no native durable reader is configured.
-            if not isinstance(reader, ExecutionProvenanceReader):
-                events, read_degradations = await run_in_threadpool(
-                    _native_events, app, [sid, *child_ids]
-                )
-                normalized = normalize_semantic_events(
-                    events,
-                    provider="native",
-                    session_id=sid,
-                    limit=limit,
-                )
-                normalized["degradations"] = [
-                    *(normalized.get("degradations") or []),
-                    *read_degradations,
-                ]
-                return await run_in_threadpool(
-                    project_child_execution,
-                    app,
-                    sid,
-                    normalized,
-                    include_children=include_children,
-                )
-        else:
-            reader_method = getattr(backend, "reader", None)
-            reader = reader_method(selected) if callable(reader_method) else None
 
-        if not isinstance(reader, ExecutionProvenanceReader):
-            raise _typed_error(
-                status_code=503,
-                error="provenance_provider_unavailable",
-                message=f"execution provenance provider is not configured: {selected}",
-                details={"session_id": sid, "provider": selected},
+def _execution_response(
+    app: FastAPI, sid: str, selected: str, *, include_children: bool, limit: int
+) -> Response:
+    # One pydantic-core pass (Rust), as FastAPI's response serialization did, but
+    # here on the provenance pool instead of the event loop.
+    return Response(
+        content=pydantic_core.to_json(
+            _execution_provenance(
+                app, sid, selected, include_children=include_children, limit=limit
             )
-        try:
-            result = await run_in_threadpool(
-                reader.query_execution,
+        ),
+        media_type="application/json",
+    )
+
+
+def _execution_provenance(
+    app: FastAPI, sid: str, selected: str, *, include_children: bool, limit: int
+) -> dict[str, Any]:
+    child_ids = _child_session_ids(app, sid) if include_children else []
+    backend = getattr(app.state, "semantic_trace_backend", None)
+    flush = getattr(backend, "flush", None)
+    if callable(flush):
+        flush()
+
+    if selected == "native":
+        reader_method = getattr(backend, "reader", None)
+        reader = reader_method("jsonl") if callable(reader_method) else None
+        # JSONL is the native provider's durable, complete view. ARC may
+        # already have released older event segments after the downstream
+        # durability receipt, so returning ARC merely because it still has
+        # *some* rows produces a silently truncated timeline. Use ARC only
+        # when no native durable reader is configured.
+        if not isinstance(reader, ExecutionProvenanceReader):
+            events, read_degradations = _native_events(app, [sid, *child_ids])
+            normalized = normalize_semantic_events(
+                events,
+                provider="native",
                 session_id=sid,
-                child_session_ids=child_ids,
                 limit=limit,
             )
-            return await run_in_threadpool(
-                project_child_execution, app, sid, result, include_children=include_children
+            normalized["degradations"] = [
+                *(normalized.get("degradations") or []),
+                *read_degradations,
+            ]
+            return project_child_execution(app, sid, normalized, include_children=include_children)
+    else:
+        reader_method = getattr(backend, "reader", None)
+        reader = reader_method(selected) if callable(reader_method) else None
+
+    if not isinstance(reader, ExecutionProvenanceReader):
+        raise _typed_error(
+            status_code=503,
+            error="provenance_provider_unavailable",
+            message=f"execution provenance provider is not configured: {selected}",
+            details={"session_id": sid, "provider": selected},
+        )
+    try:
+        result = reader.query_execution(
+            session_id=sid,
+            child_session_ids=child_ids,
+            limit=limit,
+        )
+        return project_child_execution(app, sid, result, include_children=include_children)
+    except Exception as exc:
+        raise _typed_error(
+            status_code=503,
+            error="provenance_query_failed",
+            message=f"execution provenance query failed for provider {selected}",
+            details={
+                "session_id": sid,
+                "provider": selected,
+                "reason": f"{type(exc).__name__}: {exc}",
+            },
+        ) from exc
+
+
+_PROVENANCE_EXECUTOR: ThreadPoolExecutor | None = None
+_PROVENANCE_EXECUTOR_LOCK = threading.Lock()
+
+
+def _provenance_executor() -> ThreadPoolExecutor:
+    """Return the small pool that serves execution-provenance reads."""
+    global _PROVENANCE_EXECUTOR  # noqa: PLW0603
+    with _PROVENANCE_EXECUTOR_LOCK:
+        if _PROVENANCE_EXECUTOR is None:
+            _PROVENANCE_EXECUTOR = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="gact-provenance-read"
             )
-        except Exception as exc:
-            raise _typed_error(
-                status_code=503,
-                error="provenance_query_failed",
-                message=f"execution provenance query failed for provider {selected}",
-                details={
-                    "session_id": sid,
-                    "provider": selected,
-                    "reason": f"{type(exc).__name__}: {exc}",
-                },
-            ) from exc
+        return _PROVENANCE_EXECUTOR
