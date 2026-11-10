@@ -92,16 +92,16 @@
       "seconds": 30,
       "ok": true,
       "budget": "release lookup < 30 s",
-      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
       "required_in": [
         "desktop-install-Linux"
       ]
     },
     "desktop install (Linux): download": {
-      "seconds": 120,
+      "seconds": 60,
       "ok": true,
-      "budget": "download (the package and the plan's files at once) < 120 s",
-      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "budget": "download (the package and the plan's files at once) < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
       "required_in": [
         "desktop-install-Linux"
       ]
@@ -110,7 +110,7 @@
       "seconds": 30,
       "ok": true,
       "budget": "integrity check < 30 s",
-      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
       "required_in": [
         "desktop-install-Linux"
       ]
@@ -119,25 +119,25 @@
       "seconds": 60,
       "ok": true,
       "budget": "install the package (apt/dnf) < 60 s",
-      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
       "required_in": [
         "desktop-install-Linux"
       ]
     },
     "desktop install (Linux): prepare": {
-      "seconds": 150,
+      "seconds": 60,
       "ok": true,
-      "budget": "first-run prepare < 150 s",
-      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "budget": "first-run prepare < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
       "required_in": [
         "desktop-install-Linux"
       ]
     },
     "desktop install (Linux): total": {
-      "seconds": 180,
+      "seconds": 60,
       "ok": true,
-      "budget": "install < 180 s",
-      "measured": "CI ubuntu-latest, v0.9.5.1 deb through install.sh --desktop (run 42574071708, job 129017733668): 68.5 s in all; the 688 MB deb downloaded in ~2.5 s, apt ~11 s, dpkg unpack ~14 s, --prepare-runtime ~40 s. Per-step rows are new with this budget.",
+      "budget": "install, download included, < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
       "required_in": [
         "desktop-install-Linux"
       ]
@@ -146,16 +146,16 @@
       "seconds": 30,
       "ok": true,
       "budget": "release lookup < 30 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
       "required_in": [
         "desktop-install-Windows"
       ]
     },
     "desktop install (Windows): download": {
-      "seconds": 120,
+      "seconds": 60,
       "ok": true,
-      "budget": "download (the setup and the plan's files at once) < 120 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
+      "budget": "download (the setup and the plan's files at once) < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
       "required_in": [
         "desktop-install-Windows"
       ]
@@ -164,25 +164,25 @@
       "seconds": 30,
       "ok": true,
       "budget": "integrity check < 30 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
       "required_in": [
         "desktop-install-Windows"
       ]
     },
     "desktop install (Windows): install": {
-      "seconds": 210,
+      "seconds": 60,
       "ok": true,
-      "budget": "setup, including its own first-run prepare < 210 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
+      "budget": "setup, including its own first-run prepare < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
       "required_in": [
         "desktop-install-Windows"
       ]
     },
     "desktop install (Windows): total": {
-      "seconds": 240,
+      "seconds": 60,
       "ok": true,
-      "budget": "install < 240 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
+      "budget": "install, download included, < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
       "required_in": [
         "desktop-install-Windows"
       ]

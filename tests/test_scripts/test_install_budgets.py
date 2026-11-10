@@ -122,9 +122,9 @@ def test_a_failed_desktop_install_fails_its_step_and_the_unrun_steps() -> None:
 @pytest.mark.parametrize(
     ("os_name", "steps", "total"),
     [
-        ("Linux", ("resolve", "download", "verify", "install", "prepare", "total"), 180),
+        ("Linux", ("resolve", "download", "verify", "install", "prepare", "total"), 60),
         # The Windows setup runs its own --prepare-runtime inside the install step.
-        ("Windows", ("resolve", "download", "verify", "install", "total"), 240),
+        ("Windows", ("resolve", "download", "verify", "install", "total"), 60),
     ],
 )
 def test_linux_and_windows_hold_the_same_steps_to_budgets(
@@ -140,6 +140,12 @@ def test_linux_and_windows_hold_the_same_steps_to_budgets(
     missing = budgets_check.check_timings([], BUDGETS["timings"], job)
     assert {row[1] for row in missing} == {f"desktop install ({os_name}): {s}" for s in steps}
     assert BUDGETS["timings"][f"desktop install ({os_name}): total"]["seconds"] == total
+    # Every install finishes in under 60 s, download included (gact-tui#739).
+    assert all(
+        row["seconds"] <= 60
+        for name, row in BUDGETS["timings"].items()
+        if name.startswith(f"desktop install ({os_name}): ")
+    )
 
 
 def test_the_macos_desktop_install_runs_on_installer_pull_requests() -> None:
