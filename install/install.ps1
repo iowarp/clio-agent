@@ -392,7 +392,7 @@ $ProgressJson = $OptProgress -eq 'json'
 # and its install plan), download (the setup and the plan's files at once, hashed as they
 # arrive), verify, install. The setup itself prepares the agent and its tools (Office,
 # pnpm) before it exits, from the plan's files when their bytes match its pins
-# (CLIO_INSTALL_DOWNLOADS), so on Windows the install step includes the prepare.
+# (CLIO_INSTALL_DOWNLOADS); its timed lines in CLIO_INSTALL_LOG become the prepare step.
 # -DownloadOnly DIR stops after the verified download; -Unattended runs the setup
 # silently (/S) with its defaults instead of showing its pages.
 function Install-ClioDesktop {
