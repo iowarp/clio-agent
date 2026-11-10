@@ -258,6 +258,18 @@ def test_children_get_the_bundled_git_only_without_a_real_one(
     assert gx.with_bundled_git(dict(own)) == own
 
 
+def test_a_partial_child_environment_hides_the_processs_git_exec_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: Path
+) -> None:
+    """Shells merge the added variables over ``os.environ``; the parent's value must not win."""
+    _use_runtime(monkeypatch, _runtime(tmp_path))
+    monkeypatch.setenv("PATH", str(clean_env))
+    monkeypatch.setenv("GIT_EXEC_PATH", "/another-git/libexec/git-core")
+    added: dict[str, str] = {}
+    gx.with_bundled_git(added)
+    assert {**os.environ, **added}["GIT_EXEC_PATH"] == ""
+
+
 @posix_only
 def test_children_behind_the_macos_placeholder_get_the_bundled_git(
     tmp_path: Path,

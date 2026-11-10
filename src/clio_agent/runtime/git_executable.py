@@ -236,13 +236,19 @@ def with_bundled_git(environment: MutableMapping[str, str]) -> MutableMapping[st
     root = bundled_git_root()
     if root is None:
         return environment
-    path = environment.get("PATH", os.environ.get("PATH", ""))
-    if real_git_on_path(path, environment) is not None:
+    # Callers merge a partial ``environment`` over ``os.environ``: judge the merged one.
+    inherited = {**os.environ, **environment}
+    path = inherited.get("PATH", "")
+    if real_git_on_path(path, inherited) is not None:
         return environment
     directory = str((root / BUNDLED_GIT_RELATIVE).parent)
     environment["PATH"] = os.pathsep.join(part for part in (directory, path) if part)
     for key in BUNDLED_GIT_CLEARED_ENV:
         environment.pop(key, None)
+        if key in os.environ:
+            # Popping cannot hide the process's own value from a merge; git ignores an
+            # empty GIT_EXEC_PATH (exec-cmd.c uses it only when non-empty).
+            environment[key] = ""
     for key, value in bundled_git_env({**os.environ, **environment}).items():
         environment.setdefault(key, value)
     return environment
