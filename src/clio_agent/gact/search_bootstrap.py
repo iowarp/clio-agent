@@ -156,7 +156,17 @@ async def _run(
         ServiceActionRequest(target_id=LOCAL_TARGET, action=action, variant_id=VARIANT_ID),
         initiator="clio",
     )
-    return await _finish(runtime, row.id, poll_seconds)
+    state = await _finish(runtime, row.id, poll_seconds)
+    if state != "succeeded":
+        # The boot log is where a first run's search failure is diagnosed; say why.
+        final = runtime.store.operation(row.id)
+        logger.warning(
+            "local SearXNG %s %s: %s",
+            action,
+            state,
+            (getattr(final, "error", None) or "no error recorded") if final else "unknown",
+        )
+    return state
 
 
 def _started_by_clio(runtime: Any) -> bool:

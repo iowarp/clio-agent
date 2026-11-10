@@ -30,6 +30,16 @@ from urllib.request import ProxyHandler, Request, build_opener
 _JOB: Any = None
 LOG_GENERATIONS = 3
 WINDOWS_LOCK_WAIT_SECONDS = 60.0
+#: How long a Windows rename waits out a reader (a lockless status read, antivirus) that
+#: holds the target open without delete sharing, which fails the rename with Access denied.
+WINDOWS_REPLACE_WAIT_SECONDS = 10.0
+#: Upper bound for a detached worker to bind its Job Object. A cold start on a loaded
+#: host (antivirus scanning the freshly written controller, concurrent builds) can take
+#: far longer than an idle one; a launcher that exits ends the wait at once.
+WORKER_START_SECONDS = 90.0
+#: macOS and Windows build service environments on uv-managed Python: their system
+#: ``python3`` can be the Command Line Tools stub or Microsoft Store Python.
+MANAGED_PYTHON = os.name == "nt" or sys.platform == "darwin"
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -39,7 +49,16 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
         json.dump(value, writer)
         writer.flush()
         os.fsync(writer.fileno())
-    temporary.replace(path)
+    deadline = time.monotonic() + WINDOWS_REPLACE_WAIT_SECONDS
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 def clio_tool(name: str, interpreter: str | None = None) -> str | None:
@@ -123,6 +142,11 @@ def worker_environment(
     env = {**base, **manifest.get("environment", {})}
     for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
         env.pop(name, None)
+    if MANAGED_PYTHON:
+        # uv refuses ``--managed-python`` beside these (exit 2), so an inherited
+        # preference would fail every install; the service's Python is CLIO's choice.
+        for name in ("UV_PYTHON_PREFERENCE", "UV_NO_MANAGED_PYTHON"):
+            env.pop(name, None)
     tmp = service_tmp(root)
     env.update(
         UV_CACHE_DIR=str(root / "cache/uv"),
@@ -203,11 +227,10 @@ def uv_python_arguments(manifest: dict[str, Any]) -> list[str]:
     """
     if manifest.get("interpreter") == "clio" and durable_interpreter():
         return ["--python", sys.executable, "--no-python-downloads"]
-    managed = os.name == "nt" or sys.platform == "darwin"
     return [
         "--python",
         str(manifest.get("python_version", "3.12")),
-        *(["--managed-python"] if managed else []),
+        *(["--managed-python"] if MANAGED_PYTHON else []),
     ]
 
 
@@ -456,11 +479,18 @@ def bind_worker(generation: str, root: Path) -> None:
     )
 
 
-def await_worker(root: Path, generation: str) -> dict[str, Any]:
-    """Record the actual worker, including when a Windows venv launcher has another PID."""
-    deadline = time.monotonic() + 10
+def await_worker(
+    root: Path, generation: str, launcher_pid: int = 0, launcher_identity: str = ""
+) -> dict[str, Any]:
+    """Record the actual worker, including when a Windows venv launcher has another PID.
+
+    Waits while the launcher lives (a cold, loaded host can take tens of seconds to
+    start Python), up to :data:`WORKER_START_SECONDS`; a launcher that exits without
+    the worker publishing its identity fails at once.
+    """
+    started = time.monotonic()
     ready = root / "evidence" / f"worker-{generation}.json"
-    while time.monotonic() < deadline:
+    while True:
         if ready.is_file():
             record = json.loads(ready.read_text())
             if record.get("generation") != generation or not record.get("process_identity"):
@@ -468,8 +498,18 @@ def await_worker(root: Path, generation: str) -> dict[str, Any]:
             if identity(record["pid"]) != record["process_identity"]:
                 raise RuntimeError("The native worker exited before its launch committed")
             return record
+        elapsed = time.monotonic() - started
+        launcher_gone = launcher_identity and identity(launcher_pid) != launcher_identity
+        if launcher_gone and not ready.is_file():
+            raise RuntimeError(
+                f"Native worker exited after {elapsed:.0f}s before establishing its owned "
+                f"process tree; inspect {root / 'logs' / 'supervisor.log'}"
+            )
+        if elapsed >= WORKER_START_SECONDS:
+            raise RuntimeError(
+                f"Native worker did not establish its owned process tree within {elapsed:.0f}s"
+            )
         time.sleep(0.05)
-    raise RuntimeError("Native worker did not establish its owned process tree")
 
 
 def stop(receipt: dict[str, Any]) -> None:
