@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from clio_agent.tools import mcp_prepare
+from clio_agent.tools.desktop_mcp_runtime import CLIO_KIT_ENTRY
 from clio_agent.tools.mcp_config import MCPServerSpec
 
 
@@ -227,6 +228,111 @@ def test_a_missing_launcher_is_typed(tmp_path: Path) -> None:
 def test_a_remote_server_has_nothing_to_provision() -> None:
     spec = MCPServerSpec(name="geo", transport="http", url="https://example.invalid/mcp")
     assert mcp_prepare.provision("geo", spec) == mcp_prepare.PROVISION_NOT_APPLICABLE
+
+
+# --------------------------------------------------------------------------- #
+# The desktop runtime's bundled clio-kit (no console script on PATH)          #
+# --------------------------------------------------------------------------- #
+
+
+def _bundle(
+    monkeypatch: pytest.MonkeyPatch, launcher: tuple[str, list[str], dict[str, str]] | None
+) -> None:
+    monkeypatch.setattr(
+        "clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher",
+        lambda _command, _args: launcher,
+    )
+    monkeypatch.setenv("PATH", "")
+
+
+def test_the_bundled_web_adapter_needs_no_launcher_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DMG/NSIS install has no ``clio-kit`` on PATH; the web namespace still prepares."""
+
+    _bundle(
+        monkeypatch,
+        ("/rt/python/bin/python3.14", ["-c", "from web_mcp.server import main; main()"], {}),
+    )
+    spec = MCPServerSpec(
+        name="web", transport="stdio", command="clio-kit", args=("mcp-server", "web")
+    )
+    assert mcp_prepare.provision("web", spec) == mcp_prepare.PROVISION_NOT_APPLICABLE
+
+
+def test_a_bundled_clio_kit_server_prepares_through_the_runtime_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = (
+        "/rt/python/bin/python3.14",
+        ["-c", CLIO_KIT_ENTRY, "mcp-server", "geo"],
+        {"PATH": "/rt/bin", "CLIO_KIT_CACHE_DIR": "/cache/mcp-runtime"},
+    )
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        mcp_prepare, "launcher_supports_prepare", lambda prefix: seen.append(prefix) or True
+    )
+
+    plan = mcp_prepare.bundled_provision_plan(launcher)
+
+    assert isinstance(plan, mcp_prepare.ProvisionPlan)
+    assert seen == [("/rt/python/bin/python3.14", "-c", CLIO_KIT_ENTRY)]
+    assert plan.argv == (
+        "/rt/python/bin/python3.14",
+        "-c",
+        CLIO_KIT_ENTRY,
+        "mcp-server",
+        "--prepare",
+        "geo",
+    )
+    assert plan.env == launcher[2]
+
+    monkeypatch.setattr(mcp_prepare, "launcher_supports_prepare", lambda prefix: False)
+    assert (
+        mcp_prepare.bundled_provision_plan(launcher) == mcp_prepare.PROVISION_UNSUPPORTED_LAUNCHER
+    )
+
+
+@posix_only
+@pytest.mark.usefixtures("_unconfined")
+def test_provisioning_a_bundled_clio_kit_server_runs_without_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = tmp_path / "calls.txt"
+    python = _fake_launcher(
+        tmp_path / "rt",
+        "python3.14",
+        f'echo "$@ cache=$CLIO_KIT_CACHE_DIR" >> {calls}\necho "  --prepare  Build only"',
+    )
+    cache = tmp_path / "mcp-runtime"
+    _bundle(
+        monkeypatch,
+        (
+            str(python),
+            ["-c", CLIO_KIT_ENTRY, "mcp-server", "geo"],
+            {"CLIO_KIT_CACHE_DIR": str(cache)},
+        ),
+    )
+    spec = MCPServerSpec(
+        name="geo", transport="stdio", command="clio-kit", args=("mcp-server", "geo")
+    )
+
+    assert mcp_prepare.provision("geo", spec) == mcp_prepare.PROVISIONED
+    lines = calls.read_text(encoding="utf-8").splitlines()
+    assert f"-c {CLIO_KIT_ENTRY} mcp-server --help cache=" in lines[0]
+    assert lines[-1] == f"-c {CLIO_KIT_ENTRY} mcp-server --prepare geo cache={cache}"
+
+
+def test_without_a_bundle_a_missing_clio_kit_is_still_typed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bundle(monkeypatch, None)
+    spec = MCPServerSpec(
+        name="geo", transport="stdio", command="clio-kit", args=("mcp-server", "geo")
+    )
+    with pytest.raises(mcp_prepare.PrepareError) as raised:
+        mcp_prepare.provision("geo", spec)
+    assert raised.value.reason == mcp_prepare.LAUNCHER_MISSING
 
 
 def test_failures_are_classified_by_phase() -> None:

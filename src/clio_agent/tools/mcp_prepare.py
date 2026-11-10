@@ -242,20 +242,25 @@ def _project_fingerprint(project_dir: str, argv: Sequence[str]) -> str:
     return digest.hexdigest()
 
 
-_PREPARE_OPTION: dict[str, bool] = {}
+_PREPARE_OPTION: dict[tuple[str, ...], bool] = {}
 _PREPARE_OPTION_LOCK = threading.Lock()
 
 
-def launcher_supports_prepare(command: str) -> bool:
-    """Whether this clio-kit offers ``mcp-server --prepare`` (read once from its help)."""
+def launcher_supports_prepare(command: str | Sequence[str]) -> bool:
+    """Whether this clio-kit offers ``mcp-server --prepare`` (read once from its help).
 
+    ``command`` is the launcher executable, or the full launcher prefix when clio-kit
+    runs through the desktop runtime's interpreter (``python -c <entry>``).
+    """
+
+    prefix = (command,) if isinstance(command, str) else tuple(command)
     with _PREPARE_OPTION_LOCK:
-        known = _PREPARE_OPTION.get(command)
+        known = _PREPARE_OPTION.get(prefix)
     if known is not None:
         return known
     try:
         done = subprocess.run(  # noqa: S603 - the declared launcher, fixed arguments
-            [command, "mcp-server", "--help"],
+            [*prefix, "mcp-server", "--help"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -266,7 +271,7 @@ def launcher_supports_prepare(command: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         supported = False
     with _PREPARE_OPTION_LOCK:
-        _PREPARE_OPTION[command] = supported
+        _PREPARE_OPTION[prefix] = supported
     return supported
 
 
@@ -294,6 +299,32 @@ def provision_plan(spec: Any, resolved_command: str) -> ProvisionPlan | str:
             return PROVISION_UNSUPPORTED_LAUNCHER
         return ProvisionPlan(argv=(resolved_command, "mcp-server", "--prepare", args[1]))
     return PROVISION_NOT_APPLICABLE
+
+
+def bundled_provision_plan(
+    launcher: tuple[str, Sequence[str], Mapping[str, str]],
+) -> ProvisionPlan | str:
+    """The provisioning plan for a server the desktop runtime starts with its own interpreter.
+
+    ``launcher`` is :func:`~clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher`'s
+    result. A preinstalled adapter (the Web Search MCP) has nothing to build; a bundled
+    clio-kit server is prepared through the same interpreter, with the same environment
+    (bundled ``uv`` on ``PATH``, ``CLIO_KIT_CACHE_DIR``) as the server's start.
+    """
+
+    from clio_agent.tools.desktop_mcp_runtime import CLIO_KIT_ENTRY  # noqa: PLC0415
+
+    executable, argv, env = launcher
+    argv = [str(value) for value in argv]
+    if argv[:2] != ["-c", CLIO_KIT_ENTRY]:
+        return PROVISION_NOT_APPLICABLE
+    args = argv[2:]
+    if len(args) < 2 or args[0] != "mcp-server":
+        return PROVISION_NOT_APPLICABLE
+    prefix = (str(executable), "-c", CLIO_KIT_ENTRY)
+    if not launcher_supports_prepare(prefix):
+        return PROVISION_UNSUPPORTED_LAUNCHER
+    return ProvisionPlan(argv=(*prefix, "mcp-server", "--prepare", args[1]), env=dict(env))
 
 
 def provision_max_wait_s() -> float:
@@ -411,6 +442,7 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
             stopped making progress.
     """
 
+    from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher  # noqa: PLC0415
     from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
         acquire_launcher_cache_lock,
         uses_shared_launcher_cache,
@@ -420,12 +452,19 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
 
     if getattr(spec, "transport", "") != "stdio" or not getattr(spec, "command", ""):
         return PROVISION_NOT_APPLICABLE
-    from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+    # The desktop runtime ships clio-kit and the Web Search adapter as modules of its
+    # interpreter, not as console scripts on PATH; the server's start
+    # (``mcp_config.transport_for``) prefers them, so provisioning must too.
+    bundled = bundled_module_launcher(str(spec.command), [str(arg) for arg in spec.args])
+    if bundled is not None:
+        plan = bundled_provision_plan(bundled)
+    else:
+        from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
 
-    resolved = real_which(str(spec.command))
-    if not resolved:
-        raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
-    plan = provision_plan(spec, resolved)
+        resolved = real_which(str(spec.command))
+        if not resolved:
+            raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
+        plan = provision_plan(spec, resolved)
     if isinstance(plan, str):
         if plan == PROVISION_UNSUPPORTED_LAUNCHER:
             trace.event("TOOLS", "%s namespace=%s launcher=%s", plan, namespace, spec.command)

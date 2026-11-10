@@ -13,6 +13,9 @@ from typing import Any
 
 from clio_agent import paths
 
+#: The ``-c`` entry that runs the bundled clio-kit CLI through the runtime interpreter.
+CLIO_KIT_ENTRY = "from clio_kit import cli; cli()"
+
 
 def desktop_mcp_log_file(namespace: str) -> Path | None:
     """Return an inheritable stderr sink for managed desktop MCP children."""
@@ -54,7 +57,7 @@ def bundled_module_launcher(
 
     resolved_args = [str(value) for value in args]
     modules = {
-        "clio-kit": ("clio_kit", "from clio_kit import cli; cli()"),
+        "clio-kit": ("clio_kit", CLIO_KIT_ENTRY),
         # The desktop runtime pre-installs the Web Search MCP adapter during
         # packaging. Launch it directly: connecting must not download/build a
         # second Python environment on first use or depend on ambient `uvx`.
