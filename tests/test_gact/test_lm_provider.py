@@ -2464,3 +2464,60 @@ def test_effective_lm_config_surfaces_unsupported_thinking() -> None:
 
     assert cfg["thinking_level"] == "high"
     assert cfg["thinking_effective"].startswith("unsupported")
+
+
+def test_install_runs_as_a_job_that_outlives_the_request(tmp_path: Path, monkeypatch: Any) -> None:
+    """``wait=false`` answers 202 at once; a second click joins the running
+    job instead of installing twice, and any view can read the outcome."""
+
+    from clio_agent.providers import dependencies
+
+    release = threading.Event()
+    calls: list[bool] = []
+
+    def install(**_kwargs: Any) -> bool:
+        calls.append(True)
+        release.wait(5)
+        return True
+
+    monkeypatch.setitem(dependencies._PROVIDER_INSTALLERS, "claude_code", install)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        first = client.post("/v1/providers/claude_code/install?wait=false")
+        second = client.post("/v1/providers/claude_code/install?wait=false")
+        listed = client.get("/v1/providers/support/installs").json()
+        release.set()
+        finished = client.post("/v1/providers/claude_code/install")
+        job = client.get("/v1/providers/claude_code/install").json()
+
+    assert first.status_code == 202
+    assert first.json()["state"] in {"queued", "installing"}
+    assert second.json()["started_at"] == first.json()["started_at"]
+    assert listed["running"] is True
+    assert "claude_code" in [entry["provider_id"] for entry in listed["installs"]]
+    assert finished.status_code == 200
+    assert job["state"] == "done" and job["installed"] is True
+    assert len(calls) == 2  # the joined click did not install; the later POST re-ran
+
+
+def test_install_job_reports_a_typed_failure_to_later_readers(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from clio_agent.providers import dependencies
+
+    def _fail(**_kwargs: object) -> bool:
+        raise dependencies.ProviderDependencyInstallError("no network")
+
+    monkeypatch.setitem(dependencies._PROVIDER_INSTALLERS, "argonne", _fail)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        client.post("/v1/providers/argonne_sophia/install?wait=false")
+        for _ in range(100):
+            job = client.get("/v1/providers/argonne_sophia/install").json()
+            if job["state"] == "failed":
+                break
+            time.sleep(0.02)
+
+    assert job["state"] == "failed"
+    assert job["error"]["code"] == "argonne_install_failed"
+    assert "no network" in job["error"]["diagnostic"]
