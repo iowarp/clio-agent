@@ -515,7 +515,7 @@ macOS backend above.
 | Inline hash | `tee` into `shasum` | app download now hashed inline too (`fetch_hashed`); no second `file_sha` pass | hashed while the file grows; a second pass runs only on a mismatch |
 | Prefetch handed to prepare | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` set for the setup, which runs `--prepare-runtime` from its postinstall hook |
 | Single archive, atomic swap | `.aar` streamed, folder renamed | `gact-runtime.tar.zst` in the deb/rpm, verified and unpacked by the package's postinst, swapped with a receipt ([Linux runtime archive](#linux-runtime-archive)) | `.tar.zst` pack, extracted by 8 writers, swapped with a `pack.sha256` receipt (already in gact-tui) |
-| Phases with progress and timings | resolve/download/verify/install/prepare | same five | resolve/download/verify/install; prepare runs inside the silent setup (`/S`) and is timed as part of install |
+| Phases with progress and timings | resolve/download/verify/install/prepare | same five | same five: the setup's `--prepare-runtime` appends timed lines to `CLIO_INSTALL_LOG`, which `install.ps1` follows live and times as `prepare` (needs the gact-tui `install_log` change) |
 | Per-phase CI budgets | `desktop-install-macOS` | `desktop-install-Linux` (now) | `desktop-install-Windows` (now) |
 
 ### What changed here
@@ -530,13 +530,34 @@ macOS backend above.
 - `install-matrix.yml` runs `desktop-install` on macOS, Ubuntu and Windows, with the same
   first and second launch smoke and each OS held to its own budget rows.
 
+### Prepare speed, shared by all three operating systems
+
+- **One read of the Windows pack.** gact-tui `runtime_unpack.rs` hashes the archive from the
+  bytes the decompressor reads; `runtime_pack.rs` compares that hash before activating the
+  staged runtime, instead of a separate full SHA-256 pass first. Unpack progress reports
+  files written and MB read. The managed-process stop sweep runs during the unpack.
+- **Timed record.** `--prepare-runtime` (all OSes) appends each line, with seconds since it
+  started, to `CLIO_INSTALL_LOG` when set; on Windows also to `data\runtime-install.log` in
+  the install folder, so a timed install can be read after the setup closes.
+- **Store upgrade in parallel.** `document_install` runs `clio-agent migrate` on the main
+  thread (clio-core's native handles stay there) while the packages are prepared on a
+  worker; leaving waits for both.
+- **Node.js during the Python probe.** `prepare_document_runtime` runs the full Python
+  import probe on a worker while the Node.js packages are prepared, and repairs the Python
+  environment afterwards only if that probe failed.
+
+Measured live on an M-series Mac with a scratch HOME and the 0.9.5.1 bundled runtime plus
+this branch's code: `document_install` with the plan prefetched fell from 31.9 s to 15.9 s,
+and with nothing prefetched from 38.1 s to 28.8 s (the LibreOffice download is then the
+critical path; the plan prefetch hides it).
+
 ### Gaps not closed here
 
-- **Windows prepare as its own phase.** The NSIS postinstall always runs
-  `--prepare-runtime` (gact-tui `installer-hooks.nsh`). Timing prepare on its own needs an
-  NSIS flag in gact-tui to skip it, so `install.ps1` can run it after the setup.
-- **Windows pack progress.** `runtime_pack.rs` hashes the 483 MB pack without progress output,
-  and NSIS `/S` hides the setup's checkpoint lines.
+- **Windows prepare as its own process.** The NSIS postinstall still runs
+  `--prepare-runtime` itself; `install.ps1` times it from the record above.
+- **First load of native extensions.** On a fresh install, the Python import probe spends
+  about 11 s loading native libraries for the first time (macOS code-signature checks; on
+  Windows, Defender scans each new file). It is the remaining critical path on macOS.
 
 ## Linux runtime archive
 
