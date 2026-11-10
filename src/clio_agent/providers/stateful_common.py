@@ -99,6 +99,15 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
             "and the next call is a full send on a fresh session."
         ),
     },
+    "reply_past_calls": {
+        "category": "stateful_reset",
+        "description": (
+            "The model wrote on past its call block (the text transport has no stop "
+            "sequence): results and prose it invented before any result existed. Only "
+            "the block ran, but the CLI's own history keeps the whole reply, so the "
+            "next call is a full send of what clio recorded, without the invented part."
+        ),
+    },
 }
 
 

@@ -34,6 +34,13 @@ REASON_MXC_LAUNCH_FAILED = "codex_mxc_launch_failed"
 REASON_MXC_PROBE_TIMEOUT = "codex_mxc_probe_timeout"
 #: The probe could not be prepared or launched at all.
 REASON_MXC_PROBE_FAILED = "codex_mxc_probe_failed"
+#: CLIO runs on Microsoft Store (MSIX-packaged) Python, which MXC refuses to launch.
+REASON_MXC_PACKAGED_PYTHON = "codex_mxc_packaged_python"
+PACKAGED_PYTHON_ACTION = (
+    "Reinstall CLIO with the installer, which uses uv-managed Python; for a source "
+    "checkout run `uv sync --managed-python` (or set UV_MANAGED_PYTHON=1) to rebuild "
+    "its environment, then retry Set up protected execution."
+)
 _UNAVAILABLE_REASONS = (
     REASON_MXC_UNVERIFIED,
     REASON_MXC_LAUNCH_FAILED,
@@ -98,6 +105,35 @@ class MxcProbe:
 
 def _receipt_path() -> Path:
     return paths.user_config_dir() / "sandbox" / "codex-mxc-verified.json"
+
+
+def packaged_python() -> str:
+    """The Microsoft Store (MSIX) Python CLIO runs on, or ``""``.
+
+    A virtual environment hides its base: ``sys.executable`` is the venv's launcher,
+    while ``sys._base_executable`` and ``sys.base_prefix`` name the Store alias and
+    package. MXC refuses every packaged executable, so a probe or a confined Python
+    child started from such an interpreter can never launch.
+    """
+    if sys.platform != "win32":
+        return ""
+    for candidate in (sys.executable, getattr(sys, "_base_executable", ""), sys.base_prefix):
+        folded = "\\" + candidate.replace("/", "\\").casefold() + "\\"
+        if candidate and "\\windowsapps\\" in folded:
+            return candidate
+    return ""
+
+
+def packaged_python_outcome(interpreter: str) -> dict[str, Any]:
+    """The typed refusal for a packaged interpreter, before any Codex launch."""
+    return {
+        "status": "unavailable",
+        "reason": REASON_MXC_PACKAGED_PYTHON,
+        "detail": (
+            f"CLIO runs on Microsoft Store Python ({interpreter}). Windows protected "
+            "execution cannot launch packaged apps, so CLIO's sandboxed Python never starts"
+        ),
+    }
 
 
 def _binary_identity_path(executable: Path) -> str:
@@ -177,6 +213,8 @@ def _matching_receipt(binary: str, version: str = "") -> dict[str, Any]:
 
 def mxc_ready(binary: str, *, version: str = "") -> bool:
     """Reuse only a successful proof for this executable, host and Windows update."""
+    if packaged_python():
+        return False
     return _matching_receipt(binary, version).get("status") == "verified"
 
 
@@ -216,6 +254,14 @@ def prepare_mxc(
 
     if sys.platform != "win32" or parse_version(version) < MXC_MIN_VERSION:
         return {"status": "unavailable", "reason": "codex_mxc_version_unsupported"}
+    # No receipt: the interpreter is not part of its identity, and a rebuilt
+    # environment must qualify on the next boot without an explicit retry.
+    if interpreter := packaged_python():
+        outcome = packaged_python_outcome(interpreter)
+        logger.warning("reason=%s %s", outcome["reason"], outcome["detail"])
+        if progress:
+            progress(f"Protected execution unavailable: {outcome['detail']}.")
+        return outcome
     cached = _matching_receipt(binary, version)
     if _reusable(cached, force=force, retry_unavailable=retry_unavailable):
         if progress:

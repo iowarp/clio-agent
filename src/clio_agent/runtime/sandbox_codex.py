@@ -508,6 +508,10 @@ REASON_CODEX_WINDOWS_UNPROVISIONED = "codex_windows_unprovisioned"
 REASON_CODEX_ENFORCEMENT_VERIFIED = "codex_enforcement_verified"
 REASON_CODEX_ENFORCEMENT_UNVERIFIED = "codex_enforcement_unverified"
 REASON_CODEX_ENFORCEMENT_ESCAPED = "codex_enforcement_escaped"
+#: Codex holds an existing account setup it no longer accepts (an older setup marker)
+#: and waits for its elevated setup instead of starting the command.
+REASON_CODEX_WINDOWS_SETUP_REQUIRED = "codex_windows_setup_required"
+_SETUP_REQUIRED_TEXT = "sandbox setup required"
 
 #: Bounded spawn timeout for the enforcement probe — a hung codex must never stall setup.
 _CODEX_PROBE_TIMEOUT_S = 60
@@ -635,10 +639,25 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
         ]
         # Codex delegates ACL work to background helpers, so stderr goes to a file
         # (a pipe can outlive the command on Windows); file witnesses provide the proof.
+        log_marks = _sandbox_log_marks()
         run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
         if outside_target.exists():
             # The confined child wrote OUTSIDE its territory — the fence did not hold.
             return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_ESCAPED, run.describe())
+        if not started_target.is_file() and (required := _setup_required_since(log_marks)):
+            # Codex wants its elevated setup again and waits instead of failing.
+            logger.warning(
+                "codex verification unproven reason=%s %s | %s",
+                REASON_CODEX_WINDOWS_SETUP_REQUIRED,
+                required,
+                run.describe(),
+            )
+            return EnforcementVerdict(
+                False,
+                REASON_CODEX_WINDOWS_SETUP_REQUIRED,
+                "Codex requires its one-time administrator setup again before it starts "
+                f"commands as the existing sandbox accounts (Codex log: {required})",
+            )
         if not started_target.is_file() or run.returncode == 0:
             # Missing outside output alone is not proof: the launcher may never
             # have started the child or the command may not have executed.
@@ -657,6 +676,46 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
             return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_UNVERIFIED, detail)
         # Child spawned and the out-of-root write did not land ⇒ the fence is genuinely in force.
         return EnforcementVerdict(True, REASON_CODEX_ENFORCEMENT_VERIFIED)
+
+
+def _sandbox_log_dir() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / ".sandbox"
+
+
+def _sandbox_log_marks() -> dict[Path, int]:
+    """The current size of each Codex sandbox log, so a check reads only its own lines."""
+    try:
+        return {path: path.stat().st_size for path in _sandbox_log_dir().glob("sandbox.*.log")}
+    except OSError:
+        return {}
+
+
+def _setup_required_since(marks: dict[Path, int]) -> str:
+    """Codex's 'sandbox setup required' line written after ``marks``, or ``""``."""
+    try:
+        logs = sorted(_sandbox_log_dir().glob("sandbox.*.log"))
+    except OSError:
+        return ""
+    for path in logs:
+        try:
+            with path.open("rb") as stream:
+                stream.seek(marks.get(path, 0))
+                text = stream.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if _SETUP_REQUIRED_TEXT in line:
+                return line.split("] ", 1)[-1].strip()
+    return ""
+
+
+def codex_setup_refresh_required(version: str, *, marker_reader: Any = None) -> bool:
+    """Whether this Codex's last legacy check found its account setup out of date."""
+    marker = (marker_reader if marker_reader is not None else _read_codex_marker)() or {}
+    return (
+        marker.get("enforcement_reason") == REASON_CODEX_WINDOWS_SETUP_REQUIRED
+        and marker.get("codex_version") == version
+    )
 
 
 def _codex_marker_path() -> Path:
@@ -735,7 +794,7 @@ def codex_windows_gate(
     check = provisioned if provisioned is not None else codex_windows_provisioned
     ok, _reason = check(platform=platform)
     if not ok:
-        return False, REASON_CODEX_WINDOWS_UNPROVISIONED
+        return False, _packaged_or(REASON_CODEX_WINDOWS_UNPROVISIONED, platform, version)
     read = marker_reader if marker_reader is not None else _read_codex_marker
     marker = read()
     if (
@@ -743,8 +802,22 @@ def codex_windows_gate(
         or marker.get("enforcement_verified") is not True
         or (version and marker.get("codex_version") != version)
     ):
-        return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+        return False, _packaged_or(REASON_CODEX_ENFORCEMENT_UNVERIFIED, platform, version)
     return True, REASON_CODEX_WINDOWS_PROVISIONED
+
+
+def _packaged_or(reason: str, platform: str, version: str) -> str:
+    """Name a packaged CLIO interpreter, the cause native MXC setup reports, when it applies."""
+    if platform.startswith("win") and version:
+        from clio_agent.runtime.sandbox_codex_mxc import (  # noqa: PLC0415
+            MXC_MIN_VERSION,
+            REASON_MXC_PACKAGED_PYTHON,
+            packaged_python,
+        )
+
+        if parse_version(version) >= MXC_MIN_VERSION and packaged_python():
+            return REASON_MXC_PACKAGED_PYTHON
+    return reason
 
 
 __all__ = [
@@ -767,6 +840,7 @@ __all__ = [
     "REASON_CODEX_VERSION_PROBE_UNRESPONSIVE",
     "REASON_CODEX_VERSION_UNSUPPORTED",
     "REASON_CODEX_WINDOWS_PROVISIONED",
+    "REASON_CODEX_WINDOWS_SETUP_REQUIRED",
     "REASON_CODEX_WINDOWS_UNPROVISIONED",
     "REASON_NOT_WINDOWS",
     "CodexDetection",
@@ -774,6 +848,7 @@ __all__ = [
     "CodexSpawnError",
     "codex_layer_name",
     "codex_prefix",
+    "codex_setup_refresh_required",
     "codex_windows_gate",
     "codex_windows_provisioned",
     "compose_codex_spawn",

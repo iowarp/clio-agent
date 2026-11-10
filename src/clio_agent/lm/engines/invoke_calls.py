@@ -49,6 +49,10 @@ CUT_BLOCK = (
 _PARAMETER = re.compile(
     r"""<parameter\s+name=(["'])(?P<name>[^"']+)\1\s*>(?P<value>.*?)</parameter>""", re.S
 )
+_GAP = re.compile(r"\s*")
+#: The block's end: stray closing tags haiku adds (``</tool>``, a second ``</invoke>``),
+#: then the container's own.
+_BLOCK_CLOSE = re.compile(r"(?:\s*</(?:invoke|tool)>)*(?:\s*</function_calls>)?")
 
 INVOKE_RULES = """\
 # How you act
@@ -104,6 +108,8 @@ class InvokeCalls:
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     error: str = ""
     raw: str = ""
+    #: What the model wrote on past its first call block (see :func:`call_block_end`).
+    overrun: str = ""
 
 
 def _accepts_string(schema: Mapping[str, Any]) -> bool:
@@ -139,9 +145,51 @@ def parse_invoke_calls(
     Markup that is data is never a call: an ``<invoke>`` inside a fenced code block is
     an example, and a reply whose invokes name none of the ``known`` tools (or with no
     tools at all) is an answer that happens to contain markup.
+
+    The step is the reply up to the end of its first call block (:func:`call_block_end`):
+    the transport has no stop sequence, and what the model wrote past the block was
+    written before any result existed, so it is returned as ``overrun``, never run or
+    shown.
     """
     if not known:
         return None
+    overrun = ""
+    if (cut := call_block_end(reply, known)) is not None:
+        reply, overrun = reply[:cut], reply[cut:]
+    found = _parse(reply, schemas, known)
+    if found is not None:
+        found.overrun = overrun
+    return found
+
+
+def call_block_end(reply: str, known: Collection[str]) -> int | None:
+    """Where ``reply``'s first call block ends, when the model wrote on past it.
+
+    The block is the run of ``<invoke>`` elements that begins the reply's calls, apart
+    only by blank space, and its closing ``</function_calls>``. haiku wrote on past it
+    (V, 2026-11-10): prose about results it had not received, a ``[tool results]``
+    block of its own in the host's format, then more blocks whose calls depended on the
+    invented results. ``None`` when nothing but blank space follows the block, or the
+    reply has no call of a ``known`` tool.
+    """
+    fences = [m.span() for m in _FENCED.finditer(reply)]
+    invokes = [m for m in _INVOKE.finditer(reply) if not any(a <= m.start() < b for a, b in fences)]
+    if not invokes or not any(m["name"] in known for m in invokes):
+        return None
+    end = invokes[0].end()
+    for invoke in invokes[1:]:
+        if invoke.start() != _GAP.match(reply, end).end():  # type: ignore[union-attr]
+            break
+        end = invoke.end()
+    if close := _BLOCK_CLOSE.match(reply, end):
+        end = close.end()
+    return end if reply[end:].strip() else None
+
+
+def _parse(
+    reply: str, schemas: Mapping[str, Mapping[str, Any]], known: Collection[str]
+) -> InvokeCalls | None:
+    """:func:`parse_invoke_calls` on a reply that ends at its call block."""
     fences = [m.span() for m in _FENCED.finditer(reply)]
     invokes = [m for m in _INVOKE.finditer(reply) if not any(a <= m.start() < b for a, b in fences)]
     if invokes and not any(m["name"] in known for m in invokes):

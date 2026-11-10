@@ -516,6 +516,10 @@ if (-not (Have uv)) {
     $env:PATH = "$BinDir;$env:PATH"
     if (-not (Have uv)) { Die 'could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again' }
 }
+# uv otherwise prefers an installed Microsoft Store Python over downloading one. A
+# packaged (MSIX) interpreter cannot run inside protected execution: MXC refuses to
+# launch packaged apps. Use uv's own Pythons unless the operator chose otherwise.
+if (-not $env:UV_MANAGED_PYTHON) { $env:UV_MANAGED_PYTHON = '1' }
 if ($OptSource -and -not (Have git)) { Die 'git is required for --source' }
 # The checkout this script runs from, when it runs from one (not from a URL).
 $Checkout = $null

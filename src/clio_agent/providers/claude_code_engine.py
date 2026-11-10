@@ -55,6 +55,7 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key
+from clio_agent.lm.engines.invoke_calls import text_tool_protocol
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
@@ -113,9 +114,6 @@ class AsyncClaudeCodeEngine:
     supports_function_calling = True
     supports_reasoning = True
     tool_protocol = "text_block"
-    #: Anthropic usage semantics: ``input_tokens`` excludes the cached prompt (read and
-    #: written), so the prompt's size is their sum (``context_tokens``).
-    input_tokens_exclude_cache = True
 
     def __init__(
         self,
@@ -271,6 +269,8 @@ class AsyncClaudeCodeEngine:
             _reset(entry, send)
         elif turn.provider_compacted:
             reset_conversation(entry, "provider_compacted")
+        elif turn.overran:
+            reset_conversation(entry, "reply_past_calls")
         elif replaced := record_sent(entry, send, session_id, request, system):
             _forget_costs([replaced])  # the conversation it replaced is over
         for out in closing:
@@ -316,6 +316,8 @@ class _Turn:
 
     #: Names the transport in this turn's own errors.
     label = "claude agent sdk"
+    #: Anthropic usage: the SDK's ``input_tokens`` leaves out the cache read and written.
+    input_excludes_cache = True
 
     def __init__(
         self,
@@ -341,7 +343,10 @@ class _Turn:
         # The CLI compacted its own session (``compact_boundary``): its context no longer
         # matches clio-core's, so the conversation is reset after this call.
         self.provider_compacted = False
-        self._splitter = StreamSplitter()
+        # The model wrote on past its call block; the CLI's history holds the invented rest.
+        self.overran = False
+        invoke = text_tool_protocol() == "invoke"
+        self._splitter = StreamSplitter(available_tools if invoke else ())
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
         self._held = ""  # streamed text held back while it could still be non-progress
@@ -440,6 +445,25 @@ class _Turn:
         if getattr(message, "stop_reason", None):
             self.stop_reason = str(message.stop_reason)
 
+    def _end_usage(self) -> Usage:
+        """The call's usage in lm15's convention for a provider not named ``anthropic``.
+
+        lm15 and DSPy read ``input_tokens`` as the whole prompt, with the cache counts as
+        parts of it (``prompt_tokens``, the context reading, the cost split). Anthropic
+        reports the uncached rest only, so the cache read and written are added here.
+        """
+        cache_read = self.usage.get("cache_read_input_tokens")
+        cache_write = self.usage.get("cache_creation_input_tokens")
+        input_tokens = self.usage.get("input_tokens")
+        if input_tokens is not None and self.input_excludes_cache:
+            input_tokens = int(input_tokens) + int(cache_read or 0) + int(cache_write or 0)
+        return Usage(
+            input_tokens=input_tokens,
+            output_tokens=self.usage.get("output_tokens"),
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+
     def finish(self, call_id: str) -> list[Any]:
         reply = self.reply or self.fallback
         # Some SDK routes return only an assembled AssistantMessage/ResultMessage.
@@ -528,6 +552,20 @@ class _Turn:
                 dropped,
                 len(split.calls),
             )
+        if split.overrun:
+            # Written past the call block, before any result existed (invented results,
+            # prose about them, more calls): never run or shown. On the record.
+            self.overran = True
+            logger.info(
+                "provider reply text dropped past call block reason=reply_past_calls "
+                "model=%s call_id=%s chars=%d invented_results=%s later_calls=%d calls=%d",
+                self.model,
+                call_id,
+                len(split.overrun),
+                "[tool results]" in split.overrun or "<function_results>" in split.overrun,
+                split.overrun.count("<invoke "),
+                len(split.calls),
+            )
         for index, call in enumerate(split.calls):
             out.append(
                 StreamDeltaEvent(
@@ -543,12 +581,7 @@ class _Turn:
         out.append(
             StreamEndEvent(
                 finish_reason=finish or ("tool_call" if split.calls else "stop"),
-                usage=Usage(
-                    input_tokens=self.usage.get("input_tokens"),
-                    output_tokens=self.usage.get("output_tokens"),
-                    cache_read_tokens=self.usage.get("cache_read_input_tokens"),
-                    cache_write_tokens=self.usage.get("cache_creation_input_tokens"),
-                ),
+                usage=self._end_usage(),
                 # The SDK's own subscription-priced cost (absent when it reported none).
                 provider_data=_cost_data(self.usage, self.session_id),
             )

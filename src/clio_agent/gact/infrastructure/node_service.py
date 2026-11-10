@@ -25,6 +25,7 @@ from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
+ACCEPT_GUARD = "clio_accept_guard.py"
 #: Earlier runs' logs kept beside the current one; ``server.log.1`` is the previous run.
 LOG_GENERATIONS = 3
 #: Files a service definition may never write over.
@@ -35,9 +36,15 @@ PROTECTED_FILES = frozenset(
         "manifest.json",
         "controller.py",
         "clio_native_platform.py",
+        ACCEPT_GUARD,
         ".lock",
     }
 )
+#: Services whose Windows launcher serves HTTP from an asyncio proactor loop (uvicorn):
+#: each starts under the accept guard so a client aborting mid-accept cannot close its
+#: listener (python/cpython#93821). The guard is delivered beside the launcher, outside
+#: the manifest, so an existing installation gains it without a new revision.
+ACCEPT_GUARDED_SERVICES = frozenset({"web_search"})
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -137,6 +144,7 @@ def owner(root: Path, expected: str) -> None:
         "clio_reuse.py",
         "clio_process_group.py",
         "clio_native_platform.py",
+        ACCEPT_GUARD,
         "launch.py",
         ".lock",
         "environment",
@@ -283,13 +291,24 @@ def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
 
 
 def read_receipt(root: Path) -> dict[str, Any]:
-    """Read the durable receipt, including an interrupted worker's last result."""
+    """Read the durable receipt, including an interrupted worker's last result.
+
+    Status reads take no lock, so on Windows one can land inside a worker's rename of
+    the receipt and be refused (Access denied); that moment passes, so retry briefly.
+    """
     file = root / "receipt.json"
-    return (
-        json.loads(file.read_text())
-        if file.exists()
-        else {"installed": False, "phase": "not_installed"}
-    )
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            return (
+                json.loads(file.read_text())
+                if file.exists()
+                else {"installed": False, "phase": "not_installed"}
+            )
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def effective_artifacts(root: Path) -> dict[str, str]:
@@ -429,6 +448,8 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         (root / "clio_process_group.py").write_text(request["process_group_helper"], "utf-8")
     if request.get("platform_helper"):
         (root / "clio_native_platform.py").write_text(request["platform_helper"], "utf-8")
+    if request.get("accept_guard_helper"):
+        (root / ACCEPT_GUARD).write_text(request["accept_guard_helper"], "utf-8")
     for name in ("logs", "evidence", "cache", "tmp"):
         (root / name).mkdir(exist_ok=True)
     # Per-launch, non-secret files (a router's model list): not part of the revision.
@@ -486,7 +507,11 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         )
     if os.name == "nt":
         receipt.update(launcher_pid=process.pid, launcher_identity=identity(process.pid))
-        receipt.update(platform_helper().await_worker(root, generation))
+        receipt.update(
+            platform_helper().await_worker(
+                root, generation, receipt["launcher_pid"], receipt["launcher_identity"]
+            )
+        )
     else:
         receipt.update(pid=process.pid, process_identity=identity(process.pid))
     if not receipt["process_identity"]:
@@ -519,7 +544,7 @@ copy_output = platform_helper().copy_output
 rotate_log = platform_helper().rotate_log
 
 
-def worker(root: Path, action: str, generation: str) -> None:
+def _work(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
     if os.name == "nt":
         platform_helper().bind_worker(generation, root)
@@ -571,8 +596,15 @@ def worker(root: Path, action: str, generation: str) -> None:
             *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     else:
+        guard = root / ACCEPT_GUARD
+        guarded = (
+            os.name == "nt"
+            and manifest.get("service") in ACCEPT_GUARDED_SERVICES
+            and guard.is_file()
+        )
         command = [
             str(environment_python(root)),
+            *([str(guard)] if guarded else []),
             str(root / "launch.py"),
             *manifest["arguments"],
         ]
@@ -661,17 +693,36 @@ def worker(root: Path, action: str, generation: str) -> None:
                 error=None if code == 0 else f"{action} exited with code {code}; inspect its logs",
             )
             write_json(root / "receipt.json", current)
-    except (OSError, ValueError) as exc:
-        with locked(root):
-            current = read_receipt(root)
-            if current.get("generation") == generation:
-                current.update(
-                    phase="failed",
-                    error=f"{action} failed: {type(exc).__name__}",
-                    pid=0,
-                    process_identity="",
-                )
-                write_json(root / "receipt.json", current)
+    except Exception as exc:
+        record_failure(root, action, generation, exc)
+
+
+def record_failure(root: Path, action: str, generation: str, exc: BaseException) -> None:
+    """Publish why this worker's operation ended, so readiness reports it instead of
+    "stopped before it was ready" when a worker dies on an unexpected error."""
+    import traceback  # noqa: PLC0415
+
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    detail = str(exc).strip()[:300]
+    with suppress(Exception), locked(root):
+        current = read_receipt(root)
+        if current.get("generation") == generation:
+            current.update(
+                phase="failed",
+                error=f"{action} failed: {type(exc).__name__}" + (f": {detail}" if detail else ""),
+                pid=0,
+                process_identity="",
+            )
+            write_json(root / "receipt.json", current)
+
+
+def worker(root: Path, action: str, generation: str) -> None:
+    """Run the operation; any error it raises is recorded on the receipt."""
+    try:
+        _work(root, action, generation)
+    except Exception as exc:
+        record_failure(root, action, generation, exc)
+        raise
 
 
 def control(request: dict[str, Any]) -> dict[str, Any]:

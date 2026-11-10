@@ -173,8 +173,14 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     import uvicorn
 
     from clio_agent.gact.auth import refuse_open_bind  # noqa: PLC0415
+    from clio_agent.runtime import windows_accept_guard  # noqa: PLC0415
 
     refuse_open_bind(host)
+    # A Windows client that aborts mid-accept must not close the listener
+    # (python/cpython#93821).
+    guard = windows_accept_guard.install()
+    log = logger.warning if guard == "unsupported" else logger.info
+    log("gact_accept_guard outcome=%s", guard)
     server = uvicorn.Server(
         uvicorn.Config(
             app,
