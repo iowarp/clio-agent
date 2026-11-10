@@ -915,3 +915,12 @@ def test_signed_macos_artifact_builds_only_the_bundled_apple_silicon_leg() -> No
     assert desktop["steps"][0]["with"]["ref"] == (
         "${{ inputs.signed_macos_artifact && github.sha || env.RELEASE_TAG }}"
     )
+
+
+def test_tauri_build_keeps_the_runtime_signed_by_macos_sign_runtime() -> None:
+    """gact-tui's runner must not re-sign the runtime with its own entitlements."""
+    steps = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))["jobs"]["desktop"]["steps"]
+    builds = [step for step in steps if "tauri build" in step.get("run", "")]
+    assert builds
+    for step in builds:
+        assert step["env"]["CLIO_MACOS_SIGN_RUNTIME"] == "0"

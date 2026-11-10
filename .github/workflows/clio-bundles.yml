@@ -411,6 +411,10 @@ jobs:
           APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          # The runtime was signed above by scripts/macos_sign_runtime.py
+          # (role entitlements, wheel members). gact-tui's branded runner
+          # would otherwise re-sign it, entitling every executable.
+          CLIO_MACOS_SIGN_RUNTIME: "0"
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
