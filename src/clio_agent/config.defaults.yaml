@@ -889,6 +889,21 @@ arc.clio_core.daemon_rss_warn_bytes: 1073741824
 # socket; raise to cut overhead, lower to catch a dead daemon faster.
 arc.clio_core.liveness_ttl_s: 3.0
 
+# CLIO_ARC_CLIO_CORE_LOG_FLOOD_LINES_PER_S  (int)  <- src/clio_agent/arc/runtime_log.py
+# Sustained clio-core daemon log lines/s marking a log flood (a looping
+# error); raise only if a verbose CTP_LOG_LEVEL legitimately logs faster.
+arc.clio_core.log_flood_lines_per_s: 1000
+
+# CLIO_ARC_CLIO_CORE_LOG_FLOOD_RESTART_LIVE  (bool)  <- src/clio_agent/arc/runtime_log_flood.py
+# Opt-in: replace a log-flooding clio-core daemon even while clients use it;
+# they lose the daemon until they attach again.
+arc.clio_core.log_flood_restart_live: false
+
+# CLIO_ARC_CLIO_CORE_LOG_MAX_BYTES  (int)  <- src/clio_agent/arc/runtime_log.py
+# Cap on the clio-core daemon log (one rotation to .1 keeps a second capped
+# file); raise to keep more daemon history.
+arc.clio_core.log_max_bytes: 16777216
+
 # CLIO_ARC_CLIO_CORE_WRITE_RETRY_ATTEMPTS  (int)  <- src/clio_agent/arc/clio_core_retry.py
 # Max attempts (incl. the first) for a clio-core blob PutBlob before the
 # write is recorded lost; raise if refusals under load need more headroom.
