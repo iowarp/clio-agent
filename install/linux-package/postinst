@@ -1,0 +1,75 @@
+#!/bin/sh
+# CLIO Desktop: unpack the runtime the Linux package ships as one archive.
+#
+# The deb postinst and, embedded verbatim, the rpm %post, so this is POSIX sh. The
+# package also ships it as gact-runtime.unpack.sh: install.sh runs it again after the
+# package manager, because rpm erases the files of the package it upgrades AFTER the new
+# %post (the first upgrade from an exploded-runtime rpm removes what this unpacked).
+#
+# Mirrors the desktop's Windows unpack (gact-tui runtime_pack.rs): check the archive's
+# SHA-256 against its manifest, unpack beside the live copy, swap, roll back on failure,
+# and skip the work when the receipt already matches. One sync replaces dpkg's fsync of
+# every one of the runtime's ~32,000 files.
+set -eu
+
+root="${CLIO_PACKAGE_ROOT:-/usr/lib/CLIO Desktop}"
+case "$root" in /*) ;; *) echo "clio-desktop: CLIO_PACKAGE_ROOT must be absolute" >&2; exit 1 ;; esac
+manifest="$root/gact-runtime.pack.json"
+runtime="$root/gact-runtime"
+staging="$root/gact-runtime.installing"
+previous="$root/gact-runtime.previous"
+receipt=.clio-pack-sha256
+
+fail() {
+  echo "clio-desktop: $*" >&2
+  rm -rf "$staging"
+  exit 1
+}
+
+rm -rf "$staging"
+if [ ! -f "$manifest" ]; then
+  # This package carries no runtime archive (the lite app): drop one a bundled package
+  # unpacked. A runtime without the receipt belongs to the package itself.
+  if [ -f "$runtime/$receipt" ]; then rm -rf "$runtime" "$previous"; fi
+  exit 0
+fi
+
+grep -q '"schema":1[,}]' "$manifest" || fail "unsupported runtime manifest $manifest"
+name="$(sed -n 's/.*"archive":"\([^"/]*\)".*/\1/p' "$manifest")"
+[ "$name" = gact-runtime.tar.zst ] || fail "$manifest names an unexpected archive"
+sha="$(sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1/p' "$manifest")"
+[ -n "$sha" ] || fail "$manifest has no SHA-256"
+archive="$root/$name"
+[ -f "$archive" ] || fail "$archive is missing"
+if [ -f "$runtime/runtime.json" ] && [ "$(cat "$runtime/$receipt" 2>/dev/null || true)" = "$sha" ]; then
+  exit 0
+fi
+command -v zstd >/dev/null 2>&1 || fail "zstd is required to unpack the CLIO runtime"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required to check the CLIO runtime"
+
+started="$(date +%s)"
+mkdir -m 755 "$staging"
+# Hash and unpack at the same time: both read the same archive pages. Nothing is
+# activated until the hash matches.
+sha256sum "$archive" >"$staging/.sha256" &
+hashing=$!
+if ! { zstd -q -d -c -- "$archive" || echo failed >"$staging/.zstd"; } \
+  | tar -x -f - --no-same-owner -C "$staging"; then
+  wait "$hashing" || true
+  fail "could not unpack $archive"
+fi
+wait "$hashing" || fail "could not hash $archive"
+[ ! -f "$staging/.zstd" ] || fail "could not decompress $archive"
+[ "$(cut -d ' ' -f 1 "$staging/.sha256")" = "$sha" ] || fail "$archive does not match its manifest"
+[ -f "$staging/gact-runtime/runtime.json" ] || fail "$archive has no gact-runtime/runtime.json"
+printf '%s\n' "$sha" >"$staging/gact-runtime/$receipt"
+sync -f "$staging/gact-runtime/runtime.json" 2>/dev/null || sync
+
+rm -rf "$previous"
+if [ -e "$runtime" ]; then mv "$runtime" "$previous" || fail "could not set aside $runtime"; fi
+if ! mv "$staging/gact-runtime" "$runtime"; then
+  if [ -e "$previous" ]; then mv "$previous" "$runtime" || true; fi
+  fail "could not activate $runtime"
+fi
+rm -rf "$previous" "$staging"
+echo "clio-desktop: runtime unpacked in $(($(date +%s) - started))s"

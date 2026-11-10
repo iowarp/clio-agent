@@ -806,9 +806,10 @@ def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("variant", "platform"), [("bundled", "Windows"), ("lite", "Windows"), ("bundled", "Linux")]
+    ("variant", "platform"),
+    [("bundled", "Windows"), ("lite", "Windows"), ("bundled", "Linux"), ("lite", "Linux")],
 )
-def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
+def test_actual_desktop_config_inherits_only_its_platform_pack_optimizations(
     tmp_path: Path, variant: str, platform: str
 ) -> None:
     """Run the shipping merge against a pinned UI overlay, retaining brand/signing policy."""
@@ -850,7 +851,7 @@ def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
         check=False,
         timeout=10,
         cwd=tmp_path,
-        env={**os.environ, "RUNNER_OS": platform},
+        env={**os.environ, "RUNNER_OS": platform, "GITHUB_WORKSPACE": str(ROOT)},
     )
     assert result.returncode == 0, result.stderr
     config = json.loads(output.read_text())
@@ -867,6 +868,22 @@ def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
         assert config["bundle"]["resources"] == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]
     else:
         assert nsis.get("compression") == brand["bundle"]["windows"]["nsis"].get("compression")
+    linux = config["bundle"].get("linux", {})
+    if platform == "Linux":
+        scripts = ROOT / "install/linux-package"
+        for package in (linux["deb"], linux["rpm"]):
+            assert package["postInstallScript"] == str(scripts / "postinst")
+            assert package["preRemoveScript"] == str(scripts / "prerm")
+            assert package["postRemoveScript"] == str(scripts / "postrm")
+            assert ("zstd" in package.get("depends", [])) == (variant == "bundled")
+        if variant == "bundled":
+            assert config["bundle"]["resources"] == [
+                "gact-runtime.tar.zst",
+                "gact-runtime.pack.json",
+                "gact-runtime.unpack.sh",
+            ]
+    else:
+        assert "postInstallScript" not in linux.get("deb", {})
 
 
 def test_release_steps_after_the_check_use_the_package_version() -> None:

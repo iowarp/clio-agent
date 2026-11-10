@@ -514,7 +514,7 @@ macOS backend above.
 | Concurrent downloads | app + plan in parallel | app + plan in parallel | now one `curl.exe` per item in parallel (`Save-ClioDownloads`), serial fallback without `curl.exe` |
 | Inline hash | `tee` into `shasum` | app download now hashed inline too (`fetch_hashed`); no second `file_sha` pass | hashed while the file grows; a second pass runs only on a mismatch |
 | Prefetch handed to prepare | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` set for the setup, which runs `--prepare-runtime` from its postinstall hook |
-| Single archive, atomic swap | `.aar` streamed, folder renamed | **gap**: deb/rpm unpack loose files through dpkg/rpm | `.tar.zst` pack, extracted by 8 writers, swapped with a `pack.sha256` receipt (already in gact-tui) |
+| Single archive, atomic swap | `.aar` streamed, folder renamed | `gact-runtime.tar.zst` in the deb/rpm, verified and unpacked by the package's postinst, swapped with a receipt ([Linux runtime archive](#linux-runtime-archive)) | `.tar.zst` pack, extracted by 8 writers, swapped with a `pack.sha256` receipt (already in gact-tui) |
 | Phases with progress and timings | resolve/download/verify/install/prepare | same five | resolve/download/verify/install; prepare runs inside the silent setup (`/S`) and is timed as part of install |
 | Per-phase CI budgets | `desktop-install-macOS` | `desktop-install-Linux` (now) | `desktop-install-Windows` (now) |
 
@@ -532,11 +532,109 @@ macOS backend above.
 
 ### Gaps not closed here
 
-- **Linux single archive and atomic swap.** The deb/rpm formats install loose files through
-  the package manager. Shipping the runtime as one archive would need a product decision on
-  the Linux package format.
 - **Windows prepare as its own phase.** The NSIS postinstall always runs
   `--prepare-runtime` (gact-tui `installer-hooks.nsh`). Timing prepare on its own needs an
   NSIS flag in gact-tui to skip it, so `install.ps1` can run it after the setup.
 - **Windows pack progress.** `runtime_pack.rs` hashes the 483 MB pack without progress output,
   and NSIS `/S` hides the setup's checkpoint lines.
+
+## Linux runtime archive
+
+The Linux deb and rpm now ship the bundled runtime the way Windows does: one
+`gact-runtime.tar.zst` plus its `gact-runtime.pack.json`, made by
+`install/pack-gact-runtime.sh` with the shared `install/compress_runtime.py` (level 19,
+128 MB window). The package's maintainer scripts (`install/linux-package`) unpack it into
+`/usr/lib/CLIO Desktop/gact-runtime`. That is the directory the desktop already reads on
+Linux (gact-tui `bundled_runtime_dir`), so gact-tui needs no change. The runtime stays
+root-owned and not writable by group or others. The precompiled `.pyc` files from
+`install/precompile_runtime.py` travel inside the archive, and the packer refuses a runtime
+without them.
+
+### Measured before
+
+| Item | v0.9.5.1 amd64 deb | Source |
+| --- | --- | --- |
+| Package | 722,401,870 bytes, gzip `data.tar.gz`, no maintainer scripts | release asset |
+| Files | 32,250 files, 4,287 directories, 1.86 GB unpacked; `gact-runtime` alone 32,243 files, 1.80 GB | `data.tar.gz` listing |
+| `install.sh --desktop` on CI | 58.1 s: resolve 0.8, download 2.6, verify 0.0, install 21.8, prepare 32.8 | install-matrix 42765370459, `install-events.jsonl` |
+| dpkg `Unpacking clio-desktop` | about 11.8 s, plus about 2 s setup and triggers | install-matrix 42765370459, package job |
+| `apt remove` | 5.2 s | same run, `timings.jsonl` |
+
+The older 75.9 s figure in #1987 had install at 23.8 s and prepare at 44.0 s. The 44 s was
+prepare, not dpkg.
+
+### The archive, measured on the real 0.9.5.1 Linux runtime
+
+These were measured on the M4 Mac, using the runtime extracted from the 0.9.5.1 deb.
+
+| Step | Result |
+| --- | --- |
+| Pack (`pack-gact-runtime.sh`) | 1,783 MiB tar → 443.3 MiB (464.9 MB) in 150 s, 10 workers, build time only |
+| Package payload | 722 MB gzip deb → about 465 MB plus the shell (-36%) |
+| zstd decode alone | 1.1 s for 1.9 GB |
+| sha256 of the archive | 0.9 s, run alongside the unpack |
+| postinst unpack on APFS | 19 s, all from creating the files (raw `tar -x` alone 13 s); not an ext4 prediction |
+| Round trip | byte-identical to the source tree (`diff -r`) |
+
+### How it installs, upgrades and removes
+
+- **postinst / `%post`** (POSIX sh; rpm embeds the text). Reads the manifest, skips when the
+  receipt matches, then hashes and unpacks in parallel into `gact-runtime.installing`. It
+  checks the hash and `runtime.json`, writes the receipt, runs one `sync -f`, then swaps the
+  directories through `gact-runtime.previous`, rolling back on failure.
+- **prerm / `%preun`** on remove (`remove`, `0`): deletes the unpacked runtime so the
+  package manager can remove the directory. Upgrades keep it, and the new postinst swaps it.
+- **postrm / `%postun`** on remove, purge or `0`: a safety net that also removes the empty
+  directory.
+- **Ownership.** Only a runtime carrying the `.clio-pack-sha256` receipt is ever deleted. An
+  exploded, package-owned runtime from an older release is left to its package manager.
+- **Lite variant.** It ships the same scripts. When a lite package replaces a bundled one,
+  its postinst finds no manifest and removes the unpacked runtime.
+- **rpm upgrade from an exploded rpm.** rpm erases the old package's files after the new
+  `%post`, which deletes what it just unpacked. The package therefore also ships the script
+  as `gact-runtime.unpack.sh`, and `install.sh` runs it after `apt-get`/`dnf`. When the
+  receipt matches it does nothing; otherwise it repairs the runtime. Without `install.sh`,
+  `dnf reinstall clio-desktop` repairs it.
+- **Repair.** `dpkg-reconfigure clio-desktop` or `apt install --reinstall` re-runs the
+  unpack from the archive. The package keeps the archive (dpkg owns it), at a cost of about
+  465 MB of disk space; Windows deletes its archive instead.
+- **Downgrade to a pre-archive release** may leave stale files in the runtime. Remove the
+  package first.
+- `zstd` is a package dependency of the bundled variant (default on Ubuntu and Fedora).
+
+Lifecycle checks ran under `/bin/dash` on a scratch root (`CLIO_PACKAGE_ROOT`), and all
+passed:
+
+- fresh install;
+- no-op rerun;
+- bad hash, and a truncated archive: refused, live runtime kept, no staging left;
+- upgrade over an exploded runtime;
+- rpm `%post 2`, `%preun 1`, `%postun 1`;
+- bundled to lite;
+- deb remove and purge;
+- rpm erase;
+- rpm exploded-upgrade repair;
+- a relative root refused.
+
+### Expected Linux time, still to be measured on real Linux
+
+| Step | v0.9.5.1 (CI) | Expected |
+| --- | --- | --- |
+| download | 2.6 s (722 MB) | about 1.8 s on CI; about 14 s less at the 18 MB/s seen on the Mac |
+| install | 21.8 s (dpkg unpack ~11.8 s) | dpkg writes one file; the postinst extract plus one sync replace 32,000 fsyncs; estimate 12-17 s |
+| prepare | 32.8 s | unchanged by this; #2000's (g)/(d)/(e3) apply once released |
+| uninstall | 5.2 s | about 1-2 s (one `rm -rf` and four package files) |
+
+Needs a real Linux machine (none was reachable from the Mac):
+
+- a bundled build with the pack;
+- `install.sh --desktop` timing for deb and rpm;
+- upgrade from 0.9.5.1, remove, purge, reinstall and `dpkg-reconfigure` on deb, and the same
+  on rpm (including the exploded-upgrade repair);
+- the install-matrix Linux leg and `desktop-bundle-smoke`, which now builds the same layout.
+
+The `desktop install (Linux)` budgets stay unchanged until that measurement exists.
+
+A single cross-platform unpacker (the Rust `runtime_unpack.rs`, run on every OS, design A2
+in `install-and-startup-implementation.md`) would replace the shell extract. It needs a
+gact-tui change and a pin bump, so it is left as follow-up work.
