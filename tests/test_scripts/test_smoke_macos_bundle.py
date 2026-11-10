@@ -67,14 +67,53 @@ def test_any_write_into_the_bundle_fails_the_smoke(tmp_path: Path) -> None:
     module.parent.mkdir(parents=True)
     module.write_text("x = 1\n", encoding="utf-8")
     before = smoke.snapshot(app)
-    smoke.require_unchanged(app, before)
+    smoke.require_unchanged(app, before, "the launch")
 
     cache = module.parent / "__pycache__" / "mod.cpython-314.pyc"
     cache.parent.mkdir()
     cache.write_bytes(b"\0" * 16)
 
-    with pytest.raises(RuntimeError, match="wrote into its bundle.*mod.cpython-314.pyc"):
-        smoke.require_unchanged(app, before)
+    with pytest.raises(RuntimeError, match="the launch wrote into the bundle.*mod.cpython-314.pyc"):
+        smoke.require_unchanged(app, before, "the launch")
+
+
+def test_bytecode_newer_than_the_build_fails_before_any_other_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = tmp_path / "CLIO Desktop.app"
+    plist = app / "Contents/Info.plist"
+    shipped = app / "Contents/Resources/gact-runtime/python/lib/__pycache__/os.cpython-314.pyc"
+    shipped.parent.mkdir(parents=True)
+    shipped.write_bytes(b"\0" * 16)
+    plist.write_bytes(b"")
+    os.utime(shipped, ns=(1_000, 1_000))
+    os.utime(plist, ns=(2_000, 2_000))
+    verified: list[Path] = []
+    monkeypatch.setattr(smoke, "verify", verified.append)
+    before = smoke.snapshot(app)
+
+    assert smoke.written_bytecode(app) == []
+    smoke.require_sealed(app, before, "--prepare-runtime")
+    assert verified == [app]
+
+    compiled = shipped.parent / "plistlib.cpython-314.pyc"
+    compiled.write_bytes(b"\0" * 16)
+    os.utime(compiled, ns=(3_000, 3_000))
+
+    assert smoke.written_bytecode(app) == [
+        "Contents/Resources/gact-runtime/python/lib/__pycache__/plistlib.cpython-314.pyc"
+    ]
+    with pytest.raises(RuntimeError, match="--prepare-runtime compiled bytecode.*plistlib"):
+        smoke.require_sealed(app, before, "--prepare-runtime")
+    assert verified == [app]
+
+
+def test_find_record_walks_the_inventory_to_the_searxng_row() -> None:
+    row = {"id": "local:searxng", "observation": {"serving": True}}
+    inventory = {"targets": [{"id": "local", "services": [{"id": "local:other"}, row]}]}
+
+    assert smoke.find_record(inventory, "local:searxng") is row
+    assert smoke.find_record(inventory, "local:missing") is None
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="quarantine is a macOS xattr")

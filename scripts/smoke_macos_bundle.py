@@ -11,6 +11,11 @@ fatal (use it once releases are notarized).
 magic number, not by name) plus binaries hidden inside archives, which the
 notary service also inspects. The signing step must sign each listed file
 inside-out with the hardened runtime; see ``install/macos-signing.md``.
+
+``--exercise`` runs the installer's ``--prepare-runtime`` step first, then has the
+live backend serve local web search and an Office render. After each stage the
+seal must verify, nothing in the bundle may change, and no ``__pycache__/*.pyc``
+may be newer than ``Info.plist`` (#1979).
 """
 
 from __future__ import annotations
@@ -94,15 +99,128 @@ def snapshot(app: Path) -> dict[str, tuple[int, int]]:
     }
 
 
-def require_unchanged(app: Path, before: dict[str, tuple[int, int]]) -> None:
+def require_unchanged(app: Path, before: dict[str, tuple[int, int]], stage: str) -> None:
     after = snapshot(app)
     changed = sorted(
         name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
     )
     if changed:
+        raise RuntimeError(f"{stage} wrote into the bundle ({len(changed)} paths): {changed[:20]}")
+
+
+def written_bytecode(app: Path) -> list[str]:
+    """Bytecode compiled after the app was built, which breaks its signature seal (#1979)."""
+    built = (app / "Contents/Info.plist").stat().st_mtime_ns
+    return sorted(
+        path.relative_to(app).as_posix()
+        for path in app.rglob("__pycache__/*.pyc")
+        if path.lstat().st_mtime_ns > built
+    )
+
+
+def require_sealed(app: Path, before: dict[str, tuple[int, int]], stage: str) -> None:
+    """Fail if ``stage`` compiled bytecode or changed anything inside the signed bundle."""
+    written = written_bytecode(app)
+    if written:
         raise RuntimeError(
-            f"Running the app wrote into its bundle ({len(changed)} paths): {changed[:20]}"
+            f"{stage} compiled bytecode into the bundle ({len(written)} files): {written[:20]}"
         )
+    require_unchanged(app, before, stage)
+    verify(app)
+    print(f"Bundle seal intact after {stage}", flush=True)
+
+
+def prepare_runtime(app: Path, env: dict[str, str]) -> None:
+    """Run the installer's ``--prepare-runtime`` step: the document stack and Office."""
+    result = subprocess.run(
+        [str(app / "Contents/MacOS/clio-desktop"), "--prepare-runtime"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    print(result.stdout + result.stderr, flush=True)
+    if result.returncode:
+        raise RuntimeError(f"--prepare-runtime exited {result.returncode}")
+
+
+def get_json(url: str, token: str | None = None) -> object:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    with urlopen(Request(url, headers=headers), timeout=10) as response:
+        return json.load(response)
+
+
+def find_record(value: object, record_id: str) -> dict[str, object] | None:
+    if isinstance(value, dict):
+        if value.get("id") == record_id:
+            return value
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            if (found := find_record(item, record_id)) is not None:
+                return found
+    return None
+
+
+def use_web_search(port: int, token: str) -> None:
+    """Wait for the boot-installed local SearXNG worker, then search through it."""
+    deadline = time.monotonic() + 300
+    record: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        inventory = get_json(f"http://127.0.0.1:{port}/v1/infrastructure/inventory", token)
+        record = find_record(inventory, "local:searxng")
+        observation = record.get("observation") if record else None
+        if isinstance(observation, dict) and observation.get("serving"):
+            break
+        time.sleep(3)
+    else:
+        raise TimeoutError(f"Local SearXNG never served within 300 seconds: {record}")
+    configuration = record.get("configuration") if record else None
+    search_port = configuration.get("port") if isinstance(configuration, dict) else None
+    results = get_json(f"http://127.0.0.1:{search_port}/search?q=python&format=json")
+    if not isinstance(results, dict) or "results" not in results:
+        raise RuntimeError(f"SearXNG returned no result list: {str(results)[:300]}")
+    print(f"Local SearXNG answered with {len(results['results'])} results", flush=True)
+
+
+# Runs as an agent document tool would: the server's protection first, then the
+# confined helper renders through Office and recalculates a formula.
+_OFFICE_USE = """
+import sys
+from pathlib import Path
+from clio_agent.runtime.execution_environment import protect_bundled_runtime
+protect_bundled_runtime()
+from docx import Document
+from openpyxl import Workbook
+from clio_agent.runtime.document_runtime import prepare_document_runtime, run_document_helper
+workspace = Path(sys.argv[1])
+document = Document()
+document.add_paragraph("Rendering must not write bytecode into the app bundle.")
+document.save(workspace / "seal.docx")
+book = Workbook()
+book.active.append([2, 3, "=SUM(A1:B1)"])
+book.save(workspace / "seal.xlsx")
+runtime = prepare_document_runtime(workspace)
+for action, name in (("render", "seal.docx"), ("recalculate", "seal.xlsx")):
+    result = run_document_helper(
+        runtime, [action, str(workspace / name), str(workspace / "out")], cwd=workspace
+    )
+    if result.get("status") != "complete":
+        raise SystemExit(f"{action} failed: {result}")
+    print(f"Office {action} complete")
+"""
+
+
+def use_office(runtime: Path, root: Path, env: dict[str, str]) -> None:
+    workspace = root / "documents"
+    workspace.mkdir()
+    subprocess.run(
+        [str(runtime / "python/bin/python3.14"), "-I", "-B", "-X", "utf8", "-c", _OFFICE_USE]
+        + [str(workspace)],
+        env=env,
+        check=True,
+        timeout=600,
+    )
 
 
 def quarantine(app: Path) -> None:
@@ -168,8 +286,12 @@ def launch_desktop(app: Path, root: Path, env: dict[str, str]) -> None:
             print((root / "desktop.log").read_text(errors="replace"))
 
 
-def smoke(app: Path, *, bundled: bool) -> None:
-    """Launch the native app and require readiness from the real bundled backend."""
+def smoke(app: Path, *, bundled: bool, exercise: bool = False) -> None:
+    """Launch the native app and require readiness from the real bundled backend.
+
+    ``exercise`` first runs ``--prepare-runtime``, then has the live backend serve web
+    search and Office rendering, checking the seal after each stage.
+    """
     verify(app)
     before = snapshot(app)
     with tempfile.TemporaryDirectory(prefix="clio-macos-smoke-") as directory:
@@ -180,10 +302,17 @@ def smoke(app: Path, *, bundled: bool) -> None:
             if not key.startswith(("CLIO_", "GACT_"))
         }
         env.update(CLIO_AGENT_HOME=str(root / "agent"), CLIO_DESKTOP_HOME=str(root / "desktop"))
+        if exercise:
+            # The Desktop keys its data folder on HOME; keep it out of the real profile.
+            (root / "home").mkdir()
+            env["HOME"] = str(root / "home")
         if bundled:
             runtime = app / "Contents/Resources/gact-runtime"
             if not (runtime / "runtime.json").is_file():
                 raise ValueError("Bundled app has no runtime manifest")
+            if exercise:
+                prepare_runtime(app, env)
+                require_sealed(app, before, "--prepare-runtime")
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
@@ -219,6 +348,10 @@ def smoke(app: Path, *, bundled: bool) -> None:
                         raise TimeoutError(
                             "Packaged sidecar did not become ready within 90 seconds"
                         )
+                    if exercise:
+                        office_env = {**env, "GACT_BUNDLED_RUNTIME_DIR": str(runtime)}
+                        use_web_search(port, token)
+                        use_office(runtime, root, office_env)
                     # Attach to the live, real packaged backend. Launching Desktop
                     # first would start its own independently grouped backend and
                     # race this smoke's second server over the same configuration.
@@ -230,8 +363,7 @@ def smoke(app: Path, *, bundled: bool) -> None:
         else:
             launch_desktop(app, root, env)
         # Starting Python must not invalidate the signed app by modifying resources.
-        require_unchanged(app, before)
-        verify(app)
+        require_sealed(app, before, "the launch")
 
 
 def main() -> None:
@@ -252,6 +384,11 @@ def main() -> None:
         action="store_true",
         help="fail unless Gatekeeper accepts the quarantined app (notarized builds)",
     )
+    parser.add_argument(
+        "--exercise",
+        action="store_true",
+        help="with --bundled: run --prepare-runtime, then use web search and Office",
+    )
     args = parser.parse_args()
     app = args.app.resolve(strict=True)
     runtime = app / "Contents/Resources/gact-runtime"
@@ -267,7 +404,7 @@ def main() -> None:
             print(f"::warning::unsignable Mach-O inside an archive: {member}", flush=True)
         if args.macho_list:
             args.macho_list.write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
-    smoke(app, bundled=args.bundled)
+    smoke(app, bundled=args.bundled, exercise=args.exercise and args.bundled)
     if args.quarantine or args.require_gatekeeper:
         quarantine(app)
         if gatekeeper_accepts(app):
