@@ -124,6 +124,10 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
 
     from clio_agent.runtime import sandbox_codex as sc  # noqa: PLC0415
     from clio_agent.runtime.execution_environment import bundled_root  # noqa: PLC0415
+    from clio_agent.runtime.sandbox_codex_mxc import (  # noqa: PLC0415
+        PACKAGED_PYTHON_ACTION,
+        REASON_MXC_PACKAGED_PYTHON,
+    )
 
     codex_missing = (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED)
     if resolved.reason in codex_missing and bundled_root() is not None:
@@ -149,6 +153,8 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             "verification receipt. Open Infrastructure > CLIO hosts > Protected execution and select "
             "Set up protected execution, or run `clio sandbox setup`, to verify it."
         )
+    elif resolved.reason == REASON_MXC_PACKAGED_PYTHON:
+        next_action = PACKAGED_PYTHON_ACTION
     elif resolved.reason == sb.REASON_DISABLED:
         next_action = "Set sandbox.enabled=true (CLIO_SANDBOX_ENABLED) to resolve a fence."
     else:

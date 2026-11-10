@@ -202,8 +202,13 @@ def durable_interpreter(executable: str | None = None) -> bool:
     """CLIO's interpreter stays where it is, so a service environment can be built on it.
 
     Not one inside a disk image or behind App Translocation (both vanish), nor
-    Microsoft Store Python (its activation broker escapes the worker's job).
+    Microsoft Store Python (its activation broker escapes the worker's job),
+    including a virtual environment whose base interpreter is Store Python.
     """
+    if executable is None:
+        base = getattr(sys, "_base_executable", "") or ""
+        if "windowsapps" in f"{base}\n{sys.base_prefix}".casefold():
+            return False
     executable = executable if executable is not None else sys.executable
     if not executable:
         return False

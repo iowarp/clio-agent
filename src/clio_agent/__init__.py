@@ -144,22 +144,25 @@ def _default_litellm_local_cost_map() -> None:
 _default_litellm_local_cost_map()
 
 
-def _default_uv_managed_python_on_macos() -> None:
-    """Keep every ``uv`` CLIO starts on macOS away from ``/usr/bin/python3``.
+def _default_uv_managed_python() -> None:
+    """Keep every ``uv`` CLIO starts on macOS and Windows on uv-managed Pythons.
 
-    uv's interpreter discovery executes ``/usr/bin/python3``; on a Mac without the
-    Command Line Tools that is a stub which opens their install dialog. Children
-    inherit this, so ``uv sync``/``uv tool install``/``uv run`` use uv-managed
-    Pythons. ``UV_MANAGED_PYTHON`` (not ``UV_PYTHON_PREFERENCE``, which uv refuses
-    next to an explicit ``--no-managed-python``) still yields to such a flag, and
-    ``setdefault`` keeps an operator's explicit choice.
+    On macOS uv's interpreter discovery executes ``/usr/bin/python3``; on a Mac without
+    the Command Line Tools that is a stub which opens their install dialog. On Windows
+    uv otherwise prefers an installed Microsoft Store Python over downloading one, and
+    a packaged (MSIX) interpreter cannot run inside protected execution (MXC refuses
+    to launch packaged apps). Children inherit this, so ``uv sync``/``uv tool
+    install``/``uv run`` use uv-managed Pythons. ``UV_MANAGED_PYTHON`` (not
+    ``UV_PYTHON_PREFERENCE``, which uv refuses next to an explicit
+    ``--no-managed-python``) still yields to such a flag or an explicit interpreter
+    path, and ``setdefault`` keeps an operator's explicit choice.
     """
 
-    if sys.platform == "darwin":
+    if sys.platform in ("darwin", "win32"):
         os.environ.setdefault("UV_MANAGED_PYTHON", "1")
 
 
-_default_uv_managed_python_on_macos()
+_default_uv_managed_python()
 
 
 # PEP 562 lazy attribute access. ``from clio_agent import ClioAgent``
