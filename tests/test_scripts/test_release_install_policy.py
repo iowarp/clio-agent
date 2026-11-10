@@ -20,10 +20,10 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5.1"
+EXPECTED_VERSION = "0.9.6"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
-DOCUMENTED_VERSION = "0.9.5.1"
+DOCUMENTED_VERSION = "0.9.6"
 EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.1.2"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"
@@ -242,6 +242,11 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         assert "PYTHONDONTWRITEBYTECODE" in script[script.index("runtime manifest") :], (
             relative_path
         )
+        # The lazily imported stdlib and the real launch's third-party imports (#1979);
+        # the launch-path boot needs runtime.json, so it runs after the manifest.
+        assert "--stdlib" in script[compile_step:relocation_proof], relative_path
+        assert "--launch-path" in script[compile_step:relocation_proof], relative_path
+        assert script.index("runtime manifest") < compile_step, relative_path
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path
@@ -801,9 +806,10 @@ def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("variant", "platform"), [("bundled", "Windows"), ("lite", "Windows"), ("bundled", "Linux")]
+    ("variant", "platform"),
+    [("bundled", "Windows"), ("lite", "Windows"), ("bundled", "Linux"), ("lite", "Linux")],
 )
-def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
+def test_actual_desktop_config_inherits_only_its_platform_pack_optimizations(
     tmp_path: Path, variant: str, platform: str
 ) -> None:
     """Run the shipping merge against a pinned UI overlay, retaining brand/signing policy."""
@@ -845,7 +851,7 @@ def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
         check=False,
         timeout=10,
         cwd=tmp_path,
-        env={**os.environ, "RUNNER_OS": platform},
+        env={**os.environ, "RUNNER_OS": platform, "GITHUB_WORKSPACE": str(ROOT)},
     )
     assert result.returncode == 0, result.stderr
     config = json.loads(output.read_text())
@@ -862,6 +868,22 @@ def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
         assert config["bundle"]["resources"] == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]
     else:
         assert nsis.get("compression") == brand["bundle"]["windows"]["nsis"].get("compression")
+    linux = config["bundle"].get("linux", {})
+    if platform == "Linux":
+        scripts = ROOT / "install/linux-package"
+        for package in (linux["deb"], linux["rpm"]):
+            assert package["postInstallScript"] == str(scripts / "postinst")
+            assert package["preRemoveScript"] == str(scripts / "prerm")
+            assert package["postRemoveScript"] == str(scripts / "postrm")
+            assert ("zstd" in package.get("depends", [])) == (variant == "bundled")
+        if variant == "bundled":
+            assert config["bundle"]["resources"] == [
+                "gact-runtime.tar.zst",
+                "gact-runtime.pack.json",
+                "gact-runtime.unpack.sh",
+            ]
+    else:
+        assert "postInstallScript" not in linux.get("deb", {})
 
 
 def test_release_steps_after_the_check_use_the_package_version() -> None:

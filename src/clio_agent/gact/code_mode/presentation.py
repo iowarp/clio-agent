@@ -63,7 +63,10 @@ def _summary(row: Mapping[str, Any]) -> str:
         return f"Stopped at its time limit; {text}"
     if status == "failed":
         return f"Script failed; {text}"
-    return text if calls else "No tool calls"
+    if status == "cancelled":
+        return f"Stopped; {text}"
+    # A finished script that called no tools still ran: say so, not just "no calls".
+    return text if calls else "Finished without tool calls"
 
 
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:

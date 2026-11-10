@@ -1,0 +1,19 @@
+#!/bin/sh
+# CLIO Desktop: before the package and its runtime archive are removed, remove the
+# runtime postinst unpacked from it, so the package manager can remove the directory.
+#
+# The deb prerm (remove) and, embedded verbatim, the rpm %preun ($1 = 0 on erase), so
+# this is POSIX sh. Upgrades keep the runtime: the new package's postinst replaces it.
+set -eu
+
+root="${CLIO_PACKAGE_ROOT:-/usr/lib/CLIO Desktop}"
+case "$root" in /*) ;; *) echo "clio-desktop: CLIO_PACKAGE_ROOT must be absolute" >&2; exit 1 ;; esac
+
+case "${1:-}" in
+  remove | 0)
+    rm -rf "$root/gact-runtime.installing" "$root/gact-runtime.previous"
+    # Only an unpacked runtime carries the receipt; an exploded one is the package's own.
+    if [ -f "$root/gact-runtime/.clio-pack-sha256" ]; then rm -rf "$root/gact-runtime"; fi
+    ;;
+esac
+exit 0

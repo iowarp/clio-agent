@@ -113,8 +113,13 @@ def completed_presentation(
     terminal_output: str,
     *,
     error: str | None = None,
+    outcome: str | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Prepare the observer view; failures cannot alter the tool's result or status."""
+    """Prepare the observer view; failures cannot alter the tool's result or status.
+
+    ``outcome`` (``denied`` or ``cancelled``) is an unsuccessful call that is not the
+    tool's failure: the view says it was not run, or was stopped, rather than failed.
+    """
     from clio_agent.gact.agents.tool_instrumentation import present_native_result
     from clio_agent.tools.tool_presentation import present_mcp_result
 
@@ -127,7 +132,21 @@ def completed_presentation(
         if presentation is None:
             presentation = present_mcp_result(name, args, result)
         presentation = ToolPresentation.model_validate(presentation).model_dump(exclude_none=True)
-        if error:
+        if error and outcome in {"cancelled", "denied"}:
+            presentation["status"] = outcome
+            presentation["summary"] = ""
+            presentation["blocks"].append(
+                {
+                    "id": "execution-outcome",
+                    "type": "text",
+                    "label": "Not run" if outcome == "denied" else "Stopped",
+                    "severity": "warning",
+                    "text": _human_execution_error(error)
+                    if outcome == "denied"
+                    else "Stopped before it finished; no result was returned.",
+                }
+            )
+        elif error:
             explained = _presenter_explained_task_failure(result, presentation)
             presentation["status"] = "failed"
             presentation["summary"] = ""

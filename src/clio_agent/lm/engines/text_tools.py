@@ -546,15 +546,32 @@ _INVOKE_MARKUP = re.compile(
     re.DOTALL,
 )
 #: Where call markup begins, an invoke opener or the pieces of a call whose opener was
-#: lost (the invoke protocol: L1's answers began with streamed "</function_cal" pieces).
-_INVOKE_OPENER = re.compile(r"""</?function_calls>|<invoke\s+name=|<parameter\s+name=|</invoke>""")
+#: lost (the invoke protocol: L1's answers began with streamed "</function_cal" pieces),
+#: or a line that begins with the container's word written without its markup
+#: (``function_calls="" invoke name="run_code">``, ``function_calls: invoke run_code``):
+#: what is left of a call block whose tags were lost, never prose. The service may also
+#: replace call markup the model wrote as text with ``<invoke_tool_placeholder>`` tags,
+#: and models write an invented ``<invoke:shell_bash>`` opener beside a real block.
+_INVOKE_OPENER = re.compile(
+    r"""</?function_calls>|<invoke\s+name=|<parameter\s+name=|</invoke>"""
+    r"""|</?invoke_tool_placeholder>|</?invoke:[\w.-]+>"""
+    r"""|(?<![^\n])[ \t]*<?/?function_calls\b"""
+)
 _INVOKE_OPENERS = (
     "<function_calls>",
     "</function_calls>",
     "<invoke name=",
+    "<invoke:",
+    "</invoke:",
     "<parameter name=",
     "</invoke>",
+    "<invoke_tool_placeholder>",
+    "</invoke_tool_placeholder>",
 )
+#: The container's word at a line start, held back while the line could still become it.
+_CALL_WORDS = ("function_calls", "<function_calls", "</function_calls")
+#: An invented ``<invoke:NAME`` opener still being written, held back until its ``>``.
+_UNFINISHED_INVOKE_NAME = re.compile(r"</?invoke:[\w.-]*$")
 
 
 def _without_invoke_markup(text: str) -> tuple[str, int]:
@@ -564,9 +581,14 @@ def _without_invoke_markup(text: str) -> tuple[str, int]:
     cleaned, removed = _INVOKE_MARKUP.subn("", text)
     if opener := _INVOKE_OPENER.search(cleaned):
         return cleaned[: opener.start()], removed
+    if unfinished := _UNFINISHED_INVOKE_NAME.search(cleaned):
+        return cleaned[: unfinished.start()], removed
     for n in range(min(max(map(len, _INVOKE_OPENERS)) - 1, len(cleaned)), 0, -1):
         if any(o.startswith(cleaned[-n:]) for o in _INVOKE_OPENERS):
             return cleaned[:-n], removed
+    last = cleaned.rsplit("\n", 1)[-1]
+    if (word := last.lstrip(" \t")) and any(w.startswith(word) for w in _CALL_WORDS):
+        return cleaned[: len(cleaned) - len(last)], removed
     return cleaned, removed
 
 

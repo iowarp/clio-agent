@@ -342,8 +342,12 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
         allowFreeform: bool | None = None,  # noqa: N803 - released parameter
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        from clio_agent.gact.artifacts.observer_bridge import current_call_id, observer_call_id
         from clio_agent.gact.question_bundle import normalize_question_bundle
 
+        # The asking call's own id, read before the hand-off below, links the Question
+        # (and its interaction) to the tool row that asked it.
+        asking_call = TASK_CALL.get().invocation_id or observer_call_id() or current_call_id()
         bundle = normalize_question_bundle(questions) if questions is not None else None
 
         def post() -> dict[str, Any]:
@@ -359,7 +363,7 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
                         raise ValueError("surface_id must name an existing surface in this session")
                 if expiresInSeconds < 0:
                     raise ValueError("Question expiry must be nonnegative")
-                invocation = TASK_CALL.get().invocation_id or uuid4().hex
+                invocation = asking_call or uuid4().hex
                 handle = (
                     "task_"
                     + hashlib.sha256(

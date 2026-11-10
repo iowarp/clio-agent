@@ -41,6 +41,15 @@ _FENCED = re.compile(r"```.*?(?:```|\Z)", re.S)
 _INVOKE_OPEN = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>""")
 #: A call's closing markup or a parameter without its <invoke name=...> opener.
 _CUT = re.compile(r"""<parameter\s+name=|</invoke>|</function_calls>""")
+#: A line that begins with the container's word but is not its tag: what is left of a
+#: call block whose markup was lost (``function_calls="" invoke name="run_code">``,
+#: ``function_calls: invoke run_code``), or the ``<invoke_tool_placeholder>`` tags the
+#: service substitutes for call markup written as text, or an invented ``<invoke:NAME>``
+#: opener models write beside a real block. Never prose and never a call.
+_RESIDUE = re.compile(
+    r"""(?m)^[ \t]*(?:<?/?function_calls(?!>)\b|</?invoke_tool_placeholder>"""
+    r"""|</?invoke:[\w.-]+>).*$"""
+)
 #: The reason a cut call block is refused, in this protocol's own terms.
 CUT_BLOCK = (
     "the call block was cut: it must open with <function_calls> and then "
@@ -198,6 +207,9 @@ def _parse(
         outside = _FENCED.sub("", reply)  # markup in a fenced block is an example
         opened = _INVOKE_OPEN.search(outside)
         if opened is None and _CUT.search(outside) is None:
+            if residue := _RESIDUE.search(outside):
+                return InvokeCalls(_visible(outside[: residue.start()]), error=CUT_BLOCK,
+                                   raw=outside[residue.start():])  # fmt: skip
             return None
         if opened is not None and opened["name"] not in known:
             return None
@@ -231,8 +243,8 @@ def _parse(
 
 
 def _visible(text: str) -> str:
-    """``text`` without the container tags, its blank runs closed up."""
-    cleaned = text.replace(_OPEN, "").replace(_CLOSE, "")
+    """``text`` without the container tags or their residue, its blank runs closed up."""
+    cleaned = _RESIDUE.sub("", text.replace(_OPEN, "").replace(_CLOSE, ""))
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 

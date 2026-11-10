@@ -30,8 +30,10 @@ on:
       signed_macos_artifact:
         description: >-
           Build the Developer ID signed and notarized macOS aarch64 bundled
-          Desktop from the dispatch ref as a workflow artifact. `tag` only
-          labels the version; no release is created, changed or published.
+          Desktop from the dispatch ref as a workflow artifact. `tag` labels the
+          version and must match the ref's pyproject.toml version (the app and
+          its runtime would otherwise disagree); no release is created, changed
+          or published.
         type: boolean
         default: false
 
@@ -69,6 +71,12 @@ jobs:
       SIGNED_MACOS_ARTIFACT: ${{ inputs.signed_macos_artifact || false }}
     steps:
       - uses: actions/checkout@v4
+      # The app shell is versioned from the tag and its runtime from pyproject.toml;
+      # refuse a mismatch before any draft or build. A rebuild checks out the tag
+      # only in its desktop legs, which run the same check.
+      - name: Check the release tag matches the package version
+        if: ${{ !inputs.rebuild_bundled }}
+        run: python3 scripts/check_bundle_matches_lock.py --project . --release-tag "$RELEASE_TAG"
       - name: Ensure exactly one draft release for the tag
         if: ${{ !inputs.signed_macos_artifact }}
         env:
@@ -278,7 +286,7 @@ jobs:
         # python; packaging is a declared dependency of that frozen runtime.
         run: |
           external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14 \
-            "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" \
+            "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" --release-tag "$RELEASE_TAG" \
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14
       # Tauri signs only the app, its frameworks and the sidecar; the runtime
       # ships as resources. Sign every runtime Mach-O (and the native members
@@ -300,12 +308,18 @@ jobs:
         shell: pwsh
         run: |
           & external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe `
-            "$env:BUNDLE_CHECKER" --project "$env:GITHUB_WORKSPACE" `
+            "$env:BUNDLE_CHECKER" --project "$env:GITHUB_WORKSPACE" --release-tag "$env:RELEASE_TAG" `
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe
       - name: Pack embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: ./install/pack-gact-runtime.ps1
+      # The deb and rpm carry one archive instead of the runtime's ~32,000 files; their
+      # postinst (install/linux-package) verifies and unpacks it, root-owned.
+      - name: Pack embedded clio-agent runtime (Linux)
+        if: matrix.variant == 'bundled' && runner.os == 'Linux'
+        shell: bash
+        run: bash install/pack-gact-runtime.sh
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
@@ -483,6 +497,14 @@ jobs:
             ));
             config.bundle = merge(config.bundle ?? {}, windowsPack.bundle);
           }
+          // The Linux deb and rpm ship the runtime as the same archive and unpack it in
+          // their maintainer scripts (install/linux-package).
+          if (process.env.RUNNER_OS === "Linux") {
+            const { linuxPackageBundle } = require(
+              `${process.env.GITHUB_WORKSPACE}/install/linux-package/tauri-overlay.cjs`,
+            );
+            config.bundle = linuxPackageBundle(config.bundle ?? {}, variant);
+          }
           // CLIO-branded installers use the CLIO release identity. GACT keeps
           // its independent package version for its own releases and diagnostics.
           config.version = tauriVersion;
@@ -550,6 +572,15 @@ jobs:
               || { echo "::error::runtime pack manifest missing"; exit 1; }
             jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]' "$cfg" >/dev/null \
               || { echo "::error::Windows bundle still enumerates the exploded runtime"; exit 1; }
+          fi
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" = "Linux" ]; then
+            for f in gact-runtime.tar.zst gact-runtime.pack.json gact-runtime.unpack.sh; do
+              [ -f "desktop/src-tauri/$f" ] || { echo "::error::Linux runtime pack: $f missing"; exit 1; }
+            done
+            jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json", "gact-runtime.unpack.sh"]
+              and ([.bundle.linux.deb, .bundle.linux.rpm] | all(.postInstallScript and .preRemoveScript
+                and .postRemoveScript and (.depends | index("zstd"))))' "$cfg" >/dev/null \
+              || { echo "::error::Linux bundle lacks the runtime archive or its maintainer scripts"; exit 1; }
           fi
           # Tauri only WARNS when the private key does not match the overlay's
           # pubkey, yet every client would reject the resulting signatures at

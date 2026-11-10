@@ -211,6 +211,8 @@ def register_task_routes(app: FastAPI) -> None:
                 message_after=message_after,
                 message_before=message_before,
                 relation=relation,
+                # The runs list's "active" means queued, running or waiting, not merely open.
+                underway_only=active_only,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error

@@ -619,7 +619,21 @@ install_desktop_linux() {
       if have dnf; then $sudo dnf install -y "$package" >&"$out" || die "dnf could not install $package"
       else $sudo rpm -U --replacepkgs "$package" >&"$out" || die "rpm could not install $package"; fi ;;
   esac
+  linux_runtime_ready "$sudo" "$out"
   say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."
+}
+
+# A bundled package unpacks its runtime archive in its postinst. Run that step again:
+# rpm erases the files of the package it upgrades after the new %post, which removes
+# what the first upgrade from an exploded-runtime rpm unpacked. It does nothing when the
+# runtime already matches the archive.
+linux_runtime_ready() {  # SUDO OUT
+  local root="/usr/lib/CLIO Desktop"
+  [ -f "$root/gact-runtime.pack.json" ] || return 0
+  [ -f "$root/gact-runtime.unpack.sh" ] || die "the CLIO Desktop package has no runtime unpacker"
+  $1 sh "$root/gact-runtime.unpack.sh" >&"$2" \
+    || die "the CLIO runtime could not be unpacked; reinstall the clio-desktop package"
+  [ -f "$root/gact-runtime/runtime.json" ] || die "the CLIO runtime is missing after install"
 }
 
 # A CLIO Desktop running from DESTINATION would be replaced under it. One running from

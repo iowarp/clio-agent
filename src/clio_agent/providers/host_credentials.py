@@ -16,11 +16,13 @@ shared credentials and config files, SSO, web identity and ``aws login``
 profiles), plus local configuration that names a credential source without
 resolving it: a profile with ``role_arn`` or ``credential_process``, or the
 container credential variables. botocore's container and instance-metadata
-providers are never consulted, since they connect to an HTTP endpoint (for
-EC2, the link-local ``169.254.169.254``, which macOS treats as a Local Network
-access). An identity that exists only on a cloud VM's metadata server is
-therefore not detected, for either chain. LiteLLM still resolves the full AWS
-chain when a Bedrock request is actually made.
+providers are not consulted, since they connect to an HTTP endpoint (for EC2,
+the link-local ``169.254.169.254``, which macOS treats as a Local Network
+access, and which any computer waits on when no metadata server exists). An
+identity that exists only on a cloud VM's metadata server is therefore not
+detected, for either chain; a computer that signs with only an EC2 instance role
+opts in to the AWS instance-metadata lookup with ``AWS_EC2_METADATA_DISABLED=false``.
+LiteLLM still resolves the full AWS chain when a Bedrock request is actually made.
 """
 
 from __future__ import annotations
@@ -94,8 +96,17 @@ _AWS_CONTAINER_ENV = (
 )
 
 
+def _aws_instance_metadata_opted_in() -> bool:
+    """Whether the user explicitly asked for the EC2 instance-metadata lookup."""
+
+    return os.environ.get("AWS_EC2_METADATA_DISABLED", "").strip().lower() == "false"
+
+
 def _aws_present() -> bool:
-    """Whether AWS credentials are configured on this computer, without any network call."""
+    """Whether AWS credentials are configured on this computer, without any network call.
+
+    The instance-metadata provider is consulted only when opted in.
+    """
 
     if any(os.environ.get(name, "").strip() for name in _AWS_CONTAINER_ENV):
         return True
@@ -113,7 +124,10 @@ def _aws_present() -> bool:
         return True
 
     resolver = session.get_component("credential_provider")
-    resolver.providers = [p for p in resolver.providers if p.METHOD in _AWS_OFFLINE_PROVIDERS]
+    allowed = _AWS_OFFLINE_PROVIDERS
+    if _aws_instance_metadata_opted_in():
+        allowed = allowed | {"iam-role"}
+    resolver.providers = [p for p in resolver.providers if p.METHOD in allowed]
     try:
         return resolver.load_credentials() is not None
     except botocore.exceptions.BotoCoreError as exc:

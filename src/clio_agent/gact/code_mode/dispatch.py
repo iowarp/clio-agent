@@ -235,7 +235,10 @@ class Dispatcher:
         from clio_agent.gact.runtime.tool_permission_layers import native_gate  # noqa: PLC0415
         from clio_agent.gact.tool_observation import INLINE_COLLECTION  # noqa: PLC0415
         from clio_agent.runtime.fresh_loop import run_in_new_loop  # noqa: PLC0415
-        from clio_agent.tools.tool_observation import RESULT_SINK  # noqa: PLC0415
+        from clio_agent.tools.tool_observation import (  # noqa: PLC0415
+            RESULT_SINK,
+            call_identity_scope,
+        )
 
         target = self.tools[tool]
         group, _ = tool_group(tool, self.servers)
@@ -246,7 +249,11 @@ class Dispatcher:
         INLINE_COLLECTION.set(None)  # the script reads the reply, not the model
         RESULT_SINK.set(sink)
         started = time.monotonic()
-        with self.gates(group or tool), native_gate(target, tool, args) as refused:
+        with (
+            call_identity_scope(),
+            self.gates(group or tool),
+            native_gate(target, tool, args) as refused,
+        ):
             try:
                 if refused:  # a rule or the tool's default (the gate's layers)
                     raise PermissionError(refused)

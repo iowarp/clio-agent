@@ -48,8 +48,9 @@ A write into `Contents/` breaks the seal. The runtime guarantees this:
   `PYTHONDONTWRITEBYTECODE=1`, and `protect_bundled_runtime()` re-applies it in
   the server and document/Office preparation, so no child writes `.pyc`.
 - Bytecode ships precompiled (`install/precompile_runtime.py`): the startup
-  import graph plus every module of `clio_agent`, `clio_kit` and
-  `clio_schemas`.
+  import graph, every module of `clio_agent`, `clio_kit` and `clio_schemas`,
+  the standard library, and every module a real boot of the image loads while
+  serving its API (`--launch-path`).
 - Package environments, Office and caches live under `~/Library/Caches` and
   `~/Library/Application Support`.
 

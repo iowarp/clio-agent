@@ -50,7 +50,11 @@ from clio_agent.gact.tool_call_merge import (
     _tool_calls_from_handoff_rows as _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.tool_completion_delivery import terminal_tool_delivery
-from clio_agent.gact.tool_observer_parts import completed_tool_metadata, completed_tool_text
+from clio_agent.gact.tool_observer_parts import (
+    completed_tool_metadata,
+    completed_tool_outcome,
+    completed_tool_text,
+)
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
@@ -58,6 +62,7 @@ from clio_agent.runtime.lm_activity import in_live_chunk_order
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.mcp_results import content_blocks_for_wire
 from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.tool_observation import REFUSED_CALL, claim_call_identity
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -538,7 +543,9 @@ def _make_tool_observer(app: "FastAPI"):
         # server/group; fall back to the owner outside a react scope (#732).
         invoking_expert = _ctx.active_react_scope() or tool_owner
         if phase == "started":
-            call_id = f"call_{uuid.uuid4().hex[:12]}"
+            # The identity a pending permission request already named, so the
+            # waiting call and its running/finished row are one entity.
+            call_id = claim_call_identity() or f"call_{uuid.uuid4().hex[:12]}"
             # Concurrent coroutines must retain their own call identity and clock.
             _OBSERVER_CALL_IDS.set(call_id)
             report_observer_call(call_id)
@@ -650,6 +657,8 @@ def _make_tool_observer(app: "FastAPI"):
                 completion_error = completed_after_cancel_error(name, completion_error)
                 cancellation_metadata = {"execution_cancellation": "best_effort"}
             ok = completion_error is None
+            # Refused or stopped is not the tool failing: recorded as its own outcome.
+            outcome = completed_tool_outcome(completion_error, result, refused=REFUSED_CALL.get())
             # A native tool may DECLARE its typed structured payload (P5; the model's
             # return value is unchanged). Read + cleared once per completed call so it
             # never leaks onto a later call; else the MCP-shaped extraction below.
@@ -664,7 +673,13 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             result, presentation = completed_presentation(
-                name, args, result, structured_content, terminal_output, error=completion_error
+                name,
+                args,
+                result,
+                structured_content,
+                terminal_output,
+                error=completion_error,
+                outcome=outcome,
             )
             status = completion_status(name, ok, completed_after_cancel, result, presentation)
             result_summary = f"Tool {name} {status}."
@@ -689,6 +704,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "completed_at": _iso_from_epoch(completed_epoch),
                 "tool": name,
                 "ok": ok,
+                **({"outcome": outcome} if outcome else {}),
                 "presentation": presentation,
                 "duration_ms": duration_ms,
                 "cached": False,
@@ -779,6 +795,7 @@ def _make_tool_observer(app: "FastAPI"):
                                 completed_at=_iso_from_epoch(completed_epoch),
                                 cancellation=cancellation_metadata,
                                 provenance=provenance,
+                                outcome=outcome,
                             ),
                         ),
                     )

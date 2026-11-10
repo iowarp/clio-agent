@@ -511,6 +511,8 @@ class _TranscriptProjection:
     artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
+_ERROR_FALLBACK = {"cancelled": "Cancelled", "denied": "Denied"}
+
 _EntityProjector = Callable[[_TranscriptProjection, Mapping[str, Any], str], None]
 
 
@@ -560,7 +562,11 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
             else current.get("duration_ms")
         ),
         **carried,
-        **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
+        **(
+            {"error": str(part.get("text") or _ERROR_FALLBACK.get(state, "Tool failed"))}
+            if failed
+            else {}
+        ),
         **({"error": MISSING_EXECUTION_OUTCOME} if state == "unknown" else {}),
     }
 
