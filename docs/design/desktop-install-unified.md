@@ -402,6 +402,40 @@ fixes this.
   launches in the release `desktop` job get the same `--agent-home`. Before this, they
   measured a cold home and redid the whole prepare.
 
+## Under 60 s: overlap and trims (follow-up to the 71.1 s live run)
+
+The live run of the merged #1985 took 71.1 s: download 45.2, install 2.6, prepare 23.0. Three
+changes cut what still ran in series.
+
+- **(g) Prepare while first-launch files download.** The plan's first line is now
+  `capability waits-for-partial-downloads`. When the installer sees it, it no longer waits
+  for LibreOffice and pnpm before verify, install and prepare; it waits for them after
+  prepare. The app (`office.installer_download`, also used for pnpm) waits while
+  `NAME.part` grows and takes `NAME` once the installer has verified and renamed it. A
+  partial file that stops growing for 60 s is abandoned and the app fetches it. Prefetch
+  curls stop after 60 s below 1 B/s. An older app has no such wait and would download the
+  file a second time, so a plan without the line keeps the old order. Progress events for
+  those files stay `"step":"download"` while later steps run; the download step's seconds
+  then cover the app only, and prepare includes any wait for Office.
+- **(d) Signature check during prepare.** For a release install, `codesign --verify --deep
+  --strict` runs in the background once the app is in place, and its result is collected
+  after prepare. If it fails, or the run stops first, the new app is removed and the
+  previous app restored. The archive already matched the release's SHA-256, and arm64
+  enforces code signatures at exec, so the gap is a prepare run by a signature-invalid app
+  whose bytes matched the release. `--desktop-package` test builds keep the check before
+  the swap.
+- **(e1) Drop Codex's unused helpers on macOS.** `codex-exec-server` and
+  `codex-code-mode-host` (126 MB raw, 31 MB LZMA in the `.aar`) are pruned in
+  `build-gact-runtime.sh`, with their `RECORD` lines. The `codex` binary stays: it is the
+  macOS write fence (`runtime/sandbox.py`), and dropping it would leave no fence. A live
+  probe through `compose_codex_spawn` with the helpers removed still denied writes outside
+  the territory and allowed them inside; the Codex provider itself never spawns `codex`.
+  Linux keeps the helpers until a Linux run proves the same.
+
+Expected, with the 71.1 s link: about 3 s saved by (e1), the Office tail and Node prepare
+overlapping the app download by (g), and 2.6 s by (d). Together with (a), the Node
+entitlements in #1978, that is about 52–55 s. Live measurement on the Mac mini is pending.
+
 ## Side findings
 
 - During `--prepare-runtime` with an isolated `HOME`, the store migration reported

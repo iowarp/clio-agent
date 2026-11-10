@@ -53,6 +53,8 @@ def test_apple_silicon_plan_prefetches_libreoffice_and_native_pnpm(tmp_path: Pat
     out = tmp_path / "install-plan.aarch64-apple-darwin.bundled.txt"
     assert plan.main(["--target", "aarch64-apple-darwin", "--output", str(out), "--no-sizes"]) == 0
     lines = [line.split() for line in out.read_text().splitlines()]
+    assert lines[0] == ["capability", office.INSTALLER_PLAN_CAPABILITY]
+    lines = lines[1:]
     assert [(line[0], line[3]) for line in lines] == [
         ("office", f"LibreOffice_{office.VERSION}_MacOS_aarch64.dmg"),
         ("npm", f"pnpm-{document_runtime.PNPM_VERSION}.tgz"),
