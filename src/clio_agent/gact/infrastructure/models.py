@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from clio_agent.gact.infrastructure.operation_models import OperationProgressFields
 from clio_agent.gact.infrastructure.server_parameters import ServerParameter
+from clio_agent.server_port import DEFAULT_PORT
 
 _NULLABLE_SSH_STRING_FIELDS = ("profile", "host", "user", "identity_file")
 
@@ -496,7 +497,7 @@ class VersionConflictDetail(BaseModel):
     health: Literal["healthy", "unresponsive", "unknown", "stopped"] = "unknown"
     target_version: str = ""
     owner: str = ""
-    port: int = 17800
+    port: int = DEFAULT_PORT
 
 
 class InfrastructureOperation(OperationProgressFields):

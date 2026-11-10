@@ -364,3 +364,195 @@ def test_a_failed_preparation_is_reported_and_left_to_first_launch(tmp_path: Pat
     assert result.returncode == 0
     assert "did not finish" in result.stdout + result.stderr
     assert "first launch" in result.stdout + result.stderr
+
+
+def _package_fakes(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    """Fake macOS tools for ``--desktop-package``: nothing is mounted or installed for real."""
+    calls = tmp_path / "calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi',
+        "pgrep": "exit 1",
+        "hdiutil": """echo "hdiutil $*" >> "$TEST_CALLS"
+if [ "$1" = attach ]; then
+  while [ "$#" -gt 0 ]; do [ "$1" = -mountpoint ] && mnt="$2"; shift; done
+  app="$mnt/CLIO Desktop.app/Contents"; mkdir -p "$app/MacOS"
+  printf '#!/bin/bash\\necho "app $*" >> "$TEST_CALLS"\\n' > "$app/MacOS/clio-desktop"
+  chmod +x "$app/MacOS/clio-desktop"
+fi""",
+        "ditto": 'echo "ditto $*" >> "$TEST_CALLS"\nsrc="${*: -2:1}"; dst="${*: -1}"\ncp -R "$src" "$dst"',
+        "codesign": 'echo "codesign $*" >> "$TEST_CALLS"',
+        "plutil": "echo 0.9.6-test",
+        "curl": 'echo "curl $*" >> "$TEST_CALLS"; exit 99',
+    }
+    for name, contents in commands.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        TEST_CALLS=str(calls),
+        CLIO_DESKTOP_DIR=str(tmp_path / "Applications"),
+        TMPDIR=str(tmp_path),
+    )
+    return env, calls
+
+
+def _run_installer(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [shutil.which("bash") or "bash", str(ROOT / "install/install.sh"), *args],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_desktop_test_package_installs_unquarantined_and_prepares(tmp_path: Path) -> None:
+    """A local test build is checked, installed without quarantine, and prepared."""
+    env, calls = _package_fakes(tmp_path)
+    image = tmp_path / "CLIO Desktop_0.9.6_aarch64.dmg"
+    image.write_bytes(b"test build")
+    digest = hashlib.sha256(image.read_bytes()).hexdigest().upper()
+
+    result = _run_installer(["--desktop-package", str(image), "--desktop-sha256", digest], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = calls.read_text()
+    assert f"hdiutil attach {image} -readonly -nobrowse -noverify" in log
+    assert "ditto --noqtn " in log
+    # The long silent steps say what they are doing (a real user took them for a hang).
+    out = result.stdout
+    assert out.index("Copying CLIO Desktop into") < out.index("Checking the app's signature")
+    assert out.index("Signature valid.") < out.index("Installed: ")
+    assert "codesign --verify --deep --strict" in log
+    assert "app --prepare-runtime" in log
+    assert "curl" not in log
+    assert (tmp_path / "Applications/CLIO Desktop.app/Contents/MacOS/clio-desktop").is_file()
+    assert "test build 0.9.6-test" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--desktop-sha256", "0" * 64], "checksum mismatch"),
+        (["--desktop-sha256", "not-a-sha"], "must be a SHA-256"),
+        (["--download-only", "out"], "--download-only"),
+    ],
+)
+def test_desktop_test_package_refusals_install_nothing(
+    tmp_path: Path, args: list[str], message: str
+) -> None:
+    env, calls = _package_fakes(tmp_path)
+    image = tmp_path / "test.dmg"
+    image.write_bytes(b"test build")
+
+    result = _run_installer(["--desktop-package", str(image), *args], env)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert not calls.exists()
+    assert not (tmp_path / "Applications").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_desktop_test_package_url_needs_a_checksum(tmp_path: Path) -> None:
+    env, calls = _package_fakes(tmp_path)
+
+    result = _run_installer(["--desktop-package", "https://example.invalid/t.dmg"], env)
+
+    assert result.returncode != 0
+    assert "needs --desktop-sha256" in result.stderr
+    assert not calls.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_release_desktop_install_keeps_its_plain_copy() -> None:
+    """Only the explicit test package skips quarantine; the release path is unchanged."""
+    source = (ROOT / "install/install.sh").read_text()
+    release = source.split("install_desktop() {", 1)[1].split("\n}\n", 1)[0]
+    assert 'install_desktop_mac "$scratch" "$scratch/$asset"\n' in release
+
+
+def _git_functions() -> str:
+    """install.sh's --source git resolution, without the rest."""
+    script = (ROOT / "install/install.sh").read_text(encoding="utf-8")
+    blocks, keep = [], False
+    for line in script.splitlines():
+        if line.startswith(("macos_git_placeholder()", "source_git()")):
+            keep = True
+        if keep:
+            blocks.append(line)
+            if line == "}":
+                keep = False
+    return "\n".join(blocks)
+
+
+def _source_git(tmp_path: Path, env: dict[str, str], call: str = "source_git") -> str:
+    # install.sh runs under `set -euo pipefail` and assigns SOURCE_GIT="$(source_git)":
+    # finding no git must answer empty and succeed so the script reaches its guidance.
+    if call == "source_git":
+        call = 'answer="$(source_git)"\nprintf "%s" "$answer"'
+    result = subprocess.run(
+        ["/bin/bash", "-c", "set -euo pipefail\nOS=darwin\n" + _git_functions() + f"\n{call}"],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        env={"HOME": str(tmp_path), **env},
+    )
+    if call.startswith("answer="):
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+    return str(result.returncode)
+
+
+def _executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_source_git_prefers_clio_git_then_a_real_git_then_the_desktops(tmp_path: Path) -> None:
+    """--source never runs the macOS /usr/bin/git placeholder (CLT dialog); git is not run."""
+    chosen = _executable(tmp_path / "chosen/git")
+    on_path = _executable(tmp_path / "bin/git")
+    bundled = _executable(
+        tmp_path / "Apps/CLIO Desktop.app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
+    )
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    apps = {"CLIO_DESKTOP_DIR": str(tmp_path / "Apps")}
+    assert _source_git(tmp_path, {"CLIO_GIT": str(chosen), "PATH": str(on_path.parent)}) == str(
+        chosen
+    )
+    assert _source_git(tmp_path, {"PATH": str(on_path.parent), **apps}) == str(on_path)
+    assert _source_git(tmp_path, {"PATH": str(empty), **apps}) == str(bundled)
+    assert _source_git(tmp_path, {"PATH": str(empty)}) == ""
+    assert _source_git(tmp_path, {"CLIO_GIT": str(tmp_path / "absent/git")}) == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_usr_bin_git_counts_as_real_once_developer_tools_provide_it(tmp_path: Path) -> None:
+    developer = tmp_path / "Developer"
+    _executable(developer / "usr/bin/git")
+    check = "macos_git_placeholder /usr/bin/git"
+    assert _source_git(tmp_path, {"DEVELOPER_DIR": str(developer)}, check) == "1"
+    assert _source_git(tmp_path, {}, "macos_git_placeholder /opt/homebrew/bin/git") == "1"
+    no_tools = (
+        not any(
+            Path(d, "usr/bin/git").is_file()
+            for d in (
+                "/Applications/Xcode.app/Contents/Developer",
+                "/Library/Developer/CommandLineTools",
+            )
+        )
+        and not Path("/var/db/xcode_select_link").exists()
+    )
+    if no_tools:
+        assert _source_git(tmp_path, {}, check) == "0"

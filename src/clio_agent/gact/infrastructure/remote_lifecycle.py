@@ -7,7 +7,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from clio_agent.gact.infrastructure.clio_agent_deploy import _COMMON, _HELPERS, LAUNCHER_PRELUDE
+from clio_agent.gact.infrastructure.clio_agent_deploy import (
+    _COMMON,
+    _HELPERS,
+    CLIO_LAUNCHER,
+    LAUNCHER_PRELUDE,
+)
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 
@@ -73,13 +78,14 @@ def start_owned_command(launch: RemoteLaunch) -> CommandSpec:
     script = (
         "# clio-deploy:start\n"
         + LAUNCHER_PRELUDE
+        + CLIO_LAUNCHER
         + _HELPERS
         + r"""
 export CLIO_PORT="$2" CLIO_DESKTOP_LAUNCH="$3" CLIO_DEPLOYMENT_TARGET="${4:-}"
 # A second process may have taken the port since the initial claim. Never adopt
 # it implicitly or claim its ownership just because the launcher says healthy.
 port_busy "$port" && fail "Port $port became busy. Choose another port or reconnect."
-"$bin/clio" start || fail "The CLIO launcher could not start the server (exit $?). Its log is in $root/user/state."
+clio_launcher start || fail "The CLIO launcher could not start the server (exit $?). Its log is in $root/user/state."
 pid="$(cat "$(pidfile_for "$root")" 2>/dev/null || true)"
 [ -n "$pid" ] && [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$(id -u)" ] || fail "Cannot verify the new CLIO process owner"
 tr '\0' '\n' <"/proc/$pid/environ" | grep -Fxq "CLIO_DESKTOP_LAUNCH=$3" || fail "The running CLIO was not started by this deployment"

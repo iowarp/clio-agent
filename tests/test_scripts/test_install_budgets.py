@@ -87,7 +87,7 @@ def test_a_step_over_its_budget_or_failing_fails_with_the_number() -> None:
 def test_a_required_step_that_never_reported_fails() -> None:
     checked = budgets_check.check_timings([], BUDGETS["timings"], "script")
     missing = {row[1] for row in checked if "not measured" in row[-1]}
-    assert {"source: fresh install", "source: stop"} <= missing
+    assert {"source: fresh install", "source: start", "source: stop"} <= missing
     assert budgets_check.check_timings([], BUDGETS["timings"], "desktop") == []
 
 

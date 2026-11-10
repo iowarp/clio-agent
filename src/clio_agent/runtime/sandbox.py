@@ -266,8 +266,19 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
     (``allow_upstream_proxy``). MXC permits direct host loopback, so its narrower
     external-egress guarantee is recorded separately rather than claiming all
     local connections are observed.
+
+    The macOS layer does not enable codex's managed proxy, so a child reaches CLIO's
+    chokepoint only through the proxy environment variables; a client that ignores them
+    connects directly, unrecorded and outside deny mode. That tier is therefore reported
+    ``env-cooperative``, never ``proxy``.
     """
     mxc = base_details.get("codex", {}).get("implementation") == "mxc"
+    if mxc:
+        net_enforcement = "proxy-external"
+    elif base_details.get("platform") == "darwin":
+        net_enforcement = NET_ENFORCEMENT_ENV_COOPERATIVE
+    else:
+        net_enforcement = NET_ENFORCEMENT_PROXY
     return SandboxResult(
         mechanism=MECHANISM_CODEX,
         active=True,
@@ -276,7 +287,7 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
             **base_details,
             "codex_binary": det.binary_path,
             "codex_version": det.version,
-            "net_enforcement": "proxy-external" if mxc else NET_ENFORCEMENT_PROXY,
+            "net_enforcement": net_enforcement,
             **({"host_loopback": "direct", "detached_children": "terminated"} if mxc else {}),
         },
     )

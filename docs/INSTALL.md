@@ -50,10 +50,20 @@ its first launch instead.
 
 `--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.
 
-The macOS app is ad-hoc signed, not Apple-notarized. A first-launch approval may still
-be needed in System Settings → Privacy & Security → Open Anyway. Neither script
-disables security settings or removes quarantine. Invalid checksums/signatures fail
-before replacing an installed app.
+The macOS app is ad-hoc signed, not Apple-notarized. A copy downloaded in a browser
+carries quarantine, so its first launch needs approval: on macOS 15 and 26 open it once,
+choose Done, then System Settings → Privacy & Security → Security → Open Anyway
+(Control-click → Open no longer bypasses Gatekeeper there). `install.sh --desktop`
+downloads with curl, which sets no quarantine. Neither script
+disables security settings or removes quarantine from a release. Invalid
+checksums/signatures fail before replacing an installed app.
+
+A desktop test build that is not a release (for example the `macos-source-dmg` CI
+artifact) installs with `install.sh --desktop-package <file.dmg|https URL>
+[--desktop-sha256 <hex>]` (`CLIO_DESKTOP_PACKAGE`/`CLIO_DESKTOP_SHA256`). A URL needs the
+SHA-256; a local file is checked when it is given. The signature is still verified, and
+because the person named the file explicitly, the installed copy is not quarantined even
+when a browser downloaded it, so an ad-hoc test build opens without Open Anyway.
 
 The macOS CI builds a DMG from source and boots its relocated application and packaged
 backend on macOS 15 and 26. The same checks gate release publication. These checks
@@ -217,7 +227,10 @@ Source installs require a new or explicitly emptied program directory; an
 existing checkout is never erased automatically. Uninstall retains Agent data,
 state, and unknown files. `--purge` / `-Purge` additionally removes the resolved
 Agent config directory, including saved credentials; custom config roots require
-explicit manual removal.
+explicit manual removal. `--purge-caches` / `-PurgeCaches` removes the resolved Agent
+cache root, `--purge-data` / `-PurgeData` removes the resolved Agent data and state roots (refusing
+custom roots, and keeping them while a clio-core daemon runs), and `--desktop` (macOS)
+removes CLIO Desktop.app and its caches and logs.
 
 The public Agent CI needs a `CLIO_NAMESPACES_READ_TOKEN` repository secret with
 read-only Contents access to the private `iowarp/clio-namespaces` repository.
@@ -229,6 +242,6 @@ The CLI (`clio` / `clio --web`) and the desktop app each spawn a gact server and
 to the **same port**. Agents sharing a state directory must not run two writers.
 Running two
 simultaneously can clash on the port and risk concurrent-write corruption / version skew.
-Use one at a time, or a different `CLIO_PORT` (desktop supervisor) / `--port`
-(raw server) + state dirs. Tracked in
+Use one at a time, or a different port (`clio --port N`, or `--port` on the raw
+server) and state directory. Tracked in
 [#698](https://github.com/iowarp/clio-agent/issues/698).

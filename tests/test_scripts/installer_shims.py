@@ -66,6 +66,11 @@ exit 0
 
 _GIT = r"""#!/usr/bin/env bash
 echo "git $*" >> "$TEST_LOG"
+if [ "$1" = --exec-path ]; then  # a full git: it has the git-submodule script
+  mkdir -p "$TEST_FIXTURES/git-core" && : > "$TEST_FIXTURES/git-core/git-submodule"
+  echo "$TEST_FIXTURES/git-core"
+  exit 0
+fi
 if [ "$1" = clone ]; then
   ref=""; dest=""
   args=("$@")
@@ -84,7 +89,8 @@ exit 0
 
 _LN = r"""#!/usr/bin/env bash
 echo "ln $*" >> "$TEST_LOG"
-exec /usr/bin/ln "$@"
+[ -x /usr/bin/ln ] && exec /usr/bin/ln "$@"
+exec /bin/ln "$@"
 """
 
 
@@ -134,6 +140,10 @@ def run_installer(
     shimmed = [("curl", _CURL), ("uv", _UV), ("uname", uname), ("ln", _LN)]
     if not real_git:
         shimmed.append(("git", _GIT))
+    elif (host_git := shutil.which("git")) and Path(host_git) != Path("/usr/bin/git"):
+        # PATH below has /usr/bin first; on a Mac without the Command Line Tools its git
+        # is a placeholder that asks to install them. Use the git these tests found.
+        shimmed.append(("git", f'#!/bin/sh\nexec "{shell_path(Path(host_git))}" "$@"\n'))
     for name, body in shimmed:
         shim = shims / name
         shim.write_text(body, newline="\n")

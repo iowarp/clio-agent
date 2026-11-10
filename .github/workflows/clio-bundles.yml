@@ -652,7 +652,7 @@ jobs:
       matrix:
         os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -670,7 +670,16 @@ jobs:
           hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
           ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
           hdiutil detach "$RUNNER_TEMP/clio-image"
-          uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+          uv run --no-project --python 3.14 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled \
+            --exercise --quarantine --macho-list "$RUNNER_TEMP/gact-runtime-macho.json"
+      - name: Publish the runtime's Mach-O inventory for signing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gact-runtime-macho-${{ matrix.os }}
+          path: ${{ runner.temp }}/gact-runtime-macho.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   release-check:
     name: release completeness

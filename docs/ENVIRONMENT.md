@@ -262,6 +262,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
+| `CLIO_PORT` | `gact.port` | int | `17800` | `src/clio_agent/server_port.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_ATTENTION_FILES_DIR` | `provenance.attention.files_dir` | str | _(unset)_ | `src/clio_agent/gact/attention/files.py` |
 | `CLIO_PROVENANCE_ATTENTION_TOKENIZER` | `provenance.attention.tokenizer` | str | _(unset)_ | `src/clio_agent/gact/attention/tokenizer_source.py` |
@@ -395,6 +396,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_AGENT_PACKAGE_OVERLAY` | unmigrated | `src/clio_agent/runtime/package_overlay.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
+| `CLIO_BIND_ADDR` | unmigrated | `src/clio_agent/arc/clio_core_attach.py` |
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
@@ -433,7 +435,6 @@ Documented variables consumed *outside* `src/clio_agent` -- the `external/gact-t
 | --- | --- | --- |
 | `CLIO_GACT_URL` | gact-tui | Base URL the TUI/desktop client dials the gact server on. |
 | `CLIO_INTEGRATION_BASE` | test-harness | Base URL the contract test suite targets. |
-| `CLIO_PORT` | gact-tui | Port the desktop supervisor attaches to (raw server uses --port). |
 | `CLIO_RUN_LIVE` | test-harness | Opt-in flag for live-provider integration tests. |
 | `CLIO_SESSION_ID` | gact-tui | Session id the client pins a conversation to. |
 | `CLIO_WORKSPACE_ID` | gact-tui | Workspace id the client scopes requests to. |

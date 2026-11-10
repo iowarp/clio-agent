@@ -151,7 +151,11 @@ rm -f "$CONSTRAINTS"
 # install developer tooling or configure PATH.
 mkdir -p "$OUT/bin"
 cp "$(command -v uv)" "$OUT/bin/uv"
-cp "$(command -v uv)" "$OUT/bin/uvx"
+# uvx is uv's own small shim that execs the sibling uv as `uv tool run`; a copy
+# of uv renamed uvx still behaves as plain uv (`uvx pkg` -> `uv pkg`).
+UVX="$(dirname "$(command -v uv)")/uvx"
+[ -x "$UVX" ] || { echo "build-gact-runtime: uvx shim missing beside uv" >&2; exit 1; }
+cp "$UVX" "$OUT/bin/uvx"
 chmod +x "$OUT/bin/uv" "$OUT/bin/uvx"
 
 # CLIO installs marketplace plugins with git, and a fresh Mac has only the
@@ -234,7 +238,7 @@ test -n "$DOCUMENT_STACK"
 # some optional provider paths exceed Windows' legacy path limit.
 echo "[build-gact-runtime] compiling portable startup bytecode"
 "$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
-  --python-root "$OUT/python"
+  --python-root "$OUT/python" --package clio_agent --package clio_kit --package clio_schemas
 COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
 if [ "${COMPILED:-0}" -eq 0 ]; then
   echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2

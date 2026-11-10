@@ -28,7 +28,7 @@ from clio_agent.gact.infrastructure.native_monitoring import (
 from clio_agent.gact.infrastructure.native_vllm import FLOWCEPT_REVISION
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.storage import resolved_locations
-from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+from clio_agent.gact.infrastructure.supervised_service import service_python, supervised_plan
 
 MONITORING_SERVICES = frozenset({"flowcept", "cmf"})
 CMF_REVISION = "53d9c3e518ab2fde46955f10520d4842c572bf05"
@@ -489,10 +489,11 @@ def monitoring_plan(
                 },
             ],
         )
+    requires, interpreter = service_python(facts)
+    manifest.update(interpreter)
     manifest["project"] = (
-        '[project]\nname="clio-managed-monitoring"\nversion="0.0.0"\nrequires-python=">=3.12,<3.13"\ndependencies='
-        + json.dumps(dependencies)
-        + "\n"
+        '[project]\nname="clio-managed-monitoring"\nversion="0.0.0"\n'
+        f'requires-python="{requires}"\ndependencies=' + json.dumps(dependencies) + "\n"
     )
     resolved = {
         **configuration,

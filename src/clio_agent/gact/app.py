@@ -4,11 +4,11 @@ Exposes the GACT contract documented in ``gact-tui/contract/SPEC.md``.
 
 Run via::
 
-    clio-agent-gact --host 127.0.0.1 --port 8100
+    clio-agent-gact --host 127.0.0.1 --port 17800
 
 Or::
 
-    uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 8100
+    uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 17800
 
 This is CLIO's single HTTP front door. The legacy ``clio_agent.ui.api``
 REST server has been removed; the ``clio-agent-api`` console script is now
@@ -58,7 +58,6 @@ import openai  # noqa: E402, F401
 import pyarrow  # noqa: E402, F401
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
@@ -1620,29 +1619,10 @@ def build_app(
     # The Exception backstop is registered by install_error_envelope above,
     # paired with the middleware it must agree with.
 
-    # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
-    # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-
-    # byte unchanged unless web mode is explicitly enabled. Mounted LAST so every
-    # /v1 API route (and /docs, /openapi.json) registered above takes precedence;
-    # an SPA fallback serves index.html for unknown non-API paths so client-side
-    # (history) routing works. The bundle's API calls are same-origin (relative
-    # /v1/...), so no CORS/proxy is needed — this is the in-process equivalent of
-    # the docker clio-web nginx setup.
-    web_dir = _web_dir()
-    if web_dir and (Path(web_dir) / "index.html").is_file():
-        from fastapi.staticfiles import StaticFiles
-        from starlette.responses import FileResponse
+    # Optional web UI (`clio web`, CLIO_WEB_DIR), mounted LAST so every /v1 route wins.
+    from clio_agent.gact.web_mount import mount_web_ui  # noqa: PLC0415
 
-        class _SPAStaticFiles(StaticFiles):
-            async def get_response(self, path: str, scope: Any) -> Any:
-                try:
-                    return await super().get_response(path, scope)
-                except StarletteHTTPException as exc:
-                    if exc.status_code == 404:
-                        return FileResponse(Path(web_dir) / "index.html")
-                    raise
-
-        app.mount("/", _SPAStaticFiles(directory=web_dir, html=True), name="web")
+    mount_web_ui(app, _web_dir())
 
     return app
 
@@ -1671,7 +1651,7 @@ def __getattr__(name: str):
 
 def run_server(
     host: str = "127.0.0.1",
-    port: int = 8100,
+    port: int | None = None,
     *,
     reload: bool = False,
     no_agent: bool = False,
@@ -1688,12 +1668,15 @@ def run_server(
 
     Args:
         host: Bind host.
-        port: Bind port.
+        port: Bind port; ``None`` uses the configured default (``gact.port``).
         reload: uvicorn auto-reload on source changes (dev only).
         no_agent: Skip ClioAgent construction even when LM env is configured.
     """
     import uvicorn
 
+    from clio_agent.server_port import claim_api_port  # noqa: PLC0415
+
+    port = claim_api_port(port)
     trace.configure()  # trace verbosity (file -> env -> default) + the formatted log handler
     from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
 
@@ -1734,7 +1717,7 @@ def main() -> None:
         description="CLIO's GACT v0.2 REST + SSE server.",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8100, type=int)
+    parser.add_argument("--port", default=None, type=int, help="port (default: gact.port)")
     parser.add_argument(
         "--reload",
         action="store_true",

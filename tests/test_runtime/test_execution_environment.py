@@ -180,3 +180,23 @@ def test_every_shell_names_clios_own_python_and_uv(
     environment = execution.shell_environment(tmp_path / "w2")
     assert environment["CLIO_PYTHON"] == "/clio/python/bin/python"  # the run_code interpreter
     assert environment["UV_CACHE_DIR"] == "/ws/.tmp/uv"  # the prepared cache is kept
+
+
+def test_bundled_runtime_children_never_write_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signed bundle stays sealed even when the supervisor did not apply runtime.json env."""
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    monkeypatch.setattr(execution.sys, "dont_write_bytecode", False)
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path / "missing"))
+    monkeypatch.setattr(execution.sys, "executable", str(tmp_path / "host" / "bin" / "python"))
+
+    assert execution.protect_bundled_runtime() is False
+    assert "PYTHONDONTWRITEBYTECODE" not in os.environ
+
+    (tmp_path / "runtime.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path))
+
+    assert execution.protect_bundled_runtime() is True
+    assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert execution.sys.dont_write_bytecode is True

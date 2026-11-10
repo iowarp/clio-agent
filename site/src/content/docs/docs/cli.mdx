@@ -59,7 +59,7 @@ On Windows the command is `clio.ps1` (with a `clio.cmd` wrapper), and it support
 
 - Supported: `clio`, `clio web` (or `--web`), `start`, `stop`, `restart`, `status` (or `ps`), `logs`, `sandbox`, `doctor`, `report`, `completion`, `uninstall`, and `help`.
 - Not available: `update` and `desktop`. To update, rerun the install script.
-- The uninstall flags are `-Purge` and `-Yes`.
+- The uninstall flags are `-Yes`, `-Purge`, `-PurgeCaches` and `-PurgeData`.
 - The backend writes its output to separate files, `clio-server.log` and `clio-server.err.log`.
 
 ## Port and logs
@@ -72,11 +72,15 @@ The backend listens on `127.0.0.1` port 17800. Set `CLIO_PORT` to use a differen
 | `clio-server.log` and `clio-server.err.log` in the install prefix | Backend output on Windows. |
 | `gact-stderr.log`, if retained from an older install | Historical TUI errors; current CLIO does not run the TUI. |
 
-Set `CLIO_LOG` to write the backend log to a different file on macOS and Linux. The install prefix is `~/.local/share/clio` on macOS and Linux, and `%LOCALAPPDATA%\clio` on Windows.
+Set `CLIO_LOG` to write the backend log to a different file on macOS and Linux. The install prefix is `~/Library/Application Support/clio-agent/data/app` on macOS, `~/.local/share/clio-agent/app` on Linux, and `%LOCALAPPDATA%\clio-agent\data\app` on Windows.
 
 ## Update checks
 
 On macOS and Linux, the `clio` command checks PyPI for a newer `clio-agent` at most about once a day and prints a one-line hint. To turn the check off, set `CLIO_NO_UPDATE_CHECK=1`. See [Data and network](/docs/privacy/).
+
+## Protected execution warning
+
+When protected execution (the OS sandbox) is off, the agent's tools can change any file your account can. CLIO still starts, so `clio`, `clio web`, `clio start` and `clio restart` print a security warning with the reason and the step that turns protection on. In a terminal they ask you to confirm. If you don't answer yes, `clio` stops the server it started. Scripts and other runs without a terminal only see the warning. To acknowledge it without the prompt, set `CLIO_ACCEPT_UNSANDBOXED=1`. Run `clio sandbox status` to check protection at any time.
 
 ## The clio-agent command
 

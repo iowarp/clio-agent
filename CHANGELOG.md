@@ -162,8 +162,54 @@ not affected.
   surrounding whitespace from `root_path` (#1804).
 - A mid-stream reload shows a streamed part only once `message.part.added` has
   announced it (#1772).
+- **Breaking:** `clio-agent serve` without `--port` listens on **17800**, not 8100.
+  The default port is one machine-wide setting, `gact.port` in the user
+  `config.yaml`, shared by the server, the `clio` launcher, Desktop and Web.
+  Precedence: `--port` > user `gact.port` > `CLIO_PORT` > 17800. A workspace
+  `.clio-agent/shared/config.yaml` no longer moves the port.
+  `python -I -m clio_agent.server_port` prints the resolved value. `clio --port N`
+  overrides it for one invocation, and remote deployments pass it explicitly.
+  Docker images and compose files keep their explicit `--port 8100`. Scripts that
+  reached a bare `clio-agent serve` on 8100 must pass `--port 8100` or set
+  `gact.port`.
+- The clio-core daemon binds its RPC and data ports to loopback (`127.0.0.1`)
+  instead of all interfaces. Only the clio-core child processes get
+  `CLIO_BIND_ADDR`; the server's own environment is unchanged.
 
 ### Fixed
+
+- macOS: `clio`, `clio start` and `clio --web` start the server without `setsid(1)`,
+  and `clio stop` stops the whole process tree. CLIO never runs the `/usr/bin`
+  Command Line Tools stubs (`python3`, `git`, `install_name_tool`), so first launch
+  no longer asks to install developer tools. uv uses managed Python only, and
+  local native services (SearXNG, web search, model router, monitoring) build on
+  CLIO's own Python 3.14 instead of downloading a second CPython 3.12.
+- macOS Desktop: nothing writes into the signed app bundle at runtime (bytecode,
+  caches and installs go to `~/Library`). The bundled runtime is precompiled in
+  full and slimmed, and its Mach-O files are listed for signing.
+- macOS: the Codex-based sandbox finds the bundled `codex` binary. When no write
+  fence is available, `clio start` warns and asks for confirmation on a terminal,
+  and `GET /v1/system/sandbox` reports `active`, a typed `reason`, a message and
+  the next step for the UI's start-up banner.
+- `/v1/health` reports readiness, and requests made while the server is starting
+  answer `503` with `Retry-After` and a `starting` status.
+- `install.sh --desktop` installs to `~/Applications` without a redundant DMG
+  verify, checks the app signature once, and accepts `--desktop-package` for a
+  local test DMG. `uninstall.sh` removes `libexec/clio` and, with `--purge-caches`,
+  CLIO's caches. With `--purge` it also removes clio-core's unedited `~/.clio`
+  seed and CLIO's perf stats there; clio-core children now keep that state in
+  CLIO's runtime state directory (`CLIO_STORAGE_ROOT`). `--purge` also removes the
+  host-wide clio-core records (`state/core-hosts`) unless that daemon is running,
+  and finds the macOS config in `~/Library/Application Support/clio-agent/config`
+  when no Agent is installed. New `--purge-data` removes the Agent data and state
+  roots (conversations, workspaces, the clio-core store, service environments, a
+  source install's clone), so `--purge --purge-caches --purge-data --desktop` leaves
+  nothing of CLIO behind on macOS.
+- `install.sh --source` never runs the macOS `/usr/bin/git` placeholder. It uses
+  `CLIO_GIT`, a real git, or the git bundled with an installed CLIO Desktop, and says
+  what to install when there is none. It checks out the recorded submodules with git
+  plumbing when that git has no `git submodule` command, as with the git bundled in
+  CLIO Desktop.
 
 - NDP and EarthScope work without their MCP servers. The agents told the model it
   could search the National Data Platform, but CLIO withheld the search tools until

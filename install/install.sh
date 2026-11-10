@@ -7,6 +7,9 @@
 #   install.sh --dev --source  source at `develop`
 #   install.sh --desktop       the desktop app, bundled with its agent (Apple Silicon macOS, Linux);
 #                              --dev and --version pick the release as above
+#   install.sh --desktop-package <file|https URL> [--desktop-sha256 <hex>]
+#                              a pre-release desktop test build (for example a CI artifact)
+#                              instead of a release; a URL needs --desktop-sha256
 #   install.sh --reset-old-data  move data CLIO 0.9.5.1 or older wrote aside without asking
 #                              (this release cannot open it; it is kept, never deleted)
 #
@@ -42,8 +45,10 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 1
 fi
 set -euo pipefail
+# The PATH this person's shell gave us, before the installer prepends its own bin dir.
+CALLER_PATH="${PATH:-}"
 
-usage() { sed -n '2,22p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
 OPT_SOURCE=0
 OPT_DEV=0
@@ -51,6 +56,8 @@ OPT_VERSION=""
 OPT_REF=""
 OPT_DESKTOP=0
 OPT_DOWNLOAD_ONLY=""
+OPT_DESKTOP_PACKAGE="${CLIO_DESKTOP_PACKAGE:-}"
+OPT_DESKTOP_SHA256="${CLIO_DESKTOP_SHA256:-}"
 OPT_RESET_OLD_DATA=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -61,6 +68,8 @@ while [ $# -gt 0 ]; do
     --ref|-Ref) OPT_REF="${2:?--ref needs a value}"; shift ;;
     --ref=*) OPT_REF="${1#*=}" ;;
     --desktop|-Desktop) OPT_DESKTOP=1 ;;
+    --desktop-package) OPT_DESKTOP_PACKAGE="${2:?--desktop-package needs a file or URL}"; shift ;;
+    --desktop-sha256) OPT_DESKTOP_SHA256="${2:?--desktop-sha256 needs a SHA-256}"; shift ;;
     --download-only|-DownloadOnly) OPT_DOWNLOAD_ONLY="${2:?--download-only needs a directory}"; shift ;;
     --reset-old-data|-ResetOldData) OPT_RESET_OLD_DATA=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -132,7 +141,51 @@ file_sha() {
   if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
 
+# A desktop test build that is not a release (a CI artifact): its checksum comes from the
+# person who built it, and its version from the app itself. A file a browser downloaded is
+# quarantined, which Gatekeeper refuses for a test build that is not notarized; the person
+# chose this file explicitly, so the installed copy is not quarantined (as a curl download).
+install_desktop_package() {
+  local package="$OPT_DESKTOP_PACKAGE" sha os file scratch app_dir version=""
+  sha="$(printf '%s' "$OPT_DESKTOP_SHA256" | tr 'A-F' 'a-f')"
+  [ -z "$sha" ] || [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "--desktop-sha256 must be a SHA-256 (64 hex digits)"
+  [ -z "$OPT_DOWNLOAD_ONLY" ] || die "--download-only selects a release; --desktop-package is already a file"
+  os="$(uname -s)"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/clio-desktop.XXXXXXXX")"
+  # shellcheck disable=SC2064 # expand now: the trap must remove this run's directory
+  trap "[ -d '$scratch/mount' ] && hdiutil detach '$scratch/mount' -quiet 2>/dev/null; rm -rf '$scratch'" EXIT
+  case "$package" in
+    https://*)
+      [ -n "$sha" ] || die "a --desktop-package URL needs --desktop-sha256"
+      have curl || die "curl is required"
+      file="${package%%\?*}"; file="$scratch/${file##*/}"
+      say "Downloading the CLIO Desktop test build ($package)"
+      curl --proto '=https' --tlsv1.2 -fL --progress-bar --retry 3 "$package" -o "$file" \
+        || die "could not download $package" ;;
+    *://*) die "--desktop-package must be a local file or an https URL" ;;
+    *) [ -f "$package" ] || die "no such desktop package: $package"; file="$package" ;;
+  esac
+  if [ -n "$sha" ]; then
+    [ "$(file_sha "$file")" = "$sha" ] || die "desktop package checksum mismatch; nothing installed"
+  else
+    warn "no --desktop-sha256 given: installing $file unverified"
+  fi
+  case "$os:$file" in
+    Darwin:*.dmg)
+      install_desktop_mac "$scratch" "$file" --noqtn
+      app_dir="${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app"
+      version="$(plutil -extract CFBundleShortVersionString raw -o - "$app_dir/Contents/Info.plist" 2>/dev/null || true)"
+      say "Installed the CLIO Desktop test build ${version:+$version }(not a release)"
+      prepare_desktop "" "$app_dir/Contents/MacOS/clio-desktop" ;;
+    Linux:*.deb|Linux:*.rpm)
+      install_desktop_linux "$file"
+      prepare_desktop "" /usr/bin/clio-desktop ;;
+    *) die "--desktop-package on $os takes a $( [ "$os" = Darwin ] && echo .dmg || echo .deb or .rpm )" ;;
+  esac
+}
+
 install_desktop() {
+  if [ -n "$OPT_DESKTOP_PACKAGE" ]; then install_desktop_package; return; fi
   [ "$OPT_SOURCE" = 0 ] || die "--desktop installs a released app; --source builds the agent only (build the app from gact-tui)"
   have curl || die "curl is required"
   local os cpu tag version asset manifest scratch
@@ -185,7 +238,7 @@ install_desktop() {
     return 0
   fi
   case "$os" in
-    Darwin) install_desktop_mac "$scratch" "$asset"
+    Darwin) install_desktop_mac "$scratch" "$scratch/$asset"
       prepare_desktop "$tag" "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app/Contents/MacOS/clio-desktop" ;;
     Linux) install_desktop_linux "$scratch/$asset"
       prepare_desktop "$tag" /usr/bin/clio-desktop ;;
@@ -203,9 +256,10 @@ desktop_prepares() {
 
 # What a first launch would do before the agent starts (its tool packages, Office),
 # done now, as the person who will open the app, as the Windows installer does.
+# An empty tag is a current test build, which can.
 prepare_desktop() {
   local tag="$1" desktop="$2"
-  desktop_prepares "$tag" || return 0
+  [ -z "$tag" ] || desktop_prepares "$tag" || return 0
   [ -x "$desktop" ] || { say "warning: $desktop not found; the app prepares itself on first launch"; return 0; }
   say "Preparing the desktop's agent and its tools"
   local run=("$desktop" --prepare-runtime)
@@ -233,21 +287,31 @@ install_desktop_linux() {
   say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."
 }
 
+# install_desktop_mac SCRATCH IMAGE [--noqtn]: --noqtn leaves quarantine off the copy.
 install_desktop_mac() {
-  local scratch="$1" asset="$2" destination app staging backup=""
+  local scratch="$1" image="$2" ditto_flags=("${@:3}") destination app staging backup=""
   pgrep -x clio-desktop >/dev/null && die "Quit CLIO Desktop before installing."
-  hdiutil verify "$scratch/$asset" >/dev/null || die "the disk image failed verification"
+  # The image's SHA-256 is already checked against the release, so attach skips its own
+  # checksum pass (-noverify); the app's signature is checked once, on the installed copy.
   mkdir "$scratch/mount"
-  hdiutil attach "$scratch/$asset" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
+  say "Opening the disk image"
+  hdiutil attach "$image" -readonly -nobrowse -noverify -mountpoint "$scratch/mount" -quiet \
+    || die "could not open the disk image $image"
   app="$scratch/mount/CLIO Desktop.app"
   [ -d "$app" ] || die "the disk image does not contain CLIO Desktop.app"
-  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
   destination="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
   case "$destination" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
   mkdir -p "$destination"
   staging="$(mktemp -d "$destination/.clio-install.XXXXXXXX")"
-  ditto "$app" "$staging/CLIO Desktop.app"
-  codesign --verify --deep --strict "$staging/CLIO Desktop.app" || die "the copied app failed its signature check"
+  # Both steps below read the whole app (tens of thousands of files) and print nothing.
+  say "Copying CLIO Desktop into $destination (about 1.7 GB; this takes a few minutes)..."
+  ditto ${ditto_flags[@]+"${ditto_flags[@]}"} "$app" "$staging/CLIO Desktop.app"
+  say "Checking the app's signature (about a minute)..."
+  if ! codesign --verify --deep --strict "$staging/CLIO Desktop.app"; then
+    rm -rf "$staging"
+    die "the app's signature is invalid or absent; nothing installed"
+  fi
+  say "Signature valid."
   if [ -e "$destination/CLIO Desktop.app" ]; then
     backup="$destination/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
     mv "$destination/CLIO Desktop.app" "$backup"
@@ -259,10 +323,11 @@ install_desktop_mac() {
   rmdir "$staging"
   say "Installed: $destination/CLIO Desktop.app"
   [ -z "$backup" ] || say "Previous app kept: $backup"
-  say "Open CLIO Desktop from Applications. macOS may ask once: Privacy & Security > Open Anyway."
+  # curl does not quarantine what it downloads, so Gatekeeper does not prompt for this copy.
+  say "Open it from $destination in Finder, or run: open \"$destination/CLIO Desktop.app\""
 }
 
-if [ "$OPT_DESKTOP" = 1 ]; then
+if [ "$OPT_DESKTOP" = 1 ] || [ -n "$OPT_DESKTOP_PACKAGE" ]; then
   install_desktop
   exit 0
 fi
@@ -315,6 +380,11 @@ case "$(uname -s)" in
   Darwin*) OS=darwin ;;
   *) die "unsupported OS: $(uname -s) (use install.ps1 on Windows)" ;;
 esac
+# uv's interpreter discovery runs /usr/bin/python3, which on a Mac without the
+# Command Line Tools is a stub that opens their install dialog. Use uv's own Pythons.
+if [ "$OS" = darwin ]; then
+  export UV_MANAGED_PYTHON="${UV_MANAGED_PYTHON:-1}"
+fi
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=amd64 ;;
   arm64|aarch64) ARCH=arm64 ;;
@@ -332,8 +402,58 @@ if ! have uv; then
     || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
   export PATH="$BIN_DIR:$PATH"
 fi
+
+# A fresh Mac's /usr/bin/git is a placeholder: running it opens the "Install Command
+# Line Developer Tools" dialog. Decided from the filesystem, never by running it.
+macos_git_placeholder() {
+  local developer link
+  [ "$OS" = darwin ] || return 1
+  [ "$1" = /usr/bin/git ] || return 1
+  link="$(readlink /var/db/xcode_select_link 2>/dev/null || true)"
+  for developer in "${DEVELOPER_DIR:-}" "$link" /Applications/Xcode.app/Contents/Developer \
+      /Library/Developer/CommandLineTools; do
+    [ -n "$developer" ] && [ -f "$developer/usr/bin/git" ] && return 1
+  done
+  return 0
+}
+
+# The git --source uses, as CLIO resolves it (runtime/git_executable.py): CLIO_GIT, a
+# real git on PATH, else the git bundled with an installed CLIO Desktop.
+source_git() {
+  local candidate app
+  if [ -n "${CLIO_GIT:-}" ]; then
+    if [ -x "$CLIO_GIT" ]; then printf '%s' "$CLIO_GIT"; fi
+    return 0
+  fi
+  candidate="$(command -v git 2>/dev/null || true)"
+  if [ -n "$candidate" ] && ! macos_git_placeholder "$candidate"; then
+    printf '%s' "$candidate"
+    return
+  fi
+  for app in "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app" "/Applications/CLIO Desktop.app"; do
+    candidate="$app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  done
+  # No git: an empty answer, not a failure, so `set -e` reaches the guidance below.
+  return 0
+}
+
 if [ "$OPT_SOURCE" = 1 ]; then
-  have git || die "git is required for --source"
+  SOURCE_GIT="$(source_git)"
+  if [ -z "$SOURCE_GIT" ]; then
+    [ "$OS" = darwin ] \
+      && die "git is required for --source. This Mac has none (/usr/bin/git only offers the Command Line Tools). Install CLIO Desktop first (install.sh --desktop), whose git --source uses, or the Command Line Tools (xcode-select --install), or set CLIO_GIT"
+    die "git is required for --source"
+  fi
+  if [ "$SOURCE_GIT" != "$(command -v git 2>/dev/null || true)" ]; then
+    # This script's git calls and uv's (the git-pinned dependencies) find this git
+    # first on PATH; a bundled one must not use another git's helpers.
+    git_shim="$(mktemp -d "${TMPDIR:-/tmp}/clio-git.XXXXXXXX")"
+    printf '#!/bin/sh\nunset GIT_EXEC_PATH\nexec "%s" "$@"\n' "$SOURCE_GIT" > "$git_shim/git"
+    chmod +x "$git_shim/git"
+    export PATH="$git_shim:$PATH"
+    say "Using git: $SOURCE_GIT"
+  fi
 fi
 
 # The checkout this script runs from, when it runs from one (not when streamed).
@@ -414,6 +534,40 @@ clone_changes() {
     }'
 }
 
+# Check out each submodule of the clone at $1 at the commit it records, recursively.
+# This uses only commands every git has, for a git without `git submodule`, which is a
+# shell script: CLIO Desktop's bundled git ships the git binary and its HTTPS helpers only.
+checkout_submodules() {
+  local src="$1" key path name url commit
+  [ -f "$src/.gitmodules" ] || return 0
+  git -C "$src" config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r key path; do
+    name="${key#submodule.}"
+    name="${name%.path}"
+    url="$(git -C "$src" config -f .gitmodules --get "submodule.$name.url")" || exit 1
+    commit="$(git -C "$src" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
+    [ -n "$commit" ] || continue
+    if [ ! -e "$src/$path/.git" ]; then
+      git init -q "$src/$path" && git -C "$src/$path" remote add origin "$url" || exit 1
+    fi
+    if ! git -C "$src/$path" cat-file -e "$commit^{commit}" 2>/dev/null; then
+      git -C "$src/$path" fetch -q --depth 1 origin "$commit" || exit 1
+    fi
+    git -C "$src/$path" checkout -q --detach "$commit" && checkout_submodules "$src/$path" || exit 1
+  done
+}
+
+# `git submodule update --init --recursive` for the clone at $1 (further arguments go to
+# it), or checkout_submodules when this git has no `git submodule`.
+update_submodules() {
+  local src="$1"
+  shift
+  if [ -e "$(git --exec-path)/git-submodule" ]; then
+    git -C "$src" submodule update --init --recursive "$@"
+  else
+    checkout_submodules "$src"
+  fi
+}
+
 # Bring this installer's clone at $1 to ref $2: fetch it, check it out detached, update
 # the submodules. Local changes to tracked files (submodules included) refuse it.
 update_source_clone() {
@@ -431,13 +585,16 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
     || die "could not fetch '$ref' into '$src' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
   git -C "$src" checkout -q --detach FETCH_HEAD \
     || die "could not check out '$ref' in '$src' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)"
-  git -C "$src" submodule update --init --recursive --depth 1 \
+  update_submodules "$src" --depth 1 \
     || die "could not update the submodules of '$src' to '$ref' (git's message is above); run this installer again"
 }
 
 # Release installs carry Web; source installs provide the service without a frontend build.
 # The legacy TUI is frozen and unsupported. Do not build or download it here.
-on_exit() { [ -z "${lockdir:-}" ] || rm -rf "$lockdir"; }
+on_exit() {
+  [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
+  [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
+}
 trap on_exit EXIT
 
 # ---------- install clio-agent ----------------------------------------
@@ -461,7 +618,8 @@ if [ "$OPT_SOURCE" = 1 ]; then
       rm -rf "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
     fi
     ln -sfn "$SRC" "$PREFIX/clio-agent"
-    git -C "$SRC" submodule update --init --recursive
+    update_submodules "$SRC" \
+      || die "could not update the submodules of '$SRC' (git's message is above); run this installer again"
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --python "$py" --extra argonne --extra flowcept)
   else
@@ -471,14 +629,15 @@ if [ "$OPT_SOURCE" = 1 ]; then
       update_source_clone "$SRC" "$ref"
     else
       say "Cloning clio-agent at $ref"
-      if ! git clone --quiet --recurse-submodules --shallow-submodules --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
+      if ! git clone --quiet --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
         # A commit is not a branch or tag: fetch it by id.
         rm -rf "$SRC"
         git init -q "$SRC" && git -C "$SRC" remote add origin "$CLIO_REPO" \
           && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
-          && git -C "$SRC" submodule update --init --recursive --depth 1 \
           || die "could not fetch clio-agent at '$ref' from $CLIO_REPO: check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
       fi
+      update_submodules "$SRC" --depth 1 \
+        || die "could not fetch the submodules of clio-agent at '$ref' (git's message is above); run this installer again"
     fi
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
@@ -751,19 +910,47 @@ chmod +x "$PREFIX/uninstall.sh"
 
 # ---------- finishing notes -------------------------------------------
 say "Done."
+# macOS defaults to zsh; name the startup file of the shell this person actually uses.
+case "$(basename "${SHELL:-}")" in
+  zsh)  shell_rc="$HOME/.zshrc"; completion_line="autoload -Uz compinit && compinit; source <(clio completion zsh)" ;;
+  bash) if [ "$OS" = darwin ]; then shell_rc="$HOME/.bash_profile"; else shell_rc="$HOME/.bashrc"; fi
+        completion_line="source <(clio completion bash)" ;;
+  *)    shell_rc="" ;;
+esac
+case ":$CALLER_PATH:" in
+  *":$BIN_DIR:"*) path_step="$BIN_DIR is already on your PATH." ;;
+  *) if [ -n "$shell_rc" ]; then
+       path_step="Add $BIN_DIR to your PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> \"$shell_rc\""
+     else
+       path_step="Add $BIN_DIR to your PATH in your shell's startup file."
+     fi ;;
+esac
+if [ -n "$shell_rc" ]; then
+  completion_step="Tab-completion:    echo '$completion_line' >> \"$shell_rc\""
+else
+  completion_step="Tab-completion:    clio completion bash|zsh prints a script for your shell"
+fi
+if [ -f "$PREFIX/clio-agent/web/index.html" ]; then
+  frontend="Web; Desktop is available with --desktop"
+  run_step="Run:   clio (Web), or clio start (headless service)"
+else
+  # Source installs carry no frontend build; say so instead of pointing at Web.
+  frontend="none (source install); Desktop is available with --desktop"
+  run_step="Run:   clio start (headless service); for Web set CLIO_WEB_DIR to a built web dist"
+fi
 clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
 cat <<EOF
 
 Installed to:        $PREFIX
 Launcher:            $LAUNCHER
 clio-agent:          $clio_src
-Frontend:            Web (release installs); Desktop is available with --desktop
+Frontend:            $frontend
 
 Next steps:
-  1. Make sure $BIN_DIR is on your PATH.
-  2. Run:   clio (Web), or clio start (headless service)
+  1. $path_step
+  2. $run_step
   3. Manage the server: clio status | clio restart | clio logs
-  4. Tab-completion:    clio completion bash >> ~/.bashrc   (or zsh)
+  4. $completion_step
   5. Uninstall:         clio uninstall   (add --purge to drop config)
 
 EOF

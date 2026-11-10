@@ -75,7 +75,7 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     plan = _plan(InfrastructureStore(tmp_path / "infra.json"))
     tags = [spec.args[1].splitlines()[0] for spec in plan.commands]
     assert tags[:2] == ["# clio-deploy:claim", "# clio-deploy:install"]
-    assert '"$bin/clio" start' in plan.commands[2].args[1]
+    assert "clio_launcher start" in plan.commands[2].args[1]
     # Trailing "0": claim never replaces a found CLIO unless configuration
     # says so (see build_driver_plan's on_conflict plumbing).
     assert plan.commands[0].args[-5:] == [str(CLIO_AGENT_PORT), VERSION, "0", "", "0"]
@@ -182,7 +182,7 @@ class _ScriptedTransports:
             return script.splitlines()[0].removeprefix("# clio-deploy:")
         if 'rm -rf -- "$root"' in script:
             return "uninstall"
-        if '"$bin/clio" start' in script:
+        if "clio_launcher start" in script:
             return "start"
         return "other"
 

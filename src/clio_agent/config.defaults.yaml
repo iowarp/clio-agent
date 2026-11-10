@@ -723,6 +723,13 @@ gact.mailbox.max_pending_messages: 0
 # context reads, least recently used first out; lower to bound memory.
 gact.media_cache_bytes: 67108864
 
+# CLIO_PORT  (int)  <- src/clio_agent/server_port.py
+# TCP port the CLIO server listens on and the launcher, Desktop and web UI
+# attach to when none is given; one shared value, so change it here rather
+# than per surface. Read from the user config.yaml only (a workspace file
+# cannot move it). Precedence: --port > gact.port > CLIO_PORT > 17800.
+gact.port: 17800
+
 # CLIO_RECALL_INDEX_REBUILD_DELAY_S  (float)  <- src/clio_agent/gact/recall_index.py
 # Seconds a conversation's transcript must be quiet before its recall search
 # digest is rebuilt; until then searches read that conversation's transcript

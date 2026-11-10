@@ -8,6 +8,7 @@ from typing import cast
 from uuid import uuid4
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
+    CLIO_LAUNCHER,
     LAUNCHER_PRELUDE,
     claim_command,
     install_command,
@@ -521,7 +522,7 @@ def _clio_agent_plan(
             program="bash",
             args=[
                 "-lc",
-                LAUNCHER_PRELUDE + 'export CLIO_PORT="$2"; ' + script,
+                LAUNCHER_PRELUDE + 'export CLIO_PORT="$2"; ' + CLIO_LAUNCHER + script,
                 "clio",
                 root,
                 str(port),
@@ -531,9 +532,9 @@ def _clio_agent_plan(
     if action == "status":
         return DriverPlan((status_command(root, port),), connection_port=port)
     if action == "logs":
-        return DriverPlan((launcher('"$bin/clio" logs'),), connection_port=port)
+        return DriverPlan((launcher("clio_launcher logs"),), connection_port=port)
     if action == "stop":
-        return DriverPlan((launcher('"$bin/clio" stop'),))
+        return DriverPlan((launcher("clio_launcher stop"),))
     if action == "uninstall":
         return DriverPlan(
             (
@@ -541,7 +542,7 @@ def _clio_agent_plan(
                     'marker="$root/.clio-managed-install"; '
                     'if [ ! -f "$marker" ]; then '
                     "echo 'Refusing to remove an unmarked install root' >&2; exit 73; fi; "
-                    '"$bin/clio" stop || true; rm -rf -- "$root"'
+                    'clio_launcher stop || true; rm -rf -- "$root"'
                 ),
             )
         )

@@ -398,6 +398,17 @@ class ConfigStore:
         """Return the dotted-path value from the file layer, or ``_UNSET``."""
         return _lookup(self.data, key)
 
+    def user_value(self, key: str) -> Any:
+        """Return ``key`` from the per-user ``config.yaml`` alone, or ``_UNSET``.
+
+        For machine-wide keys that a workspace must not override (one server per
+        machine listens on one port, whatever directory a command runs from).
+        """
+        user, _workspace = self._layer_paths()
+        if user is None:
+            return _UNSET
+        return _lookup(_read_yaml_mapping(user), key)
+
     def source(
         self, key: str, *, env: str
     ) -> Literal["workspace", "user", "environment", "default"]:
@@ -425,6 +436,7 @@ class ConfigStore:
         env: str,
         default: T,
         cast: Callable[[Any], T] | None = None,
+        user_only: bool = False,
     ) -> T:
         """Resolve ``key`` by file → env → committed-default → in-code precedence.
 
@@ -437,11 +449,13 @@ class ConfigStore:
                 (not to ``default``). Use the module ``as_*`` helpers. When
                 ``None`` the value is returned unchanged (env values are
                 therefore strings).
+            user_only: read the file layer from the per-user ``config.yaml`` alone,
+                for machine-wide keys a workspace must not override.
 
         Returns:
             The resolved, optionally-cast value.
         """
-        file_value = self.file_value(key)
+        file_value = self.user_value(key) if user_only else self.file_value(key)
         if file_value is not _UNSET:
             return cast(file_value) if cast is not None else file_value
         env_value = self._env_map().get(env)
@@ -467,9 +481,10 @@ def resolve(
     env: str,
     default: T,
     cast: Callable[[Any], T] | None = None,
+    user_only: bool = False,
 ) -> T:
     """Resolve a config value via the process-wide store (file → env → default)."""
-    return _STORE.resolve(key, env=env, default=default, cast=cast)
+    return _STORE.resolve(key, env=env, default=default, cast=cast, user_only=user_only)
 
 
 def reload() -> None:
