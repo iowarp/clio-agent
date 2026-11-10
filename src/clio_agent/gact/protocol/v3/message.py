@@ -38,7 +38,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _wire_value(value: Any) -> str | list[str]:
+def _metadata_wire_value(value: Any) -> str | list[str]:
     """A record metadata value as the wire types it: a list of ids, or text."""
     if isinstance(value, (list, tuple)):
         return [str(item) for item in value]
@@ -314,7 +314,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
         # clients render it as what it is, never as model or user text.
         # A compaction record's metadata: what it summarized and kept, and the system
         # prompt in force (clio-schemas InjectionMetadata; other keys stay server-side).
-        record = {k: _wire_value(metadata[k]) for k in WIRE_METADATA_KEYS if k in metadata}
+        record = {k: _metadata_wire_value(metadata[k]) for k in WIRE_METADATA_KEYS if k in metadata}
         return {
             "id": part_id,
             "type": "injection",

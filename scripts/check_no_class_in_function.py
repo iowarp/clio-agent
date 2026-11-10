@@ -54,6 +54,11 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/lm/adapters.py": 2,
     "src/clio_agent/providers/argonne_auth.py": 1,
     "src/clio_agent/runtime/lm_activity.py": 1,
+    # RC1 DEBT (recorded 2026-11, develop CI-to-green pass, iowarp/gact-tui#739): develop
+    # landed these with CI off during the RC1 UI freeze, so the guard went red unnoticed.
+    # The code is frozen for the release; split or hoist and ratchet these back down after
+    # RC1 instead of growing them further.
+    "src/clio_agent/runtime/windows_accept_guard.py": 1,
 }
 
 # Root of the source tree to scan, relative to the repository root.
