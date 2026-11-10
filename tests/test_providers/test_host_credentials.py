@@ -146,6 +146,39 @@ def test_unknown_chain_is_rejected() -> None:
         host_credentials.present("azure")
 
 
+def _record_metadata_lookups(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    from botocore.utils import InstanceMetadataFetcher
+
+    calls: list[str] = []
+
+    def _fake(self: object) -> dict[str, str]:
+        calls.append("iam-role")
+        return {}
+
+    monkeypatch.setattr(InstanceMetadataFetcher, "retrieve_iam_role_credentials", _fake)
+    return calls
+
+
+def test_aws_check_never_asks_the_instance_metadata_endpoint(
+    bare_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The launch-time check must not connect to 169.254.169.254: on macOS that
+    # connect raises the "Local Network" permission prompt.
+    monkeypatch.delenv("AWS_EC2_METADATA_DISABLED", raising=False)
+    calls = _record_metadata_lookups(monkeypatch)
+    assert not host_credentials.present("aws")
+    assert calls == []
+
+
+def test_aws_instance_metadata_is_an_explicit_opt_in(
+    bare_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "false")
+    calls = _record_metadata_lookups(monkeypatch)
+    assert not host_credentials.present("aws")
+    assert calls == ["iam-role"]
+
+
 def test_refresh_skips_host_credential_providers_without_credentials(bare_host: Path) -> None:
     from clio_agent.providers.model_discovery.refresh import is_provider_configured
 
