@@ -306,3 +306,28 @@ def test_route_waiting_includes_a_request_that_parks_no_turn() -> None:
     }
     waiting = client.get("/v1/sessions?waiting_on_person=true").json()["sessions"]
     assert {row["id"] for row in waiting} == {ids[1], child.id}
+
+
+def test_route_waiting_includes_a_pending_question() -> None:
+    """An ask_user question leaves its session idle; the notifier still needs it.
+
+    SABOTAGE: drop the pending-question union -> the idle session is missing -> red.
+    """
+    store, ids = _store(_MemoryStore(), 3)
+    child = store.create(workspace_id="ws", title="kid", parent_session_id=ids[1], agent={})
+    tasks = {
+        "q_open": SimpleNamespace(raw_status="pending", owner=SimpleNamespace(session_id=child.id)),
+        "q_done": SimpleNamespace(raw_status="answered", owner=SimpleNamespace(session_id=ids[2])),
+    }
+
+    async def run(read: Any) -> Any:
+        return read()
+
+    client = _client(store)
+    client.app.state.task_history = SimpleNamespace(
+        task_handles=lambda **_: set(tasks),
+        task_snapshot=tasks.get,
+        io=SimpleNamespace(run=run),
+    )
+    waiting = client.get("/v1/sessions?waiting_on_person=true").json()["sessions"]
+    assert {row["id"] for row in waiting} == {ids[1], child.id}
