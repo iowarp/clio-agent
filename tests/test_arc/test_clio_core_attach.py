@@ -205,26 +205,29 @@ def test_attach_hands_the_native_client_clios_bound(monkeypatch):
 
 @pytest.mark.parametrize(("preset", "expected"), [(None, "127.0.0.1"), ("10.0.0.5", "10.0.0.5")])
 def test_attach_binds_the_native_clients_listener_to_loopback(monkeypatch, preset, expected):
-    """F001: the native client's own listener bound 0.0.0.0 in the server process."""
-    monkeypatch.setenv("BIND_ADDR", "restored-after-test")
+    """F001: the native client's own listener bound 0.0.0.0 in the server process.
+
+    clio-core reads only ``CLIO_BIND_ADDR``; pinning a bare ``BIND_ADDR`` left the
+    listener on every interface.
+    """
+    monkeypatch.setenv("CLIO_BIND_ADDR", "restored-after-test")
     if preset is None:
-        monkeypatch.delenv("BIND_ADDR")
+        monkeypatch.delenv("CLIO_BIND_ADDR")
     else:
-        monkeypatch.setenv("BIND_ADDR", preset)
+        monkeypatch.setenv("CLIO_BIND_ADDR", preset)
     seen: list[str | None] = []
 
     def _init(mode, flag):
-        seen.append(os.environ.get("BIND_ADDR"))
+        seen.append(os.environ.get("CLIO_BIND_ADDR"))
         return True
 
-    monkeypatch.delenv("CLIO_BIND_ADDR", raising=False)
     cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
     clio_core_attach.attach_native_client(
         cte, config_path="c.yaml", port=1, on_failure=lambda: None
     )
     assert seen == [expected]
     # The pin lasts only for the native init: children of this server never inherit it.
-    assert os.environ.get("BIND_ADDR") == preset
+    assert os.environ.get("CLIO_BIND_ADDR") == preset
 
 
 def _daemon_work(monkeypatch, read) -> None:

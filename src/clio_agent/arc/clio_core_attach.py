@@ -70,7 +70,8 @@ _NATIVE_WAIT_ENV = "CLIO_WAIT_SERVER"
 # environment at ``clio_init``; the library defaults it to 0.0.0.0). CLIO's client
 # talks only to the daemon on this host, so it binds loopback unless the person set
 # the variable themselves (F001: an ephemeral 0.0.0.0 listener in the server process).
-_NATIVE_BIND_ENV = "BIND_ADDR"
+# clio-core reads only the ``CLIO_``-prefixed name; a bare ``BIND_ADDR`` is ignored.
+_NATIVE_BIND_ENV = CORE_BIND_ADDR_ENV
 _LOOPBACK_BIND = "127.0.0.1"
 
 
@@ -318,9 +319,9 @@ def attach_native_client(
     the native client gave up sooner.
 
     LOOPBACK. The native client opens a listener of its own during init, bound to
-    ``$CLIO_BIND_ADDR`` / ``$BIND_ADDR`` (library default 0.0.0.0). Unless one is already
-    set, ``BIND_ADDR`` is 127.0.0.1 for the init only and removed again afterwards, so
-    it never stays in this server's environment for its children to inherit.
+    ``$CLIO_BIND_ADDR`` (library default 0.0.0.0). Unless it is already set, it is
+    127.0.0.1 for the init only and removed again afterwards, so it never stays in this
+    server's environment for its children to inherit.
 
     NEVER EXITS THE PROCESS. The native client ends the process (``exit(1)``) on some
     startup failures instead of returning (:mod:`clio_agent.arc.clio_core_native_preflight`).
@@ -362,7 +363,7 @@ def attach_native_client(
         logger.error("%s reason=%s", error, reason)
         raise error
     os.environ[_NATIVE_WAIT_ENV] = f"{window:g}"  # one native client per process
-    pinned = not (os.environ.get(CORE_BIND_ADDR_ENV) or os.environ.get(_NATIVE_BIND_ENV))
+    pinned = not os.environ.get(_NATIVE_BIND_ENV)
     if pinned:
         os.environ[_NATIVE_BIND_ENV] = _LOOPBACK_BIND
     try:
