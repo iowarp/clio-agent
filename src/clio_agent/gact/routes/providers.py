@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact import shared_result
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.claude_code_auth_reprobe import (
     claude_code_overlay_verified,
@@ -78,6 +79,7 @@ from clio_agent.gact.routes.provider_auth_copilot import copilot_readiness
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
 from clio_agent.gact.server_boot import process_arc_off_loop
+from clio_agent.gact.shared_result import SharedResults
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -91,6 +93,49 @@ from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+#: A provider list this young is shared by every read; older, the next read collects
+#: anew (no stale answers: a sign-in finished elsewhere shows within this window).
+PROVIDERS_FRESH_S = 2.0
+PROVIDERS = "providers"
+
+
+def _provider_results(app: FastAPI) -> SharedResults[dict[str, Any]]:
+    return shared_result.for_app(
+        app, PROVIDERS, fresh_s=PROVIDERS_FRESH_S, stale_s=PROVIDERS_FRESH_S, max_entries=2
+    )
+
+
+class ProviderWriteInvalidation:
+    """Discards the shared ``GET /v1/providers`` list around every provider write.
+
+    Sign-in, keys, saved servers, model refreshes and binds all live under
+    ``/v1/providers``; a read made after any of them returns must see it. Raw ASGI,
+    so the reads it does not touch pay one comparison.
+    """
+
+    def __init__(self, app: Any, *, state: Any) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") in {"GET", "HEAD", "OPTIONS"}
+            or not str(scope.get("path") or "").startswith("/v1/providers")
+        ):
+            await self.app(scope, receive, send)
+            return
+        self._invalidate()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self._invalidate()
+
+    def _invalidate(self) -> None:
+        owner = (getattr(self.state, "shared_results", None) or {}).get(PROVIDERS)
+        if owner is not None:
+            owner.invalidate()
 
 
 def _lmstudio_flash_attention_enabled() -> bool:
@@ -130,6 +175,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.providers.catalog import as_lm_presets as _build_lm_presets
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
+    app.add_middleware(ProviderWriteInvalidation, state=app.state)
 
     # Per-provider model catalogs. Hand-curated rather than introspected
     # because most upstreams either don't expose a /models endpoint or
@@ -282,9 +328,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         # Each row probes credentials, model overlays and saved addresses on disk;
-        # keep that I/O off the event loop so it cannot stall every other request.
-        return await run_off_loop(
-            lambda: {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]}
+        # concurrent reads share one collection off the event loop
+        # (:data:`PROVIDERS_FRESH_S`), and every provider write discards it
+        # (:class:`ProviderWriteInvalidation`).
+        startup_check = getattr(app.state, "provider_catalog_startup_task", None)
+        return await _provider_results(app).get(
+            (startup_check is None or startup_check.done(),),
+            lambda: {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]},
         )
 
     # GET /v1/providers/{provider_id} is registered after the literal

@@ -12,7 +12,8 @@ collection off the loop at startup. While it is in flight, ``/v1/health`` answer
 at once with the rows that are cheap and exact right now -- the API itself, the
 typed ``clio_core_attach`` state -- plus a ``doctor`` row whose typed reason
 (``doctor_boot_collection_in_progress``) says the full rows are still being
-collected. Once it finishes (warm caches), every call collects fresh as before.
+collected. Once it finishes, its report answers the first polls, and later polls share
+one collection at a time (``routes.system.shared_health_report``).
 In-process test apps never set ``server_boot`` and keep the synchronous path.
 """
 

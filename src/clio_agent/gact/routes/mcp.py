@@ -37,11 +37,11 @@ import json
 import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact import shared_result
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
 from clio_agent.gact.events import Event
 from clio_agent.gact.mcp_apps import call_tool_result_to_observer
@@ -59,6 +59,7 @@ from clio_agent.gact.routes.mcp_rows import (
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.gact.routes.mcp_specs import declared_mcp_specs, session_mcp_inventory
 from clio_agent.gact.runtime.tool_session import _async_tool_session_context as tool_session_context
+from clio_agent.gact.shared_result import SharedResults
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.execution import notify_tool_observer
 from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
@@ -67,6 +68,37 @@ from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+#: An inventory this young is served as is; an older one is refreshed by one
+#: collection while polls keep getting it, up to MCP_INVENTORY_STALE_S. A saved MCP
+#: configuration change discards it (:func:`invalidate_mcp_inventory`).
+MCP_INVENTORY_FRESH_S = 5.0
+MCP_INVENTORY_STALE_S = 15.0
+MCP_INVENTORY = "mcp_inventory"
+
+
+def _mcp_inventory(app: FastAPI) -> SharedResults[Any]:
+    return shared_result.for_app(
+        app,
+        MCP_INVENTORY,
+        fresh_s=MCP_INVENTORY_FRESH_S,
+        stale_s=MCP_INVENTORY_STALE_S,
+        max_entries=64,
+        workers=2,
+    )
+
+
+def invalidate_mcp_inventory(app: FastAPI) -> None:
+    """Make the next ``GET /v1/mcp/servers`` collect anew (a declared server changed)."""
+
+    shared_result.invalidate(app, MCP_INVENTORY)
+
+
+def _plugin_generation(app: FastAPI) -> int:
+    """Moves on an in-process plugin install/update/uninstall (the catalog registry's)."""
+
+    registry = getattr(app.state, "a2ui_catalogs", None)
+    return int(getattr(registry, "generation", 0) or 0)
 
 
 def _external_mcp_tool_annotations(info: Mapping[str, Any], tool_name: str) -> Any:
@@ -117,21 +149,28 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         id/name/status/transport/tools_count/tools.
 
         ``degradations`` names every reason the listing is partial, so a shorter
-        list is never served as the whole truth. The session inventory blocks
-        (files + the fleet lock a live turn holds), hence the worker.
+        list is never served as the whole truth. The bundled rows and the session
+        inventory (files, plugin resolution and the fleet lock a live turn holds)
+        are one shared collection per (workspace, session) on its own thread
+        (:data:`MCP_INVENTORY_FRESH_S`); installed servers are read live.
         """
 
-        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-        rows = await asyncio.to_thread(_mcp_server_rows, cwd=cwd)
-        inventory = await asyncio.to_thread(
-            session_mcp_inventory, app, cwd=cwd, session_id=session_id
+        bundled, inventory = await _mcp_inventory(app).get(
+            (workspace_id, session_id, _plugin_generation(app)),
+            lambda: _collect_listing(workspace_id, session_id),
         )
-        return {"servers": [*rows, *inventory.rows], "degradations": inventory.degradations}
+        return {
+            "servers": [*bundled, *_installed_server_rows(), *inventory.rows],
+            "degradations": list(inventory.degradations),
+        }
 
-    def _mcp_server_rows(cwd: Path | None = None) -> list[dict[str, Any]]:
-        """Return bundled plus installed MCP server catalog rows."""
+    def _collect_listing(workspace_id: str, session_id: str) -> tuple[list[dict[str, Any]], Any]:
+        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
+        return _bundled_server_rows(), session_mcp_inventory(app, cwd=cwd, session_id=session_id)
+
+    def _bundled_server_rows() -> list[dict[str, Any]]:
+        """The in-process built-in servers (fs/shell via the gateway)."""
         rows: list[dict[str, Any]] = []
-        # In-process bundled built-in servers (fs/shell via gateway).
         try:
             from clio_agent.tools.gateway import list_capabilities
 
@@ -163,12 +202,13 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "error": f"gateway introspection failed: {exc!r}",
                 }
             )
+        return rows
 
-        # Third-party servers installed at runtime.
+    def _installed_server_rows() -> list[dict[str, Any]]:
+        """Third-party servers installed at runtime (in memory)."""
+        rows: list[dict[str, Any]] = []
         installed = getattr(app.state, "external_mcp_servers", {})
-        installed_ids: set[str] = set()
         for sid, info in sorted(installed.items()):
-            installed_ids.add(str(sid))
             rows.append(
                 {
                     "id": sid,
@@ -737,7 +777,8 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def get_mcp_server(sid: str) -> dict[str, Any]:
         """SPEC §6.7 detail endpoint for one MCP server row."""
 
-        for row in _mcp_server_rows():
+        bundled = await _mcp_inventory(app).get(("bundled",), _bundled_server_rows)
+        for row in [*bundled, *_installed_server_rows()]:
             if row.get("id") == sid:
                 return row
         raise HTTPException(
