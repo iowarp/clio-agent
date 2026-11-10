@@ -432,3 +432,49 @@ def test_product_release_reports_real_import_failures(
     )
     with pytest.raises(RuntimeError, match="missing native dependency"):
         cbl.verify_product_release(tmp_path / "python", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("tag", "version"),
+    [
+        ("v0.9.5", "0.9.5"),
+        ("v0.9.5.1", "0.9.5.1"),
+        ("v0.9.6-beta.0", "0.9.6b0"),
+        ("v0.9.5-beta.7.2", "0.9.5b7.post2"),
+    ],
+)
+def test_release_tags_map_to_their_package_version(tag: str, version: str) -> None:
+    assert cbl.package_version_for_tag(tag) == version
+
+
+@pytest.mark.parametrize("tag", ["v0.9.6-rc.1", "v0.9", "main", "v0.9.5.1-beta.0"])
+def test_release_tag_mapping_refuses_other_tags(tag: str) -> None:
+    with pytest.raises(ValueError, match="not a CLIO release tag"):
+        cbl.package_version_for_tag(tag)
+
+
+def test_a_tag_naming_another_release_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Build 42780090698: app labelled v0.9.6-beta.0, runtime 0.9.5.1, "update ready"."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion="0.9.5.1"\n')
+    with pytest.raises(RuntimeError, match="needs pyproject.toml version '0.9.6b0'"):
+        cbl.verify_release_tag(tmp_path, "v0.9.6-beta.0")
+    cbl.verify_release_tag(tmp_path, "v0.9.5.1")
+
+    monkeypatch.setattr(
+        sys, "argv", ["check", "--project", str(tmp_path), "--release-tag", "v0.9.6-beta.0"]
+    )
+    assert cbl.main() == 1
+    assert "0.9.5.1" in capsys.readouterr().err
+    monkeypatch.setattr(
+        sys, "argv", ["check", "--project", str(tmp_path), "--release-tag", "v0.9.5.1"]
+    )
+    assert cbl.main() == 0
+
+
+def test_every_release_build_checks_its_tag_against_the_package() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/clio-bundles.yml").read_text(encoding="utf-8")
+    assert '--release-tag "$RELEASE_TAG"' in workflow
+    assert '--release-tag "$env:RELEASE_TAG"' in workflow
+    assert workflow.count("--release-tag") == 3

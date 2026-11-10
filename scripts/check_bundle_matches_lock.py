@@ -35,10 +35,18 @@ extras. This script has two modes built on that set:
     them for every bundle target platform (``uv pip compile``), so a conflict
     like the clio-kit/click one fails on the PR instead of at release.
 
+``--release-tag <tag>`` (alone, or with either mode)
+    The desktop shell's version comes from the release tag (``clio-bundles.yml``)
+    while the bundled runtime's comes from ``pyproject.toml``. A tag that names
+    another version builds an app that reports itself behind or ahead of its
+    own runtime -- signed build 42780090698 labelled ``v0.9.6-beta.0`` shipped a
+    ``0.9.5.1`` runtime and showed "update ready". Refuse that mismatch.
+
 Usage::
 
     python scripts/check_bundle_matches_lock.py --python <path/to/python>
     python scripts/check_bundle_matches_lock.py --resolve
+    python scripts/check_bundle_matches_lock.py --release-tag v0.9.6-beta.0
 
 Runtime validation uses the runtime's declared ``packaging`` dependency to evaluate
 markers for the interpreter being checked. ``--resolve`` needs only stdlib and ``uv``.
@@ -390,6 +398,37 @@ def verify_product_release(python: Path, project: Path) -> None:
     print(f"OK: installed and imported clio-agent match release {expected}.")
 
 
+def package_version_for_tag(tag: str) -> str:
+    """Map a CLIO release tag to the ``pyproject.toml`` version it must carry.
+
+    ``vX.Y.Z`` and ``vX.Y.Z.N`` are unchanged; ``vX.Y.Z-beta.N`` is the PEP 440
+    ``X.Y.ZbN`` and its hotfix ``vX.Y.Z-beta.N.M`` is ``X.Y.ZbN.postM`` (the
+    inverse of ``release_notes_from_changelog._heading_form``).
+    """
+    version = tag.removeprefix("v")
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", version):
+        return version
+    beta = re.fullmatch(r"(\d+\.\d+\.\d+)-beta\.(\d+)(?:\.(\d+))?", version)
+    if beta is None:
+        raise ValueError(f"not a CLIO release tag: {tag!r}")
+    hotfix = f".post{beta.group(3)}" if beta.group(3) is not None else ""
+    return f"{beta.group(1)}b{beta.group(2)}{hotfix}"
+
+
+def verify_release_tag(project: Path, tag: str) -> None:
+    """Reject a release tag whose version differs from the project's own."""
+    with (project / "pyproject.toml").open("rb") as handle:
+        declared = tomllib.load(handle)["project"]["version"]
+    expected = package_version_for_tag(tag)
+    if declared != expected:
+        raise RuntimeError(
+            f"release tag {tag} needs pyproject.toml version {expected!r}, but it is "
+            f"{declared!r}. The desktop app would carry {tag} and its runtime {declared}, "
+            "and report an update to itself. Bump the version or use the matching tag."
+        )
+    print(f"OK: release tag {tag} matches pyproject.toml version {declared}.")
+
+
 def resolve_bundle(project: Path) -> int:
     """Resolve the bundle's install set against the lock export on every target."""
     failures = 0
@@ -436,7 +475,7 @@ def resolve_bundle(project: Path) -> int:
 def main() -> int:
     """Parse arguments and run the selected mode."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--python", type=Path, help="Path to the built runtime's python executable")
     mode.add_argument(
         "--resolve",
@@ -452,9 +491,23 @@ def main() -> int:
     parser.add_argument(
         "--lock", type=Path, default=None, help="Path to uv.lock (default: <project>/uv.lock)"
     )
+    parser.add_argument(
+        "--release-tag",
+        help="Release tag the desktop shell is versioned from; must match pyproject.toml",
+    )
     args = parser.parse_args()
+    if not (args.python or args.resolve or args.release_tag):
+        parser.error("one of --python, --resolve or --release-tag is required")
     lock: Path = args.lock or args.project / "uv.lock"
 
+    if args.release_tag:
+        try:
+            verify_release_tag(args.project, args.release_tag)
+        except (RuntimeError, ValueError) as exc:
+            print(f"check_bundle_matches_lock: {exc}", file=sys.stderr)
+            return 1
+        if not (args.python or args.resolve):
+            return 0
     if not lock.is_file():
         print(f"check_bundle_matches_lock: lock not found at {lock}", file=sys.stderr)
         return 1

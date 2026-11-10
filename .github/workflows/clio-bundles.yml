@@ -30,8 +30,10 @@ on:
       signed_macos_artifact:
         description: >-
           Build the Developer ID signed and notarized macOS aarch64 bundled
-          Desktop from the dispatch ref as a workflow artifact. `tag` only
-          labels the version; no release is created, changed or published.
+          Desktop from the dispatch ref as a workflow artifact. `tag` labels the
+          version and must match the ref's pyproject.toml version (the app and
+          its runtime would otherwise disagree); no release is created, changed
+          or published.
         type: boolean
         default: false
 
@@ -69,6 +71,12 @@ jobs:
       SIGNED_MACOS_ARTIFACT: ${{ inputs.signed_macos_artifact || false }}
     steps:
       - uses: actions/checkout@v4
+      # The app shell is versioned from the tag and its runtime from pyproject.toml;
+      # refuse a mismatch before any draft or build. A rebuild checks out the tag
+      # only in its desktop legs, which run the same check.
+      - name: Check the release tag matches the package version
+        if: ${{ !inputs.rebuild_bundled }}
+        run: python3 scripts/check_bundle_matches_lock.py --project . --release-tag "$RELEASE_TAG"
       - name: Ensure exactly one draft release for the tag
         if: ${{ !inputs.signed_macos_artifact }}
         env:
@@ -278,7 +286,7 @@ jobs:
         # python; packaging is a declared dependency of that frozen runtime.
         run: |
           external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14 \
-            "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" \
+            "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" --release-tag "$RELEASE_TAG" \
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14
       # Tauri signs only the app, its frameworks and the sidecar; the runtime
       # ships as resources. Sign every runtime Mach-O (and the native members
@@ -300,7 +308,7 @@ jobs:
         shell: pwsh
         run: |
           & external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe `
-            "$env:BUNDLE_CHECKER" --project "$env:GITHUB_WORKSPACE" `
+            "$env:BUNDLE_CHECKER" --project "$env:GITHUB_WORKSPACE" --release-tag "$env:RELEASE_TAG" `
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe
       - name: Pack embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
