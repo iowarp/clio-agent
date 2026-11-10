@@ -17,6 +17,7 @@ from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
+from clio_agent.gact.permission_timeout import REASON_PERMISSION_CANCELLED
 from clio_agent.gact.question_surface import question_row
 from clio_agent.gact.routes.interaction_surface_projection import (
     _latest_action_record as _latest_action_record,
@@ -169,9 +170,16 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         "computer": platform.node(),
         "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
     }
-    status: Literal["pending", "answered", "cancelled"] = "pending"
-    if row.get("status") != "pending":
-        status = "answered" if allows(row.get("action")) else "cancelled"
+    status: Literal["pending", "answered", "denied", "cancelled", "expired"] = "pending"
+    if row.get("status") == "timeout":
+        status = "expired"
+    elif row.get("status") != "pending":
+        if allows(row.get("action")):
+            status = "answered"
+        elif row.get("reason") == REASON_PERMISSION_CANCELLED:
+            status = "cancelled"  # the call was cancelled before anyone answered
+        else:
+            status = "denied"
     return PendingInteraction(
         id=f"permission:{row.get('id', '')}",
         kind="permission",

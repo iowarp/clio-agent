@@ -128,7 +128,8 @@ class PendingInteraction(BaseModel):
     owner_session_id: str
     attended_session_id: str
     task_id: str = ""
-    status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
+    # ``denied``: a permission request the person (or a reviewer) refused.
+    status: Literal["pending", "answered", "denied", "cancelled", "expired"] = "pending"
     title: str
     prompt: str = ""
     requires_human_response: bool = False

@@ -32,6 +32,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.tools.tool_observation import RefusedCallError
 
 __all__ = [
     "CODE_PLAN_MODE_UNCONFINED",
@@ -105,7 +106,8 @@ def _approve(app: Any, code: str) -> None:
     deny_message = str(getattr(decision, "deny_message", "") or "")
     reason = CODE_SCRIPT_DENIED if deny_message else CODE_SCRIPT_NOT_ALLOWED
     trace.event("CODE", "run_code refused reason=%s", reason)
-    raise PermissionError(
+    # Refused, not failed: recorded as denied like any tool the gate refuses.
+    raise RefusedCallError(
         f"{deny_message} The script did not run ({reason})."
         if deny_message
         else "The script did not run: it was not approved, or a permission rule denies "
