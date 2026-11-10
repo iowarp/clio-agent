@@ -221,12 +221,25 @@ The same model is in the design document; it is repeated here so this plan reads
     each server's visible state: `preparing` (phase `provision`, `launch` or `connect`), `ready`
     or `failed` with a typed `mcp_prepare_*` reason.
   - On Windows the provision step runs outside the sandbox, because the AppContainer denies
-    the trampoline writes a `uv` build makes (#1991). A clio-kit without `--prepare` is built
-    by running its own build in the launcher's interpreter with the server's start left out.
-    Failures are typed `mcp_prepare_provision_access_denied` or
-    `mcp_prepare_provision_path_too_long`. MCP build roots (`paths.mcp_build_cache_dir()`) move
+    the trampoline writes a `uv` build makes (#1991). `clio-kit mcp-server --prepare` (clio-kit
+    #402) prints one `clio-kit.mcp-prepare.v1` JSON line on stdout and its exit status maps to
+    a typed reason: 1 `mcp_prepare_provision_unknown_server`, 2 `mcp_prepare_provision_usage`,
+    10 `mcp_prepare_provision_failed`, 11 `mcp_prepare_provision_access_denied`, 12
+    `mcp_prepare_provision_path_too_long`, 13 `mcp_prepare_provision_network`, 14
+    `mcp_prepare_provision_uv_missing`. Only a clio-kit without `--prepare` falls back to
+    running its own build in the launcher's interpreter with the server's start left out;
+    those failures are typed from the build output (`access_denied` or `path_too_long`).
+    MCP build roots (`paths.mcp_build_cache_dir()`) move
     to `%LOCALAPPDATA%\clio-m\<hash>` when the CLIO cache path is longer than 48 characters
     (#1992); `owner.txt` there names the cache it serves.
+  - The same deep-home rule covers first-run provisioning beyond MCP builds. A new plugin
+    store (`paths.plugin_store_dir()`) goes to `%LOCALAPPDATA%\clio-p\<hash>` when
+    `<config>\plugins` is longer than 80 characters, so the default marketplace can be
+    cloned and its agents installed. Managed services on this machine
+    (`paths.service_data_root()`, for example SearXNG) go to `%LOCALAPPDATA%\clio-s\<hash>`
+    when the data root is longer than 72 characters. A store or `services` folder that
+    already exists at the long root stays where it is. Plugin git fetches pass
+    `core.longpaths`, and JSONL logs such as the semantic trace open extended-length paths.
   - `gact/mcp_readiness.py` starts a cold server once: the first start connects directly
     (`mcp_prepare_first_start_direct`) and lists over that connection.
   - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while

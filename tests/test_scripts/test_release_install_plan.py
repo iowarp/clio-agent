@@ -63,9 +63,28 @@ def test_apple_silicon_plan_prefetches_libreoffice_and_native_pnpm(tmp_path: Pat
     assert all(len(line) == 5 and line[2] == "0" for line in lines)
 
 
+def test_windows_plan_prefetches_the_msi_and_native_pnpm(tmp_path: Path) -> None:
+    out = tmp_path / "install-plan.x86_64-pc-windows-msvc.bundled.txt"
+    assert (
+        plan.main(["--target", "x86_64-pc-windows-msvc", "--output", str(out), "--no-sizes"]) == 0
+    )
+    lines = [line.split() for line in out.read_text().splitlines()]
+    assert [(line[0], line[3]) for line in lines] == [
+        ("office", f"LibreOffice_{office.VERSION}_Win_x86-64.msi"),
+        ("npm", f"pnpm-{document_runtime.PNPM_VERSION}.tgz"),
+        ("npm", f"exe.win32-x64-{document_runtime.PNPM_VERSION}.tgz"),
+    ]
+
+
+def test_windows_host_package_has_a_pin(monkeypatch) -> None:
+    monkeypatch.setattr(document_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(document_runtime.platform, "machine", lambda: "AMD64")
+    assert document_runtime._pnpm_host_package() in document_runtime.PNPM_PACKAGES
+
+
 def test_unknown_target_has_no_plan() -> None:
     with pytest.raises(SystemExit):
-        plan.entries("x86_64-pc-windows-msvc")
+        plan.entries("aarch64-pc-windows-msvc")
 
 
 def test_size_falls_back_to_a_one_byte_range_when_head_has_no_length(monkeypatch) -> None:

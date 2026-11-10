@@ -14,8 +14,10 @@ This module prepares one turn's *prompt context* and records what went into it:
 * **Context frames** -- ``_record_context_frame`` snapshots the assembled context
   (visible transcript, attached files, CLIO's additions, with token estimates) into
   ``app.state.context_frames`` (served by ``GET /v1/sessions/{sid}/context/frames``);
-  ``_finalize_context_frame`` stamps the assistant message id + terminal status. ``_message_text_for_frame`` /
-  ``_estimate_context_tokens`` are their leaf token-accounting helpers.
+  ``_finalize_context_frame`` stamps the assistant message id, terminal status and the
+  measured input size of the turn's last LM call (``prompt_input_tokens``). Message items
+  are estimated from their own replayed content (``gact.message_context_tokens``), never
+  from the provider usage of the call that produced them.
 * **Turn provenance** -- ``_context_file_turn_provenance`` returns non-secret
   provenance for the context files attached to a turn.
 * **Workspace resources** -- bounded state for ``resource_ref`` parts.
@@ -33,6 +35,12 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context_reference_delivery
 from clio_agent.gact.conversation_projection import model_context_messages
+from clio_agent.gact.message_context_tokens import (
+    TOKEN_ESTIMATE_METHOD,
+    estimate_message_context_tokens,
+    estimate_text_tokens,
+    message_context_text,
+)
 from clio_agent.gact.providers.config import _active_lm_model_ref
 from clio_agent.gact.resource_enrichment import enrich_with_workspace_resources
 from clio_agent.gact.runtime import bringup_timing
@@ -94,20 +102,35 @@ def _context_file_access_error(
 
 
 def _estimate_context_tokens(text: str) -> int:
-    return max(1, len(text) // 4) if text else 0
+    return estimate_text_tokens(text)
 
 
 def _message_text_for_frame(message: "Message") -> str:
-    chunks: list[str] = []
-    for part in getattr(message, "parts", []) or []:
-        text = getattr(part, "text", "") or ""
-        if text:
-            chunks.append(text)
-        for attr in ("path", "unified_diff", "new_content"):
-            value = getattr(part, attr, "") or ""
-            if value:
-                chunks.append(str(value))
-    return "\n".join(chunks)
+    return message_context_text(message)
+
+
+def _prompt_input_metadata(usage: Any, *, turn_id: str = "") -> dict[str, Any]:
+    """Project a recorded last-call prompt reading onto frame metadata keys.
+
+    This is the real input size of the last LM call (system prompt, tool
+    definitions and history included), kept apart from the per-item estimates.
+    """
+
+    if not isinstance(usage, dict):
+        return {}
+    try:
+        used = int(usage.get("used_tokens") or 0)
+    except (TypeError, ValueError):
+        used = 0
+    if used <= 0:
+        return {}
+    return {
+        "prompt_input_tokens": used,
+        "prompt_input_tokens_source": str(usage.get("source") or ""),
+        "prompt_input_tokens_turn_id": str(turn_id or usage.get("turn_id") or ""),
+        "prompt_input_cache_read_tokens": int(usage.get("cache_read_tokens") or 0),
+        "prompt_input_cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
+    }
 
 
 def _record_context_frame(
@@ -128,18 +151,11 @@ def _record_context_frame(
     # ledgers carry duplicate ``msg_asst_*`` ids.
     in_model_context = {id(row) for row in model_context_messages(visible_messages)}
     items: list[dict[str, Any]] = []
-    token_total = 0
     for msg in visible_messages:
-        msg_text = _message_text_for_frame(msg)
-        tokens = (
-            int(getattr(msg.tokens, "input", 0) or 0)
-            + int(getattr(msg.tokens, "output", 0) or 0)
-            + int(getattr(msg.tokens, "cache_read", 0) or 0)
-            + int(getattr(msg.tokens, "cache_write", 0) or 0)
-        )
-        if tokens <= 0:
-            tokens = _estimate_context_tokens(msg_text)
-        token_total += tokens
+        # What this message adds to the prompt, never ``msg.tokens``: that is the
+        # usage of the call(s) that produced it, which already contains the system
+        # prompt and every earlier message.
+        tokens = estimate_message_context_tokens(msg)
         included = id(msg) in in_model_context
         items.append(
             {
@@ -164,7 +180,6 @@ def _record_context_frame(
         except (TypeError, ValueError):
             raw_size = 0
         tokens = max(0, min(max(raw_size, 0), _CTX_MAX_BYTES) // 4)
-        token_total += tokens
         items.append(
             {
                 "kind": "context_file",
@@ -185,12 +200,10 @@ def _record_context_frame(
 
     reference_items = context_reference_delivery.context_reference_frame_items(user_msg)
     items.extend(reference_items)
-    token_total += sum(int(item.get("tokens_estimated", 0) or 0) for item in reference_items)
 
     # CLIO's own additions this turn, each shown as what it is (never user text).
     for source, text in injections:
         tokens = _estimate_context_tokens(text)
-        token_total += tokens
         items.append(
             {
                 "kind": "injection",
@@ -204,6 +217,19 @@ def _record_context_frame(
 
     enriched_delta = max(0, len(enriched_text) - len(user_text))
     agent_ref = getattr(sess, "agent", {}) or {}
+    # Only what this turn's prompt carries: compacted messages and files that
+    # failed to load are listed but not counted. The system prompt and tool
+    # definitions are not items, so this total is smaller than the real request;
+    # ``prompt_input_tokens`` carries the measured size of the last LM call.
+    token_total = sum(
+        int(item.get("tokens_estimated", 0) or 0) for item in items if item.get("included", True)
+    )
+    usage_by_scope = (getattr(sess, "metadata", {}) or {}).get("context_usage_by_scope", {})
+    previous_usage = (
+        usage_by_scope.get(_session_agent_id(sess) or "main")
+        if isinstance(usage_by_scope, dict)
+        else None
+    )
     frame = {
         "id": _new_context_frame_id(),
         "session_id": sid,
@@ -229,7 +255,10 @@ def _record_context_frame(
         "tokens_estimated": token_total,
         "metadata": {
             "retained_context_source": "visible_gact_transcript",
-            "token_estimate": "message_tokens_or_chars_div_4",
+            "token_estimate": TOKEN_ESTIMATE_METHOD,
+            "tokens_estimated_scope": "included_transcript_files_references_injections",
+            # Until the turn finalizes, the measured prompt is the previous turn's.
+            **_prompt_input_metadata(previous_usage),
             "context_file_injected_chars": enriched_delta,
             "context_error": context_error.model_dump(exclude_none=True)
             if context_error is not None
@@ -255,6 +284,7 @@ def _finalize_context_frame(
     status: str,
     *,
     error_info: Optional[ErrorInfo],
+    prompt_usage: Optional[dict[str, Any]] = None,
 ) -> None:
     with ledger_guard(app):
         frames = list(app.state.context_frames.get(sid, []))
@@ -268,6 +298,9 @@ def _finalize_context_frame(
             frame.setdefault("metadata", {})["turn_error"] = error_info.model_dump(
                 exclude_none=True
             )
+        measured = _prompt_input_metadata(prompt_usage, turn_id=str(frame.get("turn_id") or ""))
+        if measured:
+            frame.setdefault("metadata", {}).update(measured)
         # Not on the served UI wire (see _create/_record context frame above) — the
         # finalized frame is read on demand via the context/frames endpoint.
         break

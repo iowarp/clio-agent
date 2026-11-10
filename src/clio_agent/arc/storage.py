@@ -286,12 +286,15 @@ def _kill_daemon_pidfile() -> None:
     runtime_stop.kill_daemon_pidfile()
 
 
-def release_runtime_client(config_path: str = "", log_level: str = "error") -> None:
+def release_runtime_client(
+    config_path: str = "", log_level: str = "error", *, ceiling_s: float | None = None
+) -> None:
     """Deregister this process; stop the shared daemon iff it was the last live client.
 
     Idempotent and safe to call from multiple shutdown paths (gact lifespan + atexit).
     Serialised by the host-global lock so a concurrent client that is just attaching
     (which registers under the same lock) is never stopped out from under.
+    ``ceiling_s`` bounds the wait for a clean daemon stop (the server's shutdown budget).
     """
     global _client_registered
     if not _client_registered:
@@ -301,7 +304,11 @@ def release_runtime_client(config_path: str = "", log_level: str = "error") -> N
             return
         _deregister_client()
         if not _live_client_pids():
-            _stop_runtime_daemon(config_path or _active_config_path, log_level)
+            config = config_path or _active_config_path
+            if ceiling_s is None:
+                _stop_runtime_daemon(config, log_level)
+            else:
+                _stop_runtime_daemon(config, log_level, ceiling_s=ceiling_s)
 
 
 def cleanup_runtime_after_client_crash(

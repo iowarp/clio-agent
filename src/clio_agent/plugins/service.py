@@ -98,7 +98,7 @@ def plugin_store_root() -> Path:
     ).strip()
     if override:
         return Path(override).expanduser()
-    return paths.user_config_dir() / "plugins"
+    return paths.plugin_store_dir()
 
 
 def default_marketplace_source() -> str:

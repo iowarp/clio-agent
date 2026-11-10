@@ -340,6 +340,7 @@ def finalize_turn(
         assistant_msg.id,
         "cancelled" if state.cancelled_turn else ("error" if state.error_info else "completed"),
         error_info=state.error_info,
+        prompt_usage=state.last_prompt_usage,
     )
 
     # Name the message holding this turn's file_diff parts on the change ledger rows.

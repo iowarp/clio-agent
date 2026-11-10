@@ -370,6 +370,12 @@ in the clio-core child environments only (`arc/clio_core_config.py`
 `pin_loopback_bind`), and keeps an explicit value set by a hand-authored multi-node
 setup. The server's own environment is not changed.
 
+clio-core's runtime web dashboard (`viz`, fixed port 8080 by default) is off in
+CLIO: the same helper sets `CLIO_VIZ_ENABLE=0`, which wins over any `cte.yaml`.
+CLIO does not use the dashboard, and with a fixed port, two homes or users on one
+computer (and a common dev server) would share 8080. An explicit
+`CLIO_VIZ_ENABLE=1` in the server's environment turns it back on for debugging.
+
 **Known gap:** clio-core's control channel, on the RPC port + 2 (`9415` by default),
 binds `tcp://*` (all interfaces) and ignores `CLIO_BIND_ADDR`
 (`ControlChannelLoop` in iowarp/clio-core `context-runtime/src/ipc_manager.cc`).

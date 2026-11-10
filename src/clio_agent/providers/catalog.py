@@ -17,6 +17,7 @@ automatically and the gact modal picks the new preset up at the next
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from clio_agent.providers.catalog_types import (
@@ -24,6 +25,8 @@ from clio_agent.providers.catalog_types import (
     ProviderConfigurationField,
 )
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
+
+logger = logging.getLogger(__name__)
 
 # -- the catalog ------------------------------------------------------
 #
@@ -518,8 +521,16 @@ def get_provider(provider_id: str) -> Provider | None:
     return None
 
 
-def normalize_provider_options(provider_id: str, options: dict[str, Any]) -> dict[str, str]:
-    """Validate and normalize the non-secret LiteLLM options for a provider."""
+def normalize_provider_options(
+    provider_id: str, options: dict[str, Any], *, drop_unknown: bool = False
+) -> dict[str, str]:
+    """Validate and normalize the non-secret LiteLLM options for a provider.
+
+    ``drop_unknown`` drops (and logs) option keys the provider does not declare
+    instead of rejecting them. Stored or inherited settings use it, so an option
+    saved under another provider (``show_diffusion`` after switching from
+    OpenRouter to Codex) never stops a run; a person's request stays strict.
+    """
 
     provider = get_provider(provider_id)
     if provider is None:
@@ -528,7 +539,14 @@ def normalize_provider_options(provider_id: str, options: dict[str, Any]) -> dic
         return {}
     fields = {field.id: field for field in provider.configuration_fields}
     unknown = sorted(set(options) - set(fields))
-    if unknown:
+    if unknown and drop_unknown:
+        logger.warning(
+            "⚑ PROVIDER-OPTIONS reason=provider_option_unsupported provider=%s dropped=%s",
+            provider.id,
+            ",".join(unknown),
+        )
+        options = {key: value for key, value in options.items() if key in fields}
+    elif unknown:
         raise ValueError(f"unsupported options for {provider.id}: {', '.join(unknown)}")
     normalized: dict[str, str] = {}
     for key, raw_value in options.items():

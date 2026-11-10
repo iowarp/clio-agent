@@ -499,3 +499,44 @@ Office).
   loop ran a bare `python3` and an `xcrun stapler` loop, both of which resolve to CLT stubs on a
   Mac without Xcode tools. The measurement scripts now use absolute interpreters and
   `date +%s`. The `install.sh` desktop path calls no stub.
+
+## Windows and Linux parity
+
+The same install shape should hold on all three operating systems: an install plan with a
+sha256 for each asset, concurrent downloads hashed as they arrive, one runtime archive that
+is streamed into place and swapped in atomically, the shared phases with progress lines and
+timings, and CI budgets for each phase. This section compares Linux and Windows against the
+macOS backend above.
+
+| Shape | macOS | Linux (`install.sh --desktop`, deb/rpm) | Windows (`install.ps1 -Desktop`, NSIS) |
+| --- | --- | --- | --- |
+| Install plan, sha256 per asset | `install-plan.<target>.bundled.txt` | same plan, already published | now published for `x86_64-pc-windows-msvc` (Office MSI, pnpm, native `@pnpm/exe.win32-x64`); read and checked against `SHA256SUMS` |
+| Concurrent downloads | app + plan in parallel | app + plan in parallel | now one `curl.exe` per item in parallel (`Save-ClioDownloads`), serial fallback without `curl.exe` |
+| Inline hash | `tee` into `shasum` | app download now hashed inline too (`fetch_hashed`); no second `file_sha` pass | hashed while the file grows; a second pass runs only on a mismatch |
+| Prefetch handed to prepare | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` set for the setup, which runs `--prepare-runtime` from its postinstall hook |
+| Single archive, atomic swap | `.aar` streamed, folder renamed | **gap**: deb/rpm unpack loose files through dpkg/rpm | `.tar.zst` pack, extracted by 8 writers, swapped with a `pack.sha256` receipt (already in gact-tui) |
+| Phases with progress and timings | resolve/download/verify/install/prepare | same five | resolve/download/verify/install; prepare runs inside the silent setup (`/S`) and is timed as part of install |
+| Per-phase CI budgets | `desktop-install-macOS` | `desktop-install-Linux` (now) | `desktop-install-Windows` (now) |
+
+### What changed here
+
+- `scripts/release_install_plan.py` knows the Windows target, and `clio-bundles.yml`
+  publishes the plan for every bundled target.
+- `document_runtime.PNPM_PACKAGES` pins `@pnpm/exe.win32-x64`, so the Windows plan can name it.
+- `install.ps1` resolves the manifest, expected size and plan up front, downloads everything
+  concurrently with an inline hash, verifies from that hash, and passes the verified prefetch
+  folder to the setup. `-Unattended` runs the setup silently for CI.
+- `install.sh` hashes the generic app download (deb, rpm) inline, like the macOS archive.
+- `install-matrix.yml` runs `desktop-install` on macOS, Ubuntu and Windows, with the same
+  first and second launch smoke and each OS held to its own budget rows.
+
+### Gaps not closed here
+
+- **Linux single archive and atomic swap.** The deb/rpm formats install loose files through
+  the package manager. Shipping the runtime as one archive would need a product decision on
+  the Linux package format.
+- **Windows prepare as its own phase.** The NSIS postinstall always runs
+  `--prepare-runtime` (gact-tui `installer-hooks.nsh`). Timing prepare on its own needs an
+  NSIS flag in gact-tui to skip it, so `install.ps1` can run it after the setup.
+- **Windows pack progress.** `runtime_pack.rs` hashes the 483 MB pack without progress output,
+  and NSIS `/S` hides the setup's checkpoint lines.

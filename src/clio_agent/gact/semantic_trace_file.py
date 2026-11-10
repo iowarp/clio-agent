@@ -7,12 +7,14 @@ the sink): this module owns only the file backend and its one shared writer thre
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 from clio_agent.errors import ClioError
+from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.append_handles import AppendHandles
 
 if TYPE_CHECKING:
@@ -151,9 +153,10 @@ class FileSemanticTraceBackend:
                 event_type="trace.read", session_id=session_id, trace_id=f"session:{session_id}"
             )
         )
-        if not path.exists():
+        readable = Path(win_extended_path(os.path.abspath(path)))  # a deep home passes MAX_PATH
+        if not readable.exists():
             return
-        with path.open(encoding="utf-8") as stream:
+        with readable.open(encoding="utf-8") as stream:
             for number, line in enumerate(stream, 1):
                 try:
                     event = json.loads(line)

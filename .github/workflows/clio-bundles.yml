@@ -711,12 +711,13 @@ jobs:
               exit 1
             fi
           fi
-          # install.sh fetches the first launch's downloads (LibreOffice, pnpm)
-          # alongside the app; SHA256SUMS below authenticates the plan. A rebuild
-          # of a tag older than the plan script has none to publish.
-          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" != "Windows" ] \
-             && [ -f scripts/release_install_plan.py ]; then
-            python3 scripts/release_install_plan.py --target "${{ matrix.target }}" \
+          # install.sh and install.ps1 fetch the first launch's downloads (LibreOffice,
+          # pnpm) alongside the app; SHA256SUMS below authenticates the plan. Windows
+          # runners name the interpreter python. A rebuild of a tag older than the plan
+          # script has none to publish.
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ -f scripts/release_install_plan.py ]; then
+            py="$(command -v python3 || command -v python)"
+            "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
           fi
           # Cross-platform checksum: Linux has both, macOS has only `shasum`,

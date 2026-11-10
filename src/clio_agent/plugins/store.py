@@ -15,7 +15,8 @@ Trust (``docs/design/sdk/plugins-and-composition.md``, "External plugins and tru
   hooks, flows) is held as pending until the trust step runs again, while an
   update that changes only text (skills, fragments) applies to the next session.
 
-Layout under ``<config>/plugins/``::
+Layout under ``<config>/plugins/`` (on Windows a deep ``<config>`` moves a new store to
+``%LOCALAPPDATA%\\clio-p\\<hash>``, see :func:`clio_agent.paths.plugin_store_dir`)::
 
     state.json                     marketplaces, active and pending records, specs, trust
     snapshots/<market>/<digest>/   immutable copies the records point into
