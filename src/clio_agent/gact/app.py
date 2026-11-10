@@ -1034,6 +1034,10 @@ def build_app(
     # path -> ContextFile dict.
     app.state.context_files_path = session_store_path.parent / "context_files.json"
     app.state.context_files = _load_context_files(app.state.context_files_path)
+    # The system prompt in force per agent scope, which a compaction record names.
+    from clio_agent.gact.compaction import configure_system_prompt_store  # noqa: PLC0415
+
+    configure_system_prompt_store(session_store_path.parent / "system_prompts")
     # iowarp/clio-agent#331: per-turn context truth frames. These
     # capture what visible transcript/context attachments were
     # retained for a turn, plus model/agent/prompt provenance.
