@@ -208,63 +208,48 @@ function Save-ClioDownload([string]$Uri, [string]$OutFile) {
     }
 }
 
-# Save-ClioDownloads ITEMS EXPECTED: the desktop's downloads (the setup and the release
-# plan's files), all at once. Each is one curl.exe, which retries and resumes as
+# Save-ClioDownloads ITEMS EXPECTED [UNTIL]: the desktop's downloads (the setup and the
+# release plan's files), all at once. Each is one curl.exe, which retries and resumes as
 # Save-ClioDownload does; the bytes are hashed as they land, so no second pass reads the
 # file again. A line every 5 s (2 s as JSON) reports the progress. Each item (.Url, .File)
-# gets .Ok (curl succeeded) and .Sha (lowercase hex of what was written).
-function Save-ClioDownloads($Items, [int64]$Expected) {
+# gets .Ok (curl succeeded), .Sha (lowercase hex of what was written) and .Landed; a plan
+# file (.Final set) then goes through Complete-ClioPrefetch. With UNTIL (one of ITEMS) it
+# returns as soon as that item has landed: the others keep downloading, carried on by
+# Step-ClioDownloads and ended by Stop-ClioDownloads.
+$ClioTransfers = @()
+$ClioBuffer = New-Object byte[] 1048576
+function Save-ClioDownloads($Items, [int64]$Expected, $Until = $null) {
     foreach ($item in $Items) {
         Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
         $item | Add-Member -Force -NotePropertyName Ok -NotePropertyValue $false
         $item | Add-Member -Force -NotePropertyName Sha -NotePropertyValue ''
+        $item | Add-Member -Force -NotePropertyName Landed -NotePropertyValue $false
     }
     $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $curl) {
         foreach ($item in $Items) {
             try { Save-ClioDownload $item.Url $item.File; $item.Sha = Get-ClioSha256 $item.File; $item.Ok = $true } catch { Warn "$_" }
+            $item.Landed = $true
+            if ($item.Final) { Complete-ClioPrefetch $item }
         }
         return
     }
-    $transfers = @(foreach ($item in $Items) {
+    $script:ClioTransfers = @(foreach ($item in $Items) {
         $arguments = "--fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-connrefused --continue-at - --output `"$($item.File)`" `"$($item.Url)`""
         $process = Start-Process -FilePath $curl.Source -ArgumentList $arguments -NoNewWindow -PassThru
         # Windows PowerShell reports no exit code for a process whose handle was never read.
         $null = $process.Handle
         [pscustomobject]@{ Item = $item; Process = $process; Hash = [Security.Cryptography.SHA256]::Create(); Stream = $null; Bytes = [int64]0; Done = $false }
     })
-    $buffer = New-Object byte[] 1048576
     $interval = if ($script:ProgressJson) { 2 } else { 5 }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $next = $interval
     $last = [int64]0
     while ($true) {
-        $active = $false
-        foreach ($t in $transfers) {
-            if ($t.Done) { continue }
-            # Read the exit first: what curl wrote before it exited is then all on disk.
-            $exited = $t.Process.HasExited
-            if (-not $t.Stream -and (Test-Path -LiteralPath $t.Item.File)) {
-                try { $t.Stream = [IO.File]::Open($t.Item.File, 'Open', 'Read', 'ReadWrite, Delete') } catch { }
-            }
-            if ($t.Stream) {
-                while (($n = $t.Stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $null = $t.Hash.TransformBlock($buffer, 0, $n, $null, 0)
-                    $t.Bytes += $n
-                }
-            }
-            if (-not $exited) { $active = $true; continue }
-            $t.Process.WaitForExit()
-            $null = $t.Hash.TransformFinalBlock($buffer, 0, 0)
-            $t.Item.Sha = (($t.Hash.Hash | ForEach-Object { $_.ToString('x2') }) -join '')
-            $t.Item.Ok = $t.Process.ExitCode -eq 0
-            if ($t.Stream) { $t.Stream.Dispose() }
-            $t.Hash.Dispose()
-            $t.Done = $true
-        }
-        if (-not $active) { break }
+        if (-not (Step-ClioDownloads)) { break }
+        if ($Until -and $Until.Landed) { break }
         if ($clock.Elapsed.TotalSeconds -ge $next) {
-            $bytes = [int64](($transfers | Measure-Object -Property Bytes -Sum).Sum)
+            $bytes = [int64](($script:ClioTransfers | Measure-Object -Property Bytes -Sum).Sum)
             Write-ClioEvent ([ordered]@{ event = 'progress'; step = 'download'; bytes = $bytes; total = $Expected })
             $of = if ($Expected -gt 0) { " of $([math]::Round($Expected / 1e6))" } else { '' }
             $rate = ([math]::Round(($bytes - $last) / $interval / 1e6, 1)).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture)
@@ -274,7 +259,65 @@ function Save-ClioDownloads($Items, [int64]$Expected) {
         }
         Start-Sleep -Milliseconds 200
     }
-    $script:RunBytes = [int64](($transfers | Measure-Object -Property Bytes -Sum).Sum)
+    $script:RunBytes = [int64](($script:ClioTransfers | Measure-Object -Property Bytes -Sum).Sum)
+}
+
+# Step-ClioDownloads: hash what each running download wrote since the last call and finish
+# those whose curl.exe exited. $true while any still runs.
+function Step-ClioDownloads {
+    $active = $false
+    foreach ($t in $script:ClioTransfers) {
+        if ($t.Done) { continue }
+        # Read the exit first: what curl wrote before it exited is then all on disk.
+        $exited = $t.Process.HasExited
+        if (-not $t.Stream -and (Test-Path -LiteralPath $t.Item.File)) {
+            try { $t.Stream = [IO.File]::Open($t.Item.File, 'Open', 'Read', 'ReadWrite, Delete') } catch { }
+        }
+        if ($t.Stream) {
+            while (($n = $t.Stream.Read($script:ClioBuffer, 0, $script:ClioBuffer.Length)) -gt 0) {
+                $null = $t.Hash.TransformBlock($script:ClioBuffer, 0, $n, $null, 0)
+                $t.Bytes += $n
+            }
+        }
+        if (-not $exited) { $active = $true; continue }
+        $t.Process.WaitForExit()
+        $null = $t.Hash.TransformFinalBlock($script:ClioBuffer, 0, 0)
+        $t.Item.Sha = (($t.Hash.Hash | ForEach-Object { $_.ToString('x2') }) -join '')
+        $t.Item.Ok = $t.Process.ExitCode -eq 0
+        if ($t.Stream) { $t.Stream.Dispose() }
+        $t.Hash.Dispose()
+        $t.Done = $true
+        $t.Item.Landed = $true
+        if ($t.Item.Final) { Complete-ClioPrefetch $t.Item }
+    }
+    return $active
+}
+
+# Stop-ClioDownloads: end the downloads still running (the setup no longer needs them, or
+# the run failed) and count what all of them fetched.
+function Stop-ClioDownloads {
+    if (-not $script:ClioTransfers.Count) { return }
+    foreach ($t in $script:ClioTransfers) {
+        if ($t.Done) { continue }
+        try { $t.Process.Kill(); $t.Process.WaitForExit() } catch { }
+        if ($t.Stream) { $t.Stream.Dispose() }
+        $t.Hash.Dispose()
+        $t.Done = $true
+    }
+    $script:RunBytes = [int64](($script:ClioTransfers | Measure-Object -Property Bytes -Sum).Sum)
+    $script:ClioTransfers = @()
+}
+
+# Complete-ClioPrefetch ITEM: a plan file is NAME.part while it downloads and NAME once its
+# bytes match the plan, which is what the setup's prepare waits on (office.py
+# installer_download, as install.sh's prefetch). A failure only means the setup fetches it.
+function Complete-ClioPrefetch($item) {
+    if ($item.Ok -and $item.Sha -eq $item.Expected) {
+        try { Move-Item -LiteralPath $item.File -Destination $item.Final -Force; return } catch { }
+    }
+    $item.Ok = $false
+    Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
+    Warn "could not fetch $($item.Name) ahead of time; the setup downloads it while preparing"
 }
 
 # Get-ClioManifestSha MANIFEST NAME: NAME's SHA-256 in a release checksum manifest, or
@@ -432,21 +475,26 @@ function Install-ClioDesktopRelease([string]$repo) {
         $url = "$repo/releases/download/$tag/$asset"
         $downloads = Join-Path $scratch 'downloads'
         New-Item -ItemType Directory -Path $downloads | Out-Null
-        $items = @([pscustomobject]@{ Name = $asset; Url = $url; File = (Join-Path $scratch $asset); Expected = $expected })
+        $items = @([pscustomobject]@{ Name = $asset; Url = $url; File = (Join-Path $scratch $asset); Final = $null; Expected = $expected })
         $total = [int64]0
         try { $total = [int64]@((Invoke-WebRequest -UseBasicParsing -Method Head $url).Headers['Content-Length'])[0] } catch { }
         # The plan is authenticated by the manifest; a release without one (or a plan that
         # cannot be read) only means the setup downloads those files while it prepares.
         $planName = "install-plan.$triple.bundled.txt"
         $planSha = Get-ClioManifestSha $manifest $planName
+        # A plan whose app waits for a download still in progress lets the setup start as
+        # soon as it has landed, its files arriving while it installs and prepares.
+        $planWaits = $false
         if (-not $OptDownloadOnly -and $planSha) {
             $planFile = Join-Path $scratch 'plan'
             try {
                 Invoke-WebRequest -UseBasicParsing "$repo/releases/download/$tag/$planName" -OutFile $planFile
                 if ((Get-ClioSha256 $planFile) -ne $planSha) { throw 'checksum mismatch' }
                 $plan = @(Read-ClioPlan $planFile)
+                $planWaits = [bool](@([IO.File]::ReadAllLines($planFile)) -cmatch '^capability waits-for-partial-downloads( |$)')
                 foreach ($entry in $plan) {
-                    $items += [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = (Join-Path $downloads $entry.Name); Expected = $entry.Sha }
+                    $final = Join-Path $downloads $entry.Name
+                    $items += [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha }
                     $total += $entry.Bytes
                 }
                 if ($plan.Count) { Say "Fetching what the first launch needs at the same time: $(($plan | ForEach-Object { $_.Name }) -join ', ')" }
@@ -456,7 +504,7 @@ function Install-ClioDesktopRelease([string]$repo) {
         }
         Start-ClioStep 'download'
         Say "Downloading CLIO Desktop $tag ($asset)"
-        Save-ClioDownloads $items $total
+        Save-ClioDownloads $items $total $(if ($planWaits) { $items[0] } else { $null })
         Start-ClioStep 'verify'
         $installer = $items[0]
         if (-not $installer.Ok) { Die "Could not download $asset from release $tag" }
@@ -465,15 +513,8 @@ function Install-ClioDesktopRelease([string]$repo) {
         if ($installer.Sha -ne $expected -and (Get-ClioSha256 $installer.File) -ne $expected) {
             Die 'Download checksum mismatch; nothing installed'
         }
-        $prefetched = 0
-        foreach ($item in @($items | Select-Object -Skip 1)) {
-            if ($item.Ok -and $item.Sha -eq $item.Expected) {
-                $prefetched++
-            } else {
-                Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
-                Warn "could not fetch $($item.Name) ahead of time; the setup downloads it while preparing"
-            }
-        }
+        # Plan files that landed intact, or are still arriving for a setup that waits.
+        $prefetched = @($items | Select-Object -Skip 1 | Where-Object { $_.Ok -or -not $_.Landed }).Count
         if ($OptDownloadOnly) {
             New-Item -ItemType Directory -Force -Path $OptDownloadOnly | Out-Null
             $verified = Join-Path $OptDownloadOnly $asset
@@ -506,16 +547,20 @@ function Install-ClioDesktopRelease([string]$repo) {
             $shown = [int64]0
             do {
                 $exited = $setup.WaitForExit(250)
+                $null = Step-ClioDownloads
                 $shown = Show-ClioPrepareLog $prepareLog $shown
             } until ($exited)
         } finally {
             $env:CLIO_INSTALL_DOWNLOADS = $previousDownloads
             $env:CLIO_INSTALL_LOG = $previousLog
         }
+        # The setup has prepared; a plan file still downloading is no longer used.
+        Stop-ClioDownloads
         if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup did not finish (exit $($setup.ExitCode))" }
         Say 'CLIO Desktop installed. Open it from the Start menu.'
         Complete-ClioRun $true
     } finally {
+        Stop-ClioDownloads
         Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
