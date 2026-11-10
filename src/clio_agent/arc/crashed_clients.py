@@ -107,7 +107,6 @@ def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> 
     from clio_agent.arc import clio_core_daemon_version as daemon_version  # noqa: PLC0415
     from clio_agent.arc import runtime_stop, storage  # noqa: PLC0415 - import cycle
     from clio_agent.arc.clio_core_config import runtime_state_dir  # noqa: PLC0415
-    from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError  # noqa: PLC0415
 
     # Crashed entries are pruned only once the daemon is stopped: a start killed during
     # the stop leaves them, so the next start still knows the daemon is suspect.
@@ -116,11 +115,9 @@ def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> 
         return False
     running = daemon_version.running_daemon_config(runtime_state_dir(), config_path)
     daemon_pid = storage.pidfile_live_pid(storage._daemon_pidfile())
-    try:
-        listening = storage._runtime_alive(storage._resolve_runtime_port(running))
-    except ClioCoreRuntimeLostError:
-        listening = daemon_pid is not None  # inconclusive probe: trust the pidfile
-    if daemon_pid is None and not listening:
+    if daemon_pid is None:
+        # No daemon this home started is running. A listener on the port belongs to
+        # another user or home, and is never stopped from here (runtime_ownership).
         _prune_all(crashed)
         return False
     started = time.monotonic()

@@ -297,6 +297,31 @@ ARC on `app.state.arc` does not deregister another owner's client or stop its
 daemon. The `atexit`-registered `release_runtime_client` (`arc/storage.py`) remains
 a crash and legacy backstop, not the primary cleanup path.
 
+### One daemon per user home
+
+The daemon's port is machine-wide, but its spawn lock, pidfile, client registry and
+version record live in the user's runtime state directory
+(`<host state dir>/core-hosts/<host>`). Two users, or one user under two `HOME`
+values, never share a daemon (`arc/runtime_ownership.py`):
+
+- A listener counts as this home's daemon only when this home's pidfile names a
+  live process (PID-reuse checked) that, or a child of which, holds the listening
+  socket.
+- Connect-or-spawn never attaches to a listener it does not own. It moves this
+  home's generated `cte.yaml` to a free port block (from 9421, in steps of 8, from
+  a start derived from the state directory) and spawns its own daemon there. The
+  move is logged at WARNING (`clio_core_port_moved_off_foreign_daemon`) and holds
+  across restarts. A hand-written config (`arc.store_config`, a workspace
+  `.clio/core/cte.yaml`) is never rewritten: the attach fails with
+  `clio_core_foreign_daemon_on_port` and names the setting to change.
+- A stop (last client out, crashed-client replacement, log-flood replacement,
+  the opt-in recycle) runs `clio_run stop` only against this home's own daemon.
+  Without one it stops nothing (`StopOutcome.path == "not_owned"`); when another
+  daemon holds the port it kills only this home's pidfile process
+  (`foreign_listener_kill`).
+
+The rules are the same on Linux, macOS and Windows.
+
 ---
 
 ## Storage topology
