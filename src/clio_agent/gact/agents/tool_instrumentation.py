@@ -66,6 +66,7 @@ from typing import Any, cast, get_args
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.types import ToolDomain
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
+from clio_agent.tools.tool_observation import refusal_reported
 from clio_agent.tools.tool_settings import CALLERS_ATTR, check_callers
 
 logger = logging.getLogger(__name__)
@@ -582,9 +583,10 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
                 result = await func(*call_args, **call_kwargs)
             except (Exception, asyncio.CancelledError) as exc:
                 try:
-                    await observe_native_call(
-                        tool_name, args, "completed", error=str(exc) or type(exc).__name__
-                    )
+                    with refusal_reported(exc):
+                        await observe_native_call(
+                            tool_name, args, "completed", error=str(exc) or type(exc).__name__
+                        )
                 finally:
                     pop_declared_structured_content()
                 raise
@@ -617,9 +619,10 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
             result = func(*call_args, **call_kwargs)
         except Exception as exc:
             try:
-                _execution.notify_global_tool_observer(
-                    tool_name, args, "completed", error=str(exc) or type(exc).__name__
-                )
+                with refusal_reported(exc):
+                    _execution.notify_global_tool_observer(
+                        tool_name, args, "completed", error=str(exc) or type(exc).__name__
+                    )
             finally:
                 # The real one-shot guarantee: consumed HERE, tied to the call
                 # boundary, whether or not the observer ever reached its own

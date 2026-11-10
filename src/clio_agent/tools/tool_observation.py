@@ -24,6 +24,25 @@ OBSERVATION_GROUP: ContextVar[Any | None] = ContextVar("clio_observation_group",
 #: True while a refused call's completion is reported (:func:`notify_refused_call`), so
 #: the observer records it as denied, not as a call that ran and failed.
 REFUSED_CALL: ContextVar[bool] = ContextVar("clio_refused_call", default=False)
+
+
+class RefusedCallError(PermissionError):
+    """A self-gated tool refused its own call before doing anything (``run_code``'s
+    approval was denied). The call's row is completed as denied, not as a failure."""
+
+
+@contextmanager
+def refusal_reported(exc: BaseException) -> Iterator[None]:
+    """Report the completion of a call that raised ``exc`` as refused when it is one."""
+
+    token = REFUSED_CALL.set(True) if isinstance(exc, RefusedCallError) else None
+    try:
+        yield
+    finally:
+        if token is not None:
+            REFUSED_CALL.reset(token)
+
+
 #: One tool call's identity, shared by its permission request and its observed row. A
 #: mutable holder so a copied context (a worker thread) still sees one identity.
 _CALL_IDENTITY: ContextVar[dict[str, Any] | None] = ContextVar("clio_call_identity", default=None)
