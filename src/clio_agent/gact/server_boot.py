@@ -120,6 +120,9 @@ async def close_request_owners(app: "FastAPI") -> None:
     from clio_agent.gact import shutdown_budget  # noqa: PLC0415
 
     shutdown_budget.begin(app)
+    terminals = getattr(app.state, "clio_coder_terminals", None)
+    if terminals is not None:
+        await terminals.close()
     if getattr(app.state, "server_boot", False):
         from clio_agent.gact import search_bootstrap  # noqa: PLC0415
 

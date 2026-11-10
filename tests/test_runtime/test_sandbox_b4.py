@@ -910,10 +910,13 @@ def test_wrap_confined_codex_records_egress_recipe_a(
 
     monkeypatch.setattr(nc, "open_child_channel", _fake_open)
 
+    # The workspace is a sibling of the test home: the Codex marker store must stay unwritable.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     confined = sandbox.wrap_confined(
         "python",
         ["-c", "print(1)"],
-        write_roots=[str(tmp_path)],
+        write_roots=[str(workspace)],
         profile=sandbox.PROFILE_FLEET,
         state=_codex_state(),
     )
@@ -926,7 +929,7 @@ def test_wrap_confined_codex_records_egress_recipe_a(
     assert confined.env_overlay["ALL_PROXY"] == "http://127.0.0.1:44444"
     # The child cannot bypass codex's managed proxy → the honest per-edge label is proxy-enforced.
     assert captured["mechanism"] == nc.MECHANISM_PROXY_ENFORCED
-    assert captured["workspace_root"] == str(tmp_path)
+    assert captured["workspace_root"] == str(workspace)
 
 
 def test_confined_spawn_release_closes_its_real_channel(monkeypatch: pytest.MonkeyPatch) -> None:

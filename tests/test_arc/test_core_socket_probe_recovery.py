@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,12 +23,12 @@ def _forbidden() -> Any:
     raise AssertionError("Do not rebuild native bindings or probe a changed daemon")
 
 
-@pytest.mark.parametrize("error_number", [errno.EADDRINUSE, errno.EACCES, errno.ENOBUFS, None])
+@pytest.mark.parametrize("error_number", [errno.EADDRINUSE, errno.EACCES, errno.ENOBUFS])
 def test_inconclusive_probe_is_typed_not_dead(
     monkeypatch: pytest.MonkeyPatch, error_number: int | None
 ) -> None:
-    """Resource/permission failures and timeouts are not refused connections."""
-    error = OSError(error_number, "local failure") if error_number else TimeoutError("timed out")
+    """Resource/permission failures are not refused connections."""
+    error = OSError(error_number, "local failure")
     monkeypatch.setattr(liveness, "_listener_present", lambda *_a, **_k: _raise(error))
     with pytest.raises(liveness.ClioCoreRuntimeLostError) as raised:
         liveness._runtime_alive(9413)
@@ -37,6 +38,23 @@ def test_inconclusive_probe_is_typed_not_dead(
 
 def _raise(error: Exception) -> Any:
     raise error
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows probes the listener table, not a TCP connect")
+@pytest.mark.parametrize("error", [TimeoutError("timed out"), OSError(errno.ETIMEDOUT, "timeout")])
+def test_loopback_timeout_means_not_running(monkeypatch, caplog, error) -> None:
+    monkeypatch.setattr(liveness, "_listener_present", lambda _port: _raise(error))
+    with caplog.at_level("INFO", logger=liveness.__name__):
+        assert liveness._runtime_alive(9413) is False
+    assert "reason=clio_core_loopback_timeout" in caplog.text
+
+
+def test_windows_listener_table_timeout_remains_inconclusive(monkeypatch) -> None:
+    monkeypatch.setattr(liveness, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(liveness, "_listener_present", lambda _port: _raise(TimeoutError("table")))
+    with pytest.raises(liveness.ClioCoreRuntimeLostError) as raised:
+        liveness._runtime_alive(9413)
+    assert raised.value.details["reason"] == liveness.SOCKET_PROBE_UNAVAILABLE_REASON
 
 
 def test_refused_connection_still_proves_socket_absence(monkeypatch: pytest.MonkeyPatch) -> None:

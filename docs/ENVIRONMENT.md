@@ -392,6 +392,11 @@ These deliberately bypass the config store (a shared file must not be able to re
 | Environment variable | Tier | Read in |
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
+| `CLIO_AGENT_CLIO_CODER_API_KEY_ENV` | unmigrated | `src/clio_agent/gact/clio_coder_route.py` |
+| `CLIO_AGENT_CLIO_CODER_BIN` | unmigrated | `src/clio_agent/runtime/clio_coder/doctor.py`, `src/clio_agent/runtime/clio_coder/launch.py` |
+| `CLIO_AGENT_CLIO_CODER_HOME_TEMPLATE` | unmigrated | `src/clio_agent/gact/clio_coder_route.py` |
+| `CLIO_AGENT_CLIO_CODER_MODEL` | unmigrated | `src/clio_agent/gact/clio_coder_route.py` |
+| `CLIO_AGENT_CLIO_CODER_URL` | unmigrated | `src/clio_agent/gact/clio_coder_route.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |

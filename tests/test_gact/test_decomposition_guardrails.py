@@ -247,7 +247,7 @@ from clio_agent.gact.app import build_app
 # (#1927), a person's way out of a SPOTTER quarantine, adds one; the per-item attention
 # view and its CSV export (POST /v1/sessions/{sid}/messages/{mid}/attention/items[/export])
 # are removed, two: a person selects the part of the answer they want.
-EXPECTED_ROUTE_METHOD_PAIRS = 438
+EXPECTED_ROUTE_METHOD_PAIRS = 440
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

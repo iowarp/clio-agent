@@ -187,9 +187,9 @@ def _listener_present(port: int) -> bool:
 def _runtime_alive(port: int) -> bool:
     """Return listener presence; raise when the local probe cannot establish it.
 
-    A refused connection or Windows' OS listener table proves absence. Timeouts,
-    local socket exhaustion and table-query failures cannot authorize replacement
-    or permanent dead-client quarantine.
+    A refused connection or Windows' OS listener table proves absence. On hosts
+    using a loopback connect, a timeout also means not running (WSL can drop a
+    closed port's refusal). Resource, permission and table-query failures still raise.
     """
     try:
         # Windows reads actual OS listener state instead of allocating another
@@ -198,6 +198,11 @@ def _runtime_alive(port: int) -> bool:
         return _listener_present(port)
     except OSError as error:
         if error.errno == errno.ECONNREFUSED or getattr(error, "winerror", None) == 10061:
+            return False
+        if os.name != "nt" and (isinstance(error, TimeoutError) or error.errno == errno.ETIMEDOUT):
+            logger.info(
+                "Core loopback probe timed out: reason=clio_core_loopback_timeout port=%s", port
+            )
             return False
         logger.warning(
             "Core socket probe failed: port=%s error_type=%s errno=%s winerror=%s detail=%s",
