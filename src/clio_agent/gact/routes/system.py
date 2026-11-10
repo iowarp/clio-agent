@@ -28,7 +28,12 @@ from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
 from clio_agent.gact import boot_timing, store_format_boot, store_migrations
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
+from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.documents.models import ANCHOR_PROFILES, DOCUMENT_PROFILES
+from clio_agent.gact.message_context_tokens import (
+    TOKEN_ESTIMATE_METHOD,
+    estimate_message_context_tokens,
+)
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
@@ -251,25 +256,12 @@ def _fold_handshake_row(live: IntegrationStatus, enriched: IntegrationStatus) ->
 def _estimate_message_context_tokens(message: Message) -> int:
     """Estimate the retained-context tokens one message contributes.
 
-    Prefers the message's recorded token counters; falls back to a chars/4
-    approximation over its text/thinking/path/diff payloads.
+    chars/4 of the message's replayed content. Never the message's recorded
+    provider usage: that is the size of the whole call that produced it (system
+    prompt and all earlier history), so summing it counts the prompt once per message.
     """
 
-    explicit = (
-        int(getattr(message.tokens, "input", 0) or 0)
-        + int(getattr(message.tokens, "output", 0) or 0)
-        + int(getattr(message.tokens, "cache_read", 0) or 0)
-        + int(getattr(message.tokens, "cache_write", 0) or 0)
-    )
-    if explicit > 0:
-        return explicit
-    chars = 0
-    for part in message.parts:
-        chars += len(part.text or "")
-        chars += len(str(getattr(part, "thinking", "") or ""))
-        chars += len(part.path or "")
-        chars += len(part.unified_diff or "")
-    return max(1, chars // 4) if chars else 0
+    return estimate_message_context_tokens(message)
 
 
 def _estimate_context_file_tokens(row: Mapping[str, Any]) -> int:
@@ -721,7 +713,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         session_block: Optional[SessionMemoryStats] = None
         metadata: dict[str, Any] = {
             "retained_context_source": "visible_gact_transcript",
-            "token_estimate": "message_tokens_or_chars_div_4",
+            "token_estimate": TOKEN_ESTIMATE_METHOD,
         }
         if session_id:
             sess_rec = app.state.sessions.get(session_id)
@@ -732,7 +724,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 for row in context_files:
                     mode = str(row.get("mode") or "read")
                     context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
-                transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
+                # Rows a compaction checkpoint covers stay visible but are no longer
+                # sent to the model, so they add no pressure.
+                transcript_tokens = sum(
+                    _estimate_message_context_tokens(m) for m in model_context_messages(messages)
+                )
                 context_file_tokens = sum(
                     _estimate_context_file_tokens(row) for row in context_files
                 )

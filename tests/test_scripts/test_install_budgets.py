@@ -15,6 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -93,7 +94,7 @@ def test_each_desktop_install_step_is_held_to_its_budget() -> None:
     rows = budgets_check.install_event_rows(events, "macOS")
     verdicts = {
         row[1]: row[-1]
-        for row in budgets_check.check_timings(rows, BUDGETS["timings"], "desktop-install")
+        for row in budgets_check.check_timings(rows, BUDGETS["timings"], "desktop-install-macOS")
     }
     assert set(verdicts) == {f"desktop install (macOS): {step}" for step in _MAC_STEPS}
     assert verdicts["desktop install (macOS): install"] == (
@@ -108,14 +109,43 @@ def test_a_failed_desktop_install_fails_its_step_and_the_unrun_steps() -> None:
     rows = budgets_check.install_event_rows(events, "macOS")
     verdicts = {
         row[1]: row[-1]
-        for row in budgets_check.check_timings(rows, BUDGETS["timings"], "desktop-install")
+        for row in budgets_check.check_timings(rows, BUDGETS["timings"], "desktop-install-macOS")
     }
     assert verdicts["desktop install (macOS): resolve"] == "ok"
     assert "the step failed" in verdicts["desktop install (macOS): download"]
     assert "the step failed" in verdicts["desktop install (macOS): total"]
     for step in ("verify", "install", "prepare"):
         assert "not measured" in verdicts[f"desktop install (macOS): {step}"]
-    assert budgets_check.check_timings([], BUDGETS["timings"], "desktop-install")
+    assert budgets_check.check_timings([], BUDGETS["timings"], "desktop-install-macOS")
+
+
+@pytest.mark.parametrize(
+    ("os_name", "steps", "total"),
+    [
+        ("Linux", ("resolve", "download", "verify", "install", "prepare", "total"), 60),
+        # The Windows setup runs its own --prepare-runtime inside the install step.
+        ("Windows", ("resolve", "download", "verify", "install", "total"), 60),
+    ],
+)
+def test_linux_and_windows_hold_the_same_steps_to_budgets(
+    os_name: str, steps: tuple, total: int
+) -> None:
+    timed = [(step, 1.0) for step in steps if step != "total"]
+    rows = budgets_check.install_event_rows(_events(*timed), os_name)
+    job = f"desktop-install-{os_name}"
+    verdicts = {
+        row[1]: row[-1] for row in budgets_check.check_timings(rows, BUDGETS["timings"], job)
+    }
+    assert verdicts == {f"desktop install ({os_name}): {step}": "ok" for step in steps}
+    missing = budgets_check.check_timings([], BUDGETS["timings"], job)
+    assert {row[1] for row in missing} == {f"desktop install ({os_name}): {s}" for s in steps}
+    assert BUDGETS["timings"][f"desktop install ({os_name}): total"]["seconds"] == total
+    # Every install finishes in under 60 s, download included (gact-tui#739).
+    assert all(
+        row["seconds"] <= 60
+        for name, row in BUDGETS["timings"].items()
+        if name.startswith(f"desktop install ({os_name}): ")
+    )
 
 
 def test_the_macos_desktop_install_runs_on_installer_pull_requests() -> None:
@@ -130,12 +160,14 @@ def test_the_macos_desktop_install_runs_on_installer_pull_requests() -> None:
     ):
         assert path in paths
     job = workflow["jobs"]["desktop-install"]
-    assert "if" not in job and job["runs-on"].startswith("macos")
+    assert "if" not in job and job["runs-on"] == "${{ matrix.os }}"
+    assert job["strategy"]["matrix"]["os"] == ["macos-15", "ubuntu-latest", "windows-latest"]
     script = "\n".join(step.get("run", "") for step in job["steps"])
     assert 'install/install.sh --desktop "${package[@]}"' in script
     assert "--progress json" in script
     assert 'CLIO_DESKTOP_DIR="$RUNNER_TEMP/' in script
-    assert "--install-events" in script and "job=desktop-install" in script
+    assert "install/install.ps1 -Desktop -Unattended -Progress json" in script
+    assert "--install-events" in script and 'job="desktop-install-$RUNNER_OS"' in script
     # A dispatch can install a signed build's Apple archive instead of the release.
     assert "--desktop-package" in script and "source=Notarized Developer ID" in script
 

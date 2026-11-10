@@ -274,6 +274,10 @@ def effective_write_roots(
         _add(_mcp_uv_cache_dir())
         # A deep home's MCP builds sit under a short root outside the cache (WinError 206).
         _add(paths.mcp_build_cache_dir())
+        from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415 - avoid cycle
+
+        # Plugin servers keep PLUGIN_DATA in the store, which a deep home puts outside it.
+        _add(plugin_store_root() / "data")
         for cache in _platform_tool_cache_dirs():
             _add(cache)
 

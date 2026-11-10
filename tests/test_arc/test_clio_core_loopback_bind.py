@@ -16,6 +16,7 @@ from clio_agent.arc import clio_core_attach
 from clio_agent.arc.clio_core_config import (
     CORE_BIND_ADDR_ENV,
     CORE_STORAGE_ROOT_ENV,
+    CORE_VIZ_ENABLE_ENV,
     pin_core_child_env,
     pin_loopback_bind,
 )
@@ -76,6 +77,19 @@ def test_child_env_respects_an_explicit_storage_root() -> None:
     env = {CORE_STORAGE_ROOT_ENV: "/data/core"}
     pin_core_child_env(env)
     assert env[CORE_STORAGE_ROOT_ENV] == "/data/core"
+
+
+def test_child_env_turns_off_the_fixed_port_dashboard() -> None:
+    # clio_run serves a dashboard on 8080 by default; two homes on one computer shared it.
+    env: dict[str, str] = {}
+    pin_core_child_env(env)
+    assert env[CORE_VIZ_ENABLE_ENV] == "0"
+
+
+def test_child_env_respects_an_explicit_dashboard_setting() -> None:
+    env = {CORE_VIZ_ENABLE_ENV: "1"}
+    pin_core_child_env(env)
+    assert env[CORE_VIZ_ENABLE_ENV] == "1"
 
 
 def test_spawned_daemon_gets_a_clio_owned_storage_root(

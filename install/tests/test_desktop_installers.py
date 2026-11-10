@@ -477,6 +477,75 @@ def test_desktop_test_package_refusals_install_nothing(
     assert not (tmp_path / "Applications").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the Linux shell installer")
+@pytest.mark.parametrize("proxy", [False, True])
+def test_deb_dependencies_are_fetched_in_parallel_into_a_private_cache(
+    tmp_path: Path, proxy: bool
+) -> None:
+    """apt's serial dependency download is replaced by parallel fetches it then checks."""
+    calls = tmp_path / "calls.txt"
+    mirrors = tmp_path / "apt-mirrors.txt"
+    mirrors.write_text("# list\nhttp://mirror.invalid/ubuntu/\tpriority:1\nhttp://other.invalid/\n")
+    uris = "\n".join(
+        [
+            f"'mirror+file:{mirrors}/pool/main/w/webkit/libwebkit_2.52_amd64.deb'"
+            " libwebkit_2.52_amd64.deb 2500000 SHA256:aa",
+            "'http://archive.invalid/ubuntu/pool/main/o/orc/liborc_1%3a0.4_amd64.deb'"
+            " liborc_1%3a0.4_amd64.deb 285000 SHA256:bb",
+            "'file:/tmp/ignored.deb' ignored.deb 1 SHA256:cc",
+        ]
+    )
+    proxy_line = 'Acquire::http::Proxy "http://proxy.invalid:3128";' if proxy else ""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "uname": 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi',
+        "id": "echo 1000",
+        "sudo": '"$@"',
+        "apt-config": f"echo 'APT::Architecture \"amd64\";'; echo '{proxy_line}'",
+        "apt-get": f"""case " $* " in
+  *" --print-uris "*) cat <<'URIS'
+{uris}
+URIS
+  ;;
+  *) echo "apt-get $*" >> "$TEST_CALLS" ;;
+esac""",
+        "curl": """out=""; url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac
+done
+echo "curl $url" >> "$TEST_CALLS"; echo deb > "$out\"""",
+    }
+    for name, contents in commands.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env = dict(os.environ)
+    env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", TEST_CALLS=str(calls), TMPDIR=str(tmp_path))
+    package = tmp_path / "CLIO.Desktop_0.9.6_amd64.deb"
+    package.write_bytes(b"test build")
+    digest = hashlib.sha256(package.read_bytes()).hexdigest()
+
+    result = _run_installer(["--desktop-package", str(package), "--desktop-sha256", digest], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = calls.read_text().splitlines()
+    install = next(line for line in log if line.startswith("apt-get "))
+    assert install.endswith(str(package))
+    if proxy:
+        assert not any(line.startswith("curl") for line in log)
+        assert "Dir::Cache::Archives" not in install
+        return
+    assert sorted(line for line in log if line.startswith("curl")) == [
+        "curl http://archive.invalid/ubuntu/pool/main/o/orc/liborc_1%3a0.4_amd64.deb",
+        "curl http://mirror.invalid/ubuntu/pool/main/w/webkit/libwebkit_2.52_amd64.deb",
+    ]
+    assert "Fetching 2 system packages CLIO Desktop needs (3 MB), 8 at a time" in result.stdout
+    archives = install.split("Dir::Cache::Archives=")[1].split()[0]
+    assert archives.endswith("/apt/")
+    assert log.index(install) > max(i for i, line in enumerate(log) if line.startswith("curl"))
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
 def test_desktop_test_package_url_needs_a_checksum(tmp_path: Path) -> None:
     env, calls = _package_fakes(tmp_path)
@@ -595,7 +664,9 @@ def _app_archive(path: Path, marker: str = "release") -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _release_fixture(tmp_path: Path, names: list[str], *, tamper: bool = False) -> dict[str, str]:
+def _release_fixture(
+    tmp_path: Path, names: list[str], *, tamper: bool = False, capability: str = ""
+) -> dict[str, str]:
     """A v0.9.6 release whose manifest lists ``names`` (app archives) and an install plan."""
     fixtures = tmp_path / "release"
     fixtures.mkdir()
@@ -609,7 +680,8 @@ def _release_fixture(tmp_path: Path, names: list[str], *, tamper: bool = False) 
     office.write_bytes(b"office image")
     plan = fixtures / "install-plan.aarch64-apple-darwin.bundled.txt"
     plan.write_text(
-        f"office {hashlib.sha256(b'office image').hexdigest()} 12 LibreOffice.dmg "
+        (f"capability {capability}\n" if capability else "")
+        + f"office {hashlib.sha256(b'office image').hexdigest()} 12 LibreOffice.dmg "
         "https://example.invalid/LibreOffice.dmg\n"
         "office 0000 1 ../escape https://example.invalid/escape\n"
     )
@@ -629,8 +701,11 @@ done
 echo "curl $url" >> "$TEST_CALLS"
 file="$TEST_RELEASE/${url##*/}"
 [ -f "$file" ] || exit 22
+case "$url" in *"${TEST_SLOW_URL:-none}") sleep 2 ;; esac
 [ -z "$headers" ] || printf 'HTTP/2 200\\r\\ncontent-length: %s\\r\\n\\r\\n' "$(wc -c < "$file" | tr -d ' ')" > "$headers"
-if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi""",
+if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
+echo "curl-done $url" >> "$TEST_CALLS"
+""",
         "aa": 'echo "aa $*" >> "$TEST_CALLS"; [ "$1" = extract ] && [ "$2" = -d ]; exec tar -xzf - -C "$3"',
         "shasum": 'if command -v sha256sum >/dev/null; then sha256sum; else /usr/bin/shasum "$@"; fi',
         "sw_vers": "echo 15.0",
@@ -704,6 +779,52 @@ def test_mac_release_streams_the_app_archive_and_hands_over_prefetched_files(
         + 12
     )
     assert "Installed: " in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_mac_release_prepares_while_a_capable_apps_files_still_download(tmp_path: Path) -> None:
+    """A plan whose app waits for partial downloads lets prepare start before they land;
+    the run still waits for them and counts their bytes."""
+    env = _release_fixture(
+        tmp_path,
+        ["CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar"],
+        capability="waits-for-partial-downloads",
+    )
+    env["TEST_SLOW_URL"] = "/LibreOffice.dmg"
+
+    result = _run_installer(["--desktop", "--progress", "json"], env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = (tmp_path / "calls.txt").read_text().splitlines()
+    prepared = next(i for i, line in enumerate(log) if line.startswith("app --prepare-runtime"))
+    landed = log.index("curl-done https://example.invalid/LibreOffice.dmg")
+    assert prepared < landed
+    assert "Checking the app's signature while it prepares" in result.stderr
+    summary = _events(result.stdout)[-1]
+    assert summary["ok"] is True
+    archive = tmp_path / "release/CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar"
+    assert summary["bytes"] == archive.stat().st_size + 12
+    assert not list(tmp_path.glob("clio-desktop.*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
+def test_mac_release_with_an_invalid_signature_restores_the_previous_app(tmp_path: Path) -> None:
+    """The signature check runs while the app prepares; its failure removes the new app."""
+    env = _release_fixture(tmp_path, ["CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar"])
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    (bin_dir / "codesign").write_text('#!/bin/bash\necho "codesign $*" >> "$TEST_CALLS"\nexit 1\n')
+    previous = tmp_path / "Applications/CLIO Desktop.app"
+    previous.mkdir(parents=True)
+    (previous / "marker").write_text("previous")
+
+    result = _run_installer(["--desktop", "--progress", "json"], env)
+
+    assert result.returncode != 0
+    assert "previous app restored" in result.stderr
+    assert (previous / "marker").read_text() == "previous"
+    assert sorted(p.name for p in previous.parent.iterdir()) == ["CLIO Desktop.app"]
+    summary = _events(result.stdout)[-1]
+    assert summary["ok"] is False and summary["step"] == "prepare"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")

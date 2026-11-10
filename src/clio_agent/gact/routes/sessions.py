@@ -19,7 +19,11 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact.autonomous_loop import stop_session_loop
-from clio_agent.gact.compaction import CompactionError, compact_session_context
+from clio_agent.gact.compaction import (
+    CompactionError,
+    compact_session_context,
+    forget_system_prompts,
+)
 from clio_agent.gact.context_rollback import follow_rollback
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
@@ -222,6 +226,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         forget_session_reasoning(app, sid)
         await run_off_loop(close_session_model_clients, app, sid)
         deps.delete_session_context_files(app, sid)
+        await run_off_loop(forget_system_prompts, sid)
         await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
         await run_off_loop(close_session_processes, app, sid)  # its kernels and pages (BR23)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes

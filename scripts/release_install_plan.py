@@ -1,10 +1,14 @@
 """Write a desktop release's install plan: what the first launch would download.
 
-``install.sh --desktop`` fetches these files while the app downloads and hands them to
-``clio-desktop --prepare-runtime`` (``CLIO_INSTALL_DOWNLOADS``), which uses each one
+``install.sh --desktop`` and ``install.ps1 -Desktop`` fetch these files while the app
+downloads and hand them to ``clio-desktop --prepare-runtime`` (``CLIO_INSTALL_DOWNLOADS``), which uses each one
 only when its bytes match the app's own pin. One line per file, readable by bash 3.2:
 
     kind sha256 bytes name url
+
+A first ``capability WORD`` line says the app waits for a download still in progress
+(``office.INSTALLER_PLAN_CAPABILITY``), so the installer may prepare before its downloads
+finish; readers that predate it skip lines without five fields.
 
 The pins are read from the source (``office.py``, ``document_runtime.py``) without
 importing it, so this runs on any CI Python. Sizes come from the servers and only feed
@@ -31,6 +35,8 @@ TARGETS = {
     "x86_64-apple-darwin": (("Darwin", "x86_64"), "darwin-x64"),
     "x86_64-unknown-linux-gnu": (("Linux", "x86_64"), "linux-x64"),
     "aarch64-unknown-linux-gnu": (("Linux", "aarch64"), "linux-arm64"),
+    # The bundled Windows setup is x64 only (it runs under emulation on ARM).
+    "x86_64-pc-windows-msvc": (("Windows", "x86_64"), "win32-x64"),
 }
 
 
@@ -45,6 +51,11 @@ def _constants(path: Path, *names: str) -> dict[str, object]:
     if missing:
         raise SystemExit(f"{path.name} no longer defines {sorted(missing)}")
     return found
+
+
+def capability() -> str:
+    """What this release's app does with the installer's downloads (one word)."""
+    return str(_constants(OFFICE, "INSTALLER_PLAN_CAPABILITY")["INSTALLER_PLAN_CAPABILITY"])
 
 
 def entries(target: str) -> list[tuple[str, str, str, str]]:
@@ -95,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--no-sizes", action="store_true", help="write 0 instead of asking")
     args = parser.parse_args(argv)
-    lines = [
+    lines = [f"capability {capability()}"] + [
         f"{kind} {sha} {0 if args.no_sizes else remote_size(url)} {name} {url}"
         for kind, sha, name, url in entries(args.target)
     ]

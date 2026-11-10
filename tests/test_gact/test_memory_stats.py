@@ -196,9 +196,11 @@ def test_memory_stats_session_block_populated_when_session_id_set(
     s = body["session"]
     assert s["session_id"] == sid
     assert s["messages_retained"] == 2
-    assert s["tokens_retained"] == 30
+    # chars/4 of each message's own text; the recorded provider usage (12 + 18) is
+    # the size of the call that produced a message and is not counted (gact-tui#739).
+    assert s["tokens_retained"] == 2
     assert s["tokens_budget"] == 4000
-    assert s["token_pressure"] == pytest.approx(30 / 4000)
+    assert s["token_pressure"] == pytest.approx(2 / 4000)
     assert s["threshold_state"] == "normal"
     assert s["compaction_recommended"] is False
     assert body["metadata"]["tokens_budget_source"] == "handshake_window"

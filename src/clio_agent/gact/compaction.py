@@ -35,10 +35,17 @@ compaction_session`).
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import re
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from clio_agent import injections
@@ -65,7 +72,10 @@ from clio_agent.gact.summarization_record import (
     summary_text,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.platform_paths import atomic_write_text
 from clio_agent.runtime.stream_audit import stream_audit
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AUDIT_AUTO_FAILED",
@@ -78,7 +88,10 @@ __all__ = [
     "CompactionError",
     "compact_session_context",
     "compaction_limit",
+    "configure_system_prompt_store",
+    "forget_system_prompts",
     "maybe_autocompact",
+    "note_system_prompt",
 ]
 
 #: Skip reasons: ``compact_session_context`` returns ``{"compacted": False, "reason": ...}``.
@@ -283,6 +296,123 @@ def _role(row: Any) -> str:
     return "user" if getattr(row, "role", "") == "user" else "assistant"
 
 
+def _kept_rows(app: Any, sid: str, plan: _ScopePlan) -> list[str]:
+    """The transcript rows the agent still sees verbatim beside the summary: each row
+    some of whose segments the policy keeps."""
+    rows = model_context_messages(list(app.state.messages.get(sid, [])))
+    keys = (((getattr(m, "turn_id", "") or m.id), _role(m), m.id) for m in rows)
+    return [i for t, r, i in keys if (t, r) in plan.kept_rows]
+
+
+# ---------------------------------------------------------------------------
+# The system prompt in force, per agent scope (the record names it).
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPTS: OrderedDict[tuple[str, str], str] = OrderedDict()
+_SYSTEM_PROMPTS_LOCK = threading.Lock()
+_SYSTEM_PROMPTS_MAX = 256
+#: One JSON file per session, ``{"prompts": {scope: text}}``; ``None``: memory only.
+_SYSTEM_PROMPTS_DIR: Path | None = None
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+
+
+def configure_system_prompt_store(directory: Path | None) -> None:
+    """Keep each session's noted system prompts under ``directory``, so a compaction
+    after a restart still names the prompt in force before the scope's agent runs again."""
+    global _SYSTEM_PROMPTS_DIR
+    with _SYSTEM_PROMPTS_LOCK:
+        _SYSTEM_PROMPTS_DIR = directory
+        _SYSTEM_PROMPTS.clear()
+
+
+def _prompt_file(session_id: str) -> Path | None:
+    if _SYSTEM_PROMPTS_DIR is None:
+        return None
+    name = session_id
+    if not _SAFE_SESSION_ID.fullmatch(name) or name.startswith("."):
+        name = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return _SYSTEM_PROMPTS_DIR / f"{name}.json"
+
+
+def _read_prompts(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        logger.warning("system prompt store unreadable path=%s: %s", path, exc)
+        return {}
+    prompts = data.get("prompts") if isinstance(data, Mapping) else None
+    if not isinstance(prompts, Mapping):
+        return {}
+    return {str(k): v for k, v in prompts.items() if isinstance(v, str) and v}
+
+
+def _remember_prompt(key: tuple[str, str], text: str) -> None:
+    _SYSTEM_PROMPTS[key] = text
+    _SYSTEM_PROMPTS.move_to_end(key)
+    while len(_SYSTEM_PROMPTS) > _SYSTEM_PROMPTS_MAX:
+        _SYSTEM_PROMPTS.popitem(last=False)
+
+
+def note_system_prompt(session_id: str, scope: str, text: str) -> None:
+    """Remember the system prompt an agent loop of ``scope`` in ``session_id`` sends.
+
+    A compaction record names it, so a reader sees what the agent was told when its
+    history was summarized. Held in a bounded memory cache and, once
+    :func:`configure_system_prompt_store` names a directory, in the session's file
+    (rewritten only when the scope's prompt changes), so it outlives a restart. A
+    failed write is logged, never raised: the turn goes on.
+    """
+    if not session_id or not text:
+        return
+    key = (session_id, scope)
+    with _SYSTEM_PROMPTS_LOCK:
+        if _SYSTEM_PROMPTS.get(key) == text:
+            _SYSTEM_PROMPTS.move_to_end(key)
+            return
+        _remember_prompt(key, text)
+        path = _prompt_file(session_id)
+        if path is None:
+            return
+        prompts = _read_prompts(path)
+        if prompts.get(scope) == text:
+            return
+        prompts[scope] = text
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(path, json.dumps({"prompts": prompts}, sort_keys=True))
+        except OSError as exc:
+            logger.warning("system prompt not persisted session=%s: %s", session_id, exc)
+
+
+def _system_prompt_in_force(session_id: str, scope: str) -> str:
+    """The prompt last noted for ``scope``: from memory, else the session's file."""
+    key = (session_id, scope)
+    with _SYSTEM_PROMPTS_LOCK:
+        if key in _SYSTEM_PROMPTS:
+            return _SYSTEM_PROMPTS[key]
+        path = _prompt_file(session_id)
+        text = _read_prompts(path).get(scope, "") if path is not None else ""
+        if text:
+            _remember_prompt(key, text)
+        return text
+
+
+def forget_system_prompts(session_id: str) -> None:
+    """Drop a deleted session's noted prompts from memory and disk."""
+    with _SYSTEM_PROMPTS_LOCK:
+        for key in [k for k in _SYSTEM_PROMPTS if k[0] == session_id]:
+            del _SYSTEM_PROMPTS[key]
+        path = _prompt_file(session_id)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("system prompt file not removed session=%s: %s", session_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # The one operation.
 # ---------------------------------------------------------------------------
@@ -313,7 +443,10 @@ def compact_session_context(
     Returns:
         ``{session_id, compacted, compactions: [...]}``, one entry per compacted scope
         (``compaction_id``, ``scope``, ``trigger``, ``turn_id``, ``message_id``,
-        ``part_id``, ``replaced_count``, ``summary``); ``reason`` on a typed skip.
+        ``part_id``, ``replaced_count`` (context segments), ``summarized_message_count``,
+        ``compacted_message_ids``, ``kept_message_ids``, ``summary``); ``reason`` on a
+        typed skip. ``compaction.completed`` carries the same entry without ``summary``;
+        the record's metadata also names the system prompt in force.
 
     Raises:
         CompactionError: session not found (404), History mode (409), a manual
@@ -466,12 +599,16 @@ def _summarize_record_fold(
     summary = _summary(app, sid, plan, focus, summarize)
     search_enabled = context_search_available(app.state.arc)
     text = summary_text(summary, base["compaction_id"], search_enabled=search_enabled)
+    compacted = _covered_rows(app, sid, base["turn_id"], plan)
+    kept = _kept_rows(app, sid, plan)
     part = summarization_part(
         text,
         trigger=trigger,
         compaction_id=base["compaction_id"],
         derived_from=plan.summarize,
-        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan),
+        compacted_message_ids=compacted,
+        kept_message_ids=kept,
+        system_prompt=_system_prompt_in_force(sid, plan.scope),
         agent_id=plan.scope,
     )
     try:
@@ -485,7 +622,11 @@ def _summarize_record_fold(
         **base,
         "message_id": message_id,
         "part_id": part_id,
+        # Context segments replaced; the transcript messages they stand for follow.
         "replaced_count": len(plan.summarize),
+        "summarized_message_count": len(compacted),
+        "compacted_message_ids": compacted,
+        "kept_message_ids": kept,
         "summary": text,
     }
 

@@ -88,6 +88,29 @@ def asset() -> tuple[str, str, str]:
 
 
 INSTALLER_DOWNLOADS = "CLIO_INSTALL_DOWNLOADS"
+#: Advertised in the release's install plan (``scripts/release_install_plan.py``): this
+#: app waits for a download still in progress, so the installer may prepare before
+#: its own downloads finish.
+INSTALLER_PLAN_CAPABILITY = "waits-for-partial-downloads"
+#: A partial download that stops growing for this long is abandoned; the app fetches it.
+_INSTALLER_STALL_S = 60.0
+
+
+def _await_installer_file(candidate: Path) -> None:
+    """Wait while the installer still writes ``NAME.part``, renamed to ``NAME`` when verified."""
+    partial = candidate.with_name(candidate.name + ".part")
+    size, changed = -1, time.monotonic()
+    while not candidate.exists():
+        try:
+            current = partial.stat().st_size
+        except OSError:
+            return
+        if current != size:
+            size, changed = current, time.monotonic()
+        elif time.monotonic() - changed > _INSTALLER_STALL_S:
+            logger.warning("installer download %s stalled; fetching it here", candidate.name)
+            return
+        time.sleep(0.25)
 
 
 def installer_download(name: str, checksum: str) -> Path | None:
@@ -95,11 +118,13 @@ def installer_download(name: str, checksum: str) -> Path | None:
 
     ``install.sh --desktop`` fetches LibreOffice while the app downloads and names the
     folder in ``CLIO_INSTALL_DOWNLOADS``; only a file whose bytes match the pin counts.
+    A download still in progress is waited for rather than fetched a second time.
     """
     folder = os.environ.get(INSTALLER_DOWNLOADS, "")
     if not folder or Path(name).name != name:
         return None
     candidate = Path(folder) / name
+    _await_installer_file(candidate)
     try:
         if not candidate.is_file() or candidate.is_symlink():
             return None

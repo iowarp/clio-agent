@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import paths
+from clio_agent.gact.browser import driver
 from clio_agent.gact.browser.settings import BrowserError
 from clio_agent.runtime import package_preparation, trace
 
@@ -72,6 +73,8 @@ def browsers_root() -> Path:
 def _driver() -> tuple[str, str]:
     from playwright._impl._driver import compute_driver_executable  # noqa: PLC0415
 
+    # A desktop bundle fetches the driver's Node.js on first use (browser/driver.py).
+    driver.ensure_node()
     node, cli = compute_driver_executable()
     return str(node), str(cli)
 
@@ -274,6 +277,11 @@ def probe_browser() -> Any:
     root = browsers_root()
     sandbox = _last_sandbox()
     details: dict[str, Any] = {"playwright": version, "cache": str(root), "sandbox": sandbox}
+    try:
+        node = driver.node_path()
+        details["driver"] = str(node) if node is not None else "fetched on first use"
+    except BrowserError as exc:
+        details["driver"] = exc.message
     if not version:
         state, summary = IntegrationState.UNAVAILABLE, "The playwright package is not installed."
         next_action = "Reinstall clio-agent with its dependencies."

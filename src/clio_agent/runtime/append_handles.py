@@ -20,6 +20,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import TextIO
 
+from clio_agent.platform_paths import win_extended_path
+
 __all__ = ["AppendHandles"]
 
 
@@ -73,11 +75,11 @@ class AppendHandles:
             self._open.move_to_end(key)
             if now - checked < self.recheck_s:
                 return handle
-            if _identity(Path(key)) == identity:
+            if _identity(Path(win_extended_path(os.path.abspath(key)))) == identity:
                 self._open[key] = (handle, identity, now)
                 return handle
             self._drop(key)
-        path = Path(key)
+        path = Path(win_extended_path(os.path.abspath(key)))  # a deep home passes MAX_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open("a", encoding="utf-8")
         self._open[key] = (handle, _identity(path) or (0, 0), now)

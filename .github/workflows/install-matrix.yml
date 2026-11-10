@@ -376,8 +376,14 @@ jobs:
   # total are held to their budgets. Pull requests run it only when they change the
   # installers, the first-run prepare they hand downloads to, or these budgets.
   desktop-install:
-    name: Desktop install steps (macOS)
-    runs-on: macos-15
+    # The same steps on every OS (resolve, download, verify, install, prepare; on Windows
+    # the setup prepares inside its install step), each held to its own budget.
+    name: Desktop install steps (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -385,12 +391,15 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
+      # A signed build's Apple archive (dispatch input); macOS only.
       SIGNED_RUN: ${{ inputs.signed_run || '' }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - name: Decide whether this change touches the desktop install
         id: scope
-        shell: bash
         run: |
           if [ "${{ github.event_name }}" != pull_request ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -405,7 +414,7 @@ jobs:
       # it measures this branch's install.sh against the assets that release has. A
       # dispatch with signed_run installs that build's notarized Apple archive instead.
       - name: install.sh --desktop --progress json (scratch directory)
-        if: steps.scope.outputs.run == 'true'
+        if: steps.scope.outputs.run == 'true' && runner.os == 'macOS'
         continue-on-error: true
         run: |
           package=()
@@ -420,27 +429,63 @@ jobs:
           CLIO_DESKTOP_DIR="$RUNNER_TEMP/Applications" bash install/install.sh --desktop "${package[@]}" \
             --progress json > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
       - name: Gatekeeper accepts the installed signed build
-        if: steps.scope.outputs.run == 'true' && env.SIGNED_RUN != ''
+        if: steps.scope.outputs.run == 'true' && runner.os == 'macOS' && env.SIGNED_RUN != ''
         run: |
           spctl --assess --type execute -vv "$RUNNER_TEMP/Applications/CLIO Desktop.app" 2>&1 \
             | tee /dev/stderr | grep "source=Notarized Developer ID" >/dev/null
+      - name: install.sh --desktop --progress json (deb)
+        if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          # The runner image's apt index can be stale (404 on a superseded dependency), and
+          # the desktop's system libraries (WebKitGTK, the tray indicator, ~50 MB from the
+          # Ubuntu mirror) are an OS precondition, not CLIO's install: fetch them untimed so
+          # the install budget measures CLIO, as on macOS and Windows.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-0 libayatana-appindicator3-1 >/dev/null
+          bash install/install.sh --desktop --progress json \
+            > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
+      # Windows PowerShell 5.1, the shell `irm ... | iex` runs in; bash keeps the events'
+      # bytes as they are (5.1's own redirection would write UTF-16).
+      - name: install.ps1 -Desktop -Unattended -Progress json
+        if: steps.scope.outputs.run == 'true' && runner.os == 'Windows'
+        continue-on-error: true
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 -Desktop -Unattended -Progress json \
+            > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
       # The installed app's first launch (on what the install prepared) and a returning
       # one: a faster install must not move work into the first launch.
       - name: First and second launch of the installed app
         if: steps.scope.outputs.run == 'true'
         continue-on-error: true
         run: |
-          app="$RUNNER_TEMP/Applications/CLIO Desktop.app"
-          for run in first second; do
-            uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
-              "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$run" \
-              --agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent" || true
+          case "$RUNNER_OS" in
+            macOS)
+              app="$RUNNER_TEMP/Applications/CLIO Desktop.app/Contents/MacOS/clio-desktop"
+              args=(--agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent")
+              run=() ;;
+            Linux)
+              sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null
+              app=/usr/bin/clio-desktop
+              args=(--agent-home "$HOME/.local/share/clio-agent-ci"
+                    --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log")
+              run=(xvfb-run -a) ;;
+            Windows)
+              dir="$LOCALAPPDATA/CLIO Desktop"
+              app="$dir/clio-desktop.exe"
+              args=(--agent-home "$dir/data/clio-agent"
+                    --boot-log "$LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log")
+              run=() ;;
+          esac
+          for launch in first second; do
+            "${run[@]}" uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
+              "$app" --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$launch" "${args[@]}" || true
           done
       - name: Report
         if: always() && steps.scope.outputs.run == 'true'
         run: |
           {
-            echo "## install.sh --desktop on macOS"
+            echo "## Desktop install on $RUNNER_OS"
             echo '```'
             grep -v '"event":"progress"' "$RUNNER_TEMP/install-events.jsonl" || true
             echo '```'
@@ -449,15 +494,16 @@ jobs:
       - name: Enforce the step budgets
         if: always() && steps.scope.outputs.run == 'true'
         run: |
-          # A local signed package has no download step to require.
-          job=desktop-install
-          [ -z "$SIGNED_RUN" ] || job=desktop-package
-          python3 scripts/ci/check_budgets.py --install-events "$RUNNER_TEMP/install-events.jsonl" \
-            --os macOS --job "$job" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+          # A local signed package (macOS) has no download step to require.
+          job="desktop-install-$RUNNER_OS"
+          [ -z "$SIGNED_RUN" ] || [ "$RUNNER_OS" != macOS ] || job=desktop-package
+          uv run --no-project --python 3.14 python scripts/ci/check_budgets.py \
+            --install-events "$RUNNER_TEMP/install-events.jsonl" \
+            --os "$RUNNER_OS" --job "$job" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.run == 'true'
         with:
-          name: desktop-install-macos
+          name: desktop-install-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/install-events.jsonl
             ${{ runner.temp }}/install.log

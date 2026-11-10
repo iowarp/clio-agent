@@ -402,6 +402,74 @@ fixes this.
   launches in the release `desktop` job get the same `--agent-home`. Before this, they
   measured a cold home and redid the whole prepare.
 
+## Under 60 s: overlap and trims (follow-up to the 71.1 s live run)
+
+The live run of the merged #1985 took 71.1 s: download 45.2, install 2.6, prepare 23.0. Three
+changes cut what still ran in series.
+
+- **(g) Prepare while first-launch files download.** The plan's first line is now
+  `capability waits-for-partial-downloads`. When the installer sees it, it no longer waits
+  for LibreOffice and pnpm before verify, install and prepare; it waits for them after
+  prepare. The app (`office.installer_download`, also used for pnpm) waits while
+  `NAME.part` grows and takes `NAME` once the installer has verified and renamed it. A
+  partial file that stops growing for 60 s is abandoned and the app fetches it. Prefetch
+  curls stop after 60 s below 1 B/s. An older app has no such wait and would download the
+  file a second time, so a plan without the line keeps the old order. Progress events for
+  those files stay `"step":"download"` while later steps run; the download step's seconds
+  then cover the app only, and prepare includes any wait for Office.
+- **(d) Signature check during prepare.** For a release install, `codesign --verify --deep
+  --strict` runs in the background once the app is in place, and its result is collected
+  after prepare. If it fails, or the run stops first, the new app is removed and the
+  previous app restored. The archive already matched the release's SHA-256, and arm64
+  enforces code signatures at exec, so the gap is a prepare run by a signature-invalid app
+  whose bytes matched the release. `--desktop-package` test builds keep the check before
+  the swap.
+- **(e1) Drop Codex's unused helpers on macOS.** `codex-exec-server` and
+  `codex-code-mode-host` (126 MB raw, 31 MB LZMA in the `.aar`) are pruned in
+  `build-gact-runtime.sh`, with their `RECORD` lines. The `codex` binary stays: it is the
+  macOS write fence (`runtime/sandbox.py`), and dropping it would leave no fence. A live
+  probe through `compose_codex_spawn` with the helpers removed still denied writes outside
+  the territory and allowed them inside; the Codex provider itself never spawns `codex`.
+  Linux keeps the helpers until a Linux run proves the same.
+
+Expected, with the 71.1 s link: about 3 s saved by (e1), the Office tail and Node prepare
+overlapping the app download by (g), and 2.6 s by (d). Together with (a), the Node
+entitlements in #1978, that is about 52–55 s.
+
+Measured live on the Mac mini (12 headless installs alternating A = develop and
+B = (g)+(d)+(e1), app archive from a mirror held to 10.7 MB/s, LibreOffice from upstream,
+isolated `HOME`; runs that overlapped other traffic excluded): median total **63.3 s → 59.4
+s**; download 45.2 → 42.3, install 3.0 → 0.0, prepare 15.0 → 17.0 (now also waiting for
+Office).
+
+- **(e3) Playwright's Node.js on first browser use.** The `playwright` wheel carries the
+  official Node.js binary its driver runs on (`playwright/driver/node`, 122 MB raw, 28 MB
+  LZMA in the `.aar`), needed only when the agent first opens a browser.
+  `install/stage_playwright_node.py`, run by both `build-gact-runtime.sh` and `.ps1`,
+  finds the byte-identical binary in the nodejs.org release archive, fails the build if it
+  differs, writes `playwright/driver/clio-node.json` (archive URL and SHA-256 from
+  `SHASUMS256.txt`, binary SHA-256 from the hash-locked wheel) and deletes the binary and
+  its `RECORD` line. `gact/browser/driver.py` fetches the archive on first browser use
+  (browser tools and HTML rendering), checks size, both hashes and `node --version`, and
+  moves the result into `<cache>/browser/node-<version>-<hash>` in one rename, so a failed
+  or interrupted fetch leaves nothing that looks installed. Like Chromium's first-use
+  download, the fetch outlives the action and answers `browser_runtime_preparing` with
+  bytes so far ("first use only: 12 of 28 MB"); it tries 3 times and then answers
+  `browser_runtime_install_failed`, and the next browser use starts over. Playwright is
+  pointed at the binary through its own `PLAYWRIGHT_NODEJS_PATH`, which a person's own
+  setting overrides. The same code runs on macOS, Linux and Windows. The macOS binary is
+  signed by the Node.js Foundation with hardened runtime and the JIT entitlements, so the
+  fetched copy runs as is; #1978's signing script picks entitlements by content, so one
+  file fewer to sign needs no change there.
+
+  Windows finding: `build-gact-runtime.ps1` deleted every `*.exe` under site-packages except
+  Codex and iowarp-core, which removed `playwright\driver\node.exe` and nothing restored it,
+  so Windows bundles had no browser driver at all (from reading the build, not run on
+  Windows). Staging runs before that sweep, so Windows now fetches it on first use too.
+
+  Expected: 28 MB less to download (about 1.5 s at the 18 MB/s of the 71.1 s run, 2.6 s
+  on the 10.7 MB/s A/B mirror) and 122 MB less to unpack.
+
 ## Side findings
 
 - During `--prepare-runtime` with an isolated `HOME`, the store migration reported
@@ -431,3 +499,44 @@ fixes this.
   loop ran a bare `python3` and an `xcrun stapler` loop, both of which resolve to CLT stubs on a
   Mac without Xcode tools. The measurement scripts now use absolute interpreters and
   `date +%s`. The `install.sh` desktop path calls no stub.
+
+## Windows and Linux parity
+
+The same install shape should hold on all three operating systems: an install plan with a
+sha256 for each asset, concurrent downloads hashed as they arrive, one runtime archive that
+is streamed into place and swapped in atomically, the shared phases with progress lines and
+timings, and CI budgets for each phase. This section compares Linux and Windows against the
+macOS backend above.
+
+| Shape | macOS | Linux (`install.sh --desktop`, deb/rpm) | Windows (`install.ps1 -Desktop`, NSIS) |
+| --- | --- | --- | --- |
+| Install plan, sha256 per asset | `install-plan.<target>.bundled.txt` | same plan, already published | now published for `x86_64-pc-windows-msvc` (Office MSI, pnpm, native `@pnpm/exe.win32-x64`); read and checked against `SHA256SUMS` |
+| Concurrent downloads | app + plan in parallel | app + plan in parallel | now one `curl.exe` per item in parallel (`Save-ClioDownloads`), serial fallback without `curl.exe` |
+| Inline hash | `tee` into `shasum` | app download now hashed inline too (`fetch_hashed`); no second `file_sha` pass | hashed while the file grows; a second pass runs only on a mismatch |
+| Prefetch handed to prepare | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` | `CLIO_INSTALL_DOWNLOADS` set for the setup, which runs `--prepare-runtime` from its postinstall hook |
+| Single archive, atomic swap | `.aar` streamed, folder renamed | **gap**: deb/rpm unpack loose files through dpkg/rpm | `.tar.zst` pack, extracted by 8 writers, swapped with a `pack.sha256` receipt (already in gact-tui) |
+| Phases with progress and timings | resolve/download/verify/install/prepare | same five | resolve/download/verify/install; prepare runs inside the silent setup (`/S`) and is timed as part of install |
+| Per-phase CI budgets | `desktop-install-macOS` | `desktop-install-Linux` (now) | `desktop-install-Windows` (now) |
+
+### What changed here
+
+- `scripts/release_install_plan.py` knows the Windows target, and `clio-bundles.yml`
+  publishes the plan for every bundled target.
+- `document_runtime.PNPM_PACKAGES` pins `@pnpm/exe.win32-x64`, so the Windows plan can name it.
+- `install.ps1` resolves the manifest, expected size and plan up front, downloads everything
+  concurrently with an inline hash, verifies from that hash, and passes the verified prefetch
+  folder to the setup. `-Unattended` runs the setup silently for CI.
+- `install.sh` hashes the generic app download (deb, rpm) inline, like the macOS archive.
+- `install-matrix.yml` runs `desktop-install` on macOS, Ubuntu and Windows, with the same
+  first and second launch smoke and each OS held to its own budget rows.
+
+### Gaps not closed here
+
+- **Linux single archive and atomic swap.** The deb/rpm formats install loose files through
+  the package manager. Shipping the runtime as one archive would need a product decision on
+  the Linux package format.
+- **Windows prepare as its own phase.** The NSIS postinstall always runs
+  `--prepare-runtime` (gact-tui `installer-hooks.nsh`). Timing prepare on its own needs an
+  NSIS flag in gact-tui to skip it, so `install.ps1` can run it after the setup.
+- **Windows pack progress.** `runtime_pack.rs` hashes the 483 MB pack without progress output,
+  and NSIS `/S` hides the setup's checkpoint lines.

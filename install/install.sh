@@ -136,6 +136,11 @@ DESKTOP_JOBS=""
 DESKTOP_MONITOR=""
 DESKTOP_APP_FILE=""
 DESKTOP_PLAN_BYTES=0
+# The plan's app waits for a download in progress, so preparing need not wait for them.
+DESKTOP_PLAN_WAITS=0
+# The background signature check of the app just moved in, and the app it replaced.
+DESKTOP_SIGNCHECK=""
+DESKTOP_BACKUP=""
 STEP_NAME=""
 STEP_START=""
 STEP_TIMES=""
@@ -183,10 +188,16 @@ finish_run() {
 desktop_cleanup() {
   local code=$? pid
   # A job is a subshell; its curl would outlive it and keep writing into the scratch.
-  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS; do
+  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS $DESKTOP_SIGNCHECK; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
+  # Stopped before its signature was confirmed: the app does not stay installed.
+  if [ -n "$DESKTOP_SIGNCHECK" ]; then
+    rm -rf "$DESKTOP_DEST/CLIO Desktop.app"
+    [ -z "$DESKTOP_BACKUP" ] || mv "$DESKTOP_BACKUP" "$DESKTOP_DEST/CLIO Desktop.app" || true
+    warn "stopped before the app's signature was confirmed; the new app was removed"
+  fi
   if [ -n "$DESKTOP_SCRATCH" ]; then
     [ ! -d "$DESKTOP_SCRATCH/mount" ] || hdiutil detach "$DESKTOP_SCRATCH/mount" -quiet 2>/dev/null || true
     rm -rf "$DESKTOP_SCRATCH"
@@ -231,6 +242,27 @@ manifest_sha() {
 file_sha() {
   if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
+sha_stream() {
+  if have sha256sum; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi
+}
+
+# fetch_hashed URL FILE [curl options]: download URL to FILE, hashing the bytes as they
+# arrive (FILE.sha), so verifying needs no second pass over the file. An interrupted
+# download starts again once, from the beginning (curl cannot rewind into the hash).
+fetch_hashed() {
+  local url="$1" file="$2" attempt status
+  shift 2
+  for attempt in 1 2; do
+    rm -f "$file" "$file.sha"
+    curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$@" "$url" \
+      | tee "$file" | sha_stream > "$file.sha" && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
+    [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ] || [ "${status[2]}" != 0 ] || return 0
+    [ "$attempt" = 2 ] || [ "${status[0]}" = 22 ] || continue
+    break
+  done
+  rm -f "$file" "$file.sha"
+  return 1
+}
 
 is_sha() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
 
@@ -239,7 +271,10 @@ file_bytes() { local n; n="$(wc -c < "$1" 2>/dev/null || echo 0)"; echo $(( n + 
 # Bytes downloaded so far, and expected in all (the app's size comes from its response).
 downloaded_bytes() {
   local total=0 file
-  for file in "$DESKTOP_APP_FILE" "$DESKTOP_SCRATCH"/downloads/*; do
+  # The streamed archive is removed once verified; app.bytes keeps its size.
+  if [ -f "$DESKTOP_APP_FILE" ]; then total=$(file_bytes "$DESKTOP_APP_FILE")
+  elif [ -f "$DESKTOP_SCRATCH/app.bytes" ]; then total=$(( $(cat "$DESKTOP_SCRATCH/app.bytes") + 0 )); fi
+  for file in "$DESKTOP_SCRATCH"/downloads/*; do
     [ ! -f "$file" ] || total=$(( total + $(file_bytes "$file") ))
   done
   echo "$total"
@@ -263,17 +298,22 @@ download_monitor() {
     [ "$total" -gt 0 ] && total=" of $(megabytes "$total")" || total=""
     say "Downloaded $(megabytes "$bytes")$total MB ($(awk -v d=$(( bytes - last )) -v s="$interval" 'BEGIN { printf "%.1f", d / s / 1000000 }') MB/s)"
     last="$bytes"
+    # Downloads can outlast the app's and run on through prepare; stop once all landed.
+    total="$(expected_bytes)"
+    [ ! -f "$DESKTOP_SCRATCH/app.headers" ] || [ "$bytes" -lt "$total" ] || break
   done
 }
 start_job() { "$@" & DESKTOP_JOBS="$DESKTOP_JOBS $!"; }
 start_monitor() { download_monitor & DESKTOP_MONITOR=$!; }
 
 # The release's install plan lists what the first launch would fetch (LibreOffice, pnpm)
-# as "kind sha256 bytes name url"; only well-formed lines count.
+# as "kind sha256 bytes name url"; only well-formed lines count. A "capability WORD" line
+# says what the plan's app can do with them.
 plan_entries() {
   awk 'NF == 5 && length($2) == 64 && $2 ~ /^[0-9a-f]+$/ && $3 ~ /^[0-9]+$/ \
        && $4 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ && $5 ~ /^https:\/\// { print $2, $3, $4, $5 }' "$1"
 }
+plan_capable() { [ -n "$1" ] && awk -v want="$2" '$1 == "capability" && $2 == want { found=1 } END { exit !found }' "$1"; }
 
 # Root preparing for a sudo user cannot hand its private scratch files over.
 plan_usable() { [ "$(id -u)" != 0 ] || [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; }
@@ -292,11 +332,12 @@ fetch_plan() {  # TAG MANIFEST TRIPLE -> the plan file, or nothing
 
 prefetch() {  # SHA NAME URL: a failure only means the app fetches it itself later
   local file="$DESKTOP_SCRATCH/downloads/$2"
-  if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$3" -o "$file.part" 2>/dev/null \
-     && [ "$(file_sha "$file.part")" = "$1" ]; then
+  # NAME.part while it downloads, NAME once verified: the app waits on that (office.py).
+  if fetch_hashed "$3" "$file.part" 2>/dev/null && [ "$(cat "$file.part.sha")" = "$1" ]; then
     mv "$file.part" "$file"
+    rm -f "$file.part.sha"
   else
-    rm -f "$file.part"
+    rm -f "$file.part" "$file.part.sha"
     warn "could not fetch $2 ahead of time; the app downloads it while preparing"
   fi
 }
@@ -439,6 +480,7 @@ install_desktop() {
   if [ -z "$OPT_DOWNLOAD_ONLY" ]; then
     [ "$os" != Darwin ] || mac_destination
     ! plan_usable || plan="$(fetch_plan "$tag" "$DESKTOP_SCRATCH/checksums" "$triple")"
+    ! plan_capable "$plan" waits-for-partial-downloads || DESKTOP_PLAN_WAITS=1
   fi
   url="$REPO_URL/releases/download/$tag/$asset"
   step download
@@ -453,15 +495,20 @@ install_desktop() {
       say "Downloading CLIO Desktop $tag ($asset)"
       DESKTOP_APP_FILE="$DESKTOP_SCRATCH/$asset"
       start_monitor
-      curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -D "$DESKTOP_SCRATCH/app.headers" "$url" -o "$DESKTOP_APP_FILE" \
+      fetch_hashed "$url" "$DESKTOP_APP_FILE" -D "$DESKTOP_SCRATCH/app.headers" \
         || die "could not download $asset from release $tag" ;;
   esac
-  finish_downloads
+  # The app is what the next steps need. Its first-launch files keep downloading through
+  # them when the app waits for them; an older app would fetch them a second time.
+  [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
   step verify
   case "$asset" in
     *.aar|*.tar.gz) [ "$(cat "$DESKTOP_SCRATCH/app.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed"
-      rm -f "$DESKTOP_APP_FILE" ;;
-    *) [ "$(file_sha "$DESKTOP_APP_FILE")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
+      if [ -z "$OPT_DOWNLOAD_ONLY" ]; then
+        file_bytes "$DESKTOP_APP_FILE" > "$DESKTOP_SCRATCH/app.bytes"
+        rm -f "$DESKTOP_APP_FILE"
+      fi ;;
+    *) [ "$(cat "$DESKTOP_APP_FILE.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
   esac
   if [ -n "$OPT_DOWNLOAD_ONLY" ]; then
     mkdir -p "$OPT_DOWNLOAD_ONLY"
@@ -472,8 +519,8 @@ install_desktop() {
   fi
   step install
   case "$asset" in
-    *.aar|*.tar.gz) mac_install_staged ;;
-    *.dmg) install_desktop_mac "$DESKTOP_APP_FILE" ;;
+    *.aar|*.tar.gz) DESKTOP_DEFER_SIGNATURE=1 mac_install_staged ;;
+    *.dmg) DESKTOP_DEFER_SIGNATURE=1 install_desktop_mac "$DESKTOP_APP_FILE" ;;
     *) install_desktop_linux "$DESKTOP_APP_FILE" ;;
   esac
   step prepare
@@ -481,6 +528,8 @@ install_desktop() {
     Darwin) prepare_desktop "$tag" "$DESKTOP_DEST/CLIO Desktop.app/Contents/MacOS/clio-desktop" "$DESKTOP_SCRATCH/downloads" ;;
     Linux) prepare_desktop "$tag" /usr/bin/clio-desktop "$DESKTOP_SCRATCH/downloads" ;;
   esac
+  mac_signature_settle
+  finish_downloads
   finish_run true
 }
 
@@ -517,13 +566,54 @@ prepare_desktop() {
   fi
 }
 
+# A mirror+file: source names a file of mirrors; the first one serves the download.
+apt_mirror_uri() {  # URI -> an http(s) URI, or nothing
+  local uri="$1" list base
+  case "$uri" in
+    http://*|https://*) printf '%s' "$uri"; return ;;
+    mirror+file:/*) ;;
+    *) return 0 ;;
+  esac
+  list="${uri#mirror+file:}"
+  while [ ! -f "$list" ] && [ "$list" != "${list%/*}" ]; do list="${list%/*}"; done
+  [ -f "$list" ] || return 0
+  base="$(awk '$1 ~ /^https?:\/\// { print $1; exit }' "$list")"
+  [ -z "$base" ] || printf '%s/%s' "${base%/}" "${uri#mirror+file:"$list"/}"
+}
+
+# apt fetches the desktop's system libraries (WebKitGTK, GStreamer: ~70 packages on a
+# system without them) one at a time from one mirror, where one slow response stalls the
+# rest. They are fetched 8 at a time into a private archive directory instead, a stalled
+# transfer restarting; apt then checks each against its signed index (size and hash)
+# and fetches any that are missing or wrong itself. Behind an apt proxy apt does it all.
+apt_prefetch() {  # SUDO PACKAGE DIR
+  local sudo="$1" package="$2" dir="$3" uri name size rest url count=0 bytes=0
+  mkdir -p "$dir/partial"
+  apt-config dump > "$dir/config" 2>/dev/null || true
+  ! grep -qiE '^Acquire::[a-z]+::Proxy "[^"]' "$dir/config" || return 1
+  $sudo apt-get install -y -qq --print-uris "$package" 2>/dev/null > "$dir/uris" || return 1
+  while read -r uri name size rest; do
+    url="$(apt_mirror_uri "${uri//\'/}")"
+    [ -n "$url" ] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]] || continue
+    printf '%s %s\n' "$dir/$name" "$url"
+    size="${size//[^0-9]/}"; count=$(( count + 1 )); bytes=$(( bytes + ${size:-0} ))
+  done < "$dir/uris" > "$dir/fetch"
+  [ "$count" -gt 0 ] || return 0
+  say "Fetching $count system packages CLIO Desktop needs ($(megabytes "$bytes") MB), 8 at a time"
+  # shellcheck disable=SC2016
+  xargs -P 8 -n 2 sh -c 'curl -fsSL --connect-timeout 10 --speed-limit 50000 --speed-time 10 --retry 3 \
+      -o "$0.part" "$1" && mv "$0.part" "$0" || rm -f "$0.part"; exit 0' < "$dir/fetch"
+}
+
 install_desktop_linux() {
-  local package="$1" sudo="" out=1
+  local package="$1" sudo="" out=1 archives=()
   [ "$PROGRESS_JSON" = 0 ] || out=2
   [ "$(id -u)" = 0 ] || { have sudo || die "installing $package needs root; run as root or install sudo"; sudo=sudo; }
   case "$package" in
     *.deb)
-      if have apt-get; then $sudo apt-get install -y "$package" >&"$out" || die "apt-get could not install $package"
+      if have apt-get; then
+        ! apt_prefetch "$sudo" "$package" "$DESKTOP_SCRATCH/apt" || archives=(-o "Dir::Cache::Archives=$DESKTOP_SCRATCH/apt/")
+        $sudo apt-get install -y ${archives[@]+"${archives[@]}"} "$package" >&"$out" || die "apt-get could not install $package"
       else $sudo dpkg -i "$package" >&"$out" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
     *.rpm)
       if have dnf; then $sudo dnf install -y "$package" >&"$out" || die "dnf could not install $package"
@@ -595,13 +685,17 @@ mac_stream() {
   die "could not download or unpack $url; nothing installed"
 }
 
-# Check the staged app's signature once, then swap it in, keeping the previous app.
+# Check the staged app's signature once, then swap it in, keeping the previous app. With
+# DESKTOP_DEFER_SIGNATURE=1 the check runs while the app prepares (its archive already
+# matched the release checksum) and mac_signature_settle removes the app if it fails.
 mac_install_staged() {
   local app="$DESKTOP_STAGING/CLIO Desktop.app" backup=""
   [ -d "$app" ] || die "the download does not contain CLIO Desktop.app; nothing installed"
-  say "Checking the app's signature..."
-  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
-  say "Signature valid."
+  if [ "${DESKTOP_DEFER_SIGNATURE:-0}" != 1 ]; then
+    say "Checking the app's signature..."
+    codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
+    say "Signature valid."
+  fi
   if [ -e "$DESKTOP_DEST/CLIO Desktop.app" ]; then
     backup="$DESKTOP_DEST/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
     mv "$DESKTOP_DEST/CLIO Desktop.app" "$backup"
@@ -612,10 +706,35 @@ mac_install_staged() {
   fi
   rm -rf "$DESKTOP_STAGING"
   DESKTOP_STAGING=""
+  DESKTOP_BACKUP="$backup"
+  if [ "${DESKTOP_DEFER_SIGNATURE:-0}" = 1 ]; then
+    say "Checking the app's signature while it prepares..."
+    codesign --verify --deep --strict "$DESKTOP_DEST/CLIO Desktop.app" \
+      > "$DESKTOP_SCRATCH/signature.log" 2>&1 &
+    DESKTOP_SIGNCHECK=$!
+  fi
   say "Installed: $DESKTOP_DEST/CLIO Desktop.app"
   [ -z "$backup" ] || say "Previous app kept: $backup"
   # curl does not quarantine what it downloads, so Gatekeeper does not prompt for this copy.
   say "Open it from $DESKTOP_DEST in Finder, or run: open \"$DESKTOP_DEST/CLIO Desktop.app\""
+}
+
+# The deferred signature check's verdict: a failure removes the new app and puts the
+# previous one back.
+mac_signature_settle() {
+  local pid="$DESKTOP_SIGNCHECK"
+  [ -n "$pid" ] || return 0
+  DESKTOP_SIGNCHECK=""
+  if wait "$pid"; then
+    say "Signature valid."
+    return 0
+  fi
+  cat "$DESKTOP_SCRATCH/signature.log" >&2 2>/dev/null || true
+  rm -rf "$DESKTOP_DEST/CLIO Desktop.app"
+  if [ -n "$DESKTOP_BACKUP" ] && mv "$DESKTOP_BACKUP" "$DESKTOP_DEST/CLIO Desktop.app"; then
+    die "the app's signature is invalid or absent; it was removed and the previous app restored"
+  fi
+  die "the app's signature is invalid or absent; it was removed"
 }
 
 # install_desktop_mac IMAGE [--noqtn]: copy the app out of a disk image (--noqtn leaves

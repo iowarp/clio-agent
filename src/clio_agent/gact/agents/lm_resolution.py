@@ -75,7 +75,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
         handshake-populated skeleton plus any structured handshake-fallback
         reason. Call :meth:`ResolvedLMSpec.materialize` to get the runnable config.
     """
-    from clio_agent.providers.lm_spec import build_spec  # noqa: PLC0415
+    from clio_agent.providers.lm_spec import build_spec, same_provider_identity  # noqa: PLC0415
     from clio_agent.providers.resolver import resolve_endpoint_and_handshake  # noqa: PLC0415
 
     default_spec = _default_profile_spec(base_agent)
@@ -92,10 +92,13 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
     boot_provider = str(getattr(base_config, "provider", "") or "")
     boot_key = str(getattr(base_config, "api_key", "") or "")
     declared_provider = str(getattr(agent_def, "default_provider", "") or "")
-    if declared_provider and declared_provider != default_spec.provider:
-        # Cross-provider expert: endpoint / model / credential-ref / transport
-        # are provider-scoped, so inheriting the default provider's values would
-        # point the new provider at the wrong endpoint (and a foreign credential).
+    if declared_provider and not same_provider_identity(declared_provider, default_spec):
+        # Cross-provider expert: endpoint / model / credential-ref / transport and
+        # provider options are provider-scoped, so inheriting the default provider's
+        # values would point the new provider at the wrong endpoint (a foreign
+        # credential) and fail on options it does not take (OpenRouter's
+        # show_diffusion on codex). Identity is the preset/server id, not the wire
+        # kind: OpenRouter and the direct OpenAI preset share kind ``openai``.
         # Blank them — the resolver fills the new provider's PROVIDER_DEFAULTS and
         # its own default credential — while provider-agnostic sampling params
         # still inherit (the old ``same_provider`` semantics, design §2; §4).
@@ -105,6 +108,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
             model="",
             api_base="",
             credential_ref="",
+            provider_options={},
             transport="",
         )
     spec = build_spec(agent_def, default_spec)
