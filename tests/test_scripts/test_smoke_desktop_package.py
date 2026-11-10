@@ -169,9 +169,9 @@ def test_cleanup_stops_a_real_owned_tree_and_preserves_an_unrelated_process(tmp_
             child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize(("crash", "reset"), [(False, False), (True, False), (False, True)])
 def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash: bool, reset: bool
 ) -> None:
     candidate = backend(tmp_path)
     desktop = tmp_path / "desktop.exe"
@@ -206,8 +206,13 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
     monkeypatch.setattr(smoke.subprocess, "Popen", launch)
     requests: list[object] = []
 
+    resets = [ConnectionResetError(54, "Connection reset by peer")] if reset else []
+
     def response(request: object, **kwargs: object) -> io.BytesIO:
         requests.append(request)
+        if resets:
+            # A backend still starting resets the first probe; the smoke retries.
+            raise resets.pop()
         if request.full_url.endswith("/v1/health"):
             return io.BytesIO(
                 b'{"integrations":[{"name":"arc","status":"ready"},{"name":"clio_core_attach","status":"ready"}]}'
