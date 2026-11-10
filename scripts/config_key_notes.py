@@ -283,6 +283,18 @@ KEY_NOTES: dict[str, str] = {
         "RSS bytes marking the shared clio-core daemon elevated in the doctor report; tune to "
         "match normal daemon growth on this host."
     ),
+    "arc.clio_core.log_flood_lines_per_s": (
+        "Sustained clio-core daemon log lines/s marking a log flood (a looping error); raise "
+        "only if a verbose CTP_LOG_LEVEL legitimately logs faster."
+    ),
+    "arc.clio_core.log_flood_restart_live": (
+        "Opt-in: replace a log-flooding clio-core daemon even while clients use it; they lose "
+        "the daemon until they attach again."
+    ),
+    "arc.clio_core.log_max_bytes": (
+        "Cap on the clio-core daemon log (one rotation to .1 keeps a second capped file); "
+        "raise to keep more daemon history."
+    ),
     "arc.clio_core.liveness_ttl_s": (
         "Seconds a clio-core liveness probe is trusted before re-checking the socket; raise to cut "
         "overhead, lower to catch a dead daemon faster."

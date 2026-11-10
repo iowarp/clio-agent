@@ -129,7 +129,8 @@ class FileEntry(StorageModel):
 
     path: str
     kind: Literal["file", "directory"]
-    size: int = Field(default=0, ge=0)
+    # None: the provider cannot report the size before reading (e.g. Google Docs exported as PDF).
+    size: int | None = Field(default=0, ge=0)
     revision: str = ""
     sha256: str | None = None
     locator: str = ""

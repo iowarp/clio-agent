@@ -83,7 +83,7 @@ def _sources(app: FastAPI, workspace_id: str, directory: str) -> list[dict[str, 
                     "display_path": name,
                     "type": "file",
                     "internal": False,
-                    "size": item.size,
+                    **({"size": item.size} if item.size is not None else {}),
                     "source_id": source.id,
                 }
     return list(entries.values())

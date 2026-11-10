@@ -55,7 +55,7 @@ class _Agent:
         self.leases: list[str] = []
 
     @contextmanager
-    def lease_workspace_fleet(self, root: str) -> Iterator[None]:
+    def lease_workspace_fleet(self, root: str, *, wait: bool = True) -> Iterator[None]:
         self.leases.append(root)
         try:
             yield

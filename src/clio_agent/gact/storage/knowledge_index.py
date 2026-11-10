@@ -150,7 +150,7 @@ class KnowledgeIndex:
     def _read_note(
         self, adapter: ObsidianSource, entry: FileEntry
     ) -> tuple[KnowledgeNote, str, dict[str, Any]]:
-        if entry.size > 2 * 1024 * 1024:
+        if entry.size is not None and entry.size > 2 * 1024 * 1024:
             raise ValueError("Note exceeds the 2 MiB reader limit")
         with adapter.open_read(entry) as reader:
             data = reader.read(2 * 1024 * 1024 + 1)

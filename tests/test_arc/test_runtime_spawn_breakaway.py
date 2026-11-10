@@ -71,6 +71,8 @@ def _spawn_with_popen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, popen: An
         lambda _core: str(tmp_path / "clio_run.exe"),
     )
     monkeypatch.setattr("clio_agent.arc.storage.subprocess.Popen", popen)
+    # The log pump is spawned through the same Popen; these tests count daemon spawns only.
+    monkeypatch.setattr("clio_agent.arc.runtime_log.start_log_pump", lambda *_a: None)
 
     class _Core:
         @staticmethod

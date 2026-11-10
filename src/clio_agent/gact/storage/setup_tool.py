@@ -236,7 +236,10 @@ def connected_data_open(
     Linked files use fsspec; downloaded files use the approved baseline.
     This does not authorize new sources or expose credentials. Linked paths are
     virtual CLIO paths, not operating-system mounts for shell commands.
+    A listed file with a null size has a size the provider reports only when it is
+    read (for example a Google Doc exported as PDF); it is still readable.
     """
+    from clio_agent.gact.agents.session_inventory import running_operations
     from clio_agent.gact.storage.linked import linked_file
     from clio_agent.gact.storage.models import Manifest
     from clio_agent.gact.storage.references import folder_entries, source_resource
@@ -250,6 +253,12 @@ def connected_data_open(
     record = service.get(session.workspace_id, source_id, connected=linked)
     manifest_id = record.linked_manifest_id if linked else record.manifest_id
     if not manifest_id or (not linked and not record.source.local_path):
+        if running := running_operations(app, source_id):
+            raise ValueError(
+                f"{running[0]['kind'].capitalize()} of this source is still "
+                f"{running[0]['state']} (task {running[0]['handle']}). Call wait_tasks "
+                "with that handle, then open it again."
+            )
         raise ValueError(
             "This source has not been linked or downloaded. Use connected_data_download, "
             "wait for its task, then open with linked=false; or use an existing Link "
