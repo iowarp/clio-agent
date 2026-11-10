@@ -104,10 +104,12 @@ def test_verified_desktop_download(
         wrapper.write_text(
             f"""$ErrorActionPreference = 'Stop'
 function Invoke-WebRequest {{
-    param($Uri, $OutFile, [switch]$UseBasicParsing)
+    param($Uri, $OutFile, $Method, [switch]$UseBasicParsing)
     Add-Content -LiteralPath {quote(urls)} -Value $Uri
-    if ($OutFile) {{ Copy-Item -LiteralPath {quote(payload)} -Destination $OutFile }}
-    else {{ return @{{Content = (Get-Content -Raw -LiteralPath {quote(manifest)})}} }}
+    $source = if ($Uri -like '*/SHA256SUMS.*.txt') {{ {quote(manifest)} }} else {{ {quote(payload)} }}
+    if ($Method -eq 'Head') {{ return @{{Headers = @{{}}}} }}
+    if ($OutFile) {{ Copy-Item -LiteralPath $source -Destination $OutFile }}
+    else {{ return @{{Content = (Get-Content -Raw -LiteralPath $source)}} }}
 }}
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
 # Downloads use curl.exe when Windows has it; hide it so the stub above serves them.
@@ -129,20 +131,23 @@ exit $LASTEXITCODE
             "dpkg": "exit 0",
             "sysctl": "echo 1",
             "sw_vers": "echo 15.0",
+            # Without -o the installer streams the body through its hasher (fetch_hashed).
             "curl": """out=""; url=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
+    -D) shift 2 ;;
     https://*) url="$1"; shift ;;
     *) shift ;;
   esac
 done
 printf '%s\\n' "$url" >> "$TEST_URLS"
 case "$url" in
-  *.dmg|*.deb) cp "$TEST_PAYLOAD" "$out" ;;
-  */SHA256SUMS.*.txt) cp "$TEST_MANIFEST" "$out" ;;
+  *.dmg|*.deb) source="$TEST_PAYLOAD" ;;
+  */SHA256SUMS.*.txt) source="$TEST_MANIFEST" ;;
   *) exit 99 ;;
-esac""",
+esac
+if [ -n "$out" ]; then cp "$source" "$out"; else cat "$source"; fi""",
             "hdiutil": "echo 'Download-only must never mount' >&2; exit 99",
             "apt-get": "echo 'Download-only must never install' >&2; exit 99",
         }
@@ -562,7 +567,7 @@ def test_release_desktop_install_keeps_its_plain_copy() -> None:
     """Only the explicit test package skips quarantine; the release path is unchanged."""
     source = (ROOT / "install/install.sh").read_text()
     release = source.split("install_desktop() {", 1)[1].split("\n}\n", 1)[0]
-    assert '*.dmg) install_desktop_mac "$DESKTOP_APP_FILE" ;;' in release
+    assert 'install_desktop_mac "$DESKTOP_APP_FILE" ;;' in release
     assert "--noqtn" not in release
 
 
