@@ -41,9 +41,10 @@ def stdio_environment(
 
         # Reuse the same short content-addressed runtime cache as Desktop.
         # Nesting projects beneath the redirected Windows profile adds another
-        # workspace hash and exceeds MAX_PATH while copying locked projects.
+        # workspace hash and exceeds MAX_PATH while copying locked projects; a deep
+        # CLIO_AGENT_HOME gets a short build root for the same reason.
         if not env.get("CLIO_KIT_CACHE_DIR"):
-            env["CLIO_KIT_CACHE_DIR"] = str(paths.user_cache_dir() / "mcp-runtime")
+            env["CLIO_KIT_CACHE_DIR"] = str(paths.mcp_build_cache_dir() / "mcp-runtime")
         from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
             remove_stale_environments,
         )

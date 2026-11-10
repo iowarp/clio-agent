@@ -91,7 +91,7 @@ def bundled_module_launcher(
         ambient_path = os.environ.get("PATH", "")
         env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
     env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
-        "CLIO_KIT_CACHE_DIR", str(paths.user_cache_dir() / "mcp-runtime")
+        "CLIO_KIT_CACHE_DIR", str(paths.mcp_build_cache_dir() / "mcp-runtime")
     )
     executable = Path(sys.executable).resolve()
     return str(executable), ["-c", selected[1], *resolved_args], env

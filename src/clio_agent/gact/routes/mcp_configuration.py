@@ -17,6 +17,7 @@ from clio_agent.gact.mcp_user_configuration import mcp_server_arg_value
 from clio_agent.gact.resource_processing import DocumentProcessorClient
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
+from clio_agent.tools import mcp_prepare
 from clio_agent.tools.mcp_config import (
     MCPTransportError,
     spec_from_declaration,
@@ -182,6 +183,9 @@ async def _probe_user_mcp_server(
         normalized = spec_from_declaration("configuration", transport_spec)
         if not normalized.usable:
             raise MCPTransportError("; ".join(normalized.validation_errors))
+        if normalized.transport == "stdio" and mcp_prepare.builds_outside_fence():
+            # The probe starts the server confined; build its environment first (#1991).
+            await asyncio.to_thread(mcp_prepare.provision, normalized.name, normalized)
         transport = transport_for(normalized)
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None

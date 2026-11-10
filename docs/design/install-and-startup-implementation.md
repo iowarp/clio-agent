@@ -220,6 +220,13 @@ The same model is in the design document; it is repeated here so this plan reads
     clio-kit offers it, else the typed `mcp_prepare_provision_unsupported_launcher`), and keeps
     each server's visible state: `preparing` (phase `provision`, `launch` or `connect`), `ready`
     or `failed` with a typed `mcp_prepare_*` reason.
+  - On Windows the provision step runs outside the sandbox, because the AppContainer denies
+    the trampoline writes a `uv` build makes (#1991). A clio-kit without `--prepare` is built
+    by running its own build in the launcher's interpreter with the server's start left out.
+    Failures are typed `mcp_prepare_provision_access_denied` or
+    `mcp_prepare_provision_path_too_long`. MCP build roots (`paths.mcp_build_cache_dir()`) move
+    to `%LOCALAPPDATA%\clio-m\<hash>` when the CLIO cache path is longer than 48 characters
+    (#1992); `owner.txt` there names the cache it serves.
   - `gact/mcp_readiness.py` starts a cold server once: the first start connects directly
     (`mcp_prepare_first_start_direct`) and lists over that connection.
   - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while
