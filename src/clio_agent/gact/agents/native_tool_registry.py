@@ -433,8 +433,16 @@ def build_native_tools(
                 _pick([*build_ndp_discovery_tools(), *build_ndp_endpoint_tools()], wanted)
             )
         else:
-            # Connecting is how an empty workspace acquires its first Endpoint.
-            available.update(_pick(build_ndp_endpoint_tools(setup_only=True), wanted))
+            # Claiming the ndp plugin is the opt-in: catalog discovery is
+            # credential-free and is how an empty workspace finds its first
+            # dataset, and connecting is how it acquires its first Endpoint.
+            # Operations, requests and uploads need a source or Endpoint first.
+            available.update(
+                _pick(
+                    [*build_ndp_discovery_tools(), *build_ndp_endpoint_tools(setup_only=True)],
+                    wanted,
+                )
+            )
         for name in wanted & set(_NDP_DISCOVERY + _NDP_ENDPOINT):
             if name not in available:
                 withheld[name] = "ndp_source_not_connected"
