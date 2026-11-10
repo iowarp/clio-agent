@@ -554,6 +554,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_pending_steers=True,
                 x_clio_queued_messages=True,
                 x_clio_hdf5_viewer=True,
+                x_clio_session_move=True,  # POST /v1/sessions/{sid}/move
                 x_clio_resources=resource_capabilities(app),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),

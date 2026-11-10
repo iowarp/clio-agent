@@ -672,10 +672,13 @@ class SessionStore:
         agent: Optional[dict[str, str]] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
         archived: Optional[bool] = None,
+        workspace_id: Optional[str] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
 
-        Any field left ``None`` is untouched. ``metadata_patch``
+        Any field left ``None`` is untouched. ``workspace_id`` re-homes the
+        session (``POST /v1/sessions/{sid}/move`` owns the guards and the
+        session-owned state that follows it); an empty value is refused. ``metadata_patch``
         merges into existing metadata; message marks merge per ID,
         other keys shallowly, without clobbering the rest. The
         ``add_tokens_*`` / ``add_cost_usd`` params accumulate onto
@@ -754,6 +757,10 @@ class SessionStore:
                 sess.metadata = merge_session_metadata(sess.metadata, metadata_patch)
             if archived is not None:
                 sess.archived = bool(archived)
+            if workspace_id is not None:
+                if not workspace_id:
+                    raise ValueError("a session's workspace_id cannot be empty")
+                sess.workspace_id = workspace_id
             now = _utcnow_iso()
             if message_count is not None:
                 sess.last_interaction_at = now
