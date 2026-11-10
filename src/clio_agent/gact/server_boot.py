@@ -127,6 +127,9 @@ async def close_request_owners(app: "FastAPI") -> None:
     from clio_agent.gact import shared_result  # noqa: PLC0415
 
     shared_result.close_all(app)  # polled-route collections (health, MCP inventory)
+    from clio_agent.gact.routes.session_creation import close_creation_executor  # noqa: PLC0415
+
+    close_creation_executor(app)
     if getattr(app.state, "server_boot", False):
         from clio_agent.gact import search_bootstrap  # noqa: PLC0415
 

@@ -73,6 +73,26 @@ async def join_off_loop(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     It does not turn a cancelled waiter into proof that its thread has exited.
     """
     worker = asyncio.create_task(call_sync_fn_in_threadpool(fn, *args, **kwargs))
+    return await _join(worker)
+
+
+async def join_on(
+    executor: concurrent.futures.Executor, fn: Callable[..., T], *args: Any, **kwargs: Any
+) -> T:
+    """:func:`join_off_loop` on an owned ``executor`` instead of the shared worker pool.
+
+    For a request whose latency must not depend on how many unrelated sync handlers
+    are queued in the shared pool (a write behind a read flood).
+    """
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    worker = asyncio.ensure_future(
+        loop.run_in_executor(executor, functools.partial(ctx.run, fn, *args, **kwargs))
+    )
+    return await _join(worker)
+
+
+async def _join(worker: "asyncio.Future[T]") -> T:
     cancellation: asyncio.CancelledError | None = None
     while True:
         try:

@@ -17,6 +17,7 @@ What moves and what stays is documented in :mod:`clio_agent.gact.session_move`.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import ExitStack
 
 from fastapi import FastAPI, HTTPException, Request
@@ -36,6 +37,9 @@ from clio_agent.gact.session_move import (
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, MoveSessionRequest, Session
 
 __all__ = ["register_session_move_route"]
+
+# How long a move waits for an admission check (no turn admitted) to release the slot.
+_ADMISSION_SETTLE_S = 10.0
 
 
 def _error(status: int, code: str, message: str, details: dict, recoverable: bool) -> HTTPException:
@@ -93,25 +97,35 @@ def register_session_move_route(app: FastAPI) -> None:
             )
         if sess.workspace_id != target:
             owned = owned_sessions(app, sid)
-            busy = active_work(app, [sess, *owned])
-            if busy:
-                raise _active_work_error(sid, busy)
+            rows = [sess, *owned]
             runner = getattr(app.state, "turn_runner", None)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _ADMISSION_SETTLE_S
             with ExitStack() as slots:
-                if runner is not None:
+                for attempt in range(3):
+                    if runner is not None:
+                        # The previous change's release starts an admission check; it holds
+                        # the slot without running anything, so wait it out, not refuse.
+                        for row in rows:
+                            await runner.settle_admission(row.id, max(0.0, deadline - loop.time()))
+                    busy = active_work(app, rows)
+                    if busy:
+                        raise _active_work_error(sid, busy)
+                    if runner is None:
+                        break
                     from clio_agent.gact.turn_runner import TurnAdmissionError  # noqa: PLC0415
 
-                    for row in [sess, *owned]:
-                        try:
+                    try:
+                        for row in rows:
                             slots.enter_context(runner.session_change(row.id))
-                        except TurnAdmissionError as exc:
-                            raise _active_work_error(sid, {row.id: []}) from exc
+                    except TurnAdmissionError as exc:
+                        slots.close()
+                        if attempt < 2 and not runner.working(exc.session_id):
+                            continue  # a new admission check began; settle and retry
+                        raise _active_work_error(sid, {exc.session_id: []}) from exc
+                    break
                 # A task can start between the first check and taking the slots.
-                busy = {
-                    key: handles
-                    for key, handles in active_work(app, [sess, *owned]).items()
-                    if handles
-                }
+                busy = {key: handles for key, handles in active_work(app, rows).items() if handles}
                 if busy:
                     raise _active_work_error(sid, busy)
                 result = await join_off_loop(move_session, app, sess, target, owned)

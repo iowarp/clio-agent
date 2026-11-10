@@ -183,6 +183,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
+        await app.state.turn_runner.settle_admission(sid)  # an input check is not work
         active = app.state.task_history.tree_handles(sid, active_only=True)
         if active or app.state.turn_runner.busy(sid):
             raise HTTPException(

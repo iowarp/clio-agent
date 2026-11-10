@@ -213,6 +213,12 @@ class _Writer:
 
     def peek(self, name: str) -> tuple[bool, Optional[bytes]]:
         """A pending (not yet landed) body: ``(True, body)``; a ``None`` body is a delete."""
+        # Lock-free when nothing is queued: list pages peek every row from many reader
+        # threads, and taking ``_cond`` for each made writers queue behind them. A
+        # batch is published to ``_inflight`` before ``_pending`` is cleared, so
+        # checking ``_pending`` first never misses a body between the two.
+        if not self._pending and not self._inflight:
+            return False, None
         with self._cond:
             for held in (self._pending, self._inflight):
                 if name in held:
