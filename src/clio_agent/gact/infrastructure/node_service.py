@@ -283,13 +283,24 @@ def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
 
 
 def read_receipt(root: Path) -> dict[str, Any]:
-    """Read the durable receipt, including an interrupted worker's last result."""
+    """Read the durable receipt, including an interrupted worker's last result.
+
+    Status reads take no lock, so on Windows one can land inside a worker's rename of
+    the receipt and be refused (Access denied); that moment passes, so retry briefly.
+    """
     file = root / "receipt.json"
-    return (
-        json.loads(file.read_text())
-        if file.exists()
-        else {"installed": False, "phase": "not_installed"}
-    )
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            return (
+                json.loads(file.read_text())
+                if file.exists()
+                else {"installed": False, "phase": "not_installed"}
+            )
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def effective_artifacts(root: Path) -> dict[str, str]:
@@ -486,7 +497,11 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         )
     if os.name == "nt":
         receipt.update(launcher_pid=process.pid, launcher_identity=identity(process.pid))
-        receipt.update(platform_helper().await_worker(root, generation))
+        receipt.update(
+            platform_helper().await_worker(
+                root, generation, receipt["launcher_pid"], receipt["launcher_identity"]
+            )
+        )
     else:
         receipt.update(pid=process.pid, process_identity=identity(process.pid))
     if not receipt["process_identity"]:
@@ -519,7 +534,7 @@ copy_output = platform_helper().copy_output
 rotate_log = platform_helper().rotate_log
 
 
-def worker(root: Path, action: str, generation: str) -> None:
+def _work(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
     if os.name == "nt":
         platform_helper().bind_worker(generation, root)
@@ -661,17 +676,36 @@ def worker(root: Path, action: str, generation: str) -> None:
                 error=None if code == 0 else f"{action} exited with code {code}; inspect its logs",
             )
             write_json(root / "receipt.json", current)
-    except (OSError, ValueError) as exc:
-        with locked(root):
-            current = read_receipt(root)
-            if current.get("generation") == generation:
-                current.update(
-                    phase="failed",
-                    error=f"{action} failed: {type(exc).__name__}",
-                    pid=0,
-                    process_identity="",
-                )
-                write_json(root / "receipt.json", current)
+    except Exception as exc:
+        record_failure(root, action, generation, exc)
+
+
+def record_failure(root: Path, action: str, generation: str, exc: BaseException) -> None:
+    """Publish why this worker's operation ended, so readiness reports it instead of
+    "stopped before it was ready" when a worker dies on an unexpected error."""
+    import traceback  # noqa: PLC0415
+
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    detail = str(exc).strip()[:300]
+    with suppress(Exception), locked(root):
+        current = read_receipt(root)
+        if current.get("generation") == generation:
+            current.update(
+                phase="failed",
+                error=f"{action} failed: {type(exc).__name__}" + (f": {detail}" if detail else ""),
+                pid=0,
+                process_identity="",
+            )
+            write_json(root / "receipt.json", current)
+
+
+def worker(root: Path, action: str, generation: str) -> None:
+    """Run the operation; any error it raises is recorded on the receipt."""
+    try:
+        _work(root, action, generation)
+    except Exception as exc:
+        record_failure(root, action, generation, exc)
+        raise
 
 
 def control(request: dict[str, Any]) -> dict[str, Any]:
