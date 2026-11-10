@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import threading
 from collections.abc import Sequence
 from pathlib import Path
 
 from clio_agent import path_relocation
+from clio_agent.tools.mcp_environment_repair import remove_environment
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def remove_stale_environments(cache_root: Path) -> list[str]:
                 built_at,
             )
             continue
-        shutil.rmtree(environment)
+        remove_environment(environment)  # renamed aside first: never left half-deleted
         removed.append(environment.name)
         path_relocation.record(
             {

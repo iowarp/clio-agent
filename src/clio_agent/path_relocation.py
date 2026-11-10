@@ -149,12 +149,24 @@ def venv_recorded_path(environment: Path) -> str | None:
     return None
 
 
+def _relocatable(environment: Path) -> bool:
+    try:
+        text = (environment / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(line.replace(" ", "").lower() == "relocatable=true" for line in text.splitlines())
+
+
 def venv_is_stale(environment: Path) -> bool:
     """Whether the environment was created at another location (moved, or copied).
 
     Its console scripts then start the OLD location's interpreter, so it must be
-    rebuilt before anything runs from it.
+    rebuilt before anything runs from it. A relocatable environment (``uv venv
+    --relocatable``: ``relocatable = true`` in ``pyvenv.cfg``) finds itself from where it
+    is, so it is never stale.
     """
+    if _relocatable(environment):
+        return False
     recorded_at = venv_recorded_path(environment)
     if recorded_at is None:
         return False
