@@ -211,7 +211,7 @@ jobs:
         working-directory: external/gact-tui
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
       - name: Install
         working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false

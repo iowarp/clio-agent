@@ -87,6 +87,7 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
     environment.update(_clio_tools(environment))
+    _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))
     path = environment.get("PATH", os.environ.get("PATH", ""))
     if shutil.which("gh", path=path):
@@ -100,6 +101,22 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
             part for part in (directory, prefix) if part
         )
     return environment
+
+
+def _bundled_git(environment: dict[str, str]) -> None:
+    """Give shells CLIO's bundled git when their PATH has no real one (macOS placeholder)."""
+    from clio_agent.runtime.git_executable import with_bundled_git  # noqa: PLC0415
+
+    before = environment.get("PATH", os.environ.get("PATH", ""))
+    with_bundled_git(environment)
+    after = environment.get("PATH", before)
+    if after == before:
+        return
+    directory = after.split(os.pathsep, 1)[0]
+    prefix = environment.get("CLIO_EXECUTION_PATH", "")
+    environment["CLIO_EXECUTION_PATH"] = os.pathsep.join(
+        part for part in (directory, prefix) if part
+    )
 
 
 #: The variables naming CLIO's own interpreter and uv in every shell and kernel.

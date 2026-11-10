@@ -53,4 +53,8 @@ def stdio_environment(
     for name in ("PYTHONHOME", "PYTHONPATH"):
         if name not in spec_env:
             env.pop(name, None)
+    from clio_agent.runtime.git_executable import with_bundled_git  # noqa: PLC0415
+
+    # ``uvx git+https://...`` launchers run git by name; a fresh Mac has only the placeholder.
+    with_bundled_git(env)
     return env

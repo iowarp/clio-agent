@@ -26,6 +26,8 @@
 #                        of the git ref (CI passes its own workspace so the
 #                        runtime is built from EXACTLY the released tree)
 #   CLIO_RUNTIME_PYTHON  python minor version (default: 3.14, standard GIL build)
+#   CLIO_BUNDLED_GIT     a git tree already built by build-bundled-git.sh to ship
+#                        instead of building one (default: build it)
 #
 # Usage:
 #   ./build-gact-runtime.sh <output-dir>
@@ -38,6 +40,7 @@ OUT="${1:?usage: build-gact-runtime.sh <output-dir>}"
 REF="${CLIO_REF:-develop}"
 PYVER="${CLIO_RUNTIME_PYTHON:-3.14}"
 REPO_URL="git+https://github.com/iowarp/clio-agent.git"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 dir_size_mb() {
   if [ ! -d "$1" ]; then echo "0"; return; fi
@@ -150,6 +153,21 @@ mkdir -p "$OUT/bin"
 cp "$(command -v uv)" "$OUT/bin/uv"
 cp "$(command -v uv)" "$OUT/bin/uvx"
 chmod +x "$OUT/bin/uv" "$OUT/bin/uvx"
+
+# CLIO installs marketplace plugins with git, and a fresh Mac has only the
+# /usr/bin/git placeholder that opens the developer-tools installer. Ship a
+# relocatable git (clio_agent/runtime/git_executable.py resolves it).
+if [ -n "${CLIO_BUNDLED_GIT:-}" ]; then
+  [ -x "${CLIO_BUNDLED_GIT}/libexec/git-core/git" ] || {
+    echo "build-gact-runtime: CLIO_BUNDLED_GIT=$CLIO_BUNDLED_GIT has no libexec/git-core/git" >&2
+    exit 1
+  }
+  echo "[build-gact-runtime] shipping prebuilt git from $CLIO_BUNDLED_GIT"
+  cp -R "$CLIO_BUNDLED_GIT" "$OUT/git"
+else
+  echo "[build-gact-runtime] building the bundled git"
+  "$SCRIPT_DIR/build-bundled-git.sh" "$OUT/git"
+fi
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size before prune: ${SIZE_BEFORE} MB"
@@ -274,6 +292,25 @@ echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.g
 "$RELOC/$PYBIN_REL" -I -B -m clio_agent.gact --help >/dev/null
 "$RELOC/$PYBIN_REL" -I -B -c 'from clio_kit import cli; cli()' --help >/dev/null
 "$RELOC/bin/uv" --version >/dev/null
+# The bundled git must work with no git on PATH and nothing inherited, through
+# the same resolver CLIO uses (it also supplies Linux's CA bundle).
+echo "[build-gact-runtime] sanity (relocated): bundled git ls-remote with an empty PATH"
+GIT_HOME="$(mktemp -d)"
+env -i HOME="$GIT_HOME" PATH=/var/empty "$RELOC/$PYBIN_REL" -I -B - <<'PY'
+from clio_agent.runtime.git_executable import resolve_git, run_git
+
+git = resolve_git()
+if git.source != "bundled":
+    raise SystemExit(f"build-gact-runtime: resolver chose {git.source} git {git.path}")
+run_git(
+    ["ls-remote", "https://github.com/iowarp/clio-agent-marketplace.git", "HEAD"],
+    check=True,
+    capture_output=True,
+    timeout=120,
+)
+print(f"[build-gact-runtime] bundled git OK: {git.path}")
+PY
+rm -rf "$GIT_HOME"
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.
 PORT=$((RANDOM % 20000 + 24000))

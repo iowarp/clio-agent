@@ -340,24 +340,29 @@ def built_identity_reused(
     return True
 
 
+def _git_command(*args: str) -> tuple[list[str], dict[str, str] | None]:
+    """Argv and environment for git: CLIO's resolver when shipped with CLIO, else host git.
+
+    On a remote host this file runs without ``clio_agent``; that host's own git is used.
+    """
+    try:
+        from clio_agent.runtime.git_executable import resolve_git  # noqa: PLC0415
+    except ImportError:
+        return ["git", *args], None
+    git = resolve_git()
+    return git.command(*args), git.env()
+
+
 def checkout_source(root: Path, build: dict[str, Any]) -> Path:
     """Check out the pinned service source into the owned ``source`` folder."""
     source = root / "source"
     if source.is_symlink():
         raise ValueError("Monitoring source directory cannot be a symlink")
     if not source.exists():
-        subprocess.run(
-            ["git", "clone", "--no-checkout", build["repository"], str(source)],
-            check=True,
-            capture_output=True,
-            timeout=180,
-        )
-    subprocess.run(
-        ["git", "-C", str(source), "checkout", "--detach", build["revision"]],
-        check=True,
-        capture_output=True,
-        timeout=60,
-    )
+        argv, env = _git_command("clone", "--no-checkout", build["repository"], str(source))
+        subprocess.run(argv, env=env, check=True, capture_output=True, timeout=180)
+    argv, env = _git_command("-C", str(source), "checkout", "--detach", build["revision"])
+    subprocess.run(argv, env=env, check=True, capture_output=True, timeout=60)
     return source
 
 

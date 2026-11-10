@@ -135,6 +135,23 @@ function Save-ClioDownload([string]$Uri, [string]$OutFile) {
     }
 }
 
+# Get-ClioSha256 FILE: the file's SHA-256 as lowercase hex. Windows PowerShell 5.1 started
+# from pwsh inherits pwsh's PSModulePath and cannot load Get-FileHash's module, so fall back
+# to .NET when the cmdlet is missing or fails.
+function Get-ClioSha256([string]$Path) {
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+        try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() } catch { }
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        return (($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
 # ConvertFrom-ClioReleaseTag TAG: the package version a release tag names, and how it
 # sorts; $null for a tag that is not a CLIO release. v0.9.5.1 is stable; v0.9.5-beta.8(.1)
 # is 0.9.5b8(.post1); v0.10.0a1 and v0.10.0rc1 are themselves.
@@ -231,7 +248,7 @@ function Install-ClioDesktop {
             ($_ -replace 'CLIO Desktop', 'CLIO.Desktop') -match ('^([a-fA-F0-9]{64}) [ *]' + [regex]::Escape($asset) + '$')
         })
         if ($entries.Count -ne 1) { Die 'Release checksum missing or ambiguous; nothing installed' }
-        if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $entries[0].Substring(0, 64)) {
+        if ((Get-ClioSha256 $installer) -ne $entries[0].Substring(0, 64).ToLowerInvariant()) {
             Die 'Download checksum mismatch; nothing installed'
         }
         if ($OptDownloadOnly) {

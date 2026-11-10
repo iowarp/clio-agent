@@ -66,6 +66,77 @@ def launch_desktop(app: Path, root: Path, env: dict[str, str]) -> None:
             print((root / "desktop.log").read_text(errors="replace"))
 
 
+BUNDLED_GIT_PROGRAMS = (
+    "git",
+    "git-remote-https",
+    "git-remote-http",
+    "git-submodule",
+    "git-sh-setup",
+    "git-sh-i18n",
+    "git-sh-i18n--envsubst",
+)
+SUBMODULE_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
+
+
+def check_bundled_git(git_core: Path, root: Path) -> None:
+    """Require the app's own git to clone and check out submodules with no other git.
+
+    A fresh Mac has only the developer-tools placeholder at /usr/bin/git, so
+    nothing here may reach it. git runs with PATH=/var/empty; `git submodule` is
+    a /bin/sh script, so it gets a PATH holding only the sed, basename and uname
+    it uses (git puts its own exec-path first).
+    """
+    for name in BUNDLED_GIT_PROGRAMS:
+        if not (git_core / name).is_file():
+            raise ValueError(f"Bundled app has no {name}")
+    git = str(git_core / "git")
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    for tool in ("sed", "basename", "uname"):
+        (tools / tool).symlink_to(f"/usr/bin/{tool}")
+    home = root / "home"
+    home.mkdir()
+    base = {"HOME": str(home), "GIT_AUTHOR_NAME": "clio", "GIT_AUTHOR_EMAIL": "clio@localhost"}
+    base |= {"GIT_COMMITTER_NAME": "clio", "GIT_COMMITTER_EMAIL": "clio@localhost"}
+
+    def run(*args: str, path: str = "/var/empty", cwd: Path | None = None) -> str:
+        return subprocess.run(
+            [git, "-c", "init.defaultBranch=main", *args],
+            env=base | {"PATH": path},
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout
+
+    run("--version")
+    head = run("ls-remote", SUBMODULE_URL, "HEAD").split("\t", 1)[0]
+    if len(head) != 40:
+        raise RuntimeError(f"Bundled git could not reach {SUBMODULE_URL}")
+    super_dir = root / "super"
+    run("init", "-q", str(super_dir))
+    run("config", "-f", ".gitmodules", "submodule.mp.path", "mp", cwd=super_dir)
+    run("config", "-f", ".gitmodules", "submodule.mp.url", SUBMODULE_URL, cwd=super_dir)
+    run("add", ".gitmodules", cwd=super_dir)
+    run("update-index", "--add", "--cacheinfo", f"160000,{head},mp", cwd=super_dir)
+    run("commit", "-q", "-m", "super", cwd=super_dir)
+    update = subprocess.run(
+        [git, "submodule", "update", "--init", "--depth", "1"],
+        env=base | {"PATH": str(tools)},
+        cwd=super_dir,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    output = update.stdout + update.stderr
+    if update.returncode or "not a git command" in output or "command not found" in output:
+        raise RuntimeError(f"Bundled git submodule update failed:\n{output}")
+    if run("rev-parse", "HEAD", cwd=super_dir / "mp").strip() != head:
+        raise RuntimeError("Bundled git submodule checked out the wrong commit")
+    print(f"Bundled git checked out a submodule at {head[:9]}", flush=True)
+
+
 def smoke(app: Path, *, bundled: bool) -> None:
     """Launch the native app and require readiness from the real bundled backend."""
     verify(app)
@@ -81,6 +152,7 @@ def smoke(app: Path, *, bundled: bool) -> None:
             runtime = app / "Contents/Resources/gact-runtime"
             if not (runtime / "runtime.json").is_file():
                 raise ValueError("Bundled app has no runtime manifest")
+            check_bundled_git(runtime / "git/libexec/git-core", root / "git")
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
