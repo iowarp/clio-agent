@@ -50,16 +50,13 @@ def running_operations(app: Any, source_id: str) -> list[dict[str, str]]:
 
     A person can link a folder and type at once: the agent must know the indexing has
     not finished, and which handle to ``wait_tasks`` on, instead of reading a partial
-    folder. Best effort: facts never fail a turn.
+    folder.
     """
     from clio_agent.gact.storage.task_controls import source_operation_views  # noqa: PLC0415
 
     if getattr(getattr(app, "state", None), "task_history", None) is None:
         return []
-    try:
-        views = source_operation_views(app, source_id)
-    except Exception:  # noqa: BLE001
-        return []
+    views = source_operation_views(app, source_id)
     return [
         {
             "handle": str(view["task_handle"]),
