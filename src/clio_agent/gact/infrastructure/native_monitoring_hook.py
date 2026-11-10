@@ -250,6 +250,19 @@ def mongo_platform(release: str) -> str:
     return selected
 
 
+def _git_command(*args: str) -> tuple[list[str], dict[str, str] | None]:
+    """Argv and environment for git: CLIO's resolver when shipped with CLIO, else host git.
+
+    On a remote host this file runs without ``clio_agent``; that host's own git is used.
+    """
+    try:
+        from clio_agent.runtime.git_executable import resolve_git  # noqa: PLC0415
+    except ImportError:
+        return ["git", *args], None
+    git = resolve_git()
+    return git.command(*args), git.env()
+
+
 def install_cmf(root: Path, manifest: dict[str, Any]) -> None:
     """Install CMF's pinned server lock and rebase its fixed paths into owned data."""
     uv = _clio_tool("uv") or "uv"
@@ -258,13 +271,12 @@ def install_cmf(root: Path, manifest: dict[str, Any]) -> None:
         if source.is_symlink():
             raise ValueError("CMF source directory cannot be a symlink")
         shutil.rmtree(source)
-    subprocess.run(
-        ["git", "clone", "--no-checkout", "https://github.com/HewlettPackard/cmf.git", str(source)],
-        check=True,
+    argv, env = _git_command(
+        "clone", "--no-checkout", "https://github.com/HewlettPackard/cmf.git", str(source)
     )
-    subprocess.run(
-        ["git", "checkout", "--detach", manifest["cmf_revision"]], cwd=source, check=True
-    )
+    subprocess.run(argv, env=env, check=True)
+    argv, env = _git_command("checkout", "--detach", manifest["cmf_revision"])
+    subprocess.run(argv, env=env, cwd=source, check=True)
     data = root / "data/cmf"
     (data / "static").mkdir(parents=True, exist_ok=True)
     patches = {}

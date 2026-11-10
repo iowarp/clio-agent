@@ -22,6 +22,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from clio_agent.runtime.git_executable import GitUnavailableError, run_git
+
 
 class SourceError(RuntimeError):
     """A source could not be fetched. The message names the source and the cause."""
@@ -92,14 +94,16 @@ def _check_declared(url: str) -> None:
 def _git(args: list[str], cwd: Path | None = None, timeout: int = 600) -> str:
     verb = " ".join(a for a in args if not a.startswith(("-", "protocol.")))[:40]
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed git argv
-            ["git", *args],
+        completed = run_git(
+            args,
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
+    except GitUnavailableError as exc:
+        raise SourceError(f"git {verb} failed: {exc}") from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SourceError(f"git {verb} failed: {exc}") from exc
     if completed.returncode != 0:
