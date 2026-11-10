@@ -329,5 +329,5 @@ class TestSealedRuntimeOverlay:
         assert dependencies.ensure_copilot_support(python_executable="python") is True
         (command,) = calls
         assert command[:2] == ["python", "-c"]
-        assert str(overlay) in command[2] and "'copilot'" in command[2]
+        assert repr(str(overlay)) in command[2] and "'copilot'" in command[2]
         assert command[3:] == ["download-runtime"]

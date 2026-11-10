@@ -35,8 +35,12 @@ def test_a_runtime_inside_a_macos_app_bundle_uses_the_overlay(
 ) -> None:
     python = _runtime(tmp_path / "CLIO Desktop.app" / "Contents" / "Resources" / "gact-runtime")
     monkeypatch.setattr(sys, "executable", str(python))
+    platform = sys.platform
     monkeypatch.setattr(sys, "platform", "darwin")
     assert package_overlay.overlay_in_use() is True
+    # The data dir must resolve on the host: a faked darwin makes Windows paths relative.
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(package_overlay, "overlay_in_use", lambda: True)
     overlay = package_overlay.overlay_for(str(python))
     assert overlay is not None
     assert overlay.is_relative_to(tmp_path / "data")
