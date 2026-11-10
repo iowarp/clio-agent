@@ -211,6 +211,12 @@
         "script"
       ]
     },
+    "source: full purge (-Purge -PurgeCaches -PurgeData)": {
+      "seconds": 120,
+      "ok": true,
+      "budget": "the Windows remover clears every scope it is asked to",
+      "measured": "Windows only; new"
+    },
     "source: stop after re-run": {
       "seconds": 20,
       "budget": "shutdown < 20 s",

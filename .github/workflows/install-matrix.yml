@@ -294,7 +294,8 @@ jobs:
         env:
           CLIO_PREFIX: ${{ runner.temp }}\clio-src\app
           CLIO_BIN_DIR: ${{ runner.temp }}\clio-src\bin
-          CLIO_AGENT_HOME: ${{ runner.temp }}\clio-src\home
+          # Named clio-agent so the scoped purges below accept it as a native root.
+          CLIO_AGENT_HOME: ${{ runner.temp }}\clio-src\clio-agent
           CLIO_REF: ${{ github.head_ref || github.ref_name }}
         run: |
           function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
@@ -302,7 +303,10 @@ jobs:
           Rec --name "source: start" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" start
           Rec --name "source: stop" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" stop
           Rec --name "source: re-run over an install" -- powershell -NoProfile -ExecutionPolicy Bypass -File install/install.ps1
-          Rec --name "source: uninstall" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+          Rec --name "source: full purge (-Purge -PurgeCaches -PurgeData)" -- powershell -NoProfile -ExecutionPolicy Bypass -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes -Purge -PurgeCaches -PurgeData
+          $left = @(Get-ChildItem -LiteralPath $env:CLIO_AGENT_HOME -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+          $outcome = if ($left -eq 0) { 'ok' } else { "$left files left" }
+          Add-Content -LiteralPath $env:TIMINGS -Value (@{ name = 'source: files left after a full purge'; os = $env:RUNNER_OS; seconds = 0; exit_code = $left; killed = $false; outcome = $outcome } | ConvertTo-Json -Compress)
       # Windows PowerShell 5.1 is what `irm ... | iex` runs in on a stock Windows; pwsh 7
       # passes native arguments differently and hid #1913. The desktop download is the
       # largest thing a user fetches, so its lookup, download and checksum run on every

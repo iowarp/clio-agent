@@ -1,7 +1,9 @@
-"""Read-only NDP discovery HTTP client, independent of MCP component installation.
+"""Read-only NDP Endpoint API discovery client, independent of MCP component installation.
 
 Uses the /search and /organization API also consumed by CLIO Kit's NDP server.
-The application needs discovery without installing or importing an MCP server.
+There is no public Endpoint API: Endpoints are per institution and configured
+through NDP_API_URL or CLIO_STORAGE_NDP_ENDPOINTS. Without one, discovery uses
+the public CKAN catalog in ``ndp_ckan``.
 """
 
 from __future__ import annotations
@@ -24,18 +26,25 @@ class Dataset(BaseModel):
     resources: list[dict[str, Any]] = Field(default_factory=list)
 
 
+def configured_api_url() -> str:
+    """Return the operator's NDP Endpoint API, or an empty string when none is set."""
+    return (os.getenv("NDP_API_URL") or "").strip().rstrip("/")
+
+
 class NDPClient:
     """Read one bounded discovery response without retrying or forwarding credentials."""
 
     def __init__(self, base_url: str | None = None) -> None:
-        self.base_url = (
-            base_url or os.getenv("NDP_API_URL") or "http://155.101.6.191:8003"
-        ).rstrip("/")
+        self.base_url = (base_url or configured_api_url()).rstrip("/")
         self.timeout = httpx.Timeout(15, connect=5)
 
     async def _request(
         self, method: str, path: str, *, params: Any = None, body: dict[str, Any] | None = None
     ) -> list[Any]:
+        if not self.base_url:
+            raise ValueError(
+                "No NDP Endpoint API is configured; set NDP_API_URL or use the public catalog"
+            )
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.request(method, self.base_url + path, params=params, json=body)
             response.raise_for_status()

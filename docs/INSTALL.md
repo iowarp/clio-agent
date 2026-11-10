@@ -169,6 +169,18 @@ new custom storage roots, which previously had no effect on the writers.
 Older clients may still send the former `<workspace>/.clio` default; it is
 accepted as a compatibility input and normalized to the managed state directory.
 
+Provider support installed from the app (GitHub Copilot, Claude Code, ALCF
+sign-in) and provider component updates never modify a sealed desktop runtime.
+When the backend runs from the signed macOS app bundle, or from a runtime whose
+`site-packages` is not writable (for example a system package), CLIO installs
+them into `data/runtime-packages/<runtime-key>` instead and puts that directory
+first on the backend's import path. The key changes with every desktop build, so
+an updated app starts with an empty overlay, the startup restore reinstalls the
+support you had, and the previous build's overlay is removed. Development
+environments, `pip` installs and per-user Windows desktop installs keep
+installing in place. `CLIO_AGENT_PACKAGE_OVERLAY=1` forces the overlay and
+`CLIO_AGENT_PACKAGE_OVERLAY=0` disables it.
+
 The default workspace (`ws_default`) is created on the server's first start.
 Its root is `paths.default_workspace` in `config.yaml` (or `CLIO_DEFAULT_WORKSPACE`)
 when set, else the directory the server was started from. The setting must be an
@@ -215,8 +227,8 @@ Source installs require a new or explicitly emptied program directory; an
 existing checkout is never erased automatically. Uninstall retains Agent data,
 state, and unknown files. `--purge` / `-Purge` additionally removes the resolved
 Agent config directory, including saved credentials; custom config roots require
-explicit manual removal. `--purge-caches` (POSIX) removes the resolved Agent cache
-root, `--purge-data` (POSIX) removes the resolved Agent data and state roots (refusing
+explicit manual removal. `--purge-caches` / `-PurgeCaches` removes the resolved Agent
+cache root, `--purge-data` / `-PurgeData` removes the resolved Agent data and state roots (refusing
 custom roots, and keeping them while a clio-core daemon runs), and `--desktop` (macOS)
 removes CLIO Desktop.app and its caches and logs.
 

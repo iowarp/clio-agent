@@ -57,8 +57,11 @@ forwarding behavior.
    without performing the request or saving a capture. Private account setup
    uses the ordinary NDP sign-in control.
 
-The shared `work-with-ndp` skill teaches catalog search, registered services,
+The `ndp` plugin's `work-with-ndp` skill teaches catalog search, registered services,
 FDSN station queries, finite SSE segments and live-bridge session ownership.
+Endpoint connection is always available to agents carrying the plugin; operations,
+requests and uploads load once the workspace has a connected NDP dataset or a
+visible saved Endpoint.
 Starting a remote producer is not consuming its output. A model must retain the
 returned session identity, inspect actual status/data and stop only the session
 it owns. Closing a bounded local sample does not stop another remote producer.

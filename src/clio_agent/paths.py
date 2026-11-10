@@ -187,6 +187,42 @@ def user_cache_dir() -> Path:
     return _root("cache")
 
 
+#: Longest cache root MCP environment builds may sit under on Windows. The default root
+#: (``%LOCALAPPDATA%\clio-agent\cache``) fits; a deep ``CLIO_AGENT_HOME`` does not, as uv's
+#: ``mcp-environments\<server>-<hash>\Lib\site-packages\...`` and ``archive-v0`` trees
+#: then pass MAX_PATH (WinError 206) on hosts without long-path support.
+WINDOWS_MCP_BUILD_ROOT_MAX = 48
+_WINDOWS_MCP_BUILD_DIR = "clio-m"
+
+
+def mcp_build_cache_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return the root MCP server environments are built under (uv caches, venvs).
+
+    This is :func:`user_cache_dir` except on Windows when that root is longer than
+    :data:`WINDOWS_MCP_BUILD_ROOT_MAX`: then a short root keyed by the cache root,
+    ``%LOCALAPPDATA%\\clio-m\\<hash>``, keeps each instance's builds separate and
+    within MAX_PATH. An ``owner.txt`` inside it names the cache root it serves.
+    """
+    cache = _root("cache", env=env) if env is not None else user_cache_dir()
+    if _platform() != "windows" or len(str(cache)) <= WINDOWS_MCP_BUILD_ROOT_MAX:
+        return cache
+    source = os.environ if env is None else env
+    local = source.get("LOCALAPPDATA", "").strip()
+    base = Path(local) if local else Path.home() / "AppData" / "Local"
+    digest = hashlib.sha256(os.path.normcase(str(cache)).encode("utf-8")).hexdigest()[:10]
+    short = base / _WINDOWS_MCP_BUILD_DIR / digest
+    if len(str(short)) >= len(str(cache)):
+        return cache
+    owner = short / "owner.txt"
+    if not owner.is_file():
+        try:
+            short.mkdir(parents=True, exist_ok=True)
+            owner.write_text(f"{cache}\n", encoding="utf-8")
+        except OSError as exc:  # the builds create the folder themselves
+            logger.debug("mcp build root owner record not written at %s: %r", owner, exc)
+    return short
+
+
 def server_state_dir() -> Path:
     """Return persistent server state, never a directory inside the install."""
     return user_state_dir() / "server"

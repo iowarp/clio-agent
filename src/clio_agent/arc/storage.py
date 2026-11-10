@@ -32,6 +32,7 @@ from clio_agent.arc import (
     crashed_clients,
     runtime_log,
     runtime_log_flood,
+    runtime_ownership,
     runtime_stop,
 )
 from clio_agent.arc import clio_core_daemon_version as daemon_version
@@ -317,13 +318,15 @@ def cleanup_runtime_after_client_crash(
 
 
 def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> str:
-    """Connect-or-spawn + register: ensure the machine's daemon is up and count this client.
+    """Connect-or-spawn + register: ensure this home's daemon is up and count this client.
 
     All under the host-global lock so the spawn decision AND the client registration are atomic
     w.r.t. a concurrent client's release (last-one-out stop). Registers THIS process as an attached
     client before returning, so no concurrent release can stop the daemon we are about to connect
     to. FAIL LOUD if a spawned daemon never binds the RPC port. A daemon this process did not spawn
     is version-gated and its config adopted (first config wins; ``clio_core_daemon_version``).
+    A listener this state directory's pidfile does not own (another user's or home's daemon) is
+    never adopted: this home's generated config moves to a free port (``runtime_ownership``).
     The latch check is the first statement UNDER the lock: a caller blocked on the lock (behind a
     concurrent ``release_runtime_client``) must re-check once it holds it.
 
@@ -344,7 +347,25 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
         running = daemon_version.running_daemon_config(state, config_path)
         try:
             alive = _runtime_alive(_resolve_runtime_port(running))
-        except ClioCoreRuntimeLostError:
+            if (
+                alive
+                and runtime_ownership.daemon_ownership(
+                    _resolve_runtime_port(running), listening=True
+                )
+                == "foreign"
+            ):
+                # Another user's or home's daemon is never adopted. This home's own
+                # daemon, if any, is retired and a fresh one starts on a private port.
+                runtime_stop.kill_daemon_pidfile()
+                if pidfile_live_pid(_daemon_pidfile()) is not None:
+                    raise runtime_ownership.ClioCoreForeignDaemonError(
+                        "This home's clio-core daemon could not be stopped to move it off a "
+                        "port another home's daemon holds; stop it and start CLIO again."
+                    )
+                running, alive = config_path, False
+                if _runtime_alive(port):
+                    port = runtime_ownership.move_off_foreign_daemon(config_path, port, state)
+        except (ClioCoreRuntimeLostError, runtime_ownership.ClioCoreForeignDaemonError):
             _deregister_client()
             raise
         if alive:

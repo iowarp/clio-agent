@@ -32,7 +32,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -162,18 +162,65 @@ def find_record(value: object, record_id: str) -> dict[str, object] | None:
     return None
 
 
+def searxng_operations(inventory: object) -> list[dict[str, object]]:
+    operations = inventory.get("operations") if isinstance(inventory, dict) else None
+    return [
+        row
+        for row in operations or []
+        if isinstance(row, dict) and row.get("service_id") == "searxng"
+    ]
+
+
+def dump_operation_logs(port: int, token: str, operations: list[dict[str, object]]) -> None:
+    """Print each SearXNG operation's newest log lines, for a run that never served."""
+    for row in operations:
+        print(f"SearXNG operation {row.get('action')} {row.get('id')}: {row}", flush=True)
+        try:
+            log = get_json(
+                f"http://127.0.0.1:{port}/v1/infrastructure/operations/{row.get('id')}/log"
+                "?limit=5000",
+                token,
+            )
+        except (HTTPError, URLError, TimeoutError) as error:
+            print(f"  log unavailable: {error}", flush=True)
+            continue
+        lines = log.get("lines") if isinstance(log, dict) else None
+        for line in (lines or [])[-80:]:
+            if isinstance(line, dict):
+                print(f"  {line.get('at')} {line.get('line')}", flush=True)
+
+
 def use_web_search(port: int, token: str) -> None:
     """Wait for the boot-installed local SearXNG worker, then search through it."""
     deadline = time.monotonic() + 300
     record: dict[str, object] | None = None
+    operations: list[dict[str, object]] = []
+    reported: set[tuple[object, ...]] = set()
     while time.monotonic() < deadline:
-        inventory = get_json(f"http://127.0.0.1:{port}/v1/infrastructure/inventory", token)
+        try:
+            inventory = get_json(f"http://127.0.0.1:{port}/v1/infrastructure/inventory", token)
+        except HTTPError as error:
+            # The server answers 503 "starting" until its boot work settles.
+            if error.code != 503:
+                raise
+            time.sleep(3)
+            continue
         record = find_record(inventory, "local:searxng")
+        operations = searxng_operations(inventory)
+        for row in operations:
+            key = (row.get("id"), row.get("state"), row.get("progress"))
+            if key not in reported:
+                reported.add(key)
+                print(
+                    f"SearXNG {row.get('action')}: {row.get('state')} {row.get('progress')}",
+                    flush=True,
+                )
         observation = record.get("observation") if record else None
         if isinstance(observation, dict) and observation.get("serving"):
             break
         time.sleep(3)
     else:
+        dump_operation_logs(port, token, operations)
         raise TimeoutError(f"Local SearXNG never served within 300 seconds: {record}")
     configuration = record.get("configuration") if record else None
     search_port = configuration.get("port") if isinstance(configuration, dict) else None
@@ -365,7 +412,11 @@ def smoke(app: Path, *, bundled: bool, exercise: bool = False) -> None:
     """
     verify(app)
     before = snapshot(app)
-    with tempfile.TemporaryDirectory(prefix="clio-macos-smoke-") as directory:
+    # A SearXNG worker or install runs in its own session and may still be writing
+    # under the agent home while the backend's stop settles.
+    with tempfile.TemporaryDirectory(
+        prefix="clio-macos-smoke-", ignore_cleanup_errors=True
+    ) as directory:
         root = Path(directory)
         env = {
             key: value
@@ -381,10 +432,10 @@ def smoke(app: Path, *, bundled: bool, exercise: bool = False) -> None:
             runtime = app / "Contents/Resources/gact-runtime"
             if not (runtime / "runtime.json").is_file():
                 raise ValueError("Bundled app has no runtime manifest")
-            check_bundled_git(runtime / "git/libexec/git-core", root / "git")
             if exercise:
                 prepare_runtime(app, env)
                 require_sealed(app, before, "--prepare-runtime")
+            check_bundled_git(runtime / "git/libexec/git-core", root / "git")
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]

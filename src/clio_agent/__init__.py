@@ -31,7 +31,12 @@ Example:
 import os
 import sys
 
-from clio_agent import _dspy_lazy_proxies
+from clio_agent.runtime import package_overlay as _package_overlay
+
+# Before anything imports a package CLIO installed outside a sealed desktop runtime.
+_package_overlay.activate()
+
+from clio_agent import _dspy_lazy_proxies  # noqa: E402
 
 _dspy_lazy_proxies.install()
 
