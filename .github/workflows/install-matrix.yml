@@ -408,8 +408,12 @@ jobs:
         if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
         continue-on-error: true
         run: |
-          # The runner image's apt index can be stale (404 on a superseded dependency).
+          # The runner image's apt index can be stale (404 on a superseded dependency), and
+          # the desktop's system libraries (WebKitGTK, the tray indicator, ~50 MB from the
+          # Ubuntu mirror) are an OS precondition, not CLIO's install: fetch them untimed so
+          # the install budget measures CLIO, as on macOS and Windows.
           sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-0 libayatana-appindicator3-1 >/dev/null
           bash install/install.sh --desktop --progress json \
             > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
       # Windows PowerShell 5.1, the shell `irm ... | iex` runs in; bash keeps the events'
