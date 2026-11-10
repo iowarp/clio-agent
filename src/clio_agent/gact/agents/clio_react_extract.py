@@ -2,9 +2,10 @@
 
 After a loop longer than ``agents.react_extract.after_steps`` model steps (default 3),
 the signature outputs the loop did not produce are filled, from the agent's clio-core
-context, by literally DSPy's
-``ReAct`` extract: ``ChainOfThought`` over the task inputs, those outputs and the
-trajectory. Two endings qualify: ``max_iters`` (no answer at all) and a direct answer
+context, by literally DSPy's ``ReAct`` extract: ``ChainOfThought`` over the task
+inputs, those outputs and the trajectory. A workflow step fills a missing
+``workflow_state`` before that floor; other outputs still wait. Two endings
+qualify: ``max_iters`` (no answer at all) and a direct answer
 on a signature with further outputs (``question -> answer, summary``). The answer the
 model already wrote -- and the user already saw -- is never replaced; ``submit`` (the
 model's own typed outputs), a yield and a context overflow never extract. Amendment
@@ -46,11 +47,29 @@ def extract_after_steps() -> int:
     )
 
 
-def missing_outputs(signature: Any, outputs: dict[str, Any], reason: str, steps: int) -> list[str]:
-    """The output fields the extract should fill, empty when it should not run."""
-    if reason not in EXTRACT_REASONS or not extract_enabled() or steps <= extract_after_steps():
+def missing_outputs(
+    signature: Any,
+    outputs: dict[str, Any],
+    reason: str,
+    steps: int,
+    *,
+    workflow_step: bool = False,
+) -> list[str]:
+    """The output fields the extract should fill, empty when it should not run.
+
+    A short turn skips the extract. A workflow step is the exception, and only
+    for ``workflow_state``: the fold reads that field, and a direct answer does
+    not carry it. Other outputs still wait for the normal step floor.
+    """
+
+    if reason not in EXTRACT_REASONS or not extract_enabled():
         return []
-    return [name for name in signature.output_fields if outputs.get(name) in (None, "")]
+    missing = [name for name in signature.output_fields if outputs.get(name) in (None, "")]
+    if steps <= extract_after_steps():
+        if workflow_step and "workflow_state" in missing:
+            return ["workflow_state"]
+        return []
+    return missing
 
 
 def extract(

@@ -28,6 +28,14 @@ class WorkflowError(ValueError):
     """A workflow that cannot run: duplicate or malformed ids, unknown dependencies, a cycle."""
 
 
+def _timeout(value: Any, step_id: str) -> float:
+    if value in (None, ""):
+        return 0.0
+    if type(value) is bool or not isinstance(value, (int, float)) or value < 0:
+        raise WorkflowError(f"step {step_id!r}: timeout_s must be a number >= 0, got {value!r}")
+    return float(value)
+
+
 @dataclass(frozen=True)
 class Step:
     """One step of a workflow."""
@@ -42,6 +50,8 @@ class Step:
     #: The model the step's child runs on (``account/model`` or a model id); empty
     #: leaves it to the child's preference, then the run's model.
     model: str = ""
+    #: Seconds until the child is cancelled. Zero means no deadline.
+    timeout_s: float = 0.0
 
     def __init__(
         self,
@@ -52,16 +62,20 @@ class Step:
         description: str = "",
         options: dict[str, Any] | None = None,
         model: str = "",
+        *,
+        timeout_s: Any = 0,
     ) -> None:
         if options is not None and not isinstance(options, dict):
             raise WorkflowError(f"step {id!r}: options must be an object, got {options!r}")
-        object.__setattr__(self, "id", str(id))
+        step_id = str(id)
+        object.__setattr__(self, "id", step_id)
         object.__setattr__(self, "target", str(target))
         object.__setattr__(self, "input", input)
         object.__setattr__(self, "after", tuple(str(a) for a in after))
         object.__setattr__(self, "description", str(description))
         object.__setattr__(self, "options", dict(options or {}))
         object.__setattr__(self, "model", str(model or "").strip())
+        object.__setattr__(self, "timeout_s", _timeout(timeout_s, step_id))
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "target": self.target, "after": list(self.after)}
@@ -73,6 +87,8 @@ class Step:
             data["options"] = dict(self.options)
         if self.model:
             data["model"] = self.model
+        if self.timeout_s:
+            data["timeout_s"] = self.timeout_s
         return data
 
     @classmethod
@@ -87,7 +103,14 @@ class Step:
             description=data.get("description", ""),
             options=data.get("options"),
             model=data.get("model") or "",
+            timeout_s=data.get("timeout_s", 0),
         )
+
+
+def _concurrency(value: Any) -> int:
+    if type(value) is not int or value < 0:
+        raise WorkflowError(f"max_concurrency must be an integer >= 0, got {value!r}")
+    return value
 
 
 @dataclass
@@ -95,13 +118,19 @@ class Workflow:
     """An ordered set of steps; validated on construction."""
 
     steps: list[Step] = field(default_factory=list)
+    #: How many of this workflow's steps may be in flight. Zero means no step cap.
+    max_concurrency: int = 0
 
     def __post_init__(self) -> None:
+        self.max_concurrency = _concurrency(self.max_concurrency)
         self.steps = [n if isinstance(n, Step) else Step.from_dict(n) for n in self.steps]
         validate_steps(self.steps)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"steps": [step.to_dict() for step in self.steps]}
+        data: dict[str, Any] = {"steps": [step.to_dict() for step in self.steps]}
+        if self.max_concurrency:
+            data["max_concurrency"] = self.max_concurrency
+        return data
 
     @classmethod
     def from_dict(cls, data: Any) -> Workflow:
@@ -111,7 +140,10 @@ class Workflow:
             data = {"steps": data}
         if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
             raise WorkflowError("a workflow is {'steps': [...]}")
-        return cls(steps=[Step.from_dict(row) for row in data["steps"]])
+        return cls(
+            steps=[Step.from_dict(row) for row in data["steps"]],
+            max_concurrency=data.get("max_concurrency", 0),
+        )
 
 
 def validate_steps(steps: list[Step]) -> None:
