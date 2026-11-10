@@ -54,6 +54,7 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_checker,
     cancellation_requested,
 )
+from clio_agent.runtime.source_policy_wait import await_source_policy_settled
 from clio_agent.search.web_mcp_default import load_agent_mcp_servers, with_web_placeholders
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -431,10 +432,7 @@ class ClioAgent(dspy.Module):
         server_set = get_active_tool_server_set().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
-            if getattr(self, "_source_policy_changing", False):
-                raise RuntimeError(
-                    "CLIO is updating connected-data access; retry after setup finishes"
-                )
+            await_source_policy_settled(self, lock)
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
             # #1236: a resident executor minted under an older MCP configuration (the
@@ -568,12 +566,14 @@ class ClioAgent(dspy.Module):
             return executor
 
     @contextmanager
-    def lease_workspace_fleet(self, root: str):
+    def lease_workspace_fleet(self, root: str, *, wait: bool = True):
         """Pin a workspace root against reaping for the caller's scope (#933).
 
         Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind
         the executor for the whole expert lifetime, so between-call idleness
-        inside a live turn must never count toward the reap TTL.
+        inside a live turn must never count toward the reap TTL. During a
+        connected-data access change it waits for the change (bounded) unless
+        ``wait`` is false.
         """
 
         root = canonical_workspace_root(root)
@@ -582,10 +582,7 @@ class ClioAgent(dspy.Module):
             return
         lock, _executors, leases = self._workspace_state()
         with lock:
-            if getattr(self, "_source_policy_changing", False):
-                raise RuntimeError(
-                    "CLIO is updating connected-data access; retry after setup finishes"
-                )
+            await_source_policy_settled(self, lock, wait=wait)
             leases[root] = leases.get(root, 0) + 1
         try:
             yield
