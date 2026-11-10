@@ -9,6 +9,8 @@
 #   install.ps1 -Desktop -Progress json
 #                                the same, reporting each install step (resolve, download,
 #                                verify, install) and a summary as JSON lines on stdout
+#   install.ps1 -Desktop -Unattended
+#                                the same, running the setup silently with its defaults
 #   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
 #                                (this release cannot open it; it is kept, never deleted)
 #
@@ -167,7 +169,7 @@ function Get-ClioReleaseTag([string]$Version) {
     throw "No GitHub release tag for package version: $Version"
 }
 
-# Save-ClioDownload URI FILE: the large downloads (the desktop setup, the web UI).
+# Save-ClioDownload URI FILE: a large download (the web UI; the desktop's without curl.exe).
 # curl.exe ships with Windows 10 1803 and later; it retries, resumes a cut transfer and
 # shows its own progress. Without it, Invoke-WebRequest (progress bar off, above).
 function Save-ClioDownload([string]$Uri, [string]$OutFile) {
@@ -181,6 +183,97 @@ function Save-ClioDownload([string]$Uri, [string]$OutFile) {
         Say 'curl.exe not found; downloading with Invoke-WebRequest'
         Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile
     }
+}
+
+# Save-ClioDownloads ITEMS EXPECTED: the desktop's downloads (the setup and the release
+# plan's files), all at once. Each is one curl.exe, which retries and resumes as
+# Save-ClioDownload does; the bytes are hashed as they land, so no second pass reads the
+# file again. A line every 5 s (2 s as JSON) reports the progress. Each item (.Url, .File)
+# gets .Ok (curl succeeded) and .Sha (lowercase hex of what was written).
+function Save-ClioDownloads($Items, [int64]$Expected) {
+    foreach ($item in $Items) {
+        Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
+        $item | Add-Member -Force -NotePropertyName Ok -NotePropertyValue $false
+        $item | Add-Member -Force -NotePropertyName Sha -NotePropertyValue ''
+    }
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $curl) {
+        foreach ($item in $Items) {
+            try { Save-ClioDownload $item.Url $item.File; $item.Sha = Get-ClioSha256 $item.File; $item.Ok = $true } catch { Warn "$_" }
+        }
+        return
+    }
+    $transfers = @(foreach ($item in $Items) {
+        $arguments = "--fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-connrefused --continue-at - --output `"$($item.File)`" `"$($item.Url)`""
+        $process = Start-Process -FilePath $curl.Source -ArgumentList $arguments -NoNewWindow -PassThru
+        # Windows PowerShell reports no exit code for a process whose handle was never read.
+        $null = $process.Handle
+        [pscustomobject]@{ Item = $item; Process = $process; Hash = [Security.Cryptography.SHA256]::Create(); Stream = $null; Bytes = [int64]0; Done = $false }
+    })
+    $buffer = New-Object byte[] 1048576
+    $interval = if ($script:ProgressJson) { 2 } else { 5 }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $next = $interval
+    $last = [int64]0
+    while ($true) {
+        $active = $false
+        foreach ($t in $transfers) {
+            if ($t.Done) { continue }
+            # Read the exit first: what curl wrote before it exited is then all on disk.
+            $exited = $t.Process.HasExited
+            if (-not $t.Stream -and (Test-Path -LiteralPath $t.Item.File)) {
+                try { $t.Stream = [IO.File]::Open($t.Item.File, 'Open', 'Read', 'ReadWrite, Delete') } catch { }
+            }
+            if ($t.Stream) {
+                while (($n = $t.Stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $null = $t.Hash.TransformBlock($buffer, 0, $n, $null, 0)
+                    $t.Bytes += $n
+                }
+            }
+            if (-not $exited) { $active = $true; continue }
+            $t.Process.WaitForExit()
+            $null = $t.Hash.TransformFinalBlock($buffer, 0, 0)
+            $t.Item.Sha = (($t.Hash.Hash | ForEach-Object { $_.ToString('x2') }) -join '')
+            $t.Item.Ok = $t.Process.ExitCode -eq 0
+            if ($t.Stream) { $t.Stream.Dispose() }
+            $t.Hash.Dispose()
+            $t.Done = $true
+        }
+        if (-not $active) { break }
+        if ($clock.Elapsed.TotalSeconds -ge $next) {
+            $bytes = [int64](($transfers | Measure-Object -Property Bytes -Sum).Sum)
+            Write-ClioEvent ([ordered]@{ event = 'progress'; step = 'download'; bytes = $bytes; total = $Expected })
+            $of = if ($Expected -gt 0) { " of $([math]::Round($Expected / 1e6))" } else { '' }
+            $rate = ([math]::Round(($bytes - $last) / $interval / 1e6, 1)).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture)
+            Say "Downloaded $([math]::Round($bytes / 1e6))$of MB ($rate MB/s)"
+            $last = $bytes
+            $next += $interval
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $script:RunBytes = [int64](($transfers | Measure-Object -Property Bytes -Sum).Sum)
+}
+
+# Get-ClioManifestSha MANIFEST NAME: NAME's SHA-256 in a release checksum manifest, or
+# $null. GitHub replaces spaces in asset names with dots; older checksum manifests keep the
+# original name. Accept sha256sum's text and binary markers.
+function Get-ClioManifestSha([string]$Manifest, [string]$Name) {
+    $entries = @($Manifest -split '\r?\n' | Where-Object {
+        ($_ -replace 'CLIO Desktop', 'CLIO.Desktop') -match ('^([a-fA-F0-9]{64}) [ *]' + [regex]::Escape($Name) + '$')
+    })
+    if ($entries.Count -ne 1) { return $null }
+    return $entries[0].Substring(0, 64).ToLowerInvariant()
+}
+
+# Read-ClioPlan FILE: the release install plan's well-formed lines ("kind sha256 bytes
+# name url", scripts/release_install_plan.py), the files the first launch would download.
+function Read-ClioPlan([string]$Path) {
+    @(foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        $f = @($line -split ' ')
+        if ($f.Count -ne 5 -or $f[1] -cnotmatch '^[0-9a-f]{64}$' -or $f[2] -notmatch '^[0-9]+$' -or
+            $f[3] -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$' -or $f[4] -notmatch '^https://') { continue }
+        [pscustomobject]@{ Name = $f[3]; Sha = $f[1]; Bytes = [int64]$f[2]; Url = $f[4] }
+    })
 }
 
 # Get-ClioSha256 FILE: the file's SHA-256 as lowercase hex. Windows PowerShell 5.1 started
@@ -244,6 +337,7 @@ $OptRef = ''
 $OptDesktop = $false
 $OptDownloadOnly = ''
 $OptResetOldData = $false
+$OptUnattended = $false
 $OptProgress = if ($env:CLIO_INSTALL_PROGRESS) { $env:CLIO_INSTALL_PROGRESS } else { 'human' }
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch -Regex ([string]$args[$i]) {
@@ -256,6 +350,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^(--desktop|-Desktop)$' { $OptDesktop = $true; continue }
         '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
         '^(--reset-old-data|-ResetOldData)$' { $OptResetOldData = $true; continue }
+        '^(--unattended|-Unattended)$' { $OptUnattended = $true; continue }
         '^(--progress|-Progress)$' { $i++; $OptProgress = [string]$args[$i]; continue }
         '^--progress=' { $OptProgress = ([string]$args[$i]).Substring(11); continue }
         default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; Exit-Installer 2 }
@@ -270,9 +365,13 @@ $ProgressJson = $OptProgress -eq 'json'
 
 # ---------- desktop app (-Desktop) ------------------------------------
 # The released desktop setup carries its own agent, so -Desktop needs no Python, uv or
-# git: it picks the release, downloads the bundled x64 setup, verifies it against the
-# release's checksum manifest, and runs it silently. -DownloadOnly DIR stops after the
-# verified download.
+# git. The steps are install.sh --desktop's: resolve (the release, its checksum manifest
+# and its install plan), download (the setup and the plan's files at once, hashed as they
+# arrive), verify, install. The setup itself prepares the agent and its tools (Office,
+# pnpm) before it exits, from the plan's files when their bytes match its pins
+# (CLIO_INSTALL_DOWNLOADS), so on Windows the install step includes the prepare.
+# -DownloadOnly DIR stops after the verified download; -Unattended runs the setup
+# silently (/S) with its defaults instead of showing its pages.
 function Install-ClioDesktop {
     if ($OptSource) { Die '-Desktop installs a released app; -Source builds the agent only' }
     if (-not [Environment]::Is64BitOperatingSystem) { Die 'CLIO Desktop requires 64-bit Windows.' }
@@ -288,6 +387,7 @@ function Install-ClioDesktop {
 }
 
 function Install-ClioDesktopRelease([string]$repo) {
+    $triple = 'x86_64-pc-windows-msvc'
     Start-ClioStep 'resolve'
     if ($OptVersion) {
         $tag = Get-ClioReleaseTag $OptVersion
@@ -297,40 +397,86 @@ function Install-ClioDesktopRelease([string]$repo) {
     if (-not $tag) { Die 'Could not find a CLIO release on GitHub.' }
     $version = $tag -replace '^v', ''
     $asset = "CLIO.Desktop_${version}_x64-setup-bundled.exe"
-    $checksums = 'SHA256SUMS.x86_64-pc-windows-msvc.bundled.txt'
     $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ("clio-desktop-" + [Guid]::NewGuid().ToString('N'))))
     New-Item -ItemType Directory -Path $scratch | Out-Null
     try {
+        $sums = Join-Path $scratch 'checksums'
+        try { Invoke-WebRequest -UseBasicParsing "$repo/releases/download/$tag/SHA256SUMS.$triple.bundled.txt" -OutFile $sums }
+        catch { Die "Could not download the release checksums (SHA256SUMS.$triple.bundled.txt)" }
+        $manifest = [IO.File]::ReadAllText($sums)
+        $expected = Get-ClioManifestSha $manifest $asset
+        if (-not $expected) { Die 'Release checksum missing or ambiguous; nothing installed' }
+        $url = "$repo/releases/download/$tag/$asset"
+        $downloads = Join-Path $scratch 'downloads'
+        New-Item -ItemType Directory -Path $downloads | Out-Null
+        $items = @([pscustomobject]@{ Name = $asset; Url = $url; File = (Join-Path $scratch $asset); Expected = $expected })
+        $total = [int64]0
+        try { $total = [int64]@((Invoke-WebRequest -UseBasicParsing -Method Head $url).Headers['Content-Length'])[0] } catch { }
+        # The plan is authenticated by the manifest; a release without one (or a plan that
+        # cannot be read) only means the setup downloads those files while it prepares.
+        $planName = "install-plan.$triple.bundled.txt"
+        $planSha = Get-ClioManifestSha $manifest $planName
+        if (-not $OptDownloadOnly -and $planSha) {
+            $planFile = Join-Path $scratch 'plan'
+            try {
+                Invoke-WebRequest -UseBasicParsing "$repo/releases/download/$tag/$planName" -OutFile $planFile
+                if ((Get-ClioSha256 $planFile) -ne $planSha) { throw 'checksum mismatch' }
+                $plan = @(Read-ClioPlan $planFile)
+                foreach ($entry in $plan) {
+                    $items += [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = (Join-Path $downloads $entry.Name); Expected = $entry.Sha }
+                    $total += $entry.Bytes
+                }
+                if ($plan.Count) { Say "Fetching what the first launch needs at the same time: $(($plan | ForEach-Object { $_.Name }) -join ', ')" }
+            } catch {
+                Warn "could not read the release's install plan; the setup downloads what it needs while preparing"
+            }
+        }
         Start-ClioStep 'download'
         Say "Downloading CLIO Desktop $tag ($asset)"
-        $installer = Join-Path $scratch $asset
-        Save-ClioDownload "$repo/releases/download/$tag/$asset" $installer
-        $script:RunBytes = (Get-Item -LiteralPath $installer).Length
+        Save-ClioDownloads $items $total
         Start-ClioStep 'verify'
-        $manifest = (Invoke-WebRequest "$repo/releases/download/$tag/$checksums" -UseBasicParsing).Content
-        if ($manifest -is [byte[]]) { $manifest = [Text.Encoding]::UTF8.GetString($manifest) }
-        # GitHub replaces spaces in asset names with dots; older checksum manifests
-        # keep the original name. Accept sha256sum's text and binary markers.
-        $entries = @($manifest -split '\r?\n' | Where-Object {
-            ($_ -replace 'CLIO Desktop', 'CLIO.Desktop') -match ('^([a-fA-F0-9]{64}) [ *]' + [regex]::Escape($asset) + '$')
-        })
-        if ($entries.Count -ne 1) { Die 'Release checksum missing or ambiguous; nothing installed' }
-        if ((Get-ClioSha256 $installer) -ne $entries[0].Substring(0, 64).ToLowerInvariant()) {
+        $installer = $items[0]
+        if (-not $installer.Ok) { Die "Could not download $asset from release $tag" }
+        # The bytes were hashed as they arrived. Should curl have rewritten part of the
+        # file (a retry that could not resume), read it again before refusing it.
+        if ($installer.Sha -ne $expected -and (Get-ClioSha256 $installer.File) -ne $expected) {
             Die 'Download checksum mismatch; nothing installed'
+        }
+        $prefetched = 0
+        foreach ($item in @($items | Select-Object -Skip 1)) {
+            if ($item.Ok -and $item.Sha -eq $item.Expected) {
+                $prefetched++
+            } else {
+                Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
+                Warn "could not fetch $($item.Name) ahead of time; the setup downloads it while preparing"
+            }
         }
         if ($OptDownloadOnly) {
             New-Item -ItemType Directory -Force -Path $OptDownloadOnly | Out-Null
             $verified = Join-Path $OptDownloadOnly $asset
-            Copy-Item -LiteralPath $installer -Destination $verified
+            Copy-Item -LiteralPath $installer.File -Destination $verified
             Say "Verified download: $verified"
             Complete-ClioRun $true
             return
         }
-        # The installer's own pages ask for the model provider and infrastructure, so it runs
-        # with its window rather than silently.
         Start-ClioStep 'install'
-        Say 'Opening the CLIO Desktop installer...'
-        $setup = Start-Process -FilePath $installer -Wait -PassThru
+        $setupArgs = @()
+        if ($OptUnattended) {
+            Say 'Installing CLIO Desktop and preparing its agent (unattended)...'
+            $setupArgs = @('/S')
+        } else {
+            # The installer's own pages ask for the model provider and infrastructure.
+            Say 'Opening the CLIO Desktop installer...'
+        }
+        # The setup's --prepare-runtime uses these files instead of downloading them again.
+        $previousDownloads = $env:CLIO_INSTALL_DOWNLOADS
+        if ($prefetched) { $env:CLIO_INSTALL_DOWNLOADS = $downloads }
+        try {
+            if ($setupArgs.Count) { $setup = Start-Process -FilePath $installer.File -ArgumentList $setupArgs -Wait -PassThru }
+            else { $setup = Start-Process -FilePath $installer.File -Wait -PassThru }
+        } finally {
+            $env:CLIO_INSTALL_DOWNLOADS = $previousDownloads
+        }
         if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup did not finish (exit $($setup.ExitCode))" }
         Say 'CLIO Desktop installed. Open it from the Start menu.'
         Complete-ClioRun $true
@@ -344,6 +490,7 @@ if ($OptDesktop) {
     return
 }
 if ($OptDownloadOnly) { Die '-DownloadOnly goes with -Desktop' }
+if ($OptUnattended) { Die '-Unattended goes with -Desktop' }
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
 $ClioKitPackage = $env:CLIO_KIT_PACKAGE
 $Protocol    = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }

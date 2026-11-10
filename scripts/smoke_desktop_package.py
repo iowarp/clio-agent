@@ -15,6 +15,7 @@ import os
 import platform
 import subprocess
 import time
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -253,7 +254,14 @@ def smoke(
                             encoding="utf-8",
                         )
                         executable = require_bundled_python(candidate)
-                    except (psutil.NoSuchProcess, URLError, TimeoutError):
+                    except (
+                        psutil.NoSuchProcess,
+                        URLError,
+                        TimeoutError,
+                        ConnectionError,
+                        HTTPException,
+                    ):
+                        # A server still starting can reset or drop the connection.
                         continue
                     ready_seconds = time.perf_counter() - launched_at
                     # Readiness alone can precede an immediate native WebView crash.

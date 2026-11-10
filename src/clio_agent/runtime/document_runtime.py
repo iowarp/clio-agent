@@ -35,12 +35,13 @@ PNPM_VERSION = "12.9.1"
 # pnpm 12 is a JavaScript wrapper that runs a native binary from its per-host
 # `@pnpm/exe.*` package. These are the SHA-256 digests of their registry tarballs,
 # so the installer's concurrent download of them can stand in for `npm install`
-# (install.sh lists them in the release's install plan).
+# (install.sh and install.ps1 list them in the release's install plan).
 PNPM_PACKAGES = {
     "pnpm": "44c80447645c2a1d8da9308d3efedcec6ca2db4579183abcb15d8a90a88277d4",
     "@pnpm/exe.darwin-arm64": "456316d4cfa8b50b86224613f7f4eca591d970b07ab2f3b6d479724460845d94",
     "@pnpm/exe.linux-x64": "9581c9b2571491f9e00c841cb29864cc3bf96e66f82d55ef5bad70f8f06d1808",
     "@pnpm/exe.linux-arm64": "90530afe00c62fefd1f09d1a9b0aea058d28fd0862eeb2231de9151ffa36d291",
+    "@pnpm/exe.win32-x64": "12c4d01cb418cc7e15a155f4d467545bd161b4b2bfe57022f155a5537dfe7c33",
 }
 
 

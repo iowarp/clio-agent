@@ -231,6 +231,27 @@ manifest_sha() {
 file_sha() {
   if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
+sha_stream() {
+  if have sha256sum; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi
+}
+
+# fetch_hashed URL FILE [curl options]: download URL to FILE, hashing the bytes as they
+# arrive (FILE.sha), so verifying needs no second pass over the file. An interrupted
+# download starts again once, from the beginning (curl cannot rewind into the hash).
+fetch_hashed() {
+  local url="$1" file="$2" attempt status
+  shift 2
+  for attempt in 1 2; do
+    rm -f "$file" "$file.sha"
+    curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$@" "$url" \
+      | tee "$file" | sha_stream > "$file.sha" && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
+    [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ] || [ "${status[2]}" != 0 ] || return 0
+    [ "$attempt" = 2 ] || [ "${status[0]}" = 22 ] || continue
+    break
+  done
+  rm -f "$file" "$file.sha"
+  return 1
+}
 
 is_sha() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
 
@@ -292,11 +313,11 @@ fetch_plan() {  # TAG MANIFEST TRIPLE -> the plan file, or nothing
 
 prefetch() {  # SHA NAME URL: a failure only means the app fetches it itself later
   local file="$DESKTOP_SCRATCH/downloads/$2"
-  if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$3" -o "$file.part" 2>/dev/null \
-     && [ "$(file_sha "$file.part")" = "$1" ]; then
+  if fetch_hashed "$3" "$file.part" 2>/dev/null && [ "$(cat "$file.part.sha")" = "$1" ]; then
     mv "$file.part" "$file"
+    rm -f "$file.part.sha"
   else
-    rm -f "$file.part"
+    rm -f "$file.part" "$file.part.sha"
     warn "could not fetch $2 ahead of time; the app downloads it while preparing"
   fi
 }
@@ -453,7 +474,7 @@ install_desktop() {
       say "Downloading CLIO Desktop $tag ($asset)"
       DESKTOP_APP_FILE="$DESKTOP_SCRATCH/$asset"
       start_monitor
-      curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -D "$DESKTOP_SCRATCH/app.headers" "$url" -o "$DESKTOP_APP_FILE" \
+      fetch_hashed "$url" "$DESKTOP_APP_FILE" -D "$DESKTOP_SCRATCH/app.headers" \
         || die "could not download $asset from release $tag" ;;
   esac
   finish_downloads
@@ -461,7 +482,7 @@ install_desktop() {
   case "$asset" in
     *.aar|*.tar.gz) [ "$(cat "$DESKTOP_SCRATCH/app.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed"
       rm -f "$DESKTOP_APP_FILE" ;;
-    *) [ "$(file_sha "$DESKTOP_APP_FILE")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
+    *) [ "$(cat "$DESKTOP_APP_FILE.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
   esac
   if [ -n "$OPT_DOWNLOAD_ONLY" ]; then
     mkdir -p "$OPT_DOWNLOAD_ONLY"
@@ -517,13 +538,54 @@ prepare_desktop() {
   fi
 }
 
+# A mirror+file: source names a file of mirrors; the first one serves the download.
+apt_mirror_uri() {  # URI -> an http(s) URI, or nothing
+  local uri="$1" list base
+  case "$uri" in
+    http://*|https://*) printf '%s' "$uri"; return ;;
+    mirror+file:/*) ;;
+    *) return 0 ;;
+  esac
+  list="${uri#mirror+file:}"
+  while [ ! -f "$list" ] && [ "$list" != "${list%/*}" ]; do list="${list%/*}"; done
+  [ -f "$list" ] || return 0
+  base="$(awk '$1 ~ /^https?:\/\// { print $1; exit }' "$list")"
+  [ -z "$base" ] || printf '%s/%s' "${base%/}" "${uri#mirror+file:"$list"/}"
+}
+
+# apt fetches the desktop's system libraries (WebKitGTK, GStreamer: ~70 packages on a
+# system without them) one at a time from one mirror, where one slow response stalls the
+# rest. They are fetched 8 at a time into a private archive directory instead, a stalled
+# transfer restarting; apt then checks each against its signed index (size and hash)
+# and fetches any that are missing or wrong itself. Behind an apt proxy apt does it all.
+apt_prefetch() {  # SUDO PACKAGE DIR
+  local sudo="$1" package="$2" dir="$3" uri name size rest url count=0 bytes=0
+  mkdir -p "$dir/partial"
+  apt-config dump > "$dir/config" 2>/dev/null || true
+  ! grep -qiE '^Acquire::[a-z]+::Proxy "[^"]' "$dir/config" || return 1
+  $sudo apt-get install -y -qq --print-uris "$package" 2>/dev/null > "$dir/uris" || return 1
+  while read -r uri name size rest; do
+    url="$(apt_mirror_uri "${uri//\'/}")"
+    [ -n "$url" ] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]] || continue
+    printf '%s %s\n' "$dir/$name" "$url"
+    size="${size//[^0-9]/}"; count=$(( count + 1 )); bytes=$(( bytes + ${size:-0} ))
+  done < "$dir/uris" > "$dir/fetch"
+  [ "$count" -gt 0 ] || return 0
+  say "Fetching $count system packages CLIO Desktop needs ($(megabytes "$bytes") MB), 8 at a time"
+  # shellcheck disable=SC2016
+  xargs -P 8 -n 2 sh -c 'curl -fsSL --connect-timeout 10 --speed-limit 50000 --speed-time 10 --retry 3 \
+      -o "$0.part" "$1" && mv "$0.part" "$0" || rm -f "$0.part"; exit 0' < "$dir/fetch"
+}
+
 install_desktop_linux() {
-  local package="$1" sudo="" out=1
+  local package="$1" sudo="" out=1 archives=()
   [ "$PROGRESS_JSON" = 0 ] || out=2
   [ "$(id -u)" = 0 ] || { have sudo || die "installing $package needs root; run as root or install sudo"; sudo=sudo; }
   case "$package" in
     *.deb)
-      if have apt-get; then $sudo apt-get install -y "$package" >&"$out" || die "apt-get could not install $package"
+      if have apt-get; then
+        ! apt_prefetch "$sudo" "$package" "$DESKTOP_SCRATCH/apt" || archives=(-o "Dir::Cache::Archives=$DESKTOP_SCRATCH/apt/")
+        $sudo apt-get install -y ${archives[@]+"${archives[@]}"} "$package" >&"$out" || die "apt-get could not install $package"
       else $sudo dpkg -i "$package" >&"$out" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
     *.rpm)
       if have dnf; then $sudo dnf install -y "$package" >&"$out" || die "dnf could not install $package"
