@@ -140,6 +140,13 @@ def render_html(html: str, *, viewport_width: int, scale: float = 2.0) -> Iterat
 
     from playwright.sync_api import sync_playwright  # noqa: PLC0415 - lazy (install)
 
+    from clio_agent.gact.browser import driver  # noqa: PLC0415
+    from clio_agent.gact.browser.settings import BrowserError  # noqa: PLC0415
+
+    try:
+        driver.ensure_node()  # a desktop bundle fetches Playwright's Node.js on first use
+    except BrowserError as exc:
+        raise HtmlRenderError(exc.reason, exc.message) from exc
     with sync_playwright() as pw:
         browser = _launch(pw)
         try:

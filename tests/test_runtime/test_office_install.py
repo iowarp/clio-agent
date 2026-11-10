@@ -438,6 +438,39 @@ def test_installer_download_counts_only_the_pinned_bytes(
     assert office.installer_download(name, checksum) == expected
 
 
+@pytest.mark.parametrize("outcome", ["lands", "abandoned", "stalls"])
+def test_installer_download_waits_for_a_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """The installer may still be writing NAME.part when the app prepares."""
+    import hashlib
+    import threading
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    partial = folder / "office.dmg.part"
+    partial.write_bytes(b"off")
+    checksum = hashlib.sha256(b"office").hexdigest()
+    monkeypatch.setenv(office.INSTALLER_DOWNLOADS, str(folder))
+    monkeypatch.setattr(office, "_INSTALLER_STALL_S", 0.5)
+
+    def finish() -> None:
+        partial.write_bytes(b"office")
+        if outcome == "lands":
+            partial.rename(folder / "office.dmg")
+        else:
+            partial.unlink()
+
+    timer = threading.Timer(0.3, finish)
+    if outcome != "stalls":
+        timer.start()
+    try:
+        found = office.installer_download("office.dmg", checksum)
+    finally:
+        timer.cancel()
+    assert found == (folder / "office.dmg" if outcome == "lands" else None)
+
+
 def test_installer_download_replaces_the_network_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

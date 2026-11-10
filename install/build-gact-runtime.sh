@@ -199,6 +199,23 @@ if [ -d "$SITE_PKGS" ]; then
     [ -f "$SITE_PKGS/googleapiclient/discovery_cache/documents/drive.v3.json" ] \
       || { echo "build-gact-runtime: googleapiclient has no drive.v3.json to keep" >&2; exit 1; }
   fi
+  # Codex's exec-server and code-mode-host helpers (126 MB raw, 31 MB of the macOS
+  # download): CLIO runs only `codex sandbox`, its macOS write fence, which was verified
+  # live to enforce without them. Linux keeps them until a Linux run proves the same.
+  CODEX_BIN="$SITE_PKGS/codex_cli_bin/bin"
+  if [ "$(uname -s)" = Darwin ] && [ -d "$CODEX_BIN" ]; then
+    [ -f "$CODEX_BIN/codex" ] \
+      || { echo "build-gact-runtime: codex_cli_bin has no codex binary to keep" >&2; exit 1; }
+    rm -f "$CODEX_BIN/codex-exec-server" "$CODEX_BIN/codex-code-mode-host"
+    for record in "$SITE_PKGS"/openai_codex_cli_bin-*.dist-info/RECORD; do
+      [ -f "$record" ] || continue
+      grep -v -E '^codex_cli_bin/bin/codex-(exec-server|code-mode-host),' "$record" >"$record.tmp"
+      mv "$record.tmp" "$record"
+    done
+  fi
+  # Playwright's Node.js (122 MB raw, 28 MB of the macOS download) is fetched, hash-checked,
+  # the first time the agent opens a browser (gact/browser/driver.py); same step on Windows.
+  "$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/stage_playwright_node.py" "$SITE_PKGS"
   find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) -delete 2>/dev/null || true
   remaining="$(find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) | head -20)"
   if [ -n "$remaining" ]; then

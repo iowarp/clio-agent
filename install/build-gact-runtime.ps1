@@ -305,6 +305,13 @@ if (Test-Path $scriptsDir) {
 # GACT entry. Keep real packaged runtimes: the Codex SDK provider executable
 # and iowarp-core's native daemon/tools. Removing clio_run.exe leaves imports
 # healthy but silently forces ARC to degrade when the first agent is built.
+# Playwright's node.exe is fetched, hash-checked, the first time the agent opens a browser
+# (gact/browser/driver.py), the same step as macOS and Linux. Staged before the sweep below,
+# which used to delete node.exe and leave Windows bundles with no browser driver at all.
+if (Test-Path $sitePkgs) {
+  & $pyBin -I -B (Join-Path $PSScriptRoot 'stage_playwright_node.py') $sitePkgs
+  if ($LASTEXITCODE -ne 0) { throw 'build-gact-runtime: staging Playwright''s Node.js failed' }
+}
 if (Test-Path $sitePkgs) {
   $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'
   $iowarpCoreBin = Join-Path $sitePkgs 'iowarp_core\bin'

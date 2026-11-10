@@ -6,6 +6,10 @@ only when its bytes match the app's own pin. One line per file, readable by bash
 
     kind sha256 bytes name url
 
+A first ``capability WORD`` line says the app waits for a download still in progress
+(``office.INSTALLER_PLAN_CAPABILITY``), so the installer may prepare before its downloads
+finish; readers that predate it skip lines without five fields.
+
 The pins are read from the source (``office.py``, ``document_runtime.py``) without
 importing it, so this runs on any CI Python. Sizes come from the servers and only feed
 the installer's progress; 0 means unknown. The release lists the plan in its
@@ -47,6 +51,11 @@ def _constants(path: Path, *names: str) -> dict[str, object]:
     if missing:
         raise SystemExit(f"{path.name} no longer defines {sorted(missing)}")
     return found
+
+
+def capability() -> str:
+    """What this release's app does with the installer's downloads (one word)."""
+    return str(_constants(OFFICE, "INSTALLER_PLAN_CAPABILITY")["INSTALLER_PLAN_CAPABILITY"])
 
 
 def entries(target: str) -> list[tuple[str, str, str, str]]:
@@ -97,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--no-sizes", action="store_true", help="write 0 instead of asking")
     args = parser.parse_args(argv)
-    lines = [
+    lines = [f"capability {capability()}"] + [
         f"{kind} {sha} {0 if args.no_sizes else remote_size(url)} {name} {url}"
         for kind, sha, name, url in entries(args.target)
     ]
