@@ -120,6 +120,29 @@ function Complete-ClioRun([bool]$ok, [string]$err = '') {
         Write-ClioEvent ([ordered]@{ event = 'summary'; ok = $false; step = $failed; error = $err; seconds = $script:StepTimes; total = $total; bytes = $script:RunBytes })
     }
 }
+# Show the setup's prepare progress that arrived after byte OFFSET; returns the new offset.
+# The writer keeps the file open, so it is read with shared access, whole lines only.
+function Show-ClioPrepareLog([string]$path, [int64]$offset) {
+    if (-not (Test-Path -LiteralPath $path)) { return $offset }
+    $text = ''
+    try {
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
+        try {
+            if ($stream.Length -le $offset) { return $offset }
+            $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
+            $text = (New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding($false)))).ReadToEnd()
+        } finally { $stream.Dispose() }
+    } catch { return $offset }
+    $end = $text.LastIndexOf([char]10)
+    if ($end -lt 0) { return $offset }
+    $complete = $text.Substring(0, $end + 1)
+    if ($script:StepName -ne 'prepare') { Start-ClioStep 'prepare' }
+    foreach ($line in $complete.Split([char]10)) {
+        $line = $line.TrimEnd([char]13)
+        if ($line) { Write-ClioLine "    $line" Gray }
+    }
+    return $offset + [Text.Encoding]::UTF8.GetByteCount($complete)
+}
 function Have ($cmd) { return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue) }
 function RunNative($cmd, [string[]]$cmdArgs) {
     & $cmd @cmdArgs
@@ -369,7 +392,7 @@ $ProgressJson = $OptProgress -eq 'json'
 # and its install plan), download (the setup and the plan's files at once, hashed as they
 # arrive), verify, install. The setup itself prepares the agent and its tools (Office,
 # pnpm) before it exits, from the plan's files when their bytes match its pins
-# (CLIO_INSTALL_DOWNLOADS), so on Windows the install step includes the prepare.
+# (CLIO_INSTALL_DOWNLOADS); its timed lines in CLIO_INSTALL_LOG become the prepare step.
 # -DownloadOnly DIR stops after the verified download; -Unattended runs the setup
 # silently (/S) with its defaults instead of showing its pages.
 function Install-ClioDesktop {
@@ -471,11 +494,23 @@ function Install-ClioDesktopRelease([string]$repo) {
         # The setup's --prepare-runtime uses these files instead of downloading them again.
         $previousDownloads = $env:CLIO_INSTALL_DOWNLOADS
         if ($prefetched) { $env:CLIO_INSTALL_DOWNLOADS = $downloads }
+        # It also appends its timed progress to CLIO_INSTALL_LOG. NSIS /S shows nothing,
+        # so the file is followed here and timed as the 'prepare' step, as install.sh does.
+        $previousLog = $env:CLIO_INSTALL_LOG
+        $prepareLog = Join-Path $scratch 'prepare.log'
+        $env:CLIO_INSTALL_LOG = $prepareLog
         try {
-            if ($setupArgs.Count) { $setup = Start-Process -FilePath $installer.File -ArgumentList $setupArgs -Wait -PassThru }
-            else { $setup = Start-Process -FilePath $installer.File -Wait -PassThru }
+            if ($setupArgs.Count) { $setup = Start-Process -FilePath $installer.File -ArgumentList $setupArgs -PassThru }
+            else { $setup = Start-Process -FilePath $installer.File -PassThru }
+            $null = $setup.Handle  # keeps ExitCode readable once the setup exits
+            $shown = [int64]0
+            do {
+                $exited = $setup.WaitForExit(250)
+                $shown = Show-ClioPrepareLog $prepareLog $shown
+            } until ($exited)
         } finally {
             $env:CLIO_INSTALL_DOWNLOADS = $previousDownloads
+            $env:CLIO_INSTALL_LOG = $previousLog
         }
         if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup did not finish (exit $($setup.ExitCode))" }
         Say 'CLIO Desktop installed. Open it from the Start menu.'

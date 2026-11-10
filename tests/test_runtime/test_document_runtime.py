@@ -92,7 +92,7 @@ def test_python_failure_never_advertises_ready_runtime(
     )
     monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
 
-    def fail(cache: Path, uv: str) -> tuple[Path, dict[str, Any]]:
+    def fail(cache: Path, uv: str, **kwargs: Any) -> tuple[Path, dict[str, Any]]:
         raise runtime.DocumentRuntimeError("offline: dependency missing")
 
     monkeypatch.setattr(runtime, "_python_runtime", fail)
@@ -112,7 +112,10 @@ def test_javascript_failure_keeps_verified_python_and_reports_partial(
         "native_tools": {"soffice": {"status": "missing"}, "tesseract": {"status": "missing"}},
         "python": "prepared-python",
     }
-    monkeypatch.setattr(runtime, "_python_runtime", lambda cache, uv: (cache / "python", inventory))
+    monkeypatch.setattr(
+        runtime, "_python_runtime", lambda cache, uv, **kwargs: (cache / "python", inventory)
+    )
+    monkeypatch.setattr(runtime, "_probe", lambda python, **kwargs: inventory)
 
     def fail(*args: Any, **kwargs: Any) -> tuple[Path, Path]:
         raise runtime.DocumentRuntimeError("module resolution failed")
@@ -125,6 +128,91 @@ def test_javascript_failure_keeps_verified_python_and_reports_partial(
     assert result["capabilities"]["office_render_recalculate"] == "missing"
     assert Path(result["output_directory"]).is_relative_to(tmp_path)
     assert Path(result["output_directory"]).is_relative_to(tmp_path / ".tmp")
+
+
+def test_node_prepares_while_full_python_probe_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node starts from the installed environment before the slow import probe ends."""
+    from threading import Event
+
+    monkeypatch.setattr(
+        FileAccessPolicy, "from_env", classmethod(lambda cls: FileAccessPolicy((tmp_path,)))
+    )
+    monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
+    discovered = {
+        "node": str(tmp_path / "node"),
+        "native_tools": {
+            "soffice": {"status": "not_checked"},
+            "tesseract": {"status": "not_checked"},
+        },
+    }
+    probed = {
+        "node": str(tmp_path / "node"),
+        "native_tools": {"soffice": {"status": "available"}, "tesseract": {"status": "missing"}},
+    }
+    calls: list[bool] = []
+
+    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False) -> Any:
+        calls.append(discovery_only)
+        return cache / "python", dict(discovered)
+
+    node_started = Event()
+
+    def probe(python: Path, **kwargs: Any) -> dict[str, Any]:
+        assert node_started.wait(10), "the import probe blocked Node preparation"
+        return dict(probed)
+
+    def javascript(cache: Path, workspace: Path, inventory: dict[str, Any], **kwargs: Any) -> Any:
+        assert inventory["node"] == discovered["node"]
+        node_started.set()
+        return tmp_path / "work", tmp_path / "pnpm"
+
+    monkeypatch.setattr(runtime, "_python_runtime", python_runtime)
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_javascript_runtime", javascript)
+    monkeypatch.setattr(runtime, "publish_environment", lambda *args: None)
+    result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
+    assert calls == [True]
+    assert result["status"] == "ready" and result["javascript"]["status"] == "ready"
+    assert result["capabilities"]["office_render_recalculate"] == "available"
+
+
+def test_failed_full_probe_repairs_after_node_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe failure still gets the locked repair, once nothing runs from the environment."""
+    monkeypatch.setattr(
+        FileAccessPolicy, "from_env", classmethod(lambda cls: FileAccessPolicy((tmp_path,)))
+    )
+    monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
+    tools = {"soffice": {"status": "missing"}, "tesseract": {"status": "missing"}}
+    order: list[str] = []
+
+    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False) -> Any:
+        order.append("discover" if discovery_only else "repair")
+        return cache / "python", {
+            "node": "node",
+            "native_tools": tools,
+            "repaired": not discovery_only,
+        }
+
+    def probe(python: Path, **kwargs: Any) -> dict[str, Any]:
+        raise runtime.DocumentRuntimeError("pandas failed to import")
+
+    def javascript(*args: Any, **kwargs: Any) -> Any:
+        order.append("node")
+        return tmp_path / "work", tmp_path / "pnpm"
+
+    monkeypatch.setattr(runtime, "_python_runtime", python_runtime)
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_javascript_runtime", javascript)
+    monkeypatch.setattr(runtime, "publish_environment", lambda *args: None)
+    result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
+    assert order == ["discover", "node", "repair"]
+    assert result["repaired"] is True and result["javascript"]["status"] == "ready"
 
 
 def test_python_cache_reuse_still_probes_imports(

@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import tomllib
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -508,6 +509,19 @@ def _javascript_runtime(
     return work, pnpm
 
 
+def _javascript_or_error(
+    cache: Path,
+    workspace: Path,
+    inventory: dict[str, Any],
+    progress: Callable[[str], None] | None,
+) -> tuple[Path, Path] | DocumentRuntimeError:
+    """Prepare Node.js; a failure is returned so the verified Python stack stays usable."""
+    try:
+        return _javascript_runtime(cache, workspace, inventory, progress=progress)
+    except DocumentRuntimeError as exc:
+        return exc
+
+
 def prepare_document_runtime(
     workspace: Path,
     *,
@@ -541,13 +555,31 @@ def prepare_document_runtime(
     with FileLock(str(cache / "prepare.lock"), timeout=240):
         if progress is not None:
             progress("Preparing and checking Python document packages...")
-        python, inventory = (
-            _python_runtime(cache, uv, discovery_only=True)
-            if discovery_only
-            else _python_runtime(cache, uv)
-        )
-        if progress is not None:
-            progress("Python document packages are ready. Preparing Node.js packages...")
+        python, inventory = _python_runtime(cache, uv, discovery_only=True)
+        javascript: tuple[Path, Path] | DocumentRuntimeError
+        if discovery_only:
+            if progress is not None:
+                progress("Python document packages are ready. Preparing Node.js packages...")
+            javascript = _javascript_or_error(cache, workspace, inventory, progress)
+        else:
+            # Node needs only the installed environment, so it is prepared while the
+            # full import probe runs. That probe is most of the Python step: the first
+            # load of each newly installed native library is checked by the OS.
+            if progress is not None:
+                progress("Python document packages are installed. Preparing Node.js packages...")
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-probe") as checking:
+                probed = checking.submit(_probe, python)
+                javascript = _javascript_or_error(cache, workspace, inventory, progress)
+                try:
+                    inventory = probed.result()
+                except (DocumentRuntimeError, ValueError):
+                    inventory = {}
+            if not inventory:
+                # A damaged environment gets the same locked repair as before, now that
+                # nothing runs from it.
+                python, inventory = _python_runtime(cache, uv)
+            if progress is not None:
+                progress("Python document packages are ready.")
         output = scratch / "output"
         output.mkdir(parents=True, exist_ok=True)
         inventory.update(
@@ -577,8 +609,11 @@ def prepare_document_runtime(
                 },
             }
         )
-        try:
-            work, pnpm = _javascript_runtime(cache, workspace, inventory, progress=progress)
+        if isinstance(javascript, DocumentRuntimeError):
+            inventory["javascript"] = {"status": "failed", "error": str(javascript)}
+            inventory["status"] = "partial"
+        else:
+            work, pnpm = javascript
             inventory["node"] = node_path(str(inventory["node"]))
             inventory["javascript"] = {
                 "status": "ready",
@@ -595,9 +630,6 @@ def prepare_document_runtime(
                 ],
                 "packages": json.loads((STACK_ROOT / "package.json").read_text())["dependencies"],
             }
-        except DocumentRuntimeError as exc:
-            inventory["javascript"] = {"status": "failed", "error": str(exc)}
-            inventory["status"] = "partial"
         publish_environment(workspace, inventory, cache)
         if progress is not None and inventory["javascript"]["status"] == "ready":
             progress("Node.js document packages are ready.")

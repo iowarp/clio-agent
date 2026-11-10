@@ -258,3 +258,67 @@ def test_bootstrap_prepares_real_package_stage_without_fence_or_receipt(
     prepared = installer.prepare_managed_packages(tmp_path / "workspace", cache_root=tmp_path)
     assert prepared["capabilities"]["office_render_recalculate"] == "available"
     assert "protected_execution" not in prepared["native_tools"]
+
+
+def test_store_upgrade_runs_while_packages_are_prepared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``migrate`` overlaps the package step; the summary waits for both.
+
+    clio-core is entered from the main thread: a worker thread's native handles outlive
+    it and nanobind reports them leaked at exit.
+    """
+    import sys
+    import threading
+
+    both_running = Barrier(2, timeout=10)
+
+    def install(workspace: Path, **kwargs: Any) -> dict[str, Any]:
+        both_running.wait()
+        return {"status": "ready", "runtime_id": "locked", "native_tools": {"soffice": {}}}
+
+    def migrate(args: Any, emit: Any) -> dict[str, Any]:
+        assert threading.current_thread() is threading.main_thread()
+        both_running.wait()
+        emit("migrate status=done ran=0 seconds=0.000")
+        return {"status": "done", "seconds": 0.0}
+
+    monkeypatch.setattr(installer, "install_document_runtime", install)
+    monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
+    monkeypatch.setattr(
+        installer, "collect_snapshots_after_install", lambda: {"status": "collected"}
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
+    )
+    installer._main()
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["status"] == "ready"
+    assert summary["store_migrations"] == {"status": "done", "seconds": 0.0}
+
+
+def test_failed_package_step_waits_for_store_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed install never exits while ``migrate`` still holds clio-core."""
+    import sys
+
+    released = Event()
+
+    def install(workspace: Path, **kwargs: Any) -> dict[str, Any]:
+        raise installer.DocumentRuntimeError("Office download failed")
+
+    def migrate(args: Any, emit: Any) -> dict[str, Any]:
+        released.wait(0.2)
+        released.set()
+        return {"status": "done"}
+
+    monkeypatch.setattr(installer, "install_document_runtime", install)
+    monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(
+        sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
+    )
+    with pytest.raises(installer.DocumentRuntimeError, match="Office"):
+        installer._main()
+    assert released.is_set()

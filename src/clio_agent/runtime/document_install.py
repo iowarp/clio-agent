@@ -267,15 +267,28 @@ def _main() -> None:
         return
     # This standalone installer owns its workspace. Never widen a running agent's policy.
     os.environ["CLIO_ALLOWED_ROOTS"] = str(args.workspace.resolve())
-    result = install_document_runtime(
-        args.workspace,
-        progress=lambda message: print(message, flush=True),
-        setup_protected_execution=args.setup_protected_execution,
-        reuse_installed=args.reuse_installed,
-    )
+    output_lock = Lock()
+
+    def emit(message: str) -> None:
+        with output_lock:
+            print(message, flush=True)
+
     # The install-time prepare (not the per-start reuse check) also upgrades the store,
     # so the desktop's first start after an install or upgrade only checks the markers.
-    migrations = _run_store_migrations(args)
+    # The store reads none of the packages, so it is upgraded while they are prepared.
+    # clio-core is entered from the main thread, as before: from any other thread each
+    # native call is handed to a persistent native worker (arc/native_threads.py).
+    # Leaving this block waits for the packages too, so neither outlives the other.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-packages") as installing:
+        installation = installing.submit(
+            install_document_runtime,
+            args.workspace,
+            progress=emit,
+            setup_protected_execution=args.setup_protected_execution,
+            reuse_installed=args.reuse_installed,
+        )
+        migrations = _run_store_migrations(args, emit)
+        result = installation.result()
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
@@ -289,8 +302,10 @@ def _main() -> None:
     print(json.dumps(summary), flush=True)
 
 
-def _run_store_migrations(args: argparse.Namespace) -> dict[str, Any]:
-    """``clio-agent migrate`` as this installer's last step, reported typed.
+def _run_store_migrations(
+    args: argparse.Namespace, emit: Callable[[str], None] = print
+) -> dict[str, Any]:
+    """``clio-agent migrate`` alongside this installer's package step, reported typed.
 
     A refusal or failure does not fail the package install: the server's next boot runs
     an owed migration once and its ``store_migrations`` health row reports the outcome.
@@ -300,8 +315,8 @@ def _run_store_migrations(args: argparse.Namespace) -> dict[str, Any]:
         return {"status": "skipped", "reason": reason}
     from clio_agent.gact.store_migrate_command import run_migrations  # noqa: PLC0415
 
-    print("Upgrading the CLIO store (clio-agent migrate)...", flush=True)
-    _code, payload = run_migrations(lambda line: print(line, flush=True))
+    emit("Upgrading the CLIO store (clio-agent migrate)...")
+    _code, payload = run_migrations(emit)
     return {key: payload[key] for key in ("status", "reason", "seconds") if key in payload}
 
 
