@@ -191,7 +191,8 @@ _DEFAULT_CTE_CORE_PORT = 9413
 # environments are pinned; the server's own ``os.environ`` is left alone.
 # Known gap: clio-core's control channel (port base+2, ``ControlChannelLoop`` in
 # ``context-runtime/src/ipc_manager.cc``) binds ``tcp://*`` and ignores this
-# variable; it needs an upstream iowarp/clio-core fix.
+# variable (iowarp/clio-core#1355); ``arc.core_control_port`` keeps it off the
+# network until the upstream fix ships.
 CORE_BIND_ADDR_ENV = "CLIO_BIND_ADDR"
 CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
 
