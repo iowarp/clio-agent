@@ -1007,6 +1007,12 @@ arc.liveness.sample_after_s: 0.1
 # a stalled zombie peer; raise for very large blob ops.
 arc.liveness.stall_after_s: 30.0
 
+# CLIO_ARC_LIVENESS_STOP_ACK_S  (float)  <- src/clio_agent/arc/runtime_stop.py
+# How long (seconds) a clio-core daemon may keep serving its port after
+# clio_run stop before the request counts as lost and the daemon is sent
+# SIGTERM (POSIX).
+arc.liveness.stop_ack_s: 3.0
+
 # CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S  (float)  <- src/clio_agent/arc/runtime_stop.py
 # How long (seconds) a stopping clio-core daemon may make no progress (CPU
 # and I/O flat) before it is killed; keep it inside the desktop supervisor's
