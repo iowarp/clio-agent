@@ -151,7 +151,7 @@ def review_edits(service: StorageService, record: SourceRecord) -> ChangeReview:
             current = upstream.get(name)
             digest = None
             if current:
-                if current.kind != "file" or current.size > 512 * 1024 * 1024:
+                if current.kind != "file" or (current.size or 0) > 512 * 1024 * 1024:
                     raise ValueError("The original changed type or exceeds the linked-write limit")
                 hasher = hashlib.sha256()
                 total = 0
