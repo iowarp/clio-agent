@@ -170,7 +170,11 @@ def test_a_provider_option_set_in_the_picker_survives_a_restart(
     assert restored.provider_options == {"show_diffusion": "on"}
 
 
-def test_a_saved_option_the_provider_does_not_offer_is_refused_at_boot() -> None:
+def test_a_saved_option_the_provider_does_not_offer_is_dropped_at_boot(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A config written before options were scoped to their provider can name another
+    # provider's option; boot drops it with a typed log instead of refusing to start.
     from clio_agent.gact.providers.selection_store import (  # noqa: PLC0415
         persist_lm_selection,
     )
@@ -184,8 +188,13 @@ def test_a_saved_option_the_provider_does_not_offer_is_refused_at_boot() -> None
     assert persist_lm_selection(bound, requested_api_base="http://127.0.0.1:1/v1").persisted
 
     conf.reload()
-    with pytest.raises(ValueError, match="show_diffusion"):
-        load_config_from_env()
+    with caplog.at_level("WARNING", logger="clio_agent.providers.catalog"):
+        restored = load_config_from_env()
+    assert restored.provider_id == "vllm"
+    assert restored.provider_options == {}
+    assert "reason=provider_option_unsupported provider=vllm dropped=show_diffusion" in (
+        caplog.text
+    )
 
 
 def test_a_bind_without_provider_options_clears_the_saved_ones(

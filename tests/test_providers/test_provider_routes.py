@@ -10,7 +10,7 @@ from clio_agent.config import LMProviderConfig
 from clio_agent.lm.factory import _connection_kwargs, _resolve_model_name
 from clio_agent.lm.request_builder import build_request_kwargs
 from clio_agent.providers import credentials
-from clio_agent.providers.catalog import get_provider
+from clio_agent.providers.catalog import get_provider, normalize_provider_options
 
 
 @pytest.mark.parametrize(
@@ -201,14 +201,8 @@ def test_credentials_resolve_by_stable_provider_id(provider_id: str, env_name: s
 
 
 def test_provider_options_reject_unknown_keys() -> None:
-    with pytest.raises(ValueError, match="unsupported options"):
-        LMProviderConfig(
-            provider="azure_openai",  # type: ignore[arg-type]
-            provider_id="azure_openai",
-            model="deployment",
-            api_key="test",
-            provider_options={"shell": "no"},
-        )
+    with pytest.raises(ValueError, match="unsupported options for azure_openai: shell"):
+        normalize_provider_options("azure_openai", {"api_version": "2024-10-21", "shell": "no"})
 
 
 # NOTE (model-capabilities brief 9.1 / campaign slice P5):

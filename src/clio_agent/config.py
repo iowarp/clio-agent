@@ -262,8 +262,12 @@ class LMProviderConfig:
             self.provider = cast(Any, preset.provider_kind)
             defaults = _catalog_provider_defaults(preset)
             if self.provider_options:
+                # Stored/inherited options may name another provider's settings
+                # (a config saved under OpenRouter, then run on Codex): drop and log
+                # those rather than refuse the run. PUT /v1/providers/lm validates a
+                # person's request strictly before it reaches here.
                 self.provider_options = _normalize_provider_options(
-                    preset.id, self.provider_options
+                    preset.id, self.provider_options, drop_unknown=True
                 )
         else:
             raise UnknownLMProviderError(
