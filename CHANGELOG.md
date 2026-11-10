@@ -58,6 +58,14 @@ not affected.
 
 ### Added
 
+- `POST /v1/sessions/{sid}/move` with `{"workspace_id": "<target>"}` moves a
+  conversation or user branch to another workspace, keeping its session id, and
+  answers the moved session (v2/v3) after publishing `session.updated`. Its delegated
+  agent sessions and side sessions move with it, along with its tool-output folder.
+  User branches, workspace files, artifacts and workspace grants stay where they are.
+  Same workspace: `200`, nothing changes. Unknown session or workspace: `404
+  not_found`. Agent or side session: `409 move_not_allowed`. Turn or task active:
+  `409 session_has_active_work`. Advertised as `x_clio_session_move`.
 - `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio
   store-check` / `clio reset-store`): which CLIO wrote this machine's store, and moving
   it aside unchanged. Exit status of `store-check`: 0 nothing to do, 3 CLIO is running,

@@ -40,6 +40,7 @@ from clio_agent.gact.routes.session_creation import register_session_creation_ro
 from clio_agent.gact.routes.session_export import register_session_export_routes
 from clio_agent.gact.routes.session_fork import register_session_fork_route
 from clio_agent.gact.routes.session_list import register_session_list_route
+from clio_agent.gact.routes.session_move import register_session_move_route
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.routes.turn_retry import register_turn_retry_routes
 from clio_agent.gact.session_processes import close_session_processes
@@ -245,6 +246,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         app, copy_context=copy_session_context, delete_session=delete_session
     )
     register_session_fork_route(app)
+    register_session_move_route(app)
 
     # ---- Rollback (undo / rewind) -----------------------------------
 

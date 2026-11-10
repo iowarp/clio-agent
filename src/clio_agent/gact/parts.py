@@ -102,6 +102,8 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_queued_messages: bool = False
     # GET /v1/workspaces/{wid}/h5grove/* for the HDF5 file viewer.
     x_clio_hdf5_viewer: bool = False
+    # POST /v1/sessions/{sid}/move: re-home a conversation in another workspace.
+    x_clio_session_move: bool = False
     x_clio_resources: dict[str, Any] = Field(default_factory=dict)
 
 

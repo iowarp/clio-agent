@@ -517,6 +517,12 @@ class UpdateSessionRequest(BaseModel):
     archived: Optional[bool] = None
 
 
+class MoveSessionRequest(BaseModel):
+    """POST /v1/sessions/{sid}/move body: the workspace the conversation moves to."""
+
+    workspace_id: str = Field(min_length=1)
+
+
 class ListSessionsResponse(BaseModel):
     """GET /v1/sessions body.
 
