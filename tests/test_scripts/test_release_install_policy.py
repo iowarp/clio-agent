@@ -232,6 +232,16 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         relocation_proof = script.index("portability proof on the real object")
         assert compile_step < relocation_proof, relative_path
         assert "precompile_runtime.py" in script, relative_path
+        # Lazily imported first-party modules would otherwise compile on every launch,
+        # and the runtime's children must not write bytecode into the install (#1979).
+        for package in ("clio_agent", "clio_kit", "clio_schemas"):
+            assert re.search(rf"--package['\"]?,? ['\"]?{package}\b", script), (
+                relative_path,
+                package,
+            )
+        assert "PYTHONDONTWRITEBYTECODE" in script[script.index("runtime manifest") :], (
+            relative_path
+        )
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path

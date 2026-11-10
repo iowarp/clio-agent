@@ -17,8 +17,8 @@ This stops the backend, removes the `clio` command, and deletes the install fold
 |---|---|
 | `--yes` or `-y` | Skip the confirmation prompt. On Windows, use `-Yes`. |
 | `--purge` | Also delete CLIO's configuration folder, including stored credentials (see the caution below). On macOS and Linux it also removes clio-core's unedited default config in `~/.clio` and CLIO's performance stats there. It also removes the host-wide clio-core records in CLIO's state folder, unless that daemon is still running. On Windows, use `-Purge`. |
-| `--purge-caches` | macOS and Linux: also delete CLIO's cache folder (the document runtime, LibreOffice and tool caches, about 2 GB after first use). CLIO rebuilds it on the next launch. |
-| `--purge-data` | macOS and Linux: also delete CLIO's data and state folders: conversations, workspaces, memory, the clio-core store, service environments and a source install's clone. This cannot be undone. Kept while a clio-core daemon is still running. |
+| `--purge-caches` | Also delete CLIO's cache folder (the document runtime, LibreOffice and tool caches, about 2 GB after first use). CLIO rebuilds it on the next launch. On Windows, use `-PurgeCaches`. |
+| `--purge-data` | Also delete CLIO's data and state folders: conversations, workspaces, memory, the clio-core store, service environments and a source install's clone. This cannot be undone. Kept while a clio-core daemon is still running. On Windows, use `-PurgeData`. |
 | `--desktop` | macOS: also remove **CLIO Desktop.app** and its caches and logs. With `--purge` or `--purge-data`, also its own Application Support folder. |
 
 <Tabs syncKey="os">
@@ -66,7 +66,7 @@ accepts the same options.
 
 Installs made before 0.9.5 keep it in `%LOCALAPPDATA%\clio\uninstall.ps1`.
 
-It accepts the same `-Yes` and `-Purge` options.
+It accepts the same `-Yes`, `-Purge`, `-PurgeCaches` and `-PurgeData` options.
 
 </TabItem>
 </Tabs>

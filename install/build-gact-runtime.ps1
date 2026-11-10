@@ -291,7 +291,7 @@ Invoke-Native -Exe $pyBin -Args @('-I', '-B', '-c', 'from clio_agent.runtime.cod
 # some optional provider paths exceed Windows' legacy path limit.
 Write-Host "[build-gact-runtime] compiling portable startup bytecode"
 $precompiler = Join-Path $checkout 'install/precompile_runtime.py'
-Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot)
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot, '--package', 'clio_agent', '--package', 'clio_kit', '--package', 'clio_schemas')
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
@@ -302,8 +302,13 @@ $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent') } |
-  ConvertTo-Json -Compress
+# env reaches every child the server starts from this runtime: a helper that runs
+# the bundled python without -B would otherwise write .pyc into the install.
+$manifest = @{
+  schema = 1
+  exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent')
+  env = @{ PYTHONDONTWRITEBYTECODE = '1' }
+} | ConvertTo-Json -Compress -Depth 4
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"
 
