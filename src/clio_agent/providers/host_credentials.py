@@ -13,7 +13,13 @@ pointing at a file, or the ``gcloud auth application-default login`` file under
 the gcloud configuration directory. An identity that exists only on a cloud VM's
 metadata server is not detected, since detecting it would mean a network probe.
 AWS: botocore's own credential resolver (environment, shared files, profiles,
-SSO, container and instance roles), which is what LiteLLM uses at call time.
+SSO, container roles), which is what LiteLLM uses at call time, minus its EC2
+instance-metadata step. That step connects to 169.254.169.254:80 whenever no
+local credential exists, and model discovery runs this check on every launch:
+on macOS the connect raises the "Local Network" permission prompt, and on any
+computer it waits for a metadata server that is not there. A computer that signs
+with only an EC2 instance role opts in with ``AWS_EC2_METADATA_DISABLED=false``.
+LiteLLM's own call-time resolution is unchanged.
 """
 
 from __future__ import annotations
@@ -51,12 +57,25 @@ def _google_cloud_present() -> bool:
     return (_gcloud_config_dir() / "application_default_credentials.json").is_file()
 
 
+def _aws_instance_metadata_opted_in() -> bool:
+    """Whether the user explicitly asked for the EC2 instance-metadata lookup."""
+
+    return os.environ.get("AWS_EC2_METADATA_DISABLED", "").strip().lower() == "false"
+
+
 def _aws_present() -> bool:
-    """Whether the AWS credential chain resolves a credential on this computer."""
+    """Whether the AWS credential chain resolves a credential on this computer.
+
+    The instance-metadata provider is dropped unless opted in, so the check
+    never opens a connection to the link-local metadata endpoint.
+    """
 
     import botocore.session  # noqa: PLC0415 - heavy import, only for Bedrock checks
 
-    return botocore.session.Session().get_credentials() is not None
+    resolver = botocore.session.Session().get_component("credential_provider")
+    if not _aws_instance_metadata_opted_in():
+        resolver.remove("iam-role")
+    return resolver.load_credentials() is not None
 
 
 @dataclass(frozen=True)
