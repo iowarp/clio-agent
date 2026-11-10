@@ -525,7 +525,12 @@ macOS backend above.
 - `document_runtime.PNPM_PACKAGES` pins `@pnpm/exe.win32-x64`, so the Windows plan can name it.
 - `install.ps1` resolves the manifest, expected size and plan up front, downloads everything
   concurrently with an inline hash, verifies from that hash, and passes the verified prefetch
-  folder to the setup. `-Unattended` runs the setup silently for CI.
+  folder to the setup. `-Unattended` runs the setup silently for CI. When the plan has
+  `capability waits-for-partial-downloads` (g), it starts the setup as soon as its own exe is
+  verified: the plan files keep downloading as `NAME.part`, renamed to `NAME` once their
+  hash matches, and the setup's prepare waits for them. Measured on a loaded Windows box
+  with the 373 MB LibreOffice MSI from the TDF mirror: download step 97.6 s to 8.1 s, and
+  with gact-tui#1062's uncompressed setup the whole install 397 s to 224 s.
 - `install.sh` hashes the generic app download (deb, rpm) inline, like the macOS archive.
 - `install-matrix.yml` runs `desktop-install` on macOS, Ubuntu and Windows, with the same
   first and second launch smoke and each OS held to its own budget rows.
