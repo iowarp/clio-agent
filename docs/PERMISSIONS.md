@@ -276,6 +276,16 @@ UAC. Packaged installation and explicit **Set up protected execution** can reque
 administrator approval for first-time legacy account creation. Missing or failed
 verification stays degraded; protection is never inferred from account presence.
 
+MXC refuses to launch packaged (MSIX) apps, so CLIO cannot qualify it while it
+runs on Microsoft Store Python, including a virtual environment built on it. Setup
+then reports `codex_mxc_packaged_python` at once instead of a launch failure. CLIO
+and `install.ps1` set `UV_MANAGED_PYTHON=1` on Windows so uv builds environments on
+its own Pythons. For a source checkout already built on Store Python, run
+`uv sync --managed-python`. When Codex no longer accepts the existing legacy
+accounts' setup, it waits for administrator setup instead of starting commands.
+CLIO reports this as `codex_windows_setup_required` and stops repeating that check
+at startup. Explicit **Set up protected execution** requests UAC to refresh the setup.
+
 Startup, installer, button and CLI call the same provisioning engine. Its shared
 runtime-access cache checks directory identity and the root ACL before reuse;
 changed roots are repaired with one traversal for both restricted users. Allowing
