@@ -28,7 +28,11 @@ from clio_agent.runtime.sandbox_codex_probe import ProbeRun
 def test_windows_receipt_identifies_path_aliases_as_the_same_binary(
     monkeypatch: pytest.MonkeyPatch, ordinary: str, extended: str
 ) -> None:
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
     assert mxc._binary_identity_path(Path(ordinary)) == mxc._binary_identity_path(Path(extended))
     assert mxc._binary_identity_path(Path(ordinary.upper())) == mxc._binary_identity_path(
         Path(ordinary)
@@ -43,7 +47,14 @@ def test_native_build_does_not_depend_on_platform_cache(monkeypatch: pytest.Monk
     # registry holds the installed build (26200).
     native = SimpleNamespace(platform_version=(10, 0, 26100))
     monkeypatch.setattr(
-        mxc, "sys", SimpleNamespace(platform="win32", getwindowsversion=lambda: native)
+        mxc,
+        "sys",
+        SimpleNamespace(
+            platform="win32",
+            executable="python.exe",
+            base_prefix="C:\\Python",
+            getwindowsversion=lambda: native,
+        ),
     )
     monkeypatch.setattr(mxc.platform, "version", forbidden)
     monkeypatch.setitem(
@@ -67,7 +78,11 @@ def test_receipt_invalidates_when_windows_revision_changes(
     binary.write_bytes(b"test-only executable identity")
     monkeypatch.setattr(mxc, "_receipt_path", lambda: tmp_path / "receipt.json")
     monkeypatch.setattr(mxc, "_host_build", lambda: "10.0.26100.9550")
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
     mxc.prepare_mxc(str(binary), "0.167.0", probe=lambda binary: True)
     assert mxc.mxc_ready(str(binary), version="0.167.0")
     monkeypatch.setattr(mxc, "_host_build", lambda: "10.0.26100.9551")
@@ -100,7 +115,11 @@ def test_active_mxc_cannot_silently_downgrade_to_elevated(
 
 @pytest.fixture
 def isolated_mxc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32", executable="python.exe"))
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
     monkeypatch.setattr(mxc, "_receipt_path", lambda: tmp_path / "receipt.json")
     monkeypatch.setattr(
         mxc, "_identity", lambda binary, version="": {"binary": binary, "version": version}
