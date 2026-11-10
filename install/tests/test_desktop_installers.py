@@ -493,14 +493,21 @@ def _git_functions() -> str:
 
 
 def _source_git(tmp_path: Path, env: dict[str, str], call: str = "source_git") -> str:
+    # install.sh runs under `set -euo pipefail` and assigns SOURCE_GIT="$(source_git)":
+    # finding no git must answer empty and succeed so the script reaches its guidance.
+    if call == "source_git":
+        call = 'answer="$(source_git)"\nprintf "%s" "$answer"'
     result = subprocess.run(
-        ["/bin/bash", "-c", "OS=darwin\n" + _git_functions() + f"\n{call}"],
+        ["/bin/bash", "-c", "set -euo pipefail\nOS=darwin\n" + _git_functions() + f"\n{call}"],
         text=True,
         capture_output=True,
         timeout=30,
         env={"HOME": str(tmp_path), **env},
     )
-    return result.stdout if call == "source_git" else str(result.returncode)
+    if call.startswith("answer="):
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+    return str(result.returncode)
 
 
 def _executable(path: Path) -> Path:
@@ -527,6 +534,7 @@ def test_source_git_prefers_clio_git_then_a_real_git_then_the_desktops(tmp_path:
     assert _source_git(tmp_path, {"PATH": str(on_path.parent), **apps}) == str(on_path)
     assert _source_git(tmp_path, {"PATH": str(empty), **apps}) == str(bundled)
     assert _source_git(tmp_path, {"PATH": str(empty)}) == ""
+    assert _source_git(tmp_path, {"CLIO_GIT": str(tmp_path / "absent/git")}) == ""
 
 
 @pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
