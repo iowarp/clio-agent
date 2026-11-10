@@ -85,6 +85,13 @@ def resource_route(endpoint: NDPEndpoint, resource: NDPResource) -> tuple[str, d
         raise ValueError("NDP returned an invalid resource address")
     if parsed.scheme in {"https", "http"}:
         return resource.url, {}
+    if parsed.scheme in {"pelican", "osdf", "s3"} and not endpoint.has_api:
+        raise ValueError(
+            f"This NDP resource is published over {parsed.scheme}://, which is read through an "
+            "NDP Endpoint API. The public catalog has none; set NDP_API_URL or configure "
+            "CLIO_STORAGE_NDP_ENDPOINTS with your institution's Endpoint, or choose an "
+            "HTTP(S) resource"
+        )
     if parsed.scheme in {"pelican", "osdf"}:
         if parsed.scheme == "osdf" or parsed.hostname == "osg-htc.org":
             federation = "osdf"

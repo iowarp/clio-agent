@@ -106,6 +106,15 @@ Configure the deployment's actual Endpoints on the CLIO service, for example:
 CLIO_STORAGE_NDP_ENDPOINTS='[{"id":"lab","name":"Lab Endpoint","url":"https://your-endpoint.example/api","server":"local","authenticated":true}]'
 ```
 
+Without that setting CLIO has one built-in catalog, `ndp`. There is no public
+Endpoint API; each Endpoint belongs to an institution. The built-in catalog
+searches the public CKAN catalog at `https://nationaldataplatform.org/catalog`
+and advertises that address, unless `NDP_API_URL` names an Endpoint API to put
+behind it. Without an Endpoint API, HTTP(S) resources read normally, and
+Pelican, OSDF and S3 resources fail with a message naming the setting to add.
+Sources attached under the retired `http://155.101.6.191:8003` default keep
+their identity.
+
 The example address is a placeholder. Use the actual ep-api base URL, including
 any reverse-proxy prefix. `server` selects the existing NDP client's `local` or
 `global` catalog. Endpoint IDs must be unique. `authenticated: true` explicitly
