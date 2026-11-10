@@ -322,6 +322,12 @@ values, never share a daemon (`arc/runtime_ownership.py`):
 
 The rules are the same on Linux, macOS and Windows.
 
+A serving process's release waits for its daemon's clean stop only inside the
+shutdown budget (`gact/shutdown_budget.py` `daemon_stop_ceiling`: the budget left,
+minus 8 s for the kill fallback). A daemon still flushing when that runs out is
+killed by its owner (`stall_kill`, logged) instead of outliving a process that the
+budget watchdog ended.
+
 ---
 
 ## Storage topology

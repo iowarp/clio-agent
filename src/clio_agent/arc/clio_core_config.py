@@ -212,12 +212,24 @@ def pin_loopback_bind(env: MutableMapping[str, str]) -> None:
 # CLIO's own data and is removed with it. An explicit value is respected.
 CORE_STORAGE_ROOT_ENV = "CLIO_STORAGE_ROOT"
 
+# `clio_run runtime start` also serves a web dashboard on fixed port 8080 by default.
+# CLIO never uses it, and a fixed port collides between two homes or users on one
+# machine and with common dev servers, so CLIO's children run without it. The
+# environment wins over any cte.yaml, including ones generated before this; an
+# explicit value is respected.
+CORE_VIZ_ENABLE_ENV = "CLIO_VIZ_ENABLE"
+
 
 def pin_core_child_env(env: MutableMapping[str, str]) -> None:
-    """Prepare ``env`` for a clio-core child: loopback bind and a CLIO-owned storage root."""
+    """Prepare ``env`` for a clio-core child.
+
+    Loopback bind, a CLIO-owned storage root, and no runtime dashboard.
+    """
     pin_loopback_bind(env)
     if not env.get(CORE_STORAGE_ROOT_ENV):
         env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
+    if not env.get(CORE_VIZ_ENABLE_ENV):
+        env[CORE_VIZ_ENABLE_ENV] = "0"
 
 
 # The path suffix identifying a ram data tier (hand-authored or older configs; the

@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_BUDGET_S = 20.0
 #: EX_TEMPFAIL: the stop ended early; the next start recovers what was still running.
 EXIT_BUDGET_EXCEEDED = 75
+#: What the clio-core release still needs once its clean-stop wait gives up: ending the
+#: stop helper (up to 2 s), the daemon kill's grace (5 s) and the port probes.
+DAEMON_KILL_RESERVE_S = 8.0
+_MIN_DAEMON_STOP_WAIT_S = 1.0
+
+
+def daemon_stop_ceiling(app: Any) -> float | None:
+    """How long the clio-core release may wait for a clean daemon stop, or ``None``.
+
+    A daemon still flushing keeps the stop waiting (up to ``arc.liveness.max_wait_s``),
+    which is longer than the budget. Left to the watchdog, the process would end
+    mid-wait and leave the daemon running without its owner. Bounded here, the release
+    kills its own daemon in time, with a logged reason. ``None`` when no budget is armed.
+    """
+
+    deadline = getattr(app.state, "shutdown_deadline", None)
+    if deadline is None:
+        return None
+    left = deadline - time.monotonic() - DAEMON_KILL_RESERVE_S
+    return max(left, _MIN_DAEMON_STOP_WAIT_S)
 
 
 def budget_seconds(env: dict[str, str] | None = None) -> float:
@@ -69,6 +90,7 @@ def begin(app: Any, *, exit_process: Any = os._exit) -> threading.Event | None:
     done = threading.Event()
     state.shutdown_watchdog = done
     budget = budget_seconds()
+    state.shutdown_deadline = time.monotonic() + budget
 
     def watch() -> None:
         if done.wait(budget):
