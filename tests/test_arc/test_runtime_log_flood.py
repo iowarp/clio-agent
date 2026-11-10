@@ -13,6 +13,7 @@ is faked.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -232,14 +233,27 @@ def test_the_pump_process_caps_a_real_flood_and_exits_at_eof(state: Path) -> Non
     )
     sink.close()
     assert writer.wait(timeout=60) == 0
-    pump_proc = psutil.Process(sink.pump_pid)
-    pump_proc.wait(timeout=30)  # EOF -> exit
+    with contextlib.suppress(psutil.NoSuchProcess):  # the spawner may have reaped it
+        psutil.Process(sink.pump_pid).wait(timeout=30)  # EOF -> exit
 
     assert log_path.stat().st_size <= 64 * 1024
     text = log_path.read_text(encoding="utf-8")
     assert "previous line repeated" in text
     assert "distinct 199000" in text
     assert not runtime_log.flood_record_path(state).exists()
+
+
+def test_the_pump_is_reaped_when_it_exits(state: Path) -> None:
+    """The spawner keeps no zombie pump: a server would collect one per daemon spawn."""
+    sink = runtime_log.start_log_pump(
+        state / "clio-runtime.log", 64 * 1024, state, state / "clio-runtime.pid"
+    )
+    assert sink is not None and sink.pump_pid is not None
+    sink.close()  # EOF -> the pump exits
+    deadline = time.monotonic() + 30
+    while psutil.pid_exists(sink.pump_pid):  # a zombie still exists until reaped
+        assert time.monotonic() < deadline, "the exited pump was never reaped"
+        time.sleep(0.05)
 
 
 # ---- spawn wiring ------------------------------------------------------------------
@@ -360,6 +374,17 @@ def test_the_crash_tail_survives_a_rotation_and_stays_bounded(tmp_path: Path) ->
 
 
 # ---- acting on a flood -------------------------------------------------------------
+
+
+def test_the_flood_probe_never_recreates_a_removed_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The monitor thread polls for the process lifetime; its owner may delete the dir."""
+    removed = tmp_path / "removed-state"
+    monkeypatch.setenv("CLIO_RUNTIME_STATE_DIR", str(removed))
+    assert runtime_log_flood.active_flood() == {}
+    runtime_log_flood._poll_once()
+    assert not removed.exists()
 
 
 def test_only_a_fresh_record_for_the_pidfile_daemon_counts(state: Path, daemon: Any) -> None:

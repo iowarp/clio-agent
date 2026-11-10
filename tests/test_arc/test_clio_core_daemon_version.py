@@ -273,6 +273,9 @@ def test_spawn_path_records_version_and_config(monkeypatch, tmp_path):
     class _Proc:
         pid = os.getpid()
 
+        def wait(self, timeout: float | None = None) -> int:  # the log pump is reaped
+            return 0
+
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Proc())
 
     class _Core:

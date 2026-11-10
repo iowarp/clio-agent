@@ -12,6 +12,28 @@ import sys
 from pathlib import Path
 
 
+def active_children() -> list[str]:
+    """Describe this process's remaining descendants for the teardown error.
+
+    An exited but unreaped child (zombie) is listed too: its spawner leaked it.
+    """
+    import psutil  # noqa: PLC0415
+
+    survivors: list[str] = []
+    for child in psutil.Process().children(recursive=True):
+        try:
+            if not child.is_running():
+                continue
+            survivors.append(f"pid={child.pid} status={child.status()} cmd={child.cmdline()}")
+        except psutil.ZombieProcess:
+            survivors.append(f"pid={child.pid} status=zombie (exited, never reaped)")
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as exc:
+            survivors.append(f"pid={child.pid} ({exc.__class__.__name__})")
+    return survivors
+
+
 def main() -> None:
     """Bootstrap the suite's owned runtime, then enter the normal pytest CLI."""
     sys.dont_write_bytecode = True
@@ -35,10 +57,12 @@ def main() -> None:
         # Help/configuration failures may never enter the suite's session-finish hook.
         # Do not delete any remaining state while child custody is unresolved.
         if runtime.root.exists():
-            import psutil  # noqa: PLC0415
-
-            if any(child.is_running() for child in psutil.Process().children(recursive=True)):
-                raise RuntimeError(f"Test children remain active; state retained at {runtime.root}")
+            survivors = active_children()
+            if survivors:
+                raise RuntimeError(
+                    f"Test children remain active; state retained at {runtime.root}: "
+                    + "; ".join(survivors)
+                )
             cleanup_test_runtime(runtime.root, runtime.parent)
 
 
