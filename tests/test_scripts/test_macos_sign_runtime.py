@@ -62,16 +62,30 @@ def test_classifies_signable_code_by_content(data: bytes, kind: str | None) -> N
 
 
 @pytest.mark.parametrize(
-    ("relative", "expected"),
+    ("relative", "v8", "expected"),
     [
-        ("python/bin/python3.14", "gact-runtime.entitlements"),
-        ("python/lib/python3.14/site-packages/iowarp_core/bin/clio_run", "clio-run.entitlements"),
-        ("bin/uv", None),
-        ("python/lib/python3.14/site-packages/pkg/bin/tool", None),
+        ("python/bin/python3.14", False, "gact-runtime.entitlements"),
+        (
+            "python/lib/python3.14/site-packages/iowarp_core/bin/clio_run",
+            False,
+            "clio-run.entitlements",
+        ),
+        ("nodejs_wheel/bin/node", True, "node.entitlements"),
+        ("python/lib/python3.14/site-packages/playwright/driver/node", True, "v8.entitlements"),
+        ("bin/uv", False, None),
+        ("python/lib/python3.14/site-packages/pkg/bin/tool", False, None),
     ],
 )
-def test_entitlements_are_scoped_to_their_role(relative: str, expected: str | None) -> None:
-    assert entitlements_for(PurePosixPath(relative)) == expected
+def test_entitlements_are_scoped_to_their_role(
+    relative: str, v8: bool, expected: str | None
+) -> None:
+    assert entitlements_for(PurePosixPath(relative), v8) == expected
+
+
+def test_finds_v8_across_read_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(macos_sign_runtime, "_SCAN_CHUNK", 8)
+    assert macos_sign_runtime.embeds_v8(io.BytesIO(MH_EXECUTE + b"xxv8::internal::Isolate"))
+    assert not macos_sign_runtime.embeds_v8(io.BytesIO(MH_EXECUTE + b"v8::other"))
 
 
 def _wheel(path: Path, members: dict[str, bytes]) -> None:
@@ -142,6 +156,36 @@ class FakeCodesign:
         if command[0] == "codesign" and target.is_file():
             target.write_bytes(target.read_bytes() + b"SIGNED")
         return subprocess.CompletedProcess(command, 0, "", "")
+
+
+def test_v8_executables_and_wheel_node_get_allow_jit(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    driver = runtime / "python/lib/python3.14/site-packages/playwright/driver/node"
+    driver.parent.mkdir(parents=True)
+    driver.write_bytes(MH_EXECUTE + b"v8::internal::Isolate")
+    (runtime / "runtime.json").write_text("{}")
+    wheels = runtime / "document-wheels"
+    wheels.mkdir()
+    _wheel(wheels / "node-1.0.whl", {"nodejs_wheel/bin/node": MH_EXECUTE + b"v8::internal::"})
+    digest = hashlib.sha256((wheels / "node-1.0.whl").read_bytes()).hexdigest()
+    (wheels / "manifest.json").write_text(
+        json.dumps({"packages": [{"filename": "node-1.0.whl", "sha256": digest}]})
+    )
+    fake = FakeCodesign()
+    sign_runtime(runtime, Signer("Developer ID Application: Test (TEAM123456)", run=fake), 1)
+    roles = {
+        Path(call[-1]).relative_to(tmp_path).as_posix()
+        if Path(call[-1]).is_relative_to(tmp_path)
+        else Path(call[-1]).name: Path(call[-2]).name
+        for call in fake.calls[1:]
+    }
+    assert roles["runtime/" + driver.relative_to(runtime).as_posix()] == "v8.entitlements"
+    assert roles["node"] == "node.entitlements"
+    for name in ("node.entitlements", "v8.entitlements"):
+        granted = macos_sign_runtime._expected_entitlements(
+            name, macos_sign_runtime.ENTITLEMENTS_DIR
+        )
+        assert granted["com.apple.security.cs.allow-jit"] is True
 
 
 def test_signs_inside_out_with_runtime_timestamp_and_role_entitlements(tmp_path: Path) -> None:

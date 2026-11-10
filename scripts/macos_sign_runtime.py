@@ -7,7 +7,8 @@ runtime or a secure timestamp, including members of zip archives such as the
 offline document wheels. ``sign`` signs all of them before ``tauri build``
 copies the runtime into the bundle; ``verify`` proves each one carries the
 release team, the hardened runtime, a timestamp and exactly the entitlements
-its role needs (``install/macos/*.entitlements``).
+its role needs (``install/macos/*.entitlements``). Executables that embed V8
+(found by content) need ``allow-jit``, including Node.js inside a wheel.
 
 Signing a wheel member changes the wheel's bytes, so ``sign`` rewrites the
 wheel's ``RECORD`` and the ``document-wheels/manifest.json`` digest, and keeps
@@ -83,8 +84,25 @@ def macho_kind(stream: IO[bytes]) -> str | None:
     return "executable" if filetype == _MH_EXECUTE else "library"
 
 
-def entitlements_for(relative: PurePosixPath) -> str | None:
-    """Name the entitlements file a runtime executable needs, or None for none."""
+_V8_MARKER = b"v8::internal::"
+_SCAN_CHUNK = 8 << 20
+
+
+def embeds_v8(stream: IO[bytes]) -> bool:
+    """Whether a Mach-O embeds V8, which needs ``allow-jit`` under the hardened runtime."""
+    tail = b""
+    while chunk := stream.read(_SCAN_CHUNK):
+        if _V8_MARKER in tail + chunk:
+            return True
+        tail = chunk[-(len(_V8_MARKER) - 1) :]
+    return False
+
+
+def entitlements_for(relative: PurePosixPath, v8: bool = False) -> str | None:
+    """Name the entitlements file a runtime executable needs, or None for none.
+
+    ``relative`` is the path in the runtime, or the member name inside a wheel.
+    """
     if relative.parent == PurePosixPath("python/bin") and relative.name.startswith("python"):
         # Loads extension modules from uv-managed MCP environments, document
         # environments and the provider overlay, none signed by our team.
@@ -92,7 +110,17 @@ def entitlements_for(relative: PurePosixPath) -> str | None:
     if relative.parent.name == "bin" and relative.parent.parent.name == "iowarp_core":
         # Started with DYLD_LIBRARY_PATH (arc/runtime_spawn.py).
         return "clio-run.entitlements"
+    if relative == PurePosixPath("nodejs_wheel/bin/node"):
+        # The document runtime's Node.js: V8, plus npm native addons such as sharp.
+        return "node.entitlements"
+    if v8:
+        return "v8.entitlements"
     return None
+
+
+def _executable_entitlements(relative: PurePosixPath, path: Path) -> str | None:
+    with path.open("rb") as stream:
+        return entitlements_for(relative, embeds_v8(stream))
 
 
 @dataclass(frozen=True)
@@ -146,7 +174,7 @@ def inventory(runtime: Path) -> Inventory:
             if kind:
                 relative = PurePosixPath(path.relative_to(runtime).as_posix())
                 executable = kind == "executable"
-                entitlements = entitlements_for(relative) if executable else None
+                entitlements = _executable_entitlements(relative, path) if executable else None
                 files.append(Target(path, executable, entitlements))
             elif name.endswith(ARCHIVE_SUFFIXES) and zipfile.is_zipfile(path):
                 with zipfile.ZipFile(path) as archive:
@@ -214,6 +242,12 @@ def _rewrite_record(record: bytes, replaced: dict[str, bytes]) -> bytes:
     return output.getvalue().encode("utf-8")
 
 
+def _member_entitlements(info: zipfile.ZipInfo, kind: str, extracted: Path) -> str | None:
+    if kind != "executable":
+        return None
+    return _executable_entitlements(PurePosixPath(info.filename), extracted)
+
+
 def resign_archive(path: Path, signer: Signer) -> None:
     """Sign an archive's Mach-O members in place and keep a wheel's RECORD valid."""
     replaced: dict[str, bytes] = {}
@@ -224,7 +258,10 @@ def resign_archive(path: Path, signer: Signer) -> None:
             target.parent.mkdir()
             target.write_bytes(archive.read(info))
             target.chmod(0o755 if kind == "executable" else 0o644)
-            signer.sign(target)
+            entitlements = _member_entitlements(info, kind, target)
+            signer.sign(target, entitlements)
+            if entitlements:
+                print(f"  {path.name}!{info.filename}: {entitlements}", flush=True)
             replaced[info.filename] = target.read_bytes()
         rewritten = path.with_name(path.name + ".signing")
         with zipfile.ZipFile(rewritten, "w") as output:
@@ -334,11 +371,12 @@ def verify_runtime(
             problems.extend(result)
     for archive_path in found.archives:
         with zipfile.ZipFile(archive_path) as archive, tempfile.TemporaryDirectory() as temporary:
-            for index, (info, _kind) in enumerate(_archive_members(archive)):
+            for index, (info, kind) in enumerate(_archive_members(archive)):
                 target = Path(temporary) / str(index) / PurePosixPath(info.filename).name
                 target.parent.mkdir()
                 target.write_bytes(archive.read(info))
-                for problem in check_signature(target, team_id, None, run):
+                expected = _member_entitlements(info, kind, target)
+                for problem in check_signature(target, team_id, expected, run):
                     problems.append(f"{archive_path.name}!{info.filename}: {problem}")
     for bundle in found.bundles:
         problems.extend(check_signature(bundle, team_id, None, run))
