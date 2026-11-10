@@ -10,8 +10,22 @@ from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.version_info import build_version_info
 
 
-def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[str, Any]:
-    """Build the explicit 0.3 negotiation response from live server truth."""
+def capabilities_to_v3(
+    app: Any,
+    flags: Any,
+    *,
+    replay_retention: int,
+    a2ui_capabilities: dict[str, Any] | None = None,
+    versions: Any = None,
+    input_degradations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the explicit 0.3 negotiation response from live server truth.
+
+    ``a2ui_capabilities``/``versions`` are the plugin-store-backed inputs; the
+    capabilities route passes them from :mod:`clio_agent.gact.capabilities_snapshot`
+    (with that snapshot's ``input_degradations``) so the projection does no I/O.
+    Omitted, they are computed here.
+    """
 
     raw_flags = flags.model_dump() if hasattr(flags, "model_dump") else dict(flags)
     capabilities: dict[str, Any] = {
@@ -23,7 +37,10 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
         {key: value for key, value in raw_flags.items() if key.startswith("x_clio_")}
     )
     replay_supported = bool(replay_retention > 0 and getattr(app.state, "bus", None) is not None)
-    from clio_agent.gact.a2ui_capabilities import agent_capabilities  # noqa: PLC0415
+    if a2ui_capabilities is None:
+        from clio_agent.gact.a2ui_capabilities import agent_capabilities  # noqa: PLC0415
+
+        a2ui_capabilities = agent_capabilities(app, None)
 
     capabilities.update(
         {
@@ -31,7 +48,7 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
             # The official {"v0.9": {supportedCatalogIds, acceptsInlineCatalogs}}
             # object, server-wide scope (no session id): every INSTALLED catalog,
             # not narrowed to any one session's producible set (S3).
-            "a2ui_capabilities": agent_capabilities(app, None),
+            "a2ui_capabilities": a2ui_capabilities,
             "replay": replay_supported,
             "workspace_display_names": bool(capabilities.get("workspaces")),
             "x_clio_workspace_warmup": True,
@@ -59,6 +76,7 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
                 "recoverable": False,
             }
         )
+    degradations.extend(input_degradations or [])
 
     lm_config = _effective_lm_config(app)
     lm_status = getattr(app.state, "lm_config_status", {})
@@ -102,7 +120,7 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
         "model_catalog": model_catalog,
         # Same offline versions block the v2 model carries (agent, build, python, contract,
         # marketplace pin) -- the desktop's About panel negotiates v3, so it must ride here too.
-        "versions": build_version_info().model_dump(),
+        "versions": (versions if versions is not None else build_version_info()).model_dump(),
         **(
             {
                 "active_model": {

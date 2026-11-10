@@ -62,14 +62,20 @@ def _marketplace_version() -> MarketplaceVersion | None:
     )
 
 
-def build_version_info() -> VersionInfo:
+def build_version_info(*, include_marketplace: bool = True) -> VersionInfo:
     """Build the ``versions`` block for ``GET /v1/capabilities``.
 
     Every field is resolved from already-computed, in-process values
     (:data:`clio_agent.__version__`, :data:`GACT_BACKEND_VERSION`,
     :func:`platform.python_version`, :data:`CONTRACT_VERSION`) plus one local
-    JSON read for the marketplace pin -- no network access, no subprocess, so
-    this stays cheap enough to run on every ``/v1/capabilities`` request.
+    JSON read for the marketplace pin -- no network access, no subprocess. The
+    capabilities route reads it from :mod:`clio_agent.gact.capabilities_snapshot`,
+    which refreshes it off the request path.
+
+    Args:
+        include_marketplace: ``False`` skips the plugin-store read entirely and
+            reports ``marketplace=None`` (the capabilities placeholder used before
+            the first snapshot is collected).
 
     Returns:
         A :class:`~clio_agent.gact.types.VersionInfo`. Never raises: an
@@ -77,11 +83,12 @@ def build_version_info() -> VersionInfo:
         unreadable marketplace source row types as ``marketplace=None``.
     """
 
+    marketplace = None
     try:
-        marketplace = _marketplace_version()
+        if include_marketplace:
+            marketplace = _marketplace_version()
     except Exception:  # noqa: BLE001 - marketplace pin is best-effort, never fatal
         logger.warning("version_info_marketplace_build_failed", exc_info=True)
-        marketplace = None
     return VersionInfo(
         clio_agent=_typed(str(getattr(clio_agent, "__version__", "") or "")),
         backend_build=_typed(str(GACT_BACKEND_VERSION or "")),
