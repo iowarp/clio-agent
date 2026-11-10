@@ -266,6 +266,8 @@ class ReplySplit:
 
     text: str
     calls: list[ToolCallPart] = field(default_factory=list)
+    #: What the model wrote past its call block; never run or shown (invoke protocol).
+    overrun: str = ""
 
 
 def split_reply(
@@ -287,7 +289,9 @@ def split_reply(
         known = callable_tools(available_tools) if available_tools else frozenset()
         found = invoke_calls.parse_invoke_calls(reply, schemas or {}, known)
         if found is not None:
-            return _invoke_split(found, call_prefix)
+            split = _invoke_split(found, call_prefix)
+            split.overrun = found.overrun
+            return split
     fences = list(re.finditer(r"(?m)^[ \t]*(?P<fence>```tool_calls)[ \t]*(?=\r?$)", reply))
     if len(fences) > 1:
         return _invalid_reply(
@@ -591,12 +595,18 @@ class StreamSplitter:
     A call the model also wrote as invoke markup in its prose is not shown: only the
     fenced block runs. ``dropped_invoke_markup`` counts those fragments, for the audit;
     ``dropped_fence_words`` counts lines that were only the fence's corrupted spelling.
+
+    Under the invoke protocol the markup is the call, so ``known`` names the callable
+    tools: from the first ``<invoke>`` of one of them nothing more streams, as at the
+    fence. Text past the block is never the step's (:func:`~clio_agent.lm.engines.
+    invoke_calls.call_block_end`), and is not shown while it is still being written.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, known: Collection[str] = ()) -> None:
         self._buffer = ""
         self._shown = 0
         self._stopped = False
+        self._known = frozenset(known)
         self.dropped_invoke_markup = 0
         self.dropped_fence_words = 0
 
@@ -606,6 +616,10 @@ class StreamSplitter:
             return ""
         self._buffer += chunk
         fence_at = self._buffer.find(FENCE)
+        if (block_at := self._call_block_at()) is not None and (
+            fence_at < 0 or block_at < fence_at
+        ):
+            fence_at = block_at
         if fence_at >= 0:
             self._stopped = True
             safe = self._buffer[:fence_at]
@@ -618,6 +632,23 @@ class StreamSplitter:
         out = safe[self._shown :]
         self._shown = max(self._shown, len(safe))
         return out
+
+    def _call_block_at(self) -> int | None:
+        """Where the call block of a known tool begins in the buffer, if one has begun."""
+        if not self._known:
+            return None
+        from clio_agent.lm.engines.invoke_calls import _FENCED, _INVOKE_OPEN  # noqa: PLC0415
+
+        fences = [m.span() for m in _FENCED.finditer(self._buffer)]
+        for opened in _INVOKE_OPEN.finditer(self._buffer):
+            if any(a <= opened.start() < b for a, b in fences):
+                continue  # an example in a code block
+            if opened["name"] not in self._known:
+                continue  # markup that is data: shown as before, without the markup
+            container = self._buffer.rfind("<function_calls>", 0, opened.start())
+            gap = self._buffer[container + len("<function_calls>") : opened.start()]
+            return container if container >= 0 and not gap.strip() else opened.start()
+        return None
 
 
 def _partial_fence_len(text: str) -> int:

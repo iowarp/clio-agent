@@ -31,6 +31,7 @@ tokens, dead socket) even for the session that owns the call.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from typing import Any
 from clio_agent import conf
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
+
+logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 # Per-session in-flight tracker. Keyed by GACT session id; the ``""`` key holds
@@ -207,6 +210,39 @@ def after_live_chunks(operation: Callable[[], Any]) -> None:
     except TimeoutError:
         boundary.cancel()
         raise
+
+
+def in_live_chunk_order[T](operation: Callable[[], T]) -> T:
+    """Run a transcript append in order with this context's streamed deltas.
+
+    Streamed deltas reach the transcript as callbacks scheduled on the emitter loop,
+    while a part appended from an agent worker thread (a tool call row) would land at
+    once, ahead of deltas still queued: the step's text was cut around its own tool row
+    ("...58.47" | tool | "%, ..."). Off the loop with an emitter bound, the append is
+    scheduled behind the queued deltas and awaited; otherwise it runs here.
+    """
+    emitter = _LIVE_CHUNK_EMITTER.get()
+    if emitter is None:
+        return operation()
+    loop = emitter[0]
+    try:
+        current = asyncio.get_running_loop()
+    except RuntimeError:
+        current = None
+    if current is loop or loop.is_closed() or not loop.is_running():
+        return operation()
+
+    async def append() -> T:
+        return operation()
+
+    boundary = asyncio.run_coroutine_threadsafe(append(), loop)
+    try:
+        return boundary.result(timeout=10)
+    except TimeoutError:
+        if boundary.cancel():
+            logger.warning("live part append ran unordered reason=emitter_loop_unresponsive")
+            return operation()
+        return boundary.result()
 
 
 def note_lm_call_start() -> None:
