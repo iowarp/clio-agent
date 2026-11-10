@@ -194,14 +194,6 @@ def _heuristic_message_tokens(messages: Any) -> int:
     return max(1, total // 4)
 
 
-def _input_excludes_cache(lm: Any) -> bool:
-    """Whether the LM's engine reports input tokens without its cached prompt."""
-    return any(
-        getattr(getattr(lm, attr, None), "input_tokens_exclude_cache", False) is True
-        for attr in ("_engine_spec", "_async_engine_spec")
-    )
-
-
 def _last_prompt_tokens() -> int:
     """The LAST LM call's prompt-token count (0 if it cannot be determined).
 
@@ -236,13 +228,6 @@ def _last_prompt_tokens() -> int:
                         entries = v
                         break
             pt = int(entries[-1].get("prompt_tokens", 0) or 0) if entries else 0
-            if pt > 0 and _input_excludes_cache(lm):
-                # The engine reports Anthropic-style usage that DSPy does not fold for
-                # it: the cached part of the prompt is counted apart (claude_code reads
-                # nearly all of a step's prompt from the cache).
-                details = entries[-1].get("prompt_tokens_details") or {}
-                pt += int(details.get("cached_tokens") or 0)
-                pt += int(details.get("cache_creation_tokens") or 0)
             if pt > 0:
                 return pt
         except Exception:  # noqa: BLE001,S110 - cached prompt-token lookup best-effort; falls through

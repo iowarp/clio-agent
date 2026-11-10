@@ -100,9 +100,6 @@ class AsyncCopilotEngine:
     supports_function_calling = True
     supports_reasoning = True
     tool_protocol = "text_block"
-    #: OpenAI-style usage: the runtime's ``input_tokens`` counts the whole prompt,
-    #: cache writes included (live: 15059 input with 15049 written).
-    input_tokens_exclude_cache = False
 
     def __init__(
         self,
@@ -315,6 +312,9 @@ class _CopilotTurn(_Turn):
     """Folds Copilot session events into lm15 deltas, usage and the final reply."""
 
     label = "github copilot sdk"
+    #: OpenAI-style usage: the runtime's ``input_tokens`` counts the whole prompt,
+    #: cache writes included (live: 15059 input with 15049 written).
+    input_excludes_cache = False
 
     def handle(self, message: Any) -> list[Any]:
         if self.protocol_error:

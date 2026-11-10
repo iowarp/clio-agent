@@ -325,27 +325,19 @@ def test_last_prompt_tokens_fallback_when_tracker_reports_zero() -> None:
     assert n > 0
 
 
-def test_a_cached_prompt_counts_toward_the_window() -> None:
-    """Anthropic-style usage (``claude_code``) counts the cached prompt apart from
-    ``input_tokens``, and DSPy folds it only for providers named ``anthropic``: a step
-    that read 64k tokens from the cache reported ``prompt_tokens`` 4, so automatic
-    compaction never fired (qualification T15).
-    SABOTAGE: drop the ``_input_excludes_cache`` fold and this fails."""
-    from clio_agent.providers.claude_code_engine import ClaudeCodeEngine
-
+def test_a_reported_prompt_count_is_taken_as_the_window() -> None:
+    """The engine reports ``prompt_tokens`` as the whole prompt (claude_code adds the
+    cache read and written at its boundary), so the reading is taken as reported and
+    never folded twice: a step that read 64k tokens from the cache once reported
+    ``prompt_tokens`` 4 and automatic compaction never fired (qualification T15)."""
     usage = {
-        "prompt_tokens": 4,
+        "prompt_tokens": 4 + 63_880 + 500,
         "prompt_tokens_details": {"cached_tokens": 63_880, "cache_creation_tokens": 500},
     }
     tracker = type("FakeTracker", (), {"usage_data": {"claude_code/sonnet": [usage]}})()
-    engine = ClaudeCodeEngine("sonnet")
-    cached_lm = type("FakeLM", (), {"model": "claude_code/sonnet", "_engine_spec": engine})()
-    with dspy.context(lm=cached_lm, usage_tracker=tracker):
+    lm = type("FakeLM", (), {"model": "claude_code/sonnet"})()
+    with dspy.context(lm=lm, usage_tracker=tracker):
         assert app._last_prompt_tokens() == 4 + 63_880 + 500
-    # Usage that already includes the cache (OpenAI-style) is taken as reported.
-    plain_lm = type("FakeLM", (), {"model": "claude_code/sonnet"})()
-    with dspy.context(lm=plain_lm, usage_tracker=tracker):
-        assert app._last_prompt_tokens() == 4
 
 
 def test_per_expert_independent(arc, monkeypatch):
