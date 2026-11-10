@@ -57,6 +57,24 @@ def _pnpm_host_package() -> str:
     return f"@pnpm/exe.{sys.platform}-{architecture}"
 
 
+def installer_plan_files() -> dict[str, str]:
+    """The installer downloads this host's package preparation reads: name -> SHA-256."""
+    from clio_agent.runtime.document_stack.office import asset
+    from clio_agent.runtime.document_stack.process import DocumentError
+
+    files: dict[str, str] = {}
+    try:
+        _url, name, checksum = asset()
+        files[name] = checksum
+    except DocumentError:
+        pass
+    host = _pnpm_host_package()
+    if host in PNPM_PACKAGES:
+        for package in ("pnpm", host):
+            files[pnpm_tarball(package)] = PNPM_PACKAGES[package]
+    return files
+
+
 class DocumentRuntimeError(RuntimeError):
     """The prepared runtime could not be installed or verified."""
 

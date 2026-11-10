@@ -34,12 +34,22 @@ The private pnpm command is checked against its pinned metadata and executed
 version; damaged or mismatched commands receive one bounded repair attempt.
 
 `clio_agent.runtime.document_install` installs the locked packages and renderer.
-The Windows native installer's existing runtime preparation step and both shell
-installers invoke it during installation. DMG/AppImage installations finish this
-managed setup before starting the agent, because those formats have no post-install
-hook. Python packages, Node, pnpm and JavaScript packages download into managed
-storage; they do not enlarge the installer payload. New workspaces reuse the
-package cache. Later preparation repairs missing or damaged packages.
+Both shell installers' source installs, and CI, invoke it during installation.
+Desktop's own install step (the Windows setup's postinstall hook and
+`clio-desktop --prepare-runtime` on macOS/Linux) sets up protected execution, upgrades
+the store and prunes caches, but leaves the managed packages to the first launch
+(`--managed-packages auto`, which defers when `GACT_BUNDLED_RUNTIME_DIR` is set). That
+launch installs them in the background once the agent is ready, exactly as
+DMG/AppImage/.deb installs (which have no per-user install step) always have. A turn
+that needs them meanwhile gets a typed `managed_packages_preparing` answer.
+`--managed-packages now` or `CLIO_INSTALL_MANAGED_PACKAGES=now` restores the full
+install-time preparation. Files the installer prefetched (`CLIO_INSTALL_DOWNLOADS`:
+LibreOffice, pnpm) are linked into `document-runtime/installer-downloads` in the user
+cache so the first launch does not download them again; that folder is removed after
+the first successful preparation. Python packages, Node, pnpm and JavaScript packages
+download into managed storage; they do not enlarge the installer payload. New
+workspaces reuse the package cache. Later preparation repairs missing or damaged
+packages.
 
 `prepare_document` provides three operations on active-workspace files:
 

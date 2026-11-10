@@ -252,6 +252,13 @@ The existing `desktop:` jobs are unchanged, so the Windows job still excludes it
    inconclusive. A `summary` line from the next user install would settle it.
 2. Defer LibreOffice (C) or keep "everything ready at first launch"? C halves slow-link time,
    but the first document task then waits for the 298 MB download.
+   **Answered (2026-11, after RC1's Windows timing on gact-tui#739):** Desktop's install step
+   defers all managed packages (Office, Python and Node document packages) to the first
+   launch's background check. On a loaded Windows box they were ~155 s of a 267 s prepare.
+   The installer's prefetched files are kept, so the first launch extracts rather than
+   downloads. Costs: until that background check finishes, document/Office turns get
+   `managed_packages_preparing`, and quitting during it waits for it (see the 39–43 s
+   first-launch quits above). `--managed-packages now` restores install-time preparation.
 3. Developer ID signing and notarization: once adopted, `aa` keeps signatures intact, but the
    wheelhouse and any first-run native install get harder. This favors A over the wheelhouse.
    Answered below: an `.aar` of the stapled app keeps the ticket.

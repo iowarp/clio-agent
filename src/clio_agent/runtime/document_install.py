@@ -6,9 +6,11 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -20,9 +22,12 @@ from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_window
 from clio_agent.runtime.document_install_receipt import reuse_install_receipt, save_install_receipt
 from clio_agent.runtime.document_runtime import (
     DocumentRuntimeError,
+    _fingerprint,
+    installer_plan_files,
     prepare_document_runtime,
     prepare_office_runtime,
 )
+from clio_agent.runtime.document_stack.office import INSTALLER_DOWNLOADS, installer_download
 from clio_agent.runtime.execution_environment import (
     protect_bundled_runtime,
     publish_environment,
@@ -30,6 +35,73 @@ from clio_agent.runtime.execution_environment import (
 from clio_agent.runtime.github_cli import ensure_github_cli
 from clio_agent.runtime.ripgrep import ensure_ripgrep
 from clio_agent.runtime.tectonic import ensure_tectonic
+
+logger = logging.getLogger(__name__)
+
+#: ``now`` | ``first-launch`` | ``auto``: when the installer step prepares Office and the
+#: Python/Node document packages (``--managed-packages`` overrides it).
+MANAGED_PACKAGES_ENV = "CLIO_INSTALL_MANAGED_PACKAGES"
+REASON_FIRST_LAUNCH = "managed_packages_first_launch"
+_KEPT_DOWNLOADS = "installer-downloads"
+
+
+def _kept_downloads(cache_root: Path | None = None) -> Path:
+    return (cache_root or paths.user_cache_dir() / "document-runtime") / _KEPT_DOWNLOADS
+
+
+def keep_installer_downloads(cache_root: Path | None = None) -> list[str]:
+    """Keep the installer's verified prefetched files for the first launch's preparation.
+
+    The installer deletes its download folder when it exits; the files the first launch
+    will need (LibreOffice, pnpm) are linked, or copied across volumes, into a per-user
+    folder instead of being downloaded a second time. A download still in progress is
+    waited for, as the full preparation would.
+    """
+    if not os.environ.get(INSTALLER_DOWNLOADS):
+        return []
+    kept: list[str] = []
+    folder = _kept_downloads(cache_root)
+    for name, checksum in installer_plan_files().items():
+        source = installer_download(name, checksum)
+        if source is None:
+            continue
+        target = folder / name
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            target.unlink(missing_ok=True)
+            try:
+                os.link(source, target)
+            except OSError:
+                partial = target.with_name(name + ".part")
+                shutil.copyfile(source, partial)
+                partial.replace(target)
+        except OSError as error:
+            logger.warning(
+                "reason=installer_download_not_kept %s: %s; the first launch downloads it",
+                name,
+                error,
+            )
+            continue
+        kept.append(name)
+    return kept
+
+
+@contextmanager
+def _using_kept_downloads(cache_root: Path | None) -> Iterator[None]:
+    """Let a preparation without installer downloads use the ones an install kept.
+
+    The kept folder is removed once the preparation has succeeded.
+    """
+    folder = _kept_downloads(cache_root)
+    if os.environ.get(INSTALLER_DOWNLOADS) or not folder.is_dir():
+        yield
+        return
+    os.environ[INSTALLER_DOWNLOADS] = str(folder)
+    try:
+        yield
+    finally:
+        os.environ.pop(INSTALLER_DOWNLOADS, None)
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 def prepare_protected_execution(
@@ -94,7 +166,7 @@ def prepare_managed_packages(
         report("Tectonic is ready.")
         return tectonic
 
-    with package_preparation.preparing(cache_root):
+    with _using_kept_downloads(cache_root), package_preparation.preparing(cache_root):
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-install") as workers:
             office_job = workers.submit(prepare_office)
             github_job = workers.submit(prepare_github)
@@ -163,6 +235,54 @@ def install_document_runtime(
     if progress is not None:
         progress("All managed runtime packages are installed and verified.")
     return result
+
+
+def defer_managed_packages(
+    *,
+    setup_protected_execution: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """The install step without the managed packages, which the first launch installs.
+
+    Desktop's first launch checks the packages after the agent is ready; finding no
+    receipt, it installs them in the background while turns that need them get a typed
+    ``managed_packages_preparing`` answer (as on .dmg/.deb installs). Protected
+    execution is still set up here, where administrator approval can be asked for.
+    """
+    protect_bundled_runtime()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-keep") as keeping:
+        kept = keeping.submit(keep_installer_downloads)
+        protected = prepare_protected_execution(
+            progress=progress, setup_protected_execution=setup_protected_execution
+        )
+        kept_names = kept.result()
+    if progress is not None:
+        progress(
+            "Office and the Python/Node.js document packages are installed on first launch, "
+            f"in the background (reason={REASON_FIRST_LAUNCH})."
+        )
+    return {
+        "status": "deferred",
+        "runtime_id": _fingerprint(),
+        "native_tools": {
+            "soffice": {"status": "deferred", "reason": REASON_FIRST_LAUNCH},
+            **protected,
+        },
+        "kept_downloads": kept_names,
+    }
+
+
+def _managed_packages_now(choice: str, *, reuse_installed: bool) -> bool:
+    """Whether this installer step prepares the managed packages itself.
+
+    ``auto`` defers them only for Desktop's own install step (its bundled runtime, not
+    a per-launch check): a source install or a CI preparation still prepares them now.
+    """
+    if reuse_installed or choice == "now":
+        return True
+    if choice == "first-launch":
+        return False
+    return not os.environ.get("GACT_BUNDLED_RUNTIME_DIR")
 
 
 def prune_after_install() -> dict[str, Any]:
@@ -254,7 +374,20 @@ def _main() -> None:
         action="store_true",
         help="Do not run `clio-agent migrate` here (the caller runs it as its own step).",
     )
+    parser.add_argument(
+        "--managed-packages",
+        choices=("auto", "now", "first-launch"),
+        default=None,
+        help=(
+            "When Office and the Python/Node.js document packages are installed: now, or on "
+            "first launch in the background. auto (default; also "
+            f"{MANAGED_PACKAGES_ENV}) defers them only for Desktop's install step."
+        ),
+    )
     args = parser.parse_args()
+    choice = args.managed_packages or os.environ.get(MANAGED_PACKAGES_ENV, "auto")
+    if choice not in {"auto", "now", "first-launch"}:
+        parser.error(f"{MANAGED_PACKAGES_ENV} must be auto, now or first-launch, not {choice!r}")
     if args.protected_execution_only:
         tools = prepare_protected_execution(
             progress=lambda message: print(message, flush=True),
@@ -280,13 +413,20 @@ def _main() -> None:
     # native call is handed to a persistent native worker (arc/native_threads.py).
     # Leaving this block waits for the packages too, so neither outlives the other.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-packages") as installing:
-        installation = installing.submit(
-            install_document_runtime,
-            args.workspace,
-            progress=emit,
-            setup_protected_execution=args.setup_protected_execution,
-            reuse_installed=args.reuse_installed,
-        )
+        if _managed_packages_now(choice, reuse_installed=args.reuse_installed):
+            installation = installing.submit(
+                install_document_runtime,
+                args.workspace,
+                progress=emit,
+                setup_protected_execution=args.setup_protected_execution,
+                reuse_installed=args.reuse_installed,
+            )
+        else:
+            installation = installing.submit(
+                defer_managed_packages,
+                progress=emit,
+                setup_protected_execution=args.setup_protected_execution,
+            )
         migrations = _run_store_migrations(args, emit)
         result = installation.result()
     summary = {
