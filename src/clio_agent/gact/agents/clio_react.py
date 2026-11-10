@@ -591,13 +591,18 @@ class _Loop:
             collected_observation,
         )
         from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
+        from clio_agent.tools.tool_observation import call_identity_scope  # noqa: PLC0415
 
         slot: dict[str, str] = {}
         carried: list[Any] = []
         slot_token = MODEL_CALL_SLOT.set(slot)
         carried_token = INLINE_COLLECTION.set(carried)  # task outcomes the reply carries
         try:
-            with injections.collect() as told, native_gate(tool, call.name, call.input) as no:
+            with (
+                call_identity_scope(),
+                injections.collect() as told,
+                native_gate(tool, call.name, call.input) as no,
+            ):
                 outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
         finally:
             INLINE_COLLECTION.reset(carried_token)

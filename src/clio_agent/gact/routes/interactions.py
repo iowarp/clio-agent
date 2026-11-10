@@ -339,6 +339,12 @@ def _question_from_interaction_id(app: FastAPI, identity: str) -> UserQuestion |
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
     """Render a common Question through the shipped interaction contract."""
     bundle = question.metadata.get("question_bundle")
+    invocation = str(question.metadata.get("invocation_id") or "")
+    if not invocation and question.source == "ask_user":
+        # ask_user records its Question under the asking tool call's id, which links
+        # the waiting call to this interaction.
+        task = app.state.task_history.task_snapshot(question.task_handle or question.id)
+        invocation = str(getattr(task, "invocation_id", "") or "")
     return PendingInteraction(
         id="question:" + question.id,
         kind="question",
@@ -355,7 +361,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         source=PendingInteractionSource(
             protocol="mcp" if question.source.startswith("mcp") else "native",
             tool_name=question.source,
-            invocation_id=str(question.metadata.get("invocation_id") or ""),
+            invocation_id=invocation,
             surface_id=str(question.metadata.get("a2ui_surface_id") or ""),
         ),
         created_at=question.created_at,
