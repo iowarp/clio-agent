@@ -5,8 +5,11 @@ is to the agent: harness data the agent was given (an injection, shown with a sy
 Its ``text`` is exactly the summary text the model gets (ending with one line that names
 the recall tool: the reminder ``clio.reminder.summarization``), ``trigger`` says who asked
 (``auto`` | ``manual``), ``compaction_id`` correlates it with the ``compaction.*`` events,
-and its metadata keeps the replaced clio-core ids (``derived_from``) and the transcript
-rows it stands in for in a summarizer prompt (``compacted_message_ids``).
+and its metadata keeps the replaced clio-core ids (``derived_from``), the transcript
+rows it stands in for in a summarizer prompt (``compacted_message_ids``), the rows the
+agent still sees verbatim beside it (``kept_message_ids``) and, when the agent recorded
+one, the system prompt in force (``system_prompt``). The v3 wire forwards these as the
+injection block's ``metadata`` (:data:`WIRE_METADATA_KEYS`).
 
 A compaction that fails is recorded where it happened too, as a ``notice`` part
 (``source: "compaction_failed"``, plain-language ``text``, the error ``code``,
@@ -38,6 +41,7 @@ __all__ = [
     "COMPACTION_SKIPPED_SOURCE",
     "RECALL_TOOL",
     "SUMMARIZATION_SOURCE",
+    "WIRE_METADATA_KEYS",
     "SummarizationRecord",
     "as_summarization",
     "failure_notice_part",
@@ -59,6 +63,8 @@ COMPACTION_FAILED_SOURCE = "compaction_failed"
 COMPACTION_SKIPPED_SOURCE = "compaction_skipped"
 #: The agent-callable tool that returns what a summary replaced.
 RECALL_TOOL = "recall_context"
+#: The record metadata the v3 wire carries (clio-schemas ``InjectionMetadata``).
+WIRE_METADATA_KEYS = ("derived_from", "compacted_message_ids", "kept_message_ids", "system_prompt")
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,8 @@ def summarization_part(
     compaction_id: str,
     derived_from: Sequence[str],
     compacted_message_ids: Sequence[str],
+    kept_message_ids: Sequence[str] = (),
+    system_prompt: str = "",
     agent_id: str = "",
 ) -> Part:
     """Build the record part for one compaction (``text``: what the model gets)."""
@@ -116,6 +124,9 @@ def summarization_part(
     part.compaction_id = compaction_id
     part.metadata["derived_from"] = list(derived_from)
     part.metadata["compacted_message_ids"] = list(compacted_message_ids)
+    part.metadata["kept_message_ids"] = list(kept_message_ids)
+    if system_prompt:
+        part.metadata["system_prompt"] = system_prompt
     return part
 
 
@@ -225,8 +236,11 @@ def legacy_compaction_block(part: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(f"not a compaction part: {part.get('type')!r}")
     projected = {k: v for k, v in part.items() if k not in {"summary", "auto"}}
     projected.pop("compacted_message_ids", None)
+    metadata = dict(part.get("metadata") or {})
+    metadata.setdefault("compacted_message_ids", list(record.compacted_message_ids))
     return {
         **projected,
+        "metadata": metadata,
         "type": "injection",
         "source": SUMMARIZATION_SOURCE,
         "text": record.text,
