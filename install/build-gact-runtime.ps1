@@ -325,6 +325,9 @@ if (Test-Path $scriptsDir) {
 if (Test-Path $sitePkgs) {
   & $pyBin -I -B (Join-Path $PSScriptRoot 'stage_playwright_node.py') $sitePkgs
   if ($LASTEXITCODE -ne 0) { throw 'build-gact-runtime: staging Playwright''s Node.js failed' }
+  # pip, C/Cython build sources and dist-info markers, the same on every OS.
+  & $pyBin -I -B (Join-Path $PSScriptRoot 'prune_runtime.py') $sitePkgs
+  if ($LASTEXITCODE -ne 0) { throw 'build-gact-runtime: pruning unread runtime files failed' }
 }
 if (Test-Path $sitePkgs) {
   $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'

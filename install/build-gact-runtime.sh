@@ -226,6 +226,8 @@ if [ -d "$SITE_PKGS" ]; then
   # Playwright's Node.js (122 MB raw, 28 MB of the macOS download) is fetched, hash-checked,
   # the first time the agent opens a browser (gact/browser/driver.py); same step on Windows.
   "$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/stage_playwright_node.py" "$SITE_PKGS"
+  # pip, C/Cython build sources and dist-info markers, the same on every OS.
+  "$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/prune_runtime.py" "$SITE_PKGS"
   find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) -delete 2>/dev/null || true
   remaining="$(find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) | head -20)"
   if [ -n "$remaining" ]; then

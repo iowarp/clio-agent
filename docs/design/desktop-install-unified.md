@@ -470,6 +470,30 @@ Office).
   Expected: 28 MB less to download (about 1.5 s at the 18 MB/s of the 71.1 s run, 2.6 s
   on the 10.7 MB/s A/B mirror) and 122 MB less to unpack.
 
+- **(e4) Fewer runtime files (gact-tui#739, option D of the runtime file-count brief).**
+  Windows Defender scans each file the unpack writes, at about 380 files/s on RC1's box,
+  so file count rather than bytes sets the Windows unpack time. `install/prune_runtime.py`
+  runs from both `build-gact-runtime.sh` and `.ps1` and deletes files no run of CLIO reads:
+  - pip: every installer uses the bundled `uv`, and `python -m venv` still seeds pip from
+    `ensurepip`;
+  - C, C++ and Cython sources and headers, except cffi's and iowarp_core's;
+  - the `INSTALLER` and `REQUESTED` markers in each `.dist-info`;
+  - `globus_sdk.testing`.
+
+  `RECORD`, `METADATA`, `direct_url.json`, license files and type stubs stay. Measured on
+  a clone of the 0.9.5.1 macOS runtime, it removed 1,931 of 30,070 files, 1,448 of them
+  beyond what the existing prune already drops, in 0.8 s. The Windows interpreter seeds 481
+  pip files instead of 447. Live checks on the pruned clone:
+  - 33 touched or heavy packages imported;
+  - `importlib.metadata` still lists 223 distributions;
+  - `uv pip install --reinstall-package` upgraded lxml and markupsafe in place, although
+    their `RECORD`s list deleted files;
+  - `uv venv` and `python -m venv` both worked;
+  - GACT reached `/v1/health` ready.
+
+  Expected: about 1,450 fewer files to scan, roughly 4 s off RC1's Windows unpack.
+  Option D is the only part of that brief that needed no user decision.
+
 ## Side findings
 
 - During `--prepare-runtime` with an isolated `HOME`, the store migration reported
