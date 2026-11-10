@@ -148,7 +148,8 @@ def test_mcp_servers_get_the_bundled_git_on_path(bundled: tuple[Path, Path]) -> 
     git, _ = bundled
     env = stdio_environment({}, command="uvx", args=["git+https://example.invalid/x"])
     assert env["PATH"].split(os.pathsep)[0] == str(git.parent)
-    assert "GIT_EXEC_PATH" not in env
+    # Blanked, not absent: the process's own GIT_EXEC_PATH must not survive a merge.
+    assert env["GIT_EXEC_PATH"] == ""
 
 
 @posix_only
