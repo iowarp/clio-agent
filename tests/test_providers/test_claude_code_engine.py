@@ -243,7 +243,12 @@ def test_the_request_crosses_as_text_with_the_system_on_the_sdk_option(pool: Fak
     assert parts[1] == TextPart(text="Looking.")
     assert (parts[2].name, parts[2].input) == ("search", {"q": "x"})
     usage = response.usage
-    assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (20, 300, 12)
+    # lm15's convention: input is the whole prompt, the cache counts are parts of it.
+    assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (
+        20 + 300 + 12,
+        300,
+        12,
+    )
 
 
 def test_images_and_documents_ride_as_native_blocks(pool: FakePool) -> None:

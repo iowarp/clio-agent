@@ -76,5 +76,6 @@ async def test_the_engine_usage_keeps_cache_reads_and_writes_apart(
     fake.install(monkeypatch, reply=lambda: fake.answer("Hello", usage=usage))
     response = await fake.drive(fake.request())
 
-    assert (response.usage.input_tokens, response.usage.output_tokens) == (120, 45)
+    # Anthropic's input leaves the cache out; the engine reports the whole prompt.
+    assert (response.usage.input_tokens, response.usage.output_tokens) == (120 + 10 + 30, 45)
     assert (response.usage.cache_read_tokens, response.usage.cache_write_tokens) == (10, 30)
