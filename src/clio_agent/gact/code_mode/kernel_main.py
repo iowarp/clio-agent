@@ -21,7 +21,13 @@ from the stubs; each plugin binding is its source run in a module that holds ``t
 
 At start the kernel keeps a duplicate of its stdout for the protocol; each script's
 file descriptors 1 and 2 point at a temporary file, so its prints and those of its
-subprocesses are captured and never mix with the protocol. Variables and imports
+subprocesses are captured and never mix with the protocol. It also reads the protocol
+from a private duplicate of its stdin and points descriptor 0 (and the process's
+standard input handle) at the null device: on Windows a DLL that sets up its own C
+runtime (numpy's OpenBLAS) queries the standard handles while it loads, and a query on
+a pipe with a read pending blocks until that read ends, so ``import numpy`` hung while
+the protocol reader waited on stdin. A script's ``input()`` reads nothing rather than
+the protocol, and its subprocesses inherit the null device. Variables and imports
 persist between scripts in one namespace. A script may use top-level ``await``; the
 value of a final expression is returned like a notebook cell's.
 """
@@ -337,13 +343,16 @@ def main() -> None:
     output_limit = int(sys.argv[1]) if len(sys.argv) > 1 else OUTPUT_LIMIT
     protocol = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8")
     host = _Host(protocol)
-    sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    requests = os.fdopen(os.dup(0), "r", encoding="utf-8")
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)  # also resets the process's standard input handle on Windows
+    os.close(null)
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
     sys.stderr.reconfigure(line_buffering=True)  # type: ignore[union-attr]
     work: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
     def read() -> None:
-        for line in sys.stdin:
+        for line in requests:
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
