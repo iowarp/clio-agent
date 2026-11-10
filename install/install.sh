@@ -182,7 +182,11 @@ finish_run() {
 
 desktop_cleanup() {
   local code=$? pid
-  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS; do kill "$pid" 2>/dev/null || true; done
+  # A job is a subshell; its curl would outlive it and keep writing into the scratch.
+  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
   if [ -n "$DESKTOP_SCRATCH" ]; then
     [ ! -d "$DESKTOP_SCRATCH/mount" ] || hdiutil detach "$DESKTOP_SCRATCH/mount" -quiet 2>/dev/null || true
     rm -rf "$DESKTOP_SCRATCH"

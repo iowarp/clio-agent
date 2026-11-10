@@ -132,9 +132,12 @@ def test_the_macos_desktop_install_runs_on_installer_pull_requests() -> None:
     job = workflow["jobs"]["desktop-install"]
     assert "if" not in job and job["runs-on"].startswith("macos")
     script = "\n".join(step.get("run", "") for step in job["steps"])
-    assert "install/install.sh --desktop --progress json" in script
+    assert 'install/install.sh --desktop "${package[@]}"' in script
+    assert "--progress json" in script
     assert 'CLIO_DESKTOP_DIR="$RUNNER_TEMP/' in script
-    assert "--install-events" in script and "--job desktop-install" in script
+    assert "--install-events" in script and "job=desktop-install" in script
+    # A dispatch can install a signed build's Apple archive instead of the release.
+    assert "--desktop-package" in script and "source=Notarized Developer ID" in script
 
 
 def test_a_step_within_its_budget_passes_and_an_unbudgeted_step_is_report_only() -> None:

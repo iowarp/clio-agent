@@ -712,8 +712,10 @@ jobs:
             fi
           fi
           # install.sh fetches the first launch's downloads (LibreOffice, pnpm)
-          # alongside the app; SHA256SUMS below authenticates the plan.
-          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" != "Windows" ]; then
+          # alongside the app; SHA256SUMS below authenticates the plan. A rebuild
+          # of a tag older than the plan script has none to publish.
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" != "Windows" ] \
+             && [ -f scripts/release_install_plan.py ]; then
             python3 scripts/release_install_plan.py --target "${{ matrix.target }}" \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
           fi

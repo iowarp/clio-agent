@@ -278,6 +278,16 @@ function Install-ClioDesktop {
     if (-not [Environment]::Is64BitOperatingSystem) { Die 'CLIO Desktop requires 64-bit Windows.' }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $repo = 'https://github.com/iowarp/clio-agent'
+    # A throw (a failed download or lookup) ends the run with a summary, as Die does.
+    try {
+        Install-ClioDesktopRelease $repo
+    } catch {
+        Complete-ClioRun $false $_.Exception.Message
+        throw
+    }
+}
+
+function Install-ClioDesktopRelease([string]$repo) {
     Start-ClioStep 'resolve'
     if ($OptVersion) {
         $tag = Get-ClioReleaseTag $OptVersion

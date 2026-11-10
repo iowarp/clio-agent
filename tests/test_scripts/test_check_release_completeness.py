@@ -94,13 +94,30 @@ _INSTALLER_LABELS: set[str] = {
     "clio launcher (PowerShell)",
 }
 
+# The fast desktop install's assets (#1985): the macOS Apple archive and the
+# first-launch download plans. Every release before it lacks them.
+_INSTALL_SPEED_ASSETS: list[str] = [
+    "CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar",
+    "install-plan.aarch64-apple-darwin.bundled.txt",
+    "install-plan.x86_64-unknown-linux-gnu.bundled.txt",
+    "install-plan.aarch64-unknown-linux-gnu.bundled.txt",
+]
+
+_INSTALL_SPEED_LABELS: set[str] = {
+    "bundled macOS Apple archive (aarch64)",
+    "install plan (aarch64 macOS)",
+    "install plan (x86_64 Linux)",
+    "install plan (aarch64 Linux)",
+}
+
 # The complete listing = v0.5.17 plus the one asset it dropped, plus the
-# signing-era and installer assets its fixture lacks.
+# signing-era, installer and install-speed assets its fixture lacks.
 _COMPLETE_ASSETS: list[str] = [
     *_V0517_ASSETS,
     "CLIO.Desktop_0.7.1_aarch64-bundled.dmg",
     *_SIGNING_ASSETS,
     *_INSTALLER_ASSETS,
+    *_INSTALL_SPEED_ASSETS,
 ]
 
 # The real, complete v0.9.4.18 release listing (`gh release view v0.9.4.18
@@ -174,7 +191,13 @@ def test_v0517_flags_only_the_missing_bundled_dmg_and_predates_signing() -> None
     none of those)."""
     missing = find_missing(_V0517_ASSETS)
     labels = {label for label, _ in missing}
-    assert labels == {"bundled dmg (aarch64 macOS)"} | _SIGNING_LABELS | _INSTALLER_LABELS
+    assert (
+        labels
+        == {"bundled dmg (aarch64 macOS)"}
+        | _SIGNING_LABELS
+        | _INSTALLER_LABELS
+        | _INSTALL_SPEED_LABELS
+    )
 
 
 def test_complete_listing_has_no_gaps() -> None:
@@ -211,8 +234,19 @@ def test_extra_assets_are_ignored() -> None:
 
 
 def test_real_v09418_release_passes_the_publish_gate() -> None:
-    """A real published release's asset list satisfies the gate."""
-    assert find_missing(_V09418_ASSETS) == []
+    """A real published release's asset list, plus the assets added after it, satisfies the gate."""
+    assert find_missing(_V09418_ASSETS + _INSTALL_SPEED_ASSETS) == []
+    assert {label for label, _ in find_missing(_V09418_ASSETS)} == _INSTALL_SPEED_LABELS
+
+
+def test_each_install_speed_asset_is_individually_required() -> None:
+    """Dropping the Apple archive or a plan names exactly that asset."""
+    for dropped in _INSTALL_SPEED_ASSETS:
+        listing = [n for n in _V09418_ASSETS + _INSTALL_SPEED_ASSETS if n != dropped]
+        missing = find_missing(listing)
+        assert len(missing) == 1, (dropped, missing)
+        assert missing[0][0] in _INSTALL_SPEED_LABELS
+        assert re.search(missing[0][1], dropped)
 
 
 def test_each_installer_asset_is_individually_required() -> None:
@@ -222,7 +256,7 @@ def test_each_installer_asset_is_individually_required() -> None:
     pathway, so a release missing one must stay a draft.
     """
     for dropped in _INSTALLER_ASSETS:
-        listing = [name for name in _V09418_ASSETS if name != dropped]
+        listing = [name for name in _V09418_ASSETS + _INSTALL_SPEED_ASSETS if name != dropped]
         missing = find_missing(listing)
         assert len(missing) == 1, (dropped, missing)
         label, pattern = missing[0]
@@ -236,7 +270,11 @@ def test_release_without_updater_manifests_fails_the_gate() -> None:
     Publishing (and so becoming ``latest``) in this state is exactly what made
     ``releases/latest/download/latest-lite.json`` 404; the gate must name both.
     """
-    listing = [n for n in _V09418_ASSETS if n not in {"latest.json", "latest-lite.json"}]
+    listing = [
+        n
+        for n in _V09418_ASSETS + _INSTALL_SPEED_ASSETS
+        if n not in {"latest.json", "latest-lite.json"}
+    ]
     labels = {label for label, _ in find_missing(listing)}
     assert labels == {"Tauri update manifest (bundled)", "Tauri update manifest (lite)"}
 
@@ -270,7 +308,7 @@ def test_beta_macos_exception_removes_only_desktop_requirements(tmp_path: Path) 
     ]
     assets_file = tmp_path / "assets.txt"
     assets_file.write_text("\n".join(listing))
-    assert len(find_missing(listing)) == 9
+    assert len(find_missing(listing)) == len(MACOS_DESKTOP_LABELS)
     assert main(["--assets-file", str(assets_file)]) == 1
     assert (
         main(

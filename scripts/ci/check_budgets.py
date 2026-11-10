@@ -68,7 +68,7 @@ def install_event_rows(events: list[dict[str, Any]], os_name: str) -> list[dict[
         {
             "name": prefix + event["step"],
             "os": os_name,
-            "seconds": event["seconds"],
+            "seconds": event.get("seconds", 0),
             "outcome": "ok",
         }
         for event in events
