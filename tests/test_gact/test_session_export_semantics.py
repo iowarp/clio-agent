@@ -636,6 +636,151 @@ def test_full_never_follows_a_workspace_junction(
         link.rmdir() if os.name == "nt" else link.unlink()
 
 
+def _full_archive(app: FastAPI, sid: str) -> tuple[list[str], dict[str, Any]]:
+    transcript = build_transcript(app, sid)
+    path = build_archive(app, transcript, "full")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return archive.namelist(), json.loads(archive.read("manifest.json"))
+    finally:
+        path.unlink()
+
+
+def test_full_declares_unreadable_workspace_paths_instead_of_failing(
+    export_app: tuple[FastAPI, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    app, sid, wid = export_app
+    root = Path(app.state.workspaces.get(wid).root_path).resolve()
+    (root / "kept.txt").write_text("kept", encoding="utf-8")
+    (root / "locked.txt").write_text("locked", encoding="utf-8")
+    (root / "deep").mkdir()
+    (root / "deep" / "hidden.txt").write_text("hidden", encoding="utf-8")
+    transcript = build_transcript(app, sid)
+
+    real_open, real_scandir = Path.open, os.scandir
+
+    def failing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name == "locked.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    def failing_scandir(path: Any = ".") -> Any:
+        if Path(os.fspath(path)).name == "deep":
+            # The shape Windows raises for a path beyond MAX_PATH (WinError 3).
+            raise FileNotFoundError(2, "The system cannot find the path specified", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    monkeypatch.setattr(os, "scandir", failing_scandir)
+    path = build_archive(app, transcript, "full")
+    monkeypatch.undo()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            manifest = json.loads(archive.read("manifest.json"))
+    finally:
+        path.unlink()
+
+    assert f"workspace/{wid}/0/kept.txt" in names
+    assert not any(name.endswith(("locked.txt", "hidden.txt")) for name in names)
+    by_reason = {row["reason"]: row for row in manifest["omissions"] if "path" in row}
+    assert Path(by_reason["unreadable_file"]["path"]) == root / "locked.txt"
+    assert by_reason["unreadable_file"]["error"].startswith("PermissionError")
+    assert Path(by_reason["unreadable_directory"]["path"]) == root / "deep"
+    assert "\\\\?\\" not in json.dumps(manifest["omissions"])
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="MAX_PATH is a win32 limit")
+def test_full_reads_a_workspace_path_beyond_windows_max_path(
+    export_app: tuple[FastAPI, str, str],
+) -> None:
+    from clio_agent.platform_paths import rmtree_extended, win_extended_path
+
+    app, sid, wid = export_app
+    root = Path(app.state.workspaces.get(wid).root_path)
+    deep = root / ("d" * 120) / ("e" * 120)
+    target = deep / "long.txt"
+    assert len(str(target)) > 260
+    Path(win_extended_path(deep)).mkdir(parents=True)
+    Path(win_extended_path(target)).write_bytes(b"far")
+    try:
+        names, manifest = _full_archive(app, sid)
+    finally:
+        rmtree_extended(root / ("d" * 120))
+    expected = f"workspace/{wid}/0/{'d' * 120}/{'e' * 120}/long.txt"
+    assert expected in names
+    assert not [row for row in manifest["omissions"] if row["reason"].startswith("unreadable")]
+
+
+def test_full_declares_a_file_that_changes_while_it_is_read(
+    export_app: tuple[FastAPI, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    app, sid, wid = export_app
+    root = Path(app.state.workspaces.get(wid).root_path).resolve()
+    live = root / "live.log"
+    live.write_text("first", encoding="utf-8")
+    transcript = build_transcript(app, sid)
+    real_open = Path.open
+
+    class GrowingStream:
+        def __init__(self, stream: Any) -> None:
+            self.stream = stream
+            self.grown = False
+
+        def __enter__(self) -> GrowingStream:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.stream.close()
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self.stream.read(size)
+            if chunk and not self.grown:
+                self.grown = True
+                with real_open(live, "ab") as writer:
+                    writer.write(b" appended")
+                stamp = live.stat().st_mtime_ns + 5_000_000_000
+                os.utime(live, ns=(stamp, stamp))
+            return chunk
+
+    def growing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        stream = real_open(self, *args, **kwargs)
+        return GrowingStream(stream) if self.name == "live.log" else stream
+
+    monkeypatch.setattr(Path, "open", growing_open)
+    path = build_archive(app, transcript, "full")
+    monkeypatch.undo()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            manifest = json.loads(archive.read("manifest.json"))
+    finally:
+        path.unlink()
+    assert not any(name.endswith("live.log") for name in names)
+    assert {"path": str(live), "reason": "changed_during_export"} in manifest["omissions"]
+
+
+def test_full_excludes_clio_service_storage(export_app: tuple[FastAPI, str, str]) -> None:
+    app, sid, wid = export_app
+    root = Path(app.state.workspaces.get(wid).root_path).resolve()
+    (root / ".clio-child-cache").mkdir()
+    (root / ".clio-child-cache" / "token.json").write_text("{}", encoding="utf-8")
+    (root / ".github").mkdir()
+    (root / ".github" / "ci.yml").write_text("on: push", encoding="utf-8")
+    names, manifest = _full_archive(app, sid)
+    assert not any(".clio-child-cache" in name for name in names)
+    assert f"workspace/{wid}/0/.github/ci.yml" in names
+    assert ".clio-*" in manifest["excluded_directories"]
+    assert {
+        "path": str(root / ".clio-child-cache"),
+        "reason": "excluded_directory",
+    } in manifest["omissions"]
+
+
 def test_tool_output_store_never_follows_a_junction(
     export_app: tuple[FastAPI, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
