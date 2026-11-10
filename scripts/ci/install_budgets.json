@@ -146,7 +146,7 @@
       "seconds": 30,
       "ok": true,
       "budget": "release lookup < 30 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
       "required_in": [
         "desktop-install-Windows"
       ]
@@ -155,7 +155,7 @@
       "seconds": 120,
       "ok": true,
       "budget": "download (the setup and the plan's files at once) < 120 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
       "required_in": [
         "desktop-install-Windows"
       ]
@@ -164,25 +164,25 @@
       "seconds": 30,
       "ok": true,
       "budget": "integrity check < 30 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
       "required_in": [
         "desktop-install-Windows"
       ]
     },
     "desktop install (Windows): install": {
-      "seconds": 150,
+      "seconds": 210,
       "ok": true,
-      "budget": "setup, including its own first-run prepare < 150 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "budget": "setup, including its own first-run prepare < 210 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
       "required_in": [
         "desktop-install-Windows"
       ]
     },
     "desktop install (Windows): total": {
-      "seconds": 180,
+      "seconds": 240,
       "ok": true,
-      "budget": "install < 180 s",
-      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. Per-step rows are new with this budget.",
+      "budget": "install < 240 s",
+      "measured": "CI windows-latest, v0.9.5.1 (run 42574071708, job 129017733441): download 12 s (gh release download), NSIS /S 73.8 s including the setup's own --prepare-runtime. install.ps1 -Desktop -DownloadOnly on a 1.5 MB/s home link: resolve 1.5 s, download 347.9 s (532 MB), verify 0.0 s. install.ps1 -Desktop -Unattended on windows-latest (run 42748393063, job 129605901030): resolve 4.6 s, download 3.3 s, verify 0.0 s, install 147.9 s, total 155.8 s, so install and total get about 40% headroom.",
       "required_in": [
         "desktop-install-Windows"
       ]

@@ -408,6 +408,8 @@ jobs:
         if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
         continue-on-error: true
         run: |
+          # The runner image's apt index can be stale (404 on a superseded dependency).
+          sudo apt-get update -qq
           bash install/install.sh --desktop --progress json \
             > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
       # Windows PowerShell 5.1, the shell `irm ... | iex` runs in; bash keeps the events'
