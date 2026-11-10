@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from clio_agent.arc.chunk_records import MAGIC
+from clio_agent.arc.lane_index import INDEX_SCOPE
+from clio_agent.arc.search_companion import SEARCH_FAMILY
 from clio_agent.errors import ClioError
 
 __all__ = [
@@ -105,17 +107,35 @@ class StoreFormat:
         return out
 
 
-def _segment_names(store: Any) -> list[str]:
-    """Up to :data:`_CANDIDATES` segment-list record names (one bounded name query)."""
+#: Record-name parts (``<session>__<scope with '/' as '~'>``) of the segment records
+#: this CLIO still writes as one framed put, as 0.9.5.1 did: the content-lane index
+#: and the search-companion chunks. Their frame says nothing about which CLIO wrote
+#: the store, so the check never samples them.
+_FRAMED_INDEX_SUFFIX = "__" + INDEX_SCOPE.replace("/", "~")
+_FRAMED_SEARCH_PART = "__" + SEARCH_FAMILY + "~"
+
+
+def _tells_format(name: str) -> bool:
+    """Whether a record's first bytes tell which CLIO wrote it (pure)."""
+    return not name.endswith(_FRAMED_INDEX_SUFFIX) and _FRAMED_SEARCH_PART not in name
+
+
+def _segment_names(store: Any) -> tuple[list[str], int]:
+    """Up to :data:`_CANDIDATES` segment-list record names that tell the format (one
+    bounded name query), and how many names were listed before that filter."""
     query = getattr(store, "query_names", None)
     if callable(query):  # clio-core: ask for a bounded number of names
-        return sorted(query("segments", ".*", limit=_CANDIDATES))
+        listed = list(query("segments", ".*", limit=_CANDIDATES))
+        return sorted(name for name in listed if _tells_format(name)), len(listed)
     names: list[str] = []  # an in-process store: its listing is its own memory
+    seen = 0
     for name in store.scan_names("segments"):
-        names.append(name)
-        if len(names) >= _CANDIDATES:
-            break
-    return sorted(names)
+        seen += 1
+        if _tells_format(name):
+            names.append(name)
+            if len(names) >= _CANDIDATES:
+                break
+    return sorted(names), seen
 
 
 def inspect_store(store: Any) -> StoreFormat:
@@ -126,8 +146,12 @@ def inspect_store(store: Any) -> StoreFormat:
     """
     counts = {"current": 0, "old": 0, "unrecognized": 0}
     try:
-        names = _segment_names(store)
+        names, listed = _segment_names(store)
         if not names:
+            if listed:  # only records whose frame both formats share were listed
+                return StoreFormat(
+                    "unknown", ARC_STORE_FORMAT_UNKNOWN, counts, "no format-telling record"
+                )
             return StoreFormat("empty", counts=counts)
         sizes = store.sizes("segments", names)
         smallest = sorted((size, name) for name, size in sizes.items() if size > 0)[:_SAMPLE]

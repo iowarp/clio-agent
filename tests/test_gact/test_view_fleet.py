@@ -46,7 +46,7 @@ class _Agent:
         return self._workspace_executor_lock, self.executors, self.leases
 
     @contextmanager
-    def lease_workspace_fleet(self, root: str) -> Iterator[None]:
+    def lease_workspace_fleet(self, root: str, *, wait: bool = True) -> Iterator[None]:
         with self._workspace_executor_lock:
             self.leases[root] = self.leases.get(root, 0) + 1
         try:
@@ -128,7 +128,7 @@ def test_a_refused_lease_is_typed_and_the_view_goes_on(caplog: Any) -> None:
     agent = _Agent(ttl_s=60)
 
     @contextmanager
-    def refused(_root: str) -> Iterator[None]:
+    def refused(_root: str, *, wait: bool = True) -> Iterator[None]:
         raise RuntimeError("CLIO is updating connected-data access")
         yield  # pragma: no cover
 

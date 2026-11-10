@@ -37,6 +37,25 @@ your workspaces are not affected.
   move it aside, and the conversation list answers with the same message.
   `clio-agent migrate` refuses such a store (exit 5).
 
+### Reconnect Google Drive after upgrading
+
+Drive sign-in has moved to a new Google client built into CLIO. If you connected
+Google Drive with 0.9.5.1 or earlier, you may need to sign in to Drive again: open
+**Connect data**, choose your Google account and select **Log in**. Your Drive
+sources keep their folders and settings and work again once you have signed in;
+nothing else needs to change. Distributors who set `CLIO_STORAGE_GOOGLE_CLIENT_ID` /
+`CLIO_STORAGE_GOOGLE_CLIENT_SECRET` are not affected.
+
+Google is still verifying the new client. Until it finishes, Drive sign-in works only
+for Google accounts the CLIO team has added; if Google refuses your sign-in, ask your
+CLIO contact to add your account.
+
+Known issue: on a fresh install with no conversations yet, attaching a newly connected
+Drive folder stops at "Choose a conversation to track this work"
+([iowarp/gact-tui#873](https://github.com/iowarp/gact-tui/issues/873)). Start a
+conversation first, then attach the folder. Signing in and existing Drive sources are
+not affected.
+
 ### Added
 
 - `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio
@@ -106,6 +125,12 @@ your workspaces are not affected.
   secure timestamp. The DMG and the app are notarized and stapled, so a downloaded DMG
   opens without an "Open Anyway" step. A release whose signing, notarization or
   Gatekeeper check fails is not published.
+- `max_concurrency` caps how many of a workflow's steps are in flight
+  (`0` means no step cap; model-call admission is separate),
+  and `timeout_s` is that step's deadline. A deadline is offered to editors as
+  `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
+  Merged `workflow_state` follows definition order, with
+  `workflow_state_conflict` rows when two steps set the same key differently.
 - **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
   length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
   for the old format: a chunk written by v0.9.5.1 or an earlier development build fails

@@ -179,7 +179,10 @@ class DriveSource:
                         FileEntry(
                             path=path,
                             kind=kind,
-                            size=int(metadata.get("size", 0)),
+                            # Native documents are exported on read and report no size.
+                            size=int(metadata["size"])
+                            if metadata.get("size") is not None
+                            else (0 if kind == "directory" else None),
                             revision=str(metadata.get("version", metadata.get("modifiedTime", ""))),
                             locator=str(metadata["id"]),
                             sha256=metadata.get("sha256Checksum"),

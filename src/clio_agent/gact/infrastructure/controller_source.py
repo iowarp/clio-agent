@@ -17,6 +17,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from clio_agent.runtime.git_executable import GitUnavailableError, run_git
+
 #: The checkout root when clio-agent runs from source (``src/clio_agent/gact/infrastructure``).
 _CHECKOUT = Path(__file__).resolve().parents[4]
 
@@ -53,13 +55,16 @@ def _bundled_commit(manifest: Path) -> str | None:
 
 
 def _git(checkout: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(checkout), *args],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    try:
+        result = run_git(
+            ["-C", str(checkout), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (GitUnavailableError, OSError, subprocess.TimeoutExpired):
+        return ""  # no usable git: the checkout's commit is unknown, as for a release
     return result.stdout.strip() if result.returncode == 0 else ""
 
 

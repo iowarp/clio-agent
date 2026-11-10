@@ -15,6 +15,7 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
+from clio_agent.flows.call_metadata import active_workflow_step
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
@@ -400,8 +401,14 @@ def _agent_signature(
         inputs.append(("files", "User-provided PDF documents for this turn", list[dspy.File]))
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
-        agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
+        dict(agent_def.structured_outputs)
+        if isinstance(agent_def.structured_outputs, Mapping)
+        else {}
     )
+    # A workflow child hands state to the fold. The field stays off for an
+    # ordinary turn, and an agent that sets workflow_state false keeps it off.
+    if active_workflow_step() is not None and structured.get("workflow_state") is not False:
+        structured["workflow_state"] = True
 
     # CLEAN CONTRACT: workflow_state is the ONE load-bearing structured output --
     # a TYPED dict the adapter forces the model to emit, and the channel the

@@ -121,7 +121,13 @@ class FsspecFolder:
                     FileEntry(
                         path=path,
                         kind=kind,
-                        size=0 if export else int(item.get("size") or 0),
+                        # Native exports and providers without a reported size are unknown,
+                        # not empty; the read itself determines their bytes.
+                        size=0
+                        if kind == "directory"
+                        else None
+                        if export or item.get("size") is None
+                        else int(item["size"]),
                         revision=revision,
                         locator=name,
                     )
@@ -436,14 +442,21 @@ def _linked_file(service: StorageService, record: SourceRecord, relative: str) -
             current = adapter.metadata(relative)
         else:
             current = next((row for row in adapter.entries() if row.path == relative), None)
-        if current is None or (current.revision, current.size) != (
-            selected.revision,
-            selected.size,
+        # Size is compared only when both index entries report one: native Drive exports
+        # have no size, and indexes written before that was modeled stored 0 for them.
+        if (
+            current is None
+            or current.revision != selected.revision
+            or (
+                current.size is not None
+                and selected.size is not None
+                and current.size != selected.size
+            )
         ):
             raise ValueError("This linked file changed. Refresh the folder before opening it")
         if os.path.isfile(win_extended_path(destination)):
             return destination
-        if selected.size > 512 * 1024 * 1024:
+        if selected.size is not None and selected.size > 512 * 1024 * 1024:
             raise ValueError("This file exceeds the 512 MB linked-read limit")
         git_digest = hashlib.sha1(f"blob {selected.size}\0".encode())
         os.makedirs(win_extended_path(destination.parent), exist_ok=True)

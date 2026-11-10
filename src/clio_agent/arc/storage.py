@@ -27,7 +27,13 @@ from clio_agent import paths
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
-from clio_agent.arc import clio_core_attach, crashed_clients, runtime_stop
+from clio_agent.arc import (
+    clio_core_attach,
+    crashed_clients,
+    runtime_log,
+    runtime_log_flood,
+    runtime_stop,
+)
 from clio_agent.arc import clio_core_daemon_version as daemon_version
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
@@ -172,16 +178,17 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
+    # Never an unbounded file: a pump caps, rotates and collapses the daemon's output.
+    log_sink = runtime_log.open_daemon_log_sink(log_path, state_dir, _daemon_pidfile())
     log_offset = log_path.stat().st_size if log_path.exists() else 0
-    log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
 
     def _spawn(*, breakaway: bool) -> "subprocess.Popen[bytes]":
         return subprocess.Popen(  # type: ignore[call-overload]  # noqa: S603 - fixed launcher path
             [exe, "start"],
             env=env,
             stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
+            stdout=log_sink.target,
+            stderr=log_sink.target,
             **_detached_popen_kwargs(breakaway=breakaway),
         )
 
@@ -203,7 +210,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
             )
             proc = _spawn(breakaway=False)
     finally:
-        log_fh.close()
+        log_sink.close()
     # The daemon must die loudly in OUR channels (#1148): on abnormal exit the
     # watcher writes a typed crash record that the liveness gate folds into its
     # ClioCoreRuntimeLostError, so a crash is never misread as an env flake.
@@ -327,6 +334,9 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
         # A daemon every client crashed on may be wedged: replaced, never adopted.
         crashed_clients.replace_daemon_left_by_crashed_clients(config_path, log_level)
+        # A daemon spinning in a log flood is surfaced, and replaced when nobody uses it.
+        runtime_log_flood.replace_flooding_daemon(config_path, log_level)
+        runtime_log_flood.ensure_flood_monitor()
         _register_client()  # We are now live.
         state = runtime_state_dir()
         running = daemon_version.running_daemon_config(state, config_path)

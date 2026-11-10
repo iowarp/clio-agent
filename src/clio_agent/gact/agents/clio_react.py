@@ -68,6 +68,7 @@ from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
 from clio_agent import injections
 from clio_agent.errors import ClioError, MCPProtocolError
+from clio_agent.flows.call_metadata import active_workflow_step
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents import clio_react_stream as stream
@@ -697,8 +698,19 @@ class _Loop:
         return self._end({}, reason, steps)
 
     def _end(self, outputs: dict[str, Any], reason: str, steps: int) -> dspy.Prediction:
-        """Close the loop; after a long one, DSPy's extract fills the missing outputs."""
-        missing = extract.missing_outputs(self.agent.signature, outputs, reason, steps)
+        """Close the loop; after a long one, DSPy's extract fills the missing outputs.
+
+        A workflow step fills a missing ``workflow_state`` on a short answer too.
+        Other outputs still wait for the normal step floor. The fold reads that
+        field, and a direct answer does not carry it.
+        """
+        missing = extract.missing_outputs(
+            self.agent.signature,
+            outputs,
+            reason,
+            steps,
+            workflow_step=active_workflow_step() is not None,
+        )
         if missing:
             _raise_if_cancelled()
             try:
