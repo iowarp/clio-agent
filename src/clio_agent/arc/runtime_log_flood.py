@@ -73,7 +73,8 @@ def active_flood(state_dir: Path | None = None, *, now: float | None = None) -> 
     from clio_agent.arc.pid_identity import pidfile_live_pid  # noqa: PLC0415
     from clio_agent.arc.runtime_log import flood_record_path  # noqa: PLC0415
 
-    state = runtime_state_dir() if state_dir is None else state_dir
+    # A read-only probe: the monitor thread polls this for the process lifetime.
+    state = runtime_state_dir(create=False) if state_dir is None else state_dir
     try:
         record = json.loads(flood_record_path(state).read_text(encoding="utf-8"))
     except (OSError, ValueError):

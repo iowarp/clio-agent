@@ -83,7 +83,7 @@ def host_key() -> str:
     return _HOST_KEY_UNSAFE.sub("-", label).strip("-") or "localhost"
 
 
-def runtime_state_dir() -> Path:
+def runtime_state_dir(*, create: bool = True) -> Path:
     """Return the directory holding THIS machine's clio-core runtime bookkeeping.
 
     This is where the connect-or-spawn lifecycle keeps its coordination state: the
@@ -98,12 +98,16 @@ def runtime_state_dir() -> Path:
     this at its own directory, and its spawn lock / pidfile / registry / last-one-out
     stop all move coherently with it. The directory is created if absent.
 
-    Returns the state directory, creating it if absent.
+    ``create=False`` is for read-only probes (the flood monitor's background poll):
+    they must not resurrect a state directory that its owner has already removed.
+
+    Returns the state directory, creating it if absent unless ``create`` is false.
     """
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
     if override:
         state = Path(override).expanduser()
-        state.mkdir(parents=True, exist_ok=True)
+        if create:
+            state.mkdir(parents=True, exist_ok=True)
         return state
     from clio_agent import paths  # noqa: PLC0415
 
@@ -119,7 +123,8 @@ def runtime_state_dir() -> Path:
     if legacy.exists() and not state.exists():
         logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
         state = legacy
-    state.mkdir(parents=True, exist_ok=True)
+    if create:
+        state.mkdir(parents=True, exist_ok=True)
     return state
 
 
