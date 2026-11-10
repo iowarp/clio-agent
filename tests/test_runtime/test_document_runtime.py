@@ -142,6 +142,64 @@ def test_python_cache_reuse_still_probes_imports(
     assert inventory["verified"]
 
 
+def _venv_from(tmp_path: Path, home: Path) -> Path:
+    import os
+
+    environment = tmp_path / "cache" / "python"
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (environment / "stale-marker").touch()
+    (environment / "pyvenv.cfg").write_text(f"home = {home}\nversion_info = 3.14.0\n")
+    return python
+
+
+@pytest.mark.parametrize("old_copy", ["gone", "still-present"])
+def test_moved_app_rebuilds_venv_on_its_own_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_copy: str
+) -> None:
+    """A venv built by a translocated or older app copy is rebuilt, never reused or wedged.
+
+    ``uv venv`` refuses an existing directory, so the stale one must go first; a still
+    present old copy must not keep serving its interpreter either.
+    """
+    old_home = tmp_path / "Old.app" / "python" / "bin"
+    if old_copy == "still-present":
+        old_home.mkdir(parents=True)
+    python = _venv_from(tmp_path, old_home)
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        assert not (python.parent.parent / "stale-marker").exists()
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(runtime, "_run", run)
+    monkeypatch.setattr(runtime, "bundled_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        runtime, "bundled_wheel_requirements", lambda *args: tmp_path / "requirements.txt"
+    )
+    monkeypatch.setattr(runtime, "_probe", lambda path: {"python": str(path)})
+    runtime._python_runtime(tmp_path / "cache", "uv")
+    assert commands[0][:2] == ["uv", "venv"]
+    assert commands[0][commands[0].index("--python") + 1] == runtime.sys.executable
+    assert "--reinstall" not in commands[1]
+
+
+def test_venv_from_this_interpreter_is_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The base check accepts the running interpreter, so a warm cache never rebuilds."""
+    import sys
+
+    python = _venv_from(tmp_path, Path(sys.executable).resolve().parent)
+    monkeypatch.setattr(runtime, "_run", lambda *args, **kwargs: pytest.fail("rebuilt"))
+    monkeypatch.setattr(runtime, "_probe", lambda path: {"python": str(path)})
+    result, _ = runtime._python_runtime(tmp_path / "cache", "uv")
+    assert result == python
+    assert (python.parent.parent / "stale-marker").exists()
+
+
 def test_execution_discovery_probes_current_files_each_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
