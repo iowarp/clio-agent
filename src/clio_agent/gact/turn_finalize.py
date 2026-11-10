@@ -322,7 +322,7 @@ def finalize_turn(
         turn_id=state.turn_id,
         session_id=state.sid,
         role="assistant",
-        created_at=_iso_from_epoch(time.time()),
+        created_at=state.transcript.created_at_iso,
         updated_at=_iso_from_epoch(time.time()),
         parts=assistant_parts,
         tokens=Tokens(**state.turn_tokens),
@@ -625,10 +625,12 @@ def settle_failed_finalize(
         trace.hot("TURN-FINALIZE-FAIL", "%s %s: %s", sid, type(exc).__name__, exc)
 
     asst_id, sealed_parts = failed_finalize_identity(app, sid)
+    started_at: float | None = None
     registry = getattr(app.state, "turn_transcripts", None)
     if registry is not None:
         transcript = registry.get(sid)
         if transcript is not None:
+            started_at = transcript.started_at
             transcript.abandon()
         registry.close(sid)
 
@@ -657,7 +659,7 @@ def settle_failed_finalize(
         turn_id=turn_id,
         session_id=sid,
         role="assistant",
-        created_at=_iso_from_epoch(now),
+        created_at=_iso_from_epoch(started_at if started_at is not None else now),
         updated_at=_iso_from_epoch(now),
         parts=sealed_parts,
         tokens=Tokens(**dict(turn_tokens)),

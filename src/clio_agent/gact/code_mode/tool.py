@@ -94,7 +94,8 @@ def _approve(app: Any, code: str) -> None:
 
     gate = getattr(app.state, "pending_permission_gate", None) or app.state.make_permission_gate()
     first = next((line.strip() for line in code.splitlines() if line.strip()), "")
-    summary = f"Run a Python script ({len(code.splitlines())} lines): {first}"[:500]
+    count = len(code.splitlines())
+    summary = f"Run a Python script ({count} line{'' if count == 1 else 's'}): {first}"[:500]
     context = {"kind": "native", "summary": summary}
     decision = _invoke_permission_gate(gate, "run_code", {"code": code}, context)
     if decision == "allow":

@@ -20,7 +20,10 @@ def tool_execution_state(
     authoritative: no message in this session currently owns live tool work.
     """
     if part.get("is_error"):
-        return "failed"
+        # A refused or stopped call is not a failure of the tool (gact/tool_observer_parts).
+        metadata = part.get("metadata")
+        outcome = metadata.get("execution_outcome") if isinstance(metadata, Mapping) else None
+        return outcome if outcome in {"cancelled", "denied"} else "failed"
     if part.get("type") == "tool_result":
         return "succeeded"
     ended = wire.get("stop_reason") in {"end_turn", "error", "cancelled", "failed", "interrupted"}

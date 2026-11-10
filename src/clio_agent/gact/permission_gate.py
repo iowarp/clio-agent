@@ -82,7 +82,7 @@ from clio_agent.gact.permission_context import (
 from clio_agent.gact.permission_context import (
     _normalize_mcp_tool_annotations as _normalize_mcp_tool_annotations,
 )
-from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.permission_delivery import publish_permission_event, publish_waiting_call
 from clio_agent.gact.permission_delivery import (
     record_resolved_permission as _record_resolved_permission,
 )
@@ -108,6 +108,7 @@ from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.catalog import get_tool_entry
+from clio_agent.tools.tool_observation import call_identity_claimed, peek_call_identity
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -483,10 +484,43 @@ def _ask_person(
     cancelled: Any,
 ) -> str:
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
+    running = call_identity_claimed()
+    holder: dict[str, Any] = {}
+    decision = _ask_and_wait(
+        app,
+        sid,
+        name,
+        args,
+        context,
+        subject,
+        approval_mode,
+        policy_action,
+        cancelled,
+        holder,
+    )
+    # A call that was already running while it waited reads as running again.
+    if running and decision == "allow" and holder.get("row"):
+        publish_waiting_call(app, holder["row"], resumed=True)
+    return decision
+
+
+def _ask_and_wait(
+    app: "FastAPI",
+    sid: str,
+    name: str,
+    args: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+    subject: str,
+    approval_mode: str,
+    policy_action: str,
+    cancelled: Any,
+    holder: dict[str, Any],
+) -> str:
     if not sid:
         return "deny"
     pid = f"perm_{uuid.uuid4().hex[:12]}"
     evt = threading.Event()
+    call_id = peek_call_identity()
     row = {
         "id": pid,
         "session_id": sid,
@@ -494,6 +528,8 @@ def _ask_person(
         "tool_call": {
             "tool_name": name,
             "input": dict(args),
+            # The waiting call's own row identity (the tool entity's id).
+            **({"call_id": call_id} if call_id else {}),
         },
         "summary": (
             str(context["summary"])[:500]
@@ -524,6 +560,9 @@ def _ask_person(
         owner_session_id=sid,
         payload=row,
     )
+    if call_id:
+        holder["row"] = row
+        publish_waiting_call(app, row)
     # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
     # event are already on the ledger (auditable that a review happened, carrying the
     # typed reviewer-pending reason). Ask the in-process reviewer; on a confident

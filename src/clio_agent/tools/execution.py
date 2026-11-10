@@ -43,6 +43,7 @@ from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assembl
 from clio_agent.tools.tool_observation import (
     LegacyToolObserver,
     ToolObserver,
+    call_identity_scope,
     notify_refused_call,
     notify_tool_observer,
     observer_progress_handler,
@@ -566,7 +567,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            return self._call_tool_inner(name, args, return_raw=False)
+            with call_identity_scope():
+                return self._call_tool_inner(name, args, return_raw=False)
         finally:
             with self._inflight_lock:
                 self._inflight -= 1
@@ -585,7 +587,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            return self._call_tool_inner(name, args, return_raw=True)
+            with call_identity_scope():
+                return self._call_tool_inner(name, args, return_raw=True)
         finally:
             with self._inflight_lock:
                 self._inflight -= 1

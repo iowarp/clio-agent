@@ -73,6 +73,84 @@ def publish_permission_event(
         bus.publish(Event(type=event_type, session_id=target, payload=delivered))
 
 
+def publish_waiting_call(app: Any, row: Mapping[str, Any], *, resumed: bool = False) -> None:
+    """Show the call a pending permission holds as a waiting tool row.
+
+    The row's id is the identity the call keeps when it runs or is refused, so the
+    waiting row becomes the running, denied or finished one rather than a second row.
+    ``resumed`` reports that a call which was already running (a script asking for its
+    own approval) runs again after the person allowed it.
+    """
+
+    bus = getattr(app.state, "bus", None)
+    tool_call = row.get("tool_call")
+    tool_call = tool_call if isinstance(tool_call, Mapping) else {}
+    call_id = str(tool_call.get("call_id") or "")
+    if bus is None or not call_id:
+        return
+    from clio_agent.gact.tool_call_nesting import nested_call_fields  # noqa: PLC0415
+
+    bus.publish(
+        Event(
+            type="tool.call.resumed" if resumed else "tool.call.waiting",
+            session_id=str(row.get("session_id") or ""),
+            payload={
+                "call_id": call_id,
+                "tool": str(tool_call.get("tool_name") or ""),
+                "args": dict(tool_call.get("input") or {}),
+                "permission_id": str(row.get("id") or ""),
+                "requested_at": str(row.get("created_at") or ""),
+                **nested_call_fields(),
+            },
+        )
+    )
+
+
+_TERMINAL_TOOL_STATES = frozenset({"succeeded", "failed", "denied", "cancelled"})
+
+
+def overlay_waiting_calls(
+    app: Any, session_id: str, tools: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Project calls held by this session's pending permissions as ``pending``.
+
+    A call that has not started yet has no recorded row, so its entity comes from
+    the permission request; a call already running (a script awaiting its own
+    approval) reads as waiting until the person answers.
+    """
+
+    waiting: dict[str, Mapping[str, Any]] = {}
+    for row in list((getattr(app.state, "permissions", None) or {}).values()):
+        if row.get("session_id") != session_id or row.get("status") != "pending":
+            continue
+        tool_call = row.get("tool_call")
+        call_id = str(tool_call.get("call_id") or "") if isinstance(tool_call, Mapping) else ""
+        if call_id:
+            waiting[call_id] = row
+    if not waiting:
+        return tools
+    projected: list[dict[str, Any]] = []
+    for tool in tools:
+        tool_id = str(tool.get("id") or "")
+        if tool_id in waiting and tool.get("state") not in _TERMINAL_TOOL_STATES:
+            tool = {**tool, "state": "pending"}
+        waiting.pop(tool_id, None)
+        projected.append(tool)
+    for call_id, row in waiting.items():
+        tool_call = row["tool_call"]
+        projected.append(
+            {
+                "id": call_id,
+                "session_id": session_id,
+                "name": str(tool_call.get("tool_name") or "Tool"),
+                "state": "pending",
+                "input": tool_call.get("input"),
+                "permission_id": str(row.get("id") or ""),
+            }
+        )
+    return projected
+
+
 def record_resolved_permission(
     app: "FastAPI",
     *,

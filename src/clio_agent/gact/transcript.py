@@ -169,6 +169,10 @@ class TurnTranscript:
         self._reasoning_clock = ReasoningClock()
         self.turn_id = turn_id
         self.message_id: str = ""
+        # The reply starts when its turn opens: the assistant message's created_at is
+        # this instant (not its completion), so completed_at - created_at is the reply's
+        # real duration even when the first output arrives late.
+        self.started_at: float = time.time()
         self._publisher = publisher
         # #1337: the seal sink — called under the lock, NON-BLOCKING, with the dump of a
         # part that just became final (see ``_seal_locked``); ``None`` = no eager persist.
@@ -229,6 +233,12 @@ class TurnTranscript:
 
     # -- identity ------------------------------------------------------------
 
+    @property
+    def created_at_iso(self) -> str:
+        """The assistant message's ``created_at``: when this turn's reply started."""
+
+        return _iso_from_epoch(self.started_at)
+
     def ensure_message(self) -> str:
         """Mint the assistant message id + publish ``message.created`` ONCE.
 
@@ -252,7 +262,6 @@ class TurnTranscript:
                     f"(session={self.session_id!r} turn={self.turn_id!r})"
                 )
             self.message_id = _new_message_id("asst")
-            now = _iso_from_epoch(time.time())
             self._publisher.publish(
                 "message.created",
                 Message(
@@ -260,8 +269,8 @@ class TurnTranscript:
                     turn_id=self.turn_id,
                     session_id=self.session_id,
                     role="assistant",
-                    created_at=now,
-                    updated_at=now,
+                    created_at=self.created_at_iso,
+                    updated_at=_iso_from_epoch(time.time()),
                     parts=[],
                 ).to_wire(),
             )

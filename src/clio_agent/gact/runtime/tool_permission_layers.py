@@ -193,7 +193,13 @@ def native_gate(tool: Any, name: str, args: Mapping[str, Any]) -> Iterator[str]:
             app.state.cancel_events.get(sid),
         )
     if decision != "allow":
-        yield f"{name} was not run: the person did not approve it."
+        message = f"{name} was not run: the person did not approve it."
+        # Close the waiting row the request opened as a denied call.
+        from clio_agent.tools.execution import current_tool_runtime  # noqa: PLC0415
+        from clio_agent.tools.tool_observation import notify_refused_call  # noqa: PLC0415
+
+        notify_refused_call(current_tool_runtime().tool_observer, name, args, message)
+        yield message
         return
     token = _ANSWERED.set(name)
     try:
