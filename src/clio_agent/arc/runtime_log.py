@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Union
@@ -199,6 +200,9 @@ def start_log_pump(
         return None
     finally:
         os.close(read_fd)
+    # Reap the pump when it exits at EOF, so a long-lived server (or the test suite)
+    # does not keep one zombie per daemon spawn. Daemon thread: never blocks exit.
+    threading.Thread(target=proc.wait, name="clio-runtime-log-pump-reaper", daemon=True).start()
     return DaemonLogSink(target=write_fd, pump_pid=proc.pid)
 
 

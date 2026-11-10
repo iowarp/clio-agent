@@ -119,6 +119,12 @@ not affected.
 
 ### Changed
 
+- `max_concurrency` caps how many of a workflow's steps are in flight
+  (`0` means no step cap; model-call admission is separate),
+  and `timeout_s` is that step's deadline. A deadline is offered to editors as
+  `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
+  Merged `workflow_state` follows definition order, with
+  `workflow_state_conflict` rows when two steps set the same key differently.
 - **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
   length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
   for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
@@ -205,6 +211,17 @@ not affected.
   plumbing when that git has no `git submodule` command, as with the git bundled in
   CLIO Desktop.
 
+- NDP and EarthScope work without their MCP servers. The agents told the model it
+  could search the National Data Platform, but CLIO withheld the search tools until
+  a dataset or Endpoint was already attached, and EarthScope's skill needed the
+  clio-kit `ndp` and `geo` servers, which often did not mount. Agents carrying the
+  `ndp` plugin now always get NDP catalog search and organization lookup; Endpoint
+  operations, requests and uploads still load once the workspace has an NDP dataset
+  or saved Endpoint, and `connected_data_status` lists the configured NDP catalogs.
+  The marketplace pin moves to a version that makes `ndp` the NDP package with the
+  "Working with NDP" skill and an optional `run_code` NDP MCP server, adds an `ndp`
+  agent, and rebuilds `earthscope` on top of it. The default `standard` agent no
+  longer carries NDP search: choose the NDP agent or add the `ndp` plugin.
 - Windows protected execution qualifies on machines with a mapped network drive
   or the OpenAI Codex app installed. The bundled Codex runtime moves to 0.167.0, and
   native MXC requires 0.166.0 or later: earlier clients rejected CLIO's policy when

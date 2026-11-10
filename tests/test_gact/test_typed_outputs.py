@@ -106,6 +106,39 @@ def test_generic_schema_keeps_free_dict_field_type():
     assert _injected_workflow_state_field_type(GENERIC_WORKFLOW_STATE_SCHEMA) == dict[str, Any]
 
 
+class _Plain:
+    id = "worker"
+    module = {"kind": "predict"}
+    signature = {
+        "inputs": {"question": {"type": "string"}},
+        "outputs": {"answer": {"type": "string"}},
+    }
+    structured_outputs: dict[str, Any] = {}
+
+
+def test_workflow_step_injects_workflow_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders.active_workflow_step",
+        lambda: {"run": "r", "step": "a"},
+    )
+    fields = _agent_signature(_Plain()).output_fields
+    assert fields["workflow_state"].annotation == dict[str, Any]
+
+
+def test_workflow_step_respects_an_explicit_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders.active_workflow_step",
+        lambda: {"run": "r", "step": "a"},
+    )
+    plain = _Plain()
+    plain.structured_outputs = {"workflow_state": False}
+    assert "workflow_state" not in _agent_signature(plain).output_fields
+
+
+def test_ordinary_turn_does_not_inject_workflow_state() -> None:
+    assert "workflow_state" not in _agent_signature(_Plain()).output_fields
+
+
 def test_generic_schema_injects_free_dict_via_signature():
     # No active app/session -> resolver returns GENERIC -> dict[str, Any] injected.
     sig = _agent_signature(_Def())
