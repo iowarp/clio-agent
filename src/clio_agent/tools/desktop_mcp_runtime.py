@@ -117,8 +117,12 @@ def prepare_desktop_stdio(
         from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
             remove_stale_environments,
         )
+        from clio_agent.tools.mcp_environment_repair import (  # noqa: PLC0415
+            repair_invalid_environments,
+        )
 
         remove_stale_environments(Path(launcher_env["CLIO_KIT_CACHE_DIR"]))
+        repair_invalid_environments(Path(launcher_env["CLIO_KIT_CACHE_DIR"]))
     return command, resolved_args, child_env
 
 

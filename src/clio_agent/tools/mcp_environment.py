@@ -48,9 +48,14 @@ def stdio_environment(
         from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
             remove_stale_environments,
         )
+        from clio_agent.tools.mcp_environment_repair import (  # noqa: PLC0415
+            repair_invalid_environments,
+        )
 
-        # An environment built at another location (a moved cache) is rebuilt, never run.
+        # An environment built at another location (a moved cache) is rebuilt, never run;
+        # one an interrupted build or removal left invalid is rebuilt, never refused.
         remove_stale_environments(Path(env["CLIO_KIT_CACHE_DIR"]))
+        repair_invalid_environments(Path(env["CLIO_KIT_CACHE_DIR"]))
     for name in ("PYTHONHOME", "PYTHONPATH"):
         if name not in spec_env:
             env.pop(name, None)

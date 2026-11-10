@@ -229,6 +229,13 @@ The same model is in the design document; it is repeated here so this plan reads
     `mcp_prepare_provision_uv_missing`. Only a clio-kit without `--prepare` falls back to
     running its own build in the launcher's interpreter with the server's start left out;
     those failures are typed from the build output (`access_denied` or `path_too_long`).
+    That build is atomic: an environment that is not complete is built into a relocatable
+    hidden sibling and renamed into place under a per-environment cross-process lock
+    (`<kit cache>/clio-environment-locks/`). Before every clio-kit prepare or start,
+    `tools/mcp_environment_repair.py` removes an environment an interrupted build or
+    removal left without its interpreter (`mcp_environment_repaired`), so it is rebuilt
+    instead of failing forever with uv's "not a valid Python environment"; one it cannot
+    replace fails typed `mcp_prepare_provision_environment_invalid`.
     MCP build roots (`paths.mcp_build_cache_dir()`) move
     to `%LOCALAPPDATA%\clio-m\<hash>` when the CLIO cache path is longer than 48 characters
     (#1992); `owner.txt` there names the cache it serves.

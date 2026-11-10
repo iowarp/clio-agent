@@ -49,12 +49,14 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from clio_agent.runtime import trace
+from clio_agent.tools.mcp_environment_repair import LOCKS_DIRNAME as _ENVIRONMENT_LOCKS_DIRNAME
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,7 @@ PROVISION_UNKNOWN_SERVER = "mcp_prepare_provision_unknown_server"
 PROVISION_USAGE = "mcp_prepare_provision_usage"
 PROVISION_NETWORK = "mcp_prepare_provision_network"
 PROVISION_UV_MISSING = "mcp_prepare_provision_uv_missing"
-
+PROVISION_ENVIRONMENT_INVALID = "mcp_prepare_provision_environment_invalid"
 PREPARE_REASONS: dict[str, str] = {
     LAUNCHER_MISSING: "The server's launcher command is not installed or not on PATH.",
     PROVISION_FAILED: "Building the server's environment failed (see detail).",
@@ -116,6 +118,11 @@ PREPARE_REASONS: dict[str, str] = {
     PROVISION_UV_MISSING: (
         "clio-kit could not find 'uv' to build the server's environment (exit 14). Install "
         "uv or put it on PATH."
+    ),
+    PROVISION_ENVIRONMENT_INVALID: (
+        "The server's environment directory is not a valid Python environment (a build "
+        "or removal was interrupted) and could not be replaced: a file in it is held "
+        "open, or its lock stayed busy. It is retried on the next start (see detail)."
     ),
     PROVISION_NO_PROGRESS: (
         "Building the server's environment stopped making progress, or ran past "
@@ -322,23 +329,175 @@ def launcher_supports_prepare(command: str | Sequence[str]) -> bool:
 #: Exit status of :data:`_KIT_BUILD_SHIM` when this clio-kit lacks what it drives.
 _KIT_SHIM_UNSUPPORTED = 97
 
+#: Written by :data:`_KIT_BUILD_SHIM` when it could not replace an invalid environment.
+_ENVIRONMENT_REPAIR_FAILED = "clio environment repair failed"
+
 #: Builds a clio-kit server's environment without starting the server, for a clio-kit
 #: without ``mcp-server --prepare``. It runs ``clio-kit mcp-server <args>`` in the
 #: launcher's own interpreter with the final launch replaced by a no-op, so the build
 #: (materialize, ``uv sync --frozen``, cache upkeep) is exactly the one that the server's
 #: start would do; that start then finds the environment built.
-_KIT_BUILD_SHIM = f"""
-import sys
+#:
+#: An environment that is not complete (absent, the empty directory clio-kit creates, or
+#: one an interrupted build or removal left without its interpreter) is built atomically:
+#: into a relocatable sibling ``.<name>.build-<pid>`` (``uv venv --relocatable``, then the
+#: same ``uv sync``), which is renamed into place under the environment's cross-process
+#: lock (:func:`clio_agent.tools.mcp_environment_repair.environment_lock`; the checks
+#: mirror :func:`~clio_agent.tools.mcp_environment_repair.environment_problem`). A crash
+#: leaves only the hidden sibling, never a half-built environment under the live name.
+#: A complete environment is synced in place (uv locks it itself). Where uv cannot build
+#: a relocatable environment, the invalid one is removed and built in place as before.
+_KIT_BUILD_SHIM = (
+    r"""
+import inspect, os, shutil, subprocess, sys, time
+from pathlib import Path
 try:
     import clio_kit as kit
     group, build = kit.main, kit._build_locked_environment
     kit._run_child_command
 except (ImportError, AttributeError) as exc:
-    sys.stderr.write(f'clio-kit cannot build without starting: {{exc!r}}\\n')
-    sys.exit({_KIT_SHIM_UNSUPPORTED})
+    sys.stderr.write(f'clio-kit cannot build without starting: {exc!r}\n')
+    sys.exit(@UNSUPPORTED@)
+NT = os.name == 'nt'
+def problem(env):
+    try:
+        if not env.is_dir() or not any(env.iterdir()):
+            return None
+    except OSError:
+        return None
+    if not (env / 'pyvenv.cfg').is_file():
+        return 'no_pyvenv_cfg'
+    python = env / ('Scripts/python.exe' if NT else 'bin/python')
+    if not python.exists():
+        return 'no_interpreter'
+    if NT:
+        try:
+            with python.open('rb') as handle:
+                if handle.read(2) != b'MZ':
+                    return 'corrupt_interpreter'
+        except OSError:
+            return 'corrupt_interpreter'
+    return None
+def complete(env):
+    return (env / 'pyvenv.cfg').is_file() and problem(env) is None
+def relocatable(env):
+    try:
+        text = (env / 'pyvenv.cfg').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return any(line.replace(' ', '').lower() == 'relocatable=true' for line in text.splitlines())
+def lock(env, timeout=120.0):
+    root = env.parent.parent / '@LOCKS@'
+    root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(root / (env.name + '.lock'), os.O_RDWR | os.O_CREAT)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            if NT:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise OSError('lock busy for %.0fs: %s' % (timeout, env.name))
+            time.sleep(0.05)
+def unlock(fd):
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if NT:
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+def clear(env):
+    if not os.path.lexists(env):
+        return
+    try:
+        env.rmdir()
+        return
+    except OSError:
+        pass
+    aside = env.with_name('.%s.removed-%d-%d' % (env.name, os.getpid(), time.monotonic_ns()))
+    os.replace(env, aside)
+    shutil.rmtree(aside, ignore_errors=True)
+def place(staging, final):
+    for attempt in range(20):
+        try:
+            if complete(final):
+                shutil.rmtree(staging, ignore_errors=True)
+                return 'kept'
+            clear(final)
+            os.replace(staging, final)
+            return 'renamed'
+        except OSError:
+            if attempt == 19:
+                raise
+            time.sleep(0.5)
+PARAMS = list(inspect.signature(build).parameters)
+def atomic(*args, **kwargs):
+    # clio-kit releases differ: (runtime, runtime_project, entry_command, child_environment)
+    # or (uv, runtime_project, child_environment). Bind by name to serve both.
+    bound = {**dict(zip(PARAMS, args)), **kwargs}
+    env, project = bound.get('child_environment'), bound.get('runtime_project')
+    target = ''
+    if isinstance(env, dict) and project is not None and bound.get('runtime', 'python') == 'python':
+        target = env.get('UV_PROJECT_ENVIRONMENT', '')
+    if not target:
+        return build(*args, **kwargs)
+    final = Path(target)
+    if complete(final):
+        return build(*args, **kwargs)
+    why = problem(final) or ('empty' if final.is_dir() else 'absent')
+    staging = final.with_name('.%s.build-%d' % (final.name, os.getpid()))
+    shutil.rmtree(staging, ignore_errors=True)
+    uv = bound.get('uv') or getattr(kit, 'uv_command', lambda: 'uv')()
+    venv_env = {k: v for k, v in env.items() if k != 'UV_PROJECT_ENVIRONMENT'}
+    made = subprocess.run(
+        [uv, 'venv', '--relocatable', '--quiet', '--project', str(project), str(staging)],
+        env=venv_env, capture_output=True,
+    )
+    if made.returncode == 0:
+        ok = build(**{**bound, 'child_environment': {**env, 'UV_PROJECT_ENVIRONMENT': str(staging)}})
+        if not ok:
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
+        if complete(staging) and relocatable(staging):
+            try:
+                fd = lock(final)
+                try:
+                    outcome = place(staging, final)
+                finally:
+                    unlock(fd)
+            except OSError as exc:
+                shutil.rmtree(staging, ignore_errors=True)
+                sys.stderr.write('@REPAIR_FAILED@: %s (%s): %r\n' % (final, why, exc))
+                return False
+            sys.stderr.write('clio environment %s atomically: %s (was %s)\n'
+                             % (outcome, final.name, why))
+            return True
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        fd = lock(final)
+        try:
+            if problem(final):
+                clear(final)
+        finally:
+            unlock(fd)
+    except OSError as exc:
+        sys.stderr.write('@REPAIR_FAILED@: %s (%s): %r\n' % (final, why, exc))
+        return False
+    return build(*args, **kwargs)
 built = []
 def _build(*args, **kwargs):
-    ok = build(*args, **kwargs)
+    ok = atomic(*args, **kwargs)
     built.append(bool(ok))
     return ok
 kit._build_locked_environment = _build
@@ -349,12 +508,15 @@ except SystemExit as exc:
     if exc.code not in (0, None):
         raise
 except Exception as exc:
-    sys.stderr.write(f'{{exc}}\\n')
+    sys.stderr.write(f'{exc}\n')
     sys.exit(1)
 if False in built:
-    sys.stderr.write('clio-kit failed to build the server environment\\n')
+    sys.stderr.write('clio-kit failed to build the server environment\n')
     sys.exit(3)
-"""
+""".replace("@UNSUPPORTED@", str(_KIT_SHIM_UNSUPPORTED))
+    .replace("@LOCKS@", _ENVIRONMENT_LOCKS_DIRNAME)
+    .replace("@REPAIR_FAILED@", _ENVIRONMENT_REPAIR_FAILED)
+)
 
 
 def builds_outside_fence() -> bool:
@@ -489,25 +651,34 @@ def provision_max_wait_s() -> float:
 
 
 def _marker_matches(plan: ProvisionPlan) -> bool:
+    from clio_agent.tools.mcp_environment_repair import environment_problem  # noqa: PLC0415
+
     if not plan.marker_dir or not plan.fingerprint:
         return False
     try:
         recorded = json.loads((Path(plan.marker_dir) / _MARKER).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(recorded, dict) and recorded.get("fingerprint") == plan.fingerprint
+    if not isinstance(recorded, dict) or recorded.get("fingerprint") != plan.fingerprint:
+        return False
+    # A recorded build whose environment was since damaged is built again.
+    environment = Path(plan.marker_dir)
+    return (environment / "pyvenv.cfg").is_file() and environment_problem(environment) is None
 
 
 def _write_marker(plan: ProvisionPlan) -> None:
     if not plan.marker_dir or not plan.fingerprint:
         return
     marker = Path(plan.marker_dir) / _MARKER
+    partial = marker.with_name(f"{_MARKER}.{os.getpid()}.tmp")
     try:
-        marker.write_text(
+        partial.write_text(
             json.dumps({"fingerprint": plan.fingerprint, "argv": list(plan.argv[1:])}),
             encoding="utf-8",
         )
+        os.replace(partial, marker)  # never a half-written marker
     except OSError as exc:  # the environment is built; only the shortcut is lost
+        partial.unlink(missing_ok=True)
         trace.event("TOOLS", "mcp_prepare_marker_unwritable path=%s error=%r", marker, exc)
 
 
@@ -572,6 +743,15 @@ def _failure_reason(output: str) -> str:
     """The typed reason a failed build's ``output`` names (Windows-specific causes)."""
 
     lowered = output.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            _ENVIRONMENT_REPAIR_FAILED,
+            "not a valid python environment",
+            "failed to query python interpreter",
+        )
+    ):
+        return PROVISION_ENVIRONMENT_INVALID
     if "windows pe resources" in lowered:
         return PROVISION_ACCESS_DENIED
     if any(
@@ -700,7 +880,9 @@ def _run_provision(
             if not progressed(work, last) or now - started >= ceiling:
                 _kill_tree(process)
                 why = "no progress" if now - started < ceiling else "ceiling reached"
-                raise PrepareError(PROVISION_NO_PROGRESS, f"{label} {why} after {now - started:.0f}s")
+                raise PrepareError(
+                    PROVISION_NO_PROGRESS, f"{label} {why} after {now - started:.0f}s"
+                )
             last, last_check = work, now
     finally:
         for reader in readers:
@@ -725,6 +907,36 @@ def _run_provision(
             _failure_reason(text), f"{label} exited {process.returncode}: {text[-1500:]}"
         )
     return None
+
+
+@contextmanager
+def _owned_environment(environment: str) -> Iterator[None]:
+    """Hold CLIO's own ``uv`` project environment's lock while it is built.
+
+    Builds of one environment are serialized across processes, and one an interrupted
+    build left invalid is removed first, so ``uv sync`` rebuilds it instead of refusing it.
+    Empty ``environment`` (a declared or clio-kit environment) does nothing.
+    """
+
+    if not environment:
+        yield
+        return
+    from clio_agent.tools.mcp_environment_repair import (  # noqa: PLC0415
+        LOCKS_DIRNAME,
+        environment_lock,
+        repair_environment,
+    )
+
+    target = Path(environment)
+    lock_root = target.parent / LOCKS_DIRNAME
+    ceiling = provision_max_wait_s()
+    with environment_lock(lock_root, target.name, timeout=ceiling) as locked:
+        if not locked:
+            raise PrepareError(
+                CACHE_LOCK_TIMEOUT, f"{target.name}: another build held it past {ceiling:.0f}s"
+            )
+        repair_environment(target, lock_root, lock_held=True)
+        yield
 
 
 def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
@@ -776,11 +988,12 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     work_dir = cwd or os.getcwd()
     started = time.monotonic()
     try:
-        if uses_shared_launcher_cache(spec):
-            with acquire_launcher_cache_lock(namespace):
+        with _owned_environment(plan.env.get(_ENV_VAR, "")):
+            if uses_shared_launcher_cache(spec):
+                with acquire_launcher_cache_lock(namespace):
+                    result = _run_provision(namespace, plan, env, work_dir)
+            else:
                 result = _run_provision(namespace, plan, env, work_dir)
-        else:
-            result = _run_provision(namespace, plan, env, work_dir)
     except _UnsupportedLauncher as exc:
         trace.event(
             "TOOLS",
@@ -981,6 +1194,7 @@ __all__ = [
     "PROVISIONED",
     "PROVISION_ACCESS_DENIED",
     "PROVISION_CACHED",
+    "PROVISION_ENVIRONMENT_INVALID",
     "PROVISION_NETWORK",
     "PROVISION_NOT_APPLICABLE",
     "PROVISION_PATH_TOO_LONG",
