@@ -16,11 +16,13 @@ def run_confined(
     cwd: Path,
     workspace_root: Path | None,
     timeout_seconds: float = 120.0,
+    office: bool = False,
 ) -> str:
     """Run ``command`` confined to the workspace's write roots with the network denied.
 
     With no ``workspace_root`` the command runs unconfined, as the rendition pipeline does
-    outside a workspace. Returns the command's standard output.
+    outside a workspace. ``office`` marks a LibreOffice command (see
+    :func:`sandbox.wrap_confined`). Returns the command's standard output.
 
     Raises:
         DocumentError: the command failed or timed out.
@@ -41,6 +43,7 @@ def run_confined(
             net_policy=sandbox.NET_DENY,
             profile=sandbox.PROFILE_SHELL,
             pdeathsig=False,
+            office=office,
         )
         command = [confined.command, *confined.args]
         env = {**os.environ, **confined.env_overlay}

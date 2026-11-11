@@ -41,6 +41,7 @@ from typing import Any, Literal
 
 KIND_WRITE_DENIED = "write_denied"
 KIND_ELEVATION_REQUIRED = "elevation_required"
+KIND_OFFICE_IN_SHELL = "office_in_shell"
 CONFIRMED = "confirmed"
 POSSIBLE = "possible"
 
@@ -71,6 +72,9 @@ DENIAL_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("EPERM", re.compile(r"\bEPERM\b")),
 )
 
+#: #2139: AppKit LibreOffice aborts (SIGABRT) under the macOS shell fence.
+_OFFICE_COMMAND = re.compile(r"\b(?:soffice|libreoffice)\b", re.IGNORECASE)
+_ABORT_EXIT_CODES = (134, -6)
 _ELEVATION_TEXT = re.compile(r"requires elevation|\bERROR_ELEVATION_REQUIRED\b", re.IGNORECASE)
 #: Quoted text in a denial line (straight and typographic quotes, as GNU tools print).
 _QUOTED = re.compile(r"'([^'\r\n]+)'|\"([^\"\r\n]+)\"|‘([^’\r\n]+)’|“([^”\r\n]+)”")
@@ -127,6 +131,7 @@ class BoundaryDiagnosis:
         if not isinstance(payload, Mapping) or payload.get("kind") not in (
             KIND_WRITE_DENIED,
             KIND_ELEVATION_REQUIRED,
+            KIND_OFFICE_IN_SHELL,
         ):
             return None
         return cls(
@@ -195,6 +200,18 @@ def diagnose_boundary(
             mechanism=mechanism,
             message=_elevation_message(),
             signature="ERROR_ELEVATION_REQUIRED",
+        )
+    if (
+        platform == "darwin"
+        and exit_code in _ABORT_EXIT_CODES
+        and _OFFICE_COMMAND.search(command or "")
+    ):
+        return BoundaryDiagnosis(
+            kind=KIND_OFFICE_IN_SHELL,
+            confidence=CONFIRMED,
+            mechanism=mechanism,
+            message=_office_message(),
+            signature="SIGABRT",
         )
     signature, lines = _denial_lines(text)
     if not signature:
@@ -497,6 +514,15 @@ def _narrowed_message(write_roots: Sequence[Path | str], confidence: str) -> str
     )
 
 
+def _office_message() -> str:
+    return (
+        "On macOS, LibreOffice can't start inside CLIO's shell sandbox, so don't retry soffice "
+        "here. To convert an Office file to PDF or see how it looks, call prepare_document "
+        "with action='render' on it: the result's 'pdf' field is the converted PDF. For an "
+        "XLSX recalculation, use action='recalculate'."
+    )
+
+
 def _elevation_message() -> str:
     return (
         "This needs administrator rights. CLIO's sandbox can't elevate a command, so no "
@@ -567,6 +593,7 @@ __all__ = [
     "DENIAL_SIGNATURES",
     "ELEVATION_EXIT_CODE",
     "KIND_ELEVATION_REQUIRED",
+    "KIND_OFFICE_IN_SHELL",
     "KIND_WRITE_DENIED",
     "POSSIBLE",
     "BoundaryDiagnosis",

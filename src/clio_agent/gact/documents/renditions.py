@@ -110,13 +110,16 @@ def _find_executable(*names: str) -> str | None:
     return None
 
 
-def _run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> None:
+def _run(
+    command: list[str], *, cwd: Path, timeout_seconds: float = 120.0, office: bool = False
+) -> None:
     try:
         run_confined(
             command,
             cwd=cwd,
             workspace_root=_RENDER_WORKSPACE.get(),
             timeout_seconds=timeout_seconds,
+            office=office,
         )
     except (DocumentError, SandboxCompositionError) as exc:
         raise RenditionError(str(exc)) from exc
@@ -161,7 +164,7 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
             source,
             output_dir,
             "pdf",
-            execute=lambda command, cwd: _run(command, cwd=cwd),
+            execute=lambda command, cwd: _run(command, cwd=cwd, office=True),
             executable_path=soffice,
             workspace=_RENDER_WORKSPACE.get(),
             profile_templates=office_profile_templates(),
