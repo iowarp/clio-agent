@@ -23,6 +23,15 @@ SOURCES = {
     "amd64": r"https://snapshot\.ubuntu\.com/ubuntu/\d{8}T\d{6}Z/pool/.+_(amd64|all)\.deb",
     "arm64": r"https://launchpadlibrarian\.net/\d+/[^/]+_(arm64|all)\.deb",
 }
+#: An entry's optional ``url``: the same file's immutable librarian copy (#2104).
+LIBRARIAN = {
+    "amd64": r"https://launchpadlibrarian\.net/\d+/[^/]+_(amd64|all)\.deb",
+    "arm64": SOURCES["arm64"],
+}
+
+
+def _pinned_from(key: str, url: str) -> bool:
+    return bool(re.fullmatch(SOURCES[key], url) or re.fullmatch(LIBRARIAN[key], url))
 
 
 def _lock() -> dict[str, Any]:
@@ -99,8 +108,11 @@ def test_the_lock_holds_one_verified_package_set_per_architecture() -> None:
         names = [item["package"] for item in entry["packages"]]
         assert names == sorted(set(names))
         for item in entry["packages"]:
-            assert set(item) == {"package", "version", "path", "sha256", "size"}
+            assert set(item) - {"url"} == {"package", "version", "path", "sha256", "size"}
             assert re.fullmatch(SOURCES[key], f"{entry['base']}/{item['path']}")
+            if "url" in item:
+                assert re.fullmatch(LIBRARIAN[key], item["url"])
+                assert item["url"].rsplit("/", 1)[1] == Path(item["path"]).name
             assert Path(item["path"]).name.startswith(f"{item['package']}_")
             assert re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) and item["size"] > 0
 
@@ -127,7 +139,7 @@ def test_the_lock_pins_the_c_runtime_and_the_desktop_libraries(
     assert {"libc6", "libstdc++6", "libx11-6", "libxinerama1", "libcairo2", "libcups2"} <= names
     assert {"libfontconfig1", "libnss3", "libglib2.0-0"} <= names
     for url, checksum in pinned:
-        assert re.fullmatch(SOURCES[key], url)
+        assert _pinned_from(key, url)
         assert len(checksum) == 64
 
 
@@ -181,7 +193,7 @@ def test_wrapper_published_last_and_remains_relocatable(
 
     def download(url: str, target: Path, checksum: str) -> None:
         assert not (root / office_compat.WRAPPER).exists()
-        assert len(checksum) == 64 and re.fullmatch(SOURCES[key], url)
+        assert len(checksum) == 64 and _pinned_from(key, url)
         calls.append(url)
         target.write_bytes(payload)
 
