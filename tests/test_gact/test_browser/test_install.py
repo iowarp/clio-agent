@@ -81,3 +81,37 @@ def test_another_process_downloading_is_a_typed_preparing_answer(
         install.ensure_chromium()
     assert raised.value.reason == install.REASON_PREPARING
     assert raised.value.detail == {"status": "preparing"}
+
+
+_PLAYWRIGHT_TLS_STDOUT = (
+    "Downloading Chrome for Testing 156.0.8078.4 (playwright chromium v1248) from "
+    "https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip\n"
+    "Failed to install browsers\n"
+    "Error: Failed to download Chrome for Testing 156.0.8078.4 (playwright chromium v1248), "
+    "caused by\nError: Download failure, code=1\n"
+)
+_NODE_TLS_ERROR = (
+    "Error: self-signed certificate in certificate chain\n"
+    "    at TLSSocket.onConnectSecure (node:internal/tls/wrap:1788:34)\n"
+    "    at TLSSocket.emit (node:events:514:28) {\n"
+    "  code: 'SELF_SIGNED_CERT_IN_CHAIN'\n}\n"
+)
+
+
+def test_install_failure_names_the_cause_without_stack_frames() -> None:
+    """Playwright's retried Node.js errors become one cause and its fix, never a stack."""
+    message = install.install_failure(1, _PLAYWRIGHT_TLS_STDOUT, _NODE_TLS_ERROR * 5)
+
+    assert "cdn.playwright.dev" in message
+    assert "NODE_EXTRA_CA_CERTS" in message
+    assert message.count("SELF_SIGNED_CERT_IN_CHAIN") == 1
+    assert " at TLSSocket" not in message and "caused by" not in message
+
+
+def test_install_failure_without_a_known_code_keeps_playwrights_error() -> None:
+    message = install.install_failure(1, "", "Error: something else broke\n")
+
+    assert message == (
+        "Downloading Chromium failed: the download from the Playwright download host did not "
+        "complete. Playwright reported: Error: something else broke."
+    )
