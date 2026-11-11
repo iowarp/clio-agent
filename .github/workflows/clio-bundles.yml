@@ -257,6 +257,13 @@ jobs:
           for f in $(grep -rlE 'ppa\.launchpad(content)?\.net' /etc/apt/sources.list.d 2>/dev/null || true); do
             sudo mv "$f" "$f.disabled"
           done
+          # In the same outage the image's own mirror stopped resolving, and apt waited out DNS
+          # (about 20 s) on every package before falling back. Use the upstream hosts instead.
+          if ! timeout 15 getent hosts azure.archive.ubuntu.com >/dev/null; then
+            echo "::warning::azure.archive.ubuntu.com does not resolve; using archive/ports.ubuntu.com"
+            { grep -rlE 'azure\.(archive|ports)\.ubuntu\.com' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true; } \
+              | xargs -r sudo sed -i -E 's#azure\.(archive|ports)\.ubuntu\.com#\1.ubuntu.com#g'
+          fi
           apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
           sudo apt-get "${apt_opts[@]}" update
           sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
