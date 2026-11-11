@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CLIO uninstaller (Linux / macOS).
 #
-# Undoes install.sh: stops the server, removes the launcher, and
+# Undoes install.sh: stops the server, removes the launcher, the tools the installer
+# added (the clio-kit tool, and uv and uvx when it installed them), and
 # removes known application payloads. Pass --purge to also remove the
 # resolved Agent config directory. Data, state, and other products are retained.
 #
@@ -171,6 +172,11 @@ echo ""
 echo "CLIO uninstall — the following will be removed:"
 echo "  application payloads in: $CLIO_PREFIX (unknown files retained)"
 echo "  launcher:        $LAUNCHER"
+if [[ -f "$CLIO_PREFIX/installed-tools" ]]; then
+  echo "  installer tools: $(awk '{printf "%s%s", (NR > 1 ? ", " : ""), $2}' "$CLIO_PREFIX/installed-tools")"
+elif [[ -d "$CLIO_PREFIX/clio-agent" ]]; then
+  echo "  installer tools: clio-kit"
+fi
 if [[ "$PURGE" -eq 1 ]]; then
   echo "  clio config:     $CLIO_CONFIG  (--purge)"
 else
@@ -328,6 +334,43 @@ purge_data() {
 
 # Compare against the seeds before the payloads holding them go.
 if [[ "$PURGE" -eq 1 ]]; then purge_core_seed; fi
+
+# ---- tools the installer added (install.sh's installed-tools) ---------
+# clio-kit first, with the uv the installer used, then uv and uvx if it installed them.
+# Before 0.9.6 nothing was recorded; clio-kit was always installed, so it goes too.
+INSTALLED_TOOLS="$CLIO_PREFIX/installed-tools"
+remove_installed_tools() {
+  local uv_bin="" kind value tools=() files=()
+  if [[ -f "$INSTALLED_TOOLS" ]]; then
+    while read -r kind value; do
+      case "$kind" in
+        uv-tool) [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && tools+=("$value") ;;
+        file) [[ "$value" == /* && "$(basename "$value")" =~ ^uvx?$ ]] && files+=("$value") ;;
+      esac
+    done < "$INSTALLED_TOOLS"
+  elif [[ -d "$CLIO_PREFIX/clio-agent" ]]; then
+    tools=(clio-kit)
+  fi
+  for value in ${files[@]+"${files[@]}"}; do
+    [[ "$(basename "$value")" == uv && -x "$value" ]] && uv_bin="$value"
+  done
+  [[ -n "$uv_bin" ]] || uv_bin="$(command -v uv 2>/dev/null || true)"
+  [[ -n "$uv_bin" ]] || [[ ! -x "$CLIO_PREFIX/clio-agent/.venv/bin/uv" ]] || uv_bin="$CLIO_PREFIX/clio-agent/.venv/bin/uv"
+  for value in ${tools[@]+"${tools[@]}"}; do
+    [[ -n "$uv_bin" ]] && "$uv_bin" tool list 2>/dev/null | grep -q "^$value " || continue
+    say "Removing the $value tool"
+    "$uv_bin" tool uninstall "$value" >/dev/null 2>&1 \
+      || warn "Could not remove the $value tool; run 'uv tool uninstall $value'."
+  done
+  for value in ${files[@]+"${files[@]}"}; do
+    if [[ -f "$value" ]]; then
+      say "Removing $value"
+      rm -f -- "$value"
+    fi
+  done
+  rm -f -- "$INSTALLED_TOOLS"
+}
+remove_installed_tools
 
 # ---- remove files ----------------------------------------------------
 if [[ -e "$LAUNCHER" ]]; then

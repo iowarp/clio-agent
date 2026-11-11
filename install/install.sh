@@ -827,6 +827,17 @@ if [ "$OS" = darwin ] && ! macos_developer_tools; then
   trap 'rm -rf "$tool_shim"' EXIT  # on_exit, below, takes over
 fi
 
+# What this installer added outside its own folders, one "kind value" line each, so
+# uninstall.sh removes exactly that: "file PATH" (uv and uvx, only when installed here)
+# and "uv-tool NAME" (clio-kit). A user's own uv is never listed.
+INSTALLED_TOOLS="$PREFIX/installed-tools"
+# An install from before this record has its clio-kit from that installer.
+UNRECORDED_INSTALL=0
+[ -e "$INSTALLED_TOOLS" ] || [ ! -d "$PREFIX/clio-agent" ] || UNRECORDED_INSTALL=1
+record_installed() {  # KIND VALUE
+  grep -qxF "$1 $2" "$INSTALLED_TOOLS" 2>/dev/null || printf '%s %s\n' "$1" "$2" >> "$INSTALLED_TOOLS"
+}
+
 # uv installs Python, the environment and the locked dependencies in every mode.
 mkdir -p "$PREFIX" "$BIN_DIR"
 if ! have uv; then
@@ -834,6 +845,7 @@ if ! have uv; then
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null \
     || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
   export PATH="$BIN_DIR:$PATH"
+  for f in uv uvx; do [ ! -f "$BIN_DIR/$f" ] || record_installed file "$BIN_DIR/$f"; done
 fi
 
 # A fresh Mac's /usr/bin/git is a placeholder (above). Decided from the filesystem,
@@ -1280,6 +1292,13 @@ start_clio_kit() {
   else
     clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
     say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
+  fi
+  # Recorded for uninstall unless the user already had it: the tool's name is the spec
+  # without its version and extras (a path or URL spec has none to record).
+  local tool="${clio_kit_spec%%[=\[<>~! ]*}"
+  if [[ "$tool" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+      && { [ "$UNRECORDED_INSTALL" = 1 ] || ! uv tool list 2>/dev/null | grep -q "^$tool "; }; then
+    record_installed uv-tool "$tool"
   fi
   uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
   CLIO_KIT_JOB=$!

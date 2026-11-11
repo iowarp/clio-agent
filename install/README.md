@@ -234,7 +234,9 @@ clio uninstall
 clio uninstall -Purge
 ```
 
-Uninstall stops the server, removes the launcher, and deletes the
+Uninstall stops the server, removes the launcher and the tools the installer
+added (the `clio-kit` uv tool, and `uv`/`uvx` when the installer installed them
+rather than finding yours; on Linux and macOS), and deletes the
 application payloads in the install prefix
 (`~/Library/Application Support/clio-agent/data/app` on macOS,
 `~/.local/share/clio-agent/app` on Linux, `%LOCALAPPDATA%\clio-agent\data\app` on
