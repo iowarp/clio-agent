@@ -351,6 +351,7 @@ class DocumentAnchor(_WireModel):
     tag: str = ""
     text_excerpt: str = ""
     html_excerpt: str = ""
+    src: str = ""
     viewport_width: int | None = None
     source: dict[str, Any] = Field(default_factory=dict)
 

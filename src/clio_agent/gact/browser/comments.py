@@ -3,9 +3,11 @@
 A page comment is an attachment to the next message (ledger FB19). When it is sent, the server
 takes a fresh screenshot of the page's view (addendum A, section 3) and resolves each mark on
 the live page: a region is its box, the text and elements under it, and its crop; a picked
-element is found again by its selector and named by Chromium's accessibility tree, which gives
-a target spec the agent's browser script can use directly; a text selection carries its
-context. The entries use the same format as every other comment session.
+element is found again the way the live view's pins are (its selector, then its image source,
+role and accessible name, or text) and named by Chromium's accessibility tree, which gives a
+target spec the agent's browser script can use directly; an image also names its source; a text
+selection carries its context and is found again by its quote. A mark that is no longer on the
+page says so. The entries use the same format as every other comment session.
 """
 
 from __future__ import annotations
@@ -15,10 +17,13 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.browser.picker import LOCATE_JS
+from clio_agent.gact.browser.settings import page_errors
 from clio_agent.gact.documents.anchors import ResolvedMark, mark_mode
 from clio_agent.gact.documents.comment_settings import context_chars
 from clio_agent.gact.documents.mark_images import MarkBox, crop_png, labelled_overview_png
 from clio_agent.gact.documents.review_render import entry_block, joined_labels
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -104,12 +109,38 @@ async def _measure(
     """The screenshot, and each mark resolved on the page at ``view``."""
 
     out: dict[str, Any] = {"png": await page.screenshot(type="png"), "view": view, "marks": {}}
+    followed = [
+        {"label": mark.label, "anchor": mark.anchor.model_dump()}
+        for mark in attachment.marks
+        if mark.anchor.profile in ("dom", "text-quote")
+    ]
+    located: dict[str, dict[str, Any]] = {}
+    if followed:
+        try:
+            located = {item["label"]: item for item in await page.evaluate(LOCATE_JS, followed)}
+        except page_errors() as exc:  # the page is navigating: elements fall back to selectors
+            trace.event("BROWSER", "comment locate failed error=%s", str(exc)[:200])
     cdp = await page.context.new_cdp_session(page)
     try:
         for mark in attachment.marks:
             anchor = mark.anchor
+            where = located.get(mark.label)
             if anchor.profile == "dom" and anchor.selector:
-                out["marks"][mark.label] = await _ax(page, cdp, anchor.selector)
+                if where is not None and not where.get("found"):
+                    out["marks"][mark.label] = {"count": 0, "reason": where.get("reason")}
+                    continue
+                selector = str((where or {}).get("selector") or anchor.selector)
+                count, rect, role, name = await _ax(page, cdp, selector)
+                out["marks"][mark.label] = {
+                    "count": count,
+                    "rect": rect,
+                    "role": role,
+                    "name": name,
+                    "how": (where or {}).get("how", "selector"),
+                    "selector": selector,
+                }
+            elif anchor.profile == "text-quote" and where is not None:
+                out["marks"][mark.label] = where
             elif anchor.profile == "region" and anchor.rect:
                 x, y, w, h = anchor.rect
                 box = [
@@ -122,6 +153,20 @@ async def _measure(
     finally:
         await cdp.detach()
     return out
+
+
+_FOUND_BY = {"src": "image source", "role": "role and accessible name", "text": "text"}
+
+
+def _view_rect(rect: list[float], view: dict[str, int]) -> tuple[float, float, float, float]:
+    """A box in CSS pixels of ``view`` as a normalized rectangle clipped to it."""
+
+    left, top, width, height = rect
+    x = min(1.0, max(0.0, left / view["width"]))
+    y = min(1.0, max(0.0, top / view["height"]))
+    right = min(1.0, max(0.0, (left + width) / view["width"]))
+    bottom = min(1.0, max(0.0, (top + height) / view["height"]))
+    return x, y, max(0.0, right - x), max(0.0, bottom - y)
 
 
 def _target_spec(role: str, name: str, selector: str) -> str:
@@ -174,6 +219,19 @@ def render_page_comments(
             if anchor.suffix:
                 found.lines.append(("After", f'"{anchor.suffix[:width]}..."'))
             found.under = anchor.exact
+            where = (captured or {}).get("marks", {}).get(mark.label)
+            if where and where.get("found"):
+                found.rect = _view_rect(where["rect"], view)
+                if found.rect[2] > 0 and found.rect[3] > 0 and screenshot is not None:
+                    found.crop = crop_png(screenshot, list(found.rect))
+                else:
+                    found.rect = None  # on the page but outside the view
+            elif where:
+                found.notes.append(
+                    "text_hidden: the selected text is on the page but not shown"
+                    if where.get("reason") == "hidden"
+                    else "text_not_found: the selected text is no longer on the page"
+                )
         elif anchor.profile == "region" and anchor.rect:
             x, y, w, h = anchor.rect
             found.rect = (x, y, w, h)
@@ -190,26 +248,35 @@ def render_page_comments(
             if screenshot is not None:
                 found.crop = crop_png(screenshot, anchor.rect)
         elif anchor.profile == "dom":
-            count, rect, role, name = (captured or {}).get("marks", {}).get(mark.label) or (
-                0,
-                None,
-                "",
-                "",
-            )
+            measured = (captured or {}).get("marks", {}).get(mark.label) or {"count": 0}
+            count, rect = int(measured.get("count") or 0), measured.get("rect")
+            role, name = str(measured.get("role") or ""), str(measured.get("name") or "")
+            selector = str(measured.get("selector") or anchor.selector)
             label = f"<{anchor.tag or 'element'}>"
             if role:
                 label += f", role {role}" + (f' "{name}"' if name else "")
             found.lines.append(("Element", label))
-            found.lines.append(("Target", _target_spec(role, name, anchor.selector)))
+            if anchor.src:
+                found.lines.append(("Image", anchor.src))
+            found.lines.append(("Target", _target_spec(role, name, selector)))
             if anchor.text_excerpt:
-                found.lines.append(("Text", f'"{anchor.text_excerpt[:400]}"'))
-            if count == 0:
+                kind = "Alt" if anchor.src else "Text"
+                found.lines.append((kind, f'"{anchor.text_excerpt[:400]}"'))
+            how = measured.get("how")
+            if captured is not None and count == 0:
                 found.notes.append(
-                    "element_not_found: the selector matches nothing on the page now"
+                    "element_hidden: the element is on the page but not shown"
+                    if measured.get("reason") == "hidden"
+                    else "element_not_found: the element is no longer on the page"
                 )
             elif count > 1:
                 found.notes.append(
                     f"element_ambiguous: the selector matches {count} elements; the first is shown"
+                )
+            elif how in _FOUND_BY:
+                found.notes.append(
+                    f"element_moved: the page changed; found again by its {_FOUND_BY[how]} "
+                    f"as {selector}"
                 )
             if rect is not None:
                 left, top, width_px, height_px = rect
