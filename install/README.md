@@ -40,8 +40,13 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
 
 ## What gets installed (default: release mode)
 
-- `clio-agent` (server, Python) — latest from **PyPI**, installed into a
-  managed virtualenv at `$CLIO_PREFIX/clio-agent/.venv`
+- `clio-agent` (server, Python), installed into a managed virtualenv at
+  `$CLIO_PREFIX/clio-agent/.venv` from the release's prebuilt runtime archive when
+  the release publishes one for your platform, otherwise from **PyPI**
+  (`CLIO_INSTALL_FROM=pypi` forces PyPI)
+- `git` — the runtime archive's relocatable git, at `$CLIO_PREFIX/clio-agent/.venv/git`.
+  CLIO uses your own `git` when one is on PATH and this one otherwise, to install
+  marketplace agents (including the default `clio/standard`)
 - Web frontend — the matching release bundle, unpacked to `$CLIO_PREFIX/clio-agent/web`
 - `clio-kit` MCP launcher — provisioned via `uv tool install clio-kit==2.12.3`
   using the backend's selected Python (idempotent) when `uv` is present. Scientific
@@ -64,7 +69,11 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
 - `curl` (Linux/macOS) / `Invoke-WebRequest` (PowerShell — built in)
 - The installer provisions `uv` when missing and the release's managed Python.
 
-That's it — no `git`, no `go`.
+- `git` only for a PyPI install (no runtime archive for your platform, or
+  `CLIO_INSTALL_FROM=pypi`): CLIO installs marketplace agents, including the default
+  one, with git. Without it, no conversation can start until git is installed.
+
+No `go` is needed.
 
 CLIO 0.9.6.1 selects standard Python 3.14 with the GIL enabled for source, release
 and bundled installations.
