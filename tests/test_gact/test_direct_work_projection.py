@@ -86,6 +86,12 @@ def test_parent_work_keeps_flow_but_excludes_its_agents_and_tools(
     assert own["total"] == 2
     assert [task["handle"] for task in read(flow_sid)["processes"]] == [researcher.handle]
     assert [task["handle"] for task in read(researcher_sid)["processes"]] == [source.handle]
+    # Active means queued, running or waiting: the idle open flow is not listed until
+    # it is underway.
+    assert read(sid, active_only=True)["processes"] == []
+    app.state.task_history.record_snapshot(
+        flow.model_copy(update={"activity": "executing"}), observation_id=uuid4().hex
+    )
     assert {task["handle"] for task in read(sid, active_only=True)["processes"]} == {flow.handle}
     full = {task["handle"] for task in read(sid, include_descendants=True)["processes"]}
     assert {
