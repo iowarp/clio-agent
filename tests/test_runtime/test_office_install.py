@@ -574,6 +574,25 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/registry/res/registry_en-GB.xcd",
         "share/registry/main.xcd",
         "share/fonts/truetype/DejaVuSans.ttf",
+        "share/Scripts/python/HelloWorld.py",
+        "share/wizards/agenda.py",
+        "program/wizards/fax/FaxWizard.py",
+        "share/template/common/layout/lyt-blue.otp",
+        "share/template/shellnew/soffice.odt",
+        "share/gallery/arrows.sdg",
+        "share/autocorr/acor_en-US.dat",
+        "share/autotext/en-US/standard.bau",
+        "share/fingerprint/en.lm",
+        "share/tipoftheday/tipoftheday.png",
+        "share/numbertext/en.sor",
+        "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "readmes/readme_de.txt",
+        "readmes/readme_en-US.txt",
+        "program/python-core-3.12.14/lib/pip/__init__.py",
+        "program/python-core-3.12.14/lib/setuptools/dist.py",
+        "program/python-core-3.12.14/lib/distutils-precedence.pth",
+        "program/python-core-3.12.14/lib/encodings/utf_8.py",
+        "program/python-core-3.12.14/lib/re/__init__.py",
     ]
     for name in names:
         (image / name).parent.mkdir(parents=True, exist_ok=True)
@@ -585,3 +604,23 @@ def test_unread_names_exactly_what_prune_unread_removes(
     assert skipped == removed
     assert "share/extensions/dict-de/hyph_de_DE.dic" not in skipped
     assert "program/resource/de/LC_MESSAGES/sw.mo" in skipped
+    assert {
+        "share/Scripts/python/HelloWorld.py",
+        "program/wizards/fax/FaxWizard.py",
+        "share/gallery/arrows.sdg",
+        "readmes/readme_de.txt",
+        "program/python-core-3.12.14/lib/pip/__init__.py",
+        "program/python-core-3.12.14/lib/distutils-precedence.pth",
+    } <= skipped
+    # What a conversion reads: the startup Python, layout configuration, fonts, the
+    # NUMBERTEXT data, new-document templates, autotext and the English readme.
+    assert not skipped & {
+        "program/python-core-3.12.14/lib/encodings/utf_8.py",
+        "program/python-core-3.12.14/lib/re/__init__.py",
+        "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "share/fonts/truetype/DejaVuSans.ttf",
+        "share/numbertext/en.sor",
+        "share/template/shellnew/soffice.odt",
+        "share/autotext/en-US/standard.bau",
+        "readmes/readme_en-US.txt",
+    }
