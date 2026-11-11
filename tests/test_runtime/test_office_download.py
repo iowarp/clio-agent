@@ -36,30 +36,38 @@ def test_fresh_request_recovers_without_accepting_unverified_bytes(
 
     monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
     monkeypatch.setattr(office_fetch.time, "sleep", delays.append)
+    monkeypatch.setattr(office_fetch.random, "uniform", lambda low, high: 1.0)
     target = tmp_path / "package.part"
     office_fetch.download(
         "https://example.invalid/package", target, hashlib.sha256(payload).hexdigest()
     )
     assert target.read_bytes() == payload
     assert attempts == ["https://example.invalid/package"] * 2
-    assert delays == [1]
+    assert delays == [1.0]
 
 
 def test_repeated_corrupt_download_fails_closed_and_removes_partial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     attempts: list[str] = []
+    delays: list[float] = []
 
     def fetch(request: urllib.request.Request, **kwargs: Any) -> io.BytesIO:
         attempts.append(request.full_url)
         return io.BytesIO(b"corrupt")
 
     monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
-    monkeypatch.setattr(office_fetch.time, "sleep", lambda delay: None)
+    monkeypatch.setattr(office_fetch.time, "sleep", delays.append)
     target = tmp_path / "package.part"
-    with pytest.raises(DocumentError, match="all three download attempts failed") as failure:
+    limit = office_fetch._MAX_ATTEMPTS
+    with pytest.raises(DocumentError, match=f"all {limit} download attempts failed") as failure:
         office_fetch.download("https://example.invalid/package", target, "0" * 64)
-    assert len(attempts) == 3
+    assert len(attempts) == limit
+    # Doubling backoff from 1 s, capped, with +/-50% jitter between attempts.
+    assert len(delays) == limit - 1
+    for failed, delay in enumerate(delays, start=1):
+        backoff = min(2.0 ** (failed - 1), office_fetch._BACKOFF_CAP_S)
+        assert 0.5 * backoff <= delay <= 1.5 * backoff
     assert not target.exists()
     assert "expected " + "0" * 64 in str(failure.value)
     assert "7 bytes" in str(failure.value)
