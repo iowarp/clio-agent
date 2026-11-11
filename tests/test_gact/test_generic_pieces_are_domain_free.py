@@ -24,6 +24,8 @@ FORBIDDEN = re.compile(
     r"\bwordle\b|\bwords?\b|\bgames?\b|\bguess(?:es|ed|ing)?\b|oscillat|\bperiods?\b",
     re.IGNORECASE,
 )
+#: Typography and status-label phrasing that uses "word" in its ordinary sense.
+BENIGN = re.compile(r"\bbroken word\b|\bstate word\b", re.IGNORECASE)
 
 GENERIC = [
     MARKETPLACE / "delegation",
@@ -67,6 +69,6 @@ def test_generic_pieces_name_no_study_domain() -> None:
         for number, line in enumerate(
             path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
         )
-        if FORBIDDEN.search(line)
+        if FORBIDDEN.search(BENIGN.sub("", line))
     ]
     assert offenders == []
