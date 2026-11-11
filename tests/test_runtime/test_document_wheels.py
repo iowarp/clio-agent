@@ -70,10 +70,6 @@ def write_manifest(runtime: Path, manifest: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     "damage",
     [
-        "lock",
-        "interpreter",
-        "platform",
-        "schema",
         "missing",
         "duplicate",
         "version",
@@ -89,11 +85,7 @@ def write_manifest(runtime: Path, manifest: dict[str, Any]) -> None:
 def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: str) -> None:
     runtime, stack, project, manifest = wheel_bundle(tmp_path)
     entry = manifest["packages"][0]
-    if damage == "lock":
-        (stack / "uv.lock").write_text("version = 99\n")
-    elif damage in {"interpreter", "platform", "schema"}:
-        manifest[{"interpreter": "cache_tag"}.get(damage, damage)] = "different"
-    elif damage == "missing":
+    if damage == "missing":
         manifest["packages"] = []
     elif damage == "duplicate":
         manifest["packages"].append(entry.copy())
@@ -113,6 +105,21 @@ def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: s
     write_manifest(runtime, manifest)
     with pytest.raises(ValueError, match="Bundled document wheel"):
         bundled_wheel_requirements(runtime, stack, project)
+    assert not (project / "bundled-requirements.txt").exists()
+
+
+@pytest.mark.parametrize("other", ["lock", "interpreter", "platform", "schema"])
+def test_bundle_for_another_lock_or_interpreter_defers_to_locked_sync(
+    tmp_path: Path, other: str
+) -> None:
+    """An in-place clio-agent update keeps the older runtime's wheels for an older lock."""
+    runtime, stack, project, manifest = wheel_bundle(tmp_path)
+    if other == "lock":
+        (stack / "uv.lock").write_text("version = 99\n")
+    else:
+        manifest[{"interpreter": "cache_tag"}.get(other, other)] = "different"
+        write_manifest(runtime, manifest)
+    assert bundled_wheel_requirements(runtime, stack, project) is None
     assert not (project / "bundled-requirements.txt").exists()
 
 
