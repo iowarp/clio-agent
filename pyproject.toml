@@ -134,8 +134,11 @@ dependencies = [
     "sse-starlette>=1.6.0",
     # clio_agent.client (#799) — the typed GACT client imports httpx directly
     # (already present transitively via fastmcp/dspy; declared so the SDK
-    # does not lean on someone else's dependency tree).
-    "httpx>=0.27.0",
+    # does not lean on someone else's dependency tree). The socks extra is
+    # required: the Windows mxc fence's network proxy sets ALL_PROXY=socks5h://
+    # in every confined child, and httpx raises at client construction without
+    # socksio, which broke web_search/web_fetch in the web MCP.
+    "httpx[socks]>=0.27.0",
     # MCP 2's OAuth auth-flow request/response types and consent revocation guard.
     "httpx2>=2.9.1",
     # Connected storage uses file APIs, never an implicit FUSE mount.
