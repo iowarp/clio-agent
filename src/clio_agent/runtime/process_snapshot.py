@@ -54,6 +54,21 @@ def belongs_to_runtime(node: ProcessNode, owner_roots: Sequence[str]) -> bool:
     return False
 
 
+def _windows_parent_table(psutil: Any) -> Optional[dict[int, int]]:
+    """Read every parent pid in one system snapshot, or ``None`` to ask per process.
+
+    psutil's Windows ``ppid()`` rebuilds this whole-system table for each process it
+    is asked about: about 15 ms each, 9 s for 600 processes, which held server boot.
+    """
+
+    if os.name != "nt":
+        return None
+    try:
+        return {int(pid): int(ppid) for pid, ppid in psutil._psplatform.cext.ppid_map().items()}
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 def snapshot_process_nodes(
     server_root_pid: int,
     daemon_root_pid: Optional[int],
@@ -75,14 +90,24 @@ def snapshot_process_nodes(
 
     raw: dict[int, ProcessNode] = {}
     process_handles: dict[int, Any] = {}
-    for proc in psutil.process_iter(["pid", "ppid", "name", "create_time"]):
+    parents = _windows_parent_table(psutil)
+    fields = ["pid", "name", "create_time"]
+    if parents is None:
+        fields.append("ppid")
+    for proc in psutil.process_iter(fields):
         try:
             info = proc.info
             pid = int(info["pid"])
             name = str(info.get("name") or "")
+            if parents is None:
+                ppid = int(info.get("ppid") or 0)
+            elif pid in parents:
+                ppid = parents[pid]
+            else:  # started after the table was read
+                ppid = int(proc.ppid() or 0)
             raw[pid] = ProcessNode(
                 pid=pid,
-                ppid=int(info.get("ppid") or 0),
+                ppid=ppid,
                 name=name,
                 create_time=float(info.get("create_time") or 0.0),
                 kind=_classify_child(name),
