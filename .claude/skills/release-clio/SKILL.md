@@ -256,6 +256,14 @@ curl -s https://pypi.org/pypi/clio-agent/json | python3 -c "import sys,json;d=js
 gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check_release_completeness.py
 gh run list --workflow=docker.yml --limit 1                                 # ghcr images
 ```
+**Wait 10 minutes after the PyPI upload before announcing.** PyPI's simple
+index is served with `Cache-Control: max-age=600`, so for up to 10 minutes after
+the upload a resolver can still get the old project page. One-line installs then
+fail with `no version of clio-agent[argonne]==X.Y.Z` even though the JSON API
+above already lists the version (seen by the Linux leg on v0.9.6-beta.1.1).
+Note the upload time from `release.yml` and announce no sooner than 10 minutes
+after it.
+
 The `clio-bundles.yml` **`release-check`** job must be green. In order it: generates
 and uploads the `latest.json` / `latest-lite.json` updater manifests to the draft,
 asserts every expected asset is present (bundled msi/nsis/dmg/deb/rpm, lite set,
