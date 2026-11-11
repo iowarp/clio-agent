@@ -615,6 +615,9 @@ def test_a_stored_compaction_part_renders_as_the_summarization_injection() -> No
         "call_id": "",
         "trigger": "auto",
         "compaction_id": "mem_1",
+        # The record's wire metadata (clio-schemas InjectionMetadata); the
+        # synthetic/memory_event_id keys stay server-side.
+        "metadata": {"compacted_message_ids": ["m1"]},
     }
     row = Message(
         id="msg_compact_1",

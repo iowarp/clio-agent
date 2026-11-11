@@ -256,6 +256,13 @@ def test_sustained_actions_keep_the_per_session_reason_ring_at_256(
 ) -> None:
     app = _isolated_app(tmp_path)
     with TestClient(app) as client:
+        # Settle boot's background default-marketplace install and let the catalog
+        # registry observe it first: the registry bumps its generation on the first
+        # read after that plugin store write, and when the periodic capabilities
+        # refresh made that read mid-loop it refolded the projection and recorded
+        # a2ui_projection_cache_invalidated into this ring.
+        app.state.plugin_service.ready()
+        app.state.a2ui_catalogs.installed()
         captured = _capture_inputs(app)
         session = app.state.sessions.create(workspace_id="ws_default", title="reason ring")
         sid = session.id
