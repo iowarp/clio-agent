@@ -73,7 +73,7 @@ def test_host_created_office_profile_is_accessible_to_its_confined_executor(tmp_
         profile_url = command[1].split("=", 1)[1]
         profile = Path(url2pathname(urlparse(profile_url).path))
         assert not process._windows_dacl_protected(profile.parent)
-        assert (profile / "registrymodifications.xcu").is_file()
+        assert (profile / "user" / "registrymodifications.xcu").is_file()
         assert cwd == output
         (cwd / "deck.pdf").write_bytes(b"%PDF-1.7\npreview")
 
@@ -93,7 +93,7 @@ def test_discovered_managed_renderer_still_receives_host_access_repair(
     native = str(root / "program" / "soffice") if managed else str(tmp_path / "system-soffice")
     calls: list[Path] = []
 
-    def prepare(path: Path) -> str:
+    def prepare(path: Path, **_: object) -> str:
         calls.append(path)
         return native
 

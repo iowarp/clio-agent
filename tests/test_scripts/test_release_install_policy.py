@@ -409,7 +409,8 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     assert bundles.index("name: Notarize and staple the macOS DMG") < archive_idx
     assert archive_idx < bundles.index("name: Verify macOS release signatures") < stage_idx
     assert "-maxdepth 2 -type f" in stage_step  # never sweep deb work files or runtime internals
-    assert "find \"$stage\" -type f -name '*-bundled.*' ! -name '*.sig' -print0" in stage_step
+    assert "pattern='*-bundled.*'" in stage_step
+    assert 'find "$stage" -type f -name "$pattern" ! -name \'*.sig\' -print0' in stage_step
     assert 'base="${base//$tauri_version/$release_version}"' in stage_step
 
     # (e) release-check generates + uploads the manifest before the

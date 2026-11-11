@@ -6,7 +6,7 @@ import importlib
 import sys
 import threading
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,11 +24,11 @@ def inventory_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
-def test_converter_probes_overlap_with_two_workers(
+def test_converter_probes_all_overlap(
     inventory_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A reusable barrier detects accidental serial execution without speed assertions."""
-    barrier = threading.Barrier(2, timeout=5)
+    barrier = threading.Barrier(len(inventory_module.NATIVE_TOOLS), timeout=5)
     lock = threading.Lock()
     active = 0
     peak = 0
@@ -51,7 +51,7 @@ def test_converter_probes_overlap_with_two_workers(
     monkeypatch.setattr(inventory_module, "find_native", lambda name: name)
     monkeypatch.setattr(inventory_module, "run", run)
     result = inventory_module.native_inventory(tmp_path)
-    assert peak == 2
+    assert peak == len(inventory_module.NATIVE_TOOLS)
     assert list(result) == list(inventory_module.NATIVE_TOOLS)
     assert flags["pdftoppm"] == "-v"
     assert all(flag == "--version" for name, flag in flags.items() if name != "pdftoppm")
@@ -110,7 +110,8 @@ def test_execution_inventory_reads_fresh_metadata_without_converter_or_font_work
     monkeypatch.setitem(sys.modules, "nodejs_wheel", node_module)
     (tmp_path / "node.exe").touch()
     monkeypatch.setattr(inventory_module, "PACKAGES", {"example": "example"})
-    monkeypatch.setattr(inventory_module.importlib.util, "find_spec", lambda name: object())
+    spec = SimpleNamespace(origin=node_module.__file__)
+    monkeypatch.setattr(inventory_module.importlib.util, "find_spec", lambda name: spec)
     revision = "1.0"
     monkeypatch.setattr(inventory_module.importlib.metadata, "version", lambda name: revision)
     monkeypatch.setattr(inventory_module, "run", lambda *args, **kwargs: "v26.0.0")
