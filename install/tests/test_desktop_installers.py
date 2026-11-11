@@ -325,14 +325,15 @@ def test_macos_14_desktop_is_refused_before_any_download(tmp_path: Path) -> None
 def _prepare_functions() -> str:
     """install.sh's preparation step and the helpers it uses, without the rest."""
     script = (ROOT / "install/install.sh").read_text(encoding="utf-8")
-    wanted = ("say", "desktop_prepares", "prepare_desktop")
+    wanted = ("say", "die", "desktop_prepares", "prepare_desktop")
     blocks, keep = [], False
     for line in script.splitlines():
         if any(line.startswith(f"{name}()") for name in wanted):
             keep = True
         if keep:
             blocks.append(line)
-            if line == "}" or (line.startswith("say()") and line.rstrip().endswith("}")):
+            one_line = any(line.startswith(f"{name}()") for name in wanted)
+            if line == "}" or (one_line and line.rstrip().endswith("}")):
                 keep = False
     return "\n".join(blocks)
 
@@ -370,7 +371,8 @@ def test_desktop_is_prepared_after_install_when_its_release_can(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
-def test_a_failed_preparation_is_reported_and_left_to_first_launch(tmp_path: Path) -> None:
+def test_a_failed_preparation_fails_the_install(tmp_path: Path) -> None:
+    """Install work never moves to the first launch: a failed preparation fails the install."""
     desktop = tmp_path / "clio-desktop"
     desktop.write_text("#!/bin/bash\necho 'no network' >&2\nexit 3\n")
     desktop.chmod(0o755)
@@ -384,9 +386,11 @@ def test_a_failed_preparation_is_reported_and_left_to_first_launch(tmp_path: Pat
         capture_output=True,
         timeout=30,
     )
-    assert result.returncode == 0
-    assert "did not finish" in result.stdout + result.stderr
-    assert "first launch" in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "failed (the cause is above)" in output and "run this installer again" in output
+    assert "no network" in output
+    assert "ready to open" not in output and "first launch" not in output
 
 
 def _package_fakes(tmp_path: Path) -> tuple[dict[str, str], Path]:
@@ -525,8 +529,16 @@ echo "curl $url" >> "$TEST_CALLS"; echo deb > "$out\"""",
         path = bin_dir / name
         path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
         path.chmod(0o755)
+    desktop = tmp_path / "clio-desktop"
+    desktop.write_text('#!/bin/bash\necho "app $*" >> "$TEST_CALLS"\n')
+    desktop.chmod(0o755)
     env = dict(os.environ)
-    env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", TEST_CALLS=str(calls), TMPDIR=str(tmp_path))
+    env.update(
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        TEST_CALLS=str(calls),
+        TMPDIR=str(tmp_path),
+        CLIO_DESKTOP_BIN=str(desktop),
+    )
     package = tmp_path / "CLIO.Desktop_0.9.6_amd64.deb"
     package.write_bytes(b"test build")
     digest = hashlib.sha256(package.read_bytes()).hexdigest()
@@ -537,6 +549,7 @@ echo "curl $url" >> "$TEST_CALLS"; echo deb > "$out\"""",
     log = calls.read_text().splitlines()
     install = next(line for line in log if line.startswith("apt-get "))
     assert install.endswith(str(package))
+    assert "app --prepare-runtime" in log
     if proxy:
         assert not any(line.startswith("curl") for line in log)
         assert "Dir::Cache::Archives" not in install
