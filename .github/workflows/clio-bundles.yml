@@ -247,10 +247,19 @@ jobs:
         run: bash scripts/macos_signing_keychain.sh setup
       - name: Linux deps
         if: runner.os == 'Linux'
+        # Normally under 2 minutes; a stalled mirror fails the leg instead of eating its budget.
+        timeout-minutes: 15
         working-directory: external/gact-tui
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
+          set -euo pipefail
+          # The runner image's Launchpad PPAs hung apt for over an hour during a Launchpad
+          # outage (v0.9.6-beta.1.5). Nothing installed here comes from them.
+          for f in $(grep -rlE 'ppa\.launchpad(content)?\.net' /etc/apt/sources.list.d 2>/dev/null || true); do
+            sudo mv "$f" "$f.disabled"
+          done
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_opts[@]}" update
+          sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
       - name: Install
         working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false
