@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from ctypes import wintypes
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING or __package__:
@@ -328,8 +328,14 @@ def _expand_direct(cabinet: Path, targets: Mapping[str, tuple[Path, int]]) -> se
     return published
 
 
-def extract_application(archive: Path, root: Path) -> None:
-    """Expand the pinned MSI's complete application tree into a fresh private root."""
+def extract_application(
+    archive: Path, root: Path, skip: Callable[[PurePath], bool] | None = None
+) -> None:
+    """Expand the pinned MSI's application tree into a fresh private root.
+
+    ``skip`` names files (relative to ``root``) that are never written, such as the
+    parts headless conversion never reads.
+    """
     if any(root.iterdir()):
         raise DocumentError("Office extraction requires an empty private directory")
     database = _Database(archive)
@@ -343,6 +349,13 @@ def extract_application(archive: Path, root: Path) -> None:
             files,
             root,
         )
+        if skip is not None:
+            base = root.resolve()
+            targets = {
+                identifier: entry
+                for identifier, entry in targets.items()
+                if not skip(entry[0].relative_to(base))
+            }
         sizes = {row[0]: int(row[3]) for row in files}
         published: set[str] = set()
         created: set[Path] = set()

@@ -20,7 +20,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.6b1.post3"
+EXPECTED_VERSION = "0.9.6b1.post4"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
 DOCUMENTED_VERSION = "0.9.5.1"

@@ -102,9 +102,17 @@ def _entry() -> dict[str, Any]:
 
 
 def packages() -> list[tuple[str, str]]:
-    """This host's pinned packages as (URL, SHA-256)."""
+    """This host's pinned packages as (URL, SHA-256).
+
+    An entry's ``url`` (an immutable launchpadlibrarian.net file) wins over the snapshot
+    path: the four amd64 versions superseded on archive.ubuntu.com are otherwise served
+    only by snapshot.ubuntu.com, whose outage failed every Linux install.
+    """
     entry = _entry()
-    return [(f"{entry['base']}/{item['path']}", item["sha256"]) for item in entry["packages"]]
+    return [
+        (item.get("url") or f"{entry['base']}/{item['path']}", item["sha256"])
+        for item in entry["packages"]
+    ]
 
 
 def _triplet() -> str:
