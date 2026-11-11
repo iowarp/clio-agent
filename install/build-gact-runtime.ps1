@@ -404,6 +404,10 @@ foreach ($site in @($sitePkgs, (Join-Path $Out 'documents\python\Lib\site-packag
   Write-Host "[build-gact-runtime] zipping pure-Python packages in $site"
   Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'zip_site_packages.py'), '--site-packages', $site)
 }
+# The standard library's pure-Python modules import from python314.zip, one file
+# instead of about 1,100 (the same step on every OS).
+Write-Host "[build-gact-runtime] zipping the standard library"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'zip_stdlib.py'))
 
 $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"

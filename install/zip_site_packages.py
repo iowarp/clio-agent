@@ -30,7 +30,7 @@ NATIVE = {".pyd", ".dll", ".exe", ".so", ".lib", ".a", ".dylib"}
 # that run outside this interpreter's sys.path.
 KEEP = {
     "babel", "botocore", "certifi", "clio_agent", "litellm", "pip", "pkg_resources",
-    "setuptools", "_distutils_hack", "pytz", "tzdata", "uv", "wheel",
+    "setuptools", "_distutils_hack", "pytz", "uv", "wheel",
 }
 
 
