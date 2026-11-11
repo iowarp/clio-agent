@@ -417,7 +417,9 @@ def smoke(app: Path, *, bundled: bool, exercise: bool = False) -> None:
     with tempfile.TemporaryDirectory(
         prefix="clio-macos-smoke-", ignore_cleanup_errors=True
     ) as directory:
-        root = Path(directory)
+        # macOS hands out /var/folders/..., a symlink into /private/var; the agent
+        # refuses symlinked service directories, so give it the real path.
+        root = Path(directory).resolve()
         env = {
             key: value
             for key, value in os.environ.items()
