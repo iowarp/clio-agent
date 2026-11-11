@@ -18,7 +18,9 @@
 # --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
 # checkout in place, on whatever branch it is; streamed (`curl ... | bash`) it clones.
 # A release is installed from PyPI, constrained by that release tag's own uv.lock, on
-# the Python that release declares (.python-version; 3.13 before the file existed).
+# the Python that release declares (.python-version; 3.13 before the file existed). On
+# Linux, a release that publishes its prebuilt runtime archive is installed from that
+# instead, into the same environment; CLIO_INSTALL_FROM=pypi chooses PyPI.
 #
 # Pins for deployments and CI: --version <pypi version> (release) and --ref <git ref>
 # (source). Older environment spellings still work: CLIO_VERSION=<v> is --version,
@@ -474,6 +476,11 @@ install_desktop() {
     [ "$os" != Darwin ] || mac_destination
     ! plan_usable || plan="$(fetch_plan "$tag" "$DESKTOP_SCRATCH/checksums" "$triple")"
     ! plan_capable "$plan" waits-for-partial-downloads || DESKTOP_PLAN_WAITS=1
+    # The deb and rpm carry their runtime; the plan's runtime archive is the one-liner's.
+    if [ -n "$plan" ]; then
+      awk '$1 != "runtime"' "$plan" > "$DESKTOP_SCRATCH/plan.desktop"
+      plan="$DESKTOP_SCRATCH/plan.desktop"
+    fi
   fi
   url="$REPO_URL/releases/download/$tag/$asset"
   step download
@@ -1064,12 +1071,13 @@ install_scratch() {
 
 stop_install_jobs() {
   local pid
-  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
+  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} ${DOC_JOB:-} ${NODE_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
   [ -z "${RUNTIME_STAGE:-}" ] || rm -rf "$RUNTIME_STAGE"
   [ -z "$DESKTOP_SCRATCH" ] || rm -rf "$DESKTOP_SCRATCH"
+  [ -z "${RUNTIME_STAGE:-}" ] || rm -rf "$RUNTIME_STAGE"
 }
 
 install_triple() {
@@ -1330,6 +1338,179 @@ finish_submodules() {
   [ "$status" = 0 ] || die "$1"
 }
 
+# ---------- a release's prebuilt runtime (Linux) ----------------------
+# A Linux release publishes the desktop's runtime archive (gact-runtime-<version>-linux-
+# <arch>.tar.zst, named with its SHA-256 by the bundled install plan): clio-agent and
+# every locked dependency, installed and compiled once in CI, and the document
+# environment's wheels. A release install takes the packages from it instead of
+# resolving and downloading them from PyPI, unpacking them while the archive downloads,
+# into the virtualenv a PyPI install makes: same layout, so the launcher, `clio update`,
+# the data check and uninstall work as they do. The archive's document wheels go to the
+# managed-package step (CLIO_INSTALL_DOWNLOADS), which checks each against its lock.
+# A release without the archive, or a failure, installs from PyPI;
+# CLIO_INSTALL_FROM=pypi chooses PyPI.
+RUNTIME_UNPACK=""
+DOC_JOB=""
+NODE_JOB=""
+
+# runtime_plan_entry PLAN: "sha bytes name url" of the plan's runtime archive, or nothing.
+runtime_plan_entry() {
+  [ "$OS" = linux ] && [ "${CLIO_INSTALL_FROM:-}" != pypi ] && [ -n "$1" ] && [ -s "$1" ] || return 0
+  awk '$1 == "runtime" && $4 ~ /^gact-runtime-[A-Za-z0-9._+-]*-linux-[a-z0-9]+\.tar\.zst$/' "$1" \
+    > "$DESKTOP_SCRATCH/plan.runtime"
+  [ "$(plan_entries "$DESKTOP_SCRATCH/plan.runtime" | wc -l)" = 1 ] || return 0
+  plan_entries "$DESKTOP_SCRATCH/plan.runtime"
+}
+
+# Reads a zstd stream on stdin and writes the tar it holds, hashing the compressed bytes
+# as they pass; once the stream ends on a complete frame it writes "sha256 bytes" to
+# argv[1]. A fresh Linux has no zstd command; uv's Python 3.14 decodes it.
+RUNTIME_DECODER='
+import hashlib, sys
+from compression import zstd
+def fresh():
+    return zstd.ZstdDecompressor(options={zstd.DecompressionParameter.window_log_max: 31})
+source, sink = sys.stdin.buffer, sys.stdout.buffer
+digest, size, decoder, ended = hashlib.sha256(), 0, fresh(), False
+while chunk := source.read(1 << 20):
+    digest.update(chunk)
+    size += len(chunk)
+    while chunk:
+        sink.write(decoder.decompress(chunk))
+        ended = decoder.eof
+        chunk = decoder.unused_data if ended else b""
+        if ended:
+            decoder = fresh()
+sink.flush()
+if not ended:
+    sys.exit("the runtime archive ends inside a zstd frame")
+with open(sys.argv[1], "w", encoding="ascii") as out:
+    out.write(f"{digest.hexdigest()} {size}\n")
+'
+
+# Moves the runtime's packages (argv[1]) into the virtualenv's (argv[2]) and writes, to
+# argv[3], a wheel of launchers for every entry point they declare: uv installs it
+# offline, writing bin/ as it does for the same packages from PyPI. The runtime keeps
+# no bin/ scripts: theirs named the build machine's interpreter.
+RUNTIME_FINISHER='
+import base64, hashlib, re, sys, zipfile
+from pathlib import Path
+source, site, wheel = (Path(arg) for arg in sys.argv[1:4])
+for entry in sorted(source.iterdir()):
+    if (site / entry.name).exists():
+        sys.exit(f"{entry.name} is already in the environment")
+    entry.rename(site / entry.name)
+sections = {"console_scripts": {}, "gui_scripts": {}}
+for info in sorted(site.glob("*.dist-info")):
+    # Built from a CI checkout: a PyPI install records no local source.
+    direct = info / "direct_url.json"
+    if direct.is_file():
+        direct.unlink()
+        record = info / "RECORD"
+        if record.is_file():
+            lines = record.read_text(encoding="utf-8").splitlines(keepends=True)
+            record.write_text(
+                "".join(line for line in lines if not line.startswith(f"{info.name}/direct_url.json,")),
+                encoding="utf-8",
+            )
+    points = info / "entry_points.txt"
+    if not points.is_file():
+        continue
+    section = ""
+    for line in points.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if match := re.fullmatch(r"\[(.+)\]", line):
+            section = match[1]
+        elif section in sections and (match := re.fullmatch(r"([^=\s]+)\s*=\s*(.+)", line)):
+            sections[section].setdefault(match[1], match[2])
+if "clio-agent" not in sections["console_scripts"]:
+    sys.exit("the runtime declares no clio-agent entry point")
+info = "clio_runtime_launchers-1.dist-info"
+files = {
+    f"{info}/METADATA": "Metadata-Version: 2.1\nName: clio-runtime-launchers\nVersion: 1\n"
+    "Summary: Launchers for the CLIO runtime this environment was installed from\n",
+    f"{info}/WHEEL": "Wheel-Version: 1.0\nGenerator: clio-install\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    f"{info}/entry_points.txt": "".join(
+        f"[{name}]\n" + "".join(f"{key} = {value}\n" for key, value in entries.items()) + "\n"
+        for name, entries in sections.items()
+        if entries
+    ),
+}
+record = []
+with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+    for name, text in files.items():
+        data = text.encode()
+        archive.writestr(name, data)
+        sha = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        record.append(f"{name},sha256={sha},{len(data)}\n")
+    archive.writestr(f"{info}/RECORD", "".join(record) + f"{info}/RECORD,,\n")
+'
+
+# install_runtime_archive SHA BYTES NAME URL PYTHON: $VENV from the release's runtime
+# archive (0), or nothing installed and a reason on stderr (1).
+install_runtime_archive() {
+  local sha="$1" bytes="$2" name="$3" url="$4" python="$5" version site status sum f
+  RUNTIME_UNPACK="$PREFIX/clio-agent/.runtime-unpack"
+  rm -rf "$RUNTIME_UNPACK"
+  mkdir -p "$RUNTIME_UNPACK"
+  uv venv --quiet --python "$python" "$VENV" || { warn "uv could not create $VENV"; return 1; }
+  version="$("$VENV/bin/python" -I -c 'import sys; print("%d.%d" % sys.version_info[:2])')" || return 1
+  if ! "$VENV/bin/python" -I -c 'import compression.zstd' 2>/dev/null; then
+    warn "Python $version here cannot decode zstd"
+    return 1
+  fi
+  site="$VENV/lib/python$version/site-packages"
+  say "Downloading and unpacking the CLIO runtime ($name, $(megabytes "$bytes") MB)"
+  # Only the packages, the document wheels and uv: the runtime's own Python is not used.
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --speed-limit 1 --speed-time 60 "$url" \
+    | "$VENV/bin/python" -I -c "$RUNTIME_DECODER" "$RUNTIME_UNPACK/sum" \
+    | tar -x --no-same-owner -C "$RUNTIME_UNPACK" -f - \
+        "gact-runtime/python/lib/python$version/site-packages" gact-runtime/document-wheels gact-runtime/bin \
+    && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
+  if [ "${status[*]}" != "0 0 0" ]; then
+    warn "downloading or unpacking $name failed (curl, decoder, tar: ${status[*]})"
+    return 1
+  fi
+  sum="$(cat "$RUNTIME_UNPACK/sum" 2>/dev/null || true)"
+  # A plan written without sizes says 0; the SHA-256 is what authenticates the archive.
+  if [ "${sum%% *}" != "$sha" ] || { [ "$bytes" != 0 ] && [ "${sum#* }" != "$bytes" ]; }; then
+    warn "$name does not match the release's checksum"
+    return 1
+  fi
+  "$VENV/bin/python" -I -c "$RUNTIME_FINISHER" "$RUNTIME_UNPACK/gact-runtime/python/lib/python$version/site-packages" \
+    "$site" "$RUNTIME_UNPACK/clio_runtime_launchers-1-py3-none-any.whl" || return 1
+  uv pip install --quiet --offline --no-deps --python "$VENV/bin/python" \
+    "$RUNTIME_UNPACK/clio_runtime_launchers-1-py3-none-any.whl" || { warn "uv could not install the CLIO launchers"; return 1; }
+  # A PyPI environment has uv beside its Python too (the uv package's own scripts).
+  for f in uv uvx; do
+    [ -e "$VENV/bin/$f" ] || [ ! -f "$RUNTIME_UNPACK/gact-runtime/bin/$f" ] || mv "$RUNTIME_UNPACK/gact-runtime/bin/$f" "$VENV/bin/$f"
+  done
+  if [ -f "$RUNTIME_UNPACK/gact-runtime/document-wheels/manifest.json" ]; then
+    [ -n "$INSTALL_DOWNLOADS" ] || INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
+    mkdir -p "$INSTALL_DOWNLOADS"
+    ln -sfn "$RUNTIME_UNPACK/gact-runtime/document-wheels" "$INSTALL_DOWNLOADS/document-wheels"
+  fi
+}
+
+# The managed packages and Office are the longest step and read nothing the data check
+# and the store migration write, so a runtime install starts them at once.
+start_document_install() {
+  local flags=()
+  "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") and importlib.util.find_spec("clio_agent.gact.store_migrate_command") else 3)' 2>/dev/null \
+    || return 0
+  say 'Installing managed Python/uv and Node/pnpm packages and Office rendering (alongside the steps below)'
+  flags=(--skip-store-migrations)
+  # A runtime that cannot wait for a download still arriving gets it once it has landed.
+  [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
+  env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
+    "$VENV/bin/python" -m clio_agent.runtime.document_install "${flags[@]}" > "$DESKTOP_SCRATCH/documents.log" 2>&1 &
+  DOC_JOB=$!
+  # PyPI's Playwright carries its Node.js driver; the runtime's fetches it on first use.
+  "$VENV/bin/python" -c 'from clio_agent.gact.browser.driver import ensure_node; ensure_node()' \
+    > "$DESKTOP_SCRATCH/browser-driver.log" 2>&1 &
+  NODE_JOB=$!
+}
+
 # ---------- install clio-agent ----------------------------------------
 VENV="$PREFIX/clio-agent/.venv"
 SRC=""
@@ -1434,6 +1615,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   # a 15 MB/s link). A PyPI install leaves the line free for them from the start.
   runtime_first=0
   if [ -n "$RUNTIME_JOB" ]; then runtime_first=1; else start_install_downloads "$install_plan"; fi
+  runtime_entry="$(runtime_plan_entry "$install_plan")"
   lockdir="$(mktemp -d)"  # removed on exit (on_exit)
   for f in pyproject.toml uv.lock .python-version; do
     curl -fsSL "https://raw.githubusercontent.com/iowarp/clio-agent/$tag/$f" -o "$lockdir/$f" 2>/dev/null \
@@ -1455,7 +1637,6 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
     # of trying to compile a newer release against a missing system GDAL.
     wheel_arg=""
     [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
-    say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
     # The installed environment is set aside, not deleted, until the new one is in
     # place: an install that fails or is interrupted puts it back.
     previous=""
@@ -1465,12 +1646,28 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
       mv "$VENV" "$previous"
     fi
     mkdir -p "$PREFIX/clio-agent"
-    if ! { uv venv --python "$py" "$VENV" >/dev/null \
-        && uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
-          --constraint "$lockdir/constraints.txt" "$pkg_spec"; }; then
-      rm -rf "$VENV"
-      [ -z "$previous" ] || mv "$previous" "$VENV"
-      die "could not install $pkg_spec${previous:+; the previous installation is unchanged}"
+    from_runtime=0
+    if [ -n "$runtime_entry" ]; then
+      # shellcheck disable=SC2086  # "sha bytes name url", all checked by plan_entries
+      if install_runtime_archive $runtime_entry "$py"; then
+        from_runtime=1
+        RUNTIME_SHA="${runtime_entry%% *}"
+        start_document_install
+      else
+        rm -rf "$VENV" "$RUNTIME_UNPACK"
+        [ -z "$INSTALL_DOWNLOADS" ] || rm -f "$INSTALL_DOWNLOADS/document-wheels"
+        warn "could not install from release $tag's runtime archive; installing from PyPI instead"
+      fi
+    fi
+    if [ "$from_runtime" = 0 ]; then
+      say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
+      if ! { uv venv --python "$py" "$VENV" >/dev/null \
+          && uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
+            --constraint "$lockdir/constraints.txt" "$pkg_spec"; }; then
+        rm -rf "$VENV"
+        [ -z "$previous" ] || mv "$previous" "$VENV"
+        die "could not install $pkg_spec${previous:+; the previous installation is unchanged}"
+      fi
     fi
     [ -z "$previous" ] || rm -rf "$previous"
     CLIO_VERSION="$package_version"
@@ -1561,7 +1758,20 @@ else
   say "clio-agent $CLIO_INSTALLED_VERSION has no 'clio-agent migrate'; its boot migrates the store"
 fi
 
-if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
+if [ -n "$DOC_JOB" ]; then
+  docs_status=0
+  wait "$DOC_JOB" || docs_status=$?
+  DOC_JOB=""
+  cat "$DESKTOP_SCRATCH/documents.log" 2>/dev/null || true
+  [ -z "$INSTALL_DOWNLOADS" ] || finish_downloads
+  rm -rf "$RUNTIME_UNPACK"
+  [ "$docs_status" = 0 ] \
+    || die_with "$docs_status" "installing the managed packages and Office rendering failed (exit $docs_status); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
+  if [ -n "$NODE_JOB" ]; then
+    wait "$NODE_JOB" || warn "could not fetch the browser's Node.js driver now ($(tail -n 1 "$DESKTOP_SCRATCH/browser-driver.log" 2>/dev/null)); the first browser action fetches it"
+    NODE_JOB=""
+  fi
+elif "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
   docs_status=0
   # A runtime that cannot wait for a download still arriving gets it once it has landed.

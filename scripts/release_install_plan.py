@@ -59,12 +59,29 @@ def capability() -> str:
     return str(_constants(OFFICE, "INSTALLER_PLAN_CAPABILITY")["INSTALLER_PLAN_CAPABILITY"])
 
 
-def entries(target: str, pack: dict[str, object] | None = None) -> list[tuple[str, str, str, str]]:
+def _named_asset(manifest: dict[str, object], what: str) -> tuple[str, str, str]:
+    if not all(isinstance(manifest.get(field), str) for field in ("asset", "url", "sha256")):
+        raise SystemExit(f"the {what} manifest names no release asset")
+    return str(manifest["sha256"]), str(manifest["asset"]), str(manifest["url"])
+
+
+def entries(
+    target: str,
+    pack: dict[str, object] | None = None,
+    office_pack: dict[str, object] | None = None,
+) -> list[tuple[str, str, str, str]]:
     """``(kind, sha256, name, url)`` for each file the target's install fetches.
 
-    ``pack`` is a setup's ``gact-runtime.pack.json`` when the setup does not carry its
-    runtime archive: the archive comes first, since the setup unpacks it while it
-    downloads, and it already holds LibreOffice (``install/lay_office.py``).
+    ``pack`` is a ``gact-runtime.pack.json`` that names the runtime archive as its own
+    release asset. It comes first. The Windows setup unpacks it while it downloads, and
+    that archive already holds LibreOffice (``install/lay_office.py``). The Linux archive
+    holds no Office: ``install.sh`` installs the agent from it instead of from PyPI, and
+    ``--desktop`` skips it, since the deb and rpm carry their own copy.
+
+    ``office_pack`` (``scripts/build_office_tree.py``'s ``office-tree.pack.json``) names
+    a Linux release's prepared Office tree, its own release asset: the ``office`` line
+    then fetches it from the release instead of TDF's package archive, and the app
+    unpacks it instead of laying Office from TDF's and Ubuntu's packages.
     """
     if target not in TARGETS:
         raise SystemExit(f"no install plan for {target}")
@@ -75,18 +92,22 @@ def entries(target: str, pack: dict[str, object] | None = None) -> list[tuple[st
     directory, suffix, checksum = office["ASSETS"][key]  # type: ignore[index]
     name = f"LibreOffice_{version}_{suffix}"
     if pack is not None:
-        if not all(isinstance(pack.get(field), str) for field in ("asset", "url", "sha256")):
-            raise SystemExit("the runtime pack manifest names no release asset")
-        plan = [("runtime", str(pack["sha256"]), str(pack["asset"]), str(pack["url"]))]
+        plan = [("runtime", *_named_asset(pack, "runtime pack"))]
     else:
-        plan = [
+        plan = []
+    if office_pack is not None:
+        if key[0] != "Linux":
+            raise SystemExit("a prepared Office tree is a Linux release asset")
+        plan.append(("office", *_named_asset(office_pack, "Office tree")))
+    elif pack is None or key[0] != "Windows":
+        plan.append(
             (
                 "office",
                 checksum,
                 name,
                 f"https://download.documentfoundation.org/libreoffice/stable/{version}/{directory}/{name}",
             )
-        ]
+        )
     packages: dict[str, str] = pnpm["PNPM_PACKAGES"]  # type: ignore[assignment]
     for package in ("pnpm", f"@pnpm/exe.{pnpm_host}"):
         if package in packages:
@@ -119,19 +140,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--runtime-pack", type=Path, help="the setup's gact-runtime.pack.json, if it names an asset"
     )
+    parser.add_argument(
+        "--office-pack", type=Path, help="build_office_tree.py's office-tree.pack.json (Linux)"
+    )
     args = parser.parse_args(argv)
-    pack = None
+    pack = office_pack = None
     if args.runtime_pack is not None:
         pack = json.loads(args.runtime_pack.read_text(encoding="utf-8"))
+    if args.office_pack is not None:
+        office_pack = json.loads(args.office_pack.read_text(encoding="utf-8"))
 
     def size(kind: str, url: str) -> int:
         if kind == "runtime" and pack is not None:
             return int(pack["archive_bytes"])
+        if kind == "office" and office_pack is not None:
+            return int(office_pack["archive_bytes"])
         return 0 if args.no_sizes else remote_size(url)
 
     lines = [f"capability {capability()}"] + [
         f"{kind} {sha} {size(kind, url)} {name} {url}"
-        for kind, sha, name, url in entries(args.target, pack)
+        for kind, sha, name, url in entries(args.target, pack, office_pack)
     ]
     args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

@@ -101,6 +101,10 @@ _INSTALL_SPEED_ASSETS: list[str] = [
     "install-plan.aarch64-apple-darwin.bundled.txt",
     "install-plan.x86_64-unknown-linux-gnu.bundled.txt",
     "install-plan.aarch64-unknown-linux-gnu.bundled.txt",
+    "gact-runtime-0.9.6-linux-x64.tar.zst",
+    "gact-runtime-0.9.6-linux-arm64.tar.zst",
+    "office-26.2.6-0123456789ab-linux-x64.tar.zst",
+    "office-26.2.6-0123456789ab-linux-arm64.tar.zst",
 ]
 
 _INSTALL_SPEED_LABELS: set[str] = {
@@ -108,6 +112,10 @@ _INSTALL_SPEED_LABELS: set[str] = {
     "install plan (aarch64 macOS)",
     "install plan (x86_64 Linux)",
     "install plan (aarch64 Linux)",
+    "runtime archive (x86_64 Linux)",
+    "runtime archive (aarch64 Linux)",
+    "prepared Office (x86_64 Linux)",
+    "prepared Office (aarch64 Linux)",
 }
 
 # The complete listing = v0.5.17 plus the one asset it dropped, plus the
