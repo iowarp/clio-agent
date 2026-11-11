@@ -57,7 +57,16 @@ else:
     )
 
 VERSION = "26.2.6"
-# Published by The Document Foundation at each download URL's .sha256 endpoint.
+#: TDF's full build of ``VERSION``; its archive names directories and files by it.
+BUILD = "26.2.6.3"
+#: Byte-for-byte copies of the pinned files on a permanent iowarp/clio-agent release (not
+#: a CLIO version). TDF drops a version from ``stable/`` and its mirrors when it rotates,
+#: and its archive, the only TDF host left for older builds, serves about 0.1 MB/s.
+#: Plain literals (``{build}`` filled in) so scripts/release_install_plan.py can read them.
+MIRROR = "https://github.com/iowarp/clio-agent/releases/download/office-{build}/"
+#: TDF's permanent archive of the build, the fallback when the mirror is unreachable.
+ARCHIVE = "https://downloadarchive.documentfoundation.org/libreoffice/old/{build}/"
+# Published by The Document Foundation at each archive URL's .sha256 endpoint.
 ASSETS = {
     ("Windows", "x86_64"): (
         "win/x86_64",
@@ -100,8 +109,8 @@ MAX_PREPARED = 2 * 1024 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
-def asset() -> tuple[str, str, str]:
-    """Return this host's fixed official download URL, filename and SHA-256."""
+def _host_asset() -> tuple[str, str, str]:
+    """This host's TDF directory, file name and SHA-256 for the pinned build."""
     machine = platform.machine().lower() or sysconfig.get_platform().split("-")[-1]
     architecture = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
     key = (platform.system(), architecture)
@@ -110,9 +119,19 @@ def asset() -> tuple[str, str, str]:
             f"No private LibreOffice build for {key}; configure CLIO_DOCUMENT_SOFFICE"
         )
     directory, suffix, checksum = ASSETS[key]
-    name = f"LibreOffice_{VERSION}_{suffix}"
-    url = f"https://download.documentfoundation.org/libreoffice/stable/{VERSION}/{directory}/{name}"
-    return url, name, checksum
+    return directory, f"LibreOffice_{BUILD}_{suffix}", checksum
+
+
+def asset() -> tuple[str, str, str]:
+    """Return this host's fixed download URL (the mirror), filename and SHA-256."""
+    _, name, checksum = _host_asset()
+    return MIRROR.format(build=BUILD) + name, name, checksum
+
+
+def asset_fallback() -> str:
+    """TDF's archive URL for this host's pinned file, tried after ``asset()``'s mirror."""
+    directory, name, _ = _host_asset()
+    return f"{ARCHIVE.format(build=BUILD)}{directory}/{name}"
 
 
 INSTALLER_DOWNLOADS = "CLIO_INSTALL_DOWNLOADS"
@@ -595,7 +614,7 @@ def _office_archive(archive: Path, name: str, checksum: str, url: str) -> Path:
     if prefetched is not None:
         return prefetched
     partial = archive.with_suffix(archive.suffix + ".part")
-    _download(url, partial, checksum)
+    _download(url, partial, checksum, (asset_fallback(),))
     partial.replace(archive)
     return archive
 

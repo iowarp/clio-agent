@@ -148,7 +148,7 @@ class Fixture:
         redirector = _serve(Mirror(), self.tdf)
         self.started.append(redirector)
         self.monkeypatch.setattr(office_fetch, "_TDF", redirector.base)
-        self.monkeypatch.setattr(office_fetch, "_TDF_ARCHIVE", self.archive.base)
+        self.also = (f"{self.archive.base}libreoffice/old/{office.BUILD}/deb/x86_64/{NAME}",)
         return f"{redirector.base}libreoffice/stable/{office.VERSION}/deb/x86_64/{NAME}"
 
     def close(self) -> None:
@@ -182,7 +182,7 @@ def test_race_keeps_the_winners_bytes_and_continues_there(
     caplog.set_level(logging.INFO, logger=office_fetch.logger.name)
 
     target = tmp_path / "office.part"
-    office_fetch.download(url, target, CHECKSUM)
+    office_fetch.download(url, target, CHECKSUM, mirrors.also)
 
     assert target.read_bytes() == PAYLOAD
     assert fast.ranges == [f"bytes=0-{64 * 1024 - 1}", f"bytes={64 * 1024}-"]
@@ -207,7 +207,7 @@ def test_a_mirror_that_turns_slow_is_left_and_the_bytes_resume(
 
     target = tmp_path / "office.part"
     began = time.monotonic()
-    office_fetch.download(url, target, CHECKSUM)
+    office_fetch.download(url, target, CHECKSUM, mirrors.also)
 
     assert target.read_bytes() == PAYLOAD
     assert time.monotonic() - began < 10  # the slow mirror alone would take 28 s
@@ -230,7 +230,7 @@ def test_a_body_that_ends_early_resumes_on_the_next_source(
     caplog.set_level(logging.INFO, logger=office_fetch.logger.name)
 
     target = tmp_path / "office.part"
-    office_fetch.download(url, target, CHECKSUM)
+    office_fetch.download(url, target, CHECKSUM, mirrors.also)
 
     assert target.read_bytes() == PAYLOAD
     (retry,) = _records(caplog, "office_download_retry")
@@ -245,7 +245,7 @@ def test_without_a_metalink_the_redirector_alone_is_used(
     url = mirrors.setup([picked])
     mirrors.tdf["meta4_status"] = 503
     target = tmp_path / "office.part"
-    office_fetch.download(url, target, CHECKSUM)
+    office_fetch.download(url, target, CHECKSUM, mirrors.also)
     assert target.read_bytes() == PAYLOAD
     assert picked.ranges == [""]
     assert _records(caplog, "office_metalink_unavailable")
@@ -258,7 +258,7 @@ def test_a_metalink_that_disagrees_with_the_pin_is_ignored(
     picked = mirrors.add(Mirror())
     url = mirrors.setup([other], redirect=picked)
     mirrors.tdf["meta4"] = _metalink([other], checksum="0" * 64)
-    office_fetch.download(url, tmp_path / "office.part", CHECKSUM)
+    office_fetch.download(url, tmp_path / "office.part", CHECKSUM, mirrors.also)
     assert other.ranges == []
     assert picked.ranges == [""]
     assert "differs from the pin" in _records(caplog, "office_metalink_unavailable")[0]
@@ -272,7 +272,7 @@ def test_wrong_bytes_from_every_source_fail_closed(mirrors: Fixture, tmp_path: P
     target = tmp_path / "office.part"
     limit = office_fetch._MAX_ATTEMPTS
     with pytest.raises(DocumentError, match=f"all {limit} download attempts failed"):
-        office_fetch.download(url, target, CHECKSUM)
+        office_fetch.download(url, target, CHECKSUM, mirrors.also)
     assert not target.exists()
 
 
