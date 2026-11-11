@@ -176,18 +176,18 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         now = datetime.now(timezone.utc).isoformat()
         registry = getattr(app.state, "turn_transcripts", None)
         transcript = registry.get(sid) if registry is not None else None
-        owns_live = transcript is not None and transcript.message_id == msg_id
+        live = transcript if transcript is not None and transcript.message_id == msg_id else None
         return Message(
             id=msg_id,
             turn_id=(
-                transcript.turn_id
-                if owns_live
+                live.turn_id
+                if live is not None
                 else str(getattr(live_parts[0], "turn_id", "") or "")
             ),
             session_id=sid,
             role="assistant",
             # The reply's start, not this reload's instant (stable across reloads).
-            created_at=transcript.created_at_iso if owns_live else now,
+            created_at=live.created_at_iso if live is not None else now,
             updated_at=now,
             parts=live_parts,
             metadata={"live": True, "status": "running"},

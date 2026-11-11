@@ -155,7 +155,7 @@ def _guarded_accept(windows_events: Any, overlapped: Any) -> Any:
                 logger.debug("accept_aborted_by_client rearming error=%r", exc)
                 try:
                     arm()
-                except Exception as again:  # noqa: BLE001 - surfaced through the future
+                except Exception as again:  # noqa: BLE001 - forwards: the caller's future
                     outer.set_exception(again)
             else:
                 outer.set_exception(exc)

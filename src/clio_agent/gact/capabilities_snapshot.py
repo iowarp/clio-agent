@@ -172,7 +172,7 @@ class CapabilityInputs:
         try:
             versions = build_version_info()
             a2ui = agent_capabilities(app, None)
-        except Exception as exc:  # noqa: BLE001 - typed on the response, retried next pass
+        except Exception as exc:  # noqa: BLE001 - forwards: the typed response failure
             self._failure = f"{type(exc).__name__}: {exc}"
             logger.warning("capabilities_inputs_refresh_failed reason=%s", exc, exc_info=True)
             self._release_waiters(None)

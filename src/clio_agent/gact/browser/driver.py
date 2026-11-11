@@ -232,12 +232,12 @@ def _extract(record: dict[str, Any], archive: Path, node: Path) -> None:
         with zipfile.ZipFile(archive) as bundle, bundle.open(member) as source:
             _copy(source, node, digest)
     else:
-        with tarfile.open(archive, mode="r:*") as bundle:
-            source = bundle.extractfile(member)
-            if source is None:
+        with tarfile.open(archive, mode="r:*") as tar:
+            extracted = tar.extractfile(member)
+            if extracted is None:
                 raise ValueError(f"{member} is not a file in the archive")
-            with source:
-                _copy(source, node, digest)
+            with extracted:
+                _copy(extracted, node, digest)
     if digest.hexdigest() != record["node_sha256"]:
         raise ValueError("Node.js in the archive is not the binary this Playwright release ships")
     node.chmod(0o755)
@@ -358,7 +358,7 @@ def _fetch_in_background(task: concurrent.futures.Future[Path]) -> None:
         found = ensure_node()
     except BrowserError as exc:
         error = exc
-    except Exception as exc:  # noqa: BLE001 - forwarded to the waiting action, typed
+    except Exception as exc:  # noqa: BLE001 - forwards: a typed BrowserError to the waiting action
         error = BrowserError(REASON_INSTALL_FAILED, f"fetching the browser's driver failed: {exc}")
     finally:
         # Forget the task before completing it, so a use that sees it fail starts afresh.
