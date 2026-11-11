@@ -11,7 +11,9 @@ written to configuration).
 A catalog runtime's saved address is also what discovery probes: see
 :func:`clio_agent.gact.provider_catalog_snapshot._resolve_presets`. Each
 mutation of one retires that provider's catalog entry so the next catalog
-read re-discovers it at its new address.
+read re-discovers it at its new address. When the bound model runs on that
+server at its previous address, the binding follows it to the new one (the
+response's ``binding``), so turns stop talking to the old address.
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from clio_agent.gact import local_server_store as store
+from clio_agent.gact.lm_provider_types import LMProviderRequest
+from clio_agent.gact.providers.response_settings import SETTING_FIELDS
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -100,6 +104,24 @@ async def check_address(
     }
 
 
+#: Bound settings a re-bind carries to the new address. ``thinking_level`` is left
+#: out: an omitted level keeps the person's own for the same provider and model.
+_CARRIED = (
+    "provider",
+    "provider_id",
+    "model",
+    "provider_options",
+    "thinking_budget",
+    "turn_timeout_s",
+    "transport",
+    *SETTING_FIELDS,
+)
+
+
+def _same_address(left: object, right: object) -> bool:
+    return str(left or "").rstrip("/") == str(right or "").rstrip("/")
+
+
 def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]") -> None:
     """Register the saved-server routes on ``app``.
 
@@ -172,6 +194,57 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
             return None, label or instance_label(preset_for(preset_id).label, record.service_id)
         return preset_id, label
 
+    async def follow_binding(
+        entry: store.LocalServerEntry, previous: str | None, current: str | None
+    ) -> dict[str, Any] | None:
+        """Move the bound model to ``entry``'s new address when it ran on the old one.
+
+        Turns run on the bound configuration, which a saved address alone does not
+        change. A binding pinned to some other address is left as it is. The bind
+        goes through ``PUT /v1/providers/lm`` itself, with every bound setting kept.
+        """
+        from clio_agent.gact.providers.config import _effective_lm_config  # noqa: PLC0415
+
+        bound = _effective_lm_config(app)
+        provider_id = entry.id if entry.custom else entry.preset_id
+        if (
+            not previous
+            or not current
+            or str(bound.get("provider_id") or "") != provider_id
+            or not _same_address(bound.get("api_base"), previous)
+            or _same_address(previous, current)
+        ):
+            return None
+        # The person's own bind when there is one; a boot binding has only its config.
+        stored = getattr(app.state, "lm_config", None)
+        source = stored if isinstance(stored, dict) else bound
+        carried = {name: source[name] for name in _CARRIED if source.get(name) is not None}
+        endpoint = next(
+            route.endpoint
+            for route in app.routes
+            if getattr(route, "path", "") == "/v1/providers/lm"
+            and "PUT" in getattr(route, "methods", ())
+        )
+        try:
+            info = await endpoint(LMProviderRequest(**{**carried, "api_base": current}))
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            message = str((detail.get("error") or {}).get("message") or exc.detail)
+            return {"followed": False, "provider_id": provider_id, "error": message}
+        return {
+            "followed": True,
+            "provider_id": provider_id,
+            "api_base": current,
+            "state": str(getattr(info, "state", "") or "ready"),
+        }
+
+    async def answer(
+        entry: store.LocalServerEntry, previous: str | None, current: str | None
+    ) -> dict[str, Any]:
+        body = await checked(entry)
+        binding = await follow_binding(entry, previous, current)
+        return body if binding is None else {**body, "binding": binding}
+
     def entries() -> list[store.LocalServerEntry]:
         try:
             return store.list_servers()
@@ -192,6 +265,7 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         if req.preset_id:
             preset_for(req.preset_id)
         preset_id, label = own_entry(req.preset_id, req.address, req.label)
+        before = {e.id: e.address for e in entries()}
         try:
             # The key is matched through the preset the deployment was bound as
             # (a llama.cpp instance's own), though it is saved as a custom server.
@@ -205,7 +279,10 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         except store.LocalServerStoreError as exc:
             raise _error(422, "invalid_server", str(exc)) from exc
         retire(entry)
-        return await checked(entry)
+        previous = before.get(entry.id) or (
+            preset_for(entry.preset_id).api_base if not entry.custom else None
+        )
+        return await answer(entry, previous, entry.address)
 
     @app.patch("/v1/providers/servers/{server_id}")
     async def update_local_server(server_id: str, req: UpdateServerRequest) -> dict[str, Any]:
@@ -227,7 +304,7 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         except store.LocalServerStoreError as exc:
             raise _error(422, "invalid_server", str(exc)) from exc
         retire(entry)
-        return await checked(entry)
+        return await answer(entry, current.address if current else None, entry.address)
 
     @app.delete("/v1/providers/servers/{server_id}")
     async def remove_local_server(server_id: str) -> dict[str, Any]:
@@ -241,7 +318,9 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
             raise _error(500, "server_config_invalid", str(exc)) from exc
         _checks(app).pop(server_id, None)
         retire(entry)
-        return {"removed": server_id}
+        restored = None if entry.custom else preset_for(entry.preset_id).api_base
+        binding = await follow_binding(entry, entry.address, restored)
+        return {"removed": server_id, **({"binding": binding} if binding else {})}
 
     @app.post("/v1/providers/servers/{server_id}/check")
     async def check_local_server(server_id: str) -> dict[str, Any]:
