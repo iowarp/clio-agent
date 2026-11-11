@@ -135,9 +135,14 @@ def run(
     env: dict[str, str] | None = None,
     windows_command_line: str | None = None,
 ) -> str:
-    """Run without a shell, allowing explicit Windows quoting for non-CRT parsers."""
+    """Run without a shell, allowing explicit Windows quoting for non-CRT parsers.
+
+    Children never write bytecode: LibreOffice's embedded Python would otherwise
+    write ``.pyc`` into its application tree and break macOS's code-signature seal.
+    """
     if windows_command_line is not None and os.name != "nt":
         raise DocumentError("An explicit Windows command line requires Windows")
+    env = {**(os.environ if env is None else env), "PYTHONDONTWRITEBYTECODE": "1"}
     flags: dict[str, Any] = {}
     if os.name == "nt":
         flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)

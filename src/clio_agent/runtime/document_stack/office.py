@@ -338,7 +338,12 @@ def prune_unread(image: Path) -> int:
     ``UNREAD_EXTENSIONS`` and the non-English UI translations (``resource/<lang>``).
     The application, filters, fonts, dictionaries and English (``en*``) stay, so
     conversions are unchanged. Returns the number of files removed.
+
+    macOS is skipped: LibreOffice.app is TDF's notarized bundle, and removing any
+    sealed resource fails ``codesign --verify`` and Gatekeeper.
     """
+    if platform.system() == "Darwin":
+        return 0
     removed = 0
     for directory, names, _ in os.walk(image):
         path = Path(directory)
