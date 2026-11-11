@@ -417,13 +417,19 @@ changes cut what still ran in series.
   file a second time, so a plan without the line keeps the old order. Progress events for
   those files stay `"step":"download"` while later steps run; the download step's seconds
   then cover the app only, and prepare includes any wait for Office.
-- **(d) Signature check during prepare.** For a release install, `codesign --verify --deep
-  --strict` runs in the background once the app is in place, and its result is collected
-  after prepare. If it fails, or the run stops first, the new app is removed and the
-  previous app restored. The archive already matched the release's SHA-256, and arm64
-  enforces code signatures at exec, so the gap is a prepare run by a signature-invalid app
-  whose bytes matched the release. `--desktop-package` test builds keep the check before
-  the swap.
+- **(d) Signature check during prepare: withdrawn.** It ran `codesign --verify --deep
+  --strict` in the background once the app was in place and collected it after prepare.
+  That raced prepare, which runs the app: v0.9.5.1's prepare writes about 20 `.pyc` files
+  into the bundle (#1979). On the Install matrix's macOS VM (run 42920803736) the slower
+  check saw them and removed a working app ("a sealed resource is missing or invalid").
+  On the Mac mini the check finished first and passed, but the app was left with a broken
+  seal. The check now completes on the staged app before the swap, so the install ends
+  with a verified app and nothing races the first launch. Prepare also runs with
+  `PYTHONDONTWRITEBYTECODE=1`, which keeps releases that write `.pyc` from breaking the
+  seal the install just checked. Cost: 2.4–2.5 s in the install step. Measured live,
+  v0.9.5.1, isolated `HOME`, two runs each: develop 67.0 / 66.3 s with the seal broken at
+  the end (20 `.pyc`); fixed 72.0 / 65.8 s with the seal valid after the install and after
+  a headless first launch.
 - **(e1) Drop Codex's unused helpers on macOS.** `codex-exec-server` and
   `codex-code-mode-host` (126 MB raw, 31 MB LZMA in the `.aar`) are pruned in
   `build-gact-runtime.sh`, with their `RECORD` lines. The `codex` binary stays: it is the
@@ -433,7 +439,7 @@ changes cut what still ran in series.
   Linux keeps the helpers until a Linux run proves the same.
 
 Expected, with the 71.1 s link: about 3 s saved by (e1), the Office tail and Node prepare
-overlapping the app download by (g), and 2.6 s by (d). Together with (a), the Node
+overlapping the app download by (g), and 2.6 s by (d) (since withdrawn). Together with (a), the Node
 entitlements in #1978, that is about 52–55 s.
 
 Measured live on the Mac mini (12 headless installs alternating A = develop and
