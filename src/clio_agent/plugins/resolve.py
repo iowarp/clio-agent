@@ -256,6 +256,7 @@ def _expand_remove(builder: _Builder, removals: set[str]) -> dict[str, dict[str,
     # A requirement that was removed (whether or not it had been pulled in yet)
     # takes its dependents with it; any other missing requirement is pulled in.
     gone = set(removed) | removals
+    unresolvable: set[str] = set()
     changed = True
     while changed:
         changed = False
@@ -268,11 +269,15 @@ def _expand_remove(builder: _Builder, removals: set[str]) -> dict[str, dict[str,
                     gone.add(plugin_id)
                     changed = True
                     break
-                if ref.id not in builder.entries:
+                if ref.id not in builder.entries and ref.id not in unresolvable:
                     builder.add(
                         ref, "required", plugin_id, entry.depth, wanted_by=f"plugin {plugin_id}"
                     )
-                    changed = True
+                    if ref.id in builder.entries:
+                        changed = True
+                    else:
+                        # Not installed: diagnosed once; retrying would never converge.
+                        unresolvable.add(ref.id)
     # A pack only groups its members: once none of them remains it leaves too,
     # unless it carries content of its own.
     for plugin_id, entry in list(builder.entries.items()):
