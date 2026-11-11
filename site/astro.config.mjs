@@ -28,6 +28,7 @@ export default defineConfig({
 		'/tutorials/guides/install-a-blueprint': '/docs/agents-and-plugins/#pick-an-agent-for-a-conversation',
 		// Agent blueprints were replaced by agents and plugins.
 		'/docs/blueprints': '/docs/agents-and-plugins/',
+		'/versions': '/docs/versions/',
 	},
 	integrations: [
 		starlight({
