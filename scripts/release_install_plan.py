@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import ast
 import http.client
+import json
 import sys
 import urllib.request
 from pathlib import Path
@@ -58,8 +59,15 @@ def capability() -> str:
     return str(_constants(OFFICE, "INSTALLER_PLAN_CAPABILITY")["INSTALLER_PLAN_CAPABILITY"])
 
 
-def entries(target: str) -> list[tuple[str, str, str, str]]:
-    """``(kind, sha256, name, url)`` for each file the target's first launch fetches."""
+def entries(
+    target: str, pack: dict[str, object] | None = None
+) -> list[tuple[str, str, str, str]]:
+    """``(kind, sha256, name, url)`` for each file the target's install fetches.
+
+    ``pack`` is a setup's ``gact-runtime.pack.json`` when the setup does not carry its
+    runtime archive: the archive comes first, since the setup unpacks it while it
+    downloads, and it already holds LibreOffice (``install/lay_office.py``).
+    """
     if target not in TARGETS:
         raise SystemExit(f"no install plan for {target}")
     key, pnpm_host = TARGETS[target]
@@ -68,14 +76,19 @@ def entries(target: str) -> list[tuple[str, str, str, str]]:
     version = office["VERSION"]
     directory, suffix, checksum = office["ASSETS"][key]  # type: ignore[index]
     name = f"LibreOffice_{version}_{suffix}"
-    plan = [
-        (
-            "office",
-            checksum,
-            name,
-            f"https://download.documentfoundation.org/libreoffice/stable/{version}/{directory}/{name}",
-        )
-    ]
+    if pack is not None:
+        if not all(isinstance(pack.get(field), str) for field in ("asset", "url", "sha256")):
+            raise SystemExit("the runtime pack manifest names no release asset")
+        plan = [("runtime", str(pack["sha256"]), str(pack["asset"]), str(pack["url"]))]
+    else:
+        plan = [
+            (
+                "office",
+                checksum,
+                name,
+                f"https://download.documentfoundation.org/libreoffice/stable/{version}/{directory}/{name}",
+            )
+        ]
     packages: dict[str, str] = pnpm["PNPM_PACKAGES"]  # type: ignore[assignment]
     for package in ("pnpm", f"@pnpm/exe.{pnpm_host}"):
         if package in packages:
@@ -105,10 +118,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", required=True, choices=sorted(TARGETS))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--no-sizes", action="store_true", help="write 0 instead of asking")
+    parser.add_argument(
+        "--runtime-pack", type=Path, help="the setup's gact-runtime.pack.json, if it names an asset"
+    )
     args = parser.parse_args(argv)
+    pack = None
+    if args.runtime_pack is not None:
+        pack = json.loads(args.runtime_pack.read_text(encoding="utf-8"))
+
+    def size(kind: str, url: str) -> int:
+        if kind == "runtime" and pack is not None:
+            return int(pack["archive_bytes"])
+        return 0 if args.no_sizes else remote_size(url)
+
     lines = [f"capability {capability()}"] + [
-        f"{kind} {sha} {0 if args.no_sizes else remote_size(url)} {name} {url}"
-        for kind, sha, name, url in entries(args.target)
+        f"{kind} {sha} {size(kind, url)} {name} {url}"
+        for kind, sha, name, url in entries(args.target, pack)
     ]
     args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

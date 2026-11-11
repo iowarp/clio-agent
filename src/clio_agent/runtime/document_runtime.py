@@ -247,6 +247,49 @@ def _built_for_this_interpreter(environment: Path) -> bool:
     return home in current
 
 
+PRELAID_STAMP = "clio-prelaid.json"
+
+
+def _adopt_prelaid(name: str, target: Path) -> bool:
+    """Move a tree the runtime build laid out for this exact stack into ``target``.
+
+    Windows runtime packs carry the document environment and a hoisted ``node_modules``
+    (``install/build_document_env.py``), so an installation writes them while it unpacks
+    instead of installing tens of thousands of files again. Adoption is one directory
+    rename on the same volume; anything else (no tree, another stack, another volume)
+    returns ``False`` with nothing changed, and the caller installs as usual.
+    """
+    runtime = bundled_root()
+    if runtime is None or os.path.lexists(target):
+        return False
+    tree = runtime / "documents" / name
+    try:
+        stamp = json.loads((tree / PRELAID_STAMP).read_text(encoding="utf-8"))
+        if not isinstance(stamp, dict) or stamp.get("fingerprint") != _fingerprint():
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tree.rename(target)
+    except (OSError, ValueError):
+        return False
+    (target / PRELAID_STAMP).unlink(missing_ok=True)
+    return True
+
+
+def _set_environment_home(environment: Path) -> None:
+    """Point a relocated venv at this interpreter; Windows launchers need an absolute home."""
+    config = environment / "pyvenv.cfg"
+    home = str(Path(sys.executable).resolve().parent)
+    lines = config.read_text(encoding="utf-8").splitlines()
+    config.write_text(
+        "\n".join(
+            f"home = {home}" if line.partition("=")[0].strip() == "home" else line
+            for line in lines
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _python_runtime(
     cache: Path, uv: str, *, discovery_only: bool = False
 ) -> tuple[Path, dict[str, Any]]:
@@ -256,6 +299,8 @@ def _python_runtime(
         shutil.copyfile(STACK_ROOT / name, project / name)
     environment = cache / "python"
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not os.path.lexists(environment) and _adopt_prelaid("python", environment):
+        _set_environment_home(environment)
     repair = python.is_file() and _built_for_this_interpreter(environment)
     if not repair and os.path.lexists(environment):
         # A dangling or foreign base cannot be repaired in place: ``uv venv`` refuses an
@@ -452,6 +497,11 @@ def _javascript_runtime(
                 f"Prepared workspace manifest was changed: {target}. Preserve task dependencies in a separate project."
             )
         target.write_bytes(expected)
+    if not (work / "node_modules").is_dir() and _adopt_prelaid(
+        "node_modules", work / "node_modules"
+    ):
+        # Keep later pnpm commands in this project on the layout it was built with.
+        (work / ".npmrc").write_text("node-linker=hoisted\n", encoding="utf-8")
     if not (work / "node_modules").is_dir():
         if progress is not None:
             progress("Installing Word, PowerPoint and image packages for Node.js...")

@@ -310,10 +310,16 @@ jobs:
           & external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe `
             "$env:BUNDLE_CHECKER" --project "$env:GITHUB_WORKSPACE" --release-tag "$env:RELEASE_TAG" `
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe
+      # The setup carries only gact-runtime.pack.json. The archive is a release asset that
+      # install.ps1 downloads while the setup unpacks it (install plan, CLIO_INSTALL_DOWNLOADS);
+      # a setup run on its own, or an update, fetches it from the URL. gact-tui#739.
       - name: Pack embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
-        run: ./install/pack-gact-runtime.ps1
+        run: |
+          $asset = "gact-runtime-$($env:RELEASE_TAG.TrimStart('v'))-windows-x64.tar.zst"
+          ./install/pack-gact-runtime.ps1 -AssetName $asset `
+            -AssetUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$asset"
       # The deb and rpm carry one archive instead of the runtime's ~32,000 files; their
       # postinst (install/linux-package) verifies and unpacks it, root-owned.
       - name: Pack embedded clio-agent runtime (Linux)
@@ -570,8 +576,11 @@ jobs:
               || { echo "::error::runtime archive missing"; exit 1; }
             [ -f "desktop/src-tauri/gact-runtime.pack.json" ] \
               || { echo "::error::runtime pack manifest missing"; exit 1; }
-            jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]' "$cfg" >/dev/null \
-              || { echo "::error::Windows bundle still enumerates the exploded runtime"; exit 1; }
+            jq -e '.bundle.resources == ["gact-runtime.pack.json"]' "$cfg" >/dev/null \
+              || { echo "::error::Windows setup must carry only the runtime pack manifest"; exit 1; }
+            jq -e '(.asset | type) == "string" and (.url | type) == "string"' \
+              desktop/src-tauri/gact-runtime.pack.json >/dev/null \
+              || { echo "::error::runtime pack manifest names no release asset"; exit 1; }
           fi
           if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" = "Linux" ]; then
             for f in gact-runtime.tar.zst gact-runtime.pack.json gact-runtime.unpack.sh; do
@@ -732,6 +741,14 @@ jobs:
           if [ "${{ matrix.variant }}" = "bundled" ]; then
             floor_mb="${BUNDLED_PAYLOAD_FLOOR_MB:-60}"
             floor=$((floor_mb * 1024 * 1024))
+            pattern='*-bundled.*'
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              # The setup carries only the pack manifest; the runtime is its own asset.
+              pack=external/gact-tui/desktop/src-tauri/gact-runtime.pack.json
+              asset="$(jq -r .asset "$pack")"
+              cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
+              pattern="$asset"
+            fi
             staged=0
             while IFS= read -r -d '' f; do
               staged=$((staged + 1))
@@ -740,7 +757,7 @@ jobs:
                 echo "::error::payload assert: $(basename "$f") is ${size}B, under the ${floor_mb} MB bundled floor (runtime not embedded)"
                 exit 1
               fi
-            done < <(find "$stage" -type f -name '*-bundled.*' ! -name '*.sig' -print0)
+            done < <(find "$stage" -type f -name "$pattern" ! -name '*.sig' -print0)
             if [ "$staged" -eq 0 ]; then
               echo "::error::payload assert: bundled variant staged no *-bundled.* artifact"
               exit 1
@@ -752,7 +769,11 @@ jobs:
           # script has none to publish.
           if [ "${{ matrix.variant }}" = "bundled" ] && [ -f scripts/release_install_plan.py ]; then
             py="$(command -v python3 || command -v python)"
-            "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" \
+            pack_args=()
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              pack_args=(--runtime-pack external/gact-tui/desktop/src-tauri/gact-runtime.pack.json)
+            fi
+            "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" ${pack_args[@]+"${pack_args[@]}"} \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
           fi
           # Cross-platform checksum: Linux has both, macOS has only `shasum`,

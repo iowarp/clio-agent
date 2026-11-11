@@ -1,14 +1,15 @@
 <#
 .SYNOPSIS
-  Compress the portable CLIO runtime into the two resources used by the
+  Compress the portable CLIO runtime into the archive and manifest used by the
   Windows desktop installer.
 
 .DESCRIPTION
   The previous NSIS bundle listed every Python file separately, making install
   and uninstall take many minutes. This script creates one Zstandard-compressed
   tar archive (level 19, long window; install/compress_runtime.py) plus a small
-  integrity manifest. The desktop verifies and expands
-  it atomically on first launch.
+  integrity manifest. With -AssetName and -AssetUrl the setup carries only the
+  manifest: the archive is a release asset that install.ps1 downloads while the
+  setup unpacks it, verifying its hash in the same pass (gact-tui#739).
 #>
 
 [CmdletBinding()]
@@ -20,7 +21,16 @@ param(
   [string]$Archive = (Join-Path $PSScriptRoot '..\external\gact-tui\desktop\src-tauri\gact-runtime.tar.zst'),
 
   [Parameter()]
-  [string]$Manifest = (Join-Path $PSScriptRoot '..\external\gact-tui\desktop\src-tauri\gact-runtime.pack.json')
+  [string]$Manifest = (Join-Path $PSScriptRoot '..\external\gact-tui\desktop\src-tauri\gact-runtime.pack.json'),
+
+  # A setup that does not carry the archive: its release asset name and URL.
+  # install.ps1 downloads the asset (install plan) while the setup unpacks it;
+  # a setup run on its own fetches the URL.
+  [Parameter()]
+  [string]$AssetName = '',
+
+  [Parameter()]
+  [string]$AssetUrl = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +85,8 @@ $pack = [ordered]@{
   runtime_bytes = $runtimeBytes
   archive_bytes = $archiveInfo.Length
 }
+if ($AssetName) { $pack.asset = $AssetName }
+if ($AssetUrl) { $pack.url = $AssetUrl }
 [System.IO.File]::WriteAllText(
   $Manifest,
   (($pack | ConvertTo-Json -Compress) + "`n"),

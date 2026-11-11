@@ -266,7 +266,9 @@ if (Test-Path $sitePkgs) {
     Where-Object { $_.Name -in @('tests', 'test') -and $_.Parent.FullName -ne $sitePkgs -and $_.Parent.Parent.FullName -ne $sitePkgs } |
     Sort-Object { $_.FullName.Length } |
     ForEach-Object { if (Test-Path -LiteralPath $_.FullName) { Remove-Item -LiteralPath $_.FullName -Recurse -Force } }
-  foreach ($unread in @('pyarrow\include', 'numpy\_core\include', '..\idlelib', '..\turtledemo')) {
+  # litellm\proxy\_experimental\out is the litellm proxy's web dashboard (708 files); CLIO
+  # calls litellm as a library and never serves it.
+  foreach ($unread in @('pyarrow\include', 'numpy\_core\include', '..\idlelib', '..\turtledemo', 'litellm\proxy\_experimental\out')) {
     $unreadDir = Join-Path $sitePkgs $unread
     if (Test-Path -LiteralPath $unreadDir) { Remove-Item -LiteralPath $unreadDir -Recurse -Force }
   }
@@ -354,6 +356,16 @@ $wheelBuilder = Join-Path $checkout 'install/build_document_wheels.py'
 $documentStack = Join-Path $pyRoot 'Lib/site-packages/clio_agent/runtime/document_stack'
 Invoke-Native -Exe $pyBin -Args @('-I', '-B', $wheelBuilder, '--stack', $documentStack, '--out', (Join-Path $Out 'document-wheels'), '--uv', $uv.Source)
 
+# Windows Defender scans every file an install writes, so the install's cost is its
+# file count. Lay the document environment, its Node packages and LibreOffice out
+# here, once: the installer unpacks them with the runtime and prepare adopts them
+# with a rename instead of creating them file by file (gact-tui#739).
+Write-Host "[build-gact-runtime] laying out the document environment and Node packages"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'build_document_env.py'), '--runtime', $Out, '--uv', $uv.Source, '--drop-wheels')
+Write-Host "[build-gact-runtime] laying out LibreOffice"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'lay_office.py'), '--runtime', $Out)
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'prune_documents.py'), '--runtime', $Out)
+
 # The Python Codex wheel contains only codex.exe. Ship the matching, verified
 # protected-execution helpers too; installation must not depend on an anonymous
 # GitHub API request that can be rate limited on a user's network.
@@ -386,6 +398,13 @@ if ($compiled -eq 0) {
 }
 Write-Host "[build-gact-runtime] prepared $compiled bytecode files"
 
+# Pure-Python distributions import from one zip (with bytecode) instead of about
+# 10,000 separate files; native and path-reading packages stay extracted.
+foreach ($site in @($sitePkgs, (Join-Path $Out 'documents\python\Lib\site-packages'))) {
+  Write-Host "[build-gact-runtime] zipping pure-Python packages in $site"
+  Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'zip_site_packages.py'), '--site-packages', $site)
+}
+
 $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
@@ -393,7 +412,8 @@ Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefo
 # A venv would leave a pyvenv.cfg pinning the build host's interpreter;
 # assert the failure mode is structurally absent, then boot the runtime
 # FROM A RELOCATED COPY -- the invariant the old script never proved.
-$venvCfg = @(Get-ChildItem -LiteralPath $Out -Recurse -Filter 'pyvenv.cfg' -ErrorAction SilentlyContinue)
+# documents\python is the relocatable document venv; prepare rewrites its home.
+$venvCfg = @(Get-ChildItem -LiteralPath (Join-Path $Out 'python') -Recurse -Filter 'pyvenv.cfg' -ErrorAction SilentlyContinue)
 if ($venvCfg.Count -gt 0) {
   throw "build-gact-runtime: pyvenv.cfg found -- runtime is venv-shaped, not portable"
 }
