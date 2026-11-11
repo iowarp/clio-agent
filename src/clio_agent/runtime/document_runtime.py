@@ -276,9 +276,13 @@ def _adopt_prelaid(name: str, target: Path) -> bool:
 
 
 def _set_environment_home(environment: Path) -> None:
-    """Point a relocated venv at this interpreter; Windows launchers need an absolute home."""
+    """Point a relocated venv at this interpreter; Windows launchers need an absolute home.
+
+    Run from a virtualenv, that is the virtualenv's base interpreter: a venv whose home
+    is another venv's launcher directory runs as that other venv, not as itself.
+    """
     config = environment / "pyvenv.cfg"
-    home = str(Path(sys.executable).resolve().parent)
+    home = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent)
     lines = config.read_text(encoding="utf-8").splitlines()
     config.write_text(
         "\n".join(
