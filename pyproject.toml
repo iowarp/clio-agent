@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.9.6"
+version = "0.9.6.1"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -66,7 +66,7 @@ dependencies = [
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
     "websockets>=13.0",
-    "clio-kit==2.11.1",  # Source-locked scientific MCP components and launcher.
+    "clio-kit==2.12.3",  # Source-locked scientific MCP components and launcher.
     "fastmcp==4.1.2",  # stable native Tasks integration; adapter contracts are acceptance gates
     "fastmcp-tasks==4.1.2",
     "mcp==2.2.0",  # reviewed native Tasks wire/client contract

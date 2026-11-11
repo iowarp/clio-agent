@@ -665,7 +665,7 @@ wheels = [
 
 [[package]]
 name = "clio-agent"
-version = "0.9.6"
+version = "0.9.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "clio-kit" },
@@ -808,7 +808,7 @@ requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.159" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "copilot", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
-    { name = "clio-kit", specifier = "==2.11.1" },
+    { name = "clio-kit", specifier = "==2.12.3" },
     { name = "clio-schemas", specifier = "==0.7.0b1" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.4.0" },
@@ -902,16 +902,16 @@ install-bootstrap = [
 
 [[package]]
 name = "clio-kit"
-version = "2.11.1"
+version = "2.12.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },
     { name = "tomli-w" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/1d/8448f04c0542c11206b9279ca02419e12a8c8a7282dfea4e66f70783ef0c/clio_kit-2.11.1.tar.gz", hash = "sha256:3f9c160867f9c1697b1fcc24ae88e4e454dc857dbede66192b9dea9a3d8f44a0", size = 260849, upload-time = "2026-10-28T21:23:42.883Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/ac/185eec6d0e73e0fb6da517a70b3c1492489c8cbe72aeb0b823e48ff8ecc6/clio_kit-2.12.3.tar.gz", hash = "sha256:a6e3570b294a019e10011d701ee3f70aa40d0459af2d2d7a327577728116bcc1", size = 267526, upload-time = "2026-11-11T20:08:42.339Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/08/40c28d22582f63566cb71b0ee4b1508172ad1e6054ae7794e8407bae31b8/clio_kit-2.11.1-py3-none-any.whl", hash = "sha256:c36c12e9dbf28e9b62f14110feab542b9d33f58038f8be68d621b7e08f6ace39", size = 291193, upload-time = "2026-10-28T21:23:41.284Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/a0/7f3cd21c658cb34ee8c141e08bbf0d3810212eada6cf57552cd2c777f936/clio_kit-2.12.3-py3-none-any.whl", hash = "sha256:a1bf04284dd640d006a587dbc7c20ac71412a0971f2403f27d3a30ee0f74290f", size = 301722, upload-time = "2026-11-11T20:08:40.853Z" },
 ]
 
 [[package]]
