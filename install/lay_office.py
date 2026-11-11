@@ -43,7 +43,7 @@ def main() -> int:
         msi = args.msi
         if msi is None:
             msi = work / msi_name
-            office._download(url, msi, checksum)
+            office._download(url, msi, checksum, (office.asset_fallback(),))
         with msi.open("rb") as stream:
             if hashlib.file_digest(stream, "sha256").hexdigest() != checksum:
                 raise SystemExit(f"{msi} is not the pinned LibreOffice {office.VERSION} MSI")

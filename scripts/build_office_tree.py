@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         archive = staging / archive_name
 
         def source() -> Path:
-            office._download(url, archive, checksum)
+            office._download(url, archive, checksum, (office.asset_fallback(),))
             return archive
 
         office._lay_image(image, staging, source)

@@ -56,7 +56,7 @@ def test_apple_silicon_plan_prefetches_libreoffice_and_native_pnpm(tmp_path: Pat
     assert lines[0] == ["capability", office.INSTALLER_PLAN_CAPABILITY]
     lines = lines[1:]
     assert [(line[0], line[3]) for line in lines] == [
-        ("office", f"LibreOffice_{office.VERSION}_MacOS_aarch64.dmg"),
+        ("office", f"LibreOffice_{office.BUILD}_MacOS_aarch64.dmg"),
         ("npm", f"pnpm-{document_runtime.PNPM_VERSION}.tgz"),
         ("npm", f"exe.darwin-arm64-{document_runtime.PNPM_VERSION}.tgz"),
     ]
@@ -72,7 +72,7 @@ def test_windows_plan_prefetches_the_msi_and_native_pnpm(tmp_path: Path) -> None
     assert lines[0] == ["capability", office.INSTALLER_PLAN_CAPABILITY]
     lines = lines[1:]
     assert [(line[0], line[3]) for line in lines] == [
-        ("office", f"LibreOffice_{office.VERSION}_Win_x86-64.msi"),
+        ("office", f"LibreOffice_{office.BUILD}_Win_x86-64.msi"),
         ("npm", f"pnpm-{document_runtime.PNPM_VERSION}.tgz"),
         ("npm", f"exe.win32-x64-{document_runtime.PNPM_VERSION}.tgz"),
     ]
