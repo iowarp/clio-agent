@@ -12,38 +12,41 @@ already received it.
 
 1. Check the app's version in its About or update information.
 2. Open **Settings → Desktop → App updates** to inspect available updates.
-3. Look for the **Newer than the published beta** note in the guide.
+3. Look for the **Version note** in the guide; it names the CLIO version the
+   pictured controls need.
    Where an image names a UI revision and capture date, those identify the
    pictured interface. An **Earlier demo** label identifies an older example;
    the website's version does not change the version shown in that image.
 4. If you use a lab service, ask its administrator which Agent version is running.
    Updating Desktop alone does not update a remote lab service.
 
-The published release checked on **18 October 2026** is
-[v0.9.5-beta.7.2](https://github.com/iowarp/clio-agent/releases/tag/v0.9.5-beta.7.2).
-Use the [release list](https://github.com/iowarp/clio-agent/releases) for subsequent
-releases. Draft releases are not available through normal app updates.
+The current stable release is
+[v0.9.5.1](https://github.com/iowarp/clio-agent/releases/tag/v0.9.5.1), published on
+29 October 2026. These guides describe the
+[v0.9.6-beta.1](https://github.com/iowarp/clio-agent/releases/tag/v0.9.6-beta.1) beta.
+App updates offer stable releases only; to try a beta, install it from its release
+page. Use the [release list](https://github.com/iowarp/clio-agent/releases) for
+subsequent releases. Draft releases are not available through normal app updates.
 
 ## Guides with newer controls
 
-| Guide | What may differ in beta 7.2 |
+These guides describe controls that v0.9.5.1 does not have. They need v0.9.6-beta.1
+or later.
+
+| Guide | What v0.9.5.1 lacks |
 | --- | --- |
-| [Your workspace](/docs/workspace-panels/) | Compact Data/Work layouts and remembered expansion choices. |
-| [Conversations](/docs/sessions/) | Message marks, attached feedback comments and updated family views. |
-| [Questions](/docs/questions/) | Compact question controls, a **+** for comments on offered choices, and the pending-question list. |
-| [Work in progress](/docs/following-work/) | Compact tool rows, current todos and child-agent follow-ups. |
-| [Continue work over time](/docs/long-running-work/) | Updated goal, monitoring and schedule controls. |
-| [Search](/docs/search/) | Highlighted matching passages and the CLIO Search assistant. |
-| [Research notes](/docs/files/knowledge/) | Obsidian source browsing and linked-note exploration. |
-| [National Data Platform](/docs/files/ndp/) | Dataset search and selection, private NDP sign-in, remote Endpoint operations and retained stream captures. Requires CLIO v0.9.5-beta.8 or later. |
-| [Compare answers](/docs/best-of-n/) | Independent draft tabs and evaluation controls. |
-| [Dashboards](/docs/dashboards/) | Saved dashboards and their export menus. |
-| [Science log](/docs/science-log/) | The Science log tab: the study tree, the log, the graph and the study's views. |
-| [Subagents](/docs/subagents/) | Delegation to a copy of the agent, the explore, planner and review roles, and forks. |
-| [Flows and workflows](/docs/flows/) | Forked steps drawn beside their step, and isolated step folders. |
-| [Linked data](/docs/widgets/linked-data/) | Viewers that follow a selection, and links between views. |
-| [Save and share](/docs/exports/) | Named export checkboxes; older builds use Transcript, Effects and Full. |
-| [Build with the SDK](/docs/sdk/) | Plugins, agents and flows written with `clio_agent.sdk` are development build only. In beta 8, `clio_agent.sdk` is a different module: the HTTP client for a running CLIO service. |
+| [Use the browser with CLIO](/docs/browser/) | The browser panel the agent uses, signing in to sites yourself and choosing which sites it may load. |
+| [Commands and @ mentions](/docs/commands/) | Bringing a subagent, workflow, flow or tool server into the conversation with **@**. |
+| [Comment on results](/docs/comments/) | Marking part of a document, figure or web page and saying what to change. Comments on answers are in v0.9.5.1. |
+| [Write a paper](/docs/papers/) | LaTeX papers built beside their source, comments on either and their versions. |
+| [Scripts and background work](/docs/scripts/) | Scripts that call the agent's tools, their approval, and scripts that keep running in the background. |
+| [Watch something live](/docs/live-sources/) | Dashboards that update by themselves from a job, an instrument or a device. |
+| [Explore charts and dashboards](/docs/dashboards/) | Live sources for dashboards. |
+| [Follow work in progress](/docs/following-work/) | The session plan in the **Plan** section of **Work**. |
+| [Choose what CLIO may do](/docs/permissions/) | Default permissions for each tool and the approval of scripts. |
+| [Updates during a conversation](/docs/injections/) | The **Reminders** tab in **Settings → Prompts and commands**. |
+| [National Data Platform](/docs/files/ndp/) | The **NDP** agent. In v0.9.5.1 the standard agent searches NDP itself. |
+| [Build with the SDK](/docs/sdk/) | Script bindings, plugin server settings, per-tool permissions and `host_call`. v0.9.5.1 includes the rest of the SDK. |
 
 You can still use ordinary conversations, attach supported files and review the
 outputs your installation provides. Follow the labels you actually see; a missing
