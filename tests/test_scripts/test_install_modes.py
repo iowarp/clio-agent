@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -215,3 +216,194 @@ def test_the_finishing_note_offers_web_only_when_the_web_bundle_is_installed() -
     assert "clio (Web)" in web
     assert "clio (Web)" not in rest.split("fi", 1)[0]
     assert "  2. $run_step\n" in notes
+
+
+def _install_name_tool_stand_in() -> str:
+    text = (ROOT / "install/install.sh").read_text()
+    return text[text.index("macos_developer_tools() {") : text.index("# uv installs Python,")]
+
+
+def test_a_mac_without_developer_tools_never_runs_the_install_name_tool_placeholder() -> None:
+    # uv patches each Python it installs with install_name_tool; on a Mac without the
+    # Command Line Tools /usr/bin/install_name_tool opens their install dialog
+    # (gact-tui#739). The failing stand-in is on PATH before the first uv call.
+    text = (ROOT / "install/install.sh").read_text()
+    block = _install_name_tool_stand_in()
+    assert 'export PATH="$tool_shim:$PATH"' in block
+    assert text.index(block) < text.index("curl -LsSf https://astral.sh/uv/install.sh")
+    assert text.index(block) < text.index("uv tool install")
+    assert '[ -z "${tool_shim:-}" ] || rm -rf "$tool_shim"' in text[text.index("on_exit() {") :]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell")
+@pytest.mark.parametrize("developer_dir", [True, False])
+def test_the_stand_in_is_used_only_without_a_developer_directory(
+    tmp_path: Path, developer_dir: bool
+) -> None:
+    developer = tmp_path / "Developer"
+    if developer_dir:
+        (developer / "usr/bin").mkdir(parents=True)
+    script = (
+        f"OS=darwin\n{_install_name_tool_stand_in()}\n"
+        'printf "%s\\n" "$tool_shim"\n'
+        '[ -z "$tool_shim" ] || { "$tool_shim/install_name_tool"; echo "status $?"; }\n'
+    )
+    # Isolated from the machine's own developer tools: only DEVELOPER_DIR can supply them.
+    script = script.replace(
+        "/Applications/Xcode.app/Contents/Developer \\\n      /Library/Developer/CommandLineTools",
+        f"{tmp_path}/no-xcode {tmp_path}/no-clt",
+    ).replace("readlink /var/db/xcode_select_link", f"readlink {tmp_path}/no-link")
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", "-c", script],
+        env={**os.environ, "DEVELOPER_DIR": str(developer), "TMPDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    shim = result.stdout.splitlines()[0]
+    if developer_dir:
+        assert shim == ""
+    else:
+        assert shim.startswith(str(tmp_path / "clio-tools."))
+        assert "status 1" in result.stdout
+        assert "needs the Command Line Tools" in result.stderr
+
+
+# ---- the release's prebuilt agent: a plain macOS install unpacks the bundled runtime
+
+
+def _runtime_block() -> str:
+    text = (ROOT / "install/install.sh").read_text()
+    helpers = text[text.index("manifest_sha() {") : text.index("# fetch_hashed URL FILE")]
+    block = text[
+        text.index("# ---------- the release's prebuilt agent") : text.index(
+            "# ---------- clio-kit MCP runtime"
+        )
+    ]
+    return helpers + 'is_sha() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }\n' + block
+
+
+_RUNTIME_ASSET = "CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz"
+
+
+def _runtime_archive(tmp_path: Path, version: str) -> tuple[Path, str]:
+    import hashlib
+    import tarfile
+
+    app = tmp_path / "pkg/CLIO Desktop.app"
+    runtime = app / "Contents/Resources/gact-runtime"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "python/bin").mkdir(parents=True)
+    (app / "Contents/MacOS").mkdir(parents=True)
+    (app / "Contents/MacOS/clio-desktop").write_text("the app itself\n")
+    (runtime / "runtime.json").write_text("{}\n")
+    python = runtime / "python/bin/python3.14"
+    python.write_text(f"#!/bin/sh\necho {version}\n")
+    python.chmod(0o755)
+    (runtime / "python/bin/python3.14-config").write_text("")
+    archive = tmp_path / _RUNTIME_ASSET
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(app, arcname="CLIO Desktop.app")
+    return archive, hashlib.sha256(archive.read_bytes()).hexdigest()
+
+
+def _install_runtime(
+    tmp_path: Path, archive: Path, sha: str | None, *, os_name: str = "darwin", **env: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    prefix = tmp_path / "prefix"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(exist_ok=True)
+    venv = prefix / "clio-agent/.venv"
+    (venv / "bin").mkdir(parents=True, exist_ok=True)
+    (venv / "bin/old").write_text("the previous environment\n")
+    script = (
+        "set -euo pipefail\n"
+        'have() { command -v "$1" >/dev/null 2>&1; }\n'
+        'say() { echo "say: $*"; }\n'
+        'warn() { echo "warn: $*" >&2; }\n'
+        'die() { echo "die: $*" >&2; exit 1; }\n'
+        "sw_vers() { echo 15.4; }\n"
+        f'curl() {{ echo "curl $*" >&2; case "$*" in *SHA256SUMS*) return 22 ;; esac; '
+        f"cat {shell_path(archive)!r}; }}\n"
+        f"OS={os_name} ARCH=arm64 REPO_URL=https://example.invalid\n"
+        f"PREFIX={shell_path(prefix)!r} VENV={shell_path(venv)!r}\n"
+        f"DESKTOP_SCRATCH={shell_path(scratch)!r}\n"
+        f"{_runtime_block()}\n"
+        "start_release_runtime v1.2.3\n"
+        "if finish_release_runtime 1.2.3; then echo RESULT runtime; else echo RESULT pypi; fi\n"
+    )
+    if sha is not None:
+        (scratch / "checksums").write_text(f"{sha}  {_RUNTIME_ASSET}\n")
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", "-c", script],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result, venv
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell")
+def test_a_plain_macos_install_uses_the_releases_prebuilt_runtime(tmp_path: Path) -> None:
+    archive, sha = _runtime_archive(tmp_path, "1.2.3")
+    result, venv = _install_runtime(tmp_path, archive, sha)
+    assert "RESULT runtime" in result.stdout, result.stdout + result.stderr
+    fetched = (tmp_path / "scratch/runtime.log").read_text()
+    assert f"/releases/download/v1.2.3/{_RUNTIME_ASSET}" in fetched
+    assert os.readlink(venv / "bin/python") == "../python/bin/python3.14"
+    assert os.readlink(venv / "bin/python3") == "python"
+    trampoline = (venv / "bin/clio-agent").read_text()
+    assert f"'''exec' '{venv}/bin/python' \"$0\" \"$@\"" in trampoline
+    assert "from clio_agent.ui.cli import main" in trampoline
+    assert (venv / "runtime.json").is_file()
+    assert not (venv / "bin/old").exists()  # the previous environment was replaced
+    assert not (tmp_path / "prefix/clio-agent/.venv.previous").exists()
+    assert not (tmp_path / "prefix/clio-agent/.venv.incoming").exists()  # only the runtime
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell")
+@pytest.mark.parametrize(
+    ("case", "env"),
+    [
+        ("tampered", {}),
+        ("other version", {}),
+        ("not published", {}),
+        ("no checksums", {}),
+        ("pypi requested", {"CLIO_INSTALL_FROM": "pypi"}),
+        ("linux", {}),
+    ],
+)
+def test_without_a_verified_matching_runtime_the_install_uses_pypi(
+    tmp_path: Path, case: str, env: dict[str, str]
+) -> None:
+    archive, sha = _runtime_archive(tmp_path, "9.9.9" if case == "other version" else "1.2.3")
+    published: str | None = sha
+    if case == "tampered":
+        published = "0" * 64
+    if case == "not published":
+        published = ""
+    if case == "no checksums":  # the release publishes no macOS checksums at all
+        published = None
+    result, venv = _install_runtime(
+        tmp_path, archive, published, os_name="linux" if case == "linux" else "darwin", **env
+    )
+    assert "RESULT pypi" in result.stdout, result.stdout + result.stderr
+    assert (venv / "bin/old").is_file()  # the previous environment is untouched
+    assert not (tmp_path / "prefix/clio-agent/.venv.incoming").exists()
+    if case in ("pypi requested", "linux", "no checksums"):
+        assert not (tmp_path / "scratch/runtime.log").exists()  # no runtime was fetched
+    if case in ("not published", "no checksums"):
+        assert "publishes no prebuilt agent" in result.stdout
+
+
+def test_the_prebuilt_agent_downloads_first_and_pypi_remains_the_fallback() -> None:
+    text = (ROOT / "install/install.sh").read_text()
+    plan = text.index('  install_plan="$(release_install_plan "$tag")"')
+    start = text.index('  start_release_runtime "$tag"', plan)
+    # The checksums the plan fetched are reused; LibreOffice and pnpm wait for the runtime.
+    assert plan < start
+    assert 'if [ -n "$RUNTIME_JOB" ]; then runtime_first=1; else start_install_downloads' in text
+    finish = text.index('  ! finish_release_runtime "$package_version" || runtime_installed=1')
+    after = text.index('  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"')
+    assert start < finish < after < text.index('say "Installing $pkg_spec from PyPI', after)

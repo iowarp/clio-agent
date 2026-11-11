@@ -122,6 +122,15 @@ $u = 'https://clio.iowarp.ai/install.ps1'
   Python that release declares in `.python-version` (3.13 for releases before it).
   The release list is GitHub Releases: the default takes the highest stable version,
   `--dev` the most recently published release.
+  On Apple Silicon macOS 15 or later, a release that publishes its bundled desktop
+  (`SHA256SUMS.aarch64-apple-darwin.bundled.txt` naming the
+  `CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar` or `.app.tar.gz`) installs that
+  app's signed agent runtime instead: only its `gact-runtime` folder is unpacked, as it
+  downloads, verified against the checksum and the release version, and becomes
+  `.venv`. Without those assets, or if the runtime cannot be verified, the install
+  uses PyPI. `CLIO_INSTALL_FROM=pypi` always uses PyPI. With the release's
+  `install-plan.aarch64-apple-darwin.bundled.txt`, LibreOffice and pnpm download at
+  the same time.
 - **Source** uses `uv sync --locked` (a clone) or `uv sync` (your checkout, in place).
   It needs `git` and installs the service without building a frontend. Running a clone
   install again updates that clone to the requested ref and repairs what an
@@ -151,7 +160,7 @@ Use the lifecycle subcommands to manage a headless service:
 |---|---|
 | `clio` | ensure the server is up, then open Web |
 | `clio start` | start the headless service |
-| `clio stop` | stop the server (kills the whole process tree) |
+| `clio stop` | stop the server (kills the whole process tree), then the local services it started, such as web search (`clio-agent services stop`; installations are kept and web search starts again on the next boot) |
 | `clio restart` | stop, then start — clears stale/zombie launches |
 | `clio status` / `clio ps` | PID, port, health |
 | `clio logs [N]` | tail service logs (default 40 lines) |
@@ -225,7 +234,9 @@ clio uninstall
 clio uninstall -Purge
 ```
 
-Uninstall stops the server, removes the launcher, and deletes the
+Uninstall stops the server, removes the launcher and the tools the installer
+added (the `clio-kit` uv tool, and `uv`/`uvx` when the installer installed them
+rather than finding yours; on Linux and macOS), and deletes the
 application payloads in the install prefix
 (`~/Library/Application Support/clio-agent/data/app` on macOS,
 `~/.local/share/clio-agent/app` on Linux, `%LOCALAPPDATA%\clio-agent\data\app` on

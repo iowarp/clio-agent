@@ -6,6 +6,38 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6-beta.1.5] - 2026-11-11
+
+### Fixed
+
+- Linux installs get LibreOffice's supporting packages from archive.ubuntu.com
+  and ports.ubuntu.com, which answer while Launchpad and snapshot.ubuntu.com do
+  not. Four outdated amd64 pins move to their current security builds, and the
+  other hosts remain fallbacks (#2115).
+- A plain macOS install no longer opens the "Install Command Line Developer
+  Tools" dialog (#2106), and no longer stops silently on a release without
+  macOS checksums (#2111).
+- clio uninstall also removes the uv, uvx and clio-kit that the installer
+  added (#2112).
+- After clio update, document preparation no longer fails because the bundled
+  document packages were built for the previous release (#2113).
+- clio stop also stops the local services CLIO started, such as web search,
+  so an upgrade can replace the installed environment (#2114).
+
+### Changed
+
+- On Windows (x64) and Apple silicon Macs, the one-line install uses the
+  release's prebuilt agent runtime instead of installing from PyPI, which makes
+  it much faster. Releases without that runtime, and
+  `CLIO_INSTALL_FROM=pypi`, still install from PyPI (#2109, #2110).
+### Fixed
+
+- `clio stop` (and `clio restart`) also stops the local services the server
+  started, such as web search, which kept running and holding CLIO's Python
+  open, so a reinstall could not replace it. They are stopped, not removed, and
+  web search starts again with the server. `clio-agent services stop` does the
+  same on its own.
+
 ## [0.9.6-beta.1.4] - 2026-11-11
 
 ### Fixed

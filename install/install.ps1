@@ -17,8 +17,10 @@
 # -Source/-Dev/-Version/-Ref are the same options. From a URL:
 #   & ([scriptblock]::Create((irm <url>/install.ps1))) --dev
 # --source run from inside a clio-agent checkout installs that checkout in place; run
-# from a URL it clones. A release is installed from PyPI, constrained by that release
-# tag's own uv.lock, on the Python that release declares (.python-version; 3.13 before).
+# from a URL it clones. A release that publishes the desktop's prebuilt runtime archive
+# (x64) installs from it, unpacked while it downloads; any other release is installed
+# from PyPI, constrained by that release tag's own uv.lock, on the Python that release
+# declares (.python-version; 3.13 before). CLIO_INSTALL_FROM=pypi chooses PyPI.
 #
 # Pins: --version <pypi version> (release), --ref <git ref> (source). Older spellings
 # still work: $env:CLIO_VERSION is --version, $env:CLIO_REF is --source --ref.
@@ -169,6 +171,18 @@ function RemoveTree($path) {
         Die "failed to remove existing path: $path"
     }
 }
+# Remove-ClioTreeLater PATH: delete a tree nothing uses any more in a hidden process.
+# A replaced environment holds tens of thousands of files, and deleting them under
+# real-time scanning takes about half a minute the install need not wait for. The tree
+# is renamed first, so a later install never meets a half-deleted one under its name.
+function Remove-ClioTreeLater([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $doomed = "$Path.removing-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    try { [IO.Directory]::Move($Path, $doomed) } catch { RemoveTree $Path; return }
+    $deleter = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList '/d', '/c', "rd /s /q `"$(LongPath $doomed)`"" -WindowStyle Hidden -PassThru
+    # Idle priority also lowers its disk priority, so the install keeps the disk.
+    try { $deleter.PriorityClass = [Diagnostics.ProcessPriorityClass]::Idle } catch { }
+}
 
 # ---------- defaults ---------------------------------------------------
 $Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } elseif ($env:CLIO_USER_DIR) { Join-Path $env:CLIO_USER_DIR 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
@@ -262,7 +276,8 @@ function Save-ClioDownloads($Items, [int64]$Expected, $Until = $null) {
     $next = $interval
     $last = [int64]0
     while ($true) {
-        if (-not (Step-ClioDownloads)) { break }
+        $running = Step-ClioDownloads
+        if (-not $running) { break }
         if ($Until -and $Until.Landed) { break }
         if ($clock.Elapsed.TotalSeconds -ge $next) {
             $bytes = [int64](($script:ClioTransfers | Measure-Object -Property Bytes -Sum).Sum)
@@ -452,7 +467,7 @@ function Read-ClioPlan([string]$Path) {
         $f = @($line -split ' ')
         if ($f.Count -ne 5 -or $f[1] -cnotmatch '^[0-9a-f]{64}$' -or $f[2] -notmatch '^[0-9]+$' -or
             $f[3] -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$' -or $f[4] -notmatch '^https://') { continue }
-        [pscustomobject]@{ Name = $f[3]; Sha = $f[1]; Bytes = [int64]$f[2]; Url = $f[4] }
+        [pscustomobject]@{ Name = $f[3]; Sha = $f[1]; Bytes = [int64]$f[2]; Url = $f[4]; Kind = $f[0] }
     })
 }
 
@@ -700,16 +715,28 @@ switch ($Protocol) {
 }
 
 # ---------- prerequisite checks ---------------------------------------
-# uv installs Python, the environment and the locked dependencies in every mode.
+# uv installs Python, the environment and the locked dependencies in every mode. A
+# release's prebuilt runtime carries its own uv, so that install takes it from there.
 New-Item -ItemType Directory -Force -Path $Prefix, $BinDir | Out-Null
-if (-not (Have uv)) {
-    Say "Installing uv into $BinDir"
-    $env:UV_INSTALL_DIR = $BinDir
-    $env:UV_NO_MODIFY_PATH = '1'
-    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+function Initialize-ClioUv([string]$From = '') {
+    if (Have uv) { return }
+    $bundled = if ($From) { Join-Path $From 'uv.exe' } else { '' }
+    if ($bundled -and (Test-Path -LiteralPath $bundled)) {
+        Say "Installing uv into $BinDir (from the CLIO runtime)"
+        foreach ($exe in 'uv.exe', 'uvx.exe') {
+            $source = Join-Path $From $exe
+            if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $BinDir $exe) -Force }
+        }
+    } else {
+        Say "Installing uv into $BinDir"
+        $env:UV_INSTALL_DIR = $BinDir
+        $env:UV_NO_MODIFY_PATH = '1'
+        Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+    }
     $env:PATH = "$BinDir;$env:PATH"
     if (-not (Have uv)) { Die 'could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again' }
 }
+if ($OptSource) { Initialize-ClioUv }
 # uv otherwise prefers an installed Microsoft Store Python over downloading one. A
 # packaged (MSIX) interpreter cannot run inside protected execution: MXC refuses to
 # launch packaged apps. Use uv's own Pythons unless the operator chose otherwise.
@@ -871,11 +898,295 @@ function Complete-BytecodePrepare {
     Remove-Item -LiteralPath $script:BytecodeLog, $script:BytecodeErr -Force -ErrorAction SilentlyContinue
 }
 
+# ---------- a release's prebuilt runtime -------------------------------
+# A release that publishes the desktop's runtime archive (gact-runtime-*.tar.zst, named
+# with its SHA-256 by the bundled install plan) installs from it instead of PyPI: one
+# download, unpacked while it arrives, holding the agent, its Python and every locked
+# dependency laid out and compiled, with Office and the document environment the managed
+# packages adopt. The runtime is unpacked into the environment directory and the
+# environment is a virtualenv over it, so the launchers, upgrades, data check and
+# uninstall are the PyPI install's. A release without the archive installs from PyPI;
+# CLIO_INSTALL_FROM=pypi chooses PyPI.
+$ClioRuntimeTriple = 'x86_64-pc-windows-msvc'
+$ClioUnpackers = @()
+$ClioUnpacked = [int64]0
+function Get-ClioRuntimePlan([string]$Tag, [string]$Scratch) {
+    if ($env:CLIO_INSTALL_FROM -eq 'pypi') { return $null }
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return $null }
+    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (-not (Test-Path -LiteralPath $tar)) { return $null }
+    $base = "https://github.com/iowarp/clio-agent/releases/download/$Tag"
+    $sums = Join-Path $Scratch 'checksums'
+    $planFile = Join-Path $Scratch 'plan'
+    try { Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $sums } catch { return $null }
+    $planSha = Get-ClioManifestSha ([IO.File]::ReadAllText($sums)) "install-plan.$($script:ClioRuntimeTriple).bundled.txt"
+    if (-not $planSha) { return $null }
+    try { Invoke-WebRequest -UseBasicParsing "$base/install-plan.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $planFile } catch { return $null }
+    if ((Get-ClioSha256 $planFile) -ne $planSha) {
+        Warn "release $Tag's install plan does not match its checksum; installing from PyPI"
+        return $null
+    }
+    $plan = @(Read-ClioPlan $planFile)
+    if (@($plan | Where-Object { $_.Kind -eq 'runtime' -and $_.Name -like 'gact-runtime-*.tar.zst' }).Count -ne 1) { return $null }
+    return $plan
+}
+
+# Start-ClioUnpackers DIR ITEM: tar.exe processes that unpack ITEM's archive into DIR while
+# it downloads. Defender scans each new file as it is closed, so one process leaves the
+# disk idle between files; each process writes its own part of the tree and skips the
+# rest, which costs only decompression. Each is fed by its own thread reading the growing
+# download, so a process held up by its files never holds up the others.
+$ClioFeeders = @()
+$ClioFeed = $null
+$ClioFeederScript = {
+    param([string]$File, [string]$Final, $Out, $Feed)
+    $buffer = New-Object byte[] 1048576
+    $in = $null
+    $read = [int64]0
+    try {
+        while (-not $Feed.Abort) {
+            if (-not $in) {
+                foreach ($path in $File, $Final) {
+                    if ($in -or -not [IO.File]::Exists($path)) { continue }
+                    try { $in = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite, Delete') } catch { }
+                }
+                if (-not $in) { Start-Sleep -Milliseconds 50; continue }
+            }
+            $n = $in.Read($buffer, 0, $buffer.Length)
+            if ($n -gt 0) { $Out.Write($buffer, 0, $n); $read += $n; continue }
+            if ($Feed.Length -ge 0 -and $read -ge $Feed.Length) { break }
+            Start-Sleep -Milliseconds 50
+        }
+    } finally {
+        if ($in) { $in.Dispose() }
+        try { $Out.Close() } catch { }
+    }
+    $read
+}
+function Start-ClioUnpackers([string]$Dir, $Item) {
+    $site = 'gact-runtime/python/Lib/site-packages'
+    $documents = @('gact-runtime/documents/office', 'gact-runtime/documents/node_modules', 'gact-runtime/documents/office-profile.zip')
+    $parts = @(
+        (@($documents | ForEach-Object { "--include `"$_`"" }) -join ' '),
+        "--include `"$site/[_a-b]*`"",
+        "--include `"$site/[c-k]*`"",
+        "--include `"$site/[l-z]*`"",
+        ((@($documents | ForEach-Object { "--exclude `"$_`"" }) + "--exclude `"$site/[_a-z]*`"") -join ' ')
+    )
+    $script:ClioUnpackers = @(foreach ($part in $parts) {
+        $info = New-Object Diagnostics.ProcessStartInfo (Join-Path $env:SystemRoot 'System32\tar.exe')
+        $info.Arguments = "-x -f - --strip-components 1 -C `"$Dir`" $part"
+        $info.UseShellExecute = $false
+        $info.RedirectStandardInput = $true
+        [Diagnostics.Process]::Start($info)
+    })
+    $script:ClioFeed = [hashtable]::Synchronized(@{ Length = [int64]-1; Abort = $false })
+    $script:ClioFeeders = @(foreach ($unpacker in $script:ClioUnpackers) {
+        $shell = [PowerShell]::Create()
+        $null = $shell.AddScript($script:ClioFeederScript).AddArgument($Item.File).AddArgument($Item.Final).AddArgument($unpacker.StandardInput.BaseStream).AddArgument($script:ClioFeed)
+        [pscustomobject]@{ Shell = $shell; Handle = $shell.BeginInvoke() }
+    })
+}
+
+# Stop-ClioUnpackers LENGTH: the archive is complete at LENGTH bytes (feed it to the end),
+# or -1 (the download failed: stop now). Sets $ClioUnpacked to the fewest bytes any
+# unpacker was fed.
+function Stop-ClioUnpackers([int64]$Length) {
+    if ($Length -ge 0) { $script:ClioFeed.Length = $Length } else { $script:ClioFeed.Abort = $true }
+    $fed = @(foreach ($feeder in $script:ClioFeeders) {
+        try { [int64](@($feeder.Shell.EndInvoke($feeder.Handle))[-1]) } catch { [int64]-1 }
+        $feeder.Shell.Dispose()
+    })
+    $script:ClioUnpacked = if ($fed.Count) { [int64](($fed | Measure-Object -Minimum).Minimum) } else { [int64]-1 }
+    foreach ($unpacker in $script:ClioUnpackers) {
+        if (-not $unpacker.WaitForExit(120000)) { try { $unpacker.Kill() } catch { } }
+    }
+}
+
+# New-ClioLaunchers SITE WHEEL: a wheel of no code whose entry points are the runtime's
+# console and GUI scripts, so installing it into the virtualenv writes the Scripts\*.exe
+# launchers (clio-agent.exe, clio_run.exe, ...) a PyPI install has.
+function New-ClioLaunchers([string]$Site, [string]$Wheel) {
+    $sections = [ordered]@{ console_scripts = [ordered]@{}; gui_scripts = [ordered]@{} }
+    $read = {
+        param([string[]]$Lines)
+        $section = ''
+        foreach ($line in $Lines) {
+            $line = $line.Trim()
+            if ($line -match '^\[(.+)\]$') { $section = $Matches[1]; continue }
+            if (-not $sections.Contains($section) -or $line -notmatch '^([^=\s]+)\s*=\s*(.+)$') { continue }
+            if (-not $sections[$section].Contains($Matches[1])) { $sections[$section][$Matches[1]] = $Matches[2] }
+        }
+    }
+    foreach ($file in Get-ChildItem -LiteralPath $Site -Filter '*.dist-info' -Directory | ForEach-Object { Join-Path $_.FullName 'entry_points.txt' }) {
+        if (Test-Path -LiteralPath $file) { & $read ([IO.File]::ReadAllLines($file)) }
+    }
+    # The runtime keeps its pure-Python packages in zips on sys.path (clio-pure.zip).
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    foreach ($archive in Get-ChildItem -LiteralPath $Site -Filter '*.zip' -File) {
+        $zip = [IO.Compression.ZipFile]::OpenRead($archive.FullName)
+        try {
+            foreach ($entry in $zip.Entries | Where-Object { $_.FullName -match '^[^/]+\.dist-info/entry_points\.txt$' }) {
+                $reader = New-Object IO.StreamReader($entry.Open())
+                try { & $read ($reader.ReadToEnd() -split "`r?`n") } finally { $reader.Dispose() }
+            }
+        } finally {
+            $zip.Dispose()
+        }
+    }
+    $info = 'clio_runtime_launchers-1.dist-info'
+    $points = (@(foreach ($section in $sections.Keys) {
+        "[$section]"
+        foreach ($name in $sections[$section].Keys) { "$name = $($sections[$section][$name])" }
+        ''
+    }) -join "`n")
+    $files = [ordered]@{
+        "$info/METADATA" = "Metadata-Version: 2.1`nName: clio-runtime-launchers`nVersion: 1`nSummary: Launchers for the CLIO runtime this environment is built on`n"
+        "$info/WHEEL" = "Wheel-Version: 1.0`nGenerator: clio-install`nRoot-Is-Purelib: true`nTag: py3-none-any`n"
+        "$info/entry_points.txt" = $points
+    }
+    Add-Type -AssemblyName System.IO.Compression
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::Open($Wheel, 'Create')
+    $zip = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $record = New-Object Collections.Generic.List[string]
+        foreach ($name in @($files.Keys) + "$info/RECORD") {
+            $bytes = if ($name -like '*/RECORD') { $record.Add("$name,,"); $utf8.GetBytes(($record -join "`n") + "`n") } else { $utf8.GetBytes($files[$name]) }
+            if ($name -notlike '*/RECORD') {
+                $digest = [Convert]::ToBase64String($sha.ComputeHash($bytes)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+                $record.Add("$name,sha256=$digest,$($bytes.Length)")
+            }
+            $entry = $zip.CreateEntry($name).Open()
+            $entry.Write($bytes, 0, $bytes.Length)
+            $entry.Dispose()
+        }
+    } finally {
+        $zip.Dispose()
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
+# Install-ClioRuntime PLAN SCRATCH: the runtime archive, unpacked into $Venv as it arrives,
+# and the virtualenv over it. The plan's other files (the npm packages the managed-package
+# step installs) download beside it into SCRATCH\downloads, which that step reads.
+function Install-ClioRuntime($Plan, [string]$Scratch) {
+    $downloads = Join-Path $Scratch 'downloads'
+    New-Item -ItemType Directory -Force -Path $downloads | Out-Null
+    $items = @(foreach ($entry in $Plan) {
+        $final = Join-Path $downloads $entry.Name
+        [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha; Bytes = $entry.Bytes; Ranges = (Join-Path $Scratch 'ranges'); Kind = $entry.Kind }
+    })
+    $archive = @($items | Where-Object { $_.Kind -eq 'runtime' })[0]
+    $total = [int64](($items | Measure-Object -Property Bytes -Sum).Sum)
+    Say "Downloading and unpacking the CLIO runtime ($($archive.Name), $([math]::Round($archive.Bytes / 1e6)) MB)"
+    New-Item -ItemType Directory -Force -Path $Venv | Out-Null
+    Start-ClioUnpackers $Venv $archive
+    $failed = ''
+    try {
+        Save-ClioDownloads $items $total
+    } catch {
+        $failed = "$_"
+    }
+    Stop-ClioDownloads
+    $whole = -not $failed -and $archive.Ok -and $archive.Sha -eq $archive.Expected
+    Stop-ClioUnpackers $(if ($whole) { $archive.Bytes } else { -1 })
+    $bad = @($script:ClioUnpackers | Where-Object { $_.ExitCode -ne 0 })
+    if (-not $failed -and -not $whole) { $failed = "the download of $($archive.Name) failed or does not match its checksum" }
+    elseif (-not $failed -and $script:ClioUnpacked -ne $archive.Bytes) { $failed = "only $($script:ClioUnpacked) of $($archive.Bytes) bytes of $($archive.Name) were unpacked" }
+    elseif (-not $failed -and $bad.Count) { $failed = "tar.exe could not unpack $($archive.Name) (exit $($bad[0].ExitCode))" }
+    Remove-Item -LiteralPath $archive.Final, $archive.File -Force -ErrorAction SilentlyContinue
+    if ($failed) { return $failed }
+    if (-not (Test-Path -LiteralPath (Join-Path $Venv 'runtime.json'))) { return "$($archive.Name) holds no runtime.json" }
+    # The managed-package step takes the plan's npm packages from here.
+    $env:CLIO_INSTALL_DOWNLOADS = $downloads
+    # The managed packages, Office included, are prepared from the runtime's own
+    # interpreter while the environment, the data check and the store migration below
+    # are done: it is the longest step, and it reads none of them.
+    $site = Join-Path $Venv 'python\Lib\site-packages\clio_agent'
+    if ((Test-Path -LiteralPath (Join-Path $site 'runtime\document_install.py')) -and (Test-Path -LiteralPath (Join-Path $site 'gact\store_migrate_command.py'))) {
+        Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
+        $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') '-m clio_agent.runtime.document_install --setup-protected-execution --skip-store-migrations' 'documents' -Live
+    }
+    Initialize-ClioUv (Join-Path $Venv 'bin')
+    $runtimePython = Join-Path $Venv 'python\python.exe'
+    & uv venv --quiet --allow-existing --system-site-packages --python $runtimePython $Venv
+    if ($LASTEXITCODE -ne 0) { return "uv could not create the environment over the CLIO runtime (exit $LASTEXITCODE)" }
+    $wheel = Join-Path $Scratch 'clio_runtime_launchers-1-py3-none-any.whl'
+    New-ClioLaunchers (Join-Path $Venv 'python\Lib\site-packages') $wheel
+    & uv pip install --quiet --offline --no-deps --python (Join-Path $Venv 'Scripts\python.exe') $wheel
+    if ($LASTEXITCODE -ne 0) { return "uv could not install the CLIO launchers (exit $LASTEXITCODE)" }
+    # A PyPI environment has uv beside its Python too (the uv package's scripts).
+    foreach ($name in 'uv.exe', 'uvx.exe') {
+        $from = Join-Path $Venv "bin\$name"
+        $to = Join-Path $Venv "Scripts\$name"
+        if (-not (Test-Path -LiteralPath $from) -or (Test-Path -LiteralPath $to)) { continue }
+        try { New-Item -ItemType HardLink -Path $to -Value $from -ErrorAction Stop | Out-Null } catch { Copy-Item -LiteralPath $from -Destination $to }
+    }
+    return ''
+}
+
+# Start-ClioBackground FILE ARGS NAME [-Live]: FILE ARGS running beside the steps that
+# follow. Its output is kept in a log that Complete-ClioBackground shows once it is
+# needed, or with -Live shown as it runs.
+function Start-ClioBackground([string]$File, [string]$Arguments, [string]$Name, [switch]$Live) {
+    $log = Join-Path ([System.IO.Path]::GetTempPath()) "clio-$Name-$([guid]::NewGuid()).log"
+    try {
+        $process = if ($Live) {
+            Start-Process -FilePath $File -ArgumentList $Arguments -NoNewWindow -PassThru
+        } else {
+            Start-Process -FilePath $File -ArgumentList $Arguments -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+        }
+    } catch {
+        return $null
+    }
+    # Windows PowerShell reports no exit code for a process whose handle was never read.
+    $null = $process.Handle
+    [pscustomobject]@{ Process = $process; Log = $(if ($Live) { '' } else { $log }) }
+}
+# Complete-ClioBackground JOB: wait for JOB, show its kept output, return its exit code.
+function Complete-ClioBackground($job) {
+    $job.Process.WaitForExit()
+    if ($job.Log) {
+        foreach ($file in $job.Log, "$($job.Log).err") {
+            if (Test-Path -LiteralPath $file) {
+                Get-Content -LiteralPath $file | ForEach-Object { Write-Host $_ }
+                Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    return $job.Process.ExitCode
+}
+
+# Set-ClioVenvAside VENV: rename the installed environment to VENV.previous and return
+# that path ('' when nothing is installed). The rename is one step, so a CLIO that still
+# runs from VENV leaves it whole and stops the install: moving it file by file would
+# split it between the two directories.
+function Set-ClioVenvAside([string]$Venv) {
+    if (-not (Test-Path -LiteralPath $Venv)) { return '' }
+    $previous = "$Venv.previous"
+    Remove-ClioTreeLater $previous
+    try {
+        [IO.Directory]::Move($Venv, $previous)
+    } catch {
+        $root = [IO.Path]::GetFullPath($Venv).TrimEnd('\') + '\'
+        $users = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })
+        $detail = if ($users.Count) { ' These processes run from it: ' + (($users | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" } | Select-Object -First 6) -join '; ') + '.' } else { '' }
+        Die "CLIO is still running from $Venv, so it cannot be replaced.$detail Stop it ('clio stop', or quit CLIO Desktop; CLIO's services, such as web search, may need ending too) and run this installer again; the installed CLIO is unchanged."
+    }
+    return $previous
+}
+
 # ---------- install clio-agent ----------------------------------------
 try {
 $Venv = Join-Path $Prefix 'clio-agent\.venv'
 $Src = $null
 $ClioVersion = $null
+$RuntimePlan = $null
+$RuntimeScratch = $null
+$DocJob = $null
 # The CLIO this install replaces, named if the data check below cannot tell.
 $PreviousVersion = $null
 $PreviousPython = Join-Path $Venv 'Scripts\python.exe'
@@ -952,6 +1263,28 @@ if ($OptSource) {
         $PackageVersion = $release.Version
     }
     $tag = Get-ClioReleaseTag $PackageVersion
+    $RuntimeScratch = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-runtime-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Force -Path $RuntimeScratch | Out-Null
+    $RuntimePlan = Get-ClioRuntimePlan $tag $RuntimeScratch
+}
+if (-not $OptSource -and $RuntimePlan) {
+    # The installed environment is set aside, not deleted, until the new one is in
+    # place: an install that fails puts it back.
+    $Previous = Set-ClioVenvAside $Venv
+    New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
+    $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch | Select-Object -Last 1
+    if ($failure) {
+        if ($DocJob) { try { $DocJob.Process.Kill(); $DocJob.Process.WaitForExit() } catch { } }
+        RemoveTree $Venv
+        if ($Previous) { [IO.Directory]::Move($Previous, $Venv) }
+        Die "could not install CLIO $PackageVersion from release $tag's runtime: $failure$(if ($Previous) { '; the previous installation is unchanged' })"
+    }
+    if ($Previous) { Remove-ClioTreeLater $Previous }
+    $py = (& (Join-Path $Venv 'python\python.exe') -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
+    $ClioVersion = $PackageVersion
+} elseif (-not $OptSource) {
+    if ($RuntimeScratch) { RemoveTree $RuntimeScratch; $RuntimeScratch = $null }
+    Initialize-ClioUv
     $LockDir = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-lock-" + [guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $LockDir | Out-Null
     foreach ($f in @('pyproject.toml', 'uv.lock', '.python-version')) {
@@ -970,12 +1303,7 @@ if ($OptSource) {
     Say "Installing $pkgSpec from PyPI (Python $py, locked by $tag)"
     # The installed environment is set aside, not deleted, until the new one is in
     # place: an install that fails puts it back.
-    $Previous = ''
-    if (Test-Path -LiteralPath $Venv) {
-        $Previous = "$Venv.previous"
-        RemoveTree $Previous
-        Move-Item -LiteralPath $Venv -Destination $Previous
-    }
+    $Previous = Set-ClioVenvAside $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     & uv venv --python $py $Venv
     $ok = $LASTEXITCODE -eq 0
@@ -985,10 +1313,10 @@ if ($OptSource) {
     }
     if (-not $ok) {
         RemoveTree $Venv
-        if ($Previous) { Move-Item -LiteralPath $Previous -Destination $Venv }
+        if ($Previous) { [IO.Directory]::Move($Previous, $Venv) }
         Die "could not install $pkgSpec$(if ($Previous) { '; the previous installation is unchanged' })"
     }
-    if ($Previous) { RemoveTree $Previous }
+    if ($Previous) { Remove-ClioTreeLater $Previous }
     RemoveTree $LockDir
     $ClioVersion = $PackageVersion
 }
@@ -1001,6 +1329,32 @@ if (Test-Path $VenvPython) {
         $InstalledClioVersion = (& $VenvPython -c "from importlib.metadata import version; print(version('clio-agent'))").Trim()
     } catch {
         $InstalledClioVersion = $null
+    }
+}
+
+# A release's clio-kit launcher and Web bundle download while the store and the managed
+# packages are prepared; they are completed below in their own steps.
+$KitJob = $null
+$WebJob = $null
+if (-not $ClioKitPackage) {
+    $ClioKitSpec = 'clio-kit==2.11.1'
+} elseif ($ClioKitPackage.Contains('==')) {
+    $ClioKitParts = $ClioKitPackage.Split('==', 2)
+    $ClioKitSpec = "$($ClioKitParts[0])[science]==$($ClioKitParts[1])"
+} else {
+    $ClioKitSpec = "$ClioKitPackage[science]"
+}
+if (-not $OptSource) {
+    $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($uvCommand) { $KitJob = Start-ClioBackground $uvCommand.Source "tool install --python $py `"$ClioKitSpec`"" 'kit' }
+    $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
+    $webver = $tag -replace '^v', ''
+    $webUrl = "https://github.com/iowarp/clio-agent/releases/download/$tag/clio-web-$webver.zip"
+    $webZip = Join-Path $Prefix 'clio-web.zip'
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($curl) {
+        Remove-Item -LiteralPath $webZip -Force -ErrorAction SilentlyContinue
+        $WebJob = Start-ClioBackground $curl.Source "--fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-connrefused --output `"$webZip`" `"$webUrl`"" 'web'
     }
 }
 
@@ -1067,36 +1421,62 @@ Invoke-OldDataCheck
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
 $DocFlags = @('--setup-protected-execution')
+$MigrateJob = $null
 & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.gact.store_migrate_command') else 3)"
 if ($LASTEXITCODE -eq 0) {
-    Say 'Migrating the CLIO store (clio-agent migrate)'
-    & $VenvPython -m clio_agent.gact.store_migrate_command
-    $MigrateStatus = $LASTEXITCODE
-    if ($MigrateStatus -eq 3) {
-        Warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')"
-    } elseif ($MigrateStatus -eq 5) {
-        Warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside"
-    } elseif ($MigrateStatus -ne 0) {
-        Warn "clio-agent migrate failed (exit $MigrateStatus, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'"
+    # The managed packages do not touch the store, so they are prepared while it migrates.
+    Say 'Migrating the CLIO store (clio-agent migrate) while the managed packages are prepared'
+    $MigrateJob = Start-ClioBackground $VenvPython '-m clio_agent.gact.store_migrate_command' 'migrate'
+    if (-not $MigrateJob) {
+        & $VenvPython -m clio_agent.gact.store_migrate_command
+        $MigrateStatus = $LASTEXITCODE
     }
     $DocFlags += '--skip-store-migrations'
 } else {
     Say "clio-agent $InstalledClioVersion has no 'clio-agent migrate'; its boot migrates the store"
 }
+function Complete-ClioMigrate {
+    if ($script:MigrateJob) {
+        $script:MigrateStatus = Complete-ClioBackground $script:MigrateJob
+        $script:MigrateJob = $null
+    }
+    if ($null -eq $script:MigrateStatus) { return }
+    if ($script:MigrateStatus -eq 3) {
+        Warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')"
+    } elseif ($script:MigrateStatus -eq 5) {
+        Warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside"
+    } elseif ($script:MigrateStatus -ne 0) {
+        Warn "clio-agent migrate failed (exit $($script:MigrateStatus), see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'"
+    }
+}
 
 Complete-OfficePrepare
-& $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.runtime.document_install') else 3)"
-if ($LASTEXITCODE -eq 0) {
-    Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-    $docArgs = @('-m', 'clio_agent.runtime.document_install') + $DocFlags
-    & $VenvPython @docArgs
-    $docsStatus = $LASTEXITCODE
+if ($DocJob) {
+    $docsStatus = Complete-ClioBackground $DocJob
+    Complete-ClioMigrate
     if ($docsStatus -ne 0) {
         DieWith $docsStatus "installing the managed packages and Office rendering failed (exit $docsStatus); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
     }
 } else {
-    # Releases before the managed document runtime set it up on their own.
-    Say "clio-agent $InstalledClioVersion has no managed document runtime step; skipping it"
+    & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.runtime.document_install') else 3)"
+    if ($LASTEXITCODE -eq 0) {
+        Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
+        $docArgs = @('-m', 'clio_agent.runtime.document_install') + $DocFlags
+        & $VenvPython @docArgs
+        $docsStatus = $LASTEXITCODE
+        Complete-ClioMigrate
+        if ($docsStatus -ne 0) {
+            DieWith $docsStatus "installing the managed packages and Office rendering failed (exit $docsStatus); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
+        }
+    } else {
+        Complete-ClioMigrate
+        # Releases before the managed document runtime set it up on their own.
+        Say "clio-agent $InstalledClioVersion has no managed document runtime step; skipping it"
+    }
+}
+if ($RuntimeScratch) {
+    Remove-Item -LiteralPath $RuntimeScratch -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
 }
 
 # ---------- provision clio-kit MCP runtime ----------------------------
@@ -1108,20 +1488,19 @@ if ($LASTEXITCODE -eq 0) {
 # deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
 # is idempotent (re-run is a no-op / version pin). Needs uv; without it the
 # packs' tools simply stay unprovisioned until uv is installed.
-if (Have uv) {
+if ($KitJob -or (Have uv)) {
     if (-not $ClioKitPackage) {
-        $ClioKitSpec = 'clio-kit==2.11.1'
         Say "Provisioning released clio-kit launcher ($ClioKitSpec)"
-    } elseif ($ClioKitPackage.Contains('==')) {
-        $ClioKitParts = $ClioKitPackage.Split('==', 2)
-        $ClioKitSpec = "$($ClioKitParts[0])[science]==$($ClioKitParts[1])"
-        Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
     } else {
-        $ClioKitSpec = "$ClioKitPackage[science]"
         Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
     }
-    & uv tool install --python $py $ClioKitSpec
-    if ($LASTEXITCODE -ne 0) {
+    if ($KitJob) {
+        $kitStatus = Complete-ClioBackground $KitJob
+    } else {
+        & uv tool install --python $py $ClioKitSpec
+        $kitStatus = $LASTEXITCODE
+    }
+    if ($kitStatus -ne 0) {
         Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install `"$ClioKitSpec`"' succeeds and the dir from 'uv tool dir --bin' is on PATH"
     }
 } else {
@@ -1130,27 +1509,34 @@ if (Have uv) {
 
 # ---------- install the released Web frontend -------------------------
 if (-not $OptSource) {
-    $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
     # Web UI bundle (powers `clio --web`): optional, best-effort. The release
     # ships clio-web-<version>.zip containing a clio-web-<version>/ dist dir;
     # unpack it into $Prefix\clio-agent\web, which the launcher serves
-    # same-origin. Mirrors install.sh.
-    $webver = $tag -replace '^v', ''
-    $webUrl = "https://github.com/iowarp/clio-agent/releases/download/$tag/clio-web-$webver.zip"
-    $webZip = Join-Path $Prefix 'clio-web.zip'
+    # same-origin. Mirrors install.sh. It downloads beside the steps above.
     try {
-        Save-ClioDownload $webUrl $webZip
+        if ($WebJob) {
+            if ((Complete-ClioBackground $WebJob) -ne 0) { throw "could not download $webUrl" }
+        } else {
+            Save-ClioDownload $webUrl $webZip
+        }
         $webTmp = Join-Path $Prefix '_webtmp'
         $webDir = Join-Path $Prefix 'clio-agent\web'
         RemoveTree $webTmp
         RemoveTree $webDir
-        Expand-Archive -LiteralPath $webZip -DestinationPath $webTmp -Force
-        New-Item -ItemType Directory -Force -Path $webDir | Out-Null
+        $bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
+        $unpacked = $false
+        if (Test-Path -LiteralPath $bsdtar) {
+            New-Item -ItemType Directory -Force -Path $webTmp | Out-Null
+            & $bsdtar -x -f $webZip -C $webTmp
+            $unpacked = $LASTEXITCODE -eq 0
+            if (-not $unpacked) { RemoveTree $webTmp }
+        }
+        if (-not $unpacked) { Expand-Archive -LiteralPath $webZip -DestinationPath $webTmp -Force }
         $webInner = Join-Path $webTmp "clio-web-$webver"
         if (Test-Path $webInner) {
-            Copy-Item (Join-Path $webInner '*') $webDir -Recurse -Force
+            Move-Item -LiteralPath $webInner -Destination $webDir
         } else {
-            Copy-Item (Join-Path $webTmp '*') $webDir -Recurse -Force
+            Move-Item -LiteralPath $webTmp -Destination $webDir
         }
         Remove-Item $webZip -Force -ErrorAction SilentlyContinue
         Remove-Item $webTmp -Recurse -Force -ErrorAction SilentlyContinue

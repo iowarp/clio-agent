@@ -801,6 +801,43 @@ esac
 # ---------- prerequisite checks ---------------------------------------
 have curl || die "curl is required"
 
+# A fresh Mac's /usr/bin developer tools (git, install_name_tool, python3, ...) are
+# placeholders: running one opens the "Install Command Line Developer Tools" dialog.
+# They work once Xcode or the Command Line Tools provide a developer directory.
+macos_developer_tools() {
+  local developer link
+  link="$(readlink /var/db/xcode_select_link 2>/dev/null || true)"
+  for developer in "${DEVELOPER_DIR:-}" "$link" /Applications/Xcode.app/Contents/Developer \
+      /Library/Developer/CommandLineTools; do
+    [ -n "$developer" ] && [ -d "$developer/usr/bin" ] && return 0
+  done
+  return 1
+}
+
+# uv runs install_name_tool on each Python it installs (to patch libpython's install
+# name) and only warns when that fails. Without the developer tools a stand-in that
+# fails comes first on PATH, so installing a Python never opens the dialog.
+tool_shim=""
+if [ "$OS" = darwin ] && ! macos_developer_tools; then
+  tool_shim="$(mktemp -d "${TMPDIR:-/tmp}/clio-tools.XXXXXXXX")"
+  printf '#!/bin/sh\necho "clio: install_name_tool needs the Command Line Tools; the library is left as it is" >&2\nexit 1\n' \
+    > "$tool_shim/install_name_tool"
+  chmod +x "$tool_shim/install_name_tool"
+  export PATH="$tool_shim:$PATH"
+  trap 'rm -rf "$tool_shim"' EXIT  # on_exit, below, takes over
+fi
+
+# What this installer added outside its own folders, one "kind value" line each, so
+# uninstall.sh removes exactly that: "file PATH" (uv and uvx, only when installed here)
+# and "uv-tool NAME" (clio-kit). A user's own uv is never listed.
+INSTALLED_TOOLS="$PREFIX/installed-tools"
+# An install from before this record has its clio-kit from that installer.
+UNRECORDED_INSTALL=0
+[ -e "$INSTALLED_TOOLS" ] || [ ! -d "$PREFIX/clio-agent" ] || UNRECORDED_INSTALL=1
+record_installed() {  # KIND VALUE
+  grep -qxF "$1 $2" "$INSTALLED_TOOLS" 2>/dev/null || printf '%s %s\n' "$1" "$2" >> "$INSTALLED_TOOLS"
+}
+
 # uv installs Python, the environment and the locked dependencies in every mode.
 mkdir -p "$PREFIX" "$BIN_DIR"
 if ! have uv; then
@@ -808,10 +845,11 @@ if ! have uv; then
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null \
     || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
   export PATH="$BIN_DIR:$PATH"
+  for f in uv uvx; do [ ! -f "$BIN_DIR/$f" ] || record_installed file "$BIN_DIR/$f"; done
 fi
 
-# A fresh Mac's /usr/bin/git is a placeholder: running it opens the "Install Command
-# Line Developer Tools" dialog. Decided from the filesystem, never by running it.
+# A fresh Mac's /usr/bin/git is a placeholder (above). Decided from the filesystem,
+# never by running it.
 macos_git_placeholder() {
   local developer link
   [ "$OS" = darwin ] || return 1
@@ -1000,6 +1038,7 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
 on_exit() {
   [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
   [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
+  [ -z "${tool_shim:-}" ] || rm -rf "$tool_shim"
   stop_install_jobs
 }
 trap on_exit EXIT
@@ -1025,10 +1064,11 @@ install_scratch() {
 
 stop_install_jobs() {
   local pid
-  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
+  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
+  [ -z "${RUNTIME_STAGE:-}" ] || rm -rf "$RUNTIME_STAGE"
   [ -z "$DESKTOP_SCRATCH" ] || rm -rf "$DESKTOP_SCRATCH"
 }
 
@@ -1085,6 +1125,147 @@ start_install_downloads() {
   fi
 }
 
+# ---------- the release's prebuilt agent (Apple Silicon macOS) ---------
+# A release whose macOS desktop bundles its agent carries that agent's runtime: the
+# same Python, packages, compiled bytecode, uv, git and document wheels, signed and
+# notarized with the app. A plain install unpacks that runtime as its environment while
+# the app archive downloads, instead of resolving and writing ~26,000 files from PyPI
+# (gact-tui#739: a cold PyPI install took 92-108 s, the 60 s budget). Only the runtime
+# folder is unpacked, never the app. Without the asset, or if it cannot be fetched and
+# verified, the install continues from PyPI. CLIO_INSTALL_FROM=pypi always uses PyPI;
+# CLIO_RUNTIME_PACKAGE (a local bundled .app.aar or .app.tar.gz, as --desktop-package)
+# with CLIO_RUNTIME_SHA256 tries a test build before its release exists.
+RUNTIME_JOB=""
+RUNTIME_STAGE=""
+RUNTIME_SHA=""
+RUNTIME_INNER="CLIO Desktop.app/Contents/Resources/gact-runtime"
+
+release_runtime_asset() {  # CHECKSUMS -> the bundled app archive holding the runtime
+  local stem="CLIO.Desktop-aarch64-apple-darwin-bundled.app" format
+  for format in aar tar.gz; do
+    is_sha "$(manifest_sha "$1" "$stem.$format")" || continue
+    printf '%s' "$stem.$format"
+    return
+  done
+}
+
+runtime_unpack() {  # ASSET DIR: the runtime folder of the archive on stdin
+  case "$1" in
+    *.aar) aa extract -d "$2" -include-path "$RUNTIME_INNER" ;;
+    *) tar -xzf - -C "$2" "$RUNTIME_INNER" ;;
+  esac
+}
+
+# stream_runtime SOURCE: unpack as it arrives; the same bytes are hashed (runtime.sha).
+stream_runtime() {
+  local fifo="$DESKTOP_SCRATCH/runtime.fifo" hasher status
+  rm -f "$fifo"
+  mkfifo "$fifo"
+  { sha_stream > "$DESKTOP_SCRATCH/runtime.sha"; } < "$fifo" &
+  hasher=$!
+  case "$1" in
+    https://*) curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$1" ;;
+    *) cat "$1" ;;
+  esac | tee "$fifo" | runtime_unpack "$1" "$RUNTIME_STAGE"
+  status=("${PIPESTATUS[@]}")
+  wait "$hasher" || return 1
+  [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ] && [ "${status[2]}" = 0 ]
+}
+
+start_release_runtime() {  # TAG
+  local sums="$DESKTOP_SCRATCH/checksums" asset source
+  [ "$OS-$ARCH" = darwin-arm64 ] && [ "${CLIO_INSTALL_FROM:-}" != pypi ] || return 0
+  [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ] || return 0
+  if [ -n "${CLIO_RUNTIME_PACKAGE:-}" ]; then
+    [ -f "$CLIO_RUNTIME_PACKAGE" ] || die "no such runtime package: $CLIO_RUNTIME_PACKAGE"
+    RUNTIME_SHA="$(printf '%s' "${CLIO_RUNTIME_SHA256:-}" | tr 'A-F' 'a-f')"
+    is_sha "$RUNTIME_SHA" || die "CLIO_RUNTIME_PACKAGE needs CLIO_RUNTIME_SHA256 (64 hex digits)"
+    asset="${CLIO_RUNTIME_PACKAGE##*/}"
+    source="$CLIO_RUNTIME_PACKAGE"
+  else
+    # release_install_plan has fetched them when the release publishes them.
+    [ -s "$sums" ] || curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+      "$REPO_URL/releases/download/$1/SHA256SUMS.aarch64-apple-darwin.bundled.txt" -o "$sums" 2>/dev/null || true
+    asset=""
+    [ ! -s "$sums" ] || asset="$(release_runtime_asset "$sums")"
+    if [ -z "$asset" ]; then
+      say "Release $1 publishes no prebuilt agent for macOS: installing it from PyPI"
+      return 0
+    fi
+    RUNTIME_SHA="$(manifest_sha "$sums" "$asset" | tr 'A-F' 'a-f')"
+    source="$REPO_URL/releases/download/$1/$asset"
+  fi
+  # Beside the environment it replaces, so moving it in is a rename.
+  mkdir -p "$PREFIX/clio-agent"
+  RUNTIME_STAGE="$PREFIX/clio-agent/.venv.incoming"
+  rm -rf "$RUNTIME_STAGE"
+  mkdir "$RUNTIME_STAGE"
+  case "$asset" in
+    *.aar|*.tar.gz) ;;
+    *) die "a runtime package is a bundled .app.aar or .app.tar.gz: $asset" ;;
+  esac
+  say "Downloading the release's prebuilt agent ($asset), unpacking its runtime as it arrives"
+  stream_runtime "$source" > "$DESKTOP_SCRATCH/runtime.log" 2>&1 &
+  RUNTIME_JOB=$!
+}
+
+# finish_release_runtime VERSION: the runtime becomes $VENV; 1 means install from PyPI.
+finish_release_runtime() {
+  local status=0 root python version previous="" script
+  [ -n "$RUNTIME_JOB" ] || return 1
+  wait "$RUNTIME_JOB" || status=$?
+  RUNTIME_JOB=""
+  root="$RUNTIME_STAGE/$RUNTIME_INNER"
+  if [ "$status" != 0 ] || [ "$(cat "$DESKTOP_SCRATCH/runtime.sha" 2>/dev/null)" != "$RUNTIME_SHA" ] \
+      || [ ! -f "$root/runtime.json" ]; then
+    sed 's/^/    /' "$DESKTOP_SCRATCH/runtime.log" 2>/dev/null >&2 || true
+    warn "could not download and verify the release's prebuilt agent: installing it from PyPI instead"
+    rm -rf "$RUNTIME_STAGE"
+    return 1
+  fi
+  python="$(cd "$root/python/bin" && ls python3.* 2>/dev/null | grep -v -- -config | head -1)"
+  # The environment's usual entry points: bin/python, and the clio-agent command that
+  # `clio` runs (written as uv writes it, so a path with spaces works).
+  if [ -z "$python" ] || ! ln -s "../python/bin/$python" "$root/bin/python" \
+      || ! ln -s python "$root/bin/python3"; then
+    warn "the release's prebuilt agent has no Python: installing it from PyPI instead"
+    rm -rf "$RUNTIME_STAGE"
+    return 1
+  fi
+  script="$(printf '%s' "$VENV/bin/python" | sed "s/'/'\\\\''/g")"
+  cat > "$root/bin/clio-agent" <<EOF
+#!/bin/sh
+'''exec' '$script' "\$0" "\$@"
+' '''
+import sys
+from clio_agent.ui.cli import main
+if __name__ == "__main__":
+    sys.exit(main())
+EOF
+  chmod 755 "$root/bin/clio-agent"
+  version="$("$root/bin/python" -I -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
+  if [ "$version" != "$1" ]; then
+    if [ -z "${CLIO_RUNTIME_PACKAGE:-}" ]; then
+      warn "the release's prebuilt agent is clio-agent ${version:-of no version}, not $1: installing it from PyPI instead"
+      rm -rf "$RUNTIME_STAGE"
+      return 1
+    fi
+    warn "the runtime package is clio-agent ${version:-of no version}, not $1 (a test build)"
+  fi
+  if [ -d "$VENV" ]; then
+    previous="$VENV.previous"
+    rm -rf "$previous"
+    mv "$VENV" "$previous"
+  fi
+  if ! mv "$root" "$VENV"; then
+    [ -z "$previous" ] || mv "$previous" "$VENV"
+    die "could not move the prebuilt agent into $VENV${previous:+; the previous installation is unchanged}"
+  fi
+  rm -rf "$RUNTIME_STAGE" ${previous:+"$previous"}
+  RUNTIME_STAGE=""
+  say "Installed clio-agent ${version:-$1} from the release's prebuilt agent"
+}
+
 # ---------- clio-kit MCP runtime, provisioned alongside the Python install
 # Marketplace packs launch their MCP servers via the installed `clio-kit
 # mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
@@ -1112,6 +1293,13 @@ start_clio_kit() {
   else
     clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
     say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
+  fi
+  # Recorded for uninstall unless the user already had it: the tool's name is the spec
+  # without its version and extras (a path or URL spec has none to record).
+  local tool="${clio_kit_spec%%[=\[<>~! ]*}"
+  if [[ "$tool" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+      && { [ "$UNRECORDED_INSTALL" = 1 ] || ! uv tool list 2>/dev/null | grep -q "^$tool "; }; then
+    record_installed uv-tool "$tool"
   fi
   uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
   CLIO_KIT_JOB=$!
@@ -1239,7 +1427,13 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   fi
   tag="$(release_tag "$package_version")"
   install_scratch
-  start_install_downloads "$(release_install_plan "$tag")"
+  install_plan="$(release_install_plan "$tag")"
+  start_release_runtime "$tag"
+  # The prebuilt agent is the critical path, so it downloads alone; LibreOffice and pnpm
+  # follow while the store migrates (sharing the line, all three finished ~25 s later on
+  # a 15 MB/s link). A PyPI install leaves the line free for them from the start.
+  runtime_first=0
+  if [ -n "$RUNTIME_JOB" ]; then runtime_first=1; else start_install_downloads "$install_plan"; fi
   lockdir="$(mktemp -d)"  # removed on exit (on_exit)
   for f in pyproject.toml uv.lock .python-version; do
     curl -fsSL "https://raw.githubusercontent.com/iowarp/clio-agent/$tag/$f" -o "$lockdir/$f" 2>/dev/null \
@@ -1250,30 +1444,37 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
       --extra argonne --extra flowcept -o constraints.txt ) \
     || die "could not read the dependency lock of release $tag"
   start_clio_kit "$py"
-  pkg_spec="clio-agent[argonne,flowcept]==$package_version"
-  # On macOS, select an available Rasterio wheel for the user's OS instead
-  # of trying to compile a newer release against a missing system GDAL.
-  wheel_arg=""
-  [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
-  say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
-  # The installed environment is set aside, not deleted, until the new one is in
-  # place: an install that fails or is interrupted puts it back.
-  previous=""
-  if [ -d "$VENV" ]; then
-    previous="$VENV.previous"
-    rm -rf "$previous"
-    mv "$VENV" "$previous"
+  runtime_installed=0
+  ! finish_release_runtime "$package_version" || runtime_installed=1
+  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"
+  if [ "$runtime_installed" = 1 ]; then
+    CLIO_VERSION="$package_version"
+  else
+    pkg_spec="clio-agent[argonne,flowcept]==$package_version"
+    # On macOS, select an available Rasterio wheel for the user's OS instead
+    # of trying to compile a newer release against a missing system GDAL.
+    wheel_arg=""
+    [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
+    say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
+    # The installed environment is set aside, not deleted, until the new one is in
+    # place: an install that fails or is interrupted puts it back.
+    previous=""
+    if [ -d "$VENV" ]; then
+      previous="$VENV.previous"
+      rm -rf "$previous"
+      mv "$VENV" "$previous"
+    fi
+    mkdir -p "$PREFIX/clio-agent"
+    if ! { uv venv --python "$py" "$VENV" >/dev/null \
+        && uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
+          --constraint "$lockdir/constraints.txt" "$pkg_spec"; }; then
+      rm -rf "$VENV"
+      [ -z "$previous" ] || mv "$previous" "$VENV"
+      die "could not install $pkg_spec${previous:+; the previous installation is unchanged}"
+    fi
+    [ -z "$previous" ] || rm -rf "$previous"
+    CLIO_VERSION="$package_version"
   fi
-  mkdir -p "$PREFIX/clio-agent"
-  if ! { uv venv --python "$py" "$VENV" >/dev/null \
-      && uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
-        --constraint "$lockdir/constraints.txt" "$pkg_spec"; }; then
-    rm -rf "$VENV"
-    [ -z "$previous" ] || mv "$previous" "$VENV"
-    die "could not install $pkg_spec${previous:+; the previous installation is unchanged}"
-  fi
-  [ -z "$previous" ] || rm -rf "$previous"
-  CLIO_VERSION="$package_version"
 fi
 
 CLIO_INSTALLED_VERSION=""
@@ -1476,7 +1677,7 @@ else
   frontend="none (source install); Desktop is available with --desktop"
   run_step="Run:   clio start (headless service); for Web set CLIO_WEB_DIR to a built web dist"
 fi
-clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
+clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; elif [ -n "$RUNTIME_SHA" ]; then echo "release runtime: $CLIO_VERSION"; else echo "PyPI: $CLIO_VERSION"; fi)"
 cat <<EOF
 
 Installed to:        $PREFIX

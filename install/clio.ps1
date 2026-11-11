@@ -7,7 +7,7 @@
 #   clio                 ensure server is up, then open Web
 #   clio web | --web     ensure server is up, then open the web UI in a browser
 #   clio start           start the headless server
-#   clio stop            stop the server
+#   clio stop            stop the server and the local services it started (e.g. web search)
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail server logs
@@ -174,11 +174,43 @@ function Start-Server {
     return $false
 }
 
+# Stop-LocalServices stops the supervised services (e.g. web search) this CLIO
+# started on this computer. Their workers deliberately leave the server's process
+# tree, so killing the server leaves them running and holding the Agent's Python
+# open. Runs after the server is gone so it cannot restart them; installations
+# are kept and the next boot starts web search again. Failures only warn.
+function Stop-LocalServices {
+    if (-not (Test-Path -LiteralPath $AgentPython)) { return }
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $Output = @()
+    $Code = 0
+    try {
+        Push-Location -LiteralPath (Join-Path $Prefix 'clio-agent')
+        try {
+            $Output = @(& $AgentPython -I -m clio_agent.gact.infrastructure.local_services stop 2>&1)
+            $Code = $LASTEXITCODE
+        } finally { Pop-Location }
+    } catch {
+        $Output = @("$_")
+        $Code = 1
+    } finally { $ErrorActionPreference = $SavedPreference }
+    # An install from before this command existed has nothing to call.
+    if ("$Output" -match "No module named .?clio_agent") { return }
+    foreach ($Line in $Output) {
+        if ($Line -is [System.Management.Automation.ErrorRecord]) { Warn "  $Line" }
+        elseif ("$Line".Trim()) { Say "  $Line" }
+    }
+    if ($Code -ne 0) { Warn "  some CLIO services may still be running (see above)" }
+}
+
 function Stop-Server {
     $p = Get-ServerPid
     if (-not $p) {
         Say "no CLIO server running"
         Remove-Item $PidFile -ErrorAction SilentlyContinue
+        # A service can outlive a server that crashed or was killed elsewhere.
+        Stop-LocalServices
         return
     }
     Say "Stopping CLIO server (pid $p)"
@@ -192,6 +224,7 @@ function Stop-Server {
     }
     Remove-Item $PidFile -ErrorAction SilentlyContinue
     Say "  stopped"
+    Stop-LocalServices
 }
 
 function Get-Status {

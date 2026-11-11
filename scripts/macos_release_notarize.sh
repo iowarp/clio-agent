@@ -38,6 +38,20 @@ notarytool() {
     --team-id "$APPLE_TEAM_ID"
 }
 
+# stapler validate looks the ticket up in Apple's CloudKit. A dropped connection there
+# (NSURLError -1005, "Error 68") is not a verdict on the ticket, so it is asked again
+# before the release leg fails and its macOS assets go unpublished.
+stapler_validate() {
+  local attempt
+  for attempt in 1 2 3 4; do
+    xcrun stapler validate "$1" && return 0
+    [ "$attempt" = 4 ] && break
+    echo "::warning::stapler validate $(basename "$1") failed (attempt $attempt); retrying" >&2
+    sleep $((attempt * 15))
+  done
+  return 1
+}
+
 notarize_dmg() {
   local dmg result status id
   dmg="$(one '*.dmg' "$1/dmg")"
@@ -55,7 +69,7 @@ notarize_dmg() {
     exit 1
   fi
   xcrun stapler staple "$dmg"
-  xcrun stapler validate "$dmg"
+  stapler_validate "$dmg"
 }
 
 # LZMA: about a quarter smaller than the updater's gzip, and unpacked faster than
@@ -95,7 +109,7 @@ check_app() {
   echo "$assessment"
   grep -q "source=Notarized Developer ID" <<<"$assessment" \
     || { echo "::error::Gatekeeper does not accept $app as notarized" >&2; return 1; }
-  xcrun stapler validate "$app"
+  stapler_validate "$app"
   if [ "$variant" = bundled ]; then
     uv run --no-project --python 3.14 "$REPO/scripts/macos_sign_runtime.py" verify \
       --runtime "$app/Contents/Resources/gact-runtime" --team-id "$APPLE_TEAM_ID"
@@ -120,7 +134,7 @@ verify() {
   echo "$assessment"
   grep -q "source=Notarized Developer ID" <<<"$assessment" \
     || { echo "::error::Gatekeeper does not accept $dmg as notarized" >&2; exit 1; }
-  xcrun stapler validate "$dmg"
+  stapler_validate "$dmg"
 
   echo "== updater payload"
   extracted="$RUNNER_TEMP/updater-payload"
