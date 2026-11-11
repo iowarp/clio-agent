@@ -23,10 +23,6 @@ function linuxPackageBundle(bundle, variant) {
     if (variant === "bundled") {
       const depends = current.depends ?? [];
       out.linux[format].depends = depends.includes("zstd") ? depends : [...depends, "zstd"];
-      // The payload is the ~730 MB gact-runtime.tar.zst, already compressed. Tauri's rpm
-      // bundler recompresses it with gzip on one thread by default, which turned the
-      // bundled leg's `tauri build` from minutes (deb only) into well over an hour.
-      if (format === "rpm") out.linux.rpm.compression = { type: "none" };
     }
   }
   if (variant === "bundled") {
