@@ -1106,9 +1106,18 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
     # interpreter while the environment, the data check and the store migration below
     # are done: it is the longest step, and it reads none of them.
     $site = Join-Path $Venv 'python\Lib\site-packages\clio_agent'
-    if ((Test-Path -LiteralPath (Join-Path $site 'runtime\document_install.py')) -and (Test-Path -LiteralPath (Join-Path $site 'gact\store_migrate_command.py'))) {
-        Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-        $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') '-m clio_agent.runtime.document_install --setup-protected-execution --skip-store-migrations' 'documents' -Live
+    $docInstall = Join-Path $site 'runtime\document_install.py'
+    if ((Test-Path -LiteralPath $docInstall) -and (Test-Path -LiteralPath (Join-Path $site 'gact\store_migrate_command.py'))) {
+        # On a fresh home there is no data to check first, so a document step that
+        # upgrades the store itself does so while the packages install (as install.sh).
+        $script:DocsMigrate = $FreshHome -and (Select-String -LiteralPath $docInstall -SimpleMatch '_run_store_migrations' -Quiet)
+        if ($script:DocsMigrate) {
+            Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering, and creating the CLIO store'
+            $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') '-m clio_agent.runtime.document_install --setup-protected-execution' 'documents'
+        } else {
+            Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
+            $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') '-m clio_agent.runtime.document_install --setup-protected-execution --skip-store-migrations' 'documents' -Live
+        }
     }
     Initialize-ClioUv (Join-Path $Venv 'bin')
     $runtimePython = Join-Path $Venv 'python\python.exe'
@@ -1144,15 +1153,18 @@ function Start-ClioBackground([string]$File, [string]$Arguments, [string]$Name, 
     }
     # Windows PowerShell reports no exit code for a process whose handle was never read.
     $null = $process.Handle
-    [pscustomobject]@{ Process = $process; Log = $(if ($Live) { '' } else { $log }) }
+    [pscustomobject]@{ Process = $process; Log = $(if ($Live) { '' } else { $log }); LastLine = '' }
 }
 # Complete-ClioBackground JOB: wait for JOB, show its kept output, return its exit code.
+# The last line of its kept output stays in JOB.LastLine.
 function Complete-ClioBackground($job) {
     $job.Process.WaitForExit()
     if ($job.Log) {
         foreach ($file in $job.Log, "$($job.Log).err") {
             if (Test-Path -LiteralPath $file) {
-                Get-Content -LiteralPath $file | ForEach-Object { Write-Host $_ }
+                $lines = @(Get-Content -LiteralPath $file | Where-Object { $_ })
+                $lines | ForEach-Object { Write-Host $_ }
+                if ($file -eq $job.Log -and $lines.Count) { $job.LastLine = $lines[-1] }
                 Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
             }
         }
@@ -1187,6 +1199,7 @@ $ClioVersion = $null
 $RuntimePlan = $null
 $RuntimeScratch = $null
 $DocJob = $null
+$DocsMigrate = $false
 # The CLIO this install replaces, named if the data check below cannot tell.
 $PreviousVersion = $null
 $PreviousPython = Join-Path $Venv 'Scripts\python.exe'
@@ -1197,6 +1210,13 @@ if (Test-Path $PreviousPython) {
         $PreviousVersion = $null
     }
 }
+# A fresh home: CLIO's default folders hold nothing but this install, and no setting
+# moves its data elsewhere. No older CLIO wrote a store there, so the data check below
+# is skipped. Were one found anyway, the store upgrade refuses it and says so, as the
+# check would have.
+$FreshHome = -not $PreviousVersion -and -not (@('CLIO_PREFIX', 'CLIO_AGENT_HOME', 'CLIO_USER_DIR', 'CLIO_AGENT_DATA_DIR', 'CLIO_AGENT_CONFIG_DIR', 'CLIO_ARC_STORE_CONFIG', 'CLIO_ARC_CTE_DIR') | Where-Object { [Environment]::GetEnvironmentVariable($_) }) -and
+    -not @(Get-ChildItem -LiteralPath (Split-Path -Parent $Prefix) -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'app' }).Count -and
+    -not (@((Join-Path $env:APPDATA 'clio-agent'), $LegacyPrefix, (Join-Path $HOME '.config\clio-agent')) | Where-Object { Test-Path -LiteralPath $_ })
 
 if ($OptSource) {
     $AppDir = Join-Path $Prefix 'clio-agent'
@@ -1415,25 +1435,44 @@ function Invoke-OldDataCheck {
     }
     Move-OldDataAside
 }
-Invoke-OldDataCheck
+if ($DocsMigrate) {
+    Say 'First CLIO on this machine: no earlier data to check'
+} else {
+    Invoke-OldDataCheck
+}
 
 # ---------- upgrade the store: migrations run here, never at boot ------
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
 $DocFlags = @('--setup-protected-execution')
 $MigrateJob = $null
-& $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.gact.store_migrate_command') else 3)"
-if ($LASTEXITCODE -eq 0) {
-    # The managed packages do not touch the store, so they are prepared while it migrates.
-    Say 'Migrating the CLIO store (clio-agent migrate) while the managed packages are prepared'
-    $MigrateJob = Start-ClioBackground $VenvPython '-m clio_agent.gact.store_migrate_command' 'migrate'
-    if (-not $MigrateJob) {
-        & $VenvPython -m clio_agent.gact.store_migrate_command
-        $MigrateStatus = $LASTEXITCODE
-    }
-    $DocFlags += '--skip-store-migrations'
+$MigrateStatus = $null
+if ($DocsMigrate) {
+    # The managed-package step started above upgrades the store; its summary reports it.
 } else {
-    Say "clio-agent $InstalledClioVersion has no 'clio-agent migrate'; its boot migrates the store"
+    & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.gact.store_migrate_command') else 3)"
+    if ($LASTEXITCODE -eq 0) {
+        # The managed packages do not touch the store, so they are prepared while it migrates.
+        Say 'Migrating the CLIO store (clio-agent migrate) while the managed packages are prepared'
+        $MigrateJob = Start-ClioBackground $VenvPython '-m clio_agent.gact.store_migrate_command' 'migrate'
+        if (-not $MigrateJob) {
+            & $VenvPython -m clio_agent.gact.store_migrate_command
+            $MigrateStatus = $LASTEXITCODE
+        }
+        $DocFlags += '--skip-store-migrations'
+    } else {
+        Say "clio-agent $InstalledClioVersion has no 'clio-agent migrate'; its boot migrates the store"
+    }
+}
+# Get-ClioDocsMigrateStatus LINE: the `clio-agent migrate` exit status that the store
+# upgrade in the managed-package step's summary (its last line) stands for.
+function Get-ClioDocsMigrateStatus([string]$Line) {
+    try { $m = ($Line | ConvertFrom-Json).store_migrations } catch { return 1 }
+    if (-not $m) { return 1 }
+    if ($m.status -in 'done', 'skipped') { return 0 }
+    if ($m.reason -eq 'store_in_use') { return 3 }
+    if ($m.status -eq 'refused') { return 5 }
+    return 1
 }
 function Complete-ClioMigrate {
     if ($script:MigrateJob) {
@@ -1452,7 +1491,9 @@ function Complete-ClioMigrate {
 
 Complete-OfficePrepare
 if ($DocJob) {
+    if ($DocsMigrate) { Say 'Finishing the managed packages, Office rendering and the CLIO store' }
     $docsStatus = Complete-ClioBackground $DocJob
+    if ($DocsMigrate -and $docsStatus -eq 0) { $MigrateStatus = Get-ClioDocsMigrateStatus $DocJob.LastLine }
     Complete-ClioMigrate
     if ($docsStatus -ne 0) {
         DieWith $docsStatus "installing the managed packages and Office rendering failed (exit $docsStatus); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
