@@ -132,10 +132,11 @@ def _same_url(record: PageRecord, url: str) -> bool:
 
 
 def browser_pages() -> dict[str, Any]:
-    """The conversation's open pages."""
+    """The conversation's open pages (without their tab icons, which are for the person)."""
     _app, session_id = _session()
     svc = service()
-    return {"pages": [svc.state(r) for r in svc.session_pages(session_id)]}
+    pages = [svc.state(r) for r in svc.session_pages(session_id)]
+    return {"pages": [{k: v for k, v in page.items() if k != "favicon"} for page in pages]}
 
 
 def browser_close(page: str) -> dict[str, Any]:
