@@ -17,7 +17,7 @@ import time
 import zipfile
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, BinaryIO
 
 from filelock import FileLock
@@ -299,7 +299,7 @@ def _extract(archive: Path, root: Path) -> None:
         from importlib import import_module
 
         module = import_module(f"{__package__}.windows_msi" if __package__ else "windows_msi")
-        module.extract_application(archive, root)
+        module.extract_application(archive, root, skip=unread)
     elif platform.system() == "Darwin":
         with tempfile.TemporaryDirectory(dir=root.parent) as temporary:
             mount = Path(temporary)
@@ -330,6 +330,38 @@ def _remove_tree(path: Path) -> int:
     files = sum(len(names) for _, _, names in os.walk(path))
     shutil.rmtree(path)
     return files
+
+
+def unread(relative: PurePath) -> bool:
+    """Whether ``prune_unread`` would remove this file of an image (a path below it).
+
+    Windows extraction skips these members, so they are never written and scanned
+    only to be deleted again.
+    """
+    parts = relative.parts
+    lowered = [part.lower() for part in parts]
+    if lowered[0] == "help":
+        return True
+    for index, part in enumerate(parts[:-1]):
+        parent = parts[index - 1] if index else ""
+        if parent == "extensions" and part in UNREAD_EXTENSIONS:
+            return True
+        if (
+            parent == "resource"
+            and index + 1 < len(parts) - 1
+            and parts[index + 1] == "LC_MESSAGES"
+            and not lowered[index].startswith("en")
+        ):
+            return True
+    name = lowered[-1]
+    folder = parts[-2] if len(parts) > 1 else ""
+    grandparent = parts[-3] if len(parts) > 2 else ""
+    if folder.startswith("dict-") and grandparent == "extensions":
+        return PurePath(name).suffix in UNREAD_DICTIONARY_SUFFIXES and not name.startswith("hyph")
+    if folder == "res" and grandparent == "registry" and name.endswith(".xcd"):
+        language = PurePath(name).stem.rpartition("_")[2]
+        return bool(language) and not language.startswith("en")
+    return False
 
 
 def prune_unread(image: Path) -> int:

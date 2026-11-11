@@ -6,7 +6,7 @@ import io
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import SimpleNamespace
 from typing import Any
 
@@ -56,15 +56,17 @@ def test_windows_renderer_is_extracted_to_private_image(
     monkeypatch.setattr(office.platform, "system", lambda: "Windows")
     from clio_agent.runtime.document_stack import windows_msi
 
-    seen: list[tuple[Path, Path]] = []
+    seen: list[tuple[Path, Path, Any]] = []
 
     monkeypatch.setattr(
-        windows_msi, "extract_application", lambda archive, root: seen.append((archive, root))
+        windows_msi,
+        "extract_application",
+        lambda archive, root, skip=None: seen.append((archive, root, skip)),
     )
     archive = tmp_path / "CLIO Desktop" / "renderer.msi"
     private = tmp_path / "CLIO Desktop" / "private image"
     office._extract(archive, private)
-    assert seen == [(archive, private)]
+    assert seen == [(archive, private, office.unread)]
 
 
 def test_explicit_windows_command_line_reaches_createprocess_without_a_shell(
@@ -549,3 +551,37 @@ def test_prune_unread_keeps_hyphenation_and_english_configuration(
     assert office.prune_unread(tmp_path / "LibreOffice") == 7
     for name, kept in names.items():
         assert (share / name).exists() is kept, name
+
+
+def test_unread_names_exactly_what_prune_unread_removes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Extraction skips the same files pruning would delete, so the two never drift."""
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    image = tmp_path / "office"
+    names = [
+        "program/soffice.com",
+        "program/resource/de/LC_MESSAGES/sw.mo",
+        "program/resource/en-GB/LC_MESSAGES/sw.mo",
+        "help/en-US/text.xhp",
+        "share/extensions/nlpsolver/solver.jar",
+        "share/extensions/wiki-publisher/wiki.jar",
+        "share/extensions/dict-de/de_DE_frami.dic",
+        "share/extensions/dict-de/th_de_DE_v2.idx",
+        "share/extensions/dict-de/hyph_de_DE.dic",
+        "share/extensions/dict-de/dictionaries.xcu",
+        "share/registry/res/fcfg_langpack_fr.xcd",
+        "share/registry/res/registry_en-GB.xcd",
+        "share/registry/main.xcd",
+        "share/fonts/truetype/DejaVuSans.ttf",
+    ]
+    for name in names:
+        (image / name).parent.mkdir(parents=True, exist_ok=True)
+        (image / name).write_bytes(b"x")
+
+    skipped = {name for name in names if office.unread(PurePath(name))}
+    office.prune_unread(image)
+    removed = {name for name in names if not (image / name).exists()}
+    assert skipped == removed
+    assert "share/extensions/dict-de/hyph_de_DE.dic" not in skipped
+    assert "program/resource/de/LC_MESSAGES/sw.mo" in skipped
