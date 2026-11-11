@@ -6,6 +6,12 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- On macOS, an idle CLIO no longer keeps one CPU core at 100%: clio-core's
+  client receive thread busy-polled its local socket from launch. clio-core
+  (iowarp-core) is now 2.4.1 (iowarp/clio-core#1358).
+
 ## [0.9.6.2] - 2026-11-11
 
 A hotfix on 0.9.6.1. It ships the same iowarp/gact-tui v0.12.1, clio-kit
