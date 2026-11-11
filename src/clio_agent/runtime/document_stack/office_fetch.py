@@ -56,6 +56,15 @@ _MAX_SWITCHES = 4
 #: whole installs. Backoff doubles from 1 s (cap 16 s, ~31 s in all) with jitter, so
 #: parallel fetches do not retry in lockstep.
 _MAX_ATTEMPTS = 6
+#: Office's userland is pinned to an Ubuntu snapshot, and snapshot.ubuntu.com answers
+#: bursts of 5xx or stops responding (all of it, for a while on 2026-11-11), which failed
+#: whole installs. The same file is fetched first from the Ubuntu archive's pool path
+#: (144 of the 148 amd64 pins; the rest were superseded there), then from Launchpad's
+#: primary-archive file URL (every published version, by file name), then from the
+#: snapshot. The pinned SHA-256 is checked whichever serves it.
+_SNAPSHOT = re.compile(r"^https://snapshot\.ubuntu\.com/ubuntu/\d{8}T\d{6}Z/(pool/.+/([^/]+))$")
+_UBUNTU_ARCHIVE = "https://archive.ubuntu.com/ubuntu/"
+_LAUNCHPAD_FILES = "https://launchpad.net/ubuntu/+archive/primary/+files/"
 _BACKOFF_CAP_S = 16.0
 _CHUNK = 1024 * 1024
 
@@ -317,7 +326,10 @@ def _sources(
     """
     listing = _metalink(url, checksum)
     if listing is None:
-        return [url], None, None
+        snapshot = _SNAPSHOT.match(url)
+        if snapshot is None:
+            return [url], None, None
+        return [_UBUNTU_ARCHIVE + snapshot[1], _LAUNCHPAD_FILES + snapshot[2], url], None, None
     size, mirrors = listing
     racers = [*mirrors[:_RACE_MIRRORS], _archive_url(url)]
     won = _race(racers, size, deadline)
@@ -390,6 +402,18 @@ def download(url: str, target: Path, checksum: str) -> None:
                         floor = None  # ride out the last source rather than hop forever
                     continue
                 except _RetryableDownloadError as exc:
+                    cause = exc.__cause__
+                    if (
+                        source != url
+                        and len(sources) > 1
+                        and isinstance(cause, urllib.error.HTTPError)
+                        and cause.code in {404, 410}
+                    ):
+                        # This mirror does not have the file: skip it, not an attempt.
+                        logger.info("reason=office_mirror_missing mirror=%s", _host(source))
+                        sources.remove(source)
+                        index %= len(sources)
+                        continue
                     failures += 1
                     if failures == _MAX_ATTEMPTS:
                         raise DocumentError(
