@@ -27,6 +27,12 @@ function linuxPackageBundle(bundle, variant) {
   }
   if (variant === "bundled") {
     out.resources = ["gact-runtime.tar.zst", "gact-runtime.pack.json", "gact-runtime.unpack.sh"];
+    // The archive is already zstd-19, so a compressed rpm payload saves nothing. It
+    // also never finishes: Tauri's rpm crate (0.15) re-hashes the whole remaining
+    // buffer on every partial compressor write, quadratic in the 727 MB file (gzip
+    // takes 32 KiB per write; the v0.9.6-beta.1 legs hit the 120 min job timeout).
+    // An uncompressed payload is consumed in one write.
+    out.linux.rpm.compression = { type: "none" };
   }
   return out;
 }
