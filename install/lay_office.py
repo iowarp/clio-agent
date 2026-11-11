@@ -49,7 +49,7 @@ def main() -> int:
                 raise SystemExit(f"{msi} is not the pinned LibreOffice {office.VERSION} MSI")
         tree = work / "office"
         tree.mkdir()
-        windows_msi.extract_application(msi, tree)
+        windows_msi.extract_application(msi, tree, skip=office.unread)
         office.prune_unread(tree)
         if office.executable(tree) is None:
             raise SystemExit("the expanded MSI has no soffice executable")
