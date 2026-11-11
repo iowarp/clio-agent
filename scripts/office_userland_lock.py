@@ -351,6 +351,19 @@ def main() -> int:
             "snapshot": args.snapshot,
         }
     )
+    # A package may carry a `url`: the immutable launchpadlibrarian.net file for a pin
+    # the snapshot alone holds (a version superseded on the archive). Office fetches it
+    # there first, so an unreachable snapshot.ubuntu.com cannot fail the install. Kept
+    # while the package's version and SHA-256 are unchanged.
+    previous = {
+        (item["package"], item["version"], item["sha256"]): item["url"]
+        for item in lock.get("architectures", {}).get(args.arch, {}).get("packages", [])
+        if item.get("url")
+    }
+    for pin in chosen.values():
+        url = previous.get((pin["package"], pin["version"], pin["sha256"]))
+        if url:
+            pin["url"] = url
     lock.setdefault("architectures", {})[args.arch] = {
         "base": source.base,
         "triplet": triplet,

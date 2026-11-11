@@ -536,7 +536,8 @@
      "version": "5.2.5-2ubuntu1.1",
      "path": "pool/main/x/xz-utils/liblzma5_5.2.5-2ubuntu1.1_amd64.deb",
      "sha256": "af77f099e7fa95a31267023535832804382fa66572a6b38002187be6e15116cb",
-     "size": 99630
+     "size": 99630,
+     "url": "https://launchpadlibrarian.net/863385124/liblzma5_5.2.5-2ubuntu1.1_amd64.deb"
     },
     {
      "package": "libmd0",
@@ -585,7 +586,8 @@
      "version": "2:3.98-0ubuntu0.22.04.4",
      "path": "pool/main/n/nss/libnss3_3.98-0ubuntu0.22.04.4_amd64.deb",
      "sha256": "caf60f375adbbdafef74930c5dd91411de0ac5c9499bf699185110dc77d82611",
-     "size": 1347044
+     "size": 1347044,
+     "url": "https://launchpadlibrarian.net/865548055/libnss3_3.98-0ubuntu0.22.04.4_amd64.deb"
     },
     {
      "package": "libp11-kit0",
@@ -599,14 +601,16 @@
      "version": "10.39-3ubuntu0.1",
      "path": "pool/main/p/pcre2/libpcre2-16-0_10.39-3ubuntu0.1_amd64.deb",
      "sha256": "d4b3cd60636e869a0ca23d912d59df914779806cef7f52c0469fcd074c149d87",
-     "size": 203294
+     "size": 203294,
+     "url": "https://launchpadlibrarian.net/624961330/libpcre2-16-0_10.39-3ubuntu0.1_amd64.deb"
     },
     {
      "package": "libpcre2-8-0",
      "version": "10.39-3ubuntu0.1",
      "path": "pool/main/p/pcre2/libpcre2-8-0_10.39-3ubuntu0.1_amd64.deb",
      "sha256": "01a5a74f3d305cad32fffffdc200c2a92fd8e5a01bff97de76ac598fb444d53e",
-     "size": 220512
+     "size": 220512,
+     "url": "https://launchpadlibrarian.net/624961332/libpcre2-8-0_10.39-3ubuntu0.1_amd64.deb"
     },
     {
      "package": "libpcre3",
