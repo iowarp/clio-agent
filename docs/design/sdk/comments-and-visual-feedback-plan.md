@@ -79,7 +79,7 @@ As written in the LaTeX plan's "Design: removing the embedded Office editors", w
 | `text-quote` | `exact`, `prefix`, `suffix` (up to 64 characters each), `start` and `end` in the rendered text | Markdown, HTML, agent answers, browser pages |
 | `pdf-quad` | `page_index`, `quads`, and `exact` when the selection has text | PDF and renditions |
 | `region` | `page_index` when paged, `rect` (normalized x, y, width, height), the natural size of what was shown, and `crop_asset` (the cropped PNG at 2x, stored as a session asset) | Images, PDF pages, HTML, A2UI surfaces, browser pages |
-| `dom` | `selector`, `tag`, `text_excerpt`, `html_excerpt` (truncated to `comments.html_excerpt_chars`, default 400), `rect`, `viewport_width` | HTML, SVG, browser pages |
+| `dom` | `selector`, `tag`, `text_excerpt`, `html_excerpt` (truncated to `comments.html_excerpt_chars`, default 400), `rect`, `viewport_width`; an image also carries `src` (its `currentSrc`), with its alt as `text_excerpt`; a browser page element carries its accessibility target as `source.ax` (`role`, `name`) | HTML, SVG, browser pages |
 | `source-map` | `source_path`, start and end line, the outline node | LaTeX (resolved by the LaTeX plan's resolver) |
 
 `quads` stay as they are. `rect` is one new field used by `region` and `dom`. A browser page anchor also carries `source.page` (the page id, URL and title) and `source.captured_at`.
@@ -194,6 +194,8 @@ Comment on page p2, https://example.org/settings (element)
   Box:      132 x 36 px at (980, 640) in a 1280 px wide view (attached as image 1)
   Comment:  This is disabled after I edit the email field. Find out why.
 ```
+
+**Pins and anchors that move.** While a page comment session is open, the controlling live view has the page follow its element and text marks (`marks.watch` on the live socket). The picker script finds each again after a reload, a navigation back or a change to the page: an element by its selector (checked against `src` for an image), then by image source, accessible role and name, or text; a text mark by its quote, scored by prefix and suffix. It reports where each is (`marks`), and the view pins it there with its label. A region follows the page too: the first time the page sees it, it holds the element under the region's centre and the region's offset from it (`source.hold` on the anchor), and from then on the region moves with that element when the layout shifts, the page scrolls or reloads; a region whose element is gone stays where it was drawn, and the agent's crop of a region is taken where the region is now. A mark the page cannot find gets the note "Couldn't find this anchor on the page", like a comment on an older version of a file, and an element found under a new selector takes that selector. Marks made on another address are not pinned until the page is back on it. When the comment is sent the server locates each mark the same way: the entry says the element was found again by its image source, role and name, or text, or carries a note that the element or text is no longer on the page.
 
 **Who sees it.** Page comments are made only by the viewer that sends input to the page, which addendum A of the browser plan defines as the first viewer. The `cdp` backend's real Chrome window has no picker; its live view in CLIO does.
 

@@ -417,6 +417,21 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "status": str(part.get("status") or ""),
             **common,
         }
+    if part_type == "image" and "comment_session" in metadata:
+        # A comment session's picture: named by its mark and anchor, or by its caption.
+        name = str(metadata.get("label") or metadata.get("caption") or "Image")
+        return {"id": part_id, "type": "routing", "label": name[:1].upper() + name[1:], **common}
+    if part_type == "comment_session":
+        session = _mapping(metadata.get("comment_session"))
+        count = len(_list(session.get("marks")))
+        title = str(session.get("title") or "")
+        noun = "comment" if count == 1 else "comments"
+        return {
+            "id": part_id,
+            "type": "routing",
+            "label": f"{count} {noun} on {title}" if title else f"{count} {noun}",
+            **common,
+        }
     text = str(part.get("text") or "")
     return {
         "id": part_id,

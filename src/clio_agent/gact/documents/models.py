@@ -48,9 +48,11 @@ class DocumentAnchor(BaseModel):
     ``text-quote`` and ``pdf-quad`` carry text; ``region`` a normalized rectangle (``rect``
     as x, y, width, height in 0..1 of the page or image shown, with ``page_index`` when
     paged and the natural size of what was shown); ``dom`` a picked element (``selector``,
-    ``tag``, excerpts, and its ``rect`` in CSS pixels of a ``viewport_width`` wide view).
+    ``tag``, excerpts, and its ``rect`` in CSS pixels of a ``viewport_width`` wide view; an
+    image also carries its ``src``, and its alt text as ``text_excerpt``).
     ``source`` names a target that is not an artifact: a browser page (``page``:
-    ``{id, url, title}``, ``captured_at``), an agent answer (``message_id``) or an A2UI
+    ``{id, url, title}``, ``captured_at``, and for a picked element its accessibility
+    target ``ax``: ``{role, name}``), an agent answer (``message_id``) or an A2UI
     surface (``surface``, ``component_id``, ``revision``, and the data under the mark).
     """
 
@@ -79,6 +81,7 @@ class DocumentAnchor(BaseModel):
     tag: str = Field(default="", max_length=64)
     text_excerpt: str = Field(default="", max_length=4_000)
     html_excerpt: str = Field(default="", max_length=16_000)
+    src: str = Field(default="", max_length=2_000)
     viewport_width: Optional[int] = Field(default=None, ge=1)
     source: dict[str, Any] = Field(default_factory=dict)
 

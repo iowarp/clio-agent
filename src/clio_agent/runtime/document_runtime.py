@@ -751,10 +751,11 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
 
     command = [*runtime["helper_argv"], *args]
     environment = {**os.environ, **runtime.get("shell_environment", {})}
-    if args and (
+    office = bool(args) and (
         args[0] == "recalculate"
         or (args[0] == "render" and len(args) > 1 and Path(args[1]).suffix.lower() != ".pdf")
-    ):
+    )
+    if office:
         # The trusted host owns renderer provisioning. A confined document worker
         # must consume the verified executable, never run Windows Installer.
         environment["CLIO_DOCUMENT_SOFFICE"] = prepare_office_runtime()
@@ -766,6 +767,7 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
         net_policy=sandbox.NET_ALLOW_RECORD,
         profile=sandbox.PROFILE_SHELL,
         pdeathsig=False,
+        office=office,
     )
     try:
         result = json.loads(
@@ -784,6 +786,8 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
                 accepted_exit_codes=(0, 1),
             )
         )
+    except json.JSONDecodeError as exc:
+        raise DocumentRuntimeError("Document helper exited without a result") from exc
     finally:
         confined.release()
     if not isinstance(result, dict):

@@ -57,6 +57,7 @@ from clio_agent.arc import clio_core_relocate as _relocate
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
+from clio_agent.arc.clio_core_segments import SEGMENT_LINES, ensure_seeded_segments
 from clio_agent.arc.clio_core_threads import core_threads, ensure_seeded_threads
 
 logger = logging.getLogger(__name__)
@@ -147,11 +148,18 @@ def runtime_state_dir(*, create: bool = True) -> Path:
 # The BM25 indexer chimod is composed after the core (see
 # :mod:`clio_agent.arc.clio_core_indexer`, which owns its block and its client binding).
 
-_DEFAULT_CTE_CONFIG_TEMPLATE = """\
+#
+# The runtime's shared-memory segments are capped too (:mod:`clio_agent.arc.clio_core_segments`).
+
+_DEFAULT_CTE_CONFIG_TEMPLATE = (
+    """\
 networking:
   port: {core_port}
 runtime:
   num_threads: {core_threads}
+"""
+    + SEGMENT_LINES
+    + """\
   conf_dir: "{conf_dir}"
 compose:
   - mod_name: clio_bdev
@@ -177,6 +185,7 @@ compose:
       metadata_log_path: "{metadata_log}"
       transaction_log_capacity: "32MB"
 {indexer}"""
+)
 
 # The default MEMORY BUDGET (#890/#906): the hard DRAM bound for the clio-core
 # storage arena. Owner ruling (2026-07-13): a desktop agent is told e.g. "use
@@ -421,6 +430,7 @@ def default_cte_config_path() -> str:
         _indexer.ensure_seeded_config_indexed(cfg, cte_dir / "indexer_index.log")  # pre-#905
         _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
         ensure_seeded_threads(cfg)  # a seed from before arc.core_threads
+        ensure_seeded_segments(cfg)  # a seed with clio-core's 1 GiB segments (#906)
     else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:

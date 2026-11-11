@@ -411,6 +411,7 @@ def _compose_fence_prefix(
     *,
     proxy_port: Optional[int] = None,
     cwd: Path | str | None = None,
+    office: bool = False,
 ) -> tuple[str, list[str]]:
     """Compose the active fence's argv prefix around ``(command, args)`` (B-codex / Landlock).
 
@@ -422,6 +423,11 @@ def _compose_fence_prefix(
     mechanism = state.mechanism
     roots: list[str] = [str(r) for r in write_roots]
     try:
+        if mechanism == MECHANISM_CODEX and office and sys.platform == "darwin":
+            # #2139: AppKit LibreOffice needs two mach services Codex cannot grant.
+            from clio_agent.runtime import sandbox_office_seatbelt  # noqa: PLC0415
+
+            return sandbox_office_seatbelt.office_seatbelt_prefix(roots, command, args)
         if mechanism == MECHANISM_CODEX:
             from clio_agent.runtime import sandbox_codex  # noqa: PLC0415
 
@@ -458,6 +464,7 @@ def wrap_confined(
     pdeathsig: bool = False,
     state: Optional[SandboxResult] = None,
     cwd: Path | str | None = None,
+    office: bool = False,
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
@@ -469,6 +476,8 @@ def wrap_confined(
     ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
     floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
     ``cwd`` selects the command directory without adding or reordering permission grants.
+    ``office`` marks CLIO's own LibreOffice worker; on macOS it runs under
+    :mod:`sandbox_office_seatbelt` instead of Codex (same territory, two mach services).
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -517,7 +526,14 @@ def wrap_confined(
         # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
         env_overlay.update(_child_cache_env(write_roots, state=resolved_state, profile=profile))
         cmd, arg_list = _compose_fence_prefix(
-            resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port, cwd=cwd
+            resolved_state,
+            profile,
+            cmd,
+            arg_list,
+            write_roots,
+            proxy_port=proxy_port,
+            cwd=cwd,
+            office=office,
         )
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
@@ -536,6 +552,12 @@ def wrap_confined(
             "write_roots": [str(r) for r in write_roots],
             # B4: the per-child egress channel id (empty on the floor) — so a caller can close it.
             "net_child_id": net_child_id,
+            "office_seatbelt": bool(
+                office
+                and resolved_state.active
+                and resolved_state.mechanism == MECHANISM_CODEX
+                and sys.platform == "darwin"
+            ),
         },
     )
     return ConfinedSpawn(
