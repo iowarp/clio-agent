@@ -1071,7 +1071,7 @@ install_scratch() {
 
 stop_install_jobs() {
   local pid
-  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} ${DOC_JOB:-} ${NODE_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
+  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} ${DOC_JOB:-} ${NODE_JOB:-} ${WEB_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
@@ -1131,6 +1131,18 @@ start_install_downloads() {
   if plan_capable "$DESKTOP_SCRATCH/plan.install" waits-for-partial-downloads; then
     DESKTOP_PLAN_WAITS=1
   fi
+}
+
+# The release's Web UI bundle, fetched while the managed packages install rather than
+# after them; the Web step below waits for it and fetches it itself if this failed.
+WEB_JOB=""
+WEB_TAG=""
+web_url() { printf 'https://github.com/iowarp/clio-agent/releases/download/%s/clio-web-%s.zip' "$1" "${1#v}"; }
+start_web_download() {  # TAG
+  command -v unzip >/dev/null 2>&1 || return 0
+  WEB_TAG="$1"
+  curl -fsSL --retry 3 "$(web_url "$1")" -o "$DESKTOP_SCRATCH/clio-web.zip" 2>/dev/null &
+  WEB_JOB=$!
 }
 
 # ---------- the release's prebuilt agent (Apple Silicon macOS) ---------
@@ -1629,6 +1641,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   runtime_installed=0
   ! finish_release_runtime "$package_version" || runtime_installed=1
   [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"
+  start_web_download "$tag"
   if [ "$runtime_installed" = 1 ]; then
     CLIO_VERSION="$package_version"
   else
@@ -1742,18 +1755,34 @@ check_old_data
 # ---------- upgrade the store: migrations run here, never at boot ------
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
-doc_flags=()
-if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.gact.store_migrate_command") else 3)' 2>/dev/null; then
-  say "Migrating the CLIO store (clio-agent migrate)"
-  migrate_status=0
-  "$VENV/bin/python" -m clio_agent.gact.store_migrate_command || migrate_status=$?
-  case "$migrate_status" in
+migrate_warning() {  # STATUS: the installer's note for a migrate exit status
+  case "$1" in
     0) ;;
     3) warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')" ;;
     5) warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside" ;;
-    *) warn "clio-agent migrate failed (exit $migrate_status, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
+    *) warn "clio-agent migrate failed (exit $1, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
   esac
-  doc_flags=(--skip-store-migrations)
+}
+has_module() {  # MODULE [TEXT]: the installed clio-agent has MODULE (whose source has TEXT)
+  "$VENV/bin/python" -I -c 'import importlib.util, sys
+spec = importlib.util.find_spec(sys.argv[1])
+sys.exit(0 if spec and (len(sys.argv) < 3 or sys.argv[2] in open(spec.origin, encoding="utf-8").read()) else 3)' "$@" 2>/dev/null
+}
+doc_flags=()
+# A document step that upgrades the store itself does so while the packages install
+# (gact-tui#739: a serial migrate cost 13 s of a cold install); older ones get migrate
+# first, as does a document step already running (start_document_install skips it).
+docs_migrate=0
+if has_module clio_agent.gact.store_migrate_command; then
+  if [ -z "$DOC_JOB" ] && has_module clio_agent.runtime.document_install _run_store_migrations; then
+    docs_migrate=1
+  else
+    say "Migrating the CLIO store (clio-agent migrate)"
+    migrate_status=0
+    "$VENV/bin/python" -m clio_agent.gact.store_migrate_command || migrate_status=$?
+    migrate_warning "$migrate_status"
+    doc_flags=(--skip-store-migrations)
+  fi
 else
   say "clio-agent $CLIO_INSTALLED_VERSION has no 'clio-agent migrate'; its boot migrates the store"
 fi
@@ -1771,14 +1800,29 @@ if [ -n "$DOC_JOB" ]; then
     wait "$NODE_JOB" || warn "could not fetch the browser's Node.js driver now ($(tail -n 1 "$DESKTOP_SCRATCH/browser-driver.log" 2>/dev/null)); the first browser action fetches it"
     NODE_JOB=""
   fi
-elif "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
+elif has_module clio_agent.runtime.document_install; then
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
   docs_status=0
   # A runtime that cannot wait for a download still arriving gets it once it has landed.
   [ -z "$INSTALL_DOWNLOADS" ] || [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
+  install_scratch
   env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
-    "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} || docs_status=$?
+    "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} \
+    | tee "$DESKTOP_SCRATCH/document_install.out" || docs_status=$?  # pipefail: its status
   [ -z "$INSTALL_DOWNLOADS" ] || finish_downloads
+  if [ "$docs_migrate" = 1 ] && [ "$docs_status" = 0 ]; then
+    # Its summary (the last line) reports the migration as `clio-agent migrate` would.
+    migrate_status="$(tail -n 1 "$DESKTOP_SCRATCH/document_install.out" | "$VENV/bin/python" -I -c '
+import json, sys
+try:
+    m = json.loads(sys.stdin.read()).get("store_migrations") or {}
+except (AttributeError, ValueError):
+    m = {}
+s, r = m.get("status"), m.get("reason")
+print(0 if s in ("done", "skipped") else 3 if r == "store_in_use" else 5 if s == "refused" else 1)
+' 2>/dev/null || true)"
+    [ -z "$migrate_status" ] || migrate_warning "$migrate_status"
+  fi
   [ "$docs_status" = 0 ] \
     || die_with "$docs_status" "installing the managed packages and Office rendering failed (exit $docs_status); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
 else
@@ -1797,8 +1841,15 @@ if [ "$OPT_SOURCE" = 0 ]; then
   # ships clio-web-<version>.zip containing a clio-web-<version>/ dist dir; we
   # unpack it into $PREFIX/clio-agent/web, which the launcher serves same-origin.
   webver="${tag#v}"
-  web_url="https://github.com/iowarp/clio-agent/releases/download/${tag}/clio-web-${webver}.zip"
-  if command -v unzip >/dev/null 2>&1 && curl -fsSL "$web_url" -o "$PREFIX/clio-web.zip" 2>/dev/null; then
+  web_fetched=1
+  if [ -n "$WEB_JOB" ] && [ "$WEB_TAG" = "$tag" ]; then
+    wait "$WEB_JOB" && mv "$DESKTOP_SCRATCH/clio-web.zip" "$PREFIX/clio-web.zip" || web_fetched=0
+    WEB_JOB=""
+  else
+    web_fetched=0
+  fi
+  if command -v unzip >/dev/null 2>&1 && { [ "$web_fetched" = 1 ] \
+      || curl -fsSL "$(web_url "$tag")" -o "$PREFIX/clio-web.zip" 2>/dev/null; }; then
     rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-agent/web"
     unzip -q -o "$PREFIX/clio-web.zip" -d "$PREFIX/_webtmp"
     mkdir -p "$PREFIX/clio-agent/web"
