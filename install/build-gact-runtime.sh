@@ -296,6 +296,10 @@ if [ "${COMPILED:-0}" -eq 0 ]; then
 fi
 echo "[build-gact-runtime] prepared $COMPILED bytecode files"
 
+# The standard library's pure-Python modules import from pythonXY.zip, one file
+# instead of about 1,100 that every install writes (gact-tui#739).
+"$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/zip_stdlib.py"
+
 SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
 

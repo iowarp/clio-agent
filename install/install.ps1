@@ -218,6 +218,17 @@ function Save-ClioDownload([string]$Uri, [string]$OutFile) {
 # Step-ClioDownloads and ended by Stop-ClioDownloads.
 $ClioTransfers = @()
 $ClioBuffer = New-Object byte[] 1048576
+$ClioHold = $null
+# A plan file of RANGED_MIN bytes or more arrives over CONNECTIONS connections: one
+# connection to GitHub's release storage carries about 10 MB/s, well under most links.
+# Each curl.exe fetches every CONNECTIONS-th SEGMENT-sized range over one connection
+# (--next), and the ranges are joined in order into NAME.part as they complete, so the
+# setup reading that file sees it grow at the link's rate. The first LEAD bytes come over
+# one connection while the setup downloads; the others start once it has landed.
+$ClioRangedMin = 128MB
+$ClioConnections = 6
+$ClioSegment = 8MB
+$ClioLead = 32MB
 function Save-ClioDownloads($Items, [int64]$Expected, $Until = $null) {
     foreach ($item in $Items) {
         Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
@@ -234,12 +245,17 @@ function Save-ClioDownloads($Items, [int64]$Expected, $Until = $null) {
         }
         return
     }
+    $script:ClioHold = $Until
     $script:ClioTransfers = @(foreach ($item in $Items) {
+        if ($item.Bytes -ge $script:ClioRangedMin -and $item.Ranges) {
+            New-ClioRangedTransfer $item $curl.Source
+            continue
+        }
         $arguments = "--fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-connrefused --continue-at - --output `"$($item.File)`" `"$($item.Url)`""
         $process = Start-Process -FilePath $curl.Source -ArgumentList $arguments -NoNewWindow -PassThru
         # Windows PowerShell reports no exit code for a process whose handle was never read.
         $null = $process.Handle
-        [pscustomobject]@{ Item = $item; Process = $process; Hash = [Security.Cryptography.SHA256]::Create(); Stream = $null; Bytes = [int64]0; Done = $false }
+        [pscustomobject]@{ Item = $item; Process = $process; Hash = [Security.Cryptography.SHA256]::Create(); Stream = $null; Bytes = [int64]0; Done = $false; Ranged = $false }
     })
     $interval = if ($script:ProgressJson) { 2 } else { 5 }
     $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -268,6 +284,10 @@ function Step-ClioDownloads {
     $active = $false
     foreach ($t in $script:ClioTransfers) {
         if ($t.Done) { continue }
+        if ($t.Ranged) {
+            if (Step-ClioRangedTransfer $t) { $active = $true }
+            continue
+        }
         # Read the exit first: what curl wrote before it exited is then all on disk.
         $exited = $t.Process.HasExited
         if (-not $t.Stream -and (Test-Path -LiteralPath $t.Item.File)) {
@@ -299,13 +319,107 @@ function Stop-ClioDownloads {
     if (-not $script:ClioTransfers.Count) { return }
     foreach ($t in $script:ClioTransfers) {
         if ($t.Done) { continue }
-        try { $t.Process.Kill(); $t.Process.WaitForExit() } catch { }
+        if ($t.Ranged) {
+            foreach ($worker in $t.Workers) { try { $worker.Kill(); $worker.WaitForExit() } catch { } }
+            $t.Out.Dispose()
+        } else {
+            try { $t.Process.Kill(); $t.Process.WaitForExit() } catch { }
+        }
         if ($t.Stream) { $t.Stream.Dispose() }
         $t.Hash.Dispose()
         $t.Done = $true
     }
     $script:RunBytes = [int64](($script:ClioTransfers | Measure-Object -Property Bytes -Sum).Sum)
     $script:ClioTransfers = @()
+}
+
+# New-ClioRangedTransfer ITEM CURL: ITEM's download as ranges (see $ClioRangedMin), its
+# lead range started. ITEM.Ranges is a scratch directory for the ranges in flight.
+function New-ClioRangedTransfer($item, [string]$curl) {
+    New-Item -ItemType Directory -Force -Path $item.Ranges | Out-Null
+    $ranges = New-Object System.Collections.Generic.List[object]
+    $start = [int64]0
+    while ($start -lt $item.Bytes) {
+        $size = if ($ranges.Count) { $script:ClioSegment } else { $script:ClioLead }
+        $length = [math]::Min([int64]$size, $item.Bytes - $start)
+        $ranges.Add([pscustomobject]@{ Start = $start; Length = $length; File = (Join-Path $item.Ranges "$($item.Name).$($ranges.Count)") })
+        $start += $length
+    }
+    # The setup reads NAME.part while it grows and moves it once it is complete.
+    $out = New-Object IO.FileStream($item.File, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]'ReadWrite, Delete')
+    $t = [pscustomobject]@{
+        Item = $item; Process = $null; Hash = [Security.Cryptography.SHA256]::Create(); Stream = $null; Bytes = [int64]0; Done = $false
+        Ranged = $true; Curl = $curl; Ranges = $ranges; Workers = @(); Next = 0; Taken = [int64]0; Out = $out
+    }
+    Start-ClioRangeWorker $t 0
+    $t
+}
+
+# Start-ClioRangeWorker TRANSFER N: one curl.exe for ranges N, N+CONNECTIONS, ... in turn.
+function Start-ClioRangeWorker($t, [int]$worker) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    for ($i = $worker; $i -lt $t.Ranges.Count; $i += $script:ClioConnections) {
+        $r = $t.Ranges[$i]
+        if ($lines.Count) { $lines.Add('next') }
+        $lines.Add("url = `"$($t.Item.Url)`"")
+        $lines.Add("range = $($r.Start)-$($r.Start + $r.Length - 1)")
+        # A config file's quoted strings take backslash escapes.
+        $lines.Add("output = `"$($r.File.Replace('\', '\\'))`"")
+        foreach ($option in 'fail', 'location', 'silent', 'show-error', 'retry-connrefused', 'retry = 5', 'retry-delay = 2') { $lines.Add($option) }
+    }
+    $config = Join-Path $t.Item.Ranges "$($t.Item.Name).curl$worker"
+    [IO.File]::WriteAllLines($config, $lines)
+    $process = Start-Process -FilePath $t.Curl -ArgumentList "--config `"$config`"" -NoNewWindow -PassThru
+    $null = $process.Handle
+    $t.Workers += $process
+}
+
+# Step-ClioRangedTransfer TRANSFER: start the other connections once the setup has landed,
+# append the completed ranges to NAME.part in order and hash them. $true while it runs.
+function Step-ClioRangedTransfer($t) {
+    $wanted = [math]::Min($script:ClioConnections, $t.Ranges.Count)
+    if ($t.Workers.Count -lt $wanted -and (-not $script:ClioHold -or $script:ClioHold.Landed)) {
+        for ($w = $t.Workers.Count; $w -lt $wanted; $w++) { Start-ClioRangeWorker $t $w }
+    }
+    # Read the exits first: what curl wrote before it exited is then all on disk.
+    $exited = $t.Workers.Count -eq $wanted -and -not @($t.Workers | Where-Object { -not $_.HasExited }).Count
+    while ($t.Next -lt $t.Ranges.Count) {
+        $r = $t.Ranges[$t.Next]
+        if (-not $t.Stream) {
+            if (-not (Test-Path -LiteralPath $r.File)) { break }
+            try { $t.Stream = [IO.File]::Open($r.File, 'Open', 'Read', 'ReadWrite, Delete') } catch { break }
+        }
+        # A retried range is written again from its start with the same bytes; reading on
+        # from here waits until it has grown past this point again.
+        $n = $t.Stream.Read($script:ClioBuffer, 0, [int][math]::Min($r.Length - $t.Taken, $script:ClioBuffer.Length))
+        if ($n -le 0) { break }
+        $t.Out.Write($script:ClioBuffer, 0, $n)
+        $null = $t.Hash.TransformBlock($script:ClioBuffer, 0, $n, $null, 0)
+        $t.Bytes += $n
+        $t.Taken += $n
+        if ($t.Taken -eq $r.Length) {
+            $t.Stream.Dispose()
+            $t.Stream = $null
+            $t.Taken = 0
+            $t.Next++
+            Remove-Item -LiteralPath $r.File -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $t.Out.Flush()
+    $complete = $t.Next -ge $t.Ranges.Count
+    if (-not $complete -and -not $exited) { return $true }
+    # Complete, or every connection has ended with a range missing.
+    $t.Out.Dispose()
+    if ($t.Stream) { $t.Stream.Dispose() }
+    $null = $t.Hash.TransformFinalBlock($script:ClioBuffer, 0, 0)
+    $t.Item.Sha = (($t.Hash.Hash | ForEach-Object { $_.ToString('x2') }) -join '')
+    $t.Item.Ok = $complete
+    $t.Hash.Dispose()
+    foreach ($worker in $t.Workers) { if (-not $worker.HasExited) { try { $worker.Kill() } catch { } } }
+    $t.Done = $true
+    $t.Item.Landed = $true
+    if ($t.Item.Final) { Complete-ClioPrefetch $t.Item }
+    return $false
 }
 
 # Complete-ClioPrefetch ITEM: a plan file is NAME.part while it downloads and NAME once its
@@ -494,7 +608,7 @@ function Install-ClioDesktopRelease([string]$repo) {
                 $planWaits = [bool](@([IO.File]::ReadAllLines($planFile)) -cmatch '^capability waits-for-partial-downloads( |$)')
                 foreach ($entry in $plan) {
                     $final = Join-Path $downloads $entry.Name
-                    $items += [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha }
+                    $items += [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha; Bytes = $entry.Bytes; Ranges = (Join-Path $scratch 'ranges') }
                     $total += $entry.Bytes
                 }
                 if ($plan.Count) { Say "Fetching what the first launch needs at the same time: $(($plan | ForEach-Object { $_.Name }) -join ', ')" }

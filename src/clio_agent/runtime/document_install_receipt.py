@@ -21,7 +21,7 @@ from filelock import FileLock
 from clio_agent import paths
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.document_runtime import STACK_ROOT, _fingerprint, office_runtime_root
-from clio_agent.runtime.document_stack.process import scratch_root
+from clio_agent.runtime.document_stack.process import office_profile_template, scratch_root
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,11 @@ def _roots(result: dict[str, Any]) -> list[Path]:
     ]
     if result.get("helper"):
         roots.append(Path(result["helper"]))
+    # A removed seeded profile changes the roots, so prepare seeds it again.
+    if result.get("office_profiles") and (
+        template := office_profile_template(office, Path(result["office_profiles"]))
+    ):
+        roots.append(template)
     roots.extend(
         Path(tool["path"])
         for tool in result["native_tools"].values()

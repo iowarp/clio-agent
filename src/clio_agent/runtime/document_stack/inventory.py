@@ -88,49 +88,38 @@ def _native_tool(name: str, cwd: Path) -> dict[str, Any]:
 
 
 def native_inventory(cwd: Path) -> dict[str, dict[str, Any]]:
-    """Probe independent converters with at most two concurrent child processes."""
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="document-native-probe") as pool:
+    """Probe the independent converters concurrently."""
+    with ThreadPoolExecutor(
+        max_workers=len(NATIVE_TOOLS), thread_name_prefix="document-native-probe"
+    ) as pool:
         futures = {name: pool.submit(_native_tool, name, cwd) for name in NATIVE_TOOLS}
         return {name: future.result() for name, future in futures.items()}
 
 
-def inventory(*, execution_only: bool = False) -> dict[str, Any]:
-    """Inspect current packages and tools, with optional lightweight module discovery."""
-    packages: dict[str, Any] = {}
-    for distribution, module in PACKAGES.items():
-        if execution_only:
-            if importlib.util.find_spec(module) is None:
-                raise ImportError(f"Managed package module is missing: {module}")
-        else:
-            importlib.import_module(module)
-        packages[distribution] = {
-            "version": importlib.metadata.version(distribution),
-            "import": module,
-            "verification": "module_discovered" if execution_only else "imported",
-        }
-    import nodejs_wheel
+def _import_packages() -> None:
+    """Import every managed package, several at once.
 
-    node_module_file = nodejs_wheel.__file__
-    if not node_module_file:
-        raise DocumentError("Managed Node.js package has no module file")
-    node_root = Path(node_path(str(Path(node_module_file).resolve().parent)))
-    node_candidates = [
-        node_root / "bin" / "node",
-        node_root / "node.exe",
-        node_root / "bin" / "node.exe",
-    ]
-    node = next((path for path in node_candidates if path.is_file()), None)
-    if node is None:
-        raise DocumentError("Managed Node.js package has no supported executable layout")
-    node_version = run([str(node), "--version"], cwd=node_root).strip()
-    native = (
-        {name: {"status": "not_checked"} for name in NATIVE_TOOLS}
-        if execution_only
-        else native_inventory(node_root)
-    )
+    The first load of a newly installed native library waits on the OS's file check,
+    so the packages load in parallel threads. A failure there (including a concurrent
+    circular import) is retried alone, which gives the authoritative error.
+    """
+    modules = list(PACKAGES.values())
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="document-import-probe") as pool:
+        failed = [
+            module
+            for module, future in zip(
+                modules, [pool.submit(importlib.import_module, m) for m in modules], strict=True
+            )
+            if future.exception() is not None
+        ]
+    for module in failed:
+        importlib.import_module(module)
+
+
+def _font_inventory() -> tuple[list[str], set[str], bool]:
     fonts: list[str] = []
     roots = [Path("/usr/share/fonts"), Path("/Library/Fonts"), Path("C:/Windows/Fonts")]
-    for root in [] if execution_only else roots:
+    for root in roots:
         if root.is_dir():
             fonts.extend(
                 str(path)
@@ -149,6 +138,61 @@ def inventory(*, execution_only: bool = False) -> dict[str, Any]:
                     families.add(family)
             except OSError:
                 continue
+    return selected_fonts, families, len(fonts) > 150
+
+
+def _node(node_module_file: str | None) -> tuple[Path, Path]:
+    """The managed Node.js package's root and executable."""
+    if not node_module_file:
+        raise DocumentError("Managed Node.js package has no module file")
+    node_root = Path(node_path(str(Path(node_module_file).resolve().parent)))
+    node_candidates = [
+        node_root / "bin" / "node",
+        node_root / "node.exe",
+        node_root / "bin" / "node.exe",
+    ]
+    node = next((path for path in node_candidates if path.is_file()), None)
+    if node is None:
+        raise DocumentError("Managed Node.js package has no supported executable layout")
+    return node_root, node
+
+
+def _node_version(node_root: Path, node: Path) -> str:
+    return run([str(node), "--version"], cwd=node_root).strip()
+
+
+def inventory(*, execution_only: bool = False) -> dict[str, Any]:
+    """Inspect current packages and tools, with optional lightweight module discovery."""
+    nodejs_spec = importlib.util.find_spec("nodejs_wheel")
+    node_root, node = _node(nodejs_spec.origin if nodejs_spec else None)
+    if execution_only:
+        for module in PACKAGES.values():
+            if importlib.util.find_spec(module) is None:
+                raise ImportError(f"Managed package module is missing: {module}")
+        node_version = _node_version(node_root, node)
+        native = {name: {"status": "not_checked"} for name in NATIVE_TOOLS}
+        selected_fonts: list[str] = []
+        families: set[str] = set()
+        truncated = False
+    else:
+        # The converters, Node.js and the font scan start at once, while the packages
+        # import: each is mostly waiting on a process start or a first file check.
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="document-probe") as pool:
+            version_future = pool.submit(_node_version, node_root, node)
+            native_future = pool.submit(native_inventory, node_root)
+            fonts_future = pool.submit(_font_inventory)
+            _import_packages()
+            node_version = version_future.result()
+            native = native_future.result()
+            selected_fonts, families, truncated = fonts_future.result()
+    packages: dict[str, Any] = {
+        distribution: {
+            "version": importlib.metadata.version(distribution),
+            "import": module,
+            "verification": "module_discovered" if execution_only else "imported",
+        }
+        for distribution, module in PACKAGES.items()
+    }
     return {
         "python": sys.executable,
         "inventory_scope": "execution" if execution_only else "documents",
@@ -161,7 +205,7 @@ def inventory(*, execution_only: bool = False) -> dict[str, Any]:
         "native_tools": native,
         "font_files": selected_fonts,
         "font_families": sorted(families),
-        "fonts_truncated": len(fonts) > 150,
+        "fonts_truncated": truncated,
     }
 
 

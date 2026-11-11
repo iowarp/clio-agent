@@ -137,8 +137,25 @@ def install_document_runtime(
         else None
     )
     reused = result is not None
+    protection: dict[str, Any] | None = None
     if result is None:
-        result = prepare_managed_packages(workspace, cache_root=cache_root, progress=progress)
+        # The fence check touches only the bundled runtime, tool and temp roots, never
+        # the package caches, so it runs while the packages are prepared.
+        progress_lock = Lock()
+
+        def report(message: str) -> None:
+            if progress is not None:
+                with progress_lock:
+                    progress(message)
+
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-protection") as checking:
+            protection_job = checking.submit(
+                prepare_protected_execution,
+                progress=report,
+                setup_protected_execution=setup_protected_execution,
+            )
+            result = prepare_managed_packages(workspace, cache_root=cache_root, progress=report)
+            protection = protection_job.result()
     else:
         from clio_agent.runtime.document_stack.process import scratch_root
         from clio_agent.tools.file_policy import FileAccessPolicy
@@ -153,11 +170,11 @@ def install_document_runtime(
             progress(
                 "Verified installation unchanged; reusing Office, Python, Node.js and GitHub packages."
             )
-    result["native_tools"].update(
-        prepare_protected_execution(
+    if protection is None:
+        protection = prepare_protected_execution(
             progress=progress, setup_protected_execution=setup_protected_execution
         )
-    )
+    result["native_tools"].update(protection)
     if not reused:
         save_install_receipt(workspace, result, cache_root=cache_root)
     if progress is not None:

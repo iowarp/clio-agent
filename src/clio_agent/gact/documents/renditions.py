@@ -143,7 +143,10 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
             if not output.is_file():
                 raise RenditionError("pandoc completed without producing a PDF")
             return output, "pandoc+typst" if typst is not None else "pandoc"
-    from clio_agent.runtime.document_runtime import prepare_office_runtime
+    from clio_agent.runtime.document_runtime import (
+        office_profile_templates,
+        prepare_office_runtime,
+    )
     from clio_agent.runtime.package_preparation import preparing_result
 
     if (busy := preparing_result()) is not None:
@@ -160,6 +163,7 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
             execute=lambda command, cwd: _run(command, cwd=cwd),
             executable_path=soffice,
             workspace=_RENDER_WORKSPACE.get(),
+            profile_templates=office_profile_templates(),
         ), "libreoffice"
     except DocumentError as exc:
         raise RenditionError(str(exc)) from exc
