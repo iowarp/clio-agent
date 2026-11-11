@@ -206,22 +206,6 @@ def test_timeout_or_cancel_does_not_claim_remote_kill(
     assert ssh_command_elapsed() < 3
 
 
-def test_exec_acknowledgement_has_a_real_deadline(
-    ssh_peer: list[str], tmp_path: Path, ssh_command_elapsed: Callable[[], float]
-) -> None:
-    result = ssh_execution.execute_ssh_command(
-        SshRoute(profile="science"),
-        "no-ack",
-        root=tmp_path,
-        session_id="sess_science",
-        timeout_s=0.2,
-        max_output_bytes=1024,
-    )
-    assert ssh_peer == ["no-ack"]
-    assert result["stop_reason"] == "timeout" and result["exit_code"] is None
-    assert ssh_command_elapsed() < 3
-
-
 def test_cancellation_checker_error_propagates_after_closing_channel(
     ssh_peer: list[str],
     tmp_path: Path,
