@@ -15,8 +15,10 @@ on:
     paths:
       - 'install/**'
       - 'src/clio_agent/runtime/document_runtime.py'
+      - 'src/clio_agent/runtime/document_venv.py'
       - 'src/clio_agent/runtime/document_stack/office.py'
       - 'src/clio_agent/runtime/document_stack/office_fetch.py'
+      - 'src/clio_agent/runtime/document_stack/office_prune.py'
       - 'src/clio_agent/gact/app.py'
       - 'src/clio_agent/gact/server_boot.py'
       - 'src/clio_agent/gact/task_runtime.py'

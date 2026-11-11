@@ -197,6 +197,9 @@ def test_a_running_service_ends_stopped_with_its_installation_kept(
     }
     (root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     signalled: list[int] = []
+    # test_supervisor registers the standalone helper as clio_native_platform, which
+    # platform_helper() prefers; pin the module this test patches.
+    monkeypatch.setattr(node_service, "platform_helper", lambda: native_service_platform)
     monkeypatch.setattr(
         node_service, "identity", lambda pid: "" if signalled or pid != 4321 else "id-4321"
     )
