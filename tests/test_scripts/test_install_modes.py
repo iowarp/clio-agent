@@ -63,6 +63,14 @@ def test_default_installs_the_latest_stable_release_locked_by_its_tag(tmp_path: 
     assert "curl https://raw.githubusercontent.com/iowarp/clio-agent/v0.9.4.24/uv.lock" in calls
 
 
+def test_resolving_the_latest_release_uses_the_python_releases_pin(tmp_path: Path) -> None:
+    # 3.14 is the Python a current release installs on; resolving on another would
+    # download a second CPython that nothing else uses.
+    _release_fixtures(tmp_path)
+    _, calls = run_installer(tmp_path)
+    assert "--python 3.14 --with packaging" in _call(calls, "uv run")
+
+
 def test_dev_installs_the_latest_release_including_pre_releases(tmp_path: Path) -> None:
     _release_fixtures(tmp_path)
     result, calls = run_installer(tmp_path, "--dev")

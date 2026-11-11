@@ -1595,8 +1595,10 @@ else
     # most recently published release, pre-releases included.
     which="stable"; [ "$OPT_DEV" = 1 ] && which="any"
     say "Resolving the latest $([ "$which" = any ] && echo release || echo stable release)"
-    package_version="$(curl -fsSL "https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100" \
-      | uv run --quiet --no-project --python 3.13 --with packaging python -c '
+    # Compressed: the list is ~8.6 MB of JSON. Python 3.14 is the one the release pins
+    # (.python-version) and that the runtime archive decoder uses, so uv downloads it once.
+    package_version="$(curl -fsSL --compressed "https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100" \
+      | uv run --quiet --no-project --python 3.14 --with packaging python -c '
 import json, re, sys
 from packaging.version import InvalidVersion, Version
 found = []
