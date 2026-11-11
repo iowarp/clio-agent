@@ -23,7 +23,13 @@ def locked_document_packages(stack: Path) -> list[dict[str, Any]]:
 
 
 def bundled_wheel_requirements(runtime: Path | None, stack: Path, project: Path) -> Path | None:
-    """Verify every bundled wheel and write hash-pinned, offline uv requirements."""
+    """Verify every bundled wheel and write hash-pinned, offline uv requirements.
+
+    Returns ``None`` when there is no bundle, or when the bundle was built for another
+    package lock or interpreter: an in-place update of clio-agent (``uv pip install -U``)
+    keeps the older runtime's wheels, and its new lock is installed by the locked online
+    sync instead. A bundle built for this lock that fails verification is an error.
+    """
     if runtime is None or not (runtime / "document-wheels/manifest.json").is_file():
         return None
     directory = runtime / "document-wheels"
@@ -35,7 +41,7 @@ def bundled_wheel_requirements(runtime: Path | None, stack: Path, project: Path)
         or manifest["cache_tag"] != sys.implementation.cache_tag
         or manifest["platform"] != sysconfig.get_platform()
     ):
-        raise ValueError("Bundled document wheels do not match this interpreter and package lock")
+        return None
     packages = {package["name"]: package for package in locked_document_packages(stack)}
     entries = manifest["packages"]
     if len(entries) != len(packages) or {entry["name"] for entry in entries} != set(packages):
