@@ -17,6 +17,17 @@ TUI/HTTP surface aren't tracked here.
 - `install.sh --desktop` now fails with the cause and the command to re-run when
   runtime preparation fails or the app executable is missing, instead of
   warning and exiting successfully (#2077, #2081).
+- On Linux, fetching LibreOffice's supporting packages retries when
+  snapshot.ubuntu.com returns temporary server errors (#2084).
+- Document tools running inside the sandbox get a writable LibreOffice profile,
+  so conversions no longer fail there (#2084).
+- The reasoning timer in a conversation stops while a tool call waits for your
+  permission (#2084).
+- Listing a conversation's artifacts no longer stalls other requests (#2084).
+- `clio stop` stops a server that has exited but was not yet cleaned up, and
+  `clio restart` keeps Web running (#2084).
+- `SHA256SUMS.web.txt` names the Web zip by file name instead of the build
+  machine's path, so it can be checked with `sha256sum -c` (#2084).
 
 ### Changed
 
