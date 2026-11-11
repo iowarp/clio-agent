@@ -519,3 +519,33 @@ def test_macos_image_attach_skips_the_redundant_verify(
     office._extract(tmp_path / "office.dmg", root)
     assert commands[0][:2] == ["/usr/bin/hdiutil", "attach"]
     assert "-noverify" in commands[0]
+
+
+def test_prune_unread_keeps_hyphenation_and_english_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spelling, thesaurus and non-English configuration go; what changes layout stays."""
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    share = tmp_path / "LibreOffice" / "share"
+    names = {
+        "extensions/dict-de/de_DE_frami.dic": False,
+        "extensions/dict-de/de_DE_frami.aff": False,
+        "extensions/dict-de/th_de_DE_v2.dat": False,
+        "extensions/dict-de/th_de_DE_v2.idx": False,
+        "extensions/dict-de/hyph_de_DE.dic": True,
+        "extensions/dict-de/dictionaries.xcu": True,
+        "extensions/dict-th/th_TH.dic": False,
+        "registry/res/fcfg_langpack_de.xcd": False,
+        "registry/res/registry_pt-BR.xcd": False,
+        "registry/res/fcfg_langpack_en-US.xcd": True,
+        "registry/res/registry_en-GB.xcd": True,
+        "registry/main.xcd": True,
+    }
+    for name in names:
+        (share / name).parent.mkdir(parents=True, exist_ok=True)
+        (share / name).write_bytes(b"x")
+    (tmp_path / "LibreOffice" / "program").mkdir()
+
+    assert office.prune_unread(tmp_path / "LibreOffice") == 7
+    for name, kept in names.items():
+        assert (share / name).exists() is kept, name
