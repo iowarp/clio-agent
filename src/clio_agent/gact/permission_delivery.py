@@ -88,6 +88,14 @@ def publish_waiting_call(app: Any, row: Mapping[str, Any], *, resumed: bool = Fa
     call_id = str(tool_call.get("call_id") or "")
     if bus is None or not call_id:
         return
+    if not resumed:
+        # The reasoning that led to the call ends when the call is held: closing the open
+        # part stops its clock, which otherwise ran on through the wait for a person and
+        # showed it as thinking ("Thought for 13 minutes") once the call finally opened.
+        registry = getattr(app.state, "turn_transcripts", None)
+        transcript = registry.get(str(row.get("session_id") or "")) if registry else None
+        if transcript is not None:
+            transcript.close_open_text()
     from clio_agent.gact.tool_call_nesting import nested_call_fields  # noqa: PLC0415
 
     bus.publish(

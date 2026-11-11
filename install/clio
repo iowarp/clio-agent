@@ -242,6 +242,20 @@ resolve_web_src() {
 # server_pid echoes a live server PID (from the pidfile, validated) or
 # returns 1. Falls back to a port-owner lookup so a server started
 # outside this launcher is still manageable.
+# running PID: the process exists and has not exited. One that exited but was not yet
+# reaped (its parent is a container's PID 1 without an init, which never reaps) is a
+# zombie: `kill -0` still succeeds on it, so its state is read too.
+running() {
+  local state=""
+  kill -0 "$1" 2>/dev/null || return 1
+  if [[ -r "/proc/$1/stat" ]]; then
+    state="$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1)"
+  else
+    state="$(ps -o stat= -p "$1" 2>/dev/null | cut -c1)"
+  fi
+  [[ "$state" != Z ]]
+}
+
 server_pid() {
   local p=""
   if command -v lsof >/dev/null 2>&1; then
@@ -250,7 +264,7 @@ server_pid() {
   fi
   if [[ -f "$PIDFILE" ]]; then
     p="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then
+    if [[ -n "$p" ]] && running "$p"; then
       echo "$p"; return 0
     fi
   fi
@@ -344,10 +358,10 @@ stop_server() {
   # budget; the loop still returns immediately as soon as the server exits.
   local i
   for i in $(seq 1 120); do
-    kill -0 "$p" 2>/dev/null || break
+    running "$p" || break
     sleep 0.25
   done
-  if kill -0 "$p" 2>/dev/null; then
+  if running "$p"; then
     warn "  did not exit - force killing the process group"
     kill -9 -"$p" 2>/dev/null || kill -9 "$p" 2>/dev/null || true
   fi
@@ -594,7 +608,13 @@ main() {
       ;;
     start)        update_check; start_server && sandbox_ack ;;
     stop)         stop_server ;;
-    restart)      stop_server; start_server && sandbox_ack ;;
+    restart)
+      # Restart keeps what the server served: one started by `clio web` (or bare `clio`)
+      # comes back serving Web, not as a headless API whose "/" answers 404.
+      if serving_web && [[ -z "${CLIO_WEB_DIR:-}" && -f "$WEB_DIR/index.html" ]]; then
+        export CLIO_WEB_DIR="$WEB_DIR"
+      fi
+      stop_server; start_server && sandbox_ack ;;
     update)
       shift || true
       local uv_bin
