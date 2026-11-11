@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -215,3 +216,54 @@ def test_the_finishing_note_offers_web_only_when_the_web_bundle_is_installed() -
     assert "clio (Web)" in web
     assert "clio (Web)" not in rest.split("fi", 1)[0]
     assert "  2. $run_step\n" in notes
+
+
+def _install_name_tool_stand_in() -> str:
+    text = (ROOT / "install/install.sh").read_text()
+    return text[text.index("macos_developer_tools() {") : text.index("# uv installs Python,")]
+
+
+def test_a_mac_without_developer_tools_never_runs_the_install_name_tool_placeholder() -> None:
+    # uv patches each Python it installs with install_name_tool; on a Mac without the
+    # Command Line Tools /usr/bin/install_name_tool opens their install dialog
+    # (gact-tui#739). The failing stand-in is on PATH before the first uv call.
+    text = (ROOT / "install/install.sh").read_text()
+    block = _install_name_tool_stand_in()
+    assert 'export PATH="$tool_shim:$PATH"' in block
+    assert text.index(block) < text.index("curl -LsSf https://astral.sh/uv/install.sh")
+    assert text.index(block) < text.index("uv tool install")
+    assert '[ -z "${tool_shim:-}" ] || rm -rf "$tool_shim"' in text[text.index("on_exit() {") :]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell")
+@pytest.mark.parametrize("developer_dir", [True, False])
+def test_the_stand_in_is_used_only_without_a_developer_directory(
+    tmp_path: Path, developer_dir: bool
+) -> None:
+    developer = tmp_path / "Developer"
+    if developer_dir:
+        (developer / "usr/bin").mkdir(parents=True)
+    script = (
+        f"OS=darwin\n{_install_name_tool_stand_in()}\n"
+        'printf "%s\\n" "$tool_shim"\n'
+        '[ -z "$tool_shim" ] || { "$tool_shim/install_name_tool"; echo "status $?"; }\n'
+    )
+    # Isolated from the machine's own developer tools: only DEVELOPER_DIR can supply them.
+    script = script.replace(
+        "/Applications/Xcode.app/Contents/Developer \\\n      /Library/Developer/CommandLineTools",
+        f"{tmp_path}/no-xcode {tmp_path}/no-clt",
+    ).replace("readlink /var/db/xcode_select_link", f"readlink {tmp_path}/no-link")
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", "-c", script],
+        env={**os.environ, "DEVELOPER_DIR": str(developer), "TMPDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    shim = result.stdout.splitlines()[0]
+    if developer_dir:
+        assert shim == ""
+    else:
+        assert shim.startswith(str(tmp_path / "clio-tools."))
+        assert "status 1" in result.stdout
+        assert "needs the Command Line Tools" in result.stderr
