@@ -282,8 +282,7 @@ def _set_environment_home(environment: Path) -> None:
     lines = config.read_text(encoding="utf-8").splitlines()
     config.write_text(
         "\n".join(
-            f"home = {home}" if line.partition("=")[0].strip() == "home" else line
-            for line in lines
+            f"home = {home}" if line.partition("=")[0].strip() == "home" else line for line in lines
         )
         + "\n",
         encoding="utf-8",

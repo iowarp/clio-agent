@@ -406,6 +406,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_CTE_POOL_BOUND_BY` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
 | `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/desktop_boot.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
 | `CLIO_DOCUMENT_CONFINED` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
+| `CLIO_DOCUMENT_OFFICE_PROFILES` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_OFFICE_ROOT` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_SCRATCH` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_SHORT_TEMP` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |

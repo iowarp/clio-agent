@@ -190,7 +190,9 @@ def prepare(
                 download(url, archive, checksum)
                 return archive
 
-            with ThreadPoolExecutor(max_workers=8, thread_name_prefix="office-userland") as pool:
+            # ~150 small packages: latency, not bandwidth, bounds this (8 at a time
+            # took 30 s, 32 at a time 10 s, from snapshot.ubuntu.com).
+            with ThreadPoolExecutor(max_workers=32, thread_name_prefix="office-userland") as pool:
                 archives = list(pool.map(fetch, pinned))
             for archive in archives:
                 with archive.open("rb") as source:

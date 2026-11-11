@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import lzma
 import os
 import platform
 import shutil
@@ -15,6 +16,7 @@ import tempfile
 import time
 import zipfile
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -224,22 +226,54 @@ def _deb_data(stream: BinaryIO) -> bytes:
     raise DocumentError("Debian archive contains no data payload")
 
 
+_XZ_MAGIC = b"\xfd7zXZ\x00"
+
+
+def _deb_tar(package: Path) -> bytes:
+    """A package's data tar, xz-decompressed (lzma releases the GIL, so threads overlap).
+
+    Other compressions are returned as they are; ``tarfile`` opens them itself.
+    """
+    with package.open("rb") as source:
+        payload = _deb_data(source)
+    return lzma.decompress(payload) if payload.startswith(_XZ_MAGIC) else payload
+
+
 def _extract_linux(archive: Path, root: Path) -> None:
+    """Unpack the /opt application of every package in the archive into ``root``.
+
+    Decompressing the ~40 packages' xz payloads is most of the time (about 16 of 22 s
+    on one core), so a few are decompressed ahead on worker threads while one thread
+    writes the files in package order. At most ``2 * workers`` decompressed payloads
+    are held at once.
+    """
     with tempfile.TemporaryDirectory(dir=root.parent) as temporary:
-        packages = Path(temporary)
+        packages_root = Path(temporary)
         with tarfile.open(archive) as outer:
-            outer.extractall(packages, filter="data")
-        for package in sorted(packages.rglob("*.deb")):
-            with package.open("rb") as source:
-                payload = _deb_data(source)
-            with tarfile.open(fileobj=io.BytesIO(payload)) as contents:
-                # Only the self-contained /opt application, not distro integration.
-                members = [
-                    member
-                    for member in contents
-                    if member.name.removeprefix("./").startswith("opt/")
-                ]
-                contents.extractall(root, members=members, filter="data")
+            outer.extractall(packages_root, filter="data")
+        packages = iter(sorted(packages_root.rglob("*.deb")))
+        workers = max(1, min(4, os.cpu_count() or 1))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="office-unpack") as pool:
+            pending: deque[Future[bytes]] = deque()
+
+            def submit_next() -> None:
+                package = next(packages, None)
+                if package is not None:
+                    pending.append(pool.submit(_deb_tar, package))
+
+            for _ in range(2 * workers):
+                submit_next()
+            while pending:
+                payload = pending.popleft().result()
+                submit_next()
+                with tarfile.open(fileobj=io.BytesIO(payload)) as contents:
+                    # Only the self-contained /opt application, not distro integration.
+                    members = [
+                        member
+                        for member in contents
+                        if member.name.removeprefix("./").startswith("opt/")
+                    ]
+                    contents.extractall(root, members=members, filter="data")
 
 
 def _copy_app_bundle(source: Path, target: Path) -> None:
@@ -524,6 +558,21 @@ def _publish_image(image: Path, root: Path) -> None:
             time.sleep(0.1)
 
 
+def _office_archive(archive: Path, name: str, checksum: str, url: str) -> Path:
+    """The verified archive: the cached copy, the installer's download, or a new download."""
+    if archive.is_file():
+        with archive.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() == checksum:
+                return archive
+    prefetched = installer_download(name, checksum, url)
+    if prefetched is not None:
+        return prefetched
+    partial = archive.with_suffix(archive.suffix + ".part")
+    _download(url, partial, checksum)
+    partial.replace(archive)
+    return archive
+
+
 def ensure_office(
     root: Path,
     *,
@@ -559,37 +608,40 @@ def ensure_office(
         downloads = root.parent / "downloads"
         downloads.mkdir(exist_ok=True)
         archive = downloads / name
-        cached = False
-        if archive.is_file():
-            with archive.open("rb") as stream:
-                cached = hashlib.file_digest(stream, "sha256").hexdigest() == checksum
-        source = archive
-        if not cached:
-            prefetched = installer_download(name, checksum, url)
-            if prefetched is not None:
-                source = prefetched
-            else:
-                partial = archive.with_suffix(archive.suffix + ".part")
-                _download(url, partial, checksum)
-                partial.replace(archive)
         with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
             staging = Path(temporary)
             inherit_parent_access(staging)
             image = staging / "image"
             image.mkdir()
-            try:
-                _extract(source, image)
-                prune_unread(image)
+            # The pinned userland (~150 small packages) needs nothing from the archive:
+            # it is fetched and unpacked beside the image while the archive downloads
+            # and unpacks, and moved in after pruning, which never walks it.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="office-compat") as side:
+                userland: Future[None] | None = None
+                beside = staging / "userland"
                 if office_compat.supported():
-                    office_compat.prepare(image, download=_download, deb_data=_deb_data)
-                inherit_parent_access(image)
-                candidate = executable(image)
-                if candidate is None:
-                    raise DocumentError("LibreOffice image contains no supported executable")
-                _verify_office(candidate, cwd=image, profile_templates=profile_templates)
-                _publish_image(image, root)
-            except (OSError, ValueError, tarfile.TarError) as exc:
-                raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
+                    beside.mkdir()
+                    userland = side.submit(
+                        office_compat.prepare, beside, download=_download, deb_data=_deb_data
+                    )
+                source = _office_archive(archive, name, checksum, url)
+                try:
+                    _extract(source, image)
+                    prune_unread(image)
+                    if userland is not None:
+                        userland.result()
+                        directory = office_compat.runtime_directory()
+                        (beside / directory).rename(image / directory)
+                        # The userland is in place: this only publishes Office's launcher.
+                        office_compat.prepare(image, download=_download, deb_data=_deb_data)
+                    inherit_parent_access(image)
+                    candidate = executable(image)
+                    if candidate is None:
+                        raise DocumentError("LibreOffice image contains no supported executable")
+                    _verify_office(candidate, cwd=image, profile_templates=profile_templates)
+                    _publish_image(image, root)
+                except (OSError, ValueError, tarfile.TarError) as exc:
+                    raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
         candidate = executable(root)
         if candidate is None:
             raise DocumentError("LibreOffice renderer disappeared after provisioning")
