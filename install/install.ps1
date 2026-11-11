@@ -29,7 +29,7 @@
 #   CLIO_PREFIX        install root           (default: <agent data>\app)
 #   CLIO_BIN_DIR       launcher location      (default: ...\WindowsApps)
 #   CLIO_INSTALLER_REF pin launcher scripts   (default: the installed release's tag)
-#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.11.1)
+#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.12.3)
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
 #   CLIO_INSTALL_PROGRESS human | json        (default: human; -Desktop only)
 
@@ -1357,7 +1357,7 @@ if (Test-Path $VenvPython) {
 $KitJob = $null
 $WebJob = $null
 if (-not $ClioKitPackage) {
-    $ClioKitSpec = 'clio-kit==2.11.1'
+    $ClioKitSpec = 'clio-kit==2.12.3'
 } elseif ($ClioKitPackage.Contains('==')) {
     $ClioKitParts = $ClioKitPackage.Split('==', 2)
     $ClioKitSpec = "$($ClioKitParts[0])[science]==$($ClioKitParts[1])"

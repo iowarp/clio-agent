@@ -6,6 +6,40 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6.1] - 2026-11-11
+
+The public stable release of the 0.9.6 line. 0.9.6 was tagged and published
+to PyPI and ghcr but never as a GitHub release; 0.9.6.1 carries everything in
+0.9.6 below plus the following. It ships the CLIO interface from
+iowarp/gact-tui v0.12.1 and clio-kit 2.12.3.
+
+### Added
+
+- Comments on a shared browser page are pinned to the text, element or region
+  they mark, come back after a reload or navigating back, follow the page when
+  its layout shifts, and say so when their mark is gone; comment chips are named
+  by their mark (#2135, #2137, #2138, iowarp/gact-tui#1139, iowarp/gact-tui#1141).
+
+### Fixed
+
+- The shared Browser is person-first again: you can open a page, search or sign
+  in, then ask the agent to use that page (iowarp/gact-tui#1137).
+- Each press of Terminal or Browser in the workbench icon strip opens a new
+  terminal or page, and opening or switching tabs no longer resizes the right
+  pocket (iowarp/gact-tui#1136, iowarp/gact-tui#1138, iowarp/gact-tui#1142).
+- The desktop app no longer shows doubled native scrollbars, and runtime styles
+  blocked by the desktop's content security policy apply again
+  (iowarp/gact-tui#1134, iowarp/gact-tui#1135).
+- Web tools work on Windows inside the sandbox fence, which routes them through
+  a SOCKS proxy (#2136).
+- The Windows desktop's first store no longer reserves oversized data segments
+  (#2134).
+- clio-kit 2.12.3 rebuilds a damaged or half-created MCP server environment
+  instead of failing to start the server, and the NDP tools use the public NDP
+  catalog by default (iowarp/clio-kit#401, iowarp/clio-kit#403,
+  iowarp/clio-kit#407).
+- The clio.iowarp.ai install scripts deploy again (#2131).
+
 ## [0.9.6] - 2026-11-11
 
 The stable release of the 0.9.6 line. It includes every change in the
