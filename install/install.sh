@@ -1157,7 +1157,6 @@ WEB_JOB=""
 WEB_TAG=""
 web_url() { printf 'https://github.com/iowarp/clio-agent/releases/download/%s/clio-web-%s.zip' "$1" "${1#v}"; }
 start_web_download() {  # TAG
-  command -v unzip >/dev/null 2>&1 || return 0
   WEB_TAG="$1"
   curl -fsSL --retry 3 "$(web_url "$1")" -o "$DESKTOP_SCRATCH/clio-web.zip" 2>/dev/null &
   WEB_JOB=$!
@@ -1878,17 +1877,20 @@ if [ "$OPT_SOURCE" = 0 ]; then
   else
     web_fetched=0
   fi
-  if command -v unzip >/dev/null 2>&1 && { [ "$web_fetched" = 1 ] \
-      || curl -fsSL "$(web_url "$tag")" -o "$PREFIX/clio-web.zip" 2>/dev/null; }; then
+  if [ "$web_fetched" = 1 ] || curl -fsSL "$(web_url "$tag")" -o "$PREFIX/clio-web.zip" 2>/dev/null; then
     rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-agent/web"
-    unzip -q -o "$PREFIX/clio-web.zip" -d "$PREFIX/_webtmp"
-    mkdir -p "$PREFIX/clio-agent/web"
-    cp -r "$PREFIX/_webtmp/clio-web-${webver}/." "$PREFIX/clio-agent/web/" 2>/dev/null \
-      || cp -r "$PREFIX/_webtmp/." "$PREFIX/clio-agent/web/"
+    # The environment's Python unpacks it: unzip is not installed everywhere.
+    if "$VENV/bin/python" -I -m zipfile -e "$PREFIX/clio-web.zip" "$PREFIX/_webtmp"; then
+      mkdir -p "$PREFIX/clio-agent/web"
+      cp -r "$PREFIX/_webtmp/clio-web-${webver}/." "$PREFIX/clio-agent/web/" 2>/dev/null \
+        || cp -r "$PREFIX/_webtmp/." "$PREFIX/clio-agent/web/"
+      say "Web UI bundle installed (run: clio --web)"
+    else
+      warn "could not unpack the web UI bundle for $tag — 'clio --web' disabled until reinstalled with it"
+    fi
     rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-web.zip"
-    say "Web UI bundle installed (run: clio --web)"
   else
-    warn "web UI bundle unavailable for $tag — 'clio --web' disabled until reinstalled with it"
+    warn "could not download the web UI bundle for $tag ($(web_url "$tag")) — 'clio --web' disabled until reinstalled with it"
   fi
 fi
 
