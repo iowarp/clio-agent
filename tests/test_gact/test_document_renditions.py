@@ -125,8 +125,10 @@ def test_pdf_preview_is_persisted_reused_and_bound_to_immutable_source(
             f"/v1/workspaces/{workspace_id}/files?include_hidden=true&exclude_service_storage=true"
         ).json()
         preview_paths = [row["path"] for row in listing["entries"] if row["path"].endswith(".pdf")]
-        assert len(preview_paths) == 1
-        assert (root / preview_paths[0]).resolve().is_relative_to(root / "artifacts")
+        # The persisted preview is CLIO document machinery, omitted from the Files listing.
+        assert preview_paths == []
+        persisted = list((root / "artifacts" / "document-previews").rglob("*.pdf"))
+        assert len(persisted) == 1
         assert (
             client.post(endpoint, json={"format": "pdf"}).json()["artifact"]["artifact_id"]
             == pdf_id
@@ -150,7 +152,8 @@ def test_pdf_preview_is_persisted_reused_and_bound_to_immutable_source(
         assert second_preview.status_code == 200, second_preview.text
         assert second_preview.json()["artifact"]["artifact_id"] != pdf_id
     assert seen == [b"original document", b"new document"]
-    assert not list((root / ".tmp" / "clio-documents").iterdir())
+    # Only the CLIO-written search-ignore marker remains in the document scratch.
+    assert [p.name for p in (root / ".tmp" / "clio-documents").iterdir()] == [".ignore"]
 
 
 def test_unavailable_workspace_scratch_keeps_the_accepted_source_artifact(tmp_path: Path) -> None:

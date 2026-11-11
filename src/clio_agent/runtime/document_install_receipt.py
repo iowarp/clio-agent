@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -24,6 +25,24 @@ from clio_agent.runtime.document_runtime import STACK_ROOT, _fingerprint, office
 from clio_agent.runtime.document_stack.process import office_profile_template, scratch_root
 
 logger = logging.getLogger(__name__)
+
+# PATH reaches an installation only through the executables it resolves. The
+# desktop and its installer start the check with different PATH spellings for
+# the same tools; that alone must not force a full re-verification.
+_PATH_TOOLS = (
+    "node",
+    "soffice",
+    "libreoffice",
+    "pandoc",
+    "pdftoppm",
+    "pdftotext",
+    "tesseract",
+    "typst",
+)
+
+
+def _resolved_tools() -> dict[str, str | None]:
+    return {name: shutil.which(name) for name in _PATH_TOOLS}
 
 
 def _path_identity(path: Path) -> str:
@@ -132,8 +151,9 @@ def _identity(workspace: Path, result: dict[str, Any]) -> str:
                 else value
             )
             for name, value in os.environ.items()
-            if name in {"PATH", "GACT_BUNDLED_RUNTIME_DIR"} or name.startswith("CLIO_DOCUMENT_")
+            if name == "GACT_BUNDLED_RUNTIME_DIR" or name.startswith("CLIO_DOCUMENT_")
         },
+        "path_tools": _resolved_tools(),
         "inventory": result,
         "files": [(str(root), _tree_metadata(root)) for root in _roots(result)],
     }

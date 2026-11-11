@@ -25,6 +25,20 @@ class HomeDirectoryUnavailable(RuntimeError):
     """Native roots cannot be resolved and no explicit role root was configured."""
 
 
+def _plain_windows_path(raw: str) -> str:
+    """Drop the ``\\\\?\\`` verbatim prefix a Windows caller may pass.
+
+    Desktop derives its data root from Tauri's verbatim resource directory. The
+    same folder spelled two ways reads as two homes (a relocation on every start),
+    and the clio-core client crashes with an access violation on the verbatim form.
+    """
+    if raw.startswith(("\\\\?\\UNC\\", "//?/UNC/")):
+        return "\\\\" + raw[8:]
+    if raw.startswith(("\\\\?\\", "//?/")) and raw[5:6] == ":":
+        return raw[4:]
+    return raw
+
+
 def resolve_root(
     role: Role, *, home: str | PurePath, env: Mapping[str, str], platform: Platform
 ) -> PurePath | None:
@@ -40,7 +54,7 @@ def resolve_root(
         raw = env.get(name, "").strip()
         if not raw:
             return None
-        path = pure(raw)
+        path = pure(_plain_windows_path(raw) if platform == "windows" else raw)
         if not path.is_absolute():
             raise ValueError(f"{name} must be an absolute path")
         return path
