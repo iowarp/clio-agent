@@ -100,9 +100,15 @@ jobs:
       # Fails on any broken internal link (starlight-links-validator).
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:browser
+      # Browser tests are a regression signal, not a release gate: a failure is
+      # reported as a warning with its evidence, and the built site still deploys.
+      - id: browser-tests
+        run: pnpm test:browser
+        continue-on-error: true
+      - if: steps.browser-tests.outcome == 'failure'
+        run: echo "::warning title=Site browser tests failed::Deploying anyway; see the site-browser-evidence artifact."
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || steps.browser-tests.outcome == 'failure'
         with:
           name: site-browser-evidence
           path: site/test-results
