@@ -507,7 +507,7 @@ def _verify_office(
                     cwd=cwd,
                     timeout=120 if seed else 30,
                 )
-                if seed:
+                if profile_templates is not None:
                     _publish_profile(work, profile_templates / key)
                 return
             except DocumentError as error:
