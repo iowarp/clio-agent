@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.runtime.document_stack import office
+from clio_agent.runtime.document_stack import office, office_fetch
 from clio_agent.runtime.document_stack.process import DocumentError
 
 
@@ -42,10 +42,12 @@ def test_every_linux_build_has_a_pinned_userland(
 def test_bad_download_checksum_never_extracts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(office.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(b"corrupt"))
-    monkeypatch.setattr(office.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        office_fetch.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(b"corrupt")
+    )
+    monkeypatch.setattr(office_fetch.time, "sleep", lambda seconds: None)
     with pytest.raises(DocumentError, match="pinned SHA-256"):
-        office._download("https://example.invalid/official", tmp_path / "archive", "0" * 64)
+        office_fetch.download("https://example.invalid/official", tmp_path / "archive", "0" * 64)
 
 
 def test_windows_renderer_is_extracted_to_private_image(
