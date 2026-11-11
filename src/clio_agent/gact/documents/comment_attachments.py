@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -274,8 +275,45 @@ def _transcript_summary(attachment: CommentAttachment) -> str:
     title = attachment.title or _KIND_WORDS[attachment.kind]
     lines = [f"Comments on {title}:"]
     for mark in attachment.marks:
-        lines.append(f"{mark.label}: {mark.comment.strip() or '(no comment)'}")
+        lines.append(f"{_mark_chip(mark)}: {mark.comment.strip() or '(no comment)'}")
     return "\n".join(lines)
+
+
+_ALT = re.compile(r"""\balt\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
+
+
+def _short(text: str, limit: int = 60) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
+
+
+def _mark_chip(mark: AttachmentMark) -> str:
+    """What a mark's picture shows in the transcript: its label, its kind and its anchor."""
+
+    anchor = mark.anchor
+    mode = mark_mode(anchor)
+    if mode == "element":
+        if anchor.tag.lower() == "img":
+            alt = _ALT.search(anchor.html_excerpt)
+            name = (alt.group(1) or alt.group(2)) if alt else ""
+            name = name or anchor.text_excerpt or anchor.selector
+            return f"{mark.label} image “{_short(name)}”" if name else f"{mark.label} image"
+        target = f"<{anchor.tag}>" if anchor.tag else "element"
+        if anchor.text_excerpt:
+            return f"{mark.label} {target} “{_short(anchor.text_excerpt)}”"
+        return f"{mark.label} {target} {anchor.selector}".rstrip()
+    if mode == "region":
+        return f"{mark.label} region"
+    return f"{mark.label} text “{_short(anchor.exact)}”" if anchor.exact else mark.label
+
+
+def _image_chip(caption: str, marks: dict[str, AttachmentMark]) -> str:
+    """A mark's crop is named by its mark; the overview keeps its caption."""
+
+    label = caption.split(" ", 1)[0]
+    if label in marks and caption.startswith(f"{label} at "):
+        return _mark_chip(marks[label])
+    return caption[:1].upper() + caption[1:]
 
 
 def expand_comment_sessions(
@@ -314,6 +352,7 @@ def expand_comment_sessions(
                 metadata={"comment_summary": True},
             )
         )
+        marks = {mark.label: mark for mark in attachment.marks}
         for index, (caption, png) in enumerate(rendered.images, start=1):
             out.append(
                 Part(
@@ -321,7 +360,11 @@ def expand_comment_sessions(
                     type="image",
                     data=base64.b64encode(png).decode("ascii"),
                     media_type="image/png",
-                    metadata={"comment_session": part.id, "caption": caption},
+                    metadata={
+                        "comment_session": part.id,
+                        "caption": caption,
+                        "label": _image_chip(caption, marks),
+                    },
                 )
             )
     return out, "\n\n".join(texts)
