@@ -240,7 +240,8 @@ fi
 # defaults now, before the payloads holding them are removed.
 CORE_HOME="$HOME/.clio"
 CORE_SEEDS=()
-core_seed_dirs=("$CLIO_PREFIX/clio-agent/.venv/lib")
+# A plain install from a release's prebuilt agent keeps its Python under .venv/python.
+core_seed_dirs=("$CLIO_PREFIX/clio-agent/.venv/lib" "$CLIO_PREFIX/clio-agent/.venv/python/lib")
 for app in ${DESKTOP_APPS[@]+"${DESKTOP_APPS[@]}"}; do
   core_seed_dirs+=("$app/Contents/Resources/gact-runtime/python/lib")
 done

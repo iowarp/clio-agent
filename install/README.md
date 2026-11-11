@@ -122,6 +122,15 @@ $u = 'https://clio.iowarp.ai/install.ps1'
   Python that release declares in `.python-version` (3.13 for releases before it).
   The release list is GitHub Releases: the default takes the highest stable version,
   `--dev` the most recently published release.
+  On Apple Silicon macOS 15 or later, a release that publishes its bundled desktop
+  (`SHA256SUMS.aarch64-apple-darwin.bundled.txt` naming the
+  `CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar` or `.app.tar.gz`) installs that
+  app's signed agent runtime instead: only its `gact-runtime` folder is unpacked, as it
+  downloads, verified against the checksum and the release version, and becomes
+  `.venv`. Without those assets, or if the runtime cannot be verified, the install
+  uses PyPI. `CLIO_INSTALL_FROM=pypi` always uses PyPI. With the release's
+  `install-plan.aarch64-apple-darwin.bundled.txt`, LibreOffice and pnpm download at
+  the same time.
 - **Source** uses `uv sync --locked` (a clone) or `uv sync` (your checkout, in place).
   It needs `git` and installs the service without building a frontend. Running a clone
   install again updates that clone to the requested ref and repairs what an
