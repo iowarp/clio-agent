@@ -375,6 +375,10 @@ class TlsFixture:
                 "ec",
                 "-pkeyopt",
                 "ec_paramgen_curve:prime256v1",
+                # LibreSSL (macOS) otherwise writes explicit curve parameters, which
+                # Chromium refuses and which change the SPKI bytes on re-encoding.
+                "-pkeyopt",
+                "ec_param_enc:named_curve",
                 "-nodes",
                 "-days",
                 "30",

@@ -23,6 +23,7 @@ REAL exerciser, because fastmcp servers verifiably DO emit
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 import pytest
@@ -41,6 +42,10 @@ from tests.test_tools.mcp_exerciser import (
     LIST_CHANGED_TOOL_NAME,
     build_exerciser_server,
 )
+
+# The listing cache only stores a launcher it can resolve; a bare "python" is absent on
+# hosts that ship only python3 (stock macOS), so name the interpreter running the tests.
+PYTHON = sys.executable
 
 # --------------------------------------------------------------------------- #
 # The verified library gap, pinned as a regression lock                       #
@@ -174,14 +179,14 @@ def test_invalidate_namespace_drops_only_matching_entries(tmp_path, monkeypatch)
     from mcp.types import Tool
 
     tool = Tool(name="t", description="", inputSchema={"type": "object"})
-    listing_cache.store_listing("ns-a", "python", ("a.py",), [tool])
-    listing_cache.store_listing("ns-b", "python", ("b.py",), [tool])
+    listing_cache.store_listing("ns-a", PYTHON, ("a.py",), [tool])
+    listing_cache.store_listing("ns-b", PYTHON, ("b.py",), [tool])
 
     dropped = listing_cache.invalidate_namespace("ns-a")
 
     assert dropped is True
-    assert listing_cache.load_listing("ns-a", "python", ("a.py",)) is None
-    assert listing_cache.load_listing("ns-b", "python", ("b.py",)) is not None
+    assert listing_cache.load_listing("ns-a", PYTHON, ("a.py",)) is None
+    assert listing_cache.load_listing("ns-b", PYTHON, ("b.py",)) is not None
 
 
 def test_invalidate_namespace_is_false_when_nothing_cached(tmp_path, monkeypatch) -> None:
@@ -210,8 +215,8 @@ async def test_make_mcp_client_wires_list_changed_invalidation_when_server_id_kn
     from clio_agent.tools.mcp_runtime import make_mcp_client
 
     tool = Tool(name="t", description="", inputSchema={"type": "object"})
-    listing_cache.store_listing(EXERCISER_NAMESPACE, "python", ("a.py",), [tool])
-    listing_cache.store_listing("other-namespace", "python", ("b.py",), [tool])
+    listing_cache.store_listing(EXERCISER_NAMESPACE, PYTHON, ("a.py",), [tool])
+    listing_cache.store_listing("other-namespace", PYTHON, ("b.py",), [tool])
 
     server = build_exerciser_server()
     client = make_mcp_client(server, server_id=EXERCISER_NAMESPACE)
@@ -219,11 +224,11 @@ async def test_make_mcp_client_wires_list_changed_invalidation_when_server_id_kn
         await client.call_tool(LIST_CHANGED_TOOL_NAME, {})
         await asyncio.sleep(0.2)  # unsolicited notification delivery is async
 
-    assert listing_cache.load_listing(EXERCISER_NAMESPACE, "python", ("a.py",)) is None, (
+    assert listing_cache.load_listing(EXERCISER_NAMESPACE, PYTHON, ("a.py",)) is None, (
         "a real make_mcp_client(server_id=...)-built client must invalidate "
         "its OWN namespace's listing on a live list_changed notification"
     )
-    assert listing_cache.load_listing("other-namespace", "python", ("b.py",)) is not None, (
+    assert listing_cache.load_listing("other-namespace", PYTHON, ("b.py",)) is not None, (
         "an UNRELATED namespace's cached listing must survive untouched"
     )
 
@@ -240,7 +245,7 @@ async def test_make_mcp_client_composes_list_changed_with_a_caller_supplied_mess
     from clio_agent.tools.mcp_runtime import MCPClientHandlers, make_mcp_client
 
     tool = Tool(name="t", description="", inputSchema={"type": "object"})
-    listing_cache.store_listing(EXERCISER_NAMESPACE, "python", ("a.py",), [tool])
+    listing_cache.store_listing(EXERCISER_NAMESPACE, PYTHON, ("a.py",), [tool])
 
     received: list[Any] = []
 
@@ -257,7 +262,7 @@ async def test_make_mcp_client_composes_list_changed_with_a_caller_supplied_mess
         await client.call_tool(LIST_CHANGED_TOOL_NAME, {})
         await asyncio.sleep(0.2)
 
-    assert listing_cache.load_listing(EXERCISER_NAMESPACE, "python", ("a.py",)) is None
+    assert listing_cache.load_listing(EXERCISER_NAMESPACE, PYTHON, ("a.py",)) is None
     assert received, "the caller-supplied message hook must still receive the notification"
 
 
