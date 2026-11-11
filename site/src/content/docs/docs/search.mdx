@@ -14,18 +14,18 @@ import assistant from '../../../assets/captures/docs-search-assistant.png';
 <PreviewGuide features="Matching-passage navigation and the CLIO Search assistant" />
 
 Open **Search** in the sidebar or press **Ctrl+K** (**⌘K** on macOS).
-Type a name or paste a sentence from a conversation. Matching text appears in
-blue, and session matches appear before files.
+Type a name or paste a sentence from a conversation. Matching text is
+highlighted, and session matches appear before files.
 
 <Capture client:visible priority image={await captureImage(results)}
-  alt="Search for plant showing session titles first, a matching message excerpt, and a workspace file, with blue highlights"
+  alt="Search for rebalancing showing the conversation title first, matching message excerpts, and a workspace file, with the matched words highlighted"
   caption="Session names, message passages and file paths show where your words matched. The message result also names its workspace and offers Open matching passage." />
 
 ## Return to a matching passage
 
 Paste the sentence you remember. **Matching messages** shows the relevant
 passage rather than the beginning of a long answer. Choose the result to open
-that conversation at the matching message and highlight its text in blue.
+that conversation at the matching message and highlight its text.
 CLIO reveals the containing segment when it was collapsed.
 
 <Capture client:visible image={await captureImage(phrase)}
@@ -33,8 +33,8 @@ CLIO reveals the containing segment when it was collapsed.
   caption="The excerpt is centered on the pasted phrase, including when the stored answer uses Markdown emphasis. Opening it carries the message, part and search text to the conversation." />
 
 <Capture client:visible image={await captureImage(destination)}
-  alt="The matching sentence Share a plant with the reviewer highlighted in blue inside the original conversation, above its composer"
-  caption="After opening the result, the conversation scrolls to the matching sentence. The blue highlight stays on the source text so you can read the surrounding answer." />
+  alt="The matching phrase docked bikes per station highlighted inside the original conversation, above its composer"
+  caption="After opening the result, the conversation scrolls to the matching sentence. The highlight stays on the source text so you can read the surrounding answer." />
 
 Ordinary search looks through retained messages and session names on the
 connected CLIO service. **Workspace files** matches paths in the workspace you
@@ -43,7 +43,7 @@ finding work across the service's other registered workspaces.
 
 ## Ask CLIO Search
 
-1. Open Search and press **Tab**, or choose **Ask CLIO Search**.
+1. Open Search and press **Tab**, or choose **Ask Agent**.
 2. Enter an ordinary question, such as “Where did we discuss the reviewer
    handoff?” Press **Enter** to submit it.
 3. Read the answer and open its source citations. A message citation returns to

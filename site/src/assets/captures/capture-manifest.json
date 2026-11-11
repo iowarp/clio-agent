@@ -1,27 +1,27 @@
 {
-  "captured": "2026-10-10",
+  "captured": "2026-11-11",
   "theme": "light",
   "scale": 1,
-  "agent_base": "99655c3ed31a90efbaaa3873cd8d92e0b1b70eb4",
-  "ui_revision": "d539ce4cf8bf6f2e9665fe1d21adfdeee41c93ce",
+  "agent_base": "409d8280fbc9c268f9a2b71b74c4b8ee36da2527",
+  "ui_revision": "96dbbd2e1d9ac819b480c94217b0fa64606f44eb",
   "synthetic_only": true,
   "model_run": false,
   "captures": [
     {
       "file": "current-dashboard.png",
-      "sha256": "7dfc940be1255574a2507986f4cbd71069ba1bd307225a0a3ad0bf630bb624a9"
+      "sha256": "5fc3cffbad7b1e3ca004b777392c727ae4b411cc84eb17c2f18da8439f94385a"
     },
     {
       "file": "current-data.png",
-      "sha256": "be4cc9ecb0851507c93e6dd61ae42fc4739633057694191069d24831cd6a9bcd"
+      "sha256": "fb72569a5c382de416862a17ce73bef08b87326829d3bd0185a3ef703808671b"
     },
     {
       "file": "current-lineage.png",
-      "sha256": "a9da395161e6755fec8891a33ba2f16603e15e95b482c64c579fd2b9a1d32a4d"
+      "sha256": "32c6bf39bf58c755f2eb82fe9c0aff818eb73ee7aff8ff79e4029333baebf4e2"
     },
     {
       "file": "current-report.png",
-      "sha256": "a0b4109cbfe2fef59c85a44ecb30f4a16b869614dfa16d0047683ec5f29cf066"
+      "sha256": "53327997fb4ebb7306ffe0d82fe172a3d80ce02d7374f72d66072dd22e814943"
     }
   ],
   "observability_review": "Test-only fictional fixture: four child agents and twelve tool calls, not a model run",

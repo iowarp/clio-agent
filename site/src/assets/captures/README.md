@@ -12,9 +12,11 @@ documented in `site/video/edits/docs-20261010/README.md` and archived under
 
 ## Report overview and lineage
 
-These light-mode browser captures show the development UI on 10 October 2026,
-at one device pixel per CSS pixel. They are original product screenshots,
-without painted controls, composited responses or private research data.
+These light-mode browser captures show the release UI (gact-tui develop
+`96dbbd2e1`) on 11 November 2026, at one device pixel per CSS pixel, with the
+artifact canvas maximized. They are original product screenshots, without painted
+controls, composited responses or private research data. The 10 October set showed
+the earlier Observability canvas; the seed data and relationships are unchanged.
 
 The fictional bike-station walkthrough is authored through the real
 `create_artifact`, transform-recording and dashboard-publication tools. It is
@@ -25,12 +27,12 @@ relationships appear in Lineage.
 | File | Viewport | What to inspect |
 | --- | --- | --- |
 | `current-dashboard.png` | 1440 x 1280 | Complete charts, map, legends and five-station table. |
-| `current-data.png` | 1120 x 820 | All six registered files, including the source table. |
-| `current-lineage.png` | 1440 x 560 | All nine nodes and ten relationships, with no clipped branch. |
+| `current-data.png` | 1120 x 420 | All six registered files in Artifacts, including the source table. |
+| `current-lineage.png` | 1120 x 420 | All nine nodes and ten relationships, with no clipped branch. |
 | `current-report.png` | 1120 x 520 | The finding, its limits, and the three evidence tables. |
 
 `capture-manifest.json` records source revisions and SHA-256 checksums. The
-immutable originals and browser review screenshots are archived under
+10 October originals and browser review screenshots are archived under
 `D:/Libraries/Videos/clio_recordings/2026-10-10-website-showcase/`. Astro creates
 responsive WebP derivatives; clicking a homepage image exposes its full-size
 version.
