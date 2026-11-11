@@ -103,13 +103,13 @@ def test_install_and_doctor_gc_skip_while_a_server_is_alive(
 
     root = _store(tmp_path)
     monkeypatch.setenv("CLIO_PLUGIN_STORE", str(root))
-    monkeypatch.setattr(disk_gc, "live_peer_clio_processes", lambda: ["gact 4242"])
+    monkeypatch.setattr(disk_gc, "live_peer_clio_processes", lambda **_: ["gact 4242"])
     assert document_install.collect_snapshots_after_install() == {
         "status": "skipped",
         "reason": "marketplace_snapshots_skipped_live",
     }
     assert (root / "snapshots" / "market" / "old").is_dir()
-    monkeypatch.setattr(disk_gc, "live_peer_clio_processes", lambda: [])
+    monkeypatch.setattr(disk_gc, "live_peer_clio_processes", lambda **_: [])
     outcome = document_install.collect_snapshots_after_install()
     assert outcome["status"] == "collected" and outcome["removed"] == 2
     row = disk_gc._collect_marketplace_snapshots(now=time.time(), dry_run=True)
