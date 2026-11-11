@@ -107,8 +107,11 @@ class HealthResponse(BaseModel):
     boot: Optional[dict[str, Any]] = None
     # ``starting`` until the startup row is up (task runtime, marketplace, agent), then
     # ``ready``; ``starting`` lists what is still coming up (gact/boot_timing.readiness).
-    readiness: Optional[Literal["starting", "ready"]] = None
+    # ``failed`` once the task runtime's start failed: it will not come up until CLIO
+    # restarts, and ``failure`` says why (``reason`` token, plain ``message``).
+    readiness: Optional[Literal["starting", "ready", "failed"]] = None
     starting: Optional[list[str]] = None
+    failure: Optional[dict[str, str]] = None
 
 
 class BackendInfo(BaseModel):
