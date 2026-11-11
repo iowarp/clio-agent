@@ -85,6 +85,8 @@ MAX_DOWNLOAD = 600 * 1024 * 1024
 # Bundled extensions a headless converter never loads: the Calc NLP solver and the
 # MediaWiki publisher (about 3,000 files together).
 UNREAD_EXTENSIONS = frozenset({"nlpsolver", "wiki-publisher"})
+# A laid-out image's first-start profile, kept beside the image (build_profile_starter).
+PROFILE_STARTER = "office-profile.zip"
 logger = logging.getLogger(__name__)
 
 
@@ -403,8 +405,47 @@ def _publish_profile(work: Path, template: Path) -> None:
             time.sleep(0.1)
 
 
+def _start_profile(profile: Path, starter: Path | None) -> None:
+    """Begin from the profile laid out with this Office image, else from an empty one."""
+    if starter is not None:
+        try:
+            with zipfile.ZipFile(starter) as archive:
+                archive.extractall(profile)
+            return
+        except (OSError, zipfile.BadZipFile) as error:
+            logger.warning("reason=office_profile_starter_unusable: %s", error)
+            shutil.rmtree(profile, ignore_errors=True)
+    new_office_profile(profile)
+
+
+def build_profile_starter(executable_path: Path, archive: Path) -> int:
+    """Archive a first-start profile for an Office image laid out at release time.
+
+    Building the profile's extension registry takes a fresh LibreOffice several
+    seconds; prepare starts its verifying conversion from this archive instead.
+    The profile holds no paths or device caches, so it relocates with the image.
+    """
+    with tempfile.TemporaryDirectory(prefix="lo-starter-") as temporary:
+        templates = Path(temporary)
+        _verify_office(executable_path, cwd=executable_path.parent, profile_templates=templates)
+        profile = office_profile_template(executable_path, templates)
+        if profile is None:
+            raise DocumentError("LibreOffice did not leave a seeded profile")
+        partial = archive.with_name(archive.name + ".part")
+        members = sorted(path for path in (profile / "user").rglob("*") if path.is_file())
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for path in members:
+                bundle.write(path, path.relative_to(profile).as_posix())
+        partial.replace(archive)
+        return len(members)
+
+
 def _verify_office(
-    executable_path: Path, *, cwd: Path, profile_templates: Path | None = None
+    executable_path: Path,
+    *,
+    cwd: Path,
+    profile_templates: Path | None = None,
+    profile_starter: Path | None = None,
 ) -> None:
     """Probe without joining another Office instance or touching the user's profile.
 
@@ -413,6 +454,7 @@ def _verify_office(
     the conversion libraries during preparation and keeps its first-start profile,
     which every later conversion copies instead of rebuilding. A build that already
     has its seeded profile has converted successfully and is not probed again.
+    ``profile_starter`` is the profile archive laid out with this Office image.
     """
     # A real Windows first launch can exhaust the native probe deadline while
     # the same binary verifies promptly after its timed-out process tree retires.
@@ -445,7 +487,7 @@ def _verify_office(
                 if seed:
                     # The kept profile must stay readable to confined document workers.
                     inherit_parent_access(work)
-                    new_office_profile(profile)
+                    _start_profile(profile, profile_starter)
                     _seed_document(work / "seed.docx")
                     arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
                     arguments += ["--outdir", str(work), str(work / "seed.docx")]
@@ -513,7 +555,12 @@ def _publish_image(image: Path, root: Path) -> None:
             time.sleep(0.1)
 
 
-def ensure_office(root: Path, *, profile_templates: Path | None = None) -> str:
+def ensure_office(
+    root: Path,
+    *,
+    profile_templates: Path | None = None,
+    profile_starter: Path | None = None,
+) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
     The tree includes LibreOffice's license/notices. On Linux, Office runs on its
@@ -532,7 +579,12 @@ def ensure_office(root: Path, *, profile_templates: Path | None = None) -> str:
                         "Private LibreOffice launcher disappeared during preparation"
                     )
             inherit_parent_access(root)
-            _verify_office(existing, cwd=root, profile_templates=profile_templates)
+            _verify_office(
+                existing,
+                cwd=root,
+                profile_templates=profile_templates,
+                profile_starter=profile_starter,
+            )
             return str(existing)
         url, name, checksum = asset()
         downloads = root.parent / "downloads"

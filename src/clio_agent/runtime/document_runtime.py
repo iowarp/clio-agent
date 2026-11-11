@@ -719,6 +719,17 @@ def office_profile_templates() -> Path:
     return paths.user_cache_dir() / "document-office-profiles"
 
 
+def office_profile_starter(office_root: Path) -> Path | None:
+    """Return the first-start profile laid out beside the bundled renderer, if any."""
+    from clio_agent.runtime.document_stack.office import PROFILE_STARTER
+
+    bundled = bundled_root()
+    if bundled is None or office_root != bundled / "documents" / "office":
+        return None
+    starter = office_root.parent / PROFILE_STARTER
+    return starter if starter.is_file() else None
+
+
 def prepare_office_runtime() -> str:
     """Use an installed renderer or provision a private verified renderer automatically."""
     from clio_agent.runtime.document_stack.office import ensure_office, seed_profile
@@ -730,7 +741,11 @@ def prepare_office_runtime() -> str:
         seed_profile(Path(native), office_profile_templates())
         return native
     # A discovered managed executable still needs its host-side access repair.
-    return ensure_office(managed_root, profile_templates=office_profile_templates())
+    return ensure_office(
+        managed_root,
+        profile_templates=office_profile_templates(),
+        profile_starter=office_profile_starter(managed_root),
+    )
 
 
 def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) -> dict[str, Any]:

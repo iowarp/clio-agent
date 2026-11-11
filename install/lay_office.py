@@ -4,7 +4,9 @@ The MSI is a CAB archive that Windows' CAB API expands one file at a time, about
 415 files/s under Defender. Expanded once at release time, the same tree arrives in
 the runtime pack, which installs it with parallel tar writers and authenticates it
 with the pack's own hash. ``document_runtime`` uses ``documents\\office`` when it
-holds an executable, so prepare only verifies it.
+holds an executable, so prepare only verifies it. Its first-start profile is built
+here too, as ``documents\\office-profile.zip``, so prepare's verifying conversion
+does not rebuild it.
 
 Run with the runtime's own Python on Windows::
 
@@ -54,6 +56,10 @@ def main() -> int:
         shutil.move(str(tree), target)
     files = sum(1 for item in target.rglob("*") if item.is_file())
     print(f"[lay-office] LibreOffice {office.VERSION}: {files} files in {target}", flush=True)
+    executable = office.executable(target)
+    starter = target.parent / office.PROFILE_STARTER
+    members = office.build_profile_starter(Path(executable), starter)
+    print(f"[lay-office] first-start profile: {members} files in {starter}", flush=True)
     return 0
 
 

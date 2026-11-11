@@ -19,11 +19,15 @@ class DocumentError(RuntimeError):
 
 
 # LibreOffice reads user settings from <UserInstallation>/user, not the profile root.
+# OpenCL only accelerates interactive Calc; its per-machine device test costs a
+# headless conversion several seconds and would tie a seeded profile to one GPU.
 OFFICE_PROFILE_SETTINGS = (
     '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
     '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
-    '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
-    "</item></oor:items>"
+    '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>'
+    '<item oor:path="/org.openoffice.Office.Common/Misc">'
+    '<prop oor:name="UseOpenCL" oor:op="fuse"><value>false</value></prop></item>'
+    "</oor:items>"
 )
 
 
