@@ -59,9 +59,7 @@ def capability() -> str:
     return str(_constants(OFFICE, "INSTALLER_PLAN_CAPABILITY")["INSTALLER_PLAN_CAPABILITY"])
 
 
-def entries(
-    target: str, pack: dict[str, object] | None = None
-) -> list[tuple[str, str, str, str]]:
+def entries(target: str, pack: dict[str, object] | None = None) -> list[tuple[str, str, str, str]]:
     """``(kind, sha256, name, url)`` for each file the target's install fetches.
 
     ``pack`` is a setup's ``gact-runtime.pack.json`` when the setup does not carry its

@@ -86,7 +86,7 @@ def test_explicit_windows_command_line_reaches_createprocess_without_a_shell(
         observed.update(args=args, **kwargs)
         return Child()
 
-    monkeypatch.setattr(process, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(process, "os", SimpleNamespace(name="nt", environ={}))
     monkeypatch.setattr(process.subprocess, "Popen", start)
     command_line = 'msiexec.exe /a "renderer with spaces.msi" /qn TARGETDIR="private image"'
     assert (
@@ -359,7 +359,7 @@ def test_conversion_profile_uses_allowed_temp_instead_of_nested_artifact_path(
         assert profile.is_relative_to(temp.resolve())
         assert not profile.is_relative_to(output)
         assert f"-env:UserInstallation={profile.as_uri()}" in command
-        assert "<value>3</value>" in (profile / "registrymodifications.xcu").read_text()
+        assert "<value>3</value>" in (profile / "user" / "registrymodifications.xcu").read_text()
         assert cwd == output
         (output / "source.pdf").write_bytes(b"converted output")
 
