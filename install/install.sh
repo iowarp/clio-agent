@@ -138,9 +138,6 @@ DESKTOP_APP_FILE=""
 DESKTOP_PLAN_BYTES=0
 # The plan's app waits for a download in progress, so preparing need not wait for them.
 DESKTOP_PLAN_WAITS=0
-# The background signature check of the app just moved in, and the app it replaced.
-DESKTOP_SIGNCHECK=""
-DESKTOP_BACKUP=""
 STEP_NAME=""
 STEP_START=""
 STEP_TIMES=""
@@ -188,16 +185,10 @@ finish_run() {
 desktop_cleanup() {
   local code=$? pid
   # A job is a subshell; its curl would outlive it and keep writing into the scratch.
-  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS $DESKTOP_SIGNCHECK; do
+  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
-  # Stopped before its signature was confirmed: the app does not stay installed.
-  if [ -n "$DESKTOP_SIGNCHECK" ]; then
-    rm -rf "$DESKTOP_DEST/CLIO Desktop.app"
-    [ -z "$DESKTOP_BACKUP" ] || mv "$DESKTOP_BACKUP" "$DESKTOP_DEST/CLIO Desktop.app" || true
-    warn "stopped before the app's signature was confirmed; the new app was removed"
-  fi
   if [ -n "$DESKTOP_SCRATCH" ]; then
     [ ! -d "$DESKTOP_SCRATCH/mount" ] || hdiutil detach "$DESKTOP_SCRATCH/mount" -quiet 2>/dev/null || true
     rm -rf "$DESKTOP_SCRATCH"
@@ -519,8 +510,8 @@ install_desktop() {
   fi
   step install
   case "$asset" in
-    *.aar|*.tar.gz) DESKTOP_DEFER_SIGNATURE=1 mac_install_staged ;;
-    *.dmg) DESKTOP_DEFER_SIGNATURE=1 install_desktop_mac "$DESKTOP_APP_FILE" ;;
+    *.aar|*.tar.gz) mac_install_staged ;;
+    *.dmg) install_desktop_mac "$DESKTOP_APP_FILE" ;;
     *) install_desktop_linux "$DESKTOP_APP_FILE" ;;
   esac
   step prepare
@@ -528,7 +519,6 @@ install_desktop() {
     Darwin) prepare_desktop "$tag" "$DESKTOP_DEST/CLIO Desktop.app/Contents/MacOS/clio-desktop" "$DESKTOP_SCRATCH/downloads" ;;
     Linux) prepare_desktop "$tag" /usr/bin/clio-desktop "$DESKTOP_SCRATCH/downloads" ;;
   esac
-  mac_signature_settle
   finish_downloads
   finish_run true
 }
@@ -547,17 +537,19 @@ desktop_prepares() {
 # holds the release plan's files fetched with the app; the app uses those whose SHA-256
 # matches its own pins instead of downloading them again.
 # An empty tag is a current test build, which can.
+# No bytecode is written while preparing: releases up to 0.9.5.1 compile .pyc files into
+# the signed bundle (#1979), which breaks the signature the install just checked.
 prepare_desktop() {
   local tag="$1" desktop="$2" downloads="${3:-}" out=1
   [ -z "$tag" ] || desktop_prepares "$tag" || return 0
   [ -x "$desktop" ] || { say "warning: $desktop not found; the app prepares itself on first launch"; return 0; }
   [ "${PROGRESS_JSON:-0}" = 0 ] || out=2
   say "Preparing the desktop's agent and its tools"
-  local run=("$desktop" --prepare-runtime)
+  local run=(env PYTHONDONTWRITEBYTECODE=1 "$desktop" --prepare-runtime)
   if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-    run=(sudo -u "$SUDO_USER" -H "$desktop" --prepare-runtime)
+    run=(sudo -u "$SUDO_USER" -H "${run[@]}")
   elif [ -n "$downloads" ]; then
-    run=(env "CLIO_INSTALL_DOWNLOADS=$downloads" "$desktop" --prepare-runtime)
+    run=(env PYTHONDONTWRITEBYTECODE=1 "CLIO_INSTALL_DOWNLOADS=$downloads" "$desktop" --prepare-runtime)
   fi
   if "${run[@]}" >&"$out"; then
     say "The desktop is ready to open."
@@ -699,17 +691,16 @@ mac_stream() {
   die "could not download or unpack $url; nothing installed"
 }
 
-# Check the staged app's signature once, then swap it in, keeping the previous app. With
-# DESKTOP_DEFER_SIGNATURE=1 the check runs while the app prepares (its archive already
-# matched the release checksum) and mac_signature_settle removes the app if it fails.
+# Check the staged app's signature once, then swap it in, keeping the previous app. The
+# check finishes before anything runs from the bundle: preparing runs the app, and a
+# release whose runtime writes into its own bundle (#1979) would fail a check still
+# reading it, which then removed a working app.
 mac_install_staged() {
   local app="$DESKTOP_STAGING/CLIO Desktop.app" backup=""
   [ -d "$app" ] || die "the download does not contain CLIO Desktop.app; nothing installed"
-  if [ "${DESKTOP_DEFER_SIGNATURE:-0}" != 1 ]; then
-    say "Checking the app's signature..."
-    codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
-    say "Signature valid."
-  fi
+  say "Checking the app's signature..."
+  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
+  say "Signature valid."
   if [ -e "$DESKTOP_DEST/CLIO Desktop.app" ]; then
     backup="$DESKTOP_DEST/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
     mv "$DESKTOP_DEST/CLIO Desktop.app" "$backup"
@@ -720,35 +711,10 @@ mac_install_staged() {
   fi
   rm -rf "$DESKTOP_STAGING"
   DESKTOP_STAGING=""
-  DESKTOP_BACKUP="$backup"
-  if [ "${DESKTOP_DEFER_SIGNATURE:-0}" = 1 ]; then
-    say "Checking the app's signature while it prepares..."
-    codesign --verify --deep --strict "$DESKTOP_DEST/CLIO Desktop.app" \
-      > "$DESKTOP_SCRATCH/signature.log" 2>&1 &
-    DESKTOP_SIGNCHECK=$!
-  fi
   say "Installed: $DESKTOP_DEST/CLIO Desktop.app"
   [ -z "$backup" ] || say "Previous app kept: $backup"
   # curl does not quarantine what it downloads, so Gatekeeper does not prompt for this copy.
   say "Open it from $DESKTOP_DEST in Finder, or run: open \"$DESKTOP_DEST/CLIO Desktop.app\""
-}
-
-# The deferred signature check's verdict: a failure removes the new app and puts the
-# previous one back.
-mac_signature_settle() {
-  local pid="$DESKTOP_SIGNCHECK"
-  [ -n "$pid" ] || return 0
-  DESKTOP_SIGNCHECK=""
-  if wait "$pid"; then
-    say "Signature valid."
-    return 0
-  fi
-  cat "$DESKTOP_SCRATCH/signature.log" >&2 2>/dev/null || true
-  rm -rf "$DESKTOP_DEST/CLIO Desktop.app"
-  if [ -n "$DESKTOP_BACKUP" ] && mv "$DESKTOP_BACKUP" "$DESKTOP_DEST/CLIO Desktop.app"; then
-    die "the app's signature is invalid or absent; it was removed and the previous app restored"
-  fi
-  die "the app's signature is invalid or absent; it was removed"
 }
 
 # install_desktop_mac IMAGE [--noqtn]: copy the app out of a disk image (--noqtn leaves
