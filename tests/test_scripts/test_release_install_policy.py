@@ -248,11 +248,14 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         assert "--launch-path" in script[compile_step:relocation_proof], relative_path
         assert script.index("runtime manifest") < compile_step, relative_path
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
-        assert "within 30 seconds" in script, relative_path
+        # A bounded relocated-boot gate: fixed on POSIX, CLIO_RUNTIME_BOOT_GATE_SECONDS
+        # on loaded Windows builders.
+        assert re.search(r"within (30|\$bootBudget) seconds", script), relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path
         assert "uvx" in script, relative_path
 
     windows_builder = _text("install/build-gact-runtime.ps1")
+    assert "CLIO_RUNTIME_BOOT_GATE_SECONDS" in windows_builder
     assert "codex_cli_bin\\bin\\codex.exe" in windows_builder
     assert "packaged Codex provider executable is missing" in windows_builder
     assert "iowarp_core\\bin" in windows_builder
