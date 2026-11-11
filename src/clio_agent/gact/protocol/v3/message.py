@@ -417,7 +417,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "status": str(part.get("status") or ""),
             **common,
         }
-    if part_type == "image" and metadata.get("comment_session"):
+    if part_type == "image" and "comment_session" in metadata:
         # A comment session's picture: named by its mark and anchor, or by its caption.
         name = str(metadata.get("label") or metadata.get("caption") or "Image")
         return {"id": part_id, "type": "routing", "label": name[:1].upper() + name[1:], **common}

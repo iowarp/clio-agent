@@ -275,7 +275,7 @@ def _transcript_summary(attachment: CommentAttachment) -> str:
     title = attachment.title or _KIND_WORDS[attachment.kind]
     lines = [f"Comments on {title}:"]
     for mark in attachment.marks:
-        lines.append(f"{mark.label}: {mark.comment.strip() or '(no comment)'}")
+        lines.append(f"{_mark_chip(mark)}: {mark.comment.strip() or '(no comment)'}")
     return "\n".join(lines)
 
 
