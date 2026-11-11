@@ -879,7 +879,7 @@ def test_mac_release_human_output_names_each_step_and_its_time(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "unpacking it into" in result.stdout
-    assert "Fetching what the first launch needs at the same time: LibreOffice.dmg" in result.stdout
+    assert "Fetching at the same time: LibreOffice.dmg" in result.stdout
     done = result.stdout.splitlines()[-1]
     for step in ("resolve", "download", "verify", "install", "prepare"):
         assert f"{step} " in done

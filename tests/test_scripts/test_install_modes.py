@@ -308,7 +308,7 @@ def _runtime_archive(tmp_path: Path, version: str) -> tuple[Path, str]:
 
 
 def _install_runtime(
-    tmp_path: Path, archive: Path, sha: str, *, os_name: str = "darwin", **env: str
+    tmp_path: Path, archive: Path, sha: str | None, *, os_name: str = "darwin", **env: str
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     prefix = tmp_path / "prefix"
     scratch = tmp_path / "scratch"
@@ -317,13 +317,14 @@ def _install_runtime(
     (venv / "bin").mkdir(parents=True, exist_ok=True)
     (venv / "bin/old").write_text("the previous environment\n")
     script = (
-        "set -u\n"
+        "set -euo pipefail\n"
         'have() { command -v "$1" >/dev/null 2>&1; }\n'
         'say() { echo "say: $*"; }\n'
         'warn() { echo "warn: $*" >&2; }\n'
         'die() { echo "die: $*" >&2; exit 1; }\n'
         "sw_vers() { echo 15.4; }\n"
-        f'curl() {{ echo "curl $*" >&2; cat {shell_path(archive)!r}; }}\n'
+        f'curl() {{ echo "curl $*" >&2; case "$*" in *SHA256SUMS*) return 22 ;; esac; '
+        f"cat {shell_path(archive)!r}; }}\n"
         f"OS={os_name} ARCH=arm64 REPO_URL=https://example.invalid\n"
         f"PREFIX={shell_path(prefix)!r} VENV={shell_path(venv)!r}\n"
         f"DESKTOP_SCRATCH={shell_path(scratch)!r}\n"
@@ -331,7 +332,8 @@ def _install_runtime(
         "start_release_runtime v1.2.3\n"
         "if finish_release_runtime 1.2.3; then echo RESULT runtime; else echo RESULT pypi; fi\n"
     )
-    (scratch / "checksums").write_text(f"{sha}  {_RUNTIME_ASSET}\n")
+    if sha is not None:
+        (scratch / "checksums").write_text(f"{sha}  {_RUNTIME_ASSET}\n")
     result = subprocess.run(
         [shutil.which("bash") or "bash", "-c", script],
         env={**os.environ, **env},
@@ -367,6 +369,7 @@ def test_a_plain_macos_install_uses_the_releases_prebuilt_runtime(tmp_path: Path
         ("tampered", {}),
         ("other version", {}),
         ("not published", {}),
+        ("no checksums", {}),
         ("pypi requested", {"CLIO_INSTALL_FROM": "pypi"}),
         ("linux", {}),
     ],
@@ -375,19 +378,22 @@ def test_without_a_verified_matching_runtime_the_install_uses_pypi(
     tmp_path: Path, case: str, env: dict[str, str]
 ) -> None:
     archive, sha = _runtime_archive(tmp_path, "9.9.9" if case == "other version" else "1.2.3")
+    published: str | None = sha
     if case == "tampered":
-        sha = "0" * 64
+        published = "0" * 64
     if case == "not published":
-        sha = ""
+        published = ""
+    if case == "no checksums":  # the release publishes no macOS checksums at all
+        published = None
     result, venv = _install_runtime(
-        tmp_path, archive, sha, os_name="linux" if case == "linux" else "darwin", **env
+        tmp_path, archive, published, os_name="linux" if case == "linux" else "darwin", **env
     )
     assert "RESULT pypi" in result.stdout, result.stdout + result.stderr
     assert (venv / "bin/old").is_file()  # the previous environment is untouched
     assert not (tmp_path / "prefix/clio-agent/.venv.incoming").exists()
-    if case in ("pypi requested", "linux"):
-        assert not (tmp_path / "scratch/runtime.log").exists()  # nothing was fetched
-    if case == "not published":
+    if case in ("pypi requested", "linux", "no checksums"):
+        assert not (tmp_path / "scratch/runtime.log").exists()  # no runtime was fetched
+    if case in ("not published", "no checksums"):
         assert "publishes no prebuilt agent" in result.stdout
 
 

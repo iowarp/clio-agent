@@ -1174,7 +1174,8 @@ start_release_runtime() {  # TAG
     # release_install_plan has fetched them when the release publishes them.
     [ -s "$sums" ] || curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
       "$REPO_URL/releases/download/$1/SHA256SUMS.aarch64-apple-darwin.bundled.txt" -o "$sums" 2>/dev/null || true
-    asset="$([ -s "$sums" ] && release_runtime_asset "$sums")"
+    asset=""
+    [ ! -s "$sums" ] || asset="$(release_runtime_asset "$sums")"
     if [ -z "$asset" ]; then
       say "Release $1 publishes no prebuilt agent for macOS: installing it from PyPI"
       return 0
