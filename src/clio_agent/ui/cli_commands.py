@@ -32,4 +32,8 @@ def handle_local_command(arguments: Sequence[str]) -> bool:
         from clio_agent.ui.mcp_cli import run_mcp_cli
 
         raise SystemExit(run_mcp_cli(arguments[1:]))
+    if arguments[0] == "services":
+        from clio_agent.gact.infrastructure.local_services import main as services_main
+
+        raise SystemExit(services_main(arguments[1:]))
     return False
