@@ -104,19 +104,25 @@ def _startup_refusal(app: object, failed: bool) -> JSONResponse:
 
     While starting it says so unambiguously: ``details.readiness`` matches
     ``/v1/health``'s ``readiness``, ``details.starting`` lists what is still coming up,
-    and ``Retry-After`` tells a client when to ask again.
+    and ``Retry-After`` tells a client when to ask again. Once the start failed it says
+    why, in the failure's own plain words (``details.reason`` is its typed reason).
     """
+    from clio_agent.gact import boot_timing  # noqa: PLC0415 - keep the middleware import light
+
     if failed:
+        failure = boot_timing.startup_failure(app) or {
+            "reason": boot_timing.STARTUP_FAILED,
+            "message": "Durable task services are unavailable.",
+        }
         info = ErrorInfo(
             error="task_runtime_unavailable",
-            message="Durable task services are unavailable.",
-            details={"readiness": "failed"},
+            message=failure["message"],
+            details={"readiness": "failed", "reason": failure["reason"]},
             recoverable=True,
         )
         return JSONResponse(
             status_code=503, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
         )
-    from clio_agent.gact import boot_timing  # noqa: PLC0415 - keep the middleware import light
 
     _, pending = boot_timing.readiness(app)
     info = ErrorInfo(

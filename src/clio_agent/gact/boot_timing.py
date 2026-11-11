@@ -179,7 +179,50 @@ def snapshot(app: Any) -> dict[str, Any]:
     return block
 
 
-def readiness(app: Any) -> tuple[Literal["starting", "ready"], list[str]]:
+#: The reason when the task runtime failed without a typed CLIO error.
+STARTUP_FAILED = "task_runtime_startup_failed"
+_STARTUP_FAILED_MESSAGE = (
+    "CLIO could not start its task services, so conversations cannot open. "
+    "Quit CLIO and start it again; if this repeats, the CLIO server log has the cause."
+)
+
+
+def _typed_cause(error: BaseException) -> Any:
+    """The first CLIO error carrying a plain message, searching exception groups."""
+    from clio_agent.errors import ClioError  # noqa: PLC0415 - keep this module light
+
+    if isinstance(error, ClioError):
+        return error
+    if isinstance(error, BaseExceptionGroup):
+        for inner in error.exceptions:
+            found = _typed_cause(inner)
+            if found is not None:
+                return found
+    return None
+
+
+def startup_failure(app: Any) -> dict[str, str] | None:
+    """Why the task runtime will not come up, as ``{"reason", "message"}``; else ``None``.
+
+    The task runtime starts once per process, so a failed start is final until CLIO is
+    restarted. A typed CLIO error (for example ``arc_store_format_old``) keeps its own
+    reason and plain message, which already names the fix.
+    """
+    start = getattr(getattr(app, "state", None), "task_runtime_start", None)
+    if start is None or not start.done():
+        return None
+    if start.cancelled():
+        return {"reason": STARTUP_FAILED, "message": _STARTUP_FAILED_MESSAGE}
+    error = start.exception()
+    if error is None:
+        return None
+    cause = _typed_cause(error)
+    if cause is None:
+        return {"reason": STARTUP_FAILED, "message": _STARTUP_FAILED_MESSAGE}
+    return {"reason": str(cause.error_type), "message": str(cause.message)}
+
+
+def readiness(app: Any) -> tuple[Literal["starting", "ready", "failed"], list[str]]:
     """``("ready", [])`` once the startup row is up, else ``("starting", <pending items>)``.
 
     The startup row is what makes every later request correct: the task runtime
@@ -187,7 +230,12 @@ def readiness(app: Any) -> tuple[Literal["starting", "ready"], list[str]]:
     and the agent when one is configured. Work owed from the last stop is not part of
     it (the obligations lane resumes that after ready). An agent that failed to build is
     not pending: that is a failure, reported by the health rows.
+
+    A task runtime whose start failed never becomes ready, so it is ``("failed", [])``
+    rather than pending forever (:func:`startup_failure` says why).
     """
+    if startup_failure(app) is not None:
+        return "failed", []
     state = getattr(app, "state", None)
     pending: list[str] = []
     if "task_runtime_ready" not in timeline(app).snapshot()["marks"]:
