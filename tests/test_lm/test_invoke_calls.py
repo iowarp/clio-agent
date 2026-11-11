@@ -61,11 +61,21 @@ def test_the_x2_shapes_a_call_then_an_empty_or_equal_json_block_run_once(invoke:
         assert "tool_calls" not in split.text
 
 
-def test_a_different_json_block_beside_the_markup_is_refused(invoke: None) -> None:
-    reply = ("<function_calls>\n" + _call("shell_bash", command="ls") + "</function_calls>\n"
-             '```tool_calls\n[{"name": "shell_bash", "arguments": {"command": "rm x"}}]\n```')  # fmt: skip
-    split = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
-    assert [c.name for c in split.calls] == [INVALID_TOOL_CALL]
+def test_a_different_json_block_beside_the_markup_is_refused_or_never_run(
+    invoke: None,
+) -> None:
+    """Before the call block, a different JSON block is refused: which to run is not the
+    host's to guess. After it, it is overrun (written before any result existed): only
+    the block runs. SABOTAGE: run every call written and ``rm x`` runs."""
+    block = "<function_calls>\n" + _call("shell_bash", command="ls") + "</function_calls>\n"
+    other = '```tool_calls\n[{"name": "shell_bash", "arguments": {"command": "rm x"}}]\n```'
+    before = split_reply(other + "\n" + block, call_prefix="c", available_tools=TOOLS,
+                         schemas=SCHEMAS)  # fmt: skip
+    assert [c.name for c in before.calls] == [INVALID_TOOL_CALL]
+    after = split_reply(block + other, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
+    assert [(c.name, c.input) for c in after.calls] == [("shell_bash", {"command": "ls"})]
+    assert "rm x" in after.overrun
+    assert "rm x" not in after.text
 
 
 def test_a_typed_value_that_is_not_json_and_an_unclosed_invoke_are_refused(invoke: None) -> None:

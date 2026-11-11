@@ -20,6 +20,7 @@ import pytest
 
 from clio_agent.tools import spawn_diet
 from clio_agent.tools.mcp_config import MCPServerSpec, transport_for
+from clio_agent.tools.mcp_environment_repair import interpreter_path
 
 
 @pytest.fixture(autouse=True)
@@ -530,6 +531,14 @@ def test_learn_scan_never_matches_a_variant_invocation(tmp_path) -> None:
 
 def test_transport_for_applies_valid_plan(tmp_path, monkeypatch) -> None:
     shim, entry = _fake_env(tmp_path)
+    # A launch removes an invalid environment from the cache first, so this one is
+    # complete: pyvenv.cfg and the platform's interpreter.
+    environment = shim.parent.parent
+    (environment / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    interpreter = interpreter_path(environment)
+    interpreter.parent.mkdir(exist_ok=True)
+    if not interpreter.exists():
+        interpreter.write_text("stub")
     launcher = tmp_path / "clio-kit.exe"
     launcher.write_text("launcher")
     monkeypatch.setattr("shutil.which", lambda cmd: str(launcher))

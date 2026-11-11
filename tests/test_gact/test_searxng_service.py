@@ -347,13 +347,15 @@ async def test_a_failed_install_is_not_started_on_every_boot(
             await search_bootstrap.ensure_local_searxng(runtime, settings, poll_seconds=0.01)
             == "install_failed"
         )
-        # Every later boot: no start that can only fail "install first".
+        # Every later boot inside the retry backoff: no reinstall, and no start that can
+        # only fail "install first".
         for _boot in range(3):
             assert (
                 await search_bootstrap.ensure_local_searxng(runtime, settings, poll_seconds=0.01)
-                == "not_installed"
+                == "install_deferred"
             )
         assert [row.action for row in store.operations() if row.action == "start"] == []
+        assert [row.action for row in store.operations()].count("install") == 1
         record = store.service("local", SERVICE_ID)
         assert record is not None and record.state == "not_installed"
         assert record.auto_start_skipped is not None
