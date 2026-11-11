@@ -176,6 +176,25 @@ def test_changed_required_files_invalidate_preparation(
     assert receipts.reuse_install_receipt(workspace, cache_root=cache) is None
 
 
+def test_path_spelling_alone_keeps_the_receipt(
+    installed: tuple[Path, Path, dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Desktop's installer shell and its Explorer launch differ in PATH, not in tools.
+    workspace, cache, result = installed
+    receipts.save_install_receipt(workspace, result, cache_root=cache)
+    monkeypatch.setenv("PATH", f"{os.environ.get('PATH', '')}{os.pathsep}{tmp_path}")
+    assert receipts.reuse_install_receipt(workspace, cache_root=cache) == result
+
+
+def test_path_resolving_another_tool_needs_preparation(
+    installed: tuple[Path, Path, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace, cache, result = installed
+    receipts.save_install_receipt(workspace, result, cache_root=cache)
+    monkeypatch.setattr(receipts.shutil, "which", lambda name: f"/elsewhere/{name}")
+    assert receipts.reuse_install_receipt(workspace, cache_root=cache) is None
+
+
 @pytest.mark.parametrize("change", ["workspace", "locks", "interpreter", "environment"])
 def test_different_installation_context_needs_preparation(
     installed: tuple[Path, Path, dict[str, Any]], monkeypatch: pytest.MonkeyPatch, change: str
