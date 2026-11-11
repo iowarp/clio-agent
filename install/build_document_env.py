@@ -13,8 +13,10 @@ Run with the runtime's own interpreter, after its document wheels are built::
 from __future__ import annotations
 
 import argparse
+import compileall
 import json
 import os
+import py_compile
 import shutil
 import subprocess
 import sys
@@ -62,9 +64,18 @@ def _python(runtime: Path, uv: str, work: Path) -> Path:
     _run(
         [uv, "pip", "sync", "--python", str(python), str(requirements), "--no-index",
          "--find-links", str(runtime / "document-wheels"), "--require-hashes",
-         "--only-binary=:all:", "--compile-bytecode"],
+         "--only-binary=:all:"],
         cwd=project,
         env=env,
+    )
+    # Hash-based bytecode: the pack does not carry modification times, so uv's
+    # timestamp .pyc files would all be stale once unpacked and every import would
+    # compile from source (document probe 5.2 s -> 1.4 s).
+    compileall.compile_dir(
+        environment / "Lib" / "site-packages",
+        quiet=1,
+        workers=0,
+        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
     )
     _stamp(environment)
     return python
