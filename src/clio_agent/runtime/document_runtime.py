@@ -656,6 +656,7 @@ def prepare_document_runtime(
                 "uv": uv,
                 "uv_argv": [uv],
                 "office_root": str(office_runtime_root()),
+                "office_profiles": str(office_profile_templates()),
                 "distribution": "managed-cache",
                 "helper": str(STACK_ROOT / "cli.py"),
                 "output_directory": str(output),
@@ -713,17 +714,23 @@ def office_runtime_root() -> Path:
     return paths.user_cache_dir() / "document-office" / VERSION
 
 
+def office_profile_templates() -> Path:
+    """Hold each Office build's seeded first-start profile for this user."""
+    return paths.user_cache_dir() / "document-office-profiles"
+
+
 def prepare_office_runtime() -> str:
     """Use an installed renderer or provision a private verified renderer automatically."""
-    from clio_agent.runtime.document_stack.office import ensure_office
+    from clio_agent.runtime.document_stack.office import ensure_office, seed_profile
     from clio_agent.runtime.document_stack.process import find_native
 
     managed_root = office_runtime_root()
     native = find_native("soffice")
     if native and not Path(native).resolve().is_relative_to(managed_root.resolve()):
+        seed_profile(Path(native), office_profile_templates())
         return native
     # A discovered managed executable still needs its host-side access repair.
-    return ensure_office(managed_root)
+    return ensure_office(managed_root, profile_templates=office_profile_templates())
 
 
 def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) -> dict[str, Any]:

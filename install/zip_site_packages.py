@@ -29,8 +29,8 @@ NATIVE = {".pyd", ".dll", ".exe", ".so", ".lib", ".a", ".dylib"}
 # Read their own files by path, patch import machinery, or are imported by tools
 # that run outside this interpreter's sys.path.
 KEEP = {
-    "babel", "botocore", "certifi", "clio_agent", "litellm", "pip", "pkg_resources",
-    "setuptools", "_distutils_hack", "pytz", "uv", "wheel",
+    "babel", "botocore", "certifi", "clio_agent", "clio_schemas", "litellm", "pip",
+    "pkg_resources", "setuptools", "_distutils_hack", "pytz", "uv", "wheel",
 }
 
 

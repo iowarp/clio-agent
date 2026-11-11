@@ -81,6 +81,11 @@ def publish_environment(workspace: Path, runtime: dict[str, Any], cache: Path) -
         "CLIO_EXECUTION_PATH": os.pathsep.join(directories),
         "CLIO_EXECUTION_PYTHON": runtime["python"],
         "CLIO_DOCUMENT_OFFICE_ROOT": runtime["office_root"],
+        **(
+            {"CLIO_DOCUMENT_OFFICE_PROFILES": runtime["office_profiles"]}
+            if runtime.get("office_profiles")
+            else {}
+        ),
         "CLIO_DOCUMENT_SCRATCH": scratch,
         "CLIO_DOCUMENT_SHORT_TEMP": tempfile.gettempdir(),
         # uv otherwise chooses an AppContainer-profile cache that the write

@@ -17,6 +17,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -25,10 +26,26 @@ from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
     from . import office_compat
-    from .process import DocumentError, _cleanup_profile, inherit_parent_access, run
+    from .process import (
+        DocumentError,
+        _cleanup_profile,
+        inherit_parent_access,
+        new_office_profile,
+        office_profile_key,
+        office_profile_template,
+        run,
+    )
 else:
     import office_compat
-    from process import DocumentError, _cleanup_profile, inherit_parent_access, run
+    from process import (
+        DocumentError,
+        _cleanup_profile,
+        inherit_parent_access,
+        new_office_profile,
+        office_profile_key,
+        office_profile_template,
+        run,
+    )
 
 VERSION = "26.2.6"
 # Published by The Document Foundation at each download URL's .sha256 endpoint.
@@ -341,43 +358,141 @@ def prune_unread(image: Path) -> int:
     return removed
 
 
-def _verify_office(executable_path: Path, *, cwd: Path) -> None:
-    """Probe without joining another Office instance or touching the user's profile."""
+def _seed_document(path: Path) -> None:
+    """Write the smallest Word document, so seeding loads the OOXML import and PDF export."""
+    package = "http://schemas.openxmlformats.org/package/2006"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            f'<Types xmlns="{package}/content-types">'
+            '<Default Extension="rels" '
+            'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/'
+            'vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        )
+        archive.writestr(
+            "_rels/.rels",
+            f'<Relationships xmlns="{package}/relationships"><Relationship Id="r1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+            'officeDocument" Target="word/document.xml"/></Relationships>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>CLIO</w:t></w:r></w:p></w:body></w:document>",
+        )
+
+
+def _publish_profile(work: Path, template: Path) -> None:
+    """Keep a verified first-start profile under its Office build's key."""
+    pdf = work / "seed.pdf"
+    settings = work / "profile" / "user" / "registrymodifications.xcu"
+    if not pdf.is_file() or not pdf.stat().st_size:
+        raise DocumentError("LibreOffice returned without converting the seed document")
+    if "MacroSecurityLevel" not in settings.read_text(encoding="utf-8", errors="replace"):
+        raise DocumentError("LibreOffice dropped the private profile's macro security setting")
+    shutil.rmtree(template, ignore_errors=True)
+    template.mkdir(parents=True)
+    for attempt in range(20):
+        try:
+            (work / "profile").rename(template / "profile")
+            return
+        except OSError as error:
+            if getattr(error, "winerror", None) not in {5, 32} or attempt == 19:
+                raise DocumentError(f"Could not keep the seeded Office profile: {error}") from error
+            time.sleep(0.1)
+
+
+def _verify_office(
+    executable_path: Path, *, cwd: Path, profile_templates: Path | None = None
+) -> None:
+    """Probe without joining another Office instance or touching the user's profile.
+
+    With ``profile_templates`` the probe is one real conversion instead of
+    ``--version``, done once per Office build. That pays the cold first load of
+    the conversion libraries during preparation and keeps its first-start profile,
+    which every later conversion copies instead of rebuilding. A build that already
+    has its seeded profile has converted successfully and is not probed again.
+    """
     # A real Windows first launch can exhaust the native probe deadline while
     # the same binary verifies promptly after its timed-out process tree retires.
     # A macOS first launch is likewise delayed by the one-time Gatekeeper/XProtect
     # assessment of the freshly copied app. Recover once with a new profile; keep
     # the deadline and fail closed when neither attempt verifies. Other failures
     # and Linux are not retried.
-    attempts = 2 if platform.system() in {"Windows", "Darwin"} else 1
-    for attempt in range(attempts):
-        temporary = tempfile.TemporaryDirectory(prefix="lo-version-")
-        try:
-            profile = Path(temporary.name).resolve() / "profile"
-            run(
-                [
-                    str(executable_path),
-                    f"-env:UserInstallation={profile.as_uri()}",
-                    "--headless",
-                    "--nologo",
-                    "--norestore",
-                    "--version",
-                ],
-                cwd=cwd,
-                timeout=30,
-            )
+    if profile_templates is not None:
+        profile_templates.mkdir(parents=True, exist_ok=True)
+        key = office_profile_key(executable_path)
+        lock = FileLock(str(profile_templates / f"{key}.lock"), timeout=600)
+        lock.acquire()
+    try:
+        if (
+            profile_templates is not None
+            and office_profile_template(executable_path, profile_templates) is not None
+        ):
+            # This exact build already converted a document when it was seeded.
             return
-        except DocumentError as error:
-            if attempt + 1 == attempts or not isinstance(
-                error.__cause__, subprocess.TimeoutExpired
-            ):
-                raise
-            logger.warning(
-                "reason=office_probe_timeout_retry: %s; retrying once with a fresh private profile",
-                error,
+        seed = profile_templates is not None
+        attempts = 2 if platform.system() in {"Windows", "Darwin"} else 1
+        for attempt in range(attempts):
+            temporary = tempfile.TemporaryDirectory(
+                prefix="lo-seed-" if seed else "lo-version-",
+                dir=profile_templates if seed else None,
             )
-        finally:
-            _cleanup_profile(temporary)
+            try:
+                work = Path(temporary.name).resolve()
+                profile = work / "profile"
+                if seed:
+                    # The kept profile must stay readable to confined document workers.
+                    inherit_parent_access(work)
+                    new_office_profile(profile)
+                    _seed_document(work / "seed.docx")
+                    arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
+                    arguments += ["--outdir", str(work), str(work / "seed.docx")]
+                else:
+                    arguments = ["--norestore", "--version"]
+                run(
+                    [
+                        str(executable_path),
+                        f"-env:UserInstallation={profile.as_uri()}",
+                        "--headless",
+                        "--nologo",
+                        *arguments,
+                    ],
+                    cwd=cwd,
+                    timeout=120 if seed else 30,
+                )
+                if seed:
+                    _publish_profile(work, profile_templates / key)
+                return
+            except DocumentError as error:
+                if attempt + 1 == attempts or not isinstance(
+                    error.__cause__, subprocess.TimeoutExpired
+                ):
+                    raise
+                logger.warning(
+                    "reason=office_probe_timeout_retry: %s; "
+                    "retrying once with a fresh private profile",
+                    error,
+                )
+            finally:
+                _cleanup_profile(temporary)
+    finally:
+        if profile_templates is not None:
+            lock.release()
+
+
+def seed_profile(executable_path: Path, profile_templates: Path) -> None:
+    """Seed a native LibreOffice's first-start profile; conversions still work without it."""
+    try:
+        if office_profile_template(executable_path, profile_templates) is None:
+            _verify_office(
+                executable_path,
+                cwd=executable_path.parent,
+                profile_templates=profile_templates,
+            )
+    except (DocumentError, OSError) as error:
+        logger.warning("reason=office_profile_seed_failed: %s", error)
 
 
 def _publish_image(image: Path, root: Path) -> None:
@@ -398,7 +513,7 @@ def _publish_image(image: Path, root: Path) -> None:
             time.sleep(0.1)
 
 
-def ensure_office(root: Path) -> str:
+def ensure_office(root: Path, *, profile_templates: Path | None = None) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
     The tree includes LibreOffice's license/notices. On Linux, Office runs on its
@@ -417,7 +532,7 @@ def ensure_office(root: Path) -> str:
                         "Private LibreOffice launcher disappeared during preparation"
                     )
             inherit_parent_access(root)
-            _verify_office(existing, cwd=root)
+            _verify_office(existing, cwd=root, profile_templates=profile_templates)
             return str(existing)
         url, name, checksum = asset()
         downloads = root.parent / "downloads"
@@ -450,7 +565,7 @@ def ensure_office(root: Path) -> str:
                 candidate = executable(image)
                 if candidate is None:
                     raise DocumentError("LibreOffice image contains no supported executable")
-                _verify_office(candidate, cwd=image)
+                _verify_office(candidate, cwd=image, profile_templates=profile_templates)
                 _publish_image(image, root)
             except (OSError, ValueError, tarfile.TarError) as exc:
                 raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
