@@ -21,7 +21,7 @@ import sys
 import zipfile
 from pathlib import Path, PurePosixPath
 
-ARCHIVE = "clio-pure.zip"
+ARCHIVE = "clio-pure.zip"  # clio_agent.runtime.package_overlay.ZIPPED_SITE_PACKAGES
 SOURCE = {".py", ".pyi"}
 # Documentation that ships inside packages but is never read at runtime.
 INERT = {".md", ".rst", ".txt", ".keep"}
