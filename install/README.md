@@ -160,7 +160,7 @@ Use the lifecycle subcommands to manage a headless service:
 |---|---|
 | `clio` | ensure the server is up, then open Web |
 | `clio start` | start the headless service |
-| `clio stop` | stop the server (kills the whole process tree) |
+| `clio stop` | stop the server (kills the whole process tree), then the local services it started, such as web search (`clio-agent services stop`; installations are kept and web search starts again on the next boot) |
 | `clio restart` | stop, then start — clears stale/zombie launches |
 | `clio status` / `clio ps` | PID, port, health |
 | `clio logs [N]` | tail service logs (default 40 lines) |

@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- `clio stop` (and `clio restart`) also stops the local services the server
+  started, such as web search, which kept running and holding CLIO's Python
+  open, so a reinstall could not replace it. They are stopped, not removed, and
+  web search starts again with the server. `clio-agent services stop` does the
+  same on its own.
+
 ## [0.9.6-beta.1.4] - 2026-11-11
 
 ### Fixed
