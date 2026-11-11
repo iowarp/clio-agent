@@ -299,7 +299,10 @@ def _main() -> None:
     # clio-core is entered from the main thread, as before: from any other thread each
     # native call is handed to a persistent native worker (arc/native_threads.py).
     # Leaving this block waits for the packages too, so neither outlives the other.
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-packages") as installing:
+    # The browser's Node.js and Chromium are downloads, not disk work, so they start first
+    # and overlap the whole package step instead of waiting for the first browser use.
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-packages") as installing:
+        browser = installing.submit(_prepare_browser, args, emit)
         installation = installing.submit(
             install_document_runtime,
             args.workspace,
@@ -309,17 +312,42 @@ def _main() -> None:
         )
         migrations = _run_store_migrations(args, emit)
         result = installation.result()
+        browser_result = browser.result()
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
         "office": result["native_tools"]["soffice"],
         "store_migrations": migrations,
+        "browser": browser_result,
     }
     if not args.reuse_installed:
         # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
         summary["mcp_cache"] = prune_after_install()
         summary["marketplace_snapshots"] = collect_snapshots_after_install()
     print(json.dumps(summary), flush=True)
+
+
+def _prepare_browser(args: argparse.Namespace, emit: Callable[[str], None]) -> dict[str, Any]:
+    """The browser's Node.js driver and Chromium, fetched during an install, reported typed.
+
+    A per-launch check (``--reuse-installed``) never downloads; a failure here does not
+    fail the install, and the first browser use retries it.
+    """
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    import time  # noqa: PLC0415
+
+    from clio_agent.gact.browser.install import prepare_at_install  # noqa: PLC0415
+
+    emit("Downloading the browser for web pages (Chromium)...")
+    started = time.monotonic()
+    outcome = prepare_at_install()
+    outcome["seconds"] = round(time.monotonic() - started, 1)
+    if outcome["status"] == "ready":
+        emit("The browser is ready.")
+    elif outcome["status"] == "failed":
+        emit(f"The browser download failed; its first use will retry: {outcome['error']}")
+    return outcome
 
 
 def _run_store_migrations(

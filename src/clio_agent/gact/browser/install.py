@@ -1,10 +1,13 @@
-"""Playwright and its Chromium build: imported and downloaded on first use only.
+"""Playwright and its Chromium build: imported on first use, downloaded at install time.
 
 The Python ``playwright`` package is a clio-agent dependency, but nothing imports it until
 the browser service starts, as h5py waits for the first HDF5 request. The Chromium build
 matching that Playwright release is downloaded by Playwright's own installer into CLIO's
-cache (``<cache>/browser/playwright-<version>``), never at install time, so the base install
-and the desktop bundle do not grow. The download is recorded with
+cache (``<cache>/browser/playwright-<version>``) by the installer's package step
+(:func:`prepare_at_install`, beside the other packages), so the desktop bundle does not grow
+and the first browser use does not wait for it. A browser use that still finds it missing
+(the install-time fetch failed, or an install predating it) downloads it then. The download
+is recorded with
 :func:`clio_agent.runtime.package_preparation.preparing`, so a second process sees it
 running instead of racing it. CLIO never runs ``playwright install-deps`` (it needs root);
 missing system libraries are a typed ``browser_runtime_missing_libraries`` naming them.
@@ -154,6 +157,29 @@ def ensure_chromium() -> Path:
             raise BrowserError(REASON_INSTALL_FAILED, f"Chromium is not where it went ({root})")
         trace.event("BROWSER", "chromium installed path=%s", found)
         return found
+
+
+def prepare_at_install() -> dict[str, Any]:
+    """Fetch the driver's Node.js and the managed Chromium as an install step.
+
+    The installer runs this beside its other package steps, so the first browser use finds
+    both ready. A failure does not fail the install: it is reported typed, and the first
+    browser use retries the same fetch.
+    """
+    from clio_agent.gact.browser import settings  # noqa: PLC0415
+
+    try:
+        if not playwright_version():
+            return {"status": "skipped", "reason": REASON_NOT_INSTALLED}
+        node = driver.ensure_node()
+        if settings.backend() != "managed" or settings.channel() != "chromium":
+            return {"status": "ready", "node": str(node or ""), "chromium": "not_used"}
+        chromium = ensure_chromium()
+    except BrowserError as exc:
+        return {"status": "failed", "reason": exc.reason, "error": exc.message}
+    except (ImportError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        return {"status": "failed", "reason": REASON_INSTALL_FAILED, "error": str(exc)}
+    return {"status": "ready", "node": str(node or ""), "chromium": str(chromium)}
 
 
 _DOWNLOAD_LOCK = threading.Lock()
