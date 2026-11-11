@@ -98,6 +98,22 @@ def test_windows_ignores_xdg() -> None:
     assert root == PureWindowsPath(r"D:\Roaming\clio-agent\config")
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (r"\\?\C:\Users\u\Desk\data\clio-agent", r"C:\Users\u\Desk\data\clio-agent\state"),
+        (r"\\?\UNC\srv\share\clio-agent", r"\\srv\share\clio-agent\state"),
+        (r"C:\Users\u\clio-agent", r"C:\Users\u\clio-agent\state"),
+    ],
+)
+def test_windows_verbatim_override_is_plain(raw: str, expected: str) -> None:
+    # Desktop passes Tauri's verbatim resource dir; clio-core crashes on that spelling.
+    root = paths.resolve_root(
+        "state", home=r"C:\Users\u", env={"CLIO_AGENT_HOME": raw}, platform="windows"
+    )
+    assert str(root) == expected
+
+
 def test_relative_legacy_xdg_cannot_redirect_storage_to_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
