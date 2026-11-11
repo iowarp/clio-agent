@@ -55,6 +55,10 @@ def _row(result: Any, structured: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _records(count: Any, kind: str = "") -> str:
+    return f"{count} {kind}{'record' if count == 1 else 'records'}"
+
+
 def _text(identifier: str, label: str, value: Any, **fields: Any) -> dict[str, Any]:
     return {"id": identifier, "type": "text", "label": label, "text": _safe(value), **fields}
 
@@ -159,7 +163,8 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
                 "Result page",
                 f"Showing results {start + 1}–{start + len(entries)} of {row['total']}."
                 if entries
-                else f"No results; {row['total']} datasets in this catalog.",
+                else f"No results; {row['total']} "
+                f"{'dataset' if row['total'] == 1 else 'datasets'} in this catalog.",
             )
         )
     if row.get("next_offset") is not None:
@@ -235,7 +240,7 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
             _text(
                 "continuation",
                 "Stream records",
-                f"{continuation.get('count', 0)} records captured. A checkpoint is saved for the next capture; the agent or interface handles it.",
+                f"{_records(continuation.get('count', 0))} captured. A checkpoint is saved for the next capture; the agent or interface handles it.",
             )
         )
     if resource_id := row.get("resource_id"):
@@ -292,7 +297,7 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
             else {}
         ),
         "summary": (
-            f"{continuation.get('count', 0)} stream records captured"
+            f"{_records(continuation.get('count', 0), 'stream ')} captured"
             if isinstance(continuation, Mapping)
             else (
                 f"SDK result, {row['bytes_received']} bytes saved"
@@ -411,7 +416,9 @@ def endpoint_presentation(args: Mapping[str, Any], result: Any, structured: Any)
             )
         if row.get("search_note"):
             blocks.append(_text("search-note", "Search result", row["search_note"]))
-        return {"summary": f"{len(operations)} Endpoint operations", "blocks": blocks}
+        count = len(operations)
+        noun = "Endpoint operation" if count == 1 else "Endpoint operations"
+        return {"summary": f"{count} {noun}", "blocks": blocks}
     return {
         "summary": "NDP result unavailable",
         "blocks": [

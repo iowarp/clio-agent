@@ -74,7 +74,7 @@ def saved_output_blocks(row: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "type": "link",
                 "target": "file",
                 "uri": str(spill.get("path") or "") if saved else "",
-                "label": f"Full {noun} {verb} ({lines:,} lines, {size})",
+                "label": f"Full {noun} {verb} ({lines:,} {'line' if lines == 1 else 'lines'}, {size})",
                 "action_label": "Open full output" if saved else "",
                 "text": tail,
                 "detail": _caption(tail),

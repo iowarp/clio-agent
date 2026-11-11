@@ -256,12 +256,15 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
         summary, status = "No tools are deferred", ""
     else:
         summary, status = "No matching tools", "degraded"
+        deferred = row.get("deferred_total", 0)
         blocks.append(
             {
                 "id": "no-match",
                 "type": "text",
                 "severity": "warning",
-                "text": f"None of the {row.get('deferred_total', 0)} deferred tools matched.",
+                "text": "The one deferred tool did not match."
+                if deferred == 1
+                else f"None of the {deferred} deferred tools matched.",
             }
         )
     view: dict[str, Any] = {**head, "summary": summary, "blocks": blocks}

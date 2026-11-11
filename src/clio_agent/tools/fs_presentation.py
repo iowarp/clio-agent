@@ -93,7 +93,7 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     link = {"id": "file-link", "type": "link", "target": "file", "uri": raw_path}
     link |= {"label": path.name, "line": start} if start else {"label": path.name}
     if start is None:
-        summary = "Empty file" if total == 0 else f"Past the end ({total:,} lines)"
+        summary = "Empty file" if total == 0 else f"Past the end ({_count(total, 'line')})"
         return {"subject": "file-link", "summary": summary, "blocks": [link]}
     of = f"of {total:,}" if total is not None else "of a large file"
     summary = f"Lines {start:,}–{end:,} {of}"
@@ -110,6 +110,10 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
         more = f"More lines follow; the next read starts at line {row.get('next_offset'):,}."
         blocks.append({"id": "continues", "type": "text", "severity": "info", "text": more})
     return {"subject": "file-link", "summary": summary, "blocks": blocks}
+
+
+def _count(count: int, noun: str, plural: str = "") -> str:
+    return f"{count:,} {noun if count == 1 else plural or noun + 's'}"
 
 
 def _inspection_start(args: Mapping[str, Any]) -> dict[str, Any]:
@@ -146,14 +150,14 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
     view["blocks"].append({"id": "query", "type": "text", "label": label, "text": query})
     if mode == "count":
         total, files = int(row.get("total_matches") or 0), int(row.get("total_files") or 0)
-        view["summary"] = f"{total:,} matches in {files:,} files"
+        view["summary"] = f"{_count(total, 'match', 'matches')} in {_count(files, 'file')}"
     elif mode == "files":
         listed = row.get("files")
-        view["summary"] = f"{int(row.get('total_files') or 0):,} files"
+        view["summary"] = _count(int(row.get("total_files") or 0), "file")
         view["blocks"] += _file_links(listed if isinstance(listed, list) else [], counts=True)
     else:
         matches = [m for m in row.get("matches") or [] if isinstance(m, Mapping)]
-        view["summary"] = f"{int(row.get('total_matches') or 0):,} matching lines"
+        view["summary"] = _count(int(row.get("total_matches") or 0), "matching line")
         for i, match in enumerate(matches):
             name, number = str(match.get("path") or ""), match.get("line")
             context = [c for c in match.get("context") or [] if isinstance(c, Mapping)]
@@ -198,7 +202,10 @@ def _glob(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     if not isinstance(files, list):
         return standard_mcp_presentation(result)
     view = _inspection_start({"path": row.get("path") or args.get("path")})
-    view["summary"] = f"{int(row.get('total_files') or 0):,} files match {row.get('pattern', '')}"
+    total = int(row.get("total_files") or 0)
+    view["summary"] = f"{_count(total, 'file')} {'matches' if total == 1 else 'match'} " + str(
+        row.get("pattern", "")
+    )
     view["blocks"] += _file_links(files, counts=False)
     if row.get("truncated"):
         view["blocks"].append(

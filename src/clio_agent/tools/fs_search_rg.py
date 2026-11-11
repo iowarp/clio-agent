@@ -161,7 +161,7 @@ def search_files(
                 counts.append((name, int(count)))
         total = sum(count for _, count in counts)
         if mode == "count":
-            text = f"{total:,} matches in {len(counts):,} files under {target}"
+            text = f"{total:,} {'match' if total == 1 else 'matches'} in {_files(len(counts))} under {target}"
             if not total:
                 text += f". {SKIPPED_NOTE}"
             if timed_out:
@@ -179,7 +179,7 @@ def search_files(
         shown = counts[offset : offset + limit]
         following = offset + len(shown)
         truncated = timed_out or len(counts) > following
-        lines = [f"{len(counts):,} files match under {cwd} (newest first; {RELATIVE_NOTE}):"]
+        lines = [f"{_files(len(counts), True)} under {cwd} (newest first; {RELATIVE_NOTE}):"]
         if not counts:
             lines = [f"0 files match under {target}. {SKIPPED_NOTE}"]
         elif offset:
@@ -219,9 +219,15 @@ SKIPPED_NOTE = (
 )
 
 
+def _files(count: int, match: bool = False) -> str:
+    noun = f"{count:,} {'file' if count == 1 else 'files'}"
+    return f"{noun} {'matches' if count == 1 else 'match'}" if match else noun
+
+
 def _more(hidden: int, unit: str, timed_out: bool, following: int | None = None) -> str:
     if timed_out:
         return "(search stopped at its time limit; results are partial)"
+    unit = unit.removesuffix("s") if hidden == 1 else unit
     if following is None:
         return f"(+{hidden:,} more {unit}; narrow the path or glob, or raise limit)"
     return f"(+{hidden:,} more {unit}; continue with offset={following}, or narrow the search)"
@@ -296,7 +302,7 @@ def _content_text(
 ) -> str:
     searched = Path(head["path"])
     base = searched if searched.is_dir() else searched.parent
-    header = f"{total:,} matching lines under {base}"
+    header = f"{total:,} matching {'line' if total == 1 else 'lines'} under {base}"
     if total:
         header += f" ({RELATIVE_NOTE})"
     if not total:
@@ -322,7 +328,7 @@ def glob_files(pattern: str, path: str, limit: int = 200) -> ToolResult:
     shown = found[:limit]
     truncated = timed_out or len(found) > len(shown)
     lines = [
-        f"{len(found):,} files match {pattern} under {root} (newest first; {RELATIVE_NOTE}):",
+        f"{_files(len(found), True)} {pattern} under {root} (newest first; {RELATIVE_NOTE}):",
         *(_shown(name, root) for name in shown),
     ]
     if not found:
