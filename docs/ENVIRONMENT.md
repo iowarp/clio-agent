@@ -397,7 +397,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_AGENT_PACKAGE_OVERLAY` | unmigrated | `src/clio_agent/runtime/package_overlay.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
-| `CLIO_BIND_ADDR` | unmigrated | `src/clio_agent/arc/clio_core_attach.py` |
+| `CLIO_BIND_ADDR` | unmigrated | `src/clio_agent/arc/core_control_port.py` |
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
@@ -413,6 +413,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/env_file.py` |
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
+| `CLIO_GACT_CAPABILITIES_REFRESH_S` | unmigrated | `src/clio_agent/gact/capabilities_snapshot.py` |
 | `CLIO_GIT` | unmigrated | `src/clio_agent/runtime/git_executable.py` |
 | `CLIO_INSTALL_DOWNLOADS` | unmigrated | `src/clio_agent/runtime/document_stack/office.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |

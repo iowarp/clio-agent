@@ -54,8 +54,11 @@ def main() -> int:
             daemon.kill()
             daemon.wait(10)
             daemon = None
-            # Liveness saw the port just before the daemon died: the attach proceeds.
+            # Liveness and the ownership check saw this home's daemon on the port just
+            # before it died: the attach proceeds. (A death seen by the ownership check
+            # retires the pidfile and spawns afresh, never reaching the attach.)
             storage._runtime_alive = lambda _port: True
+            storage.runtime_ownership.daemon_ownership = lambda _port, *, listening: "owned"
         else:
             daemon.suspend()
         result["stage"] = mode
