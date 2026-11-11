@@ -27,6 +27,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from clio_agent.arc.clio_core_config import (
     cte_disk_warn_fraction,
     cte_store_dir,
@@ -46,6 +48,10 @@ __all__ = [
 ]
 
 _METADATA_LOG_PREFIX = "metadata.log"
+#: iowarp-core's default ``growth_unit`` for a file tier (``clio_default.yaml``): from 2.4.0
+#: a data file starts at one unit, reserved when the tier is created, and grows (fallocate)
+#: one unit at a time as blobs need room.
+_DEFAULT_GROWTH_UNIT = "1GB"
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,10 @@ class ColdTierUsage:
     data_allocated: int | None  # ``None`` where the platform has no ``st_blocks``
     data_logical: int
     metadata_log_bytes: int
+    #: Allocated bytes that are growth reservation, not data: the last ``growth_unit`` of
+    #: each fully allocated data file of at least one unit. A file grows only when its
+    #: blobs no longer fit, so what it holds exceeds its size minus one unit.
+    data_reserved: int = 0
 
     def data_preallocated(self, capacity_bytes: int) -> bool:
         """Whether the data files are allocated at (at least) the tier's full capacity."""
@@ -65,17 +75,20 @@ class ColdTierUsage:
         )
 
 
-def cold_tier_usage(store_dir: Path) -> ColdTierUsage:
+def cold_tier_usage(store_dir: Path, growth_unit: int = 0) -> ColdTierUsage:
     """Measure the data files and the metadata log under ``store_dir`` separately.
 
     POSIX ``st_blocks`` gives a file's allocated bytes, which tells a sparse data file
     from one holding data; platforms without it report ``data_allocated=None``. The
     metadata log is append-only and never sparse, so its logical size is its size.
+    ``growth_unit`` (bytes, 0 = unknown) marks the trailing unit of each fully allocated
+    data file as reserved (:attr:`ColdTierUsage.data_reserved`).
     """
     allocated = 0
     allocation_available = True
     logical = 0
     metadata_log = 0
+    reserved = 0
     for root, _dirs, files in os.walk(store_dir, followlinks=False):
         for name in files:
             try:
@@ -91,7 +104,31 @@ def cold_tier_usage(store_dir: Path) -> ColdTierUsage:
                 allocation_available = False
             else:
                 allocated += int(blocks) * 512
-    return ColdTierUsage(allocated if allocation_available else None, logical, metadata_log)
+                if growth_unit and stat.st_size >= growth_unit and blocks * 512 >= stat.st_size:
+                    reserved += growth_unit
+    return ColdTierUsage(
+        allocated if allocation_available else None, logical, metadata_log, reserved
+    )
+
+
+def _growth_unit_bytes(config_path: str) -> int:
+    """The final (lowest-score) file tier's ``growth_unit`` in bytes, or iowarp's default."""
+    unit = _DEFAULT_GROWTH_UNIT
+    try:
+        document = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        tiers = [
+            tier
+            for module in document.get("compose", []) or []
+            if isinstance(module, Mapping)
+            for tier in module.get("storage", []) or []
+            if isinstance(tier, Mapping)
+        ]
+        if tiers:
+            final = min(tiers, key=lambda tier: float(tier.get("score", 0.0) or 0.0))
+            unit = str(final.get("growth_unit") or _DEFAULT_GROWTH_UNIT)
+        return parse_capacity_bytes(unit)
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        return parse_capacity_bytes(_DEFAULT_GROWTH_UNIT)
 
 
 def _measure(env: Mapping[str, str]) -> tuple[str, int, Path, ColdTierUsage] | None:
@@ -106,7 +143,8 @@ def _measure(env: Mapping[str, str]) -> tuple[str, int, Path, ColdTierUsage] | N
     if capacity_bytes <= 0:
         return None
     store_dir = cte_store_dir(env=env, config_path=cap.config_path)
-    usage = cold_tier_usage(store_dir) if store_dir.is_dir() else ColdTierUsage(0, 0, 0)
+    unit = _growth_unit_bytes(cap.config_path)
+    usage = cold_tier_usage(store_dir, unit) if store_dir.is_dir() else ColdTierUsage(0, 0, 0)
     return cap.final_tier_capacity, capacity_bytes, store_dir, usage
 
 
@@ -115,7 +153,10 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
 
     Counts the data files only (the metadata log is :func:`probe_cte_metadata_log`). A
     data file allocated at the full capacity is preallocation, not occupancy, so it is
-    reported as unmeasurable rather than as a permanent 100% warning.
+    reported as unmeasurable rather than as a permanent 100% warning. A file that grows
+    in ``growth_unit`` steps (iowarp-core 2.4.0+) is judged on what it holds at least:
+    its allocation minus the trailing reserved unit, so a fresh store's first unit
+    (1 GiB of a 2 GB tier) reads as reserved, not as 50% used.
     """
     env = env if env is not None else os.environ
     measured = _measure(env)
@@ -125,13 +166,15 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
     allocated = usage.data_allocated
     preallocated = usage.data_preallocated(capacity_bytes)
     measurable = allocated is not None and not preallocated
-    fraction = allocated / capacity_bytes if measurable and allocated is not None else None
+    used = max(0, allocated - usage.data_reserved) if allocated is not None else None
+    fraction = used / capacity_bytes if measurable and used is not None else None
     warn_fraction = cte_disk_warn_fraction()
     details = {
         "store_dir": str(store_dir),
         # ``None`` is intentional: reserved capacity is not current usage.
-        "used_bytes": allocated if measurable else None,
+        "used_bytes": used if measurable else None,
         "allocated_bytes": allocated,
+        "reserved_bytes": usage.data_reserved,
         "logical_bytes": usage.data_logical,
         "metadata_log_bytes": usage.metadata_log_bytes,
         "capacity_bytes": capacity_bytes,
@@ -171,10 +214,15 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
                 required=False,
             )
         ]
+    reserved_note = (
+        f", of which {format_bytes(usage.data_reserved)} is growth reserved ahead of data"
+        if usage.data_reserved
+        else ""
+    )
     summary = (
-        f"CTE data tier files have {format_bytes(allocated or 0)} allocated "
+        f"CTE data tier holds at least {format_bytes(used or 0)} "
         f"({fraction:.0%} of its {capacity} capacity; warn at {warn_fraction:.0%}). "
-        f"Their logical size is {format_bytes(usage.data_logical)}."
+        f"Its files have {format_bytes(allocated or 0)} allocated{reserved_note}."
     )
     if fraction >= warn_fraction:
         return [
