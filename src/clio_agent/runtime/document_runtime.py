@@ -428,25 +428,21 @@ def _installer_pnpm(package: Path) -> bool:
     return True
 
 
-def _javascript_runtime(
-    cache: Path,
-    workspace: Path,
-    inventory: dict[str, Any],
-    *,
-    progress: Callable[[str], None] | None = None,
-) -> tuple[Path, Path]:
-    node = node_path(str(inventory["node"]))
-    tools = Path(node_path(str(cache / "javascript-tools")))
+def _prepared_pnpm(
+    tools: Path,
+    node: str,
+    env: dict[str, str],
+    progress: Callable[[str], None] | None,
+) -> Path:
+    """The pinned pnpm, from the installer's downloads or else the registry."""
     package = tools / "node_modules" / "pnpm"
-    env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
-    pnpm: Path | None = None
     try:
-        pnpm = _pnpm_command(package, node, env)
+        return _pnpm_command(package, node, env)
     except (DocumentRuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError):
         tools.mkdir(parents=True, exist_ok=True)
         try:
             if _installer_pnpm(package):
-                pnpm = _pnpm_command(package, node, env)
+                return _pnpm_command(package, node, env)
         except (
             DocumentRuntimeError,
             OSError,
@@ -459,103 +455,124 @@ def _javascript_runtime(
             # The registry install below is the same pinned version; only slower.
             if progress is not None:
                 progress(f"The downloaded pnpm could not be used ({exc}); fetching it instead...")
-    if pnpm is None:
-        node_root = Path(node).parent
-        if node_root.name == "bin":
-            node_root = node_root.parent
-        npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-        if not npm.is_file():
-            raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
-        if progress is not None:
-            progress("Installing the pinned pnpm package manager...")
-        _run(
-            [
-                node,
-                str(npm),
-                "install",
-                "--prefix",
-                str(tools),
-                "--ignore-scripts",
-                "--no-audit",
-                "--no-fund",
-                f"pnpm@{PNPM_VERSION}",
-            ],
-            cwd=tools,
-            env=env,
-        )
-        try:
-            pnpm = _pnpm_command(package, node, env)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise DocumentRuntimeError(f"Installed pnpm has invalid metadata: {exc}") from exc
-    work = Path(node_path(str(scratch_root(workspace) / "javascript")))
-    work.mkdir(parents=True, exist_ok=True)
-    for name in ("package.json", "pnpm-lock.yaml"):
-        target = work / name
-        expected = (STACK_ROOT / name).read_bytes()
-        if target.exists() and target.read_bytes() != expected:
-            raise DocumentRuntimeError(
-                f"Prepared workspace manifest was changed: {target}. Preserve task dependencies in a separate project."
-            )
-        target.write_bytes(expected)
-    if not (work / "node_modules").is_dir() and _adopt_prelaid(
-        "node_modules", work / "node_modules"
-    ):
-        # Keep later pnpm commands in this project on the layout it was built with.
-        (work / ".npmrc").write_text("node-linker=hoisted\n", encoding="utf-8")
-    if not (work / "node_modules").is_dir():
-        if progress is not None:
-            progress("Installing Word, PowerPoint and image packages for Node.js...")
-        _run(
-            [
-                node,
-                str(pnpm),
-                "install",
-                "--frozen-lockfile",
-                "--ignore-scripts",
-                "--store-dir",
-                node_path(str(cache / "pnpm-store")),
-            ],
-            cwd=work,
-            env=env,
-        )
-    # An interrupted install or damaged package gets one locked repair attempt.
-    probe = [
-        node,
-        "-e",
-        "require('docx'); require('pptxgenjs'); require('sharp'); "
-        "const fs = require('fs'); const expected = JSON.parse(fs.readFileSync('package.json')).dependencies; "
-        "for (const [name, version] of Object.entries(expected)) { "
-        "const actual = JSON.parse(fs.readFileSync('node_modules/' + name + '/package.json')).version; "
-        "if (actual !== version) throw new Error(name + ' differs from its locked version'); }",
-    ]
-    try:
-        _run(probe, cwd=work, env=env)
-    except DocumentRuntimeError:
-        _run(
-            [
-                node,
-                str(pnpm),
-                "install",
-                "--force",
-                "--frozen-lockfile",
-                "--ignore-scripts",
-                "--store-dir",
-                node_path(str(cache / "pnpm-store")),
-            ],
-            cwd=work,
-            env=env,
-        )
-        _run(probe, cwd=work, env=env)
+    node_root = Path(node).parent
+    if node_root.name == "bin":
+        node_root = node_root.parent
+    npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    if not npm.is_file():
+        raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
+    if progress is not None:
+        progress("Installing the pinned pnpm package manager...")
     _run(
         [
+            node,
+            str(npm),
+            "install",
+            "--prefix",
+            str(tools),
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            f"pnpm@{PNPM_VERSION}",
+        ],
+        cwd=tools,
+        env=env,
+    )
+    try:
+        return _pnpm_command(package, node, env)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise DocumentRuntimeError(f"Installed pnpm has invalid metadata: {exc}") from exc
+
+
+def _javascript_runtime(
+    cache: Path,
+    workspace: Path,
+    inventory: dict[str, Any],
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[Path, Path]:
+    node = node_path(str(inventory["node"]))
+    tools = Path(node_path(str(cache / "javascript-tools")))
+    env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
+    work = Path(node_path(str(scratch_root(workspace) / "javascript")))
+    store = node_path(str(cache / "pnpm-store"))
+    # pnpm is needed only to install or repair the packages. It is prepared and
+    # checked while prelaid packages are adopted and probed, rather than before.
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-node") as running:
+        pnpm_ready = running.submit(_prepared_pnpm, tools, node, env, progress)
+        work.mkdir(parents=True, exist_ok=True)
+        for name in ("package.json", "pnpm-lock.yaml"):
+            target = work / name
+            expected = (STACK_ROOT / name).read_bytes()
+            if target.exists() and target.read_bytes() != expected:
+                raise DocumentRuntimeError(
+                    f"Prepared workspace manifest was changed: {target}. Preserve task dependencies in a separate project."
+                )
+            target.write_bytes(expected)
+        if not (work / "node_modules").is_dir() and _adopt_prelaid(
+            "node_modules", work / "node_modules"
+        ):
+            # Keep later pnpm commands in this project on the layout it was built with.
+            (work / ".npmrc").write_text("node-linker=hoisted\n", encoding="utf-8")
+        if not (work / "node_modules").is_dir():
+            if progress is not None:
+                progress("Installing Word, PowerPoint and image packages for Node.js...")
+            _run(
+                [
+                    node,
+                    str(pnpm_ready.result()),
+                    "install",
+                    "--frozen-lockfile",
+                    "--ignore-scripts",
+                    "--store-dir",
+                    store,
+                ],
+                cwd=work,
+                env=env,
+            )
+        # An interrupted install or damaged package gets one locked repair attempt.
+        probe = [
+            node,
+            "-e",
+            "require('docx'); require('pptxgenjs'); require('sharp'); "
+            "const fs = require('fs'); const expected = JSON.parse(fs.readFileSync('package.json')).dependencies; "
+            "for (const [name, version] of Object.entries(expected)) { "
+            "const actual = JSON.parse(fs.readFileSync('node_modules/' + name + '/package.json')).version; "
+            "if (actual !== version) throw new Error(name + ' differs from its locked version'); }",
+        ]
+        module_probe = [
             node,
             "--input-type=module",
             "-e",
             "await import('docx'); await import('pptxgenjs'); await import('sharp');",
-        ],
-        cwd=work,
-        env=env,
-    )
+        ]
+        # The CommonJS and ES module checks are independent node processes.
+        modules_checked = running.submit(_run, module_probe, cwd=work, env=env)
+        try:
+            _run(probe, cwd=work, env=env)
+        except DocumentRuntimeError:
+            try:
+                modules_checked.result()
+            except DocumentRuntimeError:
+                pass
+            _run(
+                [
+                    node,
+                    str(pnpm_ready.result()),
+                    "install",
+                    "--force",
+                    "--frozen-lockfile",
+                    "--ignore-scripts",
+                    "--store-dir",
+                    store,
+                ],
+                cwd=work,
+                env=env,
+            )
+            _run(probe, cwd=work, env=env)
+            modules_checked = running.submit(_run, module_probe, cwd=work, env=env)
+        modules_checked.result()
+        pnpm = pnpm_ready.result()
     return work, pnpm
 
 
