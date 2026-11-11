@@ -2492,6 +2492,15 @@ def test_install_runs_as_a_job_that_outlives_the_request(tmp_path: Path, monkeyp
         second = client.post("/v1/providers/claude_code/install?wait=false")
         listed = client.get("/v1/providers/support/installs").json()
         release.set()
+        # A POST while the first job is still settling joins it, by design; wait
+        # for it to finish so the next POST starts a fresh install.
+        deadline = time.monotonic() + 10
+        while client.get("/v1/providers/claude_code/install").json()["state"] in {
+            "queued",
+            "installing",
+        }:
+            assert time.monotonic() < deadline, "the first install job never finished"
+            time.sleep(0.01)
         finished = client.post("/v1/providers/claude_code/install")
         job = client.get("/v1/providers/claude_code/install").json()
 
