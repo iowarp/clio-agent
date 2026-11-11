@@ -16,7 +16,13 @@ TUI/HTTP surface aren't tracked here.
   stopped; every byte is still checked against the pinned SHA-256 (#2077).
 - `install.sh --desktop` now fails with the cause and the command to re-run when
   runtime preparation fails or the app executable is missing, instead of
-  warning and exiting successfully (#2077).
+  warning and exiting successfully (#2077, #2081).
+
+### Changed
+
+- The Linux one-line and `--source` installs download LibreOffice and pnpm,
+  check out submodules and install clio-kit while clio-agent installs, and
+  unpack LibreOffice in parallel, instead of doing each step in turn (#2080).
 
 ## [0.9.6-beta.1] - 2026-11-11
 
