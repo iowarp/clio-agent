@@ -38,6 +38,7 @@ done
 echo "curl $url" >> "$TEST_LOG"
 case "$url" in
   https://api.github.com/repos/iowarp/clio-agent/releases*) src="$TEST_FIXTURES/releases.json" ;;
+  https://astral.sh/uv/install.sh) src="$TEST_FIXTURES/uv-install.sh" ;;
   https://raw.githubusercontent.com/iowarp/clio-agent/*) rest="${url#https://raw.githubusercontent.com/iowarp/clio-agent/}"; src="$TEST_FIXTURES/$rest" ;;
   *) exit 22 ;;
 esac
@@ -62,6 +63,18 @@ case "$1" in
   pip|sync) [ -n "${TEST_INSTALL_CONTINUE:-}" ] && exit 0; exit 77 ;;
 esac
 exit 0
+"""
+
+# uv's own installer, for runs without uv: it installs the uv shim once the installer
+# has asked for the release's lock (or after 10 s), so the log shows what overlapped it.
+_UV_INSTALLER = r"""#!/bin/sh
+for _ in $(seq 100); do
+  grep -q '^curl https://raw.githubusercontent.com/.*/uv.lock' "$TEST_LOG" && break
+  sleep 0.1
+done
+[ -z "${TEST_UV_INSTALL_FAILS:-}" ] || exit 1
+cp "$TEST_FIXTURES/uv" "$UV_INSTALL_DIR/uv" && chmod +x "$UV_INSTALL_DIR/uv"
+echo "uv-installer done" >> "$TEST_LOG"
 """
 
 _GIT = r"""#!/usr/bin/env bash
@@ -123,6 +136,7 @@ def run_installer(
     system: str = "Linux",
     real_git: bool = False,
     terminal_input: str | None = None,
+    uv_installed: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run the installer with the shims; return the result and the logged calls.
 
@@ -130,14 +144,22 @@ def run_installer(
     read what the installer does to a real clone; its calls are then not logged.
     ``terminal_input`` runs it on a terminal of its own (a pseudo-terminal that is its
     controlling terminal, so ``/dev/tty`` answers) with that text typed ahead; the
-    result's ``stdout`` is everything the terminal showed.
+    result's ``stdout`` is everything the terminal showed. ``uv_installed=False`` starts
+    without uv, which the installer then installs with uv's own installer.
     """
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None
     shims = tmp_path / "shims"
     shims.mkdir(exist_ok=True)
     uname = f'#!/usr/bin/env bash\nif [ "$1" = -s ]; then echo {system}; else echo arm64; fi\n'
-    shimmed = [("curl", _CURL), ("uv", _UV), ("uname", uname), ("ln", _LN)]
+    shimmed = [("curl", _CURL), ("uname", uname), ("ln", _LN)]
+    if uv_installed:
+        shimmed.append(("uv", _UV))
+    else:
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir(exist_ok=True)
+        (fixtures / "uv").write_text(_UV, newline="\n")
+        (fixtures / "uv-install.sh").write_text(_UV_INSTALLER, newline="\n")
     if not real_git:
         shimmed.append(("git", _GIT))
     elif (host_git := shutil.which("git")) and Path(host_git) != Path("/usr/bin/git"):

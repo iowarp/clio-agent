@@ -68,6 +68,23 @@ def test_a_read_only_runtime_uses_the_overlay(
     assert package_overlay.overlay_in_use() is True
 
 
+def test_a_writable_runtime_with_zipped_packages_uses_the_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installer cannot see the zipped distributions, so it must not run in place."""
+    python = _runtime(tmp_path / "CLIO Desktop" / "data" / "bundled-runtime" / "gact-runtime")
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    (site / package_overlay.ZIPPED_SITE_PACKAGES).write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setattr(package_overlay, "_site_packages", lambda: site)
+    assert os.access(site, os.W_OK)
+    assert package_overlay.overlay_in_use() is True
+    overlay = package_overlay.overlay_for(str(python))
+    assert overlay is not None
+    assert overlay.is_relative_to(tmp_path / "data")
+
+
 def test_a_dev_environment_is_never_redirected(monkeypatch: pytest.MonkeyPatch) -> None:
     """No runtime.json above this interpreter: installs stay in the venv."""
     monkeypatch.setattr(package_overlay, "_runtime_root", lambda executable=None: None)

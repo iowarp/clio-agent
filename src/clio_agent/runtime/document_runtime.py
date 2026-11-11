@@ -25,6 +25,11 @@ from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
 from clio_agent.runtime.document_stack.node_paths import node_path
 from clio_agent.runtime.document_stack.process import scratch_root
+from clio_agent.runtime.document_venv import (
+    _built_for_this_interpreter,
+    _set_environment_home,
+    _uv_cache_dir,
+)
 from clio_agent.runtime.document_wheels import bundled_wheel_requirements
 from clio_agent.runtime.execution_environment import (
     bundled_root,
@@ -211,42 +216,6 @@ def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
     return inventory
 
 
-def _built_for_this_interpreter(environment: Path) -> bool:
-    """Whether a cached venv still derives from the interpreter running Clio.
-
-    The cache key covers the Python version and lock files, not the installation path. A
-    macOS app first opened translocated (from the DMG, Downloads or a quarantined copy),
-    then moved to /Applications, leaves a venv whose ``home`` no longer exists, or one
-    that silently keeps using an older copy of the app that still exists.
-    """
-    try:
-        lines = (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return True  # Nothing recorded to compare; the import probe still verifies it.
-    recorded = next(
-        (
-            value.strip()
-            for key, _, value in (line.partition("=") for line in lines)
-            if key.strip() == "home"
-        ),
-        "",
-    )
-    if not recorded:
-        return True
-    try:
-        home = Path(recorded).resolve(strict=True)
-    except OSError:
-        return False
-    base = Path(sys.base_prefix)
-    current = {
-        Path(sys.executable).resolve().parent,
-        Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent,
-        base.resolve(),
-        (base / "bin").resolve(),
-    }
-    return home in current
-
-
 PRELAID_STAMP = "clio-prelaid.json"
 
 
@@ -275,22 +244,43 @@ def _adopt_prelaid(name: str, target: Path) -> bool:
     return True
 
 
-def _set_environment_home(environment: Path) -> None:
-    """Point a relocated venv at this interpreter; Windows launchers need an absolute home.
+def _installer_wheel_root() -> Path | None:
+    """The installer's downloads folder when it holds a runtime archive's document wheels.
 
-    Run from a virtualenv, that is the virtualenv's base interpreter: a venv whose home
-    is another venv's launcher directory runs as that other venv, not as itself.
+    ``install.sh`` installs a Linux release from its prebuilt runtime archive and hands the
+    archive's ``document-wheels`` over here, so this environment is laid out from the same
+    locked wheels the desktop uses instead of downloading them again.
+    ``bundled_wheel_requirements`` checks every wheel against this stack's lock.
     """
-    config = environment / "pyvenv.cfg"
-    home = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent)
-    lines = config.read_text(encoding="utf-8").splitlines()
-    config.write_text(
-        "\n".join(
-            f"home = {home}" if line.partition("=")[0].strip() == "home" else line for line in lines
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    from clio_agent.runtime.document_stack.office import INSTALLER_DOWNLOADS
+
+    folder = os.environ.get(INSTALLER_DOWNLOADS, "")
+    root = Path(folder) if folder else None
+    return root if root and (root / "document-wheels" / "manifest.json").is_file() else None
+
+
+def _filesystem(path: Path) -> int | None:
+    """The device holding ``path``'s nearest existing ancestor, if it is writable."""
+    for candidate in (path, *path.parents):
+        if os.path.exists(candidate):
+            return os.stat(candidate).st_dev if os.access(candidate, os.W_OK) else None
+    return None
+
+
+def _document_uv_cache(uv: str, home: Path) -> Path:
+    """The uv cache for the document environment beside ``home``.
+
+    uv's own cache is reused when it is on the same filesystem, so the packages the
+    agent's install already downloaded (numpy, matplotlib, lxml, ...) are linked rather
+    than downloaded again. A cache on another drive would copy every file instead of
+    hardlinking it, so the environment then keeps a cache on the installation drive.
+    """
+    private = home / "uv-document-cache"
+    shared = _uv_cache_dir(uv)
+    if shared is None:
+        return private
+    device = _filesystem(shared)
+    return shared if device is not None and device == _filesystem(home) else private
 
 
 def _python_runtime(
@@ -327,15 +317,19 @@ def _python_runtime(
     env = {
         **os.environ,
         "UV_PROJECT_ENVIRONMENT": str(environment),
-        # Keep wheel unpacking and the environment on the selected installation
-        # drive. uv can hardlink shared files instead of copying them across drives.
-        "UV_CACHE_DIR": str(cache.parent / "uv-document-cache"),
+        "UV_CACHE_DIR": str(_document_uv_cache(uv, cache.parent)),
     }
     runtime = bundled_root()
     try:
         requirements = bundled_wheel_requirements(runtime, STACK_ROOT, project)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise DocumentRuntimeError(f"Bundled document packages are invalid: {error}") from error
+    if runtime is None and (runtime := _installer_wheel_root()) is not None:
+        try:
+            requirements = bundled_wheel_requirements(runtime, STACK_ROOT, project)
+        except (OSError, ValueError, KeyError, TypeError):
+            # Wheels for another interpreter or lock: the locked sync below downloads them.
+            runtime = requirements = None
     if requirements is not None:
         assert runtime is not None  # A verified wheel bundle can only come from a runtime.
         if not repair:

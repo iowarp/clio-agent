@@ -63,6 +63,14 @@ def test_default_installs_the_latest_stable_release_locked_by_its_tag(tmp_path: 
     assert "curl https://raw.githubusercontent.com/iowarp/clio-agent/v0.9.4.24/uv.lock" in calls
 
 
+def test_resolving_the_latest_release_uses_the_python_releases_pin(tmp_path: Path) -> None:
+    # 3.14 is the Python a current release installs on; resolving on another would
+    # download a second CPython that nothing else uses.
+    _release_fixtures(tmp_path)
+    _, calls = run_installer(tmp_path)
+    assert "--python 3.14 --with packaging" in _call(calls, "uv run")
+
+
 def test_dev_installs_the_latest_release_including_pre_releases(tmp_path: Path) -> None:
     _release_fixtures(tmp_path)
     result, calls = run_installer(tmp_path, "--dev")
@@ -86,6 +94,34 @@ def test_a_pinned_release_installs_exactly_that_version(
     assert "could not install clio-agent" in result.stderr
     assert "clio-agent[argonne,flowcept]==0.9.5b2" in _call(calls, "uv pip install")
     assert not any("api.github.com" in call for call in calls), "a pinned version is not resolved"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or Path("/usr/bin/uv").exists(), reason="needs a POSIX PATH without uv"
+)
+def test_a_release_install_reads_the_release_while_uv_installs(tmp_path: Path) -> None:
+    # gact-tui#739 6799155260: uv's install used to run alone before the release's files
+    # started downloading. The fake uv installer finishes only once the lock was fetched.
+    _release_fixtures(tmp_path)
+    result, calls = run_installer(tmp_path, "--version", "0.9.5b2", uv_installed=False)
+    assert result.returncode == RELEASE_STOP, result.stdout + result.stderr
+    lock = "curl https://raw.githubusercontent.com/iowarp/clio-agent/v0.9.5-beta.2/uv.lock"
+    first_uv = next(i for i, call in enumerate(calls) if call.startswith("uv "))
+    assert calls.index(lock) < calls.index("uv-installer done") < first_uv
+    assert "clio-agent[argonne,flowcept]==0.9.5b2" in _call(calls, "uv pip install")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or Path("/usr/bin/uv").exists(), reason="needs a POSIX PATH without uv"
+)
+def test_a_failed_uv_install_stops_before_uv_is_used(tmp_path: Path) -> None:
+    _release_fixtures(tmp_path)
+    result, calls = run_installer(
+        tmp_path, "--version", "0.9.5b2", uv_installed=False, env={"TEST_UV_INSTALL_FAILS": "1"}
+    )
+    assert result.returncode != 0
+    assert "could not install uv" in result.stderr
+    assert not any(call.startswith("uv ") for call in calls)
 
 
 @pytest.mark.parametrize(

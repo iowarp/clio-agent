@@ -288,6 +288,67 @@ def test_venv_from_this_interpreter_is_reused(
     assert (python.parent.parent / "stale-marker").exists()
 
 
+@pytest.mark.parametrize(
+    ("same_filesystem", "expected"), [(True, "shared"), (False, "private"), (None, "private")]
+)
+def test_document_sync_reuses_uv_cache_only_on_the_same_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_filesystem: bool | None, expected: str
+) -> None:
+    """The agent's install already downloaded numpy, matplotlib, lxml...: link, don't refetch.
+
+    A cache on another drive (or one uv cannot name) would copy every file, so the
+    document environment keeps its own cache beside it on the installation drive.
+    """
+    home = tmp_path / "clio-cache"
+    shared = tmp_path / "uv-cache"
+    monkeypatch.setattr(
+        runtime, "_uv_cache_dir", lambda uv: None if same_filesystem is None else shared
+    )
+    devices = {home: 1, shared: 1 if same_filesystem else 2}
+    monkeypatch.setattr(runtime, "_filesystem", lambda path: devices[path])
+    commands: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        commands.append((command, kwargs["env"]))
+        return ""
+
+    monkeypatch.setattr(runtime, "_run", run)
+    monkeypatch.setattr(runtime, "bundled_root", lambda: None)
+    monkeypatch.setattr(runtime, "_installer_wheel_root", lambda: None)
+    monkeypatch.setattr(runtime, "_probe", lambda path: {"python": str(path)})
+    runtime._python_runtime(home / "python-runtime", "uv")
+    (command, env) = commands[-1]
+    assert command[:2] == ["uv", "sync"]
+    want = shared if expected == "shared" else home / "uv-document-cache"
+    assert env["UV_CACHE_DIR"] == str(want)
+
+
+def test_document_lock_matches_the_agent_lock_where_its_bounds_allow() -> None:
+    """Shared packages resolve to the agent's versions, so one download serves both.
+
+    Only the document stack's own upper bounds (``pillow<13``, ``filelock<4``) may hold a
+    package at another version.
+    """
+    import tomllib
+
+    root = Path(runtime.__file__).resolve().parents[3]
+    agent_lock = root / "uv.lock"
+    if not agent_lock.is_file():
+        pytest.skip("the agent's uv.lock ships only in a source checkout")
+
+    def versions(lock: Path) -> dict[str, str]:
+        packages = tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
+        return {p["name"]: p["version"] for p in packages if "version" in p}
+
+    agent = versions(agent_lock)
+    document = versions(runtime.STACK_ROOT / "uv.lock")
+    differing = {name for name in document if name in agent and agent[name] != document[name]}
+    assert differing <= {"pillow", "filelock"}, (
+        f"{sorted(differing)} differ from uv.lock: re-lock the document stack with these "
+        "pinned as [tool.uv] constraint-dependencies, then drop the constraints and lock again"
+    )
+
+
 def test_execution_discovery_probes_current_files_each_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

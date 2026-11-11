@@ -84,6 +84,11 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     # plan of first-launch downloads it fetches alongside the app.
     ("bundled macOS Apple archive (aarch64)", r"aarch64-apple-darwin-bundled\.app\.aar$"),
     ("install plan (aarch64 macOS)", r"^install-plan\.aarch64-apple-darwin\.bundled\.txt$"),
+    # The plain install.sh one-liner installs the agent from this archive.
+    ("runtime archive (x86_64 Linux)", r"^gact-runtime-.*-linux-x64\.tar\.zst$"),
+    ("runtime archive (aarch64 Linux)", r"^gact-runtime-.*-linux-arm64\.tar\.zst$"),
+    ("prepared Office (x86_64 Linux)", r"^office-.*-linux-x64\.tar\.zst$"),
+    ("prepared Office (aarch64 Linux)", r"^office-.*-linux-arm64\.tar\.zst$"),
     ("install plan (x86_64 Linux)", r"^install-plan\.x86_64-unknown-linux-gnu\.bundled\.txt$"),
     ("install plan (aarch64 Linux)", r"^install-plan\.aarch64-unknown-linux-gnu\.bundled\.txt$"),
     ("Tauri update manifest (bundled)", r"^latest\.json$"),

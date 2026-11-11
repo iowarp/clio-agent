@@ -247,10 +247,32 @@ jobs:
         run: bash scripts/macos_signing_keychain.sh setup
       - name: Linux deps
         if: runner.os == 'Linux'
+        # Normally under 2 minutes; a stalled mirror fails the leg instead of eating its budget.
+        timeout-minutes: 15
         working-directory: external/gact-tui
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
+          set -euo pipefail
+          # The runner image's Launchpad PPAs hung apt for over an hour during a Launchpad
+          # outage (v0.9.6-beta.1.5). Nothing installed here comes from them.
+          for f in $(grep -rlE 'ppa\.launchpad(content)?\.net' /etc/apt/sources.list.d 2>/dev/null || true); do
+            sudo mv "$f" "$f.disabled"
+          done
+          # In the same outage the runners' resolver stopped answering for *.ubuntu.com, and apt
+          # waited out DNS (about 20 s) on every package. Pin those hosts from Cloudflare's
+          # DNS-over-HTTPS; apt still verifies the archive signatures.
+          for h in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com ports.ubuntu.com; do
+            if ! timeout 10 getent hosts "$h" >/dev/null; then
+              ip=$(curl -fsS --max-time 10 -H 'accept: application/dns-json' "https://1.1.1.1/dns-query?name=$h&type=A" \
+                | python3 -c 'import json,sys; print(next((a["data"] for a in json.load(sys.stdin).get("Answer", []) if a.get("type") == 1), ""))' || true)
+              if [ -n "$ip" ]; then
+                echo "$ip $h" | sudo tee -a /etc/hosts >/dev/null
+                echo "::warning::$h does not resolve on this runner; pinned to $ip via DNS-over-HTTPS"
+              fi
+            fi
+          done
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_opts[@]}" update
+          sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
       - name: Install
         working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false
@@ -290,6 +312,22 @@ jobs:
           external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14 \
             "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" --release-tag "$RELEASE_TAG" \
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14
+      # Office laid and pruned once here, where TDF's and Ubuntu's hosts answer, and
+      # published as one asset in the install plan: install.sh then needs only GitHub
+      # for Office, and the app unpacks it rather than laying ~190 packages itself.
+      - name: Build prepared Office tree (Linux)
+        if: matrix.variant == 'bundled' && runner.os == 'Linux'
+        shell: bash
+        # Not fatal: without the tree this target's plan keeps TDF's Office, which installs
+        # lay as before, and check_release_completeness reports the missing asset.
+        run: |
+          if ! uv run --no-project --python 3.14 --with zstandard==0.25.0 --with 'filelock>=3.19,<4' \
+              --with truststore==0.10.4 python scripts/build_office_tree.py \
+              --output "$RUNNER_TEMP/office-tree" \
+              --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"; then
+            echo "::warning::could not build the prepared Office tree; the install plan keeps TDF's Office"
+            rm -rf "$RUNNER_TEMP/office-tree"
+          fi
       # Tauri signs only the app, its frameworks and the sidecar; the runtime
       # ships as resources. Sign every runtime Mach-O (and the native members
       # of the document wheels) inside-out before the bundler seals the app.
@@ -750,6 +788,22 @@ jobs:
               asset="$(jq -r .asset "$pack")"
               cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
               pattern="$asset"
+            elif [ "${{ runner.os }}" = "Linux" ]; then
+              # The deb and rpm carry the archive; the plain install.sh one-liner installs
+              # the agent from the same archive, published on its own (install plan).
+              case "${{ matrix.target }}" in
+                x86_64-*) arch=x64 ;;
+                aarch64-*) arch=arm64 ;;
+                *) echo "::error::no runtime asset name for ${{ matrix.target }}"; exit 1 ;;
+              esac
+              asset="gact-runtime-${RELEASE_TAG#v}-linux-${arch}.tar.zst"
+              cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
+              jq --arg asset "$asset" \
+                --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$asset" \
+                '. + {asset: $asset, url: $url}' external/gact-tui/desktop/src-tauri/gact-runtime.pack.json \
+                > "$RUNNER_TEMP/gact-runtime.asset.pack.json"
+              office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
+              [ ! -f "$office_pack" ] || cp "$RUNNER_TEMP/office-tree/$(jq -r .asset "$office_pack")" "$stage/"
             fi
             staged=0
             while IFS= read -r -d '' f; do
@@ -774,6 +828,10 @@ jobs:
             pack_args=()
             if [ "${{ runner.os }}" = "Windows" ]; then
               pack_args=(--runtime-pack external/gact-tui/desktop/src-tauri/gact-runtime.pack.json)
+            elif [ "${{ runner.os }}" = "Linux" ]; then
+              pack_args=(--runtime-pack "$RUNNER_TEMP/gact-runtime.asset.pack.json")
+              office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
+              [ ! -f "$office_pack" ] || pack_args+=(--office-pack "$office_pack")
             fi
             "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" ${pack_args[@]+"${pack_args[@]}"} \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"

@@ -11,9 +11,12 @@ covers ``python -I`` processes that ignore ``PYTHONPATH``.
 
 The overlay is keyed by the runtime's ``runtime.json``, so an updated app starts with
 an empty overlay and the startup restore (:mod:`clio_agent.providers.support_restore`)
-reinstalls recorded provider support against the new runtime. A runtime that is not
-sealed (a dev venv, a pip install, a per-user Windows desktop) keeps installing in
-place. ``CLIO_AGENT_PACKAGE_OVERLAY=1`` forces the overlay and ``=0`` disables it.
+reinstalls recorded provider support against the new runtime. A Windows runtime whose
+pure-Python distributions are zipped (``site-packages\\clio-pure.zip``) is sealed too:
+an installer cannot see a distribution inside the zip, so an in-place install would
+reinstall the runtime's own packages over the running backend's loaded extensions.
+A runtime that is not sealed (a dev venv, a pip install) keeps installing in place.
+``CLIO_AGENT_PACKAGE_OVERLAY=1`` forces the overlay and ``=0`` disables it.
 
 This module is imported on every ``clio_agent`` import: keep it standard-library only
 and cheap until a bundled runtime is detected.
@@ -30,6 +33,10 @@ from pathlib import Path
 
 #: Environment switch: ``1`` forces the overlay, ``0`` keeps installs in place.
 OVERLAY_ENV = "CLIO_AGENT_PACKAGE_OVERLAY"
+
+#: The zip ``install/zip_site_packages.py`` packs a Windows runtime's pure-Python
+#: distributions (and their ``.dist-info``) into.
+ZIPPED_SITE_PACKAGES = "clio-pure.zip"
 
 _OVERLAY_PARENT = "runtime-packages"
 _activated: list[str] = []
@@ -66,7 +73,10 @@ def overlay_in_use() -> bool:
         return False
     if sys.platform == "darwin" and _inside_app_bundle(root):
         return True
-    return not os.access(_site_packages(), os.W_OK)
+    site_packages = _site_packages()
+    if (site_packages / ZIPPED_SITE_PACKAGES).is_file():
+        return True
+    return not os.access(site_packages, os.W_OK)
 
 
 def _runtime_key() -> str:

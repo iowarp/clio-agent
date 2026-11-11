@@ -16,10 +16,12 @@ import tempfile
 import time
 import zipfile
 from collections import deque
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
+import zstandard
 from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
@@ -27,6 +29,7 @@ if TYPE_CHECKING or __package__:
     from .office_fetch import MAX_DOWNLOAD
     from .office_fetch import download as _download
     from .office_fetch import mirror_rate as _mirror_rate
+    from .office_prune import UNREAD_DICTIONARY_SUFFIXES, UNREAD_EXTENSIONS, prune_unread, unread
     from .process import (
         DocumentError,
         _cleanup_profile,
@@ -42,6 +45,7 @@ else:
     from office_fetch import MAX_DOWNLOAD
     from office_fetch import download as _download
     from office_fetch import mirror_rate as _mirror_rate
+    from office_prune import UNREAD_DICTIONARY_SUFFIXES, UNREAD_EXTENSIONS, prune_unread, unread
     from process import (
         DocumentError,
         _cleanup_profile,
@@ -86,15 +90,13 @@ ASSETS = {
         "94bb3248df074c225490a8a6d1d9dc87c7d6783dbb7a8e9f0d0c3d94348552af",
     ),
 }
-# Bundled extensions a headless converter never loads: the Calc NLP solver and the
-# MediaWiki publisher (about 3,000 files together).
-UNREAD_EXTENSIONS = frozenset({"nlpsolver", "wiki-publisher"})
-# Spelling (.aff/.dic) and thesaurus (.dat/.idx) data inside the dict-* extensions:
-# about 440 MB that no conversion reads. Hyphenation patterns (hyph_*.dic) change line
-# breaks and pagination, so they stay.
-UNREAD_DICTIONARY_SUFFIXES = frozenset({".aff", ".dic", ".dat", ".idx"})
 # A laid-out image's first-start profile, kept beside the image (build_profile_starter).
 PROFILE_STARTER = "office-profile.zip"
+# Raised whenever what ``_lay_image`` writes changes in a way the constants named in
+# ``prepared_tree_name`` do not capture, so an older prepared tree is not taken.
+PREPARED_LAYOUT = 1
+# A prepared tree's unpacked size limit (the pruned x86_64 tree is about 600 MB).
+MAX_PREPARED = 2 * 1024 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -197,6 +199,68 @@ def installer_download(name: str, checksum: str, url: str | None = None) -> Path
     except OSError:
         return None
     return candidate if digest == checksum else None
+
+
+def prepared_tree_name() -> str | None:
+    """The release asset holding this host's Office as ``ensure_office`` lays it, if any.
+
+    Linux only: TDF's packages unpacked and pruned, with the private userland laid in,
+    as one ``.tar.zst`` (``scripts/build_office_tree.py``). The name changes with every
+    pin and layout revision it was laid from, so only a tree this code would have laid
+    itself is ever taken.
+    """
+    if platform.system() != "Linux" or not office_compat.supported():
+        return None
+    _, _, checksum = asset()
+    identity = repr(
+        (
+            checksum,
+            office_compat.runtime_directory(),
+            PREPARED_LAYOUT,
+            sorted(UNREAD_EXTENSIONS),
+            sorted(UNREAD_DICTIONARY_SUFFIXES),
+        )
+    )
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    architecture = {"aarch64": "arm64", "arm64": "arm64"}.get(platform.machine().lower(), "x64")
+    return f"office-{VERSION}-{digest}-linux-{architecture}.tar.zst"
+
+
+def installer_prepared_tree() -> Path | None:
+    """The installer's download of this host's prepared Office tree, once it has landed.
+
+    The installer renames ``NAME.part`` to ``NAME`` only after the bytes match the
+    release's install plan, which its SHA256SUMS authenticates.
+    """
+    folder = os.environ.get(INSTALLER_DOWNLOADS, "")
+    name = prepared_tree_name() if folder else None
+    if not name:
+        return None
+    candidate = Path(folder) / name
+    _await_installer_file(candidate)
+    if not candidate.is_file() or candidate.is_symlink():
+        return None
+    return candidate
+
+
+def _unpack_prepared_tree(archive: Path, image: Path) -> None:
+    with (
+        archive.open("rb") as raw,
+        zstandard.ZstdDecompressor().stream_reader(raw) as stream,
+        tarfile.open(fileobj=stream, mode="r|") as contents,
+    ):
+
+        def limited() -> Iterator[tarfile.TarInfo]:
+            unpacked = 0
+            for member in contents:
+                unpacked += member.size
+                if unpacked > MAX_PREPARED:
+                    raise DocumentError("Prepared Office tree exceeds its unpacked size limit")
+                yield member
+
+        contents.extractall(image, members=limited(), filter="data")
+    if not (image / office_compat.runtime_directory() / office_compat.loader()).is_file():
+        raise DocumentError("Prepared Office tree does not hold this release's userland")
 
 
 def executable(root: Path) -> Path | None:
@@ -324,96 +388,6 @@ def _extract(archive: Path, root: Path) -> None:
                 run(["/usr/bin/hdiutil", "detach", str(mount)], cwd=root, timeout=30)
     else:
         _extract_linux(archive, root)
-
-
-def _remove_tree(path: Path) -> int:
-    files = sum(len(names) for _, _, names in os.walk(path))
-    shutil.rmtree(path)
-    return files
-
-
-def unread(relative: PurePath) -> bool:
-    """Whether ``prune_unread`` would remove this file of an image (a path below it).
-
-    Windows extraction skips these members, so they are never written and scanned
-    only to be deleted again.
-    """
-    parts = relative.parts
-    lowered = [part.lower() for part in parts]
-    if lowered[0] == "help":
-        return True
-    for index, part in enumerate(parts[:-1]):
-        parent = parts[index - 1] if index else ""
-        if parent == "extensions" and part in UNREAD_EXTENSIONS:
-            return True
-        if (
-            parent == "resource"
-            and index + 1 < len(parts) - 1
-            and parts[index + 1] == "LC_MESSAGES"
-            and not lowered[index].startswith("en")
-        ):
-            return True
-    name = lowered[-1]
-    folder = parts[-2] if len(parts) > 1 else ""
-    grandparent = parts[-3] if len(parts) > 2 else ""
-    if folder.startswith("dict-") and grandparent == "extensions":
-        return PurePath(name).suffix in UNREAD_DICTIONARY_SUFFIXES and not name.startswith("hyph")
-    if folder == "res" and grandparent == "registry" and name.endswith(".xcd"):
-        language = PurePath(name).stem.rpartition("_")[2]
-        return bool(language) and not language.startswith("en")
-    return False
-
-
-def prune_unread(image: Path) -> int:
-    """Remove the parts of an extracted LibreOffice that headless conversion never reads.
-
-    Every installed file costs a write and, on Windows, an antivirus scan (gact-tui#739).
-    The same list applies to all platforms' layouts: the offline help, the
-    ``UNREAD_EXTENSIONS``, the spelling and thesaurus data of the ``dict-*``
-    extensions, the non-English UI translations (``resource/<lang>``) and their
-    configuration packs (``registry/res/*_<lang>.xcd``, which every start reads: about
-    2 s per cold conversion). The application, filters, fonts, hyphenation patterns and
-    English (``en*``) stay, so conversions are pixel-identical. Returns the number of
-    files removed.
-
-    macOS is skipped: LibreOffice.app is TDF's notarized bundle, and removing any
-    sealed resource fails ``codesign --verify`` and Gatekeeper.
-    """
-    if platform.system() == "Darwin":
-        return 0
-    removed = 0
-    for directory, names, files in os.walk(image):
-        path = Path(directory)
-        if path.name == "extensions":
-            for name in sorted(UNREAD_EXTENSIONS.intersection(names)):
-                removed += _remove_tree(path / name)
-        elif path.name.startswith("dict-") and path.parent.name == "extensions":
-            for name in files:
-                lowered = name.lower()
-                if Path(lowered).suffix in UNREAD_DICTIONARY_SUFFIXES and not lowered.startswith(
-                    "hyph"
-                ):
-                    (path / name).unlink()
-                    removed += 1
-        elif path.name == "res" and path.parent.name == "registry":
-            for name in files:
-                language = Path(name).stem.rpartition("_")[2].lower()
-                if name.endswith(".xcd") and language and not language.startswith("en"):
-                    (path / name).unlink()
-                    removed += 1
-        elif path.name == "resource":
-            for name in sorted(names):
-                if not name.lower().startswith("en") and (path / name / "LC_MESSAGES").is_dir():
-                    removed += _remove_tree(path / name)
-        elif "program" in names and "help" in names:
-            removed += _remove_tree(path / "help")
-        # Translations and extensions are near the top of every layout; skip the rest.
-        names[:] = [
-            name
-            for name in names
-            if (path / name).exists() and len((path / name).relative_to(image).parts) < 6
-        ]
-    return removed
 
 
 def _seed_document(path: Path) -> None:
@@ -626,6 +600,73 @@ def _office_archive(archive: Path, name: str, checksum: str, url: str) -> Path:
     return archive
 
 
+def _lay_image(image: Path, staging: Path, source: Callable[[], Path]) -> None:
+    """Lay Office into ``image`` from the archive ``source`` returns, pruned and runnable.
+
+    ``staging`` is a scratch directory beside ``image``. This is what a prepared tree
+    holds (``scripts/build_office_tree.py``).
+    """
+    # The pinned userland (~150 small packages) needs nothing from the archive:
+    # it is fetched and unpacked beside the image while the archive downloads
+    # and unpacks, and moved in after pruning, which never walks it.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="office-compat") as side:
+        userland: Future[None] | None = None
+        beside = staging / "userland"
+        if office_compat.supported():
+            beside.mkdir()
+            userland = side.submit(
+                office_compat.prepare, beside, download=_download, deb_data=_deb_data
+            )
+        archive = source()
+        try:
+            _extract(archive, image)
+            prune_unread(image)
+            if userland is not None:
+                userland.result()
+                directory = office_compat.runtime_directory()
+                (beside / directory).rename(image / directory)
+                # The userland is in place: this only publishes Office's launcher.
+                office_compat.prepare(image, download=_download, deb_data=_deb_data)
+        except (OSError, ValueError, tarfile.TarError) as exc:
+            raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
+
+
+def _finish_image(image: Path, root: Path, profile_templates: Path | None) -> None:
+    try:
+        inherit_parent_access(image)
+        candidate = executable(image)
+        if candidate is None:
+            raise DocumentError("LibreOffice image contains no supported executable")
+        _verify_office(candidate, cwd=image, profile_templates=profile_templates)
+        _publish_image(image, root)
+    except (OSError, ValueError, tarfile.TarError) as exc:
+        raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
+
+
+def _lay_prepared(prepared: Path, root: Path, profile_templates: Path | None) -> bool:
+    """Publish the installer's prepared tree as ``root``; False if it cannot be used."""
+    with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
+        staging = Path(temporary)
+        inherit_parent_access(staging)
+        image = staging / "image"
+        image.mkdir()
+        try:
+            _unpack_prepared_tree(prepared, image)
+            # Rewrites the launcher only: the tree's userland is this release's.
+            office_compat.prepare(image, download=_download, deb_data=_deb_data)
+            _finish_image(image, root, profile_templates)
+        except (DocumentError, OSError, ValueError, tarfile.TarError, zstandard.ZstdError) as exc:
+            if root.exists():
+                raise
+            logger.warning(
+                "reason=office_prepared_tree_unusable name=%s error=%s; laying Office here",
+                prepared.name,
+                exc,
+            )
+            return False
+    return True
+
+
 def ensure_office(
     root: Path,
     *,
@@ -635,7 +676,9 @@ def ensure_office(
     """Download, verify and extract the renderer once under an owned cache root.
 
     The tree includes LibreOffice's license/notices. On Linux, Office runs on its
-    own pinned userland (``office_compat``), so it needs nothing from the host.
+    own pinned userland (``office_compat``), so it needs nothing from the host. An
+    installer that downloaded the release's prepared tree (``prepared_tree_name``)
+    hands it over, and nothing is downloaded or unpacked from TDF's packages here.
     """
     root = root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -657,6 +700,12 @@ def ensure_office(
                 profile_starter=profile_starter,
             )
             return str(existing)
+        prepared = installer_prepared_tree()
+        if prepared is not None and _lay_prepared(prepared, root, profile_templates):
+            candidate = executable(root)
+            if candidate is None:
+                raise DocumentError("LibreOffice renderer disappeared after provisioning")
+            return str(candidate)
         url, name, checksum = asset()
         downloads = root.parent / "downloads"
         downloads.mkdir(exist_ok=True)
@@ -666,35 +715,8 @@ def ensure_office(
             inherit_parent_access(staging)
             image = staging / "image"
             image.mkdir()
-            # The pinned userland (~150 small packages) needs nothing from the archive:
-            # it is fetched and unpacked beside the image while the archive downloads
-            # and unpacks, and moved in after pruning, which never walks it.
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="office-compat") as side:
-                userland: Future[None] | None = None
-                beside = staging / "userland"
-                if office_compat.supported():
-                    beside.mkdir()
-                    userland = side.submit(
-                        office_compat.prepare, beside, download=_download, deb_data=_deb_data
-                    )
-                source = _office_archive(archive, name, checksum, url)
-                try:
-                    _extract(source, image)
-                    prune_unread(image)
-                    if userland is not None:
-                        userland.result()
-                        directory = office_compat.runtime_directory()
-                        (beside / directory).rename(image / directory)
-                        # The userland is in place: this only publishes Office's launcher.
-                        office_compat.prepare(image, download=_download, deb_data=_deb_data)
-                    inherit_parent_access(image)
-                    candidate = executable(image)
-                    if candidate is None:
-                        raise DocumentError("LibreOffice image contains no supported executable")
-                    _verify_office(candidate, cwd=image, profile_templates=profile_templates)
-                    _publish_image(image, root)
-                except (OSError, ValueError, tarfile.TarError) as exc:
-                    raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
+            _lay_image(image, staging, lambda: _office_archive(archive, name, checksum, url))
+            _finish_image(image, root, profile_templates)
         candidate = executable(root)
         if candidate is None:
             raise DocumentError("LibreOffice renderer disappeared after provisioning")
