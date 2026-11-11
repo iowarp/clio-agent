@@ -271,7 +271,7 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     import sys
     import threading
 
-    both_running = Barrier(2, timeout=10)
+    both_running = Barrier(3, timeout=10)
 
     def install(workspace: Path, **kwargs: Any) -> dict[str, Any]:
         both_running.wait()
@@ -283,8 +283,13 @@ def test_store_upgrade_runs_while_packages_are_prepared(
         emit("migrate status=done ran=0 seconds=0.000")
         return {"status": "done", "seconds": 0.0}
 
+    def browser(args: Any, emit: Any) -> dict[str, Any]:
+        both_running.wait()
+        return {"status": "ready", "seconds": 0.0}
+
     monkeypatch.setattr(installer, "install_document_runtime", install)
     monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(installer, "_prepare_browser", browser)
     monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
     monkeypatch.setattr(
         installer, "collect_snapshots_after_install", lambda: {"status": "collected"}
@@ -296,6 +301,46 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["status"] == "ready"
     assert summary["store_migrations"] == {"status": "done", "seconds": 0.0}
+    assert summary["browser"] == {"status": "ready", "seconds": 0.0}
+
+
+def test_browser_is_fetched_by_an_install_but_never_by_a_launch_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from argparse import Namespace
+
+    from clio_agent.gact.browser import install as browser_install
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        browser_install, "prepare_at_install", lambda: calls.append("x") or {"status": "ready"}
+    )
+    lines: list[str] = []
+    launch = installer._prepare_browser(Namespace(reuse_installed=True), lines.append)
+    assert launch == {"status": "skipped", "reason": "reuse_installed"}
+    assert calls == []
+    install = installer._prepare_browser(Namespace(reuse_installed=False), lines.append)
+    assert install["status"] == "ready" and calls == ["x"]
+    assert lines[-1] == "The browser is ready."
+
+
+def test_failed_browser_fetch_is_typed_and_does_not_fail_the_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.browser import driver
+    from clio_agent.gact.browser import install as browser_install
+    from clio_agent.gact.browser.settings import BrowserError
+
+    def offline() -> None:
+        raise BrowserError("browser_runtime_install_failed", "nodejs.org is unreachable")
+
+    monkeypatch.setattr(browser_install, "playwright_version", lambda: "1.0")
+    monkeypatch.setattr(driver, "ensure_node", offline)
+    assert browser_install.prepare_at_install() == {
+        "status": "failed",
+        "reason": "browser_runtime_install_failed",
+        "error": "nodejs.org is unreachable",
+    }
 
 
 def test_failed_package_step_waits_for_store_upgrade(
@@ -316,6 +361,7 @@ def test_failed_package_step_waits_for_store_upgrade(
 
     monkeypatch.setattr(installer, "install_document_runtime", install)
     monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(installer, "_prepare_browser", lambda args, emit: {"status": "ready"})
     monkeypatch.setattr(
         sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
     )
