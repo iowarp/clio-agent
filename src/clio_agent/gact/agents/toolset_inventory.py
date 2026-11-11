@@ -57,6 +57,20 @@ if TYPE_CHECKING:
 # need the lock for a correct read-then-write.
 _STATE_LOCK = threading.Lock()
 
+# (agent_id, tool, detail) triples already traced at EVENT level this process.
+# A missing tool repeats on every turn's build; the first sighting is the news,
+# repeats drop to the ROUTING category (the reason catalog still records each).
+_UNAVAILABLE_SEEN: set[tuple[str, str, str]] = set()
+
+
+def _first_unavailable(agent_id: str, tool: str, detail: str) -> bool:
+    key = (agent_id, tool, detail)
+    with _STATE_LOCK:
+        if key in _UNAVAILABLE_SEEN:
+            return False
+        _UNAVAILABLE_SEEN.add(key)
+        return True
+
 
 def register_tool_source(sources: dict[str, str], name: object, source: str) -> None:
     """Record one tool's provenance, into THIS build's per-call ``sources`` dict
@@ -172,7 +186,8 @@ def record_tool_unavailable(
         else tool_name
     )
     _record_reason(app, sid, agent_id, "custom_agent_tool_unavailable", detail)
-    trace.event(
+    emit = trace.event if _first_unavailable(agent_id, tool_name, detail) else trace.route
+    emit(
         "TOOLSET-INVENTORY",
         "custom_agent_tool_unavailable agent_id=%s tool=%s detail=%s -- degraded, not bricked",
         agent_id,
@@ -209,7 +224,9 @@ def record_tools_unavailable_degraded(
                 app, sid, agent_id, name, mount_reason=mount_failures.get(namespace, "")
             )
         return
-    trace.event(
+    detail = repr(sorted(mount_failures.items()))
+    emit = trace.event if _first_unavailable(agent_id, ",".join(missing), detail) else trace.route
+    emit(
         "TOOLSET-INVENTORY",
         "custom_agent_tool_unavailable agent_id=%s tools=%s reason=no_app mount_failures=%s",
         agent_id,

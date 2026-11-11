@@ -83,6 +83,11 @@ class TurnRunner:
         self._closing = False
         self._released: dict[str, list[Callable[[], None]]] = {}
 
+    @property
+    def closing(self) -> bool:
+        """Whether shutdown has closed admission (its cancellations are the server's)."""
+        return self._closing
+
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind application-owned admission before producers can signal work."""
         if self._loop is not None and self._loop is not loop:

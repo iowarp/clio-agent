@@ -265,16 +265,20 @@ class WatcherArmingRefusal:
 
 
 def _record_skip(reason: str, agent_ref: str, *, server: str = "", error: str = "") -> None:
-    """Log + trace one typed "nothing to validate" outcome (no silent pass)."""
+    """Log + trace one typed "nothing to validate" outcome (no silent pass).
 
-    logger.info(
+    Every availability poll reaches this, so it logs at debug and traces as a
+    routing decision rather than a WARNING-level event.
+    """
+
+    logger.debug(
         "spotter_watcher_arm_check_skip reason=%s agent=%s server=%s error=%s",
         reason,
         agent_ref,
         server,
         error,
     )
-    trace.event(
+    trace.route(
         "SPOTTER",
         "spotter_watcher_arm_check_skip reason=%s agent=%s server=%s error=%s",
         reason,

@@ -270,7 +270,8 @@ def test_wrong_bytes_from_every_source_fail_closed(mirrors: Fixture, tmp_path: P
     mirrors.archive.payload = wrong
     url = mirrors.setup(sources)
     target = tmp_path / "office.part"
-    with pytest.raises(DocumentError, match="all three download attempts failed"):
+    limit = office_fetch._MAX_ATTEMPTS
+    with pytest.raises(DocumentError, match=f"all {limit} download attempts failed"):
         office_fetch.download(url, target, CHECKSUM)
     assert not target.exists()
 

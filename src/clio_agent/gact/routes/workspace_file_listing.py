@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from clio_agent.gact.resource_mime import detect_media_type
 from clio_agent.gact.routes.workspace_file_policy import (
+    hide_workspace_entry,
     is_internal_workspace_file_directory,
     skip_workspace_file_directory,
 )
@@ -128,6 +129,8 @@ async def collect_workspace_file_entries(
             if exclude_service_storage and is_internal_workspace_file_directory(name):
                 continue
             if not include_hidden and name.startswith("."):
+                continue
+            if hide_workspace_entry(root, child):
                 continue
             try:
                 if child.is_symlink() and not allow_symlinks:

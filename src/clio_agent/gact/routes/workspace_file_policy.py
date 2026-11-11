@@ -6,6 +6,7 @@ import mimetypes
 from pathlib import Path
 
 from clio_agent.runtime.sandbox import CHILD_CACHE_DIRNAME
+from clio_agent.runtime.sandbox_stubs import SANDBOX_MOUNT_STUB_NAMES, is_sandbox_mount_stub
 
 TEXTUAL_WORKSPACE_MIME_TYPES = frozenset(
     {
@@ -48,6 +49,33 @@ def skip_workspace_file_directory(name: str) -> bool:
     """Return whether a directory is too costly or unsafe to browse."""
 
     return name in FILE_PICKER_SKIP_DIRS
+
+
+#: Root-relative directories CLIO's document machinery writes into a workspace:
+#: rendered preview copies and the document toolchain's scratch (node_modules,
+#: uv cache, sandbox registry). They are not the user's files.
+DOCUMENT_MACHINERY_RELATIVE_PARTS = frozenset(
+    {("artifacts", "document-previews"), (".tmp", "clio-documents")}
+)
+
+
+def is_document_machinery_path(relative_path: Path) -> bool:
+    """Return whether a workspace-relative path is, or is inside, CLIO document machinery."""
+
+    parts = tuple(part.casefold() for part in relative_path.parts)
+    return any(parts[: len(prefix)] == prefix for prefix in DOCUMENT_MACHINERY_RELATIVE_PARTS)
+
+
+def hide_workspace_entry(root: Path, path: Path) -> bool:
+    """Return whether a listing should omit ``path``: a sandbox stub or document machinery."""
+
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        relative = None
+    if relative is not None and is_document_machinery_path(relative):
+        return True
+    return is_sandbox_mount_stub(path)
 
 
 #: Cache/staging directory NAMES CLIO itself creates under a workspace root
@@ -112,7 +140,12 @@ def is_textual_workspace_file(name: str, raw: bytes) -> bool:
 
 
 __all__ = [
+    "DOCUMENT_MACHINERY_RELATIVE_PARTS",
+    "SANDBOX_MOUNT_STUB_NAMES",
+    "hide_workspace_entry",
+    "is_document_machinery_path",
     "is_internal_workspace_file_directory",
+    "is_sandbox_mount_stub",
     "is_textual_workspace_file",
     "skip_workspace_file_directory",
     "workspace_read_redaction_reason",

@@ -777,15 +777,40 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
     )
 
 
-def _cancelled_error_info(sid: str, *, execution_cancellation: str) -> "ErrorInfo":
-    """ErrorInfo for a client-cancelled turn (the old, always-redundant
-    ``executor_work_may_continue`` boolean is deleted, L1 slice)."""
+def turn_cancelled_by_shutdown(app: Any | None = None) -> bool:
+    """Whether the server's shutdown drain (not a client) is cancelling turns.
+
+    ``app`` defaults to the active GACT app of the calling context.
+    """
+    if app is None:
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+        app = _ctx.active_app()
+    runner = getattr(getattr(app, "state", None), "turn_runner", None)
+    return getattr(runner, "closing", False) is True
+
+
+def _cancelled_error_info(
+    sid: str, *, execution_cancellation: str, app: Any | None = None
+) -> "ErrorInfo":
+    """ErrorInfo for a cancelled turn (the old, always-redundant
+    ``executor_work_may_continue`` boolean is deleted, L1 slice).
+
+    A turn the shutdown drain stops is the server's cancellation, not the
+    client's: it carries ``reason=server_shutdown`` and says so.
+    """
+    from clio_agent.gact.turn_runner import DRAIN_REASON_SERVER_SHUTDOWN  # noqa: PLC0415
+
+    shutdown = turn_cancelled_by_shutdown(app)
+    details: dict[str, Any] = {
+        "session_id": sid,
+        "execution_cancellation": execution_cancellation,
+    }
+    if shutdown:
+        details["reason"] = DRAIN_REASON_SERVER_SHUTDOWN
     return ErrorInfo(
         error="cancelled",
-        message="turn cancelled by client",
-        details={
-            "session_id": sid,
-            "execution_cancellation": execution_cancellation,
-        },
+        message="turn cancelled by server shutdown" if shutdown else "turn cancelled by client",
+        details=details,
         recoverable=True,
     )
