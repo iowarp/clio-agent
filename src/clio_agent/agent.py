@@ -712,18 +712,12 @@ class ClioAgent(dspy.Module):
     def _raise_if_cancelled(stage: str) -> None:
         """Raise a structured cancellation if the active turn was cancelled."""
         if cancellation_requested():
-            from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
-                turn_cancelled_by_shutdown,
-            )
+            from clio_agent.gact.runtime import turn_cancellation_info  # noqa: PLC0415
 
-            shutdown = turn_cancelled_by_shutdown()
-            details = {"execution_cancellation": "cooperative", "stage": stage}
-            if shutdown:
-                details["reason"] = "server_shutdown"
-            raise CancellationError(
-                "turn cancelled by server shutdown" if shutdown else "turn cancelled by client",
-                details=details,
+            message, details = turn_cancellation_info.cancellation_outcome(
+                {"execution_cancellation": "cooperative", "stage": stage}
             )
+            raise CancellationError(message, details=details)
 
     def _known_tool_names(self) -> set[str]:
         """Return every tool name currently visible to the executor."""
