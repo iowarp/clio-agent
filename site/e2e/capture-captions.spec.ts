@@ -5,7 +5,7 @@ test('workflow examples open their images from the caption and return focus', as
     { route: '/docs/injections/', image: 'Expanded Wait for all tasks showing one collected result and the child agent\'s calculation', caption: 'Open the returned task result to read the check.' },
     { route: '/docs/injections/', image: 'Scheduled wake expanded above the resulting saved report', caption: 'Scheduled wake carries the saved instruction into the conversation.' },
     { route: '/docs/long-running-work/', image: 'Two Loop wake entries followed by separate saved monitoring reports', caption: 'Each Loop wake carries the monitoring instruction into another check.' },
-    { route: '/docs/evidence/', image: 'Evidence view listing the bike example\'s source table, derived tables, findings report and dashboard', caption: 'Open a source or output from Evidence' },
+    { route: '/docs/evidence/', image: 'Artifacts panel listing the bike example\'s source table, derived tables, findings report and dashboard', caption: 'Open a source or output from Artifacts' },
     { route: '/docs/sessions/', image: 'Marked messages list opened from the bookmark above the conversation rail', caption: 'Each entry keeps its title and a short excerpt' },
   ];
   for (const example of examples) {

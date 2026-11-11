@@ -43,7 +43,7 @@ test('product showcase supports keyboard selection and usable image dialogs on d
 		await provenance.scrollIntoViewIfNeeded();
 		await provenance.screenshot({path:test.info().outputPath(`provenance-${width}.png`)});
 		await provenance.getByRole('button', {name:/^View larger:/}).click();
-		await expect(dialog.getByRole('img')).toHaveAttribute('alt', /Used and Generated edges/);
+		await expect(dialog.getByRole('img')).toHaveAttribute('alt', /artifact lineage graph connecting bike-stations\.csv/);
 		await expect(dialog.getByRole('link', {name:'Open full-size image (new tab)'})).toBeVisible();
 		await page.screenshot({path:test.info().outputPath(`lineage-dialog-${width}.png`)});
 		await page.keyboard.press('Escape');
