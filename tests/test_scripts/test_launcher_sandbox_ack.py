@@ -187,6 +187,7 @@ def test_server_without_acknowledgement_fields_falls_back_to_status(tmp_path: Pa
 def test_launcher_acknowledges_on_every_start_path() -> None:
     text = LAUNCHER.read_text(encoding="utf-8")
     assert "start)        update_check; start_server && sandbox_ack ;;" in text
-    assert "restart)      stop_server; start_server && sandbox_ack ;;" in text
+    restart = text[text.index("    restart)") : text.index("    update)")]
+    assert restart.rstrip().endswith("stop_server; start_server && sandbox_ack ;;")
     web = text[text.index('""|web|--web)') : text.index("desktop|--desktop)")]
     assert web.index("sandbox_ack || return 1") < web.index("open_url")
