@@ -14,6 +14,7 @@ from clio_agent.gact.artifacts.wire import mime_for
 from clio_agent.gact.context_reference_evidence import evidence_reference_snapshots
 from clio_agent.gact.context_reference_result import reference_result as _reference_result
 from clio_agent.gact.routes.workspace_file_policy import (
+    hide_workspace_entry,
     is_internal_workspace_file_directory,
     skip_workspace_file_directory,
 )
@@ -127,12 +128,13 @@ def _walk_workspace_files(
             for name in names
             if not skip_workspace_file_directory(name)
             and not is_internal_workspace_file_directory(name)
+            and not hide_workspace_entry(root, Path(directory) / name)
         )
         for name in sorted(filenames):
             if len(results) >= limit:
                 return results
             path = Path(directory) / name
-            if path.is_symlink():
+            if path.is_symlink() or hide_workspace_entry(root, path):
                 continue
             try:
                 ref_id = path.relative_to(root).as_posix()

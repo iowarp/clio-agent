@@ -6,6 +6,27 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6-beta.1.2] - 2026-11-11
+
+### Fixed
+
+- The Linux bundled desktop rpm builds again. It stores the already-compressed
+  runtime archive without compressing it a second time; the packaging library
+  made that second pass take hours, so v0.9.6-beta.1 and v0.9.6-beta.1.1
+  shipped no Linux bundled deb or rpm (#2090).
+- The Files list, @-reference search and the agent's directory listing hide the
+  empty placeholder folders the Linux sandbox mounts while a command runs, and
+  CLIO's own document preview folders (#2088).
+- Shutting the server down stops a provider process still running under it, and
+  a turn interrupted by shutdown says so instead of reporting that you
+  cancelled it (#2088).
+- Desktop and Web include gact-tui develop at de9a2709: the Linux lite AppImage
+  finds its agent on a clean home (iowarp/gact-tui#1123), Office files open
+  straight into their rendered preview with Export to PDF beside Download
+  (iowarp/gact-tui#1122, iowarp/gact-tui#1124), and the ask to enable
+  notifications sits in the bell instead of over the transcript
+  (iowarp/gact-tui#1121).
+
 ## [0.9.6-beta.1.1] - 2026-11-11
 
 ### Fixed
@@ -17,6 +38,17 @@ TUI/HTTP surface aren't tracked here.
 - `install.sh --desktop` now fails with the cause and the command to re-run when
   runtime preparation fails or the app executable is missing, instead of
   warning and exiting successfully (#2077, #2081).
+- On Linux, fetching LibreOffice's supporting packages retries when
+  snapshot.ubuntu.com returns temporary server errors (#2084).
+- Document tools running inside the sandbox get a writable LibreOffice profile,
+  so conversions no longer fail there (#2084).
+- The reasoning timer in a conversation stops while a tool call waits for your
+  permission (#2084).
+- Listing a conversation's artifacts no longer stalls other requests (#2084).
+- `clio stop` stops a server that has exited but was not yet cleaned up, and
+  `clio restart` keeps Web running (#2084).
+- `SHA256SUMS.web.txt` names the Web zip by file name instead of the build
+  machine's path, so it can be checked with `sha256sum -c` (#2084).
 
 ### Changed
 

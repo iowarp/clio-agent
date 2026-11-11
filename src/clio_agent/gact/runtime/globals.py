@@ -50,6 +50,12 @@ from clio_agent.gact.runtime.tool_session import (
 from clio_agent.gact.runtime.tool_session import (
     _tool_session_context as _tool_session_context,
 )
+from clio_agent.gact.runtime.turn_cancellation_info import (
+    _cancelled_error_info as _cancelled_error_info,
+)
+from clio_agent.gact.runtime.turn_cancellation_info import (
+    turn_cancelled_by_shutdown as turn_cancelled_by_shutdown,
+)
 from clio_agent.gact.semantic_events import DEFAULT_DETAIL_LEVEL, SemanticEvent
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime import trace
@@ -774,18 +780,4 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
             },
             recoverable=False,
         )
-    )
-
-
-def _cancelled_error_info(sid: str, *, execution_cancellation: str) -> "ErrorInfo":
-    """ErrorInfo for a client-cancelled turn (the old, always-redundant
-    ``executor_work_may_continue`` boolean is deleted, L1 slice)."""
-    return ErrorInfo(
-        error="cancelled",
-        message="turn cancelled by client",
-        details={
-            "session_id": sid,
-            "execution_cancellation": execution_cancellation,
-        },
-        recoverable=True,
     )

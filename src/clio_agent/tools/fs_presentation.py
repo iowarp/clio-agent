@@ -93,7 +93,12 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     link = {"id": "file-link", "type": "link", "target": "file", "uri": raw_path}
     link |= {"label": path.name, "line": start} if start else {"label": path.name}
     if start is None:
-        summary = "Empty file" if total == 0 else f"Past the end ({_count(total, 'line')})"
+        if total == 0:
+            summary = "Empty file"
+        elif total is None:
+            summary = "Past the end"
+        else:
+            summary = f"Past the end ({_count(total, 'line')})"
         return {"subject": "file-link", "summary": summary, "blocks": [link]}
     of = f"of {total:,}" if total is not None else "of a large file"
     summary = f"Lines {start:,}–{end:,} {of}"

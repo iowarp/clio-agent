@@ -224,7 +224,9 @@ async def _apply_turn_prediction(
         )
     if state.sid in state.app.state.cancel_flags:
         state.app.state.cancel_flags.discard(state.sid)
-        state.error_info = _cancelled_error_info(state.sid, execution_cancellation="turn_boundary")
+        state.error_info = _cancelled_error_info(
+            state.sid, execution_cancellation="turn_boundary", app=state.app
+        )
         state.answer_text = ""
         state.tools_called = []
     return True
@@ -390,7 +392,9 @@ async def _run_turn_in_background(
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
             raise _TurnCancelled(
-                _cancelled_error_info(state.sid, execution_cancellation="turn_boundary")
+                _cancelled_error_info(
+                    state.sid, execution_cancellation="turn_boundary", app=state.app
+                )
             )
 
         # Re-read the shared mailbox after the prologue's abort/veto checks. This

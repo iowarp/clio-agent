@@ -104,6 +104,10 @@ def begin(app: Any, *, exit_process: Any = os._exit) -> threading.Event | None:
             len(getattr(runner, "_turns", ()) or ()),
         )
         faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        # os._exit skips atexit, so end the provider CLI children here or they outlive us.
+        from clio_agent.runtime.process_tree import reap_sdk_cli_children  # noqa: PLC0415
+
+        reap_sdk_cli_children(reason="shutdown_budget_exceeded", grace_s=1.0)
         logging.shutdown()  # flush the reason before the process ends
         exit_process(EXIT_BUDGET_EXCEEDED)
 

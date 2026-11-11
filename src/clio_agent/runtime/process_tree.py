@@ -357,9 +357,74 @@ def teardown_pooled_sdk_transports() -> dict[str, str]:
         results["codex_ws_sessions"] = f"error:{exc!r}"
 
     logger.info(
-        "pooled SDK transports torn down on shutdown reason=sdk_pools_closed outcome=%s", results
+        "pooled SDK transports torn down on shutdown reason=sdk_pools_closed outcome=%s",
+        results,
     )
     return results
+
+
+def reap_sdk_cli_children(*, reason: str, grace_s: float = 3.0) -> str:
+    """End every Claude SDK CLI child (and its descendants) still running in this process.
+
+    The pool close above disconnects each client, but a disconnect already in flight
+    (a cancelled turn's reset) can be abandoned when its owner loop stops, and the
+    SDK's own atexit hook only sends SIGTERM -- which the CLI may take tens of seconds
+    to act on, after the server has exited and it has been reparented. This is the
+    deterministic backstop: terminate, wait ``grace_s``, then kill. A PID is acted on
+    only while it is still this process's child, so a reused PID is never touched.
+    Never raises.
+
+    Returns:
+        ``"none"``, or ``"terminated:N,killed:M"`` for the processes ended here.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+        from claude_agent_sdk._internal.transport import subprocess_cli  # noqa: PLC0415
+    except ImportError:  # no SDK (or psutil) means no SDK children
+        return "none"
+
+    tracked = list(getattr(subprocess_cli, "_ACTIVE_CHILDREN", ()))
+    me = os.getpid()
+    targets: list[Any] = []
+    for child in tracked:
+        pid = getattr(child, "pid", None)
+        if not isinstance(pid, int) or getattr(child, "returncode", None) is not None:
+            continue
+        try:
+            proc = psutil.Process(pid)
+            if proc.ppid() != me:
+                continue
+            targets.extend([proc, *proc.children(recursive=True)])
+        except psutil.Error:
+            continue
+    if not targets:
+        return "none"
+    for proc in targets:
+        try:
+            logger.warning(
+                "sdk cli child still running at teardown reason=%s pid=%d name=%s; terminating",
+                reason,
+                proc.pid,
+                proc.name(),
+            )
+            proc.terminate()
+        except psutil.Error:
+            pass
+    _gone, alive = psutil.wait_procs(targets, timeout=grace_s)
+    for proc in alive:
+        try:
+            logger.warning(
+                "sdk cli child ignored terminate reason=%s pid=%d grace_s=%s; killing",
+                reason,
+                proc.pid,
+                grace_s,
+            )
+            proc.kill()
+        except psutil.Error:
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=2.0)
+    return f"terminated:{len(targets) - len(alive)},killed:{len(alive)}"
 
 
 def close_tool_executors(executors: Iterable[Any]) -> None:
@@ -403,7 +468,10 @@ def shutdown_child_processes(agent: Any) -> dict[str, str]:
             logger.warning(
                 "agent shutdown failed on teardown reason=agent_shutdown_failed error=%r", exc
             )
-    return teardown_pooled_sdk_transports()
+    results = teardown_pooled_sdk_transports()
+    reaped = reap_sdk_cli_children(reason="server_shutdown")
+    logger.info("sdk cli children after teardown reason=server_shutdown outcome=%s", reaped)
+    return results
 
 
 # --------------------------------------------------------------------------- #
