@@ -23,8 +23,16 @@ def test_official_assets_are_pinned(
     monkeypatch.setattr(office.platform, "system", lambda: system)
     monkeypatch.setattr(office.platform, "machine", lambda: machine)
     url, filename, checksum = office.asset()
-    assert url.startswith("https://download.documentfoundation.org/")
-    assert filename in url
+    assert url.startswith("https://github.com/iowarp/clio-agent/releases/download/office-")
+    assert url.endswith(f"/office-{office.BUILD}/{filename}")
+    assert filename.startswith(f"LibreOffice_{office.BUILD}_")
+    fallback = office.asset_fallback()
+    # TDF's archive names the full build in both the directory and the file name.
+    assert fallback.startswith(
+        f"https://downloadarchive.documentfoundation.org/libreoffice/old/{office.BUILD}/"
+    )
+    assert fallback.endswith(f"/{filename}")
+    assert office.BUILD.startswith(office.VERSION + ".")
     assert len(checksum) == 64
 
 

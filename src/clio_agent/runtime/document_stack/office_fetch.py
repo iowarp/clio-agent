@@ -1,9 +1,10 @@
-"""Fetch a pinned LibreOffice package from The Document Foundation's mirrors.
+"""Fetch a pinned LibreOffice package (or Office userland package) from its copies.
 
-TDF's redirector sends each request to a random mirror, and one slow mirror can hold a
-download for its whole budget. Its Metalink names the mirrors, size and SHA-256, so the
-download races a few, keeps the winner's bytes, and resumes on the next mirror when the
-current one falls below a floor. Every byte is still checked against the pinned SHA-256.
+A plain URL is fetched, then each copy in ``also`` (for Office, TDF's archive after
+CLIO's release mirror). For a URL on TDF's redirector, which sends each request to a
+random mirror, its Metalink names the mirrors, size and SHA-256, so the download races a
+few, keeps the winner's bytes, and resumes on the next mirror when the current one falls
+below a floor. Every byte is still checked against the pinned SHA-256.
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ MAX_DOWNLOAD = 600 * 1024 * 1024
 # KB/s from cloud hosts) can hold a download for the whole budget. Its Metalink lists the
 # mirrors, size and SHA-256, so the download races a few of them and leaves one that slows.
 _TDF = "https://download.documentfoundation.org/"
-_TDF_ARCHIVE = "https://downloadarchive.documentfoundation.org/"
 _METALINK = "{urn:ietf:params:xml:ns:metalink}"
 _METALINK_MAX = 1024 * 1024
 DOWNLOAD_BUDGET_S = 600.0
@@ -83,12 +83,6 @@ class _SlowMirror(Exception):
     def __init__(self, rate: float) -> None:
         super().__init__(f"{rate / 1e6:.2f} MB/s")
         self.rate = rate
-
-
-def _archive_url(url: str) -> str:
-    """TDF's own archive copy of a release file, under the full four-part version."""
-    # The pinned release is build .2 of its version (26.2.6 is 26.2.6.2 in the archive).
-    return re.sub(r"/stable/(\d+\.\d+\.\d+)/", r"/old/\1.2/", url.replace(_TDF, _TDF_ARCHIVE))
 
 
 def _host(url: str) -> str:
@@ -268,13 +262,7 @@ def _stream(
     """
     offset = partial.count
     try:
-        try:
-            response = _open(url, offset)
-        except urllib.error.HTTPError as exc:
-            if mirror or exc.code not in {404, 410} or not url.startswith(_TDF):
-                raise
-            url = _archive_url(url)
-            response = _open(url, offset)
+        response = _open(url, offset)
         with response:
             get_url = getattr(response, "geturl", None)
             served = str(get_url()) if callable(get_url) else url
@@ -323,10 +311,11 @@ def _sources(
 ) -> tuple[list[str], int | None, float | None]:
     """Where to fetch from, best first, the expected size, and the throughput floor.
 
-    A TDF URL whose Metalink vouches for the pin races its top mirrors and TDF's archive;
-    the winner's bytes are kept. Otherwise (or if no racer finishes) it is ``url``, then
-    ``also``, each Ubuntu snapshot URL preceded by the archive and Launchpad copies and
-    each ports pool URL (gone once superseded) followed by Launchpad's.
+    A TDF URL whose Metalink vouches for the pin races its top mirrors and ``also`` (the
+    pinned file's other copies); the winner's bytes are kept. Otherwise (or if no racer
+    finishes) it is ``url``, then ``also``, each Ubuntu snapshot URL preceded by the
+    archive and Launchpad copies and each ports pool URL (gone once superseded) followed
+    by Launchpad's.
     """
     listing = _metalink(url, checksum)
     if listing is None:
@@ -340,10 +329,10 @@ def _sources(
             sources.extend(copy for copy in copies if copy not in sources)
         return sources, None, None
     size, mirrors = listing
-    racers = [*mirrors[:_RACE_MIRRORS], _archive_url(url)]
+    racers = [*mirrors[:_RACE_MIRRORS], *also]
     won = _race(racers, size, deadline)
     if won is None:
-        return [url], size, None
+        return [url, *also], size, None
     ranked, data, rate = won
     partial.write(data)
     # Untried mirrors before racers that were too slow to finish the race.
@@ -352,13 +341,13 @@ def _sources(
     return [*ranked, *spare, *late, url], size, rate * FLOOR_FRACTION
 
 
-def mirror_rate(url: str, checksum: str) -> tuple[float, int] | None:
+def mirror_rate(url: str, checksum: str, also: Sequence[str] = ()) -> tuple[float, int] | None:
     """The best racing mirror's rate and the file's size, for judging another download."""
     listing = _metalink(url, checksum)
     if listing is None:
         return None
     size, mirrors = listing
-    won = _race([*mirrors[:_RACE_MIRRORS], _archive_url(url)], size, time.monotonic() + 30)
+    won = _race([*mirrors[:_RACE_MIRRORS], *also], size, time.monotonic() + 30)
     return None if won is None else (won[2], size)
 
 

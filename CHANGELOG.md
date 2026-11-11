@@ -12,6 +12,14 @@ TUI/HTTP surface aren't tracked here.
   client receive thread busy-polled its local socket from launch. clio-core
   (iowarp-core) is now 2.4.1 (iowarp/clio-core#1358).
 
+- Installs that download LibreOffice work again. The Document Foundation moved
+  LibreOffice 26.2.6 out of its `stable` downloads, so the pinned URL returned
+  404 and the archive fallback named a file that does not exist. CLIO now
+  downloads the pinned build, 26.2.6.3, from its own `office-26.2.6.3` release
+  (byte-identical copies of TDF's files). If that fails, it falls back to TDF's
+  permanent archive, where the full build appears in both the directory and
+  the file name. Every file is still checked against the same pinned SHA-256.
+
 ## [0.9.6.1] - 2026-11-11
 
 The public stable release of the 0.9.6 line. 0.9.6 was tagged and published
