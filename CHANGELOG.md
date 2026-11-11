@@ -6,6 +6,38 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6] - 2026-11-11
+
+The stable release of the 0.9.6 line. It includes every change in the
+0.9.6-beta.1 to 0.9.6-beta.1.5 sections below, the CLIO interface from
+iowarp/gact-tui v0.12.0 and CLIO Marketplace 0.8.0-beta.1, plus the following.
+
+### Changed
+
+- The Linux one-line install uses the release's prebuilt agent runtime and a
+  prepared LibreOffice tree, both published as release assets, instead of
+  installing from PyPI and assembling LibreOffice on the machine. A measured
+  cold install went from 86 s to 43 s to a ready agent (#2119).
+- The document tools reuse the Python packages the agent already downloaded
+  instead of fetching their own copies (#2120).
+- The one-line installs on macOS and Windows upgrade a new store while the
+  document packages install, start uv's installer alongside the release
+  download, and no longer download a second Python just to find the latest
+  release (#2121, #2125, #2126, #2127).
+
+### Fixed
+
+- On the Windows bundled desktop, installing Claude Code, Copilot or ALCF
+  provider support no longer breaks the app. Provider packages now install
+  beside the bundled runtime instead of over the files the running agent has
+  loaded (#2123).
+- A fresh CLIO store no longer reports its data tier as degraded before
+  anything is stored (#2128).
+- The Linux desktop builds survive an Ubuntu mirror or DNS outage on the build
+  machines (#2122).
+- Desktop and Web include gact-tui v0.12.0: everything between two updates in
+  a conversation folds into one row (iowarp/gact-tui#1131).
+
 ## [0.9.6-beta.1.5] - 2026-11-11
 
 ### Fixed
