@@ -116,6 +116,22 @@ def inherit_parent_access(path: Path) -> None:
         run(["icacls", str(path), "/inheritancelevel:e", "/Q"], cwd=path, timeout=30)
 
 
+#: Written into CLIO-owned workspace machinery directories. ripgrep (the agent's
+#: fs_search/fs_glob, and ``rg`` in a shell) honours ``.ignore`` files, so their
+#: contents stay out of searches for the user's files.
+SEARCH_IGNORE_MARKER = "# Written by CLIO: generated document machinery, not user files.\n# Keeps it out of searches.\n*\n"
+
+
+def mark_search_ignored(directory: Path) -> None:
+    """Write a ``.ignore`` that hides ``directory``'s contents from ripgrep, if absent."""
+    marker = directory / ".ignore"
+    try:
+        if not marker.exists():
+            marker.write_text(SEARCH_IGNORE_MARKER, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def scratch_root(workspace: Path, *, create: bool = True) -> Path:
     """Create workspace-owned scratch storage without following an escaping link."""
     workspace = workspace.resolve()
@@ -124,6 +140,7 @@ def scratch_root(workspace: Path, *, create: bool = True) -> Path:
         raise DocumentError("Document scratch storage escapes the active workspace")
     if create:
         root.mkdir(parents=True, exist_ok=True)
+        mark_search_ignored(root)
     return root
 
 
