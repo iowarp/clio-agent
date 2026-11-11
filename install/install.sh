@@ -845,15 +845,31 @@ record_installed() {  # KIND VALUE
   grep -qxF "$1 $2" "$INSTALLED_TOOLS" 2>/dev/null || printf '%s %s\n' "$1" "$2" >> "$INSTALLED_TOOLS"
 }
 
-# uv installs Python, the environment and the locked dependencies in every mode.
+# uv installs Python, the environment and the locked dependencies in every mode. It
+# installs in the background: a release install starts downloading its prebuilt agent,
+# which needs only curl, while uv arrives. need_uv waits for it before uv is first used.
 mkdir -p "$PREFIX" "$BIN_DIR"
+UV_JOB=""
+UV_LOG=""
 if ! have uv; then
   say "Installing uv into $BIN_DIR"
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null \
-    || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
+  UV_LOG="$(mktemp "${TMPDIR:-/tmp}/clio-uv.XXXXXXXX")"
+  { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null; } \
+    2> "$UV_LOG" &
+  UV_JOB=$!
   export PATH="$BIN_DIR:$PATH"
-  for f in uv uvx; do [ ! -f "$BIN_DIR/$f" ] || record_installed file "$BIN_DIR/$f"; done
 fi
+need_uv() {
+  local status=0
+  [ -n "$UV_JOB" ] || return 0
+  wait "$UV_JOB" || status=$?
+  UV_JOB=""
+  cat "$UV_LOG" >&2 2>/dev/null || true
+  rm -f "$UV_LOG"
+  { [ "$status" = 0 ] && have uv; } \
+    || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
+  for f in uv uvx; do [ ! -f "$BIN_DIR/$f" ] || record_installed file "$BIN_DIR/$f"; done
+}
 
 # A fresh Mac's /usr/bin/git is a placeholder (above). Decided from the filesystem,
 # never by running it.
@@ -1046,6 +1062,7 @@ on_exit() {
   [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
   [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
   [ -z "${tool_shim:-}" ] || rm -rf "$tool_shim"
+  [ -z "${UV_LOG:-}" ] || rm -f "$UV_LOG"
   stop_install_jobs
 }
 trap on_exit EXIT
@@ -1071,7 +1088,7 @@ install_scratch() {
 
 stop_install_jobs() {
   local pid
-  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} ${DOC_JOB:-} ${NODE_JOB:-} ${WEB_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
+  for pid in ${UV_JOB:-} ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} ${RUNTIME_JOB:-} ${DOC_JOB:-} ${NODE_JOB:-} ${WEB_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
@@ -1111,6 +1128,7 @@ source_install_plan() {
   local triple
   triple="$(install_triple)"
   [ -n "$triple" ] && [ -f "$1/scripts/release_install_plan.py" ] || return 0
+  need_uv
   if uv run --quiet --no-project --python "$2" python -I "$1/scripts/release_install_plan.py" \
       --target "$triple" --no-sizes --output "$DESKTOP_SCRATCH/plan" >/dev/null 2>&1; then
     printf '%s' "$DESKTOP_SCRATCH/plan"
@@ -1300,6 +1318,7 @@ EOF
 CLIO_KIT_JOB=""
 clio_kit_spec=""
 start_clio_kit() {
+  need_uv
   if ! have uv; then
     warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
     return 0
@@ -1465,6 +1484,7 @@ install_runtime_archive() {
   RUNTIME_UNPACK="$PREFIX/clio-agent/.runtime-unpack"
   rm -rf "$RUNTIME_UNPACK"
   mkdir -p "$RUNTIME_UNPACK"
+  need_uv
   uv venv --quiet --python "$python" "$VENV" || { warn "uv could not create $VENV"; return 1; }
   version="$("$VENV/bin/python" -I -c 'import sys; print("%d.%d" % sys.version_info[:2])')" || return 1
   if ! "$VENV/bin/python" -I -c 'import compression.zstd' 2>/dev/null; then
@@ -1572,6 +1592,7 @@ if [ "$OPT_SOURCE" = 1 ]; then
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
   fi
+  need_uv  # before the subshell below, which cannot wait for this shell's job
   start_install_downloads "$(source_install_plan "$SRC" "$py")"
   start_clio_kit "$py"
   say "Installing clio-agent deps (uv ${sync_args[*]})"
@@ -1595,6 +1616,7 @@ else
     # most recently published release, pre-releases included.
     which="stable"; [ "$OPT_DEV" = 1 ] && which="any"
     say "Resolving the latest $([ "$which" = any ] && echo release || echo stable release)"
+    need_uv
     # Compressed: the list is ~8.6 MB of JSON. Python 3.14 is the one the release pins
     # (.python-version) and that the runtime archive decoder uses, so uv downloads it once.
     package_version="$(curl -fsSL --compressed "https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100" \
@@ -1636,6 +1658,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
       || { [ "$f" = .python-version ] || die "release $tag has no $f on GitHub"; }
   done
   py="$(python_of "$lockdir/.python-version")"
+  need_uv
   ( cd "$lockdir" && uv export --quiet --frozen --no-hashes --no-emit-project \
       --extra argonne --extra flowcept -o constraints.txt ) \
     || die "could not read the dependency lock of release $tag"
@@ -1689,6 +1712,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   fi
 fi
 
+need_uv
 CLIO_INSTALLED_VERSION=""
 if [ -x "$VENV/bin/python" ]; then
   CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
