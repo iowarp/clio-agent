@@ -249,7 +249,10 @@ from clio_agent.gact.app import build_app
 # are removed, two: a person selects the part of the answer they want.
 # 438 -> 439: POST /v1/sessions/{sid}/move (routes/session_move.py) moves a conversation
 # to another workspace.
-EXPECTED_ROUTE_METHOD_PAIRS = 439
+# 439 -> 441: provider support installs run as background jobs (b9f393d0c): GET
+# /v1/providers/{provider_id}/install (routes/provider_catalog_routes.py) and GET
+# /v1/providers/support/installs (routes/provider_support.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 441
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

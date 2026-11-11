@@ -18,8 +18,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.config import LMProviderConfig
+from clio_agent.gact import shared_result
 from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
+from clio_agent.gact.routes.providers import PROVIDERS
 from clio_agent.runtime.status import RuntimeProbe
 
 
@@ -144,6 +146,9 @@ def test_openrouter_auth_state_is_keyed_by_its_own_env_var(
         assert openrouter["is_authenticated"] is False
 
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+        # The list is shared for a short window and discarded on provider writes; a key
+        # set outside the API is read once that window is discarded.
+        shared_result.invalidate(app, PROVIDERS)
         body = c.get("/v1/providers").json()
     openrouter = next(p for p in body["providers"] if p["id"] == "openrouter")
     assert openrouter["is_authenticated"] is True
@@ -2487,6 +2492,15 @@ def test_install_runs_as_a_job_that_outlives_the_request(tmp_path: Path, monkeyp
         second = client.post("/v1/providers/claude_code/install?wait=false")
         listed = client.get("/v1/providers/support/installs").json()
         release.set()
+        # A POST while the first job is still settling joins it, by design; wait
+        # for it to finish so the next POST starts a fresh install.
+        deadline = time.monotonic() + 10
+        while client.get("/v1/providers/claude_code/install").json()["state"] in {
+            "queued",
+            "installing",
+        }:
+            assert time.monotonic() < deadline, "the first install job never finished"
+            time.sleep(0.01)
         finished = client.post("/v1/providers/claude_code/install")
         job = client.get("/v1/providers/claude_code/install").json()
 

@@ -521,9 +521,14 @@ $port = Get-Random -Minimum 24000 -Maximum 44000
 Write-Host "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$port"
 $srv = Start-Process -FilePath $relocPy -PassThru -WindowStyle Hidden `
   -ArgumentList @('-I', '-B', '-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
+# The gate proves the image boots, not how fast: a loaded builder can take minutes
+# to start a cold interpreter. Stop early if the server exits; otherwise allow
+# CLIO_RUNTIME_BOOT_GATE_SECONDS (default 300).
+$bootBudget = 300
+if ($env:CLIO_RUNTIME_BOOT_GATE_SECONDS) { $bootBudget = [int]$env:CLIO_RUNTIME_BOOT_GATE_SECONDS }
 $bootWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $bootOk = $false
-foreach ($i in 1..30) {
+while ($bootWatch.Elapsed.TotalSeconds -lt $bootBudget -and -not $srv.HasExited) {
   try {
     $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://127.0.0.1:$port/v1/capabilities"
     if ($resp.StatusCode -eq 200) { $bootOk = $true; break }
@@ -531,10 +536,14 @@ foreach ($i in 1..30) {
   Start-Sleep -Seconds 1
 }
 $bootWatch.Stop()
+$bootExited = $srv.HasExited
 Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $reloc -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $bootOk) {
-  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds"
+  if ($bootExited) {
+    throw "build-gact-runtime: relocated runtime exited before serving /v1/capabilities"
+  }
+  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within $bootBudget seconds"
 }
 Write-Host ("[build-gact-runtime] relocated cold boot ready in {0:N2}s" -f $bootWatch.Elapsed.TotalSeconds)
 

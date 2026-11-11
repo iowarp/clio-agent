@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -16,6 +17,9 @@ from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.session_defaults import apply_default_effort
 from clio_agent.gact.spotter_watcher import sync_watcher_for_mode
 from clio_agent.gact.types import CreateSessionRequest, ErrorEnvelope, ErrorInfo, Session
+
+if TYPE_CHECKING:
+    from clio_agent.gact.sessions import Session as StoredSession
 
 
 def register_session_creation_route(app: FastAPI) -> None:
@@ -49,7 +53,7 @@ def register_session_creation_route(app: FastAPI) -> None:
         else:
             model = None
 
-        def prepare_and_create() -> Session:
+        def prepare_and_create() -> StoredSession:
             # One off-loop job on the creation executor: each hop through the shared
             # pool waited behind every queued read, which multiplied a flood's delay.
             resolution = prepare_session_agent(app, metadata, requested)

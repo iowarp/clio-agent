@@ -11,6 +11,7 @@ Drives the bridge directly (no FastMCP server needed) and asserts:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
@@ -397,9 +398,13 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
             assert published is not None
             pending = app.state.permissions[published.payload["id"]]
             assert pending["status"] == "pending"
+            # The request names the waiting call's own row identity (its tool entity id).
+            call_id = pending["tool_call"].get("call_id", "")
+            assert re.fullmatch(r"call_[0-9a-f]{12}", call_id), pending["tool_call"]
             assert pending["tool_call"] == {
                 "tool_name": "relay_jarvis_run",
                 "input": {"pipeline_id": "pipeline-1"},
+                "call_id": call_id,
             }
 
             response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "allow"})

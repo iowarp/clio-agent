@@ -94,7 +94,7 @@ def _try_lock(fd: int) -> bool:
         if os.name == "nt":
             import msvcrt  # noqa: PLC0415
 
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
         else:
             import fcntl  # noqa: PLC0415
 
@@ -110,7 +110,7 @@ def _unlock(fd: int) -> None:
             import msvcrt  # noqa: PLC0415
 
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
         else:
             import fcntl  # noqa: PLC0415
 

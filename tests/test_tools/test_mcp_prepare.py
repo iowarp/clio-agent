@@ -181,8 +181,13 @@ def test_any_other_launcher_has_nothing_to_provision() -> None:
 @pytest.mark.usefixtures("_unconfined")
 def test_provisioning_runs_once_then_reads_its_marker(tmp_path: Path) -> None:
     calls = tmp_path / "calls.txt"
+    # The marker is honoured only beside a complete environment: pyvenv.cfg and an
+    # interpreter, as uv writes them.
     uv = _fake_launcher(
-        tmp_path / "bin", "uv", f'echo "$@" >> {calls}\nmkdir -p "$UV_PROJECT_ENVIRONMENT"'
+        tmp_path / "bin",
+        "uv",
+        f'echo "$@" >> {calls}\nmkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
+        'touch "$UV_PROJECT_ENVIRONMENT/pyvenv.cfg" "$UV_PROJECT_ENVIRONMENT/bin/python"',
     )
     project = tmp_path / "plugin" / "impl"
     project.mkdir(parents=True)

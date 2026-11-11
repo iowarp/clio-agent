@@ -142,7 +142,7 @@ class InstallJobs:
                 job.installed = install()
                 job.instructions = success_instructions
                 job.state = "done"
-            except Exception as exc:  # noqa: BLE001 - every failure becomes a typed job state
+            except Exception as exc:  # noqa: BLE001 - forwards: a typed failed job state
                 code, message = failure_copy(exc)
                 job.error_code, job.error, job.diagnostic = code, message, str(exc)
                 job.state = "failed"

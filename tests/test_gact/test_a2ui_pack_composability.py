@@ -44,6 +44,7 @@ from clio_agent.gact.a2ui_producer import build_create_a2ui_surface_tool
 from clio_agent.gact.agents.resolution import plugin_service, session_agent_def
 from clio_agent.gact.agents.skill_runtime import build_load_skill_tool, skill_runtime_for_agent
 from clio_agent.gact.app import build_app
+from clio_agent.sdk.versions import PluginRef
 from tests._marketplace import MARKETPLACE_ROOT
 
 from .a2ui_catalog_binding import bind_session_plugins
@@ -70,10 +71,20 @@ _INSTRUCTIONS_PATH = _CATALOG_DIR / "instructions.md"
 
 
 def _plugin_requirements() -> list[str]:
-    """The REAL plugin's declared requirements, read from its own manifest."""
+    """The REAL plugin's requirements, read transitively from the manifests."""
 
-    manifest = json.loads((PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8"))
-    return list(manifest["extensions"]["ai.iowarp.clio"].get("requires") or [])
+    found: list[str] = []
+    pending = [PLUGIN_ID]
+    while pending:
+        manifest_path = MARKETPLACE_PLUGINS / pending.pop(0) / "plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        clio = (manifest.get("extensions") or {}).get("ai.iowarp.clio") or {}
+        for raw in clio.get("requires") or []:
+            plugin_id = PluginRef.parse(raw).id
+            if plugin_id not in found:
+                found.append(plugin_id)
+                pending.append(plugin_id)
+    return found
 
 
 def _activated_session(tmp_path: Path) -> tuple[TestClient, Any, str]:

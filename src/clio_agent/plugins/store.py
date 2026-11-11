@@ -180,7 +180,7 @@ def _recheck_builtins() -> None:
         loaded = _BUILTIN_LOADED
         if loaded is None or loaded[0] != key:
             _load_builtins(key)
-    except Exception:  # the loaded records stay; the next due read retries
+    except Exception:  # noqa: BLE001 - logged; loaded records stay, next due read retries
         logger.warning("built-in plugin recheck failed", exc_info=True)
     finally:
         _builtin_checked_at = time.monotonic()

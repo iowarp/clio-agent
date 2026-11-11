@@ -657,7 +657,7 @@ def _app_archive(path: Path, marker: str = "release") -> str:
         for name, data, mode in [
             (
                 "CLIO Desktop.app/Contents/MacOS/clio-desktop",
-                '#!/bin/bash\necho "app $* downloads=${CLIO_INSTALL_DOWNLOADS:-}" >> "$TEST_CALLS"\n',
+                '#!/bin/bash\necho "app $* nobytecode=${PYTHONDONTWRITEBYTECODE:-} downloads=${CLIO_INSTALL_DOWNLOADS:-}" >> "$TEST_CALLS"\n',
                 0o755,
             ),
             ("CLIO Desktop.app/Contents/Info.plist", marker, 0o644),
@@ -766,6 +766,10 @@ def test_mac_release_streams_the_app_archive_and_hands_over_prefetched_files(
     assert "escape" not in log
     prepared = next(line for line in log.splitlines() if line.startswith("app --prepare-runtime"))
     assert "downloads=" in prepared and prepared.endswith("/downloads")
+    assert "nobytecode=1 " in prepared
+    calls = log.splitlines()
+    signed = next(i for i, line in enumerate(calls) if line.startswith("codesign --verify"))
+    assert signed < calls.index(prepared)
     app = tmp_path / "Applications/CLIO Desktop.app"
     assert (app / "Contents/Info.plist").read_text() == "release"
     assert not list((tmp_path / "Applications").glob(".clio-install.*"))
@@ -804,7 +808,7 @@ def test_mac_release_prepares_while_a_capable_apps_files_still_download(tmp_path
     prepared = next(i for i, line in enumerate(log) if line.startswith("app --prepare-runtime"))
     landed = log.index("curl-done https://example.invalid/LibreOffice.dmg")
     assert prepared < landed
-    assert "Checking the app's signature while it prepares" in result.stderr
+    assert result.stderr.index("Signature valid.") < result.stderr.index("Preparing the desktop")
     summary = _events(result.stdout)[-1]
     assert summary["ok"] is True
     archive = tmp_path / "release/CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar"
@@ -813,8 +817,9 @@ def test_mac_release_prepares_while_a_capable_apps_files_still_download(tmp_path
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")
-def test_mac_release_with_an_invalid_signature_restores_the_previous_app(tmp_path: Path) -> None:
-    """The signature check runs while the app prepares; its failure removes the new app."""
+def test_mac_release_with_an_invalid_signature_keeps_the_previous_app(tmp_path: Path) -> None:
+    """The signature check finishes before the app is swapped in or run: a failure leaves
+    the previous app in place and never prepares the new one."""
     env = _release_fixture(tmp_path, ["CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar"])
     bin_dir = Path(env["PATH"].split(":", 1)[0])
     (bin_dir / "codesign").write_text('#!/bin/bash\necho "codesign $*" >> "$TEST_CALLS"\nexit 1\n')
@@ -825,11 +830,12 @@ def test_mac_release_with_an_invalid_signature_restores_the_previous_app(tmp_pat
     result = _run_installer(["--desktop", "--progress", "json"], env)
 
     assert result.returncode != 0
-    assert "previous app restored" in result.stderr
+    assert "signature is invalid or absent; nothing installed" in result.stderr
     assert (previous / "marker").read_text() == "previous"
     assert sorted(p.name for p in previous.parent.iterdir()) == ["CLIO Desktop.app"]
+    assert "app --prepare-runtime" not in (tmp_path / "calls.txt").read_text()
     summary = _events(result.stdout)[-1]
-    assert summary["ok"] is False and summary["step"] == "prepare"
+    assert summary["ok"] is False and summary["step"] == "install"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the macOS shell installer")

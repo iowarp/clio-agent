@@ -78,6 +78,7 @@ def test_reset_catalog_covers_the_declared_reasons() -> None:
         "provider_error",
         "provider_compacted",
         "conversation_cleared",
+        "reply_past_calls",
     }
 
 
