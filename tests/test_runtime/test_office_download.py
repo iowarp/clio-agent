@@ -150,3 +150,55 @@ def test_retired_tdf_asset_uses_official_archive_with_same_pin(
         url,
         "https://downloadarchive.documentfoundation.org/libreoffice/old/26.2.6.2/win/file.msi",
     ]
+
+
+def test_unreachable_librarian_pin_falls_back_to_its_snapshot_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts: list[str] = []
+    payload = b"verified userland package"
+    url = "https://launchpadlibrarian.net/1/liblzma5_5.2.5-2ubuntu1.1_amd64.deb"
+    path = "pool/main/x/xz-utils/liblzma5_5.2.5-2ubuntu1.1_amd64.deb"
+    snapshot = f"https://snapshot.ubuntu.com/ubuntu/20261020T000000Z/{path}"
+
+    def fetch(request: urllib.request.Request, **kwargs: Any) -> io.BytesIO:
+        attempts.append(request.full_url)
+        if request.full_url.startswith("https://archive.ubuntu.com/"):
+            raise urllib.error.HTTPError(request.full_url, 404, "superseded", {}, None)
+        if request.full_url != snapshot:
+            raise urllib.error.URLError("handshake timed out")
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
+    monkeypatch.setattr(office_fetch.time, "sleep", lambda seconds: None)
+    target = tmp_path / "package.part"
+    office_fetch.download(url, target, hashlib.sha256(payload).hexdigest(), (snapshot,))
+    assert target.read_bytes() == payload
+    assert attempts == [
+        url,
+        f"https://archive.ubuntu.com/ubuntu/{path}",
+        "https://launchpad.net/ubuntu/+archive/primary/+files/" + path.rsplit("/", 1)[1],
+        snapshot,
+    ]
+
+
+def test_superseded_ports_pin_falls_back_to_launchpad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts: list[str] = []
+    payload = b"verified arm64 userland package"
+    name = "libnss3_3.98-0ubuntu0.22.04.5_arm64.deb"
+    url = f"https://ports.ubuntu.com/ubuntu-ports/pool/main/n/nss/{name}"
+    launchpad = f"https://launchpad.net/ubuntu/+archive/primary/+files/{name}"
+
+    def fetch(request: urllib.request.Request, **kwargs: Any) -> io.BytesIO:
+        attempts.append(request.full_url)
+        if request.full_url == url:
+            raise urllib.error.HTTPError(request.full_url, 404, "superseded", {}, None)
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
+    target = tmp_path / "package.part"
+    office_fetch.download(url, target, hashlib.sha256(payload).hexdigest())
+    assert target.read_bytes() == payload
+    assert attempts == [url, launchpad]

@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 from urllib.parse import urlsplit
@@ -63,6 +64,7 @@ _MAX_ATTEMPTS = 6
 #: primary-archive file URL (every published version, by file name), then from the
 #: snapshot. The pinned SHA-256 is checked whichever serves it.
 _SNAPSHOT = re.compile(r"^https://snapshot\.ubuntu\.com/ubuntu/\d{8}T\d{6}Z/(pool/.+/([^/]+))$")
+_PORTS = re.compile(r"^https://ports\.ubuntu\.com/ubuntu-ports/pool/.+/([^/]+)$")
 _UBUNTU_ARCHIVE = "https://archive.ubuntu.com/ubuntu/"
 _LAUNCHPAD_FILES = "https://launchpad.net/ubuntu/+archive/primary/+files/"
 _BACKOFF_CAP_S = 16.0
@@ -317,19 +319,26 @@ def _stream(
 
 
 def _sources(
-    url: str, checksum: str, partial: _Partial, deadline: float
+    url: str, checksum: str, partial: _Partial, deadline: float, also: Sequence[str] = ()
 ) -> tuple[list[str], int | None, float | None]:
     """Where to fetch from, best first, the expected size, and the throughput floor.
 
     A TDF URL whose Metalink vouches for the pin races its top mirrors and TDF's archive;
-    the winner's bytes are kept. Otherwise (or if no racer finishes) it is ``url`` alone.
+    the winner's bytes are kept. Otherwise (or if no racer finishes) it is ``url``, then
+    ``also``, each Ubuntu snapshot URL preceded by the archive and Launchpad copies and
+    each ports pool URL (gone once superseded) followed by Launchpad's.
     """
     listing = _metalink(url, checksum)
     if listing is None:
-        snapshot = _SNAPSHOT.match(url)
-        if snapshot is None:
-            return [url], None, None
-        return [_UBUNTU_ARCHIVE + snapshot[1], _LAUNCHPAD_FILES + snapshot[2], url], None, None
+        sources: list[str] = []
+        for candidate in (url, *also):
+            copies = [candidate]
+            if snapshot := _SNAPSHOT.match(candidate):
+                copies = [_UBUNTU_ARCHIVE + snapshot[1], _LAUNCHPAD_FILES + snapshot[2], candidate]
+            elif ports := _PORTS.match(candidate):
+                copies = [candidate, _LAUNCHPAD_FILES + ports[1]]
+            sources.extend(copy for copy in copies if copy not in sources)
+        return sources, None, None
     size, mirrors = listing
     racers = [*mirrors[:_RACE_MIRRORS], _archive_url(url)]
     won = _race(racers, size, deadline)
@@ -353,8 +362,10 @@ def mirror_rate(url: str, checksum: str) -> tuple[float, int] | None:
     return None if won is None else (won[2], size)
 
 
-def download(url: str, target: Path, checksum: str) -> None:
+def download(url: str, target: Path, checksum: str, also: Sequence[str] = ()) -> None:
     """Fetch verified bytes under one time budget, resuming across sources.
+
+    ``also`` names other copies of the same file, tried after ``url``.
 
     ``_MAX_ATTEMPTS`` failed attempts (network errors, bad status, a wrong SHA-256) end it;
     a source that turns slow is left for the next without counting as one
@@ -365,7 +376,7 @@ def download(url: str, target: Path, checksum: str) -> None:
     try:
         with target.open("wb") as output:
             partial = _Partial(output)
-            sources, size, floor = _sources(url, checksum, partial, deadline)
+            sources, size, floor = _sources(url, checksum, partial, deadline, also)
             failures = switches = index = 0
             used: list[str] = []
             while True:
@@ -374,8 +385,11 @@ def download(url: str, target: Path, checksum: str) -> None:
                         f"LibreOffice download exceeded {DOWNLOAD_BUDGET_S:.0f} seconds"
                     )
                 source = sources[index % len(sources)]
+                # Only the pinned URL as the last resort says a file is gone; any copy
+                # before it may simply not hold the file.
+                fallible = source != url or source != sources[-1]
                 try:
-                    served = _stream(source, partial, size, floor, deadline, source != url)
+                    served = _stream(source, partial, size, floor, deadline, fallible)
                     used.append(_host(served))
                     actual = partial.digest.hexdigest()
                     if actual != checksum:
@@ -404,7 +418,7 @@ def download(url: str, target: Path, checksum: str) -> None:
                 except _RetryableDownloadError as exc:
                     cause = exc.__cause__
                     if (
-                        source != url
+                        fallible
                         and len(sources) > 1
                         and isinstance(cause, urllib.error.HTTPError)
                         and cause.code in {404, 410}

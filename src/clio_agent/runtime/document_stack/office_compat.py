@@ -115,6 +115,21 @@ def packages() -> list[tuple[str, str]]:
     ]
 
 
+def fallbacks() -> dict[str, str]:
+    """The snapshot copy of each package pinned to a launchpadlibrarian.net ``url``.
+
+    Those versions were current at the lock's snapshot, so the snapshot (and the
+    archive and Launchpad copies tried with it) still serve them when the librarian
+    does not.
+    """
+    entry = _entry()
+    return {
+        item["url"]: f"{entry['base']}/{item['path']}"
+        for item in entry["packages"]
+        if item.get("url")
+    }
+
+
 def _triplet() -> str:
     return _entry()["triplet"]
 
@@ -173,7 +188,7 @@ def _extract(payload: bytes, root: Path) -> None:
 def prepare(
     root: Path,
     *,
-    download: Callable[[str, Path, str], None],
+    download: Callable[[str, Path, str, tuple[str, ...]], None],
     deb_data: Callable[[BinaryIO], bytes],
 ) -> None:
     """Publish the private userland and Office's launcher after all pinned packages exist.
@@ -191,11 +206,12 @@ def prepare(
             image = staging / "image"
             image.mkdir()
             pinned = packages()
+            copies = fallbacks()
 
             def fetch(item: tuple[str, str]) -> Path:
                 url, checksum = item
                 archive = staging / Path(url).name
-                download(url, archive, checksum)
+                download(url, archive, checksum, ((copies[url],) if url in copies else ()))
                 return archive
 
             # ~150 small packages: latency, not bandwidth, bounds this (8 at a time
