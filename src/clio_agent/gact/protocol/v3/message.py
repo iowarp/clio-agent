@@ -5,15 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from clio_schemas.attention_evidence import AttentionEvidenceInspection
-from pydantic import ValidationError
-
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.command_presentation import legacy_goal_receipt
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.memory.presentation import memory_used_projection
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.protocol.v3.action_cards import action_cards
 from clio_agent.gact.protocol.v3.artifact_projection import artifact_entity
+from clio_agent.gact.protocol.v3.comment_presentation import comment_chip_label
 from clio_agent.gact.protocol.v3.summon_presentation import summon_presentation
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
@@ -102,47 +101,6 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
             }
     if used := memory_used_projection(metadata):
         projected["memory_used"] = used
-    return projected
-
-
-def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
-    actions = part.get("actions")
-    if not isinstance(actions, list):
-        return []
-    projected: list[dict[str, Any]] = []
-    for action in actions:
-        if not isinstance(action, Mapping) or not action.get("id"):
-            continue
-        behavior = action.get("behavior")
-        projected_behavior: dict[str, Any] = {
-            "kind": str(behavior.get("kind") or "unavailable")
-            if isinstance(behavior, Mapping)
-            else "unavailable"
-        }
-        if isinstance(behavior, Mapping):
-            if behavior.get("handle_id"):
-                projected_behavior["handle_id"] = str(behavior["handle_id"])
-            if behavior.get("reason"):
-                projected_behavior["reason"] = str(behavior["reason"])
-            if behavior.get("kind") == "inspect_attention" and behavior.get("inspection"):
-                try:
-                    projected_behavior["inspection"] = AttentionEvidenceInspection.model_validate(
-                        behavior["inspection"]
-                    ).model_dump()
-                except ValidationError:
-                    projected_behavior["reason"] = "The finding has an invalid evidence receipt."
-        projected.append(
-            {
-                "id": str(action["id"]),
-                "label": str(action.get("label") or action["id"]),
-                "enabled": bool(action.get("enabled", True))
-                and (
-                    projected_behavior["kind"] != "inspect_attention"
-                    or "inspection" in projected_behavior
-                ),
-                "behavior": projected_behavior,
-            }
-        )
     return projected
 
 
@@ -353,7 +311,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "source": str(part.get("source") or ""),
             "severity": str(part.get("severity") or "info"),
             "status": str(part.get("status") or "active"),
-            "actions": _action_cards(part),
+            "actions": action_cards(part),
             **common,
         }
     if part_type == "mcp_app":
@@ -417,21 +375,8 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "status": str(part.get("status") or ""),
             **common,
         }
-    if part_type == "image" and "comment_session" in metadata:
-        # A comment session's picture: named by its mark and anchor, or by its caption.
-        name = str(metadata.get("label") or metadata.get("caption") or "Image")
-        return {"id": part_id, "type": "routing", "label": name[:1].upper() + name[1:], **common}
-    if part_type == "comment_session":
-        session = _mapping(metadata.get("comment_session"))
-        count = len(_list(session.get("marks")))
-        title = str(session.get("title") or "")
-        noun = "comment" if count == 1 else "comments"
-        return {
-            "id": part_id,
-            "type": "routing",
-            "label": f"{count} {noun} on {title}" if title else f"{count} {noun}",
-            **common,
-        }
+    if (chip := comment_chip_label(part_type, metadata)) is not None:
+        return {"id": part_id, "type": "routing", "label": chip, **common}
     text = str(part.get("text") or "")
     return {
         "id": part_id,

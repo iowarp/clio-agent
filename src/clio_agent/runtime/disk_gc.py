@@ -149,9 +149,11 @@ def _instance_root(role: agent_paths.Role, env: Mapping[str, str]) -> str | None
 
 def _shares_root(proc: Any, role: agent_paths.Role, ours: str, uv_cache: str | None) -> bool:
     """Whether ``proc`` works in this instance's ``role`` root (unreadable counts as yes)."""
+    import psutil  # noqa: PLC0415
+
     try:
         env = proc.environ()
-    except Exception:  # noqa: BLE001 - AccessDenied/raced: keep the conservative answer
+    except (psutil.Error, OSError):  # AccessDenied/raced: keep the conservative answer
         return True
     if _instance_root(role, env) in (None, ours):
         return True
@@ -216,6 +218,7 @@ def live_peer_clio_processes(
             marker = "clio-core-daemon-pidfile"
         if (
             marker is not None
+            and sharing is not None
             and ours is not None
             and not _shares_root(proc, sharing, ours, uv_cache)
         ):
@@ -224,7 +227,7 @@ def live_peer_clio_processes(
             peers[pid] = ProcRef(pid=pid, name=name or "python", marker=marker)
 
     if daemon is not None and daemon not in exclude and daemon not in peers:
-        if ours is not None:
+        if sharing is not None and ours is not None:
             try:
                 if not _shares_root(psutil.Process(daemon), sharing, ours, uv_cache):
                     return sorted(peers.values(), key=lambda p: p.pid)
