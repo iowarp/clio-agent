@@ -356,10 +356,10 @@ def teardown_pooled_sdk_transports() -> dict[str, str]:
         logger.warning("sdk transport teardown failed reason=codex_ws_close_failed error=%r", exc)
         results["codex_ws_sessions"] = f"error:{exc!r}"
 
-        logger.info(
-            "pooled SDK transports torn down on shutdown reason=sdk_pools_closed outcome=%s",
-            results,
-        )
+    logger.info(
+        "pooled SDK transports torn down on shutdown reason=sdk_pools_closed outcome=%s",
+        results,
+    )
     return results
 
 
@@ -380,7 +380,7 @@ def reap_sdk_cli_children(*, reason: str, grace_s: float = 3.0) -> str:
     try:
         import psutil  # noqa: PLC0415
         from claude_agent_sdk._internal.transport import subprocess_cli  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - no SDK (or psutil) means no SDK children
+    except ImportError:  # no SDK (or psutil) means no SDK children
         return "none"
 
     tracked = list(getattr(subprocess_cli, "_ACTIVE_CHILDREN", ()))
