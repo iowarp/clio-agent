@@ -3,29 +3,28 @@
 from __future__ import annotations
 
 import hashlib
-import http.client
 import io
 import logging
 import os
 import platform
 import shutil
-import ssl
 import subprocess
 import sysconfig
 import tarfile
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import zipfile
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
-import truststore
 from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
-    from . import office_compat
+    from . import office_compat, office_fetch
+    from .office_fetch import MAX_DOWNLOAD
+    from .office_fetch import download as _download
+    from .office_fetch import mirror_rate as _mirror_rate
     from .process import (
         DocumentError,
         _cleanup_profile,
@@ -37,6 +36,10 @@ if TYPE_CHECKING or __package__:
     )
 else:
     import office_compat
+    import office_fetch
+    from office_fetch import MAX_DOWNLOAD
+    from office_fetch import download as _download
+    from office_fetch import mirror_rate as _mirror_rate
     from process import (
         DocumentError,
         _cleanup_profile,
@@ -81,17 +84,12 @@ ASSETS = {
         "94bb3248df074c225490a8a6d1d9dc87c7d6783dbb7a8e9f0d0c3d94348552af",
     ),
 }
-MAX_DOWNLOAD = 600 * 1024 * 1024
 # Bundled extensions a headless converter never loads: the Calc NLP solver and the
 # MediaWiki publisher (about 3,000 files together).
 UNREAD_EXTENSIONS = frozenset({"nlpsolver", "wiki-publisher"})
 # A laid-out image's first-start profile, kept beside the image (build_profile_starter).
 PROFILE_STARTER = "office-profile.zip"
 logger = logging.getLogger(__name__)
-
-
-class _RetryableDownloadError(DocumentError):
-    """A network failure or unverified response permits a bounded fresh request."""
 
 
 def asset() -> tuple[str, str, str]:
@@ -118,35 +116,73 @@ INSTALLER_PLAN_CAPABILITY = "waits-for-partial-downloads"
 _INSTALLER_STALL_S = 60.0
 
 
-def _await_installer_file(candidate: Path) -> None:
-    """Wait while the installer still writes ``NAME.part``, renamed to ``NAME`` when verified."""
+def _await_installer_file(candidate: Path, url: str | None = None, checksum: str = "") -> None:
+    """Wait while the installer still writes ``NAME.part``, renamed to ``NAME`` when verified.
+
+    With ``url``, a prefetch still running after one floor window is compared once with
+    the mirrors' race rate: one growing slower than the download floor (the installer's
+    curl drew a slow mirror) is left, and the app fetches the file itself.
+    """
     partial = candidate.with_name(candidate.name + ".part")
-    size, changed = -1, time.monotonic()
+    began = time.monotonic()
+    size, changed = -1, began
+    window: deque[tuple[float, int]] = deque()
+    probed, reference, total = False, 0.0, 0
     while not candidate.exists():
         try:
             current = partial.stat().st_size
         except OSError:
             return
+        now = time.monotonic()
         if current != size:
-            size, changed = current, time.monotonic()
-        elif time.monotonic() - changed > _INSTALLER_STALL_S:
+            size, changed = current, now
+        elif now - changed > _INSTALLER_STALL_S:
             logger.warning("installer download %s stalled; fetching it here", candidate.name)
             return
+        if now - began > office_fetch.DOWNLOAD_BUDGET_S:
+            logger.warning(
+                "installer download %s took over %d seconds; fetching it here",
+                candidate.name,
+                office_fetch.DOWNLOAD_BUDGET_S,
+            )
+            return
+        window.append((now, current))
+        while len(window) > 1 and now - window[1][0] >= office_fetch.FLOOR_WINDOW_S:
+            window.popleft()
+        if url and now - began >= office_fetch.FLOOR_WINDOW_S:
+            if not probed:
+                probed = True
+                reference, total = _mirror_rate(url, checksum) or (0.0, 0)
+            growth = (current - window[0][1]) / max(now - window[0][0], 1e-3)
+            if (
+                reference
+                and growth < reference * office_fetch.FLOOR_FRACTION
+                and total - current > growth * office_fetch.FLOOR_WINDOW_S
+            ):
+                logger.warning(
+                    "reason=office_prefetch_slow name=%s mb_s=%.2f mirror_mb_s=%.2f; "
+                    "fetching it here",
+                    candidate.name,
+                    growth / 1e6,
+                    reference / 1e6,
+                )
+                return
         time.sleep(0.25)
 
 
-def installer_download(name: str, checksum: str) -> Path | None:
+def installer_download(name: str, checksum: str, url: str | None = None) -> Path | None:
     """The installer's concurrent download of this exact file, when it has one.
 
     ``install.sh --desktop`` fetches LibreOffice while the app downloads and names the
     folder in ``CLIO_INSTALL_DOWNLOADS``; only a file whose bytes match the pin counts.
-    A download still in progress is waited for rather than fetched a second time.
+    A download still in progress is waited for rather than fetched a second time, unless
+    ``url``'s mirrors are much faster than it (see ``_await_installer_file``).
     """
     folder = os.environ.get(INSTALLER_DOWNLOADS, "")
     if not folder or Path(name).name != name:
         return None
     candidate = Path(folder) / name
-    _await_installer_file(candidate)
+    _await_installer_file(candidate, url, checksum)
     try:
         if not candidate.is_file() or candidate.is_symlink():
             return None
@@ -167,78 +203,6 @@ def executable(root: Path) -> Path | None:
         root / "opt" / "libreoffice26.2" / "program" / "soffice",
     ]
     return next((path for path in candidates if path.is_file()), None)
-
-
-def _download(url: str, target: Path, checksum: str) -> None:
-    """Fetch verified bytes with three fresh attempts under one time budget."""
-    started = time.monotonic()
-    try:
-        for attempt in range(3):
-            if time.monotonic() - started >= 600:
-                raise DocumentError("LibreOffice download exceeded 600 seconds")
-            try:
-                _download_once(url, target, checksum, started)
-                return
-            except _RetryableDownloadError as exc:
-                target.unlink(missing_ok=True)
-                if attempt == 2:
-                    raise DocumentError(f"{exc}; all three download attempts failed") from exc
-                logger.warning(
-                    "reason=office_download_retry attempt=%d url=%s error=%s", attempt + 1, url, exc
-                )
-                time.sleep(2**attempt)
-    except DocumentError:
-        target.unlink(missing_ok=True)
-        raise
-
-
-def _download_once(url: str, target: Path, checksum: str, started: float) -> None:
-    digest = hashlib.sha256()
-    count = 0
-    source_url = url
-    try:
-        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        try:
-            request = urllib.request.Request(
-                url, headers={"Cache-Control": "no-cache", "Accept-Encoding": "identity"}
-            )
-            response = urllib.request.urlopen(request, timeout=30, context=context)
-        except urllib.error.HTTPError as exc:
-            if exc.code not in {404, 410} or not url.startswith(
-                "https://download.documentfoundation.org/"
-            ):
-                raise
-            archive = url.replace(
-                "download.documentfoundation.org", "downloadarchive.documentfoundation.org"
-            ).replace(f"/stable/{VERSION}/", f"/old/{VERSION}.2/")
-            request = urllib.request.Request(
-                archive, headers={"Cache-Control": "no-cache", "Accept-Encoding": "identity"}
-            )
-            response = urllib.request.urlopen(request, timeout=30, context=context)
-        with response, target.open("wb") as output:
-            get_url = getattr(response, "geturl", None)
-            source_url = str(get_url()) if callable(get_url) else url
-            while chunk := response.read(1024 * 1024):
-                count += len(chunk)
-                if count > MAX_DOWNLOAD:
-                    raise DocumentError("LibreOffice download exceeds its size limit")
-                if time.monotonic() - started > 600:
-                    raise DocumentError("LibreOffice download exceeded 600 seconds")
-                digest.update(chunk)
-                output.write(chunk)
-    except urllib.error.HTTPError as exc:
-        error_type = (
-            _RetryableDownloadError if exc.code in {408, 429} or exc.code >= 500 else DocumentError
-        )
-        raise error_type(f"LibreOffice download failed: HTTP {exc.code} from {source_url}") from exc
-    except (OSError, http.client.HTTPException) as exc:
-        raise _RetryableDownloadError(f"LibreOffice download failed: {exc}") from exc
-    actual = digest.hexdigest()
-    if actual != checksum:
-        raise _RetryableDownloadError(
-            f"LibreOffice download failed its pinned SHA-256 check: expected {checksum}, "
-            f"received {actual} for {count} bytes from {source_url}"
-        )
 
 
 def _deb_data(stream: BinaryIO) -> bytes:
@@ -601,7 +565,7 @@ def ensure_office(
                 cached = hashlib.file_digest(stream, "sha256").hexdigest() == checksum
         source = archive
         if not cached:
-            prefetched = installer_download(name, checksum)
+            prefetched = installer_download(name, checksum, url)
             if prefetched is not None:
                 source = prefetched
             else:

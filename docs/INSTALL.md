@@ -45,7 +45,8 @@ manifest before anything is installed:
 
 After installing, the script runs the app's own setup step as you (from 0.9.5): the agent's
 tool packages and the Office renderer are prepared then, as the Windows installer does,
-so the first launch only checks them. A package installed by double-clicking does this on
+so the first launch only checks them. If that step fails, the install fails with its cause;
+the work is never left to the first launch. A package installed by double-clicking does this on
 its first launch instead.
 
 `--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.

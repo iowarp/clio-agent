@@ -236,6 +236,9 @@ def _report_warnings() -> None:
     owner = logging.getLogger("clio_agent")
     owner.addHandler(handler)
     owner.setLevel(logging.WARNING)
+    # The Office download also names the mirror that served it and its rate, so a slow
+    # install shows where the time went.
+    logging.getLogger("clio_agent.runtime.document_stack.office_fetch").setLevel(logging.INFO)
 
 
 def main() -> None:
