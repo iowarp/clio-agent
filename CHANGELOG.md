@@ -6,6 +6,23 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6-beta.1.4] - 2026-11-11
+
+### Fixed
+
+- Clean Linux installs work again while snapshot.ubuntu.com is down. The four
+  LibreOffice supporting packages that the Ubuntu archive no longer serves are
+  fetched from their permanent Launchpad file addresses, still checked against
+  their pinned checksums (#2104).
+
+### Changed
+
+- Installs are smaller and faster. LibreOffice's spelling and thesaurus data and
+  its non-English configuration packs are left out, since document conversion
+  never reads them; the bundled runtime download shrinks by about 55 MiB (#2103).
+- When an install downloads LibreOffice, it skips writing those files in the
+  first place instead of deleting them afterwards, which saves about 14 seconds
+  on Windows (#2105).
 ## [0.9.6-beta.1.3] - 2026-11-11
 
 ### Fixed
