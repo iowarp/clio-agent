@@ -471,6 +471,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             boot=boot_timing.snapshot(app),
             readiness=readiness,
             starting=still_starting,
+            failure=boot_timing.startup_failure(app),
         )
         if overall == "unavailable":
             content = response.model_dump(mode="json", exclude_none=True)
