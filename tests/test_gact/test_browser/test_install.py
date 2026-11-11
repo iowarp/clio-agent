@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import io
+import stat
+import subprocess
 import threading
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from clio_agent.gact.browser import install
+from clio_agent.gact.browser import driver, install
 from clio_agent.gact.browser.settings import BrowserError
+from clio_agent.runtime import package_preparation
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +122,153 @@ def test_install_failure_without_a_known_code_keeps_playwrights_error() -> None:
         "Downloading Chromium failed: the download from the Playwright download host did not "
         "complete. Playwright reported: Error: something else broke."
     )
+
+
+def _chromium_zip(path: Path, *, link: bool = False) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("chrome-win64/chrome.exe", b"MZ" * 1000)
+        archive.writestr("chrome-win64/locales/en-US.pak", b"pak")
+        for index in range(20):
+            archive.writestr(f"chrome-win64/res/{index}.bin", bytes(index * 100))
+        if link:
+            entry = zipfile.ZipInfo("Chromium.app/Contents/Frameworks/Current")
+            entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(entry, "A")
+    return path
+
+
+def test_the_installer_archive_unpacks_whole_and_marked(tmp_path: Path) -> None:
+    root = tmp_path / "browsers"
+    (root / "chromium-7").mkdir(parents=True)  # an unfinished earlier attempt
+    (root / "chromium-7" / "stale").write_text("x", encoding="utf-8")
+
+    assert install._unpack_chromium(_chromium_zip(tmp_path / "c.zip"), root, "7")
+
+    folder = root / "chromium-7"
+    assert (folder / "INSTALLATION_COMPLETE").exists()
+    assert (folder / "chrome-win64" / "chrome.exe").read_bytes() == b"MZ" * 1000
+    assert len(list((folder / "chrome-win64" / "res").iterdir())) == 20
+    assert not (folder / "stale").exists()
+    # Playwright's cleanup ignores the working name; nothing is left under it.
+    assert sorted(p.name for p in root.iterdir()) == ["chromium-7"]
+
+
+def test_an_archive_with_links_is_left_to_playwright(tmp_path: Path) -> None:
+    root = tmp_path / "browsers"
+    root.mkdir()
+    assert not install._unpack_chromium(_chromium_zip(tmp_path / "c.zip", link=True), root, "7")
+    assert list(root.iterdir()) == []
+
+
+def _fake_install(monkeypatch: pytest.MonkeyPatch, root: Path, calls: list[tuple]) -> None:
+    monkeypatch.setattr(install, "browsers_root", lambda: root)
+    monkeypatch.setattr(install, "preparing_answer", lambda: None)
+    monkeypatch.setattr(install, "_driver", lambda: ("node", "cli.js"))
+    monkeypatch.setattr(install, "chromium_revision", lambda: "7")
+    monkeypatch.setattr(install, "playwright_version", lambda: "1.0")
+    monkeypatch.setattr(package_preparation, "preparing", lambda _root: contextlib.nullcontext())
+
+    def run(node: str, cli: str, where: Path, names: tuple[str, ...] = ("chromium",)):
+        calls.append(names)
+        if names == ("chromium",) and not (where / "chromium-7").exists():
+            folder = where / "chromium-7" / "chrome-win64"
+            folder.mkdir(parents=True)
+            (folder / "chrome.exe").write_bytes(b"downloaded")
+            (where / "chromium-7" / "INSTALLATION_COMPLETE").write_text("")
+        return subprocess.CompletedProcess([node], 0, "", "")
+
+    monkeypatch.setattr(install, "_run_install", run)
+
+
+_PIN = {"revision": "7", "url": "https://x/chrome-win64.zip", "sha256": "ab" * 32}
+
+
+def test_ensure_chromium_unpacks_the_pinned_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, calls = tmp_path / "browsers", []
+    _fake_install(monkeypatch, root, calls)
+    archive = _chromium_zip(tmp_path / "chrome-win64.zip")
+    monkeypatch.setattr(install, "_chromium_pin", lambda: _PIN)
+    monkeypatch.setattr(install, "_fetch_pinned", lambda pin, where: archive)
+
+    found = install.ensure_chromium()
+
+    assert found.read_bytes() == b"MZ" * 1000
+    helpers = ("ffmpeg", "winldd") if install.os.name == "nt" else ("ffmpeg",)
+    assert calls == [helpers, ("chromium",)]
+    assert not archive.exists()  # the download is spent
+
+
+def test_a_failed_pinned_download_falls_back_to_playwright(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, calls = tmp_path / "browsers", []
+    _fake_install(monkeypatch, root, calls)
+    monkeypatch.setattr(install, "_chromium_pin", lambda: _PIN)
+
+    def refuse(pin: dict, where: Path) -> Path:
+        raise ValueError("the Chromium archive does not match its recorded SHA-256")
+
+    monkeypatch.setattr(install, "_fetch_pinned", refuse)
+    assert install.ensure_chromium().read_bytes() == b"downloaded"
+    assert calls[-1] == ("chromium",)
+
+
+def test_a_broken_pinned_archive_falls_back_to_playwright(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, calls = tmp_path / "browsers", []
+    _fake_install(monkeypatch, root, calls)
+    broken = tmp_path / "chrome-win64.zip"
+    broken.write_bytes(b"not a zip")
+    monkeypatch.setattr(install, "_chromium_pin", lambda: _PIN)
+    monkeypatch.setattr(install, "_fetch_pinned", lambda pin, where: broken)
+
+    assert install.ensure_chromium().read_bytes() == b"downloaded"
+    assert calls[-1] == ("chromium",)
+    assert not broken.exists()
+
+
+def test_without_a_pin_playwright_installs_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, calls = tmp_path / "browsers", []
+    _fake_install(monkeypatch, root, calls)
+    monkeypatch.setattr(install, "_chromium_pin", lambda: None)
+    assert install.ensure_chromium().read_bytes() == b"downloaded"
+    assert calls == [("chromium",)]
+
+
+def test_the_pin_is_used_only_for_this_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(driver, "manifest", lambda: {"chromium": dict(_PIN)})
+    monkeypatch.setattr(install, "chromium_revision", lambda: "8")
+    assert install._chromium_pin() is None
+    monkeypatch.setattr(install, "chromium_revision", lambda: "7")
+    assert install._chromium_pin() == _PIN
+    monkeypatch.setattr(driver, "manifest", lambda: {"chromium": {**_PIN, "url": "http://x"}})
+    assert install._chromium_pin() is None
+
+
+class _Answer(io.BytesIO):
+    def __enter__(self) -> _Answer:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+def test_the_pinned_download_keeps_only_matching_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b"chromium bytes" * 1000
+    monkeypatch.setattr(install.urllib.request, "urlopen", lambda *a, **k: _Answer(body))
+    good = {**_PIN, "sha256": hashlib.sha256(body).hexdigest()}
+    root = tmp_path / "browsers"
+    archive = install._fetch_pinned(good, root)
+    assert archive.read_bytes() == body
+    archive.unlink()
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        install._fetch_pinned(_PIN, root)
+    assert list(root.iterdir()) == []

@@ -6,8 +6,11 @@ matching that Playwright release is downloaded by Playwright's own installer int
 cache (``<cache>/browser/playwright-<version>``) by the installer's package step
 (:func:`prepare_at_install`, beside the other packages), so the desktop bundle does not grow
 and the first browser use does not wait for it. A browser use that still finds it missing
-(the install-time fetch failed, or an install predating it) downloads it then. The download
-is recorded with
+(the install-time fetch failed, or an install predating it) downloads it then. When the
+runtime pins the Chromium archive (``clio-node.json``, written at build time), CLIO
+downloads it itself, keeps only bytes matching its SHA-256 and unpacks it on several
+threads while Playwright fetches its small helpers; Playwright's install then finds it in
+place. The download is recorded with
 :func:`clio_agent.runtime.package_preparation.preparing`, so a second process sees it
 running instead of racing it. CLIO never runs ``playwright install-deps`` (it needs root);
 missing system libraries are a typed ``browser_runtime_missing_libraries`` naming them.
@@ -19,12 +22,19 @@ server's own environment (``PLAYWRIGHT_BROWSERS_PATH``) is never changed for its
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
+import hashlib
+import http.client
 import importlib.util
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import threading
+import urllib.request
+import zipfile
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -56,6 +66,8 @@ REASON_MISSING_LIBRARIES = "browser_runtime_missing_libraries"
 REASON_NOT_INSTALLED = "browser_runtime_not_installed"
 #: Seconds the Chromium download may take before it counts as failed.
 _INSTALL_TIMEOUT_S = 1800
+#: Seconds the pinned Chromium download may wait for its next bytes.
+_READ_TIMEOUT_S = 60
 _LOCK = threading.Lock()
 #: The executable's name inside a Chrome for Testing folder, by platform.
 _EXECUTABLES = ("chrome", "chrome.exe", "Google Chrome for Testing", "Chromium")
@@ -121,6 +133,138 @@ def _install_env(root: Path) -> dict[str, str]:
     return env
 
 
+def _chromium_pin() -> dict[str, Any] | None:
+    """The Chromium archive a bundled runtime pins for this Playwright release, if any.
+
+    ``install/stage_playwright_node.py`` records it in ``clio-node.json`` at build time.
+    """
+    try:
+        pin = (driver.manifest() or {}).get("chromium")
+        if not isinstance(pin, dict) or str(pin.get("revision")) != chromium_revision():
+            return None
+        if not str(pin.get("url", "")).startswith("https://") or not pin.get("sha256"):
+            return None
+        return pin
+    except (BrowserError, OSError, ValueError):
+        return None
+
+
+def _fetch_pinned(pin: dict[str, Any], root: Path) -> Path:
+    """Download the pinned archive into ``root``; only bytes matching its SHA-256 are kept."""
+    url = str(pin["url"])
+    archive = root / f".download-{url.rsplit('/', 1)[-1]}"
+    root.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    request = urllib.request.Request(url, headers={"User-Agent": "clio-agent"})
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=_READ_TIMEOUT_S) as answer,  # noqa: S310
+            archive.open("wb") as out,
+        ):
+            while chunk := answer.read(1 << 20):
+                out.write(chunk)
+                digest.update(chunk)
+        if digest.hexdigest() != str(pin["sha256"]):
+            raise ValueError("the Chromium archive does not match its recorded SHA-256")
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
+    return archive
+
+
+def _unpack_chromium(archive: Path, root: Path, revision: str) -> bool:
+    """Install Chromium from ``archive`` the way Playwright's installer does, in parallel.
+
+    Playwright extracts its 300-file archive on one thread (about 21 s on Windows under
+    Defender); this does the same extraction on several. The folder is filled under a name
+    Playwright's cleanup ignores, gets Playwright's ``INSTALLATION_COMPLETE`` marker, and
+    only then takes its final name, so Playwright never sees it unfinished and its own
+    ``install`` afterwards finds Chromium installed. An archive with symbolic links (the
+    macOS app bundle) is left to Playwright: ``False``.
+    """
+    with zipfile.ZipFile(archive) as listing:
+        entries = listing.infolist()
+    if any(stat.S_ISLNK(entry.external_attr >> 16) for entry in entries):
+        return False
+    target = root / f"chromium-{revision}"
+    staging = root / f".unpack-chromium-{revision}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    files = sorted((e for e in entries if not e.is_dir()), key=lambda e: -e.file_size)
+    workers = max(1, min(8, os.cpu_count() or 1))
+    shares: list[list[zipfile.ZipInfo]] = [[] for _ in range(workers)]
+    loads = [0] * workers
+    for entry in files:  # the largest file first, each to the least loaded worker
+        least = loads.index(min(loads))
+        shares[least].append(entry)
+        loads[least] += entry.file_size
+
+    def _extract(share: list[zipfile.ZipInfo]) -> None:
+        with zipfile.ZipFile(archive) as source:
+            for entry in share:
+                written = Path(source.extract(entry, staging))
+                mode = (entry.external_attr >> 16) & 0o777
+                if mode and os.name != "nt":
+                    written.chmod(mode)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(workers, "clio-chromium-unpack") as pool:
+            for done in [pool.submit(_extract, share) for share in shares if share]:
+                done.result()
+        (staging / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
+        shutil.rmtree(target, ignore_errors=True)
+        staging.rename(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return True
+
+
+def _run_install(
+    node: str, cli: str, root: Path, names: tuple[str, ...] = ("chromium",)
+) -> subprocess.CompletedProcess:
+    env = _install_env(root)
+    if names != ("chromium",):
+        # Playwright's cleanup lists its folder after deciding what is in use; run beside
+        # the unpack, it could take the newly renamed Chromium folder for unused.
+        env["PLAYWRIGHT_SKIP_BROWSER_GC"] = "1"
+    return subprocess.run(  # noqa: S603 - Playwright's own pinned installer
+        [node, cli, "install", "--no-shell", *names],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_INSTALL_TIMEOUT_S,
+        check=False,
+    )
+
+
+def _install_pinned(pin: dict[str, Any], node: str, cli: str, root: Path) -> None:
+    """Install the pinned Chromium archive while Playwright fetches its small helpers.
+
+    Playwright's own install downloads Chromium, extracts it on one thread and then fetches
+    FFmpeg (and ``winldd`` on Windows) one after the other. Here the helpers download while
+    the archive downloads and then unpacks on several threads. A failure only traces: the
+    ordinary install that follows fetches whatever is still missing.
+    """
+    helpers = ("ffmpeg", "winldd") if os.name == "nt" else ("ffmpeg",)
+    with concurrent.futures.ThreadPoolExecutor(1, "clio-chromium-helpers") as pool:
+        fetching = pool.submit(_run_install, node, cli, root, helpers)
+        archive: Path | None = None
+        try:
+            archive = _fetch_pinned(pin, root)
+            unpacked = _unpack_chromium(archive, root, str(pin["revision"]))
+            trace.event("BROWSER", "chromium unpacked from the pinned archive=%s", unpacked)
+        except (OSError, ValueError, zipfile.BadZipFile, http.client.HTTPException) as exc:
+            trace.event("BROWSER", "installing the pinned chromium failed: %s", exc)
+        finally:
+            if archive is not None:
+                with contextlib.suppress(OSError):
+                    archive.unlink()
+        helped = fetching.result()
+        if helped.returncode != 0:
+            trace.event("BROWSER", "chromium helper fetch failed exit=%d", helped.returncode)
+
+
 def ensure_chromium() -> Path:
     """The Chromium executable, downloading it on the first call.
 
@@ -139,14 +283,10 @@ def ensure_chromium() -> Path:
         node, cli = _driver()
         trace.event("BROWSER", "chromium install starting root=%s", root)
         with package_preparation.preparing(root):
-            done = subprocess.run(  # noqa: S603 - Playwright's own pinned installer
-                [node, cli, "install", "--no-shell", "chromium"],
-                env=_install_env(root),
-                capture_output=True,
-                text=True,
-                timeout=_INSTALL_TIMEOUT_S,
-                check=False,
-            )
+            pin = _chromium_pin()
+            if pin is not None:
+                _install_pinned(pin, node, cli, root)
+            done = _run_install(node, cli, root)
             if done.returncode != 0:
                 tail = (done.stderr or done.stdout or "").strip()[-1500:]
                 trace.event(
