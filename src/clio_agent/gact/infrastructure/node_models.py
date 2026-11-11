@@ -89,6 +89,8 @@ def process_identity(pid: int) -> str:
     """Identify a live process by creation time, never by its reusable PID alone."""
     if sys.platform == "win32":
         return _windows_process_identity(pid)
+    if sys.platform == "darwin":
+        return _darwin_process_identity(pid)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         if stat[0] == "Z":
@@ -96,6 +98,22 @@ def process_identity(pid: int) -> str:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + stat[19]
     except (OSError, IndexError):
         return ""
+
+
+def _darwin_process_identity(pid: int) -> str:
+    """macOS has no /proc: read start time and state from libproc's ``struct proc_bsdinfo``."""
+    import ctypes
+    import struct
+
+    info = ctypes.create_string_buffer(136)
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        size = libproc.proc_pidinfo(pid, 3, ctypes.c_uint64(0), info, 136)  # PROC_PIDTBSDINFO
+    except OSError:
+        return ""
+    status, owner = struct.unpack_from("=4xI4xI", info)  # pbi_status (5: zombie), pbi_pid
+    started = "{}.{:06d}".format(*struct.unpack_from("=QQ", info, 120))  # pbi_start_tv*
+    return f"darwin:{started}" if pid > 0 and size == 136 and owner == pid and status != 5 else ""
 
 
 def _windows_process_identity(pid: int) -> str:

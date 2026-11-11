@@ -1091,6 +1091,10 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/agents/clio_react.py": 804,
     "src/clio_agent/gact/compaction.py": 913,
     "src/clio_agent/gact/infrastructure/node_service.py": 849,
+    # macOS worker identity (libproc start time, no /proc). This file ships to the host as one
+    # standalone script (routes/infrastructure_models.py reads node_models.__file__), so the
+    # probe cannot move to a sibling module; ratchet down when the worker body is split.
+    "src/clio_agent/gact/infrastructure/node_models.py": 816,
     "src/clio_agent/gact/permission_gate.py": 837,
     "src/clio_agent/gact/protocol/v3/message.py": 805,
     "src/clio_agent/gact/routes/system.py": 828,
