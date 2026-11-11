@@ -76,8 +76,31 @@ def test_failed_runtime_is_not_retried(loop: asyncio.AbstractEventLoop) -> None:
     assert "Retry-After" not in response.headers
     error = response.json()["error"]
     assert error["error"] == "task_runtime_unavailable"
-    assert error["details"] == {"readiness": "failed"}
+    assert error["details"] == {"readiness": "failed", "reason": "task_runtime_startup_failed"}
     start.exception()  # retrieved, so the loop does not log it as never retrieved
+
+
+def test_typed_startup_failure_reaches_health_and_every_api_refusal(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    from clio_agent.errors import ClioError
+    from clio_agent.gact import boot_timing
+
+    start: asyncio.Future[None] = loop.create_future()
+    cause = ClioError("Your CLIO data was written by an older CLIO.", "arc_store_format_old")
+    start.set_exception(BaseExceptionGroup("Task runtime startup failed", [cause]))
+    app = _app(start)
+
+    error = TestClient(app).get("/v1/sessions").json()["error"]
+
+    assert error["message"] == "Your CLIO data was written by an older CLIO."
+    assert error["details"] == {"readiness": "failed", "reason": "arc_store_format_old"}
+    assert boot_timing.readiness(app) == ("failed", [])
+    assert boot_timing.startup_failure(app) == {
+        "reason": "arc_store_format_old",
+        "message": "Your CLIO data was written by an older CLIO.",
+    }
+    start.exception()
 
 
 def test_ready_runtime_passes_through(loop: asyncio.AbstractEventLoop) -> None:

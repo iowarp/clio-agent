@@ -425,7 +425,8 @@ use, with thousands of conversations, not a clean first start.
   records, the marketplace and the default agent, the provider. Then `ready`. No conversation contents
   and no task trees are read, so its cost doesn't grow with history.
 - **Honest readiness.** Health reports `starting` with the steps still running, then `ready`. The UI
-  shows that Clio is starting and opens by itself; it never shows a failure for a normal start.
+  shows that Clio is starting and opens by itself; it never shows a failure for a normal start. A
+  start that failed is `failed`, with its reason and plain message, never `starting` forever.
 - **Obligations run after `ready`, on their own:** pending mail, interrupted turns, open tasks. They
   drain in bounded batches while the person is already using Clio.
 - **Views load on demand:** an opened conversation's latest page first, then at once its panels, then
