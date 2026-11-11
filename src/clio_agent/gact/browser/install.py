@@ -42,6 +42,7 @@ __all__ = [
     "chromium_executable",
     "chromium_for_action",
     "ensure_chromium",
+    "install_failure",
     "missing_libraries",
     "playwright_version",
     "preparing_answer",
@@ -148,15 +149,74 @@ def ensure_chromium() -> Path:
             )
             if done.returncode != 0:
                 tail = (done.stderr or done.stdout or "").strip()[-1500:]
+                trace.event(
+                    "BROWSER", "chromium install failed rc=%s output=%s", done.returncode, tail
+                )
                 raise BrowserError(
                     REASON_INSTALL_FAILED,
-                    f"downloading Chromium failed (exit {done.returncode}): {tail}",
+                    install_failure(done.returncode, done.stdout or "", done.stderr or ""),
                 )
         found = chromium_executable(root)
         if found is None:
             raise BrowserError(REASON_INSTALL_FAILED, f"Chromium is not where it went ({root})")
         trace.event("BROWSER", "chromium installed path=%s", found)
         return found
+
+
+_TLS_CODES = frozenset(
+    {
+        "SELF_SIGNED_CERT_IN_CHAIN",
+        "DEPTH_ZERO_SELF_SIGNED_CERT",
+        "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+        "UNABLE_TO_GET_ISSUER_CERT",
+        "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "CERT_HAS_EXPIRED",
+        "ERR_TLS_CERT_ALTNAME_INVALID",
+    }
+)
+_DNS_CODES = frozenset({"ENOTFOUND", "EAI_AGAIN"})
+_NET_CODES = frozenset(
+    {"ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "EPROTO"}
+)
+_CODE = re.compile(r"\bcode:\s*'([A-Z0-9_]+)'")
+_SOURCE = re.compile(r"\bfrom (https?://[^/\s]+)")
+
+
+def install_failure(returncode: int, stdout: str, stderr: str) -> str:
+    """One readable sentence for a failed ``playwright install``: the cause, then what to do.
+
+    Playwright retries the download several times and prints a Node.js error with its stack
+    for each attempt; the stack frames and repeats say nothing a person can act on.
+    """
+    text = f"{stdout}\n{stderr}"
+    source = _SOURCE.search(text)
+    host = source.group(1).split("://", 1)[1] if source else "the Playwright download host"
+    codes = list(dict.fromkeys(_CODE.findall(text)))
+    errors = list(
+        dict.fromkeys(
+            line.strip().removesuffix(", caused by")
+            for line in text.splitlines()
+            if line.strip().startswith("Error:") and "Download failure" not in line
+        )
+    )
+    said = "; ".join(errors[:3]) or f"exit {returncode}"
+    if codes:
+        said += f" ({', '.join(codes[:3])})"
+    if _TLS_CODES.intersection(codes):
+        cause = (
+            f"the connection to {host} presented a certificate Node.js does not trust, "
+            "usually a TLS-inspecting proxy or firewall. Point NODE_EXTRA_CA_CERTS at a PEM "
+            "file holding that proxy's CA certificate, restart CLIO and try again"
+        )
+    elif _DNS_CODES.intersection(codes):
+        cause = f"{host} could not be resolved; check the network connection or DNS"
+    elif _NET_CODES.intersection(codes):
+        cause = f"{host} could not be reached; check the network connection or HTTPS_PROXY"
+    elif "ENOSPC" in codes or "no space left" in text.lower():
+        cause = "the disk is full; free some space and try again"
+    else:
+        cause = f"the download from {host} did not complete"
+    return f"Downloading Chromium failed: {cause}. Playwright reported: {said}."
 
 
 def prepare_at_install() -> dict[str, Any]:
