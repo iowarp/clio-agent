@@ -7,9 +7,10 @@ and ``lay_office.py``:
 * the document environment's test suites (``tests`` and ``test`` directories, about
   3,400 files, mostly pandas and numpy) and type stubs, which only pytest and type
   checkers read. ``testing`` modules stay: libraries import ``numpy.testing``;
-* npm's own documentation, man pages and tests inside ``nodejs_wheel``. npm stays;
-* LibreOffice's offline help (``help``, about 5,300 files), which a headless renderer
-  never opens. The application, its extensions, dictionaries and translations stay.
+* npm's own documentation, man pages and tests inside ``nodejs_wheel``. npm stays.
+
+``lay_office.py`` already pruned LibreOffice with ``office.prune_unread``, the list
+shared with macOS and Linux.
 
 Usage: ``prune_documents.py --runtime <runtime>``
 """
@@ -57,7 +58,6 @@ def main() -> int:
     npm = site / "nodejs_wheel" / "lib" / "node_modules" / "npm"
     for name in NPM_UNREAD:
         removed += _remove(npm / name)
-    removed += _remove(documents / "office" / "help")
     print(f"[prune-documents] removed {removed} unread files", flush=True)
     return 0
 

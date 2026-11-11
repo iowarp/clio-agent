@@ -65,6 +65,9 @@ ASSETS = {
     ),
 }
 MAX_DOWNLOAD = 600 * 1024 * 1024
+# Bundled extensions a headless converter never loads: the Calc NLP solver and the
+# MediaWiki publisher (about 3,000 files together).
+UNREAD_EXTENSIONS = frozenset({"nlpsolver", "wiki-publisher"})
 logger = logging.getLogger(__name__)
 
 
@@ -302,6 +305,42 @@ def _extract(archive: Path, root: Path) -> None:
         _extract_linux(archive, root)
 
 
+def _remove_tree(path: Path) -> int:
+    files = sum(len(names) for _, _, names in os.walk(path))
+    shutil.rmtree(path)
+    return files
+
+
+def prune_unread(image: Path) -> int:
+    """Remove the parts of an extracted LibreOffice that headless conversion never reads.
+
+    Every installed file costs a write and, on Windows, an antivirus scan (gact-tui#739).
+    The same list applies to all platforms' layouts: the offline help, the
+    ``UNREAD_EXTENSIONS`` and the non-English UI translations (``resource/<lang>``).
+    The application, filters, fonts, dictionaries and English (``en*``) stay, so
+    conversions are unchanged. Returns the number of files removed.
+    """
+    removed = 0
+    for directory, names, _ in os.walk(image):
+        path = Path(directory)
+        if path.name == "extensions":
+            for name in sorted(UNREAD_EXTENSIONS.intersection(names)):
+                removed += _remove_tree(path / name)
+        elif path.name == "resource":
+            for name in sorted(names):
+                if not name.lower().startswith("en") and (path / name / "LC_MESSAGES").is_dir():
+                    removed += _remove_tree(path / name)
+        elif "program" in names and "help" in names:
+            removed += _remove_tree(path / "help")
+        # Translations and extensions are near the top of every layout; skip the rest.
+        names[:] = [
+            name
+            for name in names
+            if (path / name).exists() and len((path / name).relative_to(image).parts) < 6
+        ]
+    return removed
+
+
 def _verify_office(executable_path: Path, *, cwd: Path) -> None:
     """Probe without joining another Office instance or touching the user's profile."""
     # A real Windows first launch can exhaust the native probe deadline while
@@ -404,6 +443,7 @@ def ensure_office(root: Path) -> str:
             image.mkdir()
             try:
                 _extract(source, image)
+                prune_unread(image)
                 if office_compat.supported():
                     office_compat.prepare(image, download=_download, deb_data=_deb_data)
                 inherit_parent_access(image)

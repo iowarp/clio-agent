@@ -48,6 +48,7 @@ def main() -> int:
         tree = work / "office"
         tree.mkdir()
         windows_msi.extract_application(msi, tree)
+        office.prune_unread(tree)
         if office.executable(tree) is None:
             raise SystemExit("the expanded MSI has no soffice executable")
         shutil.move(str(tree), target)
