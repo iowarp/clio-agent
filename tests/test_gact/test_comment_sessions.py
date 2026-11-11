@@ -516,7 +516,7 @@ def test_an_a2ui_region_sends_readable_rows_and_no_json(tmp_path: Path, monkeypa
     user = next(m for m in messages if m["role"] == "user")
     kinds = [p["type"] for p in user["parts"]]
     assert kinds == ["comment_session", "text", "image", "image"]
-    assert user["parts"][1]["text"] == "Comments on Depth vs magnitude:\nS1: Outliers?"
+    assert user["parts"][1]["text"] == "Comments on Depth vs magnitude:\nS1 region: Outliers?"
     assert user["parts"][0]["metadata"]["comment_session"]["images"] == []
 
 
