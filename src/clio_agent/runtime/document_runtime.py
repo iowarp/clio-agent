@@ -123,7 +123,9 @@ def _run(
         process.kill()
         process.communicate()
         raise DocumentRuntimeError(f"{Path(command[0]).name} exceeded {timeout:g} seconds") from exc
-    if process.returncode not in accepted_exit_codes:
+    # A nonzero exit with no output is a launch failure (e.g. a sandbox wrapper that could not
+    # start the child), not a reported result: surface its stderr instead of an empty parse.
+    if process.returncode not in accepted_exit_codes or (process.returncode and not stdout.strip()):
         raise DocumentRuntimeError(f"{Path(command[0]).name} failed: {(stderr or stdout)[-4000:]}")
     return stdout
 
