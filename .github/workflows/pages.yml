@@ -85,7 +85,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: site/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: bash "$GITHUB_WORKSPACE/scripts/ci/apt_prepare.sh" && sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 15
       - run: npm ci
         working-directory: site/video
       - run: npm test

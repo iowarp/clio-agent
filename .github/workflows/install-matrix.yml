@@ -444,8 +444,9 @@ jobs:
           # the desktop's system libraries (WebKitGTK, the tray indicator, ~50 MB from the
           # Ubuntu mirror) are an OS precondition, not CLIO's install: fetch them untimed so
           # the install budget measures CLIO, as on macOS and Windows.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libwebkit2gtk-4.1-0 libayatana-appindicator3-1 >/dev/null
+          bash scripts/ci/apt_prepare.sh
+          timeout 900 sudo apt-get update -qq
+          timeout 900 sudo apt-get install -y -qq libwebkit2gtk-4.1-0 libayatana-appindicator3-1 >/dev/null
           bash install/install.sh --desktop --progress json \
             > "$RUNNER_TEMP/install-events.jsonl" 2> "$RUNNER_TEMP/install.log"
       # Windows PowerShell 5.1, the shell `irm ... | iex` runs in; bash keeps the events'
@@ -468,7 +469,8 @@ jobs:
               args=(--agent-home "$HOME/Library/Application Support/ai.iowarp.clio.desktop/clio-agent")
               run=() ;;
             Linux)
-              sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null
+              bash scripts/ci/apt_prepare.sh
+              timeout 900 sudo apt-get update -qq && timeout 900 sudo apt-get install -y -qq xvfb >/dev/null
               app=/usr/bin/clio-desktop
               args=(--agent-home "$HOME/.local/share/clio-agent-ci"
                     --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log")
@@ -554,7 +556,8 @@ jobs:
         continue-on-error: true
         run: |
           rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
-          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null
+          bash scripts/ci/apt_prepare.sh
+          timeout 900 sudo apt-get update -qq && timeout 900 sudo apt-get install -y -qq xvfb >/dev/null
           smoke() {
             xvfb-run -a uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
               /usr/bin/clio-desktop --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$1" \
