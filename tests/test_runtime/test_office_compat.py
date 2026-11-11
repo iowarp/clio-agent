@@ -18,11 +18,13 @@ HOSTS = {
     "x86_64": ("amd64", "x86_64-linux-gnu", "ld-linux-x86-64.so.2"),
     "aarch64": ("arm64", "aarch64-linux-gnu", "ld-linux-aarch64.so.1"),
 }
-#: Where each set is pinned: an immutable snapshot (amd64) or Launchpad's librarian (arm64).
+#: Where each set is pinned: an immutable snapshot (amd64) or the ports archive (arm64).
 SOURCES = {
     "amd64": r"https://snapshot\.ubuntu\.com/ubuntu/\d{8}T\d{6}Z/pool/.+_(amd64|all)\.deb",
-    "arm64": r"https://launchpadlibrarian\.net/\d+/[^/]+_(arm64|all)\.deb",
+    "arm64": r"https://ports\.ubuntu\.com/ubuntu-ports/pool/.+_(arm64|all)\.deb",
 }
+#: An amd64 version superseded on the archive is pinned to its librarian file (``url``).
+LIBRARIAN = r"https://launchpadlibrarian\.net/\d+/[^/]+_(amd64|all)\.deb"
 
 
 def _lock() -> dict[str, Any]:
@@ -99,8 +101,11 @@ def test_the_lock_holds_one_verified_package_set_per_architecture() -> None:
         names = [item["package"] for item in entry["packages"]]
         assert names == sorted(set(names))
         for item in entry["packages"]:
-            assert set(item) == {"package", "version", "path", "sha256", "size"}
+            assert set(item) - {"url"} == {"package", "version", "path", "sha256", "size"}
             assert re.fullmatch(SOURCES[key], f"{entry['base']}/{item['path']}")
+            if "url" in item:
+                assert key == "amd64" and re.fullmatch(LIBRARIAN, item["url"])
+                assert item["url"].endswith("/" + Path(item["path"]).name)
             assert Path(item["path"]).name.startswith(f"{item['package']}_")
             assert re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) and item["size"] > 0
 
@@ -127,7 +132,7 @@ def test_the_lock_pins_the_c_runtime_and_the_desktop_libraries(
     assert {"libc6", "libstdc++6", "libx11-6", "libxinerama1", "libcairo2", "libcups2"} <= names
     assert {"libfontconfig1", "libnss3", "libglib2.0-0"} <= names
     for url, checksum in pinned:
-        assert re.fullmatch(SOURCES[key], url)
+        assert re.fullmatch(SOURCES[key], url) or url in office_compat.fallbacks()
         assert len(checksum) == 64
 
 
@@ -179,9 +184,14 @@ def test_wrapper_published_last_and_remains_relocatable(
     calls: list[str] = []
     payload = _tar([(f"lib/{triplet}/{loader}", b"loader")])
 
-    def download(url: str, target: Path, checksum: str) -> None:
+    copies = office_compat.fallbacks()
+
+    def download(url: str, target: Path, checksum: str, also: tuple[str, ...]) -> None:
         assert not (root / office_compat.WRAPPER).exists()
-        assert len(checksum) == 64 and re.fullmatch(SOURCES[key], url)
+        assert len(checksum) == 64 and (re.fullmatch(SOURCES[key], url) or url in copies)
+        # A librarian pin falls back to its snapshot copy; snapshot pins need none.
+        assert also == ((copies[url],) if url in copies else ())
+        assert all(copy.startswith("https://snapshot.ubuntu.com/") for copy in also)
         calls.append(url)
         target.write_bytes(payload)
 
