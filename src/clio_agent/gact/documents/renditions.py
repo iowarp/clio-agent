@@ -36,6 +36,7 @@ from clio_agent.runtime.document_stack.process import (
     DocumentError,
     find_native,
     inherit_parent_access,
+    mark_search_ignored,
     office_convert,
     scratch_root,
 )
@@ -269,6 +270,7 @@ def _render_pdf(
     if not rendition_root.is_relative_to(workspace_root):
         raise RenditionError("PDF preview output escapes the active workspace")
     rendition_root.mkdir(parents=True, exist_ok=True)
+    mark_search_ignored(rendition_root.parent)
     target = rendition_root / f"{Path(record.name).stem}.pdf"
     if not target.resolve().is_relative_to(workspace_root):
         raise RenditionError("PDF preview output escapes the active workspace")

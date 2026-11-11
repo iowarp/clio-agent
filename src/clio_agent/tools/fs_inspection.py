@@ -10,6 +10,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
+from clio_agent.runtime.sandbox_stubs import is_sandbox_mount_stub
 from clio_agent.tools.file_policy import (
     FileAccessPolicy,
     validate_non_empty_string,
@@ -34,6 +35,8 @@ def list_directory(path: str, limit: int = 200) -> dict[str, Any]:
     truncated = False
     with os.scandir(directory) as iterator:
         for entry in iterator:
+            if is_sandbox_mount_stub(Path(entry.path)):
+                continue
             if len(entries) == limit:
                 truncated = True
                 break

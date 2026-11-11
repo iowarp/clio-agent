@@ -11,6 +11,8 @@ from typing import Any, Iterable
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.routes.workspace_file_policy import (
+    hide_workspace_entry,
+    is_document_machinery_path,
     is_internal_workspace_file_directory,
     skip_workspace_file_directory,
     workspace_read_redaction_reason,
@@ -149,6 +151,8 @@ def _local_children(
         is_internal_workspace_file_directory(p) for p in requested.parts
     ):
         return
+    if is_document_machinery_path(requested):
+        return
     allow_symlinks = FileAccessPolicy.from_mapping(os.environ).allow_symlinks
     if not allow_symlinks and any(
         (root / Path(*requested.parts[:index])).is_symlink()
@@ -163,6 +167,8 @@ def _local_children(
                 if not include_hidden and child.name.startswith("."):
                     continue
                 if exclude_service_storage and is_internal_workspace_file_directory(child.name):
+                    continue
+                if hide_workspace_entry(root, Path(child.path)):
                     continue
                 relative = (requested / child.name).as_posix()
                 if relative == ".clio/inputs" or relative in _GROUPS:
