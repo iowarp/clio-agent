@@ -1186,7 +1186,8 @@ start_release_runtime() {  # TAG
     # release_install_plan has fetched them when the release publishes them.
     [ -s "$sums" ] || curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
       "$REPO_URL/releases/download/$1/SHA256SUMS.aarch64-apple-darwin.bundled.txt" -o "$sums" 2>/dev/null || true
-    asset="$([ -s "$sums" ] && release_runtime_asset "$sums")"
+    asset=""
+    [ ! -s "$sums" ] || asset="$(release_runtime_asset "$sums")"
     if [ -z "$asset" ]; then
       say "Release $1 publishes no prebuilt agent for macOS: installing it from PyPI"
       return 0
@@ -1426,8 +1427,13 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   fi
   tag="$(release_tag "$package_version")"
   install_scratch
-  start_install_downloads "$(release_install_plan "$tag")"
+  install_plan="$(release_install_plan "$tag")"
   start_release_runtime "$tag"
+  # The prebuilt agent is the critical path, so it downloads alone; LibreOffice and pnpm
+  # follow while the store migrates (sharing the line, all three finished ~25 s later on
+  # a 15 MB/s link). A PyPI install leaves the line free for them from the start.
+  runtime_first=0
+  if [ -n "$RUNTIME_JOB" ]; then runtime_first=1; else start_install_downloads "$install_plan"; fi
   lockdir="$(mktemp -d)"  # removed on exit (on_exit)
   for f in pyproject.toml uv.lock .python-version; do
     curl -fsSL "https://raw.githubusercontent.com/iowarp/clio-agent/$tag/$f" -o "$lockdir/$f" 2>/dev/null \
@@ -1438,7 +1444,10 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
       --extra argonne --extra flowcept -o constraints.txt ) \
     || die "could not read the dependency lock of release $tag"
   start_clio_kit "$py"
-  if finish_release_runtime "$package_version"; then
+  runtime_installed=0
+  ! finish_release_runtime "$package_version" || runtime_installed=1
+  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"
+  if [ "$runtime_installed" = 1 ]; then
     CLIO_VERSION="$package_version"
   else
     pkg_spec="clio-agent[argonne,flowcept]==$package_version"
