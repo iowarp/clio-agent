@@ -483,6 +483,31 @@ def _clear_declared_structured_content():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_observer_call_identity():
+    """Start each test without a tool call id an earlier test left running.
+
+    A test that drives the tool observer outside a task context sets its call id in
+    this worker's context and never resets it, so a later Question posted outside
+    any call reuses that id and collides with its own earlier Question.
+    """
+    import sys  # noqa: PLC0415
+
+    tokens = []
+    for module_name, var_name in (
+        ("clio_agent.gact.tool_observer", "_OBSERVER_CALL_IDS"),
+        ("clio_agent.gact.artifacts.observer_bridge", "MODEL_CALL_SLOT"),
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None:
+            var = getattr(module, var_name)
+            tokens.append((var, var.set(None)))
+    yield
+    for var, token in reversed(tokens):
+        with contextlib.suppress(ValueError):
+            var.reset(token)
+
+
+@pytest.fixture(autouse=True)
 def _block_outbound_network(request):
     """Fail a unit test that reaches a non-loopback host (tests/_network_guard.py)."""
     if any(request.node.get_closest_marker(m) for m in _network_guard.EXEMPT_MARKERS):
