@@ -106,7 +106,8 @@ try {
   await page.goto(uiUrl, { waitUntil: "networkidle", timeout: 60000 });
 
   // First run shows the "Add an agent service" form; later runs restore the saved service.
-  const name = page.getByPlaceholder("For example, Homelab");
+  // The form's address starts empty, so it is always filled with --agent.
+  const name = page.locator("#endpoint");
   const composer = page.locator('textarea, [contenteditable="true"]').first();
   // Wait for whichever renders: the connect form (first run) or a restored workspace.
   const first = await Promise.race([
@@ -115,11 +116,8 @@ try {
   ]).catch(() => "neither");
   if (first === "neither") throw new Error("the UI showed neither the connect form nor a workspace");
   if (first === "form") {
-    await name.fill("cloud");
-    // The form defaults to http://127.0.0.1:8787; only retype it for another agent.
-    if (agentUrl !== "http://127.0.0.1:8787") {
-      await page.getByText("Connection address").locator("..").getByRole("textbox").fill(agentUrl);
-    }
+    await name.fill(agentUrl);
+    await page.locator("#service-name").fill("cloud").catch(() => {});
     await page.getByRole("button", { name: /Connect/ }).click();
     await name.waitFor({ state: "hidden", timeout: 30000 }).catch(() => {
       throw new Error(`could not connect to ${agentUrl}; is the stack running?`);
@@ -129,11 +127,25 @@ try {
   await shot("connected");
 
   if (send) {
+    // The UI posts the message to /v1/sessions/<id>/messages; the turn has finished when
+    // the agent reports that session idle again. Give up after --settle ms.
+    const posted = page
+      .waitForRequest((r) => r.method() === "POST" && /\/v1\/sessions\/[^/]+\/messages$/.test(r.url()), {
+        timeout: 30000,
+      })
+      .catch(() => null);
     await composer.click();
     await page.keyboard.type(send);
     await page.keyboard.press("Enter");
-    // A finished turn shows its "Done" status row; give up after --settle ms.
-    await page.getByText("Done", { exact: true }).last().waitFor({ timeout: settleMs }).catch(() => {});
+    const request = await posted;
+    const sid = request ? new URL(request.url()).pathname.split("/")[3] : "";
+    const deadline = Date.now() + settleMs;
+    while (sid && Date.now() < deadline) {
+      await page.waitForTimeout(1000);
+      const state = await fetch(`${agentUrl}/v1/sessions/${sid}`).then((r) => r.json()).catch(() => ({}));
+      if (state.status === "idle") break;
+    }
+    if (!sid) consoleErrors.push("ui_check: the UI posted no message to the agent");
     await page.waitForTimeout(1000);
     await shot("after-send");
   }

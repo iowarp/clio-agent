@@ -306,7 +306,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- listing ----------------------------------------------------------
 
     @app.get("/v1/sessions/{sid}/artifacts")
-    async def list_session_artifacts(
+    def list_session_artifacts(
         sid: str,
         limit: int | None = None,
         before: str | None = None,
@@ -346,7 +346,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
                 message=f"session not found: {sid}",
                 details={"session_id": sid},
             )
-        registry = await _registry(app)
+        registry = get_registry(app)  # a sync route: FastAPI runs it off the event loop
         child_ids: list[str] = []
         if not include_children:
             records = registry.list_for_workspace(workspace_id)
@@ -418,11 +418,11 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         return body
 
     @app.get("/v1/workspaces/{wid}/artifacts")
-    async def list_workspace_artifacts(
+    def list_workspace_artifacts(
         wid: str, limit: int | None = None, before: str | None = None
     ) -> dict[str, Any]:
         """List the artifacts of a workspace directly (newest-first, paginated)."""
-        registry = await _registry(app)
+        registry = get_registry(app)  # a sync route: store reads stay off the event loop
         records = registry.list_for_workspace(wid)
         page, next_cursor = _paginate_records(records, limit=_clamp_limit(limit), before=before)
         _audit(app, route="list_workspace_artifacts", workspace_id=wid, returned=len(page))

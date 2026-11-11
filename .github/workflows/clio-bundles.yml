@@ -174,7 +174,9 @@ jobs:
           mkdir -p "$stage"
           cp -r external/gact-tui/web/dist "$stage/clio-web-$version"
           (cd "$stage" && zip -r "clio-web-$version.zip" "clio-web-$version")
-          sha256sum "$stage/clio-web-$version.zip" > "$stage/SHA256SUMS.web.txt"
+          # Hash from inside the stage so the manifest names the file, not the runner's path
+          # (`sha256sum -c SHA256SUMS.web.txt` next to the download must find it).
+          (cd "$stage" && sha256sum "clio-web-$version.zip" > SHA256SUMS.web.txt)
       - name: Upload to draft release
         working-directory: ${{ runner.temp }}/clio-web-stage
         env:

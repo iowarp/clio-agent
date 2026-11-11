@@ -12,6 +12,7 @@ import hashlib
 import http.client
 import logging
 import queue
+import random
 import re
 import ssl
 import threading
@@ -49,6 +50,13 @@ _RACE_FALLBACKS = 8
 FLOOR_FRACTION = 0.25
 FLOOR_WINDOW_S = 10.0
 _MAX_SWITCHES = 4
+#: Failed attempts (5xx/408/429, network errors, a wrong SHA-256) before a download
+#: fails. snapshot.ubuntu.com, which serves Office's ~150 userland packages, answers
+#: bursts of 500/502 lasting several seconds; three attempts 1 s and 2 s apart failed
+#: whole installs. Backoff doubles from 1 s (cap 16 s, ~31 s in all) with jitter, so
+#: parallel fetches do not retry in lockstep.
+_MAX_ATTEMPTS = 6
+_BACKOFF_CAP_S = 16.0
 _CHUNK = 1024 * 1024
 
 logger = logging.getLogger(__name__)
@@ -336,8 +344,9 @@ def mirror_rate(url: str, checksum: str) -> tuple[float, int] | None:
 def download(url: str, target: Path, checksum: str) -> None:
     """Fetch verified bytes under one time budget, resuming across sources.
 
-    Three failed attempts (network errors, bad status, a wrong SHA-256) end it; a source
-    that turns slow is left for the next without counting as one (``_MAX_SWITCHES``).
+    ``_MAX_ATTEMPTS`` failed attempts (network errors, bad status, a wrong SHA-256) end it;
+    a source that turns slow is left for the next without counting as one
+    (``_MAX_SWITCHES``).
     """
     started = time.monotonic()
     deadline = started + DOWNLOAD_BUDGET_S
@@ -382,15 +391,19 @@ def download(url: str, target: Path, checksum: str) -> None:
                     continue
                 except _RetryableDownloadError as exc:
                     failures += 1
-                    if failures == 3:
-                        raise DocumentError(f"{exc}; all three download attempts failed") from exc
+                    if failures == _MAX_ATTEMPTS:
+                        raise DocumentError(
+                            f"{exc}; all {_MAX_ATTEMPTS} download attempts failed"
+                        ) from exc
                     logger.warning(
                         "reason=office_download_retry attempt=%d url=%s error=%s",
                         failures,
                         source,
                         exc,
                     )
-                    time.sleep(2 ** (failures - 1))
+                    backoff = min(2.0 ** (failures - 1), _BACKOFF_CAP_S)
+                    remaining = max(0.0, deadline - time.monotonic())
+                    time.sleep(min(backoff * random.uniform(0.5, 1.5), remaining))
                     index += 1
                     continue
                 elapsed = max(time.monotonic() - started, 1e-3)
