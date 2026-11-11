@@ -132,6 +132,8 @@ REPO_URL=https://github.com/iowarp/clio-agent
 DESKTOP_SCRATCH=""
 DESKTOP_STAGING=""
 DESKTOP_DEST=""
+# Where the .deb puts the app; the installer tests point it at a stand-in.
+LINUX_DESKTOP="${CLIO_DESKTOP_BIN:-/usr/bin/clio-desktop}"
 DESKTOP_JOBS=""
 DESKTOP_MONITOR=""
 DESKTOP_APP_FILE=""
@@ -408,7 +410,7 @@ install_desktop_package() {
     say "Installed the CLIO Desktop test build ${version:+$version }(not a release)"
     prepare_desktop "" "$app_dir/Contents/MacOS/clio-desktop"
   else
-    prepare_desktop "" /usr/bin/clio-desktop
+    prepare_desktop "" "$LINUX_DESKTOP"
   fi
   finish_run true
 }
@@ -517,7 +519,7 @@ install_desktop() {
   step prepare
   case "$os" in
     Darwin) prepare_desktop "$tag" "$DESKTOP_DEST/CLIO Desktop.app/Contents/MacOS/clio-desktop" "$DESKTOP_SCRATCH/downloads" ;;
-    Linux) prepare_desktop "$tag" /usr/bin/clio-desktop "$DESKTOP_SCRATCH/downloads" ;;
+    Linux) prepare_desktop "$tag" "$LINUX_DESKTOP" "$DESKTOP_SCRATCH/downloads" ;;
   esac
   finish_downloads
   finish_run true
