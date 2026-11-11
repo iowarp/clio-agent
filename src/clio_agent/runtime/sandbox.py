@@ -173,6 +173,7 @@ def _resolve_backend(
     codex_detection: Any = None,
     codex_provisioned_probe: Any = None,
     landlock: Any = None,
+    codex_linux_probe: Any = None,
 ) -> SandboxResult:
     """Resolve + ACTIVATE the confinement backend down the typed ladder (codex-primary, B-codex-5).
 
@@ -184,6 +185,12 @@ def _resolve_backend(
     (``codex_not_installed`` / ``codex_version_unsupported`` / ``codex_windows_unprovisioned`` /
     ``codex_enforcement_unverified``). Every rung carries a typed reason; all probes are injectable
     so the whole selection matrix is unit-pinnable without a real fence.
+
+    On Linux a detected codex must also launch a confined child (``codex_linux_probe``, default
+    :func:`~clio_agent.runtime.sandbox_codex_probe.probe_codex_linux_fence` when detection is
+    real): bubblewrap needs unprivileged user namespaces, which containers and hardened hosts
+    often refuse. A refusal is ``codex_linux_fence_unavailable`` with codex's own explanation in
+    ``details["codex_probe"]``, and the ladder continues to Landlock.
     """
     from clio_agent.runtime import sandbox_codex as scx  # noqa: PLC0415
 
@@ -209,6 +216,7 @@ def _resolve_backend(
         "bundled_codex_absent": cdet.bundled_codex_absent,
     }
     codex_viable = cdet.installed and cdet.reason == scx.REASON_CODEX_DETECTED
+    codex_probe_failure: dict[str, str] = {}
     if codex_viable:
         if platform.startswith("win"):  # gate on cached provision + verify (#1026 no-false-green)
             ready, creason = (
@@ -226,10 +234,25 @@ def _resolve_backend(
                 )
                 return _activate_codex(cdet, base_details)
             return floor(creason)  # codex_windows_unprovisioned / codex_enforcement_unverified
-        return _activate_codex(cdet, base_details)
+        fence_probe = codex_linux_probe
+        if fence_probe is None and codex_detection is None and platform.startswith("linux"):
+            from clio_agent.runtime.sandbox_codex_probe import (  # noqa: PLC0415
+                probe_codex_linux_fence as fence_probe,
+            )
+        verdict = fence_probe(cdet.binary_path) if fence_probe is not None else (True, "")
+        if verdict[0]:
+            return _activate_codex(cdet, base_details)
+        codex_probe_failure = {"reason": verdict[1], "detail": getattr(verdict, "detail", "")}
+        base_details["codex_probe"] = codex_probe_failure
+        logger.warning(
+            "codex fence unusable on this host reason=%s detail=%s",
+            verdict[1],
+            codex_probe_failure["detail"],
+        )
 
-    # Codex not viable → the typed skip reason (codex_not_installed / codex_version_unsupported).
-    codex_skip = cdet.reason
+    # Codex not viable → the typed skip reason (codex_not_installed / codex_version_unsupported,
+    # or codex_linux_fence_unavailable when it is installed but cannot confine a child here).
+    codex_skip = codex_probe_failure["reason"] if codex_probe_failure else cdet.reason
     base_details["codex_skip_reason"] = codex_skip
 
     # Linux fallback: the native Landlock rung → floor. (win32/darwin have no fallback rung.)
@@ -253,6 +276,8 @@ def _resolve_backend(
                     "landlock_abi": probe.abi,
                 },
             )
+        if codex_probe_failure:
+            return floor(codex_skip)
         return floor(probe.reason or codex_skip)
 
     return floor(codex_skip)

@@ -22,6 +22,10 @@ import pytest
 
 from clio_agent.runtime import sandbox
 from clio_agent.runtime import sandbox_codex as sc
+from clio_agent.runtime.sandbox_codex_probe import (
+    REASON_CODEX_LINUX_FENCE_UNAVAILABLE,
+    EnforcementVerdict,
+)
 from clio_agent.runtime.sandbox_landlock import LandlockProbe
 from clio_agent.runtime.status import IntegrationState
 
@@ -129,6 +133,28 @@ def test_codex_absent_on_linux_falls_to_landlock() -> None:
     assert result.mechanism == sandbox.MECHANISM_LANDLOCK
     assert result.active is True
     assert result.details["codex_skip_reason"] == sc.REASON_CODEX_NOT_INSTALLED
+
+
+@pytest.mark.parametrize("landlock_ok", [True, False])
+def test_linux_codex_that_cannot_confine_is_not_claimed(landlock_ok: bool) -> None:
+    """bubblewrap refused (no user namespaces) → Landlock if present, else a typed floor."""
+    bwrap = "codex exited 1: bwrap: No permissions to create a new namespace"
+    result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_ENABLED": "true"},
+        platform="linux",
+        codex_detection=_codex_ok(),
+        codex_linux_probe=lambda _binary: EnforcementVerdict(
+            False, REASON_CODEX_LINUX_FENCE_UNAVAILABLE, bwrap
+        ),
+        landlock=_ll(landlock_ok),
+    )
+    expected = sandbox.MECHANISM_LANDLOCK if landlock_ok else sandbox.MECHANISM_NONE
+    assert result.mechanism == expected
+    assert result.active is landlock_ok
+    assert result.details["codex_skip_reason"] == REASON_CODEX_LINUX_FENCE_UNAVAILABLE
+    assert result.details["codex_probe"]["detail"] == bwrap
+    if not landlock_ok:
+        assert result.reason == REASON_CODEX_LINUX_FENCE_UNAVAILABLE
 
 
 def test_codex_still_honors_disabled_knob() -> None:
