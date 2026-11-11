@@ -390,6 +390,11 @@ def _child_cache_env(
         )
     overlay: dict[str, str] = dict.fromkeys(redirected, target)
     overlay["FASTMCP_CHECK_FOR_UPDATES"] = "off"
+    # LibreOffice keeps its user profile under ~/.config (XDG_CONFIG_HOME alone is not
+    # enough), which the fence makes read-only: a confined `soffice --convert-to` then
+    # aborts with an uncaught DeploymentException. Its UserInstallation bootstrap
+    # variable, read from the environment, puts the profile in this cache directory.
+    overlay["UserInstallation"] = (cache_dir / "libreoffice").as_uri()
     return overlay
 
 
