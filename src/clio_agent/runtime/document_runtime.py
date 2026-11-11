@@ -293,6 +293,21 @@ def _set_environment_home(environment: Path) -> None:
     )
 
 
+def _installer_wheel_root() -> Path | None:
+    """The installer's downloads folder when it holds a runtime archive's document wheels.
+
+    ``install.sh`` installs a Linux release from its prebuilt runtime archive and hands the
+    archive's ``document-wheels`` over here, so this environment is laid out from the same
+    locked wheels the desktop uses instead of downloading them again.
+    ``bundled_wheel_requirements`` checks every wheel against this stack's lock.
+    """
+    from clio_agent.runtime.document_stack.office import INSTALLER_DOWNLOADS
+
+    folder = os.environ.get(INSTALLER_DOWNLOADS, "")
+    root = Path(folder) if folder else None
+    return root if root and (root / "document-wheels" / "manifest.json").is_file() else None
+
+
 def _python_runtime(
     cache: Path, uv: str, *, discovery_only: bool = False
 ) -> tuple[Path, dict[str, Any]]:
@@ -336,6 +351,12 @@ def _python_runtime(
         requirements = bundled_wheel_requirements(runtime, STACK_ROOT, project)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise DocumentRuntimeError(f"Bundled document packages are invalid: {error}") from error
+    if runtime is None and (runtime := _installer_wheel_root()) is not None:
+        try:
+            requirements = bundled_wheel_requirements(runtime, STACK_ROOT, project)
+        except (OSError, ValueError, KeyError, TypeError):
+            # Wheels for another interpreter or lock: the locked sync below downloads them.
+            runtime = requirements = None
     if requirements is not None:
         assert runtime is not None  # A verified wheel bundle can only come from a runtime.
         if not repair:
