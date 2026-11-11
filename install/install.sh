@@ -801,6 +801,32 @@ esac
 # ---------- prerequisite checks ---------------------------------------
 have curl || die "curl is required"
 
+# A fresh Mac's /usr/bin developer tools (git, install_name_tool, python3, ...) are
+# placeholders: running one opens the "Install Command Line Developer Tools" dialog.
+# They work once Xcode or the Command Line Tools provide a developer directory.
+macos_developer_tools() {
+  local developer link
+  link="$(readlink /var/db/xcode_select_link 2>/dev/null || true)"
+  for developer in "${DEVELOPER_DIR:-}" "$link" /Applications/Xcode.app/Contents/Developer \
+      /Library/Developer/CommandLineTools; do
+    [ -n "$developer" ] && [ -d "$developer/usr/bin" ] && return 0
+  done
+  return 1
+}
+
+# uv runs install_name_tool on each Python it installs (to patch libpython's install
+# name) and only warns when that fails. Without the developer tools a stand-in that
+# fails comes first on PATH, so installing a Python never opens the dialog.
+tool_shim=""
+if [ "$OS" = darwin ] && ! macos_developer_tools; then
+  tool_shim="$(mktemp -d "${TMPDIR:-/tmp}/clio-tools.XXXXXXXX")"
+  printf '#!/bin/sh\necho "clio: install_name_tool needs the Command Line Tools; the library is left as it is" >&2\nexit 1\n' \
+    > "$tool_shim/install_name_tool"
+  chmod +x "$tool_shim/install_name_tool"
+  export PATH="$tool_shim:$PATH"
+  trap 'rm -rf "$tool_shim"' EXIT  # on_exit, below, takes over
+fi
+
 # uv installs Python, the environment and the locked dependencies in every mode.
 mkdir -p "$PREFIX" "$BIN_DIR"
 if ! have uv; then
@@ -810,8 +836,8 @@ if ! have uv; then
   export PATH="$BIN_DIR:$PATH"
 fi
 
-# A fresh Mac's /usr/bin/git is a placeholder: running it opens the "Install Command
-# Line Developer Tools" dialog. Decided from the filesystem, never by running it.
+# A fresh Mac's /usr/bin/git is a placeholder (above). Decided from the filesystem,
+# never by running it.
 macos_git_placeholder() {
   local developer link
   [ "$OS" = darwin ] || return 1
@@ -1000,6 +1026,7 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
 on_exit() {
   [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
   [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
+  [ -z "${tool_shim:-}" ] || rm -rf "$tool_shim"
   stop_install_jobs
 }
 trap on_exit EXIT
