@@ -391,10 +391,13 @@ def test_without_a_verified_matching_runtime_the_install_uses_pypi(
         assert "publishes no prebuilt agent" in result.stdout
 
 
-def test_the_installer_falls_back_to_pypi_when_the_runtime_is_not_installed() -> None:
+def test_the_prebuilt_agent_downloads_first_and_pypi_remains_the_fallback() -> None:
     text = (ROOT / "install/install.sh").read_text()
-    start = text.index('  start_release_runtime "$tag"')
-    # After the plan's checksums are fetched: the runtime reuses them.
-    assert text.index('  start_install_downloads "$(release_install_plan "$tag")"') < start
-    finish = text.index('  if finish_release_runtime "$package_version"; then')
-    assert start < finish < text.index('say "Installing $pkg_spec from PyPI', finish)
+    plan = text.index('  install_plan="$(release_install_plan "$tag")"')
+    start = text.index('  start_release_runtime "$tag"', plan)
+    # The checksums the plan fetched are reused; LibreOffice and pnpm wait for the runtime.
+    assert plan < start
+    assert 'if [ -n "$RUNTIME_JOB" ]; then runtime_first=1; else start_install_downloads' in text
+    finish = text.index('  ! finish_release_runtime "$package_version" || runtime_installed=1')
+    after = text.index('  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"')
+    assert start < finish < after < text.index('say "Installing $pkg_spec from PyPI', after)
