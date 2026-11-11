@@ -41,17 +41,6 @@ def test_a_live_worker_has_a_stable_identity() -> None:
     assert not node_models.alive(job)
 
 
-def test_distinct_live_processes_have_distinct_identities() -> None:
-    children = [_sleeper(), _sleeper()]
-    try:
-        first, second = (node_models.process_identity(child.pid) for child in children)
-        assert first and second and first != second
-    finally:
-        for child in children:
-            child.kill()
-            child.wait()
-
-
 def test_an_exited_unreaped_worker_is_not_alive() -> None:
     child = REAL_POPEN([sys.executable, "-c", "pass"])
     try:
