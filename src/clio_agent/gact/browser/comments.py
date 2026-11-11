@@ -112,7 +112,7 @@ async def _measure(
     followed = [
         {"label": mark.label, "anchor": mark.anchor.model_dump()}
         for mark in attachment.marks
-        if mark.anchor.profile in ("dom", "text-quote")
+        if mark.anchor.profile in ("dom", "text-quote", "region")
     ]
     located: dict[str, dict[str, Any]] = {}
     if followed:
@@ -142,14 +142,19 @@ async def _measure(
             elif anchor.profile == "text-quote" and where is not None:
                 out["marks"][mark.label] = where
             elif anchor.profile == "region" and anchor.rect:
-                x, y, w, h = anchor.rect
-                box = [
-                    x * view["width"],
-                    y * view["height"],
-                    w * view["width"],
-                    h * view["height"],
-                ]
-                out["marks"][mark.label] = await page.evaluate(_UNDER_JS, box)
+                # Where the region is now, when the page found the element it holds to.
+                if where is not None and where.get("found") and where.get("rect"):
+                    box = list(where["rect"])
+                else:
+                    x, y, w, h = anchor.rect
+                    box = [
+                        x * view["width"],
+                        y * view["height"],
+                        w * view["width"],
+                        h * view["height"],
+                    ]
+                under = await page.evaluate(_UNDER_JS, box)
+                out["marks"][mark.label] = {"under": under, "rect": box}
     finally:
         await cdp.detach()
     return out
@@ -233,7 +238,8 @@ def render_page_comments(
                     else "text_not_found: the selected text is no longer on the page"
                 )
         elif anchor.profile == "region" and anchor.rect:
-            x, y, w, h = anchor.rect
+            measured = (captured or {}).get("marks", {}).get(mark.label) or {}
+            x, y, w, h = _view_rect(measured["rect"], view) if measured.get("rect") else anchor.rect
             found.rect = (x, y, w, h)
             found.lines.append(
                 (
@@ -241,12 +247,12 @@ def render_page_comments(
                     f"x {round(x * 100)}% to {round((x + w) * 100)}%, y {round(y * 100)}% to {round((y + h) * 100)}% of the page view",
                 )
             )
-            under = str((captured or {}).get("marks", {}).get(mark.label) or "")
+            under = str(measured.get("under") or "")
             if under:
                 found.under = under
                 found.lines.append(("Under", f'text "{under}"'))
-            if screenshot is not None:
-                found.crop = crop_png(screenshot, anchor.rect)
+            if screenshot is not None and w > 0 and h > 0:
+                found.crop = crop_png(screenshot, [x, y, w, h])
         elif anchor.profile == "dom":
             measured = (captured or {}).get("marks", {}).get(mark.label) or {"count": 0}
             count, rect = int(measured.get("count") or 0), measured.get("rect")

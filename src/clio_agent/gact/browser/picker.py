@@ -14,14 +14,17 @@ its ``src``; a text pick its quote and the text around it. The live view follows
 with ``marks.watch``: the page finds each mark again (by selector, image source, role and name or
 text for an element; by the quote and its context for text), reports where it is now as a
 ``marks`` message whenever the page scrolls, resizes or changes, and is handed the marks again after
-every navigation, so the pins come back after a reload or on going back. Only marks made on the
-page's current address are handed to it. A page could forge a ``marks`` report too; it only moves
+every navigation, so the pins come back after a reload or on going back. A region is followed too:
+the first time the page sees it, it holds the element under the region's centre and the region's
+offset from it, so the region moves with that element when the layout shifts or the page scrolls.
+Only marks made on the page's current address are handed to it. A page could forge a ``marks`` report too; it only moves
 the person's pins, and the comment is resolved again on the server when it is sent.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Callable
 from typing import Any
@@ -39,7 +42,7 @@ _MAX_HTML = 8_000
 _MAX_SRC = 2_000
 _MAX_WATCHED = 50
 _LABEL = re.compile(r"^S[1-9][0-9]{0,3}$")
-_HOWS = frozenset({"selector", "src", "role", "text", "quote"})
+_HOWS = frozenset({"selector", "src", "role", "text", "quote", "held", "region"})
 _REASONS = frozenset({"missing", "changed", "hidden"})
 _MODES: dict[str, str] = {}
 _SINKS: dict[str, Callable[[dict[str, Any]], None]] = {}
@@ -167,10 +170,35 @@ const clioQuote = (anchor, index) => {
   range.setEnd(index.nodes[last], index.at[last] + 1);
   return [range, 'quote'];
 };
+// A region follows what it was drawn over: the first time the page sees it, it holds the element
+// under its centre and the region's offset from it, and finds that element again from then on.
+// A region whose element is gone stays where it was drawn on the view.
+const clioRegion = (anchor) => {
+  const hold = (anchor.source && anchor.source.hold) || null;
+  if (hold && hold.selector) {
+    const [el] = clioElement({selector: hold.selector, tag: hold.tag});
+    const b = el && el.getBoundingClientRect();
+    if (b && (b.width || b.height))
+      return {found: true, how: 'held', rect: [b.left + hold.dx, b.top + hold.dy, hold.width, hold.height]};
+  }
+  const r = Array.isArray(anchor.rect) && anchor.rect.length === 4 ? anchor.rect : null;
+  if (!r) return {found: false, reason: 'missing'};
+  const box = [r[0] * innerWidth, r[1] * innerHeight, r[2] * innerWidth, r[3] * innerHeight];
+  const out = {found: true, how: 'region', rect: box};
+  if (hold) return out;
+  const el = document.elementFromPoint(box[0] + box[2] / 2, box[1] + box[3] / 2);
+  if (el && !clioOwn(el) && el !== document.body && el !== document.documentElement) {
+    const b = el.getBoundingClientRect();
+    out.hold = {selector: clioPath(el), tag: el.tagName.toLowerCase(), dx: box[0] - b.left,
+      dy: box[1] - b.top, width: box[2], height: box[3]};
+  }
+  return out;
+};
 const clioLocate = (items) => {
   let index = null;
   return (Array.isArray(items) ? items : []).slice(0, 50).map((item) => {
     const anchor = (item && item.anchor) || {}, label = String((item && item.label) || '');
+    if (anchor.profile === 'region') return Object.assign({label}, clioRegion(anchor));
     let target = null, how = 'missing';
     try {
       if (anchor.profile === 'dom') [target, how] = clioElement(anchor);
@@ -275,6 +303,21 @@ def _numbers(value: Any, count: int) -> list[float] | None:
     return [float(item) for item in value]
 
 
+def _hold(value: Any) -> dict[str, Any] | None:
+    """A region's held element (selector, tag, and the region's offset and size from it in CSS
+    pixels), bounded, or ``None`` when absent or malformed."""
+
+    if not isinstance(value, dict):
+        return None
+    selector = _text(value.get("selector"), 1_000)
+    numbers = _numbers([value.get(key) for key in ("dx", "dy", "width", "height")], 4)
+    if not selector or numbers is None or not all(math.isfinite(n) for n in numbers):
+        return None
+    dx, dy, width, height = numbers
+    tag = _text(value.get("tag"), 64)
+    return {"selector": selector, "tag": tag, "dx": dx, "dy": dy, "width": width, "height": height}
+
+
 def _page_url(url: str) -> str:
     """An address without its fragment: a mark made on it belongs to the whole document."""
     return url.split("#", 1)[0]
@@ -325,7 +368,8 @@ def _anchor(record: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
 
 def _watched(raw: Any) -> list[dict[str, Any]]:
     """The marks a live view follows: each label, the address it was made on and the parts of
-    its anchor the page needs to find it again (an element's or a text selection's only)."""
+    its anchor the page needs to find it again: an element's, a text selection's, or a region's
+    rectangle and the element it holds to."""
 
     if not isinstance(raw, list):
         raise ValueError("marks must be a list")
@@ -336,11 +380,15 @@ def _watched(raw: Any) -> list[dict[str, Any]]:
         label, anchor = item.get("label"), item.get("anchor")
         if not isinstance(label, str) or not _LABEL.match(label) or not isinstance(anchor, dict):
             continue
-        if anchor.get("profile") not in ("dom", "text-quote"):
+        if anchor.get("profile") not in ("dom", "text-quote", "region"):
             continue
         source = anchor.get("source") if isinstance(anchor.get("source"), dict) else {}
         page = source.get("page") if isinstance(source.get("page"), dict) else {}
         ax = source.get("ax") if isinstance(source.get("ax"), dict) else {}
+        rect = _numbers(anchor.get("rect"), 4) if anchor["profile"] == "region" else None
+        if anchor["profile"] == "region" and rect is None:
+            continue
+        hold = _hold(source.get("hold"))
         marks.append(
             {
                 "label": label,
@@ -354,11 +402,13 @@ def _watched(raw: Any) -> list[dict[str, Any]]:
                     "exact": _text(anchor.get("exact"), _MAX_TEXT),
                     "prefix": _text(anchor.get("prefix"), 64),
                     "suffix": _text(anchor.get("suffix"), 64),
+                    "rect": rect or [],
                     "source": {
                         "ax": {
                             "role": _text(ax.get("role"), 64),
                             "name": _text(ax.get("name"), 200),
-                        }
+                        },
+                        **({"hold": hold} if hold else {}),
                     },
                 },
             }
@@ -393,6 +443,9 @@ def _on_marks(record: Any, payload: dict[str, Any]) -> None:
             selector = _text(item.get("selector"), 1_000)
             if selector:
                 entry["selector"] = selector
+            hold = _hold(item.get("hold"))
+            if hold:
+                entry["hold"] = hold
         else:
             reason = item.get("reason") if item.get("reason") in _REASONS else "missing"
             entry = {"label": item["label"], "found": False, "reason": reason}
