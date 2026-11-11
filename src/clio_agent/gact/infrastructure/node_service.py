@@ -693,7 +693,7 @@ def _work(root: Path, action: str, generation: str) -> None:
                 error=None if code == 0 else f"{action} exited with code {code}; inspect its logs",
             )
             write_json(root / "receipt.json", current)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - forwards: the service receipt (record_failure)
         record_failure(root, action, generation, exc)
 
 
