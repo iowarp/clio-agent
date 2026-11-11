@@ -33,12 +33,14 @@ import re
 import shutil
 import subprocess
 import time
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
+from clio_agent import paths as agent_paths
 from clio_agent.runtime import trace
 from clio_agent.tools import mcp_cache
 
@@ -131,7 +133,37 @@ def _daemon_pid() -> int | None:
         return pid
 
 
-def live_peer_clio_processes(*, exclude_pids: Iterable[int] | None = None) -> list[ProcRef]:
+def _instance_root(role: agent_paths.Role, env: Mapping[str, str]) -> str | None:
+    """``role``'s root as a process with environment ``env`` resolves it (normalized)."""
+    home = env.get("USERPROFILE" if os.name == "nt" else "HOME", "").strip()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)  # the peer's deprecated variables
+            root = agent_paths.resolve_root(
+                role, home=home or str(Path.home()), env=env, platform=agent_paths._platform()
+            )
+    except (RuntimeError, ValueError):
+        return None
+    return os.path.normcase(os.path.normpath(str(root))) if root is not None else None
+
+
+def _shares_root(proc: Any, role: agent_paths.Role, ours: str, uv_cache: str | None) -> bool:
+    """Whether ``proc`` works in this instance's ``role`` root (unreadable counts as yes)."""
+    try:
+        env = proc.environ()
+    except Exception:  # noqa: BLE001 - AccessDenied/raced: keep the conservative answer
+        return True
+    if _instance_root(role, env) in (None, ours):
+        return True
+    spawned_cache = env.get("UV_CACHE_DIR", "").strip()
+    return bool(
+        uv_cache and spawned_cache and os.path.normcase(os.path.normpath(spawned_cache)) == uv_cache
+    )
+
+
+def live_peer_clio_processes(
+    *, exclude_pids: Iterable[int] | None = None, sharing: agent_paths.Role | None = None
+) -> list[ProcRef]:
     """Return the live clio processes that are NOT this process or its descendants.
 
     A peer is any process whose executable name or command line carries a clio marker
@@ -141,12 +173,20 @@ def live_peer_clio_processes(*, exclude_pids: Iterable[int] | None = None) -> li
 
     Args:
         exclude_pids: PIDs to treat as "self" (defaults to this process + its descendants).
+        sharing: Count only processes that resolve this ``role`` root (from their own
+            environment) to the same folder as this process, so another instance's server
+            on the same machine does not block this install's maintenance. A process
+            whose environment cannot be read still counts. ``None`` counts every one.
 
     Returns:
         One :class:`ProcRef` per live peer, sorted by pid.
     """
     exclude = set(exclude_pids) if exclude_pids is not None else _own_pids()
     peers: dict[int, ProcRef] = {}
+    ours = _instance_root(sharing, os.environ) if sharing is not None else None
+    uv_cache = None
+    if ours is not None and sharing == "cache":
+        uv_cache = os.path.normcase(os.path.normpath(str(mcp_cache._mcp_uv_cache_dir())))
 
     try:
         import psutil  # noqa: PLC0415
@@ -174,10 +214,22 @@ def live_peer_clio_processes(*, exclude_pids: Iterable[int] | None = None) -> li
         marker = next((m for m in _CLIO_MARKERS if m in haystack), None)
         if marker is None and daemon is not None and pid == daemon:
             marker = "clio-core-daemon-pidfile"
+        if (
+            marker is not None
+            and ours is not None
+            and not _shares_root(proc, sharing, ours, uv_cache)
+        ):
+            continue
         if marker is not None:
             peers[pid] = ProcRef(pid=pid, name=name or "python", marker=marker)
 
     if daemon is not None and daemon not in exclude and daemon not in peers:
+        if ours is not None:
+            try:
+                if not _shares_root(psutil.Process(daemon), sharing, ours, uv_cache):
+                    return sorted(peers.values(), key=lambda p: p.pid)
+            except psutil.NoSuchProcess:
+                return sorted(peers.values(), key=lambda p: p.pid)
         peers[daemon] = ProcRef(pid=daemon, name="clio_run", marker="clio-core-daemon-pidfile")
     return sorted(peers.values(), key=lambda p: p.pid)
 

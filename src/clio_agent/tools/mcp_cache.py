@@ -414,7 +414,9 @@ def prune_owned_mcp_cache(
             :func:`clio_agent.tools.mcp_config._mcp_uv_cache_dir`.
         others_alive: Zero-arg prober returning the live PEER clio processes (empty
             iterable = this process owns the cache). Defaults to
-            :func:`clio_agent.runtime.disk_gc.live_peer_clio_processes`. Injected in tests.
+            :func:`clio_agent.runtime.disk_gc.live_peer_clio_processes` scoped to processes
+            that resolve this instance's cache root (another instance's server on the same
+            machine cannot spawn into this cache). Injected in tests.
         now: Reference epoch seconds (injectable for tests).
 
     Returns:
@@ -428,7 +430,8 @@ def prune_owned_mcp_cache(
     if others_alive is None:
         from clio_agent.runtime.disk_gc import live_peer_clio_processes  # noqa: PLC0415
 
-        others_alive = live_peer_clio_processes
+        def others_alive() -> list[Any]:
+            return live_peer_clio_processes(sharing="cache")
 
     peers = list(others_alive())
     if peers:

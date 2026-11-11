@@ -211,7 +211,7 @@ def collect_snapshots_after_install() -> dict[str, Any]:
     from clio_agent.plugins.snapshot_gc import collect_superseded_snapshots  # noqa: PLC0415
     from clio_agent.runtime.disk_gc import live_peer_clio_processes  # noqa: PLC0415
 
-    if list(live_peer_clio_processes()):
+    if list(live_peer_clio_processes(sharing="config")):
         return {"status": "skipped", "reason": "marketplace_snapshots_skipped_live"}
     try:
         collected = collect_superseded_snapshots(plugin_store_root())
