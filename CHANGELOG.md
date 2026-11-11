@@ -6,6 +6,25 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6-beta.1.3] - 2026-11-11
+
+### Fixed
+
+- The Windows desktop app works again. It passed its agent a long-path form of
+  its data folder, so the agent stopped answering and crashed shortly after
+  starting; the app now passes plain paths and the agent accepts either form
+  (#2098, iowarp/gact-tui#1129).
+- The desktop's first launch no longer re-checks every managed package because
+  it was started with a different PATH than the installer (#2099,
+  iowarp/gact-tui#1130).
+- On Windows the server is ready several seconds sooner: the startup check for
+  leftover processes reads the process list once instead of once per process
+  (#2100).
+- The lite desktop app's first install and Repair install the matching beta
+  agent instead of the latest stable one (iowarp/gact-tui#1126).
+- On Linux, fetching LibreOffice's supporting packages falls back to the Ubuntu
+  archive when snapshot.ubuntu.com is unavailable (#2097).
+
 ## [0.9.6-beta.1.2] - 2026-11-11
 
 ### Fixed
