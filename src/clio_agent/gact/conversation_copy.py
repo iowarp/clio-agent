@@ -174,6 +174,7 @@ def create_branch(
     from clio_agent.gact.runtime.permission_policies import (  # noqa: PLC0415
         inherit_child_session_policies,
     )
+    from clio_agent.gact.session_plan_copy import copied_working_state  # noqa: PLC0415
 
     metadata = {key: value for key, value in source.metadata.items() if key in BRANCH_METADATA_KEYS}
     metadata["session_kind"] = "branch"
@@ -216,6 +217,7 @@ def create_branch(
             "message_marks": saved_message_marks(
                 source.metadata, {message.id for message in messages}
             ),
+            **copied_working_state(app, source, branch),
         },
     )
     return app.state.sessions.get(branch.id)

@@ -22,24 +22,34 @@
 #   clio doctor          check prerequisites and install layout
 #   clio sandbox status  show the OS write-fence (sandbox) status row
 #   clio sandbox setup   provision the OS write fence (one UAC prompt on Windows; idempotent)
+#   clio store-check     say whether your data was written by CLIO 0.9.5.1 or older
+#   clio reset-store [--yes]  move that data aside, unchanged (never deleted); CLIO starts empty
 #   clio report          print a diagnostics bundle for GitHub issues
 #   clio completion SH   print shell completion (bash|zsh)
 #   clio uninstall [...] run the uninstaller
 #   clio help            this text
 #
+# Global option (any command that starts, stops or talks to the server):
+#   --port N             use port N, over gact.port and CLIO_PORT
+#
 # On launch, clio prints a one-line hint when a newer clio-agent is on PyPI
 # (throttled to ~once/day; set CLIO_NO_UPDATE_CHECK=1 to disable).
 #
 # Environment overrides:
-#   CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
-#   CLIO_PORT     server port       (default: 17800)
+#   CLIO_PREFIX   install root      (default: <agent data>/app: ~/Library/Application
+#                 Support/clio-agent/data/app on macOS, ~/.local/share/clio-agent/app
+#                 on Linux; ~/.local/share/clio for installs made before 0.9.5)
+#   CLIO_PORT     server port when no --port is given and the user config.yaml
+#                 sets no gact.port (default: 17800)
 #   CLIO_BIN_DIR  launcher location (default: $HOME/.local/bin)
-#   CLIO_LOG      server log path   (default: $CLIO_PREFIX/clio-server.log)
+#   CLIO_LOG      server log path   (default: <agent state>/clio-server.<host>.log)
 #   CLIO_NO_UPDATE_CHECK  set to 1 to skip the on-launch PyPI update check
 #   CLIO_WEB_DIR  built web dist to serve (overrides the installed bundle)
 #   CLIO_WEB_SRC  gact-tui checkout for `--dev` builds (auto-detected if unset)
 #   CLIO_WEB_NO_BUILD  set to 1 to skip the `--dev` rebuild and serve the last dist
 #   CLIO_DESKTOP_BIN   installed desktop app binary for `clio --desktop`
+#   CLIO_ACCEPT_UNSANDBOXED  set to 1 to acknowledge running without protected
+#                 execution (OS sandbox) instead of confirming at the prompt
 set -euo pipefail
 
 if [[ "$(uname -s)" = Darwin* ]]; then
@@ -59,6 +69,40 @@ if [[ -z "$requested_prefix" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}
   CLIO_PREFIX="$HOME/.local/share/clio"
 fi
 CLIO_PORT="${CLIO_PORT:-17800}"
+# clio-launcher-feature: port-flag (remote deploys pass --port only when this marker exists)
+# `--port N` before or after the command wins over gact.port and CLIO_PORT. Commands that
+# hand their arguments to another program keep theirs untouched.
+CLIO_EXPLICIT_PORT=""
+port_given=0
+launcher_args=()
+launcher_cmd=""
+while (($#)); do
+  if [[ -n "$launcher_cmd" ]] && [[ "$launcher_cmd" =~ ^(sandbox|store-check|reset-store|uninstall|logs|completion)$ ]]; then
+    launcher_args+=("$@")
+    break
+  fi
+  case "$1" in
+    --port)
+      [[ $# -ge 2 ]] || { echo "clio: --port needs a value" >&2; exit 2; }
+      CLIO_EXPLICIT_PORT="$2" port_given=1
+      shift 2
+      ;;
+    --port=*) CLIO_EXPLICIT_PORT="${1#--port=}" port_given=1; shift ;;
+    *)
+      [[ -n "$launcher_cmd" ]] || launcher_cmd="$1"
+      launcher_args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- ${launcher_args[@]+"${launcher_args[@]}"}
+if ((port_given)); then
+  if ! [[ "$CLIO_EXPLICIT_PORT" =~ ^[0-9]{1,5}$ ]] || ((10#$CLIO_EXPLICIT_PORT < 1 || 10#$CLIO_EXPLICIT_PORT > 65535)); then
+    echo "clio: --port must be a TCP port (1-65535), got '$CLIO_EXPLICIT_PORT'" >&2
+    exit 2
+  fi
+  CLIO_PORT="$((10#$CLIO_EXPLICIT_PORT))"
+fi
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 # Agent data stays with the selected install. The clio-core daemon does NOT: there
 # is exactly one per machine (its state under ~/.clio/hosts/<host>, fixed ports,
@@ -82,8 +126,28 @@ CLIO_HOST_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhos
 CLIO_STATE="$CLIO_PREFIX"
 CLIO_CACHE="$CLIO_PREFIX"
 if [[ -x "$CLIO_PREFIX/clio-agent/.venv/bin/python" ]]; then
-  CLIO_STATE="$("$CLIO_PREFIX/clio-agent/.venv/bin/python" -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())')"
-  CLIO_CACHE="$("$CLIO_PREFIX/clio-agent/.venv/bin/python" -c 'from clio_agent.paths import user_cache_dir; print(user_cache_dir())')"
+  # One interpreter start for the Agent's state and cache roots and the configured
+  # server port (gact.port in the user config.yaml, else CLIO_PORT, else 17800). An
+  # install from before gact.port existed answers with an empty port line. -I and a
+  # neutral cwd keep a checkout's files and PYTHON* variables out of the answer.
+  installed_settings="$(cd / && "$CLIO_PREFIX/clio-agent/.venv/bin/python" -I -c '
+import sys
+from clio_agent.paths import user_cache_dir, user_state_dir
+print(user_state_dir())
+print(user_cache_dir())
+try:
+    from clio_agent.server_port import configured_port
+    print(configured_port())
+except ImportError:
+    print("")
+except ValueError as exc:
+    print(f"!! {exc}; using CLIO_PORT or 17800", file=sys.stderr)
+    print("")
+')"
+  configured_port=""
+  { IFS= read -r CLIO_STATE; IFS= read -r CLIO_CACHE; IFS= read -r configured_port; } <<<"$installed_settings" || true
+  CLIO_CACHE="${CLIO_CACHE:-$CLIO_STATE}"
+  if [[ -n "$configured_port" ]] && ((!port_given)); then CLIO_PORT="$configured_port"; fi
   mkdir -p "$CLIO_STATE" "$CLIO_CACHE"
 fi
 PIDFILE="$CLIO_STATE/clio-server.$CLIO_HOST_ID.pid"
@@ -120,6 +184,12 @@ serving_web() {
   curl --noproxy '*' -sS -m 1 "http://127.0.0.1:$CLIO_PORT/" 2>/dev/null | grep -qiE "<html|<!doctype html"
 }
 
+# file_mtime echoes a file's modification time in epoch seconds, or 0.
+# GNU stat spells it `-c %Y`; BSD/macOS stat spells it `-f %m`.
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 # update_check prints a one-line hint when the installed clio-agent is behind
 # the latest PyPI release. Best-effort: throttled to ~once/day via a stamp file,
 # bounded by a short curl timeout, and silent on any failure (offline, no venv).
@@ -128,7 +198,7 @@ serving_web() {
 update_check() {
   [[ "${CLIO_NO_UPDATE_CHECK:-0}" = "1" ]] && return 0
   if [[ -f "$UPDATE_STAMP" ]]; then
-    local age=$(( $(date +%s) - $(stat -c %Y "$UPDATE_STAMP" 2>/dev/null || echo 0) ))
+    local age=$(( $(date +%s) - $(file_mtime "$UPDATE_STAMP") ))
     [[ "$age" -lt 86400 ]] && return 0
   fi
   local installed latest behind
@@ -206,11 +276,26 @@ start_server() {
     return 1
   fi
   say "Starting CLIO server on :$CLIO_PORT (log: $SERVER_LOG)"
-  # setsid runs the server as its own session/process-group leader (PGID == PID)
+  # The server runs as its own session/process-group leader (PGID == PID)
   # so stop_server can group-kill the server AND every MCP child it spawns (the
   # uvx stdio servers) instead of orphaning them. It also detaches from the
   # controlling terminal (replaces nohup); stdin from /dev/null so the daemon
-  # never blocks on a read.
+  # never blocks on a read. macOS ships no setsid(1), so the install's own
+  # Python calls setsid(2) and then execs the server under the same PID.
+  local detach=()
+  if command -v setsid >/dev/null 2>&1; then
+    detach=(setsid)
+  elif [[ -x "$CLIO_VENV/bin/python" ]]; then
+    # setsid(2) fails only when the caller already leads a process group, which
+    # satisfies the group-kill contract as well.
+    detach=("$CLIO_VENV/bin/python" -I -B -c \
+      'import os, sys
+try:
+    os.setsid()
+except OSError:
+    pass
+os.execv(sys.argv[1], sys.argv[1:])')
+  fi
   (
     cd "$CLIO_PREFIX/clio-agent" &&
     api_port="$CLIO_PORT" &&
@@ -222,7 +307,7 @@ start_server() {
     # generic name for its native RPC listener, so leaking it would make the
     # runtime steal the HTTP API port. The agent already receives --port.
     unset CLIO_PORT &&
-    exec setsid "$SERVER_BIN" serve --port "$api_port" >"$SERVER_LOG" 2>&1 </dev/null
+    exec ${detach[@]+"${detach[@]}"} "$SERVER_BIN" serve --port "$api_port" >"$SERVER_LOG" 2>&1 </dev/null
   ) &
   echo $! >"$PIDFILE"
   SERVER_WAS_STARTED=1
@@ -268,6 +353,75 @@ stop_server() {
   fi
   rm -f "$PIDFILE"
   say "  stopped"
+}
+
+# sandbox_ack warns when the running server's agent tools have no OS write fence.
+# CLIO stays usable without one (fail-open), so the user must acknowledge the risk:
+# an interactive terminal must confirm, while other runs only warn. Set
+# CLIO_ACCEPT_UNSANDBOXED=1 to acknowledge without the prompt. Declining stops a
+# server this invocation started and returns 1.
+sandbox_ack() {
+  local py="$CLIO_VENV/bin/python" body verdict state="" reason="" warning="" next=""
+  [[ -x "$py" ]] || return 0
+  # The verdict exists once boot resolves the backend, a few seconds after /v1/health answers.
+  for _ in $(seq 1 120); do
+    body="$(curl --noproxy '*' -sS -m 2 "http://127.0.0.1:$CLIO_PORT/v1/system/sandbox" 2>/dev/null || true)"
+    verdict="$(printf '%s' "$body" | "$py" -I -B -c '
+import json, sys
+try:
+    row = json.loads(sys.stdin.read() or "null")
+except ValueError:
+    row = None
+if not isinstance(row, dict) or row.get("name") != "sandbox":
+    print("retry")
+    sys.exit()
+if "acknowledgement_required" in row:
+    resolved, required = row.get("resolved", True), row["acknowledgement_required"]
+else:  # a server from before the acknowledgement fields
+    resolved, required = True, row.get("status") != "ready"
+if not resolved:
+    print("retry")
+    sys.exit()
+print("warn" if required else "ok")
+for value in (row.get("reason"), row.get("warning") or row.get("summary"), row.get("next_action")):
+    print(" ".join(str(value or "").split()))
+' 2>/dev/null || echo retry)"
+    { IFS= read -r state; IFS= read -r reason; IFS= read -r warning; IFS= read -r next; } <<<"$verdict" || true
+    [[ "$state" == retry ]] || break
+    sleep 0.5
+  done
+  case "$state" in
+    ok) return 0 ;;
+    warn) ;;
+    *)
+      warn "could not read the sandbox (protected execution) state from the server; run 'clio sandbox status'"
+      return 0
+      ;;
+  esac
+  printf "${RED}%s${RESET}\n" \
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" \
+    "!!  SECURITY WARNING: protected execution (OS sandbox) is OFF" \
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+  printf "  %s\n" "$warning" >&2
+  [[ -n "$reason" ]] && printf "  reason: %s\n" "$reason" >&2
+  [[ -n "$next" ]] && printf "  next:   %s\n" "$next" >&2
+  if [[ "${CLIO_ACCEPT_UNSANDBOXED:-0}" == 1 ]]; then
+    warn "acknowledged by CLIO_ACCEPT_UNSANDBOXED=1"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    warn "not an interactive terminal: continuing without protected execution"
+    return 0
+  fi
+  local answer=""
+  printf "Continue without protected execution? [y/N] " >&2
+  IFS= read -r answer || answer=""
+  case "$answer" in
+    y|Y|yes|YES|Yes) return 0 ;;
+  esac
+  err "not acknowledged"
+  if (( SERVER_WAS_STARTED )); then stop_server; fi
+  return 1
 }
 
 status_server() {
@@ -330,7 +484,7 @@ report() {
 }
 
 completion() {
-  local cmds="web start stop restart status ps logs sandbox doctor report completion uninstall help"
+  local cmds="web start stop restart status ps logs sandbox store-check reset-store doctor report completion uninstall help"
   case "${1:-}" in
     bash)
       cat <<EOF
@@ -348,7 +502,8 @@ _clio() {
   cmds=($cmds)
   _describe 'command' cmds
 }
-_clio "\$@"
+# Autoloaded from fpath it completes; sourced from ~/.zshrc it registers.
+if [ "\$funcstack[1]" = "_clio" ]; then _clio "\$@"; else compdef _clio clio; fi
 EOF
       ;;
     *)
@@ -407,6 +562,7 @@ main() {
         stop_server
       fi
       start_server
+      sandbox_ack || return 1
       url="http://127.0.0.1:$CLIO_PORT/"
       say "CLIO web UI: $url"
       open_url "$url"
@@ -436,9 +592,9 @@ main() {
       say "launching desktop app: $dt_bin"
       exec "$dt_bin"
       ;;
-    start)        update_check; start_server ;;
+    start)        update_check; start_server && sandbox_ack ;;
     stop)         stop_server ;;
-    restart)      stop_server; start_server ;;
+    restart)      stop_server; start_server && sandbox_ack ;;
     update)
       shift || true
       local uv_bin
@@ -467,6 +623,13 @@ main() {
       shift || true
       [[ -x "$SERVER_BIN" ]] || { err "server binary not found: $SERVER_BIN"; return 1; }
       exec "$SERVER_BIN" sandbox "$@"
+      ;;
+    store-check|reset-store)
+      # Passthrough to the installed clio-agent CLI: data an older CLIO wrote, found and
+      # moved aside (it refuses while CLIO runs; `clio stop` first).
+      shift || true
+      [[ -x "$SERVER_BIN" ]] || { err "server binary not found: $SERVER_BIN"; return 1; }
+      exec "$SERVER_BIN" "$cmd" "$@"
       ;;
     doctor)       doctor ;;
     report)       report ;;

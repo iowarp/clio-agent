@@ -3,8 +3,10 @@
 ``memory_search`` and ``memory_read`` serve every session that has memory. The three
 writes -- ``create_memory``, ``update_memory``, ``forget_memory`` -- run only in a
 root conversation or a fork of one, when the user asks to remember, correct or
-forget something; they apply at once with ``source: user`` and skip review. Every
-write goes through :class:`~clio_agent.gact.memory.service.MemoryService`.
+forget something, or states a lasting, non-sensitive fact about themselves (profile)
+or how they want the assistant to work (preferences); they apply at once with
+``source: user`` and skip review. Every write goes through
+:class:`~clio_agent.gact.memory.service.MemoryService`.
 
 ``create_memory`` routes the fact with one model call on the session's model: given
 the fact and the index of its category, the model names an existing document or a new
@@ -200,7 +202,7 @@ def _notice(action: str, stored: StoredDocument, fact_id: str = "") -> dict[str,
 def create_memory(
     subject: str, fact: str, category: str, scope: str = "user", reason: str = ""
 ) -> dict[str, Any]:
-    """Remember a fact the user asked to remember."""
+    """Remember a fact the user asked to remember or stated about themselves."""
     _app, session, policy, service = _context()
     if not policy.may_write:
         raise MemoryToolError("memory_write_root_only", "only the main conversation writes memory")

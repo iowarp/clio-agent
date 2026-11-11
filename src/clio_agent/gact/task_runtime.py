@@ -168,7 +168,7 @@ async def start(app: Any) -> None:
                 "status": settled.status,
                 "settlement": settled.settlement,
             }
-        if current.kind in {"Shell", "Download", "Indexing"} or (
+        if current.kind in {"Shell", "Download", "Indexing", "Code"} or (
             current.backend is not None and current.backend.owner == "native"
         ):
             return await app.state.native_tools.cancel(current.handle, caller=caller)
@@ -183,7 +183,7 @@ async def start(app: Any) -> None:
         from clio_agent.gact.turn import _run_turn_in_background
         from clio_agent.gact.types import Message, Part
 
-        def prepare() -> tuple[Message, str, str]:
+        def prepare() -> tuple[Message, str]:
             original = history.read_content(segment.trigger.content)
             message_id = original.get("message_id") if isinstance(original, dict) else None
             existing = next(
@@ -194,9 +194,6 @@ async def start(app: Any) -> None:
                 ),
                 None,
             )
-            agent = original.get("agent_id", "") if isinstance(original, dict) else ""
-            if not isinstance(agent, str):
-                raise ValueError("Retained agent identity must be a string")
             model_text = segment.text
             retained_metadata = original.get("metadata") if isinstance(original, dict) else None
             if (
@@ -224,9 +221,9 @@ async def start(app: Any) -> None:
                 if not isinstance(model_text, str):
                     raise ValueError("Retained human model text must be a string")
                 project_accepted_mail_messages(app, history, segment.session_id, (segment.trigger,))
-                return recovered, agent, model_text
+                return recovered, model_text
             if segment.trigger.kind in {"human", "composer"} and existing is not None:
-                return existing, agent, model_text
+                return existing, model_text
             if segment.trigger.kind in {"human", "composer"}:
                 if not isinstance(original, str):
                     raise ValueError("The retained typed human message is unavailable")
@@ -241,7 +238,6 @@ async def start(app: Any) -> None:
                         updated_at=stamp,
                         parts=[Part(type="text", text=original)],
                     ),
-                    agent,
                     model_text,
                 )
             stamp = now()
@@ -292,11 +288,10 @@ async def start(app: Any) -> None:
                         **producer_metadata,
                     },
                 ),
-                agent,
                 model_text,
             )
 
-        message, agent, model_text = await history.io.run(prepare)
+        message, model_text = await history.io.run(prepare)
         app.state.cancel_flags.discard(segment.session_id)
         updated = await history.io.run(session_store.update, segment.session_id, status="running")
         if updated is not None:
@@ -311,7 +306,7 @@ async def start(app: Any) -> None:
                     },
                 )
             )
-        outcome = await _run_turn_in_background(app, segment.session_id, model_text, message, agent)
+        outcome = await _run_turn_in_background(app, segment.session_id, model_text, message)
         return (
             outcome
             if isinstance(outcome, ConversationOutcome)
@@ -440,6 +435,24 @@ async def close(app: Any) -> tuple[BaseException, ...]:
     errors: list[BaseException] = []
     if native is not None:
         errors.extend(await native.settle_shutdown())
+    from clio_agent.gact import code_task_reporting  # noqa: PLC0415
+    from clio_agent.gact.artifacts.version_pacing import flush_pending  # noqa: PLC0415
+
+    # A file version a background script's registration deferred is recorded, not lost,
+    # a script's queued notifies are sent, and an open stream's rows are written as its
+    # last version. Each runs even when another failed; their errors are reported.
+    streams = getattr(app.state, "streams", None)
+    for name, retire in (
+        ("deferred_versions", flush_pending),
+        ("queued_notifies", partial(code_task_reporting.flush_all, app)),
+        ("streams", streams.close if streams is not None else None),
+    ):
+        if retire is not None:
+            try:
+                await asyncio.to_thread(retire)
+            except BaseException as error:
+                logger.exception("Task runtime retirement failed step=%s", name)
+                errors.append(error)
     question_events = getattr(app.state, "question_events", None)
     stack = getattr(app.state, "task_resource_stack", None)
     external = getattr(app.state, "external_tasks", None)

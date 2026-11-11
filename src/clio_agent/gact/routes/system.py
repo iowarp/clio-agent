@@ -25,10 +25,21 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
-from clio_agent.gact import boot_timing, store_migrations
+from clio_agent.gact import (
+    boot_timing,
+    capabilities_snapshot,
+    shared_result,
+    store_format_boot,
+    store_migrations,
+)
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
-from clio_agent.gact.off_loop import run_off_loop
+from clio_agent.gact.conversation_projection import model_context_messages
+from clio_agent.gact.documents.models import ANCHOR_PROFILES, DOCUMENT_PROFILES
+from clio_agent.gact.message_context_tokens import (
+    TOKEN_ESTIMATE_METHOD,
+    estimate_message_context_tokens,
+)
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
 from clio_agent.gact.providers.boot_selection import explicit_lm_provider
@@ -51,6 +62,7 @@ from clio_agent.gact.runtime.constants import (
     GACT_BACKEND_VERSION,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
+from clio_agent.gact.shared_result import SharedResults
 from clio_agent.gact.summarization_record import row_summarization
 from clio_agent.gact.types import (
     AuthInfo,
@@ -68,7 +80,6 @@ from clio_agent.gact.types import (
     SessionMemoryStats,
     TransportFlags,
 )
-from clio_agent.gact.version_info import build_version_info
 from clio_agent.runtime.package_preparation import probe_managed_packages
 from clio_agent.runtime.status import (
     IntegrationState,
@@ -250,25 +261,12 @@ def _fold_handshake_row(live: IntegrationStatus, enriched: IntegrationStatus) ->
 def _estimate_message_context_tokens(message: Message) -> int:
     """Estimate the retained-context tokens one message contributes.
 
-    Prefers the message's recorded token counters; falls back to a chars/4
-    approximation over its text/thinking/path/diff payloads.
+    chars/4 of the message's replayed content. Never the message's recorded
+    provider usage: that is the size of the whole call that produced it (system
+    prompt and all earlier history), so summing it counts the prompt once per message.
     """
 
-    explicit = (
-        int(getattr(message.tokens, "input", 0) or 0)
-        + int(getattr(message.tokens, "output", 0) or 0)
-        + int(getattr(message.tokens, "cache_read", 0) or 0)
-        + int(getattr(message.tokens, "cache_write", 0) or 0)
-    )
-    if explicit > 0:
-        return explicit
-    chars = 0
-    for part in message.parts:
-        chars += len(part.text or "")
-        chars += len(str(getattr(part, "thinking", "") or ""))
-        chars += len(part.path or "")
-        chars += len(part.unified_diff or "")
-    return max(1, chars // 4) if chars else 0
+    return estimate_message_context_tokens(message)
 
 
 def _estimate_context_file_tokens(row: Mapping[str, Any]) -> int:
@@ -326,6 +324,49 @@ def collect_health_report(app: FastAPI) -> RuntimeReport:
     )
 
 
+#: A report this young is served as is; an older one is refreshed by one collection
+#: while polls keep getting it, up to HEALTH_STALE_S.
+HEALTH_FRESH_S = 10.0
+HEALTH_STALE_S = 30.0
+
+
+def _health_results(app: FastAPI) -> SharedResults[RuntimeReport]:
+    return shared_result.for_app(
+        app, "health_report", fresh_s=HEALTH_FRESH_S, stale_s=HEALTH_STALE_S, max_entries=1
+    )
+
+
+def _health_key(app: FastAPI) -> tuple[int, str]:
+    """The inputs a report depends on that change in-process: the agent and its LM bind."""
+
+    return (
+        id(getattr(app.state, "agent", None)),
+        repr(getattr(app.state, "lm_config", None)),
+    )
+
+
+def collect_boot_health_report(app: FastAPI) -> RuntimeReport:
+    """The boot doctor collection; its report answers the first polls after boot."""
+
+    key = _health_key(app)
+    report = collect_health_report(app)
+    _health_results(app).prime(key, report)
+    return report
+
+
+async def shared_health_report(app: FastAPI) -> RuntimeReport:
+    """The doctor report for ``/v1/health``: one collection shared by concurrent polls.
+
+    Each collection runs the whole doctor (about 1 s idle, far more under load). Polls
+    within :data:`HEALTH_FRESH_S` of a collection reuse it; after that, one refresh
+    runs on the owner's own thread while polls get the previous report, so a burst of
+    polls never runs a burst of doctors. A changed agent or LM bind waits for a new
+    collection.
+    """
+
+    return await _health_results(app).get(_health_key(app), lambda: collect_health_report(app))
+
+
 def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the read-only system/observability routes on ``app``.
 
@@ -350,10 +391,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         file_policy, api, clio_core) instead of the old hand-rolled five.
 
         ``api_state=READY`` reports the API in-process — the probe must never
-        re-HTTP this very endpoint. The collection runs in
-        a worker thread so the gateway/backend probes never block the event loop,
-        and never triggers an LM handshake (a polled endpoint must not block on
-        OAuth/model discovery); the LM handshake is folded in from cache only.
+        re-HTTP this very endpoint. Concurrent polls share one collection, run on
+        its own thread so the gateway/backend probes never block the event loop
+        (:func:`shared_health_report`), and never trigger an LM handshake (a polled
+        endpoint must not block on OAuth/model discovery); the LM handshake is
+        folded in from cache only.
 
         overall_status uses the engine's required-row rollup, mapped to the wire's
         ready/degraded/unavailable so the 503-on-``unavailable`` contract holds.
@@ -365,9 +407,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         try:
             # While the boot collection runs, answer at once (health_boot); else collect.
             pending = health_boot.pending_report(app)
-            report = (
-                pending if pending is not None else await run_off_loop(collect_health_report, app)
-            )
+            report = pending if pending is not None else await shared_health_report(app)
             integrations = list(report.integrations)
         except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
             # No silent fallback (cleanup ground rule): a probe engine failure is
@@ -409,7 +449,10 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # stays fast even on a cold psutil box (the cheap reaper + child_processes
         # rows were already collected inline).
         integrations = (
-            integrations + _folded_orphan_scan_rows(app) + store_migrations.health_rows(app)
+            integrations
+            + _folded_orphan_scan_rows(app)
+            + store_migrations.health_rows(app)
+            + store_format_boot.health_rows(app)
         )
         report = RuntimeReport(integrations=integrations)
 
@@ -440,12 +483,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/capabilities", response_model=Capabilities)
     async def capabilities(request: Request) -> Capabilities | JSONResponse:
+        # Plugin-store-backed inputs come from a snapshot refreshed on a dedicated
+        # thread; everything below is in-memory, so the probe answers on the loop
+        # without queueing behind the shared worker pool.
+        inputs = await capabilities_snapshot.resolve(app)
         bearer_enabled = bool(getattr(app.state, "bearer_token", None))
         history = getattr(app.state, "task_history", None)
         task_store_durable = history is not None and not history.requires_recovery
         response = Capabilities(
             contract_version=CONTRACT_VERSION,
-            versions=build_version_info(),
+            versions=inputs.versions,
             backend=BackendInfo(
                 name="clio-agent-gact",
                 version=GACT_BACKEND_VERSION,
@@ -519,33 +566,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_child_activity_projection=CHILD_ACTIVITY_PROJECTION_CAPABILITY,
                 x_clio_document_artifacts={
                     "protocol_version": "0.1.0",
-                    "profiles": [
-                        "markdown",
-                        "pdf",
-                        "latex",
-                        "html-static",
-                        "ooxml-word",
-                        "ooxml-sheet",
-                        "ooxml-slides",
-                        "odf-text",
-                        "odf-sheet",
-                        "odf-slides",
-                    ],
-                    "anchors": [
-                        "text-quote",
-                        "pdf-quad",
-                        "dom",
-                        "sheet-range",
-                        "slide-shape",
-                        "native-comment",
-                        "source-map",
-                    ],
+                    "profiles": list(DOCUMENT_PROFILES),
+                    "anchors": list(ANCHOR_PROFILES),
                     "review_parts": True,
+                    "comment_sessions": True,
                     "floating_comments": True,
                     "immutable_revisions": True,
                     "native_working_copies": True,
                     "native_comment_trigger": "@clio",
-                    "embedded_editors": ["onlyoffice", "collabora"],
                     "static_html_scripts": "blocked",
                     "executable_html_transition": "live-web",
                 },
@@ -570,13 +598,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "durable": task_store_durable,
                     "reason": None if task_store_durable else MCP_TASK_RECORD_STORE_ABSENT,
                 },
-                # Composer lanes. Unconditionally true: composer_runtime
-                # registers all three surfaces at build_app, so a running
-                # server always serves them. The resource block carries the
-                # limits a client must respect before it starts an upload.
+                # Composer lanes and the HDF5 viewer's data route: build_app registers
+                # them all, so a running server always serves them. The resource block
+                # carries the limits a client must respect before it starts an upload.
                 x_clio_message_delivery=True,
                 x_clio_pending_steers=True,
                 x_clio_queued_messages=True,
+                x_clio_hdf5_viewer=True,
+                x_clio_session_move=True,  # POST /v1/sessions/{sid}/move
                 x_clio_resources=resource_capabilities(app),
             ),
             transports=TransportFlags(events_sse=True, events_websocket=False),
@@ -585,16 +614,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
         )
-        # Catalog discovery may initialize installed plugin snapshots. Keep all
-        # filesystem work off the request loop so health/SSE remain responsive.
-        return await run_off_loop(
-            project_for_request,
+        return project_for_request(
             request,
             v3=lambda: JSONResponse(
                 content=capabilities_to_v3(
                     app,
                     response.capabilities,
                     replay_retention=app.state.bus.history_capacity,
+                    a2ui_capabilities=inputs.a2ui_capabilities,
+                    versions=inputs.versions,
+                    input_degradations=inputs.degradations,
                 )
             ),
             v2=lambda: response,
@@ -659,21 +688,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         uptime = max(0, int(time.time() - app.state.started_at))
 
-        all_sessions = app.state.sessions.list()
-        by_status: dict[str, int] = {}
-        active = 0
-        for s in all_sessions:
-            by_status[s.status] = by_status.get(s.status, 0) + 1
-            if s.status in {"running", "idle"}:
-                active += 1
-
-        # #770 C3: the all-time message total is each session's persisted
-        # message_count; the by-role counts and the iowarp/clio-agent#655 per-tool
-        # + overall "tool_call" latency buckets are this process's running counters
-        # (app.state.metrics_counters), so a poll never re-walks history and boot
-        # never replays it.
+        # The session counts and the all-time message / token / cost totals are summed
+        # from the session index's columns (no session record is read); the by-role
+        # counts and the iowarp/clio-agent#655 per-tool + overall "tool_call" latency
+        # buckets are this process's running counters (app.state.metrics_counters), so
+        # a poll never re-walks history and boot never replays it.
+        totals = app.state.sessions.index.totals()
+        by_status: dict[str, int] = totals["by_status"]
+        active = by_status.get("running", 0) + by_status.get("idle", 0)
         counters = app.state.metrics_counters
-        message_total = sum(s.message_count for s in all_sessions)
+        message_total = totals["messages"]
         role_counts = counters.role_counts()
         latencies = {
             key: _latency_stat(list(vals)) for key, vals in counters.latency_samples.items()
@@ -683,14 +707,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # session's cumulative counters.
         from clio_agent.gact.types import MetricsCost, MetricsTokens  # noqa: PLC0415
 
-        tokens_input = sum(s.tokens_input for s in all_sessions)
-        tokens_output = sum(s.tokens_output for s in all_sessions)
-        cost_total = sum(s.cost_usd for s in all_sessions)
+        tokens_input = totals["tokens_input"]
+        tokens_output = totals["tokens_output"]
+        cost_total = totals["cost_usd"]
 
         return Metrics(
             uptime_s=uptime,
             sessions=MetricsSessions(
-                total=len(all_sessions),
+                total=totals["total"],
                 active=active,
                 by_status=by_status,
             ),
@@ -741,7 +765,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         session_block: Optional[SessionMemoryStats] = None
         metadata: dict[str, Any] = {
             "retained_context_source": "visible_gact_transcript",
-            "token_estimate": "message_tokens_or_chars_div_4",
+            "token_estimate": TOKEN_ESTIMATE_METHOD,
         }
         if session_id:
             sess_rec = app.state.sessions.get(session_id)
@@ -752,7 +776,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 for row in context_files:
                     mode = str(row.get("mode") or "read")
                     context_files_by_mode[mode] = context_files_by_mode.get(mode, 0) + 1
-                transcript_tokens = sum(_estimate_message_context_tokens(m) for m in messages)
+                # Rows a compaction checkpoint covers stay visible but are no longer
+                # sent to the model, so they add no pressure.
+                transcript_tokens = sum(
+                    _estimate_message_context_tokens(m) for m in model_context_messages(messages)
+                )
                 context_file_tokens = sum(
                     _estimate_context_file_tokens(row) for row in context_files
                 )

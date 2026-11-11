@@ -29,6 +29,7 @@ never change it:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -135,9 +136,15 @@ def _selection(raw: Any) -> dict[str, str]:
 def side_sessions_of(app: "FastAPI", parent_session_id: str) -> list["Session"]:
     """Every live aside of ``parent_session_id``."""
 
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    # The parent's lookup children, from the index: only those rows are read.
+    query = PageQuery(
+        archived=None, parent_session_id=parent_session_id, kinds=frozenset({"lookup"})
+    )
     return [
         session
-        for session in app.state.sessions.list()
+        for session in app.state.sessions.select(query)
         if session.parent_session_id == parent_session_id and is_read_only_side_session(session)
     ]
 
@@ -164,7 +171,8 @@ async def open_side_session(
         The new aside session.
     """
 
-    for previous in side_sessions_of(app, parent.id):
+    # The asides' rows are clio-core reads: off the server loop.
+    for previous in await asyncio.to_thread(side_sessions_of, app, parent.id):
         trace.event(
             "SIDE-SESSION",
             "side_session_retired parent=%s side=%s reason=superseded",

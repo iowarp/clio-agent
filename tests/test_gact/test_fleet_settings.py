@@ -41,7 +41,7 @@ def test_independent_choices_persist_and_inherit_exact_caller(
     set_config("providers.private_key", "private-test-value")
     current = fleet_settings()
     assert current["judges"] == dict.fromkeys(
-        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate")
+        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate", "explore")
     )
     caller, adapter = object(), object()
     for role in ("goals", "variants", "permissions"):
@@ -130,3 +130,78 @@ def test_search_model_is_separate_and_survives_legacy_judge_updates(
     assert legacy["search"] == saved["search"]
     reset = save_fleet_settings(FleetUpdate(revision=legacy["revision"], judges={}, search=None))
     assert reset["search"] is None
+
+
+def test_the_explore_note_is_set_from_fleet_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Fleet settings page turns the explore note on or off and sets its threshold;
+    both are stored in the note's reminder, which the loop reads. SABOTAGE: drop the
+    ``save_nudge_settings`` call in ``save_fleet_settings`` and this fails."""
+    from clio_agent import paths
+    from clio_agent.gact.explore_nudge import nudge_settings
+
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    current = fleet_settings()
+    assert current["explore_nudge"] == {"enabled": True, "after": 6}
+    saved = save_fleet_settings(
+        FleetUpdate(
+            revision=current["revision"],
+            judges={},
+            explore_nudge={"enabled": False, "after": 9},
+        )
+    )
+    assert saved["explore_nudge"] == {"enabled": False, "after": 9}
+    assert "delegation" not in read_config()
+    stored = (paths.user_config_dir() / "prompts").glob("clio.reminder.explore_nudge--*.md")
+    text = next(stored).read_text(encoding="utf-8")
+    assert "x_active: false" in text and "x_param_after: 9" in text
+    assert "x_overlay: true" in text and "{{explore_model}}" not in text  # shipped wording
+    assert nudge_settings() == {"enabled": False, "after": 9}
+    assert saved["revision"] != current["revision"]
+
+
+def test_spotter_default_is_its_own_slot_and_accepts_a_saved_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import local_server_store as store
+    from clio_agent.gact.fleet.spotter_model import default_spotter_ref
+
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    original = fleet_settings()
+    assert original["spotter"] is None and default_spotter_ref() == ""
+    server = store.add_server(address="http://gpu-node:8001", label="vLLM spotter")
+    app = FastAPI()
+    register_fleet_settings_routes(app)
+    with TestClient(app) as client:
+        unknown = client.patch(
+            "/v1/settings/fleet",
+            json={
+                "revision": original["revision"],
+                "judges": {},
+                "spotter": {"provider_id": "server-missing", "model_id": "m"},
+            },
+        )
+        assert unknown.status_code == 422
+        saved = client.patch(
+            "/v1/settings/fleet",
+            json={
+                "revision": original["revision"],
+                "judges": {},
+                "spotter": {"provider_id": server.id, "model_id": "Qwen3-8B"},
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["spotter"] == {"provider_id": server.id, "model_id": "Qwen3-8B"}
+        assert saved.json()["judges"] == original["judges"]
+        assert client.get("/v1/settings/fleet").json() == saved.json()
+    assert default_spotter_ref() == "server-vllm-spotter/Qwen3-8B"
+    # A judges-only update leaves the SPOTTER default alone; null clears it.
+    kept = save_fleet_settings(
+        FleetUpdate(revision=saved.json()["revision"], judges={"goals": None})
+    )
+    assert kept["spotter"] == saved.json()["spotter"]
+    cleared = save_fleet_settings(FleetUpdate(revision=kept["revision"], judges={}, spotter=None))
+    assert cleared["spotter"] is None and default_spotter_ref() == ""

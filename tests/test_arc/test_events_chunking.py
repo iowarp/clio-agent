@@ -9,9 +9,9 @@ active chunk (O(chunk)). These tests pin the contract:
 * roll-over produces the expected chunk family, and the projections
   (``view`` / ``project_conversation`` / ``project_invocations``) are byte-identical
   to the chunk-∞ (single-scope) baseline — chunking is invisible to every reader;
-* the amplification gate: 64 events at chunk 8 write a small fraction of the bytes a
-  chunk-∞ (single-scope, Θ(N²)) replay of the same events writes, and no single
-  append re-encodes more than one chunk — measured against that exogenous baseline;
+* the amplification gate: every append sends exactly ONE event's chunk record (plus
+  the end marker), whatever the active chunk already holds (append-only chunk
+  records, ``arc/chunk_records.py``) — O(record), not O(chunk);
 * the ``_events`` family NEVER surfaces in scope search (both backends);
 * cold-start recovery resumes the last persisted chunk instead of overwriting it.
 """
@@ -24,6 +24,7 @@ import msgspec
 import pytest
 
 from clio_agent import conf
+from clio_agent.arc.chunk_records import END, MAGIC, encode_records
 from clio_agent.arc.live import events_chunk_scope
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.semantic_events import SemanticEvent
@@ -138,24 +139,36 @@ def test_rollover_projections_byte_identical_to_single_scope(
 
 
 class CountingStore:
-    """In-memory :class:`~clio_agent.arc.storage.ARCStore` that counts the bytes put to
-    the ``segments`` kind (the ``_events`` records, since the test writes only events),
-    so the append amplification can be measured directly."""
+    """In-memory :class:`~clio_agent.arc.storage.ARCStore` that records every put to the
+    ``segments`` kind (the ``_events`` records, since the test writes only events), so
+    the bytes each append sends can be measured directly. ``put_at`` behaves as
+    clio-core's offset put: it grows the record and never shrinks it."""
 
     def __init__(self) -> None:
         self._data: dict[tuple[str, str], bytes] = {}
-        self.segment_put_bytes = 0
-        self.max_segment_record = 0
+        self.segment_puts: list[bytes] = []
 
     def put(
         self, kind: str, name: str, data: bytes, *, tier: str = "warm", search_text: Any = None
     ) -> None:
         self._data[(kind, name)] = data
         if kind == "segments":
-            self.segment_put_bytes += len(data)
-            self.max_segment_record = max(self.max_segment_record, len(data))
+            self.segment_puts.append(data)
+
+    def put_at(
+        self, kind: str, name: str, data: bytes, offset: int, *, search_text: Any = None
+    ) -> None:
+        held = bytearray(self._data.get((kind, name), b""))
+        held.extend(bytes(max(0, offset - len(held))))
+        held[offset : offset + len(data)] = data
+        self._data[(kind, name)] = bytes(held)
+        if kind == "segments":
+            self.segment_puts.append(data)
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
+        return self._data.get((kind, name))
+
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
         return self._data.get((kind, name))
 
     def exists(self, kind: str, name: str) -> bool:
@@ -186,48 +199,44 @@ class CountingStore:
         return []
 
 
-def test_append_amplification_is_o_chunk(
+def _records(arc: ARCMemory) -> list[bytes]:
+    """Each stored event's own chunk record (header + msgpack payload), in append order."""
+    return [
+        encode_records([segment])
+        for scope in arc._live.events_scopes(SID)
+        for segment in arc._segments.list_segments(SID, scope, include_tombstoned=True)
+    ]
+
+
+def test_append_amplification_is_o_record(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, hermetic_conf: None
 ) -> None:
+    """An append sends ONE event's record, whatever the chunk holds already.
+
+    Exact byte accounting, not a ratio: every put is one event's record and the end
+    marker (after the two magic bytes when it opens a chunk), then only zero padding --
+    sent when the put grows the blob past its size class, never more in all than the
+    chunk's own final size. A regression to re-putting the active chunk sends its whole
+    growing body instead and fails the accounting from the second event of a chunk on.
+    """
     events = _events(64)
-
-    # Exogenous yardstick: replay the SAME 64 events at chunk-infinity (the old
-    # single-scope behavior) through its own CountingStore. Every append re-encodes
-    # the ENTIRE growing log — Sigma_{i=1..64} i == Theta(N^2) event-records of total
-    # bytes — and its largest single record is the full 64-event log.
-    monkeypatch.setenv("CLIO_ARC_EVENTS_CHUNK_SEGMENTS", "100000")
-    quadratic = CountingStore()
-    base = ARCMemory(data_dir=str(tmp_path / "base"), store=quadratic)
-    for e in events:
-        base.record_semantic_event(e)
-    assert base._live.events_scopes(SID) == ["_events"]
-    assert quadratic.max_segment_record > 0
-
-    monkeypatch.setenv("CLIO_ARC_EVENTS_CHUNK_SEGMENTS", "8")
-    store = CountingStore()
-    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=store)
-    for e in events:
-        arc.record_semantic_event(e)
-
-    # 64 events at chunk 8 -> exactly 8 chunk records (structural proof that the log
-    # rolled; a regression to the single ``_events`` scope would leave one record).
-    assert arc._live.events_scopes(SID) == [events_chunk_scope(i) for i in range(1, 9)]
-
-    # O(chunk), measured against the quadratic baseline — NOT against the chunked
-    # run's own records, which would normalize away the very amplification under test:
-    #
-    # * no single append re-encodes more than one chunk: the largest chunked record
-    #   holds 8 of 64 events (~1/8 of the baseline's full-log record; bound 1/4
-    #   leaves headroom for per-record overhead);
-    # * the TOTAL bytes across all 64 appends are a small fraction of the quadratic
-    #   total (~288 vs ~2080 event-records ~= 0.14 ideal; bound 1/4 again).
-    #
-    # Both a full regression to the single scope (total == baseline) and a dual-write
-    # regression (chunk family intact but each append also rewriting a full-log
-    # record: total > baseline, max record == full log) exceed BOTH bounds.
-    assert store.max_segment_record > 0
-    assert store.max_segment_record < quadratic.max_segment_record / 4
-    assert store.segment_put_bytes < quadratic.segment_put_bytes / 4
+    for capacity, chunks in ((100000, 1), (8, 8)):
+        monkeypatch.setenv("CLIO_ARC_EVENTS_CHUNK_SEGMENTS", str(capacity))
+        store = CountingStore()
+        arc = ARCMemory(data_dir=str(tmp_path / str(capacity)), store=store)
+        for e in events:
+            arc.record_semantic_event(e)
+        assert arc._live.events_scopes(SID) == [events_chunk_scope(i) for i in range(1, chunks + 1)]
+        records = _records(arc)
+        assert len(records) == len(store.segment_puts) == 64  # one put per append
+        padding = 0
+        for index, (record, put) in enumerate(zip(records, store.segment_puts, strict=True)):
+            head = (MAGIC if index % capacity == 0 else b"") + record + END
+            assert put[: len(head)] == head  # this event's record, nothing earlier
+            assert not any(put[len(head) :])  # then zero padding at most
+            padding += len(put) - len(head)
+        stored = sum(len(blob) for blob in store._data.values())
+        assert padding <= stored  # padding grows the blob in classes, never per append
 
 
 # --------------------------------------------------------------------------- #

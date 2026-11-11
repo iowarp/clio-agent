@@ -36,10 +36,10 @@ def build_goal_status_tool() -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def goal_status() -> dict[str, Any]:
-        """Read THIS session's active goal condition + progress (READ-ONLY).
+        """Read this session's active goal condition and progress (read-only).
 
         Returns ``{active, condition, iters_elapsed, max_goal_iters, budget_spent}``. This is
-        armed-state only — it does NOT run any evaluation, settle the goal, or end the turn. You
+        armed state only: it runs no evaluation, does not settle the goal, and does not end the turn. You
         can use set_goal to start an objective and wait_for to await owned tasks.
         Completion belongs to the independent judge; explicit user stops are authoritative."""
 

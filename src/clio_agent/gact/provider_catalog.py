@@ -123,7 +123,7 @@ EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
 #: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
 #: Every other kind is probed live and keeps a last-good list for empty probes.
-_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
+_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code", "copilot"})
 
 
 #: Codex reasoning-effort vocabulary -> CLIO level, for reading a raw
@@ -333,6 +333,9 @@ def model_catalog_row(
             preset.id, preset.provider, report.provider_id, report.api_base, profile.id, effective
         ),
         "native_tool_calling": bool(effective.tools.value),
+        # How the model streams: "append" (deltas) or "snapshot" (a diffusion
+        # model's whole current text per step); null when no source states it.
+        "stream_shape": effective.stream_shape.value,
         # context_window + loaded/native + the basis it rests on (catalog_context).
         **context_wire(effective, deployment),
         # The working-context control (number / Max; no Fit to GPU for a server
@@ -372,6 +375,7 @@ def model_catalog_row(
             "free": _provenance_row(effective.free),
             "router": _provenance_row(effective.router),
             "reasoning": _provenance_row(effective.thinking),
+            "stream_shape": _provenance_row(effective.stream_shape),
         },
         "failure": report.error or "",
     }
@@ -493,7 +497,7 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "failure": failure,
         "models": [model_catalog_row(preset, report, model) for model in models],
     }
-    if preset.provider == "claude_code":
+    if preset.provider in {"claude_code", "copilot"}:
         # Which CLI the SDK transport runs, as a typed fact on the row (Codex
         # runs none: its one transport is direct).
         from clio_agent.providers.components.client_binary import (  # noqa: PLC0415

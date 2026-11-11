@@ -8,6 +8,11 @@ honoured, so it read 0 while 583 broad excepts sat behind ``# noqa: BLE001`` (au
 a new file with any -- fails, so swallows can only be burned down, never moved or added.
 ``--lower-baseline`` writes the lower of the recorded and live counts (never raises one).
 
+A handler that *forwards* the exception is not a swallow and is not counted: its
+``except`` line says so (``# ... forwards: <to whom>``) and the bound exception is used
+outside any logging or trace call (handed to a future, turned into the reply a caller
+reads). Both are required, so a marker on a handler that only logs still counts.
+
     uv run python scripts/check_noqa_swallows.py
     uv run python scripts/check_noqa_swallows.py --lower-baseline
 """
@@ -15,8 +20,10 @@ a new file with any -- fails, so swallows can only be burned down, never moved o
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -25,6 +32,55 @@ from pathlib import Path
 RULES = ("BLE001", "S110", "E722")
 SRC_ROOT = "src/clio_agent"
 BASELINE_PATH = Path(__file__).resolve().parent / "silent_fallback_noqa_baseline.json"
+
+
+#: The ``except`` line's declaration that the handler forwards what it catches.
+_FORWARDS = re.compile(r"#.*\bforwards:")
+#: Calls that only report: an exception used only inside these is still swallowed.
+_REPORTING = frozenset(
+    {"debug", "info", "warning", "warn", "error", "exception", "critical", "log", "event"}
+)
+
+
+def _reporting_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    return name in _REPORTING or name == "print"
+
+
+def _forwards(handler: ast.ExceptHandler) -> bool:
+    """Whether the handler's bound exception is used outside every reporting call."""
+    if not handler.name:
+        return False
+    parents: dict[ast.AST, ast.AST] = {}
+    for stmt in handler.body:
+        for node in ast.walk(stmt):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+    for stmt in handler.body:
+        for node in ast.walk(stmt):
+            if not (isinstance(node, ast.Name) and node.id == handler.name):
+                continue
+            up: ast.AST | None = parents.get(node)
+            while up is not None and not _reporting_call(up):
+                up = parents.get(up)
+            if up is None:
+                return True
+    return False
+
+
+def forwarding_lines(source: str) -> set[int]:
+    """Lines of ``except`` clauses that declare and do forward the caught exception."""
+    lines = source.splitlines()
+    found: set[int] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ExceptHandler) and node.type is not None:
+            line = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
+            if _FORWARDS.search(line) and _forwards(node):
+                found.add(node.lineno)
+    return found
 
 
 def count_hidden_by_file(path: Path) -> dict[str, int]:
@@ -61,11 +117,19 @@ def count_hidden_by_file(path: Path) -> dict[str, int]:
     except ValueError as exc:
         raise RuntimeError(f"ruff JSON output did not parse: {proc.stdout[:500]!r}") from exc
     root = path.resolve()
+    forwarding: dict[str, set[int]] = {}
+
+    def forwarded(diagnostic: dict) -> bool:
+        name = diagnostic["filename"]
+        if name not in forwarding:
+            forwarding[name] = forwarding_lines(Path(name).read_text(encoding="utf-8"))
+        return int((diagnostic.get("location") or {}).get("row") or 0) in forwarding[name]
+
     return dict(
         Counter(
             Path(d["filename"]).resolve().relative_to(root).as_posix()
             for d in diagnostics
-            if d.get("code") in RULES
+            if d.get("code") in RULES and not forwarded(d)
         )
     )
 

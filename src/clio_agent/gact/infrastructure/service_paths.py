@@ -29,7 +29,7 @@ def service_directory(name: str, facts: TargetFacts, target: InfrastructureTarge
         return module.join(locations.service_data, facts.hostname or facts.target_id, name)
     root = (target.install_root.strip() if target else "").rstrip("/\\")
     if not root:
-        root = facts.agent_data_root
+        root = local_service_root(facts.agent_data_root) if windows else facts.agent_data_root
     if not root:
         if not facts.home:
             raise ValueError(
@@ -49,6 +49,22 @@ def service_directory(name: str, facts: TargetFacts, target: InfrastructureTarge
     # one SIF, and uninstalling on one would delete the other's.
     host = facts.hostname or facts.target_id
     return module.join(root, "services", host, name)
+
+
+def local_service_root(root: str) -> str:
+    """The root a Windows target's services install under when it inherits ``root``.
+
+    For this machine's own data root this is :func:`clio_agent.paths.service_data_root`,
+    which moves a first install off a deep data root (service environments pass MAX_PATH).
+    """
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    if not root or platform.system() != "Windows":
+        return root
+    own = str(paths.user_data_dir())
+    if ntpath.normcase(ntpath.normpath(root)) != ntpath.normcase(ntpath.normpath(own)):
+        return root
+    return str(paths.service_data_root())
 
 
 def this_host_counterpart(path: str, host: str | None = None, *, live_service: bool = False) -> str:

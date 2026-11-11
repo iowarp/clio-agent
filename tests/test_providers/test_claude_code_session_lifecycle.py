@@ -26,7 +26,11 @@ from clio_agent.providers import session_lifecycle
 async def test_turn_retirement_releases_provider_once_after_worker_exit(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancelled waiter cannot release provider ownership while its worker lives."""
+    """A cancelled waiter cannot release provider ownership while its worker lives.
+
+    A clean turn end keeps the connection for the session's next turn (the pool's B1
+    contract); a failed or stopped turn releases it, once, after its worker exits.
+    """
     app = SimpleNamespace(state=SimpleNamespace())
     entered, released = asyncio.Event(), asyncio.Event()
     work_release, worker_returned = threading.Event(), threading.Event()
@@ -77,12 +81,18 @@ async def test_turn_retirement_releases_provider_once_after_worker_exit(
             assert calls == [] and not stopping.done()
             work_release.set()
             await stopping
-        await asyncio.wait_for(released.wait(), 2)
+        if outcome != "normal":
+            await asyncio.wait_for(released.wait(), 2)
+        else:  # let the clean turn end before shutdown, which counts as a stop
+            for _ in range(200):
+                if not runner.busy(sid):
+                    break
+                await asyncio.sleep(0.01)
     finally:
         work_release.set()
         runner.close_admission()
         await runner.drain()
-    assert calls == [sid] and not runner.busy(sid)
+    assert calls == ([] if outcome == "normal" else [sid]) and not runner.busy(sid)
 
 
 @pytest.fixture(autouse=True)
@@ -120,36 +130,31 @@ def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resen
     shipped to a fresh subprocess that never saw the prefix -- a silent
     conversation-coherence bug, not merely a reconnect.
 
-    SABOTAGE: drop ``entry.announce_dropped()`` from
-    ``release_session_resources_nonblocking`` (the non-blocking close announces too
-    late) -> the next ``plan()`` is a delta, and this goes red.
+    The conversation lives on the entry: the released entry takes it along.
+    SABOTAGE: drop ``entry.forget_conversation()`` from
+    ``release_session_resources_nonblocking`` -> a holder of the released entry still
+    plans a delta, and this goes red.
     """
     from dspy.lm15 import Message, Request
 
-    from clio_agent.providers import claude_code_engine
+    from clio_agent.providers.claude_code_conversation import HeldConversation, plan
 
-    registry = claude_code_engine._CONVERSATIONS
-    registry.clear_for_tests()
-    try:
-        pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-        key = ("sess-1", "main#react", "m", "/w", "")
-        registry.opened(
-            key, "sdk-session-1", Request(model="claude_code/m", messages=(Message.user("a"),)), "s"
-        )
+    identity = ("m", "/w", "")
+    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
+    entry = pool.entry_for(session_id="sess-1")
+    entry.conversation = HeldConversation(identity, "sdk-session-1", "s", (Message.user("a"),))
 
-        entry = pool.entry_for(session_id="sess-1")
-        entry._bound_session = "sess-1"  # what a real connect records
+    pool.release_session_resources("sess-1")
 
-        pool.release_session_resources("sess-1")
-
-        extended = Request(
-            model="claude_code/m",
-            messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
-        )
-        send = registry.plan(key, extended, "s")
-        assert (send.handle, send.reason) == (None, "session_evicted")
-    finally:
-        registry.clear_for_tests()
+    extended = Request(
+        model="claude_code/m",
+        messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
+    )
+    send = plan(entry, extended, "s", identity, kept=True)
+    assert (send.handle, send.reason) == (None, "session_evicted")
+    assert (
+        plan(pool.entry_for(session_id="sess-1"), extended, "s", identity, kept=True).handle is None
+    )
 
 
 def test_release_session_resources_emits_a_typed_row_distinct_from_idle_reaped(

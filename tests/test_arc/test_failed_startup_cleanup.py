@@ -25,7 +25,7 @@ from typing import Any
 import psutil
 import pytest
 
-from clio_agent.arc import clio_core_attach, runtime_stop, storage
+from clio_agent.arc import clio_core_attach, runtime_ownership, runtime_stop, storage
 from clio_agent.arc.runtime_crash import DaemonSpawnFailed
 
 
@@ -116,6 +116,11 @@ def test_a_daemon_still_starting_at_the_ceiling_is_left_running_and_adopted(
 
         monkeypatch.setattr(storage, "_spawn_runtime_daemon", fake_spawn)
         monkeypatch.setattr(storage, "_runtime_alive", lambda _port: bound["now"])
+        # Once "bound", the port is the stand-in's: it is this home's daemon, never a
+        # foreign listener to retire, even if the bind lands before the next attach probes.
+        monkeypatch.setattr(
+            runtime_ownership, "listener_belongs_to", lambda pid, _port: pid == busy.pid
+        )
         monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.2")
         monkeypatch.setenv("CLIO_ARC_LIVENESS_MAX_WAIT_S", "0.6")
 

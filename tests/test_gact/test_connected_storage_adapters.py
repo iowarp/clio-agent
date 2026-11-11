@@ -48,6 +48,8 @@ def test_drive_exports_keep_original_identity_and_cannot_write_back(tmp_path: Pa
         adapter = DriveSource("folder", "private-test-token", writable=True, client=client)
         entry = adapter.entries()[0]
         assert (entry.path, entry.locator, entry.revision) == ("Study.pdf", "doc", "7")
+        # Drive reports no size for a Google Doc; it is unknown, not an empty file.
+        assert entry.size is None
         with adapter.open_read(entry) as stream:
             assert stream.read() == b"%PDF-1.7\nfixture"
         proposed = tmp_path / "edited.pdf"

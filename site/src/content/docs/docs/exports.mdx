@@ -24,8 +24,8 @@ before sending it.
 | A figure for a slide or draft | **PNG image** in a supported visual's download menu. | The rendered image; no interactive controls. |
 | A dashboard to explore | **HTML dashboard** in the dashboard viewer. | The report, captured data, and supported local interactions. |
 | Your questions, answers, and recorded work | Session **Download HTML**. | One readable review file with its viewer resources. |
-| The conversation and its session files | **Include session artifacts**, then **Download ZIP**. | The review, recorded traces, and captured session inputs and outputs. |
-| The investigation and the current workspace | **Include workspace files**, then **Download ZIP**. | The session export plus registered workspace files as they exist now. |
+| The conversation and its session files | **Artifacts**, then **Download ZIP**. | The review, recorded traces, and captured session inputs and outputs. |
+| The investigation and the current workspace | **Workspace files**, then **Download ZIP**. | The session export plus registered workspace files as they exist now. |
 
 For the dashboard's exact buttons and actual output files,
 [see the dashboard export walkthrough](/docs/dashboards/#find-the-export-buttons).
@@ -36,8 +36,8 @@ For the dashboard's exact buttons and actual output files,
 
 <Steps>
 
-1. Open the session's **⋯** menu beside its title, or the session's menu in the
-   left sidebar. Choose **Export session**.
+1. Open the conversation's **⋯** menu at the upper right, or the conversation's
+   menu in the left sidebar. Choose **Export**.
 
 2. For a review of the conversation, leave both checkboxes clear and choose
    **Download HTML**.
@@ -48,8 +48,8 @@ For the dashboard's exact buttons and actual output files,
 </Steps>
 
 <Capture client:visible image={await captureImage(exportMenu)}
-  alt="Session menu with Export session expanded, both inclusion checkboxes clear, and Download HTML available"
-  caption="The session's ⋯ menu opens the export choices. With both boxes clear, Download HTML saves one review file. The transcript is always included."
+  alt="Conversation menu with Export expanded, the Artifacts and Workspace files checkboxes clear, and Download HTML available"
+  caption="The conversation's ⋯ menu opens the export choices. With both boxes clear, Download HTML saves one review file. The transcript is always included."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 <WidgetRecording name="docs-session-export"
@@ -60,13 +60,13 @@ For the dashboard's exact buttons and actual output files,
 
 ## Include the files as well
 
-Check **Include session artifacts** when the recipient needs the files this
+Check **Artifacts** when the recipient needs the files this
 session and its child agents read or produced. The action changes to
 **Download ZIP**. This does not collect every other session's outputs.
 
 <Capture client:visible image={await captureImage(zipMenu)}
-  alt="Session export menu with Include session artifacts checked and Download ZIP available"
-  caption="Checking Include session artifacts changes HTML to ZIP. Include workspace files adds the current registered workspace and also includes session artifacts."
+  alt="Export submenu with Artifacts checked and Download ZIP available"
+  caption="Checking Artifacts changes HTML to ZIP. Workspace files adds the current registered workspace and also includes session artifacts."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 Use **Include workspace files** when your colleague also needs the broader

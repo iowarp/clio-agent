@@ -347,8 +347,9 @@ class Analyst(Agent):
 """
 
 
-#: The skills every agent carries: core's planning and the fleet plugin's update-models.
-CORE_SKILLS = ("planning", "update-models")
+#: The skills every agent carries: core's planning and task protocol, the fleet
+#: plugin's update-models and the streaming plugin's live-status.
+CORE_SKILLS = ("planning", "task-protocol", "update-models", "live-status")
 
 
 def _write_inventory_skill(root: Path, skill_id: str, description: str, body: str) -> Path:
@@ -395,13 +396,13 @@ def test_resolved_plugin_skills_are_the_agents_skills_metadata_first(
 
     _quality_marketplace(tmp_path, monkeypatch)
     agent = resolution_agent_def(PluginService().resolve("clio/analyst", pin=False))
-    # The analyst's plugins are core (planning, update-models) and quality.
+    # The analyst's plugins are core (planning, task-protocol, update-models) and quality.
     assert sorted(agent.skills) == sorted([*CORE_SKILLS, "new-format", "quality-rubric"])
     runtime = skill_runtime_for_agent(None, agent)
     rubric = runtime.resolved["quality-rubric"].skill
     assert rubric is not None and rubric.scope == "plugin" and rubric.source == "quality"
     assert "- new-format: Author the new format" in runtime.prompt_block
-    assert "Call load_skill" in runtime.prompt_block
+    assert "load an ordinary skill with load_skill" in runtime.prompt_block
     assert "NEW FORMAT BODY" not in runtime.prompt_block
     assert BODY not in runtime.prompt_block
     tool = build_load_skill_tool(agent, runtime)
@@ -812,11 +813,14 @@ def test_session_agent_sees_plugin_skills_and_catalog_skills_together(
     )
 
     # Plugin skills follow resolution order: core, then the agent's plugins, then
-    # the plugins they require (fleet, which core requires, resolves after visuals).
+    # the plugins they require (fleet and streaming, which core requires, resolve after
+    # visuals).
     assert list(runtime.resolved) == [
         "planning",
+        "task-protocol",
         "present-interactive-analysis",
         "update-models",
+        "live-status",
         "a2ui-catalog-clio-workspace",
     ]
     assert runtime.resolved["present-interactive-analysis"].skill.scope == "plugin"

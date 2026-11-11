@@ -91,15 +91,21 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
     """
     from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
     from clio_agent.gact.node_folders import session_node_folder  # noqa: PLC0415
+    from clio_agent.gact.side_sessions import is_read_only_side_session  # noqa: PLC0415
     from clio_agent.tools.execution import (  # noqa: PLC0415
         tool_server_set_context,
         tool_workspace_context,
     )
-    from clio_agent.tools.write_scope import tool_write_root_context  # noqa: PLC0415
+    from clio_agent.tools.write_scope import (  # noqa: PLC0415
+        tool_read_only_context,
+        tool_write_root_context,
+    )
 
     workspace_root = _tool_workspace_root(sid)
     app = _ctx.active_app()
     node_folder = session_node_folder(app, sid)
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    read_only = is_read_only_side_session(sessions.get(sid) if sessions is not None else None)
     from clio_agent.tools.caller_scope import tool_caller_context  # noqa: PLC0415
 
     caller = tool_caller_context(sid, _tree_root(app, sid))
@@ -118,6 +124,7 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
                 lease(workspace_root),
                 tool_workspace_context(workspace_root),
                 tool_write_root_context(node_folder),
+                tool_read_only_context(read_only),
                 caller,
                 tool_server_set_context(server_set),
             ):
@@ -135,6 +142,7 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
             with (
                 tool_workspace_context(workspace_root),
                 tool_write_root_context(node_folder),
+                tool_read_only_context(read_only),
                 caller,
                 tool_server_set_context(server_set),
             ):

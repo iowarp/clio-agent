@@ -15,6 +15,7 @@ import pytest
 
 from clio_agent.runtime import sandbox, sandbox_cli, sandbox_codex, sandbox_net
 from clio_agent.runtime import sandbox_codex_mxc as mxc
+from clio_agent.runtime.sandbox_codex_probe import ProbeRun
 
 
 @pytest.mark.parametrize(
@@ -27,7 +28,11 @@ from clio_agent.runtime import sandbox_codex_mxc as mxc
 def test_windows_receipt_identifies_path_aliases_as_the_same_binary(
     monkeypatch: pytest.MonkeyPatch, ordinary: str, extended: str
 ) -> None:
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
     assert mxc._binary_identity_path(Path(ordinary)) == mxc._binary_identity_path(Path(extended))
     assert mxc._binary_identity_path(Path(ordinary.upper())) == mxc._binary_identity_path(
         Path(ordinary)
@@ -38,9 +43,18 @@ def test_native_build_does_not_depend_on_platform_cache(monkeypatch: pytest.Monk
     def forbidden() -> str:
         pytest.fail("The synthetic platform cache cannot qualify a Windows build")
 
+    # A 25H2 system reports its servicing family's base build here (26100); the
+    # registry holds the installed build (26200).
     native = SimpleNamespace(platform_version=(10, 0, 26100))
     monkeypatch.setattr(
-        mxc, "sys", SimpleNamespace(platform="win32", getwindowsversion=lambda: native)
+        mxc,
+        "sys",
+        SimpleNamespace(
+            platform="win32",
+            executable="python.exe",
+            base_prefix="C:\\Python",
+            getwindowsversion=lambda: native,
+        ),
     )
     monkeypatch.setattr(mxc.platform, "version", forbidden)
     monkeypatch.setitem(
@@ -49,10 +63,12 @@ def test_native_build_does_not_depend_on_platform_cache(monkeypatch: pytest.Monk
         SimpleNamespace(
             HKEY_LOCAL_MACHINE=1,
             OpenKey=lambda *args: nullcontext(2),
-            QueryValueEx=lambda *args: (9550, 4),
+            QueryValueEx=lambda key, name: {"UBR": (9711, 4), "CurrentBuildNumber": ("26200", 1)}[
+                name
+            ],
         ),
     )
-    assert mxc._host_build() == "10.0.26100.9550"
+    assert mxc._host_build() == "10.0.26200.9711"
 
 
 def test_receipt_invalidates_when_windows_revision_changes(
@@ -62,11 +78,15 @@ def test_receipt_invalidates_when_windows_revision_changes(
     binary.write_bytes(b"test-only executable identity")
     monkeypatch.setattr(mxc, "_receipt_path", lambda: tmp_path / "receipt.json")
     monkeypatch.setattr(mxc, "_host_build", lambda: "10.0.26100.9550")
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
-    mxc.prepare_mxc(str(binary), "0.162.1", probe=lambda binary: True)
-    assert mxc.mxc_ready(str(binary), version="0.162.1")
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
+    mxc.prepare_mxc(str(binary), "0.167.0", probe=lambda binary: True)
+    assert mxc.mxc_ready(str(binary), version="0.167.0")
     monkeypatch.setattr(mxc, "_host_build", lambda: "10.0.26100.9551")
-    assert not mxc.mxc_ready(str(binary), version="0.162.1")
+    assert not mxc.mxc_ready(str(binary), version="0.167.0")
 
 
 def test_active_mxc_cannot_silently_downgrade_to_elevated(
@@ -85,7 +105,7 @@ def test_active_mxc_cannot_silently_downgrade_to_elevated(
         reason="fence_active",
         details={
             "codex_binary": "codex.exe",
-            "codex_version": "0.162.1",
+            "codex_version": "0.167.0",
             "codex": {"implementation": "mxc"},
         },
     )
@@ -95,7 +115,11 @@ def test_active_mxc_cannot_silently_downgrade_to_elevated(
 
 @pytest.fixture
 def isolated_mxc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32", executable="python.exe"))
+    monkeypatch.setattr(
+        mxc,
+        "sys",
+        SimpleNamespace(platform="win32", executable="python.exe", base_prefix="C:\\Python"),
+    )
     monkeypatch.setattr(mxc, "_receipt_path", lambda: tmp_path / "receipt.json")
     monkeypatch.setattr(
         mxc, "_identity", lambda binary, version="": {"binary": binary, "version": version}
@@ -113,10 +137,10 @@ def test_setup_reuses_qualified_or_unsupported_result_until_identity_changes(
         calls.append(binary)
         return verified
 
-    first = mxc.prepare_mxc("codex.exe", "0.162.1", probe=probe)
+    first = mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe)
     assert first["status"] == ("verified" if verified else "unavailable")
-    assert mxc.prepare_mxc("codex.exe", "0.162.1", probe=probe) == first
-    assert mxc.mxc_ready("codex.exe", version="0.162.1") is verified
+    assert mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe) == first
+    assert mxc.mxc_ready("codex.exe", version="0.167.0") is verified
     assert len(calls) == 1
     monkeypatch.setattr(
         mxc,
@@ -124,7 +148,7 @@ def test_setup_reuses_qualified_or_unsupported_result_until_identity_changes(
         lambda binary, version="": {"binary": binary, "version": version, "build": "updated"},
     )
     assert not mxc.mxc_ready("codex.exe")
-    mxc.prepare_mxc("codex.exe", "0.162.1", probe=probe)
+    mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe)
     assert len(calls) == 2
 
 
@@ -135,7 +159,7 @@ def test_setup_reuses_qualified_or_unsupported_result_until_identity_changes(
         None,
         {"identity": []},
         {"identity": {"version": []}},
-        {"identity": {"version": "0.162.1"}, "status": []},
+        {"identity": {"version": "0.167.0"}, "status": []},
     ],
 )
 def test_malformed_receipt_never_qualifies(isolated_mxc: Path, payload: Any) -> None:
@@ -150,7 +174,7 @@ def test_probe_error_never_publishes_success(isolated_mxc: Path, error: Exceptio
     def probe(binary: str) -> bool:
         raise error
 
-    assert mxc.prepare_mxc("codex.exe", "0.162.1", probe=probe)["status"] == "unavailable"
+    assert mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe)["status"] == "unavailable"
     assert not mxc.mxc_ready("codex.exe")
 
 
@@ -158,10 +182,10 @@ def test_probe_error_never_publishes_success(isolated_mxc: Path, error: Exceptio
 def test_explicit_recovery_rechecks_native_policy(
     isolated_mxc: Path, initially_verified: bool
 ) -> None:
-    mxc.prepare_mxc("codex.exe", "0.162.1", probe=lambda binary: initially_verified)
-    mxc.prepare_mxc("codex.exe", "0.162.1", probe=lambda binary: not initially_verified)
+    mxc.prepare_mxc("codex.exe", "0.167.0", probe=lambda binary: initially_verified)
+    mxc.prepare_mxc("codex.exe", "0.167.0", probe=lambda binary: not initially_verified)
     assert mxc.mxc_ready("codex.exe") is initially_verified
-    mxc.prepare_mxc("codex.exe", "0.162.1", probe=lambda binary: not initially_verified, force=True)
+    mxc.prepare_mxc("codex.exe", "0.167.0", probe=lambda binary: not initially_verified, force=True)
     assert mxc.mxc_ready("codex.exe") is not initially_verified
 
 
@@ -172,7 +196,7 @@ def test_proof_requires_every_positive_and_denial_witness(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(mxc, "sys", SimpleNamespace(executable="fixture-python"))
 
-    def run(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+    def run(argv: list[str], **kwargs: Any) -> ProbeRun:
         workspace = Path(argv[argv.index("-C") + 1])
         checks = dict.fromkeys(mxc._CHECKS, True)
         if broken in checks:
@@ -185,10 +209,66 @@ def test_proof_requires_every_positive_and_denial_witness(
             (workspace / "source/data.txt").write_text("changed")
         assert kwargs["timeout"] == 30
         assert "--include-managed-config" in argv
-        return SimpleNamespace(returncode=1 if broken == "launcher" else 0)
+        if broken == "launcher":
+            return ProbeRun(1, False, "MXC launcher: rejects the config")
+        return ProbeRun(0, False, "")
 
-    monkeypatch.setattr(subprocess, "run", run)
-    assert mxc._probe_mxc("codex.exe") is (broken == "none")
+    monkeypatch.setattr(mxc, "run_probe", run)
+    outcome = mxc._probe_mxc("codex.exe")
+    assert outcome.verified is (broken == "none")
+    if broken == "launcher":
+        # Codex's refusal is kept, so the cause reaches the receipt and the message.
+        assert outcome.reason == mxc.REASON_MXC_LAUNCH_FAILED
+        assert "rejects the config" in outcome.detail
+    elif broken != "none":
+        assert outcome.reason == mxc.REASON_MXC_UNVERIFIED
+
+
+def test_probe_timeout_is_reported_as_the_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(mxc, "sys", SimpleNamespace(executable="fixture-python"))
+    monkeypatch.setattr(mxc, "run_probe", lambda argv, **kwargs: ProbeRun(None, True, "slow mount"))
+    outcome = mxc._probe_mxc("codex.exe")
+    assert (outcome.verified, outcome.reason) == (False, mxc.REASON_MXC_PROBE_TIMEOUT)
+    assert outcome.detail == "codex timed out: slow mount"
+
+
+def test_explicit_setup_reprobes_a_cached_failure_but_keeps_a_proof(isolated_mxc: Path) -> None:
+    calls: list[bool] = []
+
+    def probe(verified: bool) -> Any:
+        return lambda binary: calls.append(verified) or mxc.MxcProbe(
+            verified,
+            mxc.REASON_MXC_VERIFIED if verified else mxc.REASON_MXC_LAUNCH_FAILED,
+            "" if verified else "unresolvable mount",
+        )
+
+    failed = mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe(False))
+    assert failed == {
+        "status": "unavailable",
+        "reason": mxc.REASON_MXC_LAUNCH_FAILED,
+        "detail": "unresolvable mount",
+    }
+    # A launch reuses the cached failure, with its reason and Codex's words.
+    assert mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe(True)) == failed
+    # An explicit setup probes again: the mount may be gone.
+    retried = mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe(True), retry_unavailable=True)
+    assert retried["status"] == "verified" and mxc.mxc_ready("codex.exe", version="0.167.0")
+    # A verified proof is reused even by an explicit setup.
+    assert (
+        mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe(False), retry_unavailable=True)[
+            "status"
+        ]
+        == "verified"
+    )
+    assert calls == [False, True]
+
+
+def test_clients_before_the_mount_fixes_never_qualify_mxc() -> None:
+    result = mxc.prepare_mxc("codex.exe", "0.162.1", probe=lambda binary: True)
+    assert result == {"status": "unavailable", "reason": "codex_mxc_version_unsupported"}
 
 
 def test_verified_mxc_skips_all_legacy_machine_mutations(isolated_mxc: Path) -> None:
@@ -196,7 +276,7 @@ def test_verified_mxc_skips_all_legacy_machine_mutations(isolated_mxc: Path) -> 
         pytest.fail("MXC must not create accounts, download legacy helpers, or grant ACLs")
 
     detection = sandbox_codex.CodexDetection(
-        True, "codex.exe", "0.162.1", sandbox_codex.REASON_CODEX_DETECTED, "bundled"
+        True, "codex.exe", "0.167.0", sandbox_codex.REASON_CODEX_DETECTED, "bundled"
     )
     result = sandbox_cli.provision_codex_windows(
         platform="win32",
@@ -216,7 +296,7 @@ def test_unavailable_mxc_retains_verified_elevated_fallback(isolated_mxc: Path) 
     result = sandbox_cli.provision_codex_windows(
         platform="win32",
         detection=sandbox_codex.CodexDetection(
-            True, "codex.exe", "0.162.1", sandbox_codex.REASON_CODEX_DETECTED
+            True, "codex.exe", "0.167.0", sandbox_codex.REASON_CODEX_DETECTED
         ),
         mxc_preparer=lambda *args, **kwargs: {
             "status": "unavailable",
@@ -230,10 +310,10 @@ def test_unavailable_mxc_retains_verified_elevated_fallback(isolated_mxc: Path) 
 
 
 def test_legacy_client_upgrade_requires_new_enforcement_proof() -> None:
-    for recorded, expected in (("0.160.0", False), ("0.162.1", True)):
+    for recorded, expected in (("0.160.0", False), ("0.167.0", True)):
         ready, _ = sandbox_codex.codex_windows_gate(
             platform="win32",
-            version="0.162.1",
+            version="0.167.0",
             provisioned=lambda **kwargs: (True, "accounts_present"),
             marker_reader=lambda recorded=recorded: {
                 "codex_version": recorded,
@@ -246,11 +326,11 @@ def test_legacy_client_upgrade_requires_new_enforcement_proof() -> None:
 def test_only_current_mxc_receipt_activates_accountless_gate_and_explicit_policy(
     isolated_mxc: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mxc.prepare_mxc("codex.exe", "0.162.1", probe=lambda binary: True)
+    mxc.prepare_mxc("codex.exe", "0.167.0", probe=lambda binary: True)
     assert sandbox_codex.codex_windows_gate(
         platform="win32",
         binary="codex.exe",
-        version="0.162.1",
+        version="0.167.0",
         provisioned=lambda **kwargs: (False, "absent"),
     )[0]
     assert not sandbox_codex.codex_windows_gate(
@@ -267,7 +347,7 @@ def test_only_current_mxc_receipt_activates_accountless_gate_and_explicit_policy
         binary="codex.exe",
         platform="win32",
         codex_home=isolated_mxc,
-        version="0.162.1",
+        version="0.167.0",
     )
     assert command == "codex.exe"
     assert "--include-managed-config" in args
@@ -285,7 +365,7 @@ def test_only_current_mxc_receipt_activates_accountless_gate_and_explicit_policy
         env={},
         platform="win32",
         codex_detection=sandbox_codex.CodexDetection(
-            True, "codex.exe", "0.162.1", sandbox_codex.REASON_CODEX_DETECTED
+            True, "codex.exe", "0.167.0", sandbox_codex.REASON_CODEX_DETECTED
         ),
     )
     assert state.active

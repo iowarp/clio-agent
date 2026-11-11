@@ -12,9 +12,11 @@ documented in `site/video/edits/docs-20261010/README.md` and archived under
 
 ## Report overview and lineage
 
-These light-mode browser captures show the development UI on 10 October 2026,
-at one device pixel per CSS pixel. They are original product screenshots,
-without painted controls, composited responses or private research data.
+These light-mode browser captures show the release UI (gact-tui develop
+`96dbbd2e1`) on 11 November 2026, at one device pixel per CSS pixel, with the
+artifact canvas maximized. They are original product screenshots, without painted
+controls, composited responses or private research data. The 10 October set showed
+the earlier Observability canvas; the seed data and relationships are unchanged.
 
 The fictional bike-station walkthrough is authored through the real
 `create_artifact`, transform-recording and dashboard-publication tools. It is
@@ -25,12 +27,12 @@ relationships appear in Lineage.
 | File | Viewport | What to inspect |
 | --- | --- | --- |
 | `current-dashboard.png` | 1440 x 1280 | Complete charts, map, legends and five-station table. |
-| `current-data.png` | 1120 x 820 | All six registered files, including the source table. |
-| `current-lineage.png` | 1440 x 560 | All nine nodes and ten relationships, with no clipped branch. |
+| `current-data.png` | 1120 x 420 | All six registered files in Artifacts, including the source table. |
+| `current-lineage.png` | 1120 x 420 | All nine nodes and ten relationships, with no clipped branch. |
 | `current-report.png` | 1120 x 520 | The finding, its limits, and the three evidence tables. |
 
 `capture-manifest.json` records source revisions and SHA-256 checksums. The
-immutable originals and browser review screenshots are archived under
+10 October originals and browser review screenshots are archived under
 `D:/Libraries/Videos/clio_recordings/2026-10-10-website-showcase/`. Astro creates
 responsive WebP derivatives; clicking a homepage image exposes its full-size
 version.
@@ -189,3 +191,90 @@ The `docs-memory-*` images other than `docs-memory-search.png` are light-mode br
 | `docs-memory-popover.png` | An answer that used a remembered preference, with its memory popover |
 | `docs-memory-notice.png` | A memory write in a conversation, expanded: the fact it saved and Edit in memory |
 | `docs-memory-off.png` | Memory off in the composer for a new conversation |
+
+## Browser panel
+
+`docs-browser-panel.png` (1440 x 900, dark mode) is an untouched screenshot of a real
+development session on 4 November 2026: CLIO read the test fixture site's dataset table,
+and the link in its answer opened the page in the side panel's Browser tab. The browser
+was the installed-browser channel (`browser.channel: chrome`); the panel looks the same
+with CLIO's own browser. The table is synthetic test data.
+
+The `docs-permissions-*` images are light-mode browser captures at two device pixels per
+CSS pixel (1200 × 820 viewport) of a real model run on 6 November 2026: in a fictional
+`bike-counts` workspace the agent was asked, with a tool-directed prompt, to copy
+`counts.csv` to `/home/user/Reports` without declaring the folder, so the sandbox blocked
+it. They show the folder access request the block raised, the notice on the message, the
+dialog its Allow button opens, and the folders listed in Observability after allowing.
+Nothing is painted or composited. Reproduce with `scripts/cloud/capture_permission_docs.mjs`
+against `bash scripts/cloud/stack.sh start`, with the workspace folder inside
+`CLIO_ALLOWED_ROOTS` and the outside folder not.
+
+## Comments and papers
+
+Real development sessions on the cloud stack (`claude_code` provider, workspace
+`p0-figures`), 5 November 2026, at 1440 x 900 with the canvas maximized, or 390 x 844
+with touch input for the phone captures. The burst-buffer reports, figures and papers
+were written in those sessions from plain requests, from a fictional modelled throughput
+table; they are not measurements. The full record is in
+`docs/design/comments-ledger.md` and `docs/design/latex-and-comments-ledger.md`.
+
+| File | What it shows |
+| --- | --- |
+| `comments/comment-markdown-text-editor.png` | A text comment on a Markdown report, with the controls at the lower right. |
+| `comments/comment-pdf-three-marks.png` | Two text marks and a region on one PDF page, listed together. |
+| `comments/comment-text-on-markdown-sent.png` | The sent comment in the conversation. |
+| `comments/comment-human-note.png` | A comment kept as a note (Send to agent off). |
+| `comments/comment-browser-element-editor.png` | An element picked on a web page in the browser. |
+| `comments/comment-a2ui-map-region.png` | A region over three locations on a map in the conversation. |
+| `comments/comment-phone-touch-region-editor.png` | A region drawn by touch at phone width. |
+| `papers/paper-card-in-reply.png` | The paper's card at the end of CLIO's answer (`sess_b41dc2e302b5`). |
+| `papers/paper-opened.png` | The paper opened full width: outline, source and PDF. |
+| `papers/paper-outline-to-pdf.png` | Background chosen in the outline, outlined on the PDF. |
+| `papers/latex-workspace-source-to-pdf.png` | A source line outlined on the PDF (the IEEE sample paper, `sess_3ac39589848e`). |
+| `papers/latex-paper-pdf-only.png` | The PDF-only view. |
+| `papers/latex-workspace-problems.png` | The build's problems listed (font substitutions). |
+| `papers/paper-venue-checks.png` | An ACM double-blind paper's venue checks: the author's name found at `sections/body.tex` line 2 (`sess_9ccb9f12c1bb`). |
+| `papers/paper-comment-on-pdf.png` | A comment on a phrase of the PDF. |
+| `papers/paper-marks-on-both-panes.png` | Two text marks drawn where they were made: S1 on a source line, S2 on a PDF phrase. |
+| `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated, each with CLIO's reply. |
+| `papers/paper-lineage.png` | The paper's lineage: each source file, the build and the paper. |
+| `papers/latex-workspace-phone.png` | The paper at phone width, with Source, PDF and Outline tabs. |
+
+## Commands and @ mentions
+
+Captured on 6 November 2026 from the development UI against a live CLIO with the
+marketplace's `testing/` fixtures (`commands-fixture`, `commands-clash`,
+`prompts-fixture`), at one device pixel per CSS pixel, in dark mode, with the sidebar
+collapsed where the composer is the subject. Sessions and checks are recorded in
+`docs/design/sdk/summoning-ledger.md` (N1, N6, N11, N16, N19).
+
+| File | Viewport | What to inspect |
+| --- | --- | --- |
+| `commands/slash-menu.png` | 1440 x 900 | The / menu's Commands, Skills and prompt groups, with sources. |
+| `commands/slash-menu-prompts.png` | 1440 x 900 | `fixture-docs prompts`, including `summarize_notes` added while the server ran. |
+| `commands/slash-menu-same-name.png` | 1440 x 900 | Two plugins' `review-notes`, each under its full name, marked Same name elsewhere. |
+| `commands/at-popover.png` | 1440 x 900 | The @ menu as it opens: workspace files listed, Agents, Workflows, Flows and Tools collapsed. |
+| `commands/at-popover-typed.png` | 1440 x 900 | `@dr`: the matches in every category, including the `draft-review` workflow. |
+| `commands/chip-in-draft.png` | 1440 x 900 | An `@explore` chip before the message text. |
+| `commands/two-chips-phone.png` | 390 x 844 | Two chips on one line and the text wrapping under them. |
+| `commands/summoned-subagent.png` | 1440 x 900 | The answer to an `@explore` message, with "Started explore as you asked". |
+| `commands/summon-not-started.png` | 1440 x 900 | An `@review` the agent did not start, and "review was not started" under the answer. |
+| `commands/summoned-server.png` | 1440 x 900 | "You pointed this message at the fixture-docs tools" and the answer from two of its tools. |
+| `commands/mcp-prompt-sent.png` | 1440 x 900 | A sent `/mcp__fixture-docs__show_figure` with its image and the opened prompt text. |
+
+## Writing a paper with WTF-P
+
+From the live run recorded as W7–W10 in `docs/design/sdk/summoning-ledger.md`
+(`sess_098491793925`, the `wtfp` plugin from `JaimeCernuda/wtf-p` `clio-plugin/`), at
+1440 x 900, dark mode, sidebar collapsed. The conversation is long, so each shot waits for
+its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`).
+
+| File | What to inspect |
+| --- | --- |
+| `papers/wtfp-new-paper.png` | The answer to the plain request: what exists, the defaults chosen, the review findings. |
+| `papers/wtfp-commands.png` | `/wtfp:` in the composer: WTF-P's commands. |
+| `papers/wtfp-roles.png` | `@wtfp` in the composer: the eleven roles. |
+| `papers/wtfp-plan-and-check.png` | `/wtfp:plan-and-check background` as a two-step workflow run. |
+| `papers/wtfp-comment-applied.png` | A comment on the paper and the edit to `introduction.tex`. |
+

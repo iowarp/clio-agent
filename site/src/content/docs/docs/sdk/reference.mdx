@@ -8,14 +8,14 @@ import { Aside } from '@astrojs/starlight/components';
 Signatures as they are in the source, with a line on each. The guides explain how they fit together: [Build your first plugin](/docs/sdk/build-a-plugin/), [Write a flow](/docs/sdk/flows/) and [Workflows as data](/docs/sdk/workflows/).
 
 <Aside type="caution" title="Development build">
-The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+The SDK is included from CLIO v0.9.5. These pages describe v0.9.6-beta.1; see [Features and versions](/docs/versions/) for what v0.9.5.1 lacks.
 </Aside>
 
 ```python
 from clio_agent.sdk import (
     Agent, AgentSpec, AgentDefinitionError, Flow, Workflow, Step, WorkflowError,
     Plugin, Pack, PluginRef, Requires, Prefers, Subagent, PromptFile,
-    tool, native_tool, hook, HookEvent, HOOK_EVENTS,
+    tool, native_tool, host_call, hook, HookEvent, HOOK_EVENTS,
 )
 ```
 
@@ -83,13 +83,30 @@ Raises `VersionRangeError` (from `clio_agent.sdk.versions`) for an invalid id or
 @tool
 def name(...): ...
 
-@tool(name="", description="", read_only=False)
+@tool(name="", description="", read_only=False, defer=None, callers=None, permission=None)
 def name(...): ...
 
-shell_bash = native_tool("shell_bash")
+shell_bash = native_tool("shell_bash", defer=None, callers=None, permission=None)
 ```
 
-`tool` turns a function into a tool; `name` and `description` default to the function's name and docstring. `native_tool(name)` claims one of CLIO's built-in tools for the plugin.
+`tool` turns a function into a tool; `name` and `description` default to the function's name and docstring. `native_tool(name)` claims one of CLIO's built-in tools for the plugin. Both take the same three options, each `None` by default:
+
+| Option | Values | Meaning |
+|---|---|---|
+| `defer` | `True`, `False` | `True` lists the tool by name only until the agent loads it with `search_tools`; `False` keeps it listed. `None` leaves it to the plugin's and CLIO's defaults. |
+| `callers` | `"direct"`, `"code"`, `"both"` | Who may call it: the agent itself, only `run_code` scripts (its schema stays out of the prompt), or both. `None` keeps the tool's own default, `both` unless it says otherwise. |
+| `permission` | `"allow"`, `"ask"`, `"deny"` | The tool's default permission. The person's rules override it, and it overrides the confirmation policy; `deny` hides the tool from the agent. `None` follows the tool's read-only flag. |
+
+An unknown value fails when the plugin loads. A deployment's `tools.callers` and `tools.permissions` settings override both.
+
+### `host_call`
+
+```python
+@host_call("__stream_write__")
+def write(args): ...
+```
+
+Declares the server side of a script binding's reserved call. The name is the full reserved name, `__<binding>_<name>__`; a name outside the binding's prefix is not bound. It lives in a binding's `host` module (see [Script bindings](/docs/sdk/plugins/#script-bindings)). The function receives the call's arguments as a mapping and runs in the CLIO backend without a tool call of its own: no permission question and no transcript row. Use it only for what a gated tool call already allowed.
 
 ### `hook` and `HookEvent`
 

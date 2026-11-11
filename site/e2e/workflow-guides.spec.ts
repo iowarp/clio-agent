@@ -21,7 +21,7 @@ for (const theme of ['light', 'dark']) {
 				await workflows.getByRole('link', { name: guide.link, exact: true }).click();
 				await expect(page).toHaveURL(new RegExp(`${guide.route}$`));
 				await expect(page.getByRole('heading', { level: 1, name: guide.title })).toBeVisible();
-				await expect(page.locator('.sl-markdown-content .starlight-aside')).toContainText('not included in beta 5.2');
+				await expect(page.locator('.sl-markdown-content .starlight-aside')).toContainText('need CLIO v0.9.5 or later');
 				expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 				await page.screenshot({ path: test.info().outputPath(`${guide.route.split('/')[2]}-${width}-${theme}.png`) });
 				if (width === 390) await page.getByRole('button', { name: 'Docs index', exact: true }).click();

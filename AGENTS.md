@@ -43,8 +43,8 @@ code, examples and checks required before calling a new tool complete.
 - `gact/` for the GACT server — the shipped API surface gact-tui talks to (FastAPI app, turn orchestration, SSE streaming, sessions/messages, `routes/`, `agents/`, `runtime/`, `workflow_state/`, `providers/`)
 - `agent.py`, `harness.py`, `errors.py` for the Tier-1 planner loop and run tracing
 - `conf.py`, `config.py`, `paths.py`, `prompts.py` for runtime/LM configuration, canonical paths, and the editable prompt system
-- `experts/`, `registry/`, `signatures/` for generic expert support, the agent registry, and DSPy signatures
-- `prompt_packs/` for built-in prompt packs
+- `experts/`, `registry/` for generic expert support and the agent registry
+- `injections/` for what CLIO adds to an agent's context: declarations (core's in the core plugin, a plugin's in its `ai.iowarp.clio/injections`), events, sandboxed Jinja templates
 - `arc/` for ARC memory: live context plane, prompt recorder, context compiler, cache/index/LSM/storage/retrieval
 - `tools/` for the FastMCP gateway, tool catalog, file policy, and execution boundary; `tools/servers/` for the FS and shell MCP servers
 - `providers/` for provider auth and LiteLLM bridges (Argonne/ALCF, claude_code, codex) plus `handshake/` model-limit discovery
@@ -70,7 +70,7 @@ Use `uv` for environment and command execution:
 - `uv run --frozen --no-sync python -B scripts/run_tests.py tests/ -m "not integration"` runs the test suite with writable state inside the checkout before pytest plugins load. Coverage is not on by default; CI adds the flags explicitly (see Testing Guidelines).
 - `uv run src/clio_agent/ui/cli.py doctor` reports runtime truth for LM, tools, file policy, API, and `clio-core`.
 - `uv run src/clio_agent/ui/cli.py` starts the interactive CLI.
-- `uv run clio-agent serve --host 0.0.0.0 --port 8100` starts the unified GACT server (the `/v1` REST/SSE API, health at `/v1/health`).
+- `uv run clio-agent serve` starts the unified GACT server (the `/v1` REST/SSE API, health at `/v1/health`) on port 17800, or the `gact.port` in your user `config.yaml`; `--port N` overrides it.
 
 ## Coding Style & Naming Conventions
 

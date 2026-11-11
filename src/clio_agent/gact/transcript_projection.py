@@ -31,6 +31,7 @@ from clio_agent.gact.transcript_file import (
     materialize_from_atoms,
     reload_resident_on_failure,
 )
+from clio_agent.gact.transcript_unreadable import typed_transcript_read
 from clio_agent.gact.types import Message
 from clio_agent.gact.workflow_state.state_merge import (
     drop_state_merge_lane,
@@ -325,8 +326,13 @@ def mint_atoms_from_ledger(arc: Any, session_id: str, messages: list[Message]) -
 
 
 def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message]]:
-    """Read canonical history without consulting or repairing a file cache."""
-    return materialize_from_atoms(app, session_id)
+    """Read canonical history without consulting or repairing a file cache.
+
+    Raises:
+        LedgerReadError: The stored transcript cannot be read (#1172).
+    """
+    with typed_transcript_read(session_id):
+        return materialize_from_atoms(app, session_id)
 
 
 # --------------------------------------------------------------------------- #

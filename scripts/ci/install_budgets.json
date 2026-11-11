@@ -34,6 +34,174 @@
       "budget": "install < 180 s",
       "measured": "desktop job; runs on schedule and on request only"
     },
+    "desktop install (macOS): resolve": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "release lookup < 30 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (macOS): download": {
+      "seconds": 120,
+      "ok": true,
+      "budget": "download (streamed and unpacked on macOS) < 120 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (macOS): verify": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "integrity check < 30 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (macOS): install": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "place the app < 60 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (macOS): prepare": {
+      "seconds": 150,
+      "ok": true,
+      "budget": "first-run prepare < 150 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (macOS): total": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "M4 Mac mini, 6-8 MB/s home network, v0.9.5.1 streamed .app.tar.gz: resolve 0.5 s, download 54.9 s, verify 0.0 s, install 2.4 s, prepare 45.1 s, total 102.9 s. The #1966 DMG path on the same network: download 52.6 s, attach 0.1 s, copy 11.8 s, codesign 2.7 s, prepare 40.7 s, total 108.0 s; CI (main, DMG) 177.7 s in run 42574071708",
+      "required_in": [
+        "desktop-install-macOS"
+      ]
+    },
+    "desktop install (Linux): resolve": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "release lookup < 30 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): download": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "download (the package and the plan's files at once) < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): verify": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "integrity check < 30 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): install": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "install the package (apt/dnf) < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): prepare": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "first-run prepare < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Linux): total": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "install, download included, < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI ubuntu-latest, deb through install.sh --desktop: run 42765370459 resolve 0.8, download 2.6, verify 0.0, install (apt/dpkg) 21.8, prepare 32.8, total 58.1 s; run 42751602969 total 75.9 s (install 23.8, prepare 44.0).",
+      "required_in": [
+        "desktop-install-Linux"
+      ]
+    },
+    "desktop install (Windows): resolve": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "release lookup < 30 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): download": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "download (the setup and the plan's files at once) < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): verify": {
+      "seconds": 30,
+      "ok": true,
+      "budget": "integrity check < 30 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): install": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "setup, including its own first-run prepare < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "desktop install (Windows): total": {
+      "seconds": 60,
+      "ok": true,
+      "budget": "install, download included, < 60 s",
+      "measured": "Install budget: the whole install, download included, < 60 s on every OS (gact-tui#739 issuecomment-6761185851). CI windows-latest, install.ps1 -Desktop -Unattended: run 42765370459 resolve 4.3, download 6.3, verify 0, install 164.3 (NSIS /S: pack extract plus the setup's own --prepare-runtime), total 175.0 s; run 42751602969 total 132.7 s. Install and total miss 60 s today.",
+      "required_in": [
+        "desktop-install-Windows"
+      ]
+    },
+    "source: start": {
+      "seconds": 90,
+      "ok": true,
+      "budget": "server starts within the launcher's 90 s window",
+      "measured": "new; macOS never started before the launcher stopped requiring setsid(1)",
+      "required_in": [
+        "script"
+      ]
+    },
+    "script: start": {
+      "seconds": 90,
+      "ok": true,
+      "budget": "server starts within the launcher's 90 s window",
+      "measured": "release path; runs on schedule and on request only"
+    },
     "source: stop": {
       "seconds": 20,
       "ok": true,
@@ -43,10 +211,28 @@
         "script"
       ]
     },
+    "source: full purge (-Purge -PurgeCaches -PurgeData)": {
+      "seconds": 120,
+      "ok": true,
+      "budget": "the Windows remover clears every scope it is asked to",
+      "measured": "Windows only; new"
+    },
     "source: stop after re-run": {
       "seconds": 20,
       "budget": "shutdown < 20 s",
       "measured": "0.3-3.1 s on Linux and macOS"
+    },
+    "desktop: download (Windows PowerShell 5.1)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "Windows only; new. The 507 MB 0.9.5.1 setup took 20 s with curl from a cloud host"
+    },
+    "desktop: download (pwsh)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "Windows only; new. The 507 MB 0.9.5.1 setup took 20 s with curl from a cloud host"
     }
   },
   "startup": {

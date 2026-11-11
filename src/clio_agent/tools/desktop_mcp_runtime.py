@@ -13,6 +13,9 @@ from typing import Any
 
 from clio_agent import paths
 
+#: The ``-c`` entry that runs the bundled clio-kit CLI through the runtime interpreter.
+CLIO_KIT_ENTRY = "from clio_kit import cli; cli()"
+
 
 def desktop_mcp_log_file(namespace: str) -> Path | None:
     """Return an inheritable stderr sink for managed desktop MCP children."""
@@ -54,7 +57,7 @@ def bundled_module_launcher(
 
     resolved_args = [str(value) for value in args]
     modules = {
-        "clio-kit": ("clio_kit", "from clio_kit import cli; cli()"),
+        "clio-kit": ("clio_kit", CLIO_KIT_ENTRY),
         # The desktop runtime pre-installs the Web Search MCP adapter during
         # packaging. Launch it directly: connecting must not download/build a
         # second Python environment on first use or depend on ambient `uvx`.
@@ -88,7 +91,7 @@ def bundled_module_launcher(
         ambient_path = os.environ.get("PATH", "")
         env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
     env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
-        "CLIO_KIT_CACHE_DIR", str(paths.user_cache_dir() / "mcp-runtime")
+        "CLIO_KIT_CACHE_DIR", str(paths.mcp_build_cache_dir() / "mcp-runtime")
     )
     executable = Path(sys.executable).resolve()
     return str(executable), ["-c", selected[1], *resolved_args], env
@@ -110,6 +113,16 @@ def prepare_desktop_stdio(
         command, resolved_args, launcher_env = launcher
     child_env = stdio_environment(dict(env) if env else {}, command=command, args=resolved_args)
     child_env.update(launcher_env)
+    if "CLIO_KIT_CACHE_DIR" in launcher_env:
+        from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
+            remove_stale_environments,
+        )
+        from clio_agent.tools.mcp_environment_repair import (  # noqa: PLC0415
+            repair_invalid_environments,
+        )
+
+        remove_stale_environments(Path(launcher_env["CLIO_KIT_CACHE_DIR"]))
+        repair_invalid_environments(Path(launcher_env["CLIO_KIT_CACHE_DIR"]))
     return command, resolved_args, child_env
 
 

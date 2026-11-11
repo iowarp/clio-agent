@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
@@ -27,6 +28,7 @@ from clio_agent.gact.task_observations import pattern_text, read_observations
 from clio_agent.gact.task_publication import publish_task_notice, task_owner_recipient
 from clio_agent.gact.task_queries import query_tasks
 from clio_agent.gact.task_result_content import committed_evidence, read_cursor, result_page
+from clio_agent.gact.task_result_spill import save_task_result
 from clio_agent.gact.tool_observation import CollectedTaskResult
 from clio_agent.runtime.commitment_activity import track
 
@@ -38,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 def _handles(tasks: str | list[str]) -> tuple[str, ...]:
     values = [tasks] if isinstance(tasks, str) else tasks
+    if isinstance(tasks, str) and tasks.lstrip().startswith("["):
+        # Format-only repair: a handle list a model wrote as one JSON string.
+        try:
+            parsed = json.loads(tasks)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            logger.info("Task handles reason=handle_list_json_string count=%d", len(parsed))
+            values = parsed
     if (
         not isinstance(values, list)
         or not values
@@ -173,6 +184,7 @@ class TaskOperations:
                     "shared_evidence",
                     position,
                     select,
+                    self._saver(caller, pin.handle),
                 ),
             }
         result: dict[str, Any] = {
@@ -199,6 +211,7 @@ class TaskOperations:
                         "task_result",
                         position,
                         select,
+                        self._saver(caller, current.handle),
                     )
                 )
                 result.update(
@@ -219,9 +232,21 @@ class TaskOperations:
                 "task_result",
                 position,
                 select,
+                self._saver(caller, current.handle),
             )
         )
         return result
+
+    def _saver(
+        self, caller: TaskCaller, handle: str
+    ) -> Callable[[Any, str], dict[str, Any]] | None:
+        """Save a result too big to return whole into the caller's session (#1844)."""
+        if self.app is None:
+            return None
+        app = self.app
+        return lambda value, encoded: save_task_result(
+            app, caller.session_id, handle, value, encoded
+        )
 
     async def wait(
         self,

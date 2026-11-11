@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from clio_agent.tools.execution import SyncMCPToolExecutor, tool_workspace_context
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
+from tests._config_layer import set_config
 
 
 class _FakeJarvisRunResult(BaseModel):
@@ -164,7 +165,8 @@ def test_real_fastmcp_round_trip_has_no_spurious_degrade() -> None:
         observed.append((name, args, phase, error, result))
 
     with SyncMCPToolExecutor(server, timeout=1.0, tool_observer=observer) as executor:
-        assert executor.call_tool("probe", {}) == '{"value": 42}'
+        # The server's own text block (its JSON) is what the model sees (text first).
+        assert json.loads(executor.call_tool("probe", {})) == {"value": 42}
 
     completed = [row for row in observed if row[2] == "completed"]
     assert len(completed) == 1
@@ -198,7 +200,6 @@ def test_list_result_round_trip_is_json_not_python_repr() -> None:
         text = executor.call_tool("geocode", {})
 
     expected = [{"display_name": "Los Angeles, CA", "lat": 34.05, "lon": -118.24}]
-    assert text == json.dumps(expected)
     # Explicit guard against the historical Python-repr regression: single-quoted
     # keys are never valid JSON and must never reach the model-facing text lane.
     assert "'display_name'" not in text
@@ -220,10 +221,8 @@ def test_result_to_text_circular_structure_falls_back_without_raising(caplog) ->
     detected"), which the OLD ``except TypeError`` alone never caught.
     """
 
-    from clio_agent.tools.mcp_executor import (
-        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
-        _result_to_text,
-    )
+    from clio_agent.tools.mcp_result_text import MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON
+    from clio_agent.tools.mcp_result_text import result_to_text as _result_to_text
 
     circular: dict[str, Any] = {"self": None}
     circular["self"] = circular
@@ -278,7 +277,7 @@ def test_result_to_text_recursion_error_from_json_dumps_falls_back(monkeypatch) 
     proven via a controlled monkeypatch so the test itself doesn't depend on
     fragile, platform-specific stack-depth math."""
 
-    import clio_agent.tools.mcp_executor as mcp_executor_module
+    import clio_agent.tools.mcp_result_text as mcp_executor_module
 
     def _raise_recursion(*_args: Any, **_kwargs: Any) -> str:
         raise RecursionError("maximum recursion depth exceeded")
@@ -286,14 +285,14 @@ def test_result_to_text_recursion_error_from_json_dumps_falls_back(monkeypatch) 
     monkeypatch.setattr(mcp_executor_module.json, "dumps", _raise_recursion)
 
     payload = {"deep": "structure"}
-    assert mcp_executor_module._result_to_text(payload) == str(payload)
+    assert mcp_executor_module.result_to_text(payload) == str(payload)
 
 
 def test_result_to_text_overflow_error_from_json_dumps_falls_back(monkeypatch) -> None:
     """An int outside the encoder's range raises OverflowError -- also part of
     the widened except tuple."""
 
-    import clio_agent.tools.mcp_executor as mcp_executor_module
+    import clio_agent.tools.mcp_result_text as mcp_executor_module
 
     def _raise_overflow(*_args: Any, **_kwargs: Any) -> str:
         raise OverflowError("int too large to convert")
@@ -301,7 +300,7 @@ def test_result_to_text_overflow_error_from_json_dumps_falls_back(monkeypatch) -
     monkeypatch.setattr(mcp_executor_module.json, "dumps", _raise_overflow)
 
     payload = {"huge": 10**400}
-    assert mcp_executor_module._result_to_text(payload) == str(payload)
+    assert mcp_executor_module.result_to_text(payload) == str(payload)
 
 
 def test_result_to_text_still_prefers_json_for_encodable_values() -> None:
@@ -327,10 +326,10 @@ def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
     """A huge tabular result cannot multiply across every later ReAct prompt."""
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
+
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
 
     payload = {
         "summary": {"rows": 1101, "status": "success"},
@@ -344,26 +343,26 @@ def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
     full = json.dumps(payload)
     # ``_result_to_text`` itself returns the full text; the caller bounds it.
     assert _result_to_text(payload) == full
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert text.startswith(f"[clio: result_spilled] This result is {len(full):,} characters")
     assert '"rows": 1101' in text
-    # The tail is not in the prompt; it is in the file, exactly as produced.
+    # The tail is not in the prompt; it is in the file, the same value saved indented.
     assert "earthscope_stations_clean.csv" not in text
-    assert _spilled_text(text) == full
+    assert json.loads(_spilled_text(text)) == payload
 
 
 def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
     """A quote-dense row-dict payload (the station/geocode shape) stays within the bound.
 
     The old envelope re-escaped its slices and overran the cap on this shape; the
-    head is now raw text, so the bound holds and the file keeps the exact original.
+    head is now raw text, so the bound holds and the file keeps the same value (indented).
     """
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
+
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
 
     payload = {
         "summary": {"rows": 4000, "status": "success"},
@@ -377,42 +376,42 @@ def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
     with tool_workspace_context(str(tmp_path)):
         text = bounded_model_tool_result(_result_to_text(payload))
 
-    assert len(text) <= model_tool_result_chars()
-    assert _spilled_text(text) == json.dumps(payload)
+    assert len(text) <= result_room().chars
+    assert json.loads(_spilled_text(text)) == payload
 
 
 def test_model_lane_bounds_an_escape_dense_result(tmp_path: Path) -> None:
     """Control characters do not inflate the model-lane result past the bound."""
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
+
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
 
     source = "\x07" * 40_000
     with tool_workspace_context(str(tmp_path)):
         text = bounded_model_tool_result(_result_to_text(source))
 
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert text.split("\n\n", 1)[1]  # a non-empty head is shown
     assert _spilled_text(text) == source
 
 
 def test_model_lane_never_returns_more_than_the_bound(tmp_path: Path) -> None:
-    """Just over the cap at high quote density, the result stays within the bound."""
+    """Just over the room at high quote density, the result stays within the bound."""
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
 
-    source = '"' * (model_tool_result_chars() + 1)
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
+
+    source = '"' * (result_room().chars + 4)  # one token over
     with tool_workspace_context(str(tmp_path)):
         text = bounded_model_tool_result(_result_to_text(source))
 
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert _spilled_text(text) == source
 
 
@@ -437,10 +436,8 @@ def test_result_to_text_pydantic_model_serializes_to_json_without_repr_fallback(
     repr-fallback reason.
     """
 
-    from clio_agent.tools.mcp_executor import (
-        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
-        _result_to_text,
-    )
+    from clio_agent.tools.mcp_result_text import MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON
+    from clio_agent.tools.mcp_result_text import result_to_text as _result_to_text
 
     payload = _FakeJarvisRunResult(
         task_id="task-1", job_id="job-1", state="RUNNING", terminal=False
@@ -466,10 +463,8 @@ def test_result_to_text_nested_pydantic_model_serializes_to_json(caplog) -> None
     serialize via ``model_dump(mode="json")``, not only when it sits at the
     top level of ``result.data``."""
 
-    from clio_agent.tools.mcp_executor import (
-        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
-        _result_to_text,
-    )
+    from clio_agent.tools.mcp_result_text import MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON
+    from clio_agent.tools.mcp_result_text import result_to_text as _result_to_text
 
     payload = {
         "results": [
@@ -496,10 +491,8 @@ def test_result_to_text_unserializable_object_still_falls_back_with_typed_reason
     the pydantic hook only ADDS a serialization path, it never suppresses
     this one."""
 
-    from clio_agent.tools.mcp_executor import (
-        MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON,
-        _result_to_text,
-    )
+    from clio_agent.tools.mcp_result_text import MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON
+    from clio_agent.tools.mcp_result_text import result_to_text as _result_to_text
 
     payload = object()
 

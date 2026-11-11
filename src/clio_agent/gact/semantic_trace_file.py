@@ -7,12 +7,15 @@ the sink): this module owns only the file backend and its one shared writer thre
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 from clio_agent.errors import ClioError
+from clio_agent.platform_paths import win_extended_path
+from clio_agent.runtime.append_handles import AppendHandles
 
 if TYPE_CHECKING:
     from clio_agent.gact.semantic_events import SemanticEvent
@@ -47,6 +50,44 @@ class TraceWriteError(ClioError):
         )
 
 
+class _WriteProgress:
+    """Sequence watermark over the shared writer queue (FIFO, one consumer).
+
+    ``flush`` waits for the writes enqueued BEFORE it was called, not for the queue to
+    be empty: ``Queue.join`` waits for every session's writes, including ones enqueued
+    after the call, so a reader starved while any turn kept streaming token deltas.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._enqueued = 0
+        self._written = 0
+
+    def put(self, item: "tuple[Path, SemanticEvent]") -> None:
+        # Counted under the same lock as the put, so the count order is the queue order.
+        with self._cond:
+            _TRACE_WRITE_QUEUE.put(item)
+            self._enqueued += 1
+
+    def written(self) -> None:
+        with self._cond:
+            self._written += 1
+            self._cond.notify_all()
+
+    def wait_through_enqueued(self) -> None:
+        with self._cond:
+            target = self._enqueued
+            self._cond.wait_for(lambda: self._written >= target)
+
+
+_TRACE_WRITE_PROGRESS = _WriteProgress()
+
+
+# Kept open per session trace (reopening per event was a tenth of the writer's time on
+# P7, 2026-11-02); a deleted session's trace is reopened, not written unlinked.
+_TRACE_HANDLES = AppendHandles()
+
+
 def _trace_writer_loop() -> None:
     while True:
         item = _TRACE_WRITE_QUEUE.get()
@@ -58,11 +99,7 @@ def _trace_writer_loop() -> None:
                 # Serialize HERE (off the turn loop): json.dumps of a full event
                 # (reasoning + tool results) is non-trivial CPU; doing it on the
                 # caller's event-loop thread destabilizes turns under the portal.
-                line = json.dumps(event.to_dict("full"), sort_keys=True)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as f:
-                    f.write(line)
-                    f.write("\n")
+                _TRACE_HANDLES.write(path, json.dumps(event.to_dict("full"), sort_keys=True))
             except Exception as exc:  # noqa: BLE001 - kept and raised by the backend (typed)
                 from clio_agent.runtime import trace  # noqa: PLC0415
 
@@ -70,6 +107,8 @@ def _trace_writer_loop() -> None:
                 _TRACE_WRITE_FAILURES.setdefault(path, f"{type(exc).__name__}: {exc}")
         finally:
             _TRACE_WRITE_QUEUE.task_done()
+            if item is not None:
+                _TRACE_WRITE_PROGRESS.written()
 
 
 def _ensure_trace_writer() -> None:
@@ -95,10 +134,10 @@ class FileSemanticTraceBackend:
 
     ``emit`` serializes the FULL event on the caller (cheap CPU) then enqueues to
     the shared writer thread, so the turn event loop is never blocked by file I/O
-    (the trace is ON by default). ``flush`` blocks until the queue drains
-    (tests/readers); ``close`` drains too (the shared daemon writer lives for the
-    process). The durable trace always captures the FULL event; redaction/capping
-    is a per-consumer projection applied elsewhere, never here.
+    (the trace is ON by default). ``flush`` blocks until every event enqueued before
+    it is written (tests/readers); ``close`` drains the whole queue (the shared daemon
+    writer lives for the process). The durable trace always captures the FULL event;
+    redaction/capping is a per-consumer projection applied elsewhere, never here.
     """
 
     name = "file"
@@ -126,11 +165,11 @@ class FileSemanticTraceBackend:
         path = self._path_for(event)
         if path in _TRACE_WRITE_FAILURES:
             raise TraceWriteError(path, _TRACE_WRITE_FAILURES[path])
-        _TRACE_WRITE_QUEUE.put((path, event))
+        _TRACE_WRITE_PROGRESS.put((path, event))
 
     def flush(self) -> None:
-        """Block until all enqueued events have been written; raise a write that failed."""
-        _TRACE_WRITE_QUEUE.join()
+        """Block until events enqueued before this call are written; raise a failed write."""
+        _TRACE_WRITE_PROGRESS.wait_through_enqueued()
         for path, cause in list(_TRACE_WRITE_FAILURES.items()):
             if path == self.path or self.path in path.parents:
                 raise TraceWriteError(path, cause)
@@ -149,9 +188,10 @@ class FileSemanticTraceBackend:
                 event_type="trace.read", session_id=session_id, trace_id=f"session:{session_id}"
             )
         )
-        if not path.exists():
+        readable = Path(win_extended_path(os.path.abspath(path)))  # a deep home passes MAX_PATH
+        if not readable.exists():
             return
-        with path.open(encoding="utf-8") as stream:
+        with readable.open(encoding="utf-8") as stream:
             for number, line in enumerate(stream, 1):
                 try:
                     event = json.loads(line)

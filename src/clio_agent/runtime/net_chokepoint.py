@@ -52,6 +52,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from clio_agent.runtime.net_child_hosts import (  # re-exported for callers
+    _child_host_allowed,
+    release_child_hosts,
+    restrict_child_hosts,
+)
+from clio_agent.runtime.net_upstream import _dial_tunnel, _upstream_proxy
+
 logger = logging.getLogger(__name__)
 
 REASON_CHOKEPOINT_START_FAILED = "chokepoint_start_failed"
@@ -326,7 +333,7 @@ class Chokepoint:
                 if not self._gate_allows(child_id, host, port, "connect"):
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
-                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+                upstream = _dial_tunnel(host, port, _CONNECT_READ_TIMEOUT_S)
                 upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
                 self._record_open(child_id, host, port, upstream, "connect")
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -346,7 +353,14 @@ class Chokepoint:
             if not self._gate_allows(child_id, host, port, "http", method):
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 return
-            upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+            relay = _upstream_proxy(host, "http")
+            if relay is not None:
+                # Behind a site proxy the origin is unreachable directly: hand the proxy the
+                # request in its original absolute form.
+                upstream = socket.create_connection(relay, timeout=_CONNECT_READ_TIMEOUT_S)
+                origin_head = header
+            else:
+                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
             upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
             self._record_open(child_id, host, port, upstream, "http", method)
             upstream.sendall(origin_head)
@@ -427,6 +441,11 @@ class Chokepoint:
         (an unrecognised/foreign gate, or record construction) — equivalent to unwired — so a
         total wiring failure degrades to the B4 default rather than severing all egress.
         """
+        if not _child_host_allowed(child_id, host):
+            logger.info(
+                "net egress refused reason=child_host_not_allowed child=%s host=%s", child_id, host
+            )
+            return False
         gate = _GATE
         if gate is None:
             return True
@@ -740,6 +759,8 @@ __all__ = [
     "current_chokepoint",
     "install_chokepoint",
     "open_child_channel",
+    "release_child_hosts",
+    "restrict_child_hosts",
     "set_egress_gate",
     "set_egress_recorder",
     "shutdown_chokepoint",

@@ -10,15 +10,17 @@ agent's flow runs the program; ``react`` (from ``core``) is the default.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
+from clio_agent.flows.call_metadata import active_workflow_step
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
+from clio_agent.gact.agents.agent_prompt import final_agent_prompt
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
-from clio_agent.gact.agents.composition import _runtime_active_workspace_context
 from clio_agent.gact.agents.live_tool_refresh import (
     LiveToolScope,
     live_tool_refresher,
@@ -48,11 +50,6 @@ from clio_agent.gact.agents.tool_recording import (
 )
 from clio_agent.gact.agents.tool_recording import (
     recording_tool as _recording_tool,
-)
-from clio_agent.gact.agents.wait_for_tools import (
-    WAIT_FOR_TOOLS,
-    build_wait_for_tools_tool,
-    preparing_namespaces,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
@@ -121,10 +118,9 @@ def _gateway_and_namespace_tools(
     """Gateway built-ins by name plus EVERY tool of each plugin MCP namespace.
 
     A plugin's MCP server contributes all of its tools. A namespace whose tools are
-    not listed yet is prepared in the background (:mod:`clio_agent.gact.
-    mcp_background_prepare`); the turn waits for it only for the short grace period,
-    and one still preparing after that is left out here, without a failure: its tools
-    reach the agent once listed (live tool refresh). A failed preparation is returned
+    not listed yet joins its background preparation and real listing before the
+    first model request. Valid cached definitions are usable immediately while the
+    session warm-up connects the execution server. A failed preparation is returned
     as a typed reason per namespace for this resolve only.
     """
 
@@ -144,10 +140,8 @@ def _gateway_and_namespace_tools(
         namespace = name.partition("_")[0]
         if name not in available and namespace in declared_specs:
             needed.setdefault(namespace, declared_specs[namespace])
-    preparing: set[str] = set()
     if needed:
-        preparing, prepare_failures = prepare_for_turn(tool_executor, needed)
-        failures.update(prepare_failures)
+        failures.update(prepare_for_turn(tool_executor, needed))
         available = _listed_tools(tool_executor)
     wanted = set(gateway_names)
     prefixes = tuple(f"{namespace}_" for namespace in namespaces)
@@ -157,10 +151,8 @@ def _gateway_and_namespace_tools(
         if name in wanted or (prefixes and name.startswith(prefixes))
     }
     for namespace in namespaces:
-        if (
-            namespace not in failures
-            and namespace not in preparing
-            and not any(name.startswith(f"{namespace}_") for name in picked)
+        if namespace not in failures and not any(
+            name.startswith(f"{namespace}_") for name in picked
         ):
             failures[namespace] = "mcp_server_listed_no_tools"
     return picked, failures
@@ -208,14 +200,15 @@ def _agent_tools(
     claimed = [row["name"] for row in resolution.tools if row["kind"] == "native"]
     allowed = set(agent_def.tools)
     claimed = [name for name in claimed if name in allowed and name not in AGENT_RUNTIME_TOOLS]
-    available, gateway_names, withheld = build_native_tools(
-        agent_def,
-        claimed,
-        sources,
-        supports_vision=supports_vision,
-        supports_pdf=supports_pdf,
-        a2ui_catalogs=bool(resolution.catalogs),
-    )
+    with _build_phase("tools.native"):
+        available, gateway_names, withheld = build_native_tools(
+            agent_def,
+            claimed,
+            sources,
+            supports_vision=supports_vision,
+            supports_pdf=supports_pdf,
+            a2ui_catalogs=bool(resolution.catalogs),
+        )
     namespaces = sorted(resolution.mcp_servers) if agent_def.tools else []
     mount_failures: dict[str, str] = {}
     if gateway_names or namespaces:
@@ -236,19 +229,20 @@ def _agent_tools(
                 reason="custom_agent_tool_executor_unavailable",
                 tools=[*gateway_names, *namespaces],
             )
-        refresh_executor_tools(tool_executor)  # a server's tools/list_changed since last turn
-        picked, mount_failures = _gateway_and_namespace_tools(
-            tool_executor, gateway_names, namespaces
-        )
+        with _build_phase("tools.refresh"):
+            refresh_executor_tools(tool_executor)  # a server's tools/list_changed since last turn
+        with _build_phase("tools.gateway"):
+            picked, mount_failures = _gateway_and_namespace_tools(
+                tool_executor, gateway_names, namespaces
+            )
         whole = set(namespaces) - set(mount_failures)
         if not agent_def.parent_id:
-            whole |= attach_always_load_tools(tool_executor, picked, mount_failures, list(picked))
+            with _build_phase("tools.always_load"):
+                whole |= attach_always_load_tools(
+                    tool_executor, picked, mount_failures, list(picked)
+                )
         if live is not None:
             live.executor, live.namespaces = tool_executor, whole
-        waiting = preparing_namespaces(whole, picked)
-        if waiting:
-            available[WAIT_FOR_TOOLS] = build_wait_for_tools_tool(waiting)
-            toolset_inventory.register_tool_source(sources, WAIT_FOR_TOOLS, "native")
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         for name in picked:
             prefix, sep, bare = name.partition("_")
@@ -262,8 +256,9 @@ def _agent_tools(
         toolset_inventory.record_tools_unavailable_degraded(
             _ctx.active_app(), agent_def.id, sorted(unavailable), mount_failures=unavailable
         )
-    tools = [_recording_tool(tool) for tool in available.values()]
-    tools.extend(_recording_tool(tool) for tool in _python_tools(resolution, sources))
+    with _build_phase("tools.wrap"):
+        tools = [_recording_tool(tool) for tool in available.values()]
+        tools.extend(_recording_tool(tool) for tool in _python_tools(resolution, sources))
     return tools
 
 
@@ -406,8 +401,14 @@ def _agent_signature(
         inputs.append(("files", "User-provided PDF documents for this turn", list[dspy.File]))
     outputs = _ordered_fields(raw_outputs, [("answer", "User-facing answer", str)])
     structured = (
-        agent_def.structured_outputs if isinstance(agent_def.structured_outputs, Mapping) else {}
+        dict(agent_def.structured_outputs)
+        if isinstance(agent_def.structured_outputs, Mapping)
+        else {}
     )
+    # A workflow child hands state to the fold. The field stays off for an
+    # ordinary turn, and an agent that sets workflow_state false keeps it off.
+    if active_workflow_step() is not None and structured.get("workflow_state") is not False:
+        structured["workflow_state"] = True
 
     # CLEAN CONTRACT: workflow_state is the ONE load-bearing structured output --
     # a TYPED dict the adapter forces the model to emit, and the channel the
@@ -534,6 +535,26 @@ def _workflow_editor() -> dict[str, Any] | None:
     return dict(editor) if isinstance(editor, Mapping) else None
 
 
+def _deferred_tools_entry(program: Any, resolution: "Resolution", config: Any) -> str:
+    """Defer the program's large tool groups; the prompt entry naming them."""
+    from clio_agent.gact.agents.deferred_tools import apply_disclosure  # noqa: PLC0415
+    from clio_agent.gact.search_tools import listed_loaded_tools  # noqa: PLC0415
+
+    loaded = listed_loaded_tools(_ctx.active_app(), _ctx.active_session_id() or "")
+    window = _resolve_expert_context_window(config) or 0
+    return apply_disclosure(program, resolution, context_tokens=int(window), loaded=loaded)
+
+
+def _build_phase(name: str) -> Any:
+    """A nested bring-up phase of the module build (``gact/runtime/bringup_timing``)."""
+    from clio_agent.gact.runtime import bringup_timing  # noqa: PLC0415
+
+    app, sid = _ctx.active_app(), _ctx.active_session_id()
+    if app is None or not sid:
+        return contextlib.nullcontext()
+    return bringup_timing.timer_for_session(app, sid).phase(name)
+
+
 def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Resolution") -> Any:
     """Compile a resolved plugin agent into its running DSPy module."""
 
@@ -558,26 +579,29 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             self.kind = "react" if agent_def.module.get("kind", "react") == "react" else "predict"
             # Per-agent provider identity as data; the credential is resolved fresh
             # per forward() via ``self._resolved_spec.materialize``.
-            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
-            self._cred_resolver = CredentialResolver()
-            self.config = self._resolved_spec.materialize(self._cred_resolver)
+            with _build_phase("build.lm"):
+                self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+                self._cred_resolver = CredentialResolver()
+                self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.signature = _agent_signature(agent_def, include_images=True, include_files=True)
             self.tools: list[Any] = []
-            skill_rt = _skill_runtime.skill_runtime_for_agent(
-                _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
-            )
+            with _build_phase("build.skills"):
+                skill_rt = _skill_runtime.skill_runtime_for_agent(
+                    _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
+                )
             live = LiveToolScope()
             if self.kind == "react":
                 sources = cast(dict[str, str], {})
-                tools = _agent_tools(
-                    base_agent,
-                    agent_def,
-                    resolution,
-                    sources,
-                    **declared_native_capabilities(self.config),
-                    live=live,
-                )
+                with _build_phase("build.tools"):
+                    tools = _agent_tools(
+                        base_agent,
+                        agent_def,
+                        resolution,
+                        sources,
+                        **declared_native_capabilities(self.config),
+                        live=live,
+                    )
                 claimed = {row["name"] for row in resolution.tools if row["kind"] == "native"}
                 if claimed & {"spawn_agent_task", "spawn_agents_parallel", "fork"}:
                     spawn_tools = [
@@ -626,10 +650,12 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # THE assembly seam: every tool is observed by definition.
                 tools = instrument_tools(tools)
                 self.tools = tools
-                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, sources)
-                self.program = ClioReAct(
-                    self.signature, tools=tools, max_iters=_tool_user_agent_max_iters(agent_def)
-                )
+                with _build_phase("build.inventory"):
+                    toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, sources)
+                with _build_phase("build.program"):
+                    self.program = ClioReAct(
+                        self.signature, tools=tools, max_iters=_tool_user_agent_max_iters(agent_def)
+                    )
             else:
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
@@ -640,25 +666,25 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 "_clio_unlisted",
                 unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
             )
+            with _build_phase("build.deferred"):
+                deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
             # A spawn-requested BestOfN / Refine strategy wraps the program.
             strategy = _module_variants.session_strategy()
             if strategy is not None:
                 self.program = _module_variants.wrap_strategy(self.program, agent_def.id, strategy)
-            active_app = _ctx.active_app()
-            workspace_context = (
-                _runtime_active_workspace_context(active_app, session_id=_ctx.active_session_id())
-                if active_app is not None and self.kind == "react"
-                else ""
-            )
             # Progressive disclosure (#919): react agents get skill metadata and
             # load_skill; a tool-less agent gets the bodies.
             skills_context = (
                 skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
             )
+            with _build_phase("build.prompt"):
+                agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
+            # The same text for every session of this agent: the session's own facts
+            # (workspace, roots, machine, scratch) ride the conversation as the
+            # ``session_facts`` injection (gact/working_state.py), so the cached system
+            # prompt is shared across sessions.
             self.system_prompt = "\n\n".join(
-                part
-                for part in (agent_def.system_prompt.strip(), workspace_context, skills_context)
-                if part
+                part for part in (agent_prompt, deferred_entry, skills_context) if part
             )
 
         def forward(

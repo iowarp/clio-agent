@@ -6,7 +6,7 @@ the cohesive cluster that *grounds a turn's output in verifiable reality* and
 of truth for:
 
 * **Tool-result inspection** -- previewing, error-classifying, and idempotently
-  bounding individual tool results (:func:`_tool_result_preview`,
+  bounding individual tool results for the transcript (:func:`_tool_result_preview`,
   :func:`_tool_result_is_error`, :func:`_is_bounded_tool_result`,
   :func:`_bounded_tool_call_result`).
 * **Runtime provenance** -- non-secret provenance for the dynamic agent used this
@@ -15,7 +15,7 @@ of truth for:
 The module imports only leaves: stdlib, the pure trajectory-key primitives in
 :mod:`clio_agent.gact.workflow_state.merge`, and the transcript-bound resolver in
 :mod:`clio_agent.tools.mcp_result_projection` (the single source for
-``limits.tool_result_chars``, shared with the shell tool's result sizing, #887). ``_active_lm_model_ref`` (the active
+``limits.tool_result_chars``). ``_active_lm_model_ref`` (the active
 LM reference reader in :mod:`clio_agent.gact.providers.config`) is imported lazily
 inside :func:`_dynamic_agent_runtime_provenance` to keep this module free of any
 provider-package import at module top. It never imports :mod:`clio_agent.gact.app`.
@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 TOOL_RESULT_TRUNCATED_REASON = "tool_result_oversize"
+#: Typed reason: an oversize result's stream fields were cut for the transcript copy.
+TOOL_RESULT_STREAMS_CUT_REASON = "tool_result_streams_cut"
 
 
 # ------------------------------------------------------------------------- #
@@ -110,7 +112,14 @@ def _is_bounded_tool_result(value: Any) -> bool:
 
 
 def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None) -> Any:
-    """Return a JSON-safe bounded result payload for assistant metadata."""
+    """Return a JSON-safe bounded result payload for assistant metadata.
+
+    A result that models its own cut streams (a string ``X`` beside a boolean
+    ``X_truncated``: the shell and SSH results) keeps its shape: :func:`_cut_streams`
+    shortens those strings on a line boundary, so ``stdout`` stays a real string the
+    transcript can read (#887). Any other result over the bound becomes a
+    ``{preview, truncated, original_chars}`` envelope.
+    """
 
     if _is_bounded_tool_result(value):
         return value  # already bounded -> never re-wrap (idempotent)
@@ -119,6 +128,14 @@ def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None
     preview = _tool_result_preview(value)
     if len(preview) <= max_result_chars:
         return value
+    if isinstance(value, Mapping) and (cut := _cut_streams(value, max_result_chars)):
+        logger.info(
+            "tool result bounded reason=%s original_chars=%d preview_chars=%d",
+            TOOL_RESULT_STREAMS_CUT_REASON,
+            len(preview),
+            max_result_chars,
+        )
+        return cut
     logger.info(
         "tool result bounded reason=%s original_chars=%d preview_chars=%d",
         TOOL_RESULT_TRUNCATED_REASON,
@@ -130,6 +147,51 @@ def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None
         "truncated": True,
         "original_chars": len(preview),
     }
+
+
+def _stream_paths(value: Mapping[str, Any], depth: int = 0) -> list[tuple[str, ...]]:
+    """Paths of the string fields ``X`` that sit beside a boolean ``X_truncated``."""
+    paths: list[tuple[str, ...]] = []
+    for key, item in value.items():
+        if isinstance(item, str) and isinstance(value.get(f"{key}_truncated"), bool):
+            paths.append((str(key),))
+        elif isinstance(item, Mapping) and depth < 2:
+            paths += [(str(key), *path) for path in _stream_paths(item, depth + 1)]
+    return paths
+
+
+def _cut_streams(value: Mapping[str, Any], max_chars: int) -> dict[str, Any] | None:
+    """``value`` with its stream fields cut to fit ``max_chars``, or ``None`` if they cannot.
+
+    Each cut stream keeps whole lines, its ``X_truncated`` becomes true and
+    ``X_original_chars`` records its full length; the model lane and the trace keep the
+    whole result.
+    """
+    paths = _stream_paths(value)
+    if not paths:
+        return None
+    cut: dict[str, Any] = json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    for _ in range(4 * len(paths) + 4):
+        over = len(_tool_result_preview(cut)) - max_chars
+        if over <= 0:
+            return cut
+        *parents, key = max(paths, key=lambda path: len(_field(cut, path)))
+        owner = _field(cut, tuple(parents)) if parents else cut
+        text = owner[key]
+        if not text:
+            return None
+        kept = text[: max(0, len(text) - over - 64)]  # 64: room for the added fields
+        newline = kept.rfind("\n")
+        owner[key] = kept[: newline + 1] if newline >= 0 else kept
+        owner[f"{key}_truncated"] = True
+        owner.setdefault(f"{key}_original_chars", len(text))
+    return None
+
+
+def _field(value: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    for key in path:
+        value = value[key]
+    return value
 
 
 # ------------------------------------------------------------------------- #
@@ -214,7 +276,6 @@ def _dynamic_agent_runtime_provenance(
             {
                 "parent_id": agent_def.parent_id,
                 "skills": list(agent_def.skills),
-                "commands": list(agent_def.commands),
             }
         )
     return payload

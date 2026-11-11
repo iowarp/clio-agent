@@ -222,6 +222,43 @@ async def emit_chunk(
     )
 
 
+async def emit_canvas(
+    state: "TurnState",
+    text: str,
+    agent_id: Optional[str] = None,
+    step: int = 0,
+    shape: str = "snapshot",
+) -> None:
+    """Publish one diffusion step's whole answer canvas as ``message.canvas``.
+
+    Replace semantics: the client overwrites the message's live canvas with ``text``
+    and drops it when the stream's final text arrives as an ordinary part. ``shape``
+    is ``snapshot`` for a diffusion step, or ``append`` when the steps read as
+    appended deltas and ``text`` is the accumulated answer so far. The event
+    is ``transient`` -- never written to the transcript ledger, the replay history or
+    any store -- so reloads and exports carry only the final text.
+    """
+
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+
+    transcript = state.transcript
+    label = _stream_agent(state, agent_id)
+    if transcript.frozen:
+        transcript._audit_late_op("emit_canvas", agent_id=label)
+        return
+    payload = {
+        "turn_id": state.turn_id,
+        "message_id": transcript.ensure_message(),
+        "agent_id": label,
+        "step": int(step),
+        "shape": shape,
+        "text": text,
+    }
+    state.app.state.bus.publish(
+        Event(type="message.canvas", session_id=state.sid, payload=payload, transient=True)
+    )
+
+
 def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> None:
     """Bind this turn's loop + chat publisher onto the unified LM token highway (#693).
 
@@ -237,7 +274,10 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
     """
 
     try:
-        from clio_agent.runtime.lm_activity import set_live_chunk_emitter  # noqa: PLC0415
+        from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
+            set_live_canvas_emitter,
+            set_live_chunk_emitter,
+        )
 
         # Pass the transcript's SYNCHRONOUS tap-dedup recorder alongside the async
         # emitter (#732): the tap records the streamed field text in-thread before
@@ -252,6 +292,8 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
             state.transcript.record_streamed_field_text,
             partial(begin_model_call, state),
         )
+        # The replace lane for snapshot-shaped (diffusion) streams.
+        set_live_canvas_emitter(partial(emit_canvas, state))
     except Exception:  # noqa: BLE001,S110 - live-stream wiring is best-effort
         pass
 

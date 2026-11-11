@@ -712,7 +712,7 @@ Source: server agent catalog (GET /v1/agents)
 
 
 def boot_client(
-    port: int = 8100,
+    port: int | None = None,
     host: str = "127.0.0.1",
     *,
     console: Console | None = None,
@@ -725,7 +725,7 @@ def boot_client(
     exit — never a silent fallback.
 
     Args:
-        port: TCP port to probe/serve on (default 8100).
+        port: TCP port to probe/serve on (default: the configured ``gact.port``).
         host: Bind/probe host (default ``127.0.0.1``).
         console: Optional console for the structured error (tests inject one).
 
@@ -799,7 +799,7 @@ def render_health(console: Console, health: Health) -> None:
 # ============================================================================
 
 
-def run_cli(verbose: bool = False, *, port: int = 8100, host: str = "127.0.0.1") -> None:
+def run_cli(verbose: bool = False, *, port: int | None = None, host: str = "127.0.0.1") -> None:
     """Boot the server-backed client and run the interactive CLI.
 
     Args:
@@ -814,7 +814,7 @@ def run_cli(verbose: bool = False, *, port: int = 8100, host: str = "127.0.0.1")
         client.close()
 
 
-def run_serve(*, host: str = "127.0.0.1", port: int = 8100) -> None:
+def run_serve(*, host: str = "127.0.0.1", port: int | None = None) -> None:
     """Run the GACT server IN THE FOREGROUND on this process.
 
     ``clio-agent serve`` is the single front door's serve verb: it runs the
@@ -837,7 +837,7 @@ def run_query(
     session_title: str = "CLI query",
     json_output: bool = False,
     verbose: bool = False,
-    port: int = 8100,
+    port: int | None = None,
     host: str = "127.0.0.1",
 ) -> int:
     """Non-interactive single-question mode over the server-backed client."""
@@ -895,7 +895,7 @@ def main() -> None:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
+        version=f"clio-agent {__version__}",  # not %(prog)s: 3.14 derives it from __main__
         help="Show the installed clio-agent version and exit",
     )
     parser.add_argument(
@@ -953,7 +953,7 @@ def main() -> None:
         help="Accepted for CLI parity (Codex sandbox setup pops a native UAC prompt).",
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
-    parser.add_argument("--port", type=int, default=8100, help="Server port")
+    parser.add_argument("--port", type=int, default=None, help="Server port (default: gact.port)")
     parser.add_argument(
         "--tune",
         type=str,
@@ -963,7 +963,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
     from clio_agent.runtime import trace  # noqa: PLC0415
 
     load_project_env_file()

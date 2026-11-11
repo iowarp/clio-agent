@@ -25,6 +25,7 @@ from clio_agent.gact.artifacts.model_identity import take_call_artifacts
 from clio_agent.gact.artifacts.observer_bridge import observer_call_id
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.transforms import ARTIFACT_TRANSFORM_RECORDED_EVENT
+from clio_agent.gact.highway_writer import flush_session
 from clio_agent.tools import execution
 from tests.test_gact.task_records import active_turn_fixture, record_assignment_fixture
 
@@ -42,8 +43,12 @@ def observation_world(
         workspace = client.post(
             "/v1/workspaces", json={"name": "observations", "root_path": str(tmp_path)}
         )
-        assert workspace.status_code == 201
-        wid = workspace.json()["id"]
+        # One workspace per folder (#1771): reuse the workspace already pinning it.
+        assert workspace.status_code in (201, 409), workspace.text
+        body = workspace.json()
+        wid = (
+            body["error"]["details"]["workspace_id"] if workspace.status_code == 409 else body["id"]
+        )
         response = client.post("/v1/sessions", json={"workspace_id": wid})
         assert response.status_code == 200
         sid = response.json()["id"]
@@ -68,6 +73,10 @@ def test_cold_async_observer_is_durable_responsive_and_returns_call_context(
     monkeypatch: pytest.MonkeyPatch,
     output: bool,
 ) -> None:
+    # With highway-only events recorded behind the call (``arc.highway_deferred``, the
+    # default) the call does not wait for this record: the synchronous mode is pinned here,
+    # the deferred one in test_deferred_records_never_hold_the_call_and_still_land.
+    monkeypatch.setenv("CLIO_ARC_HIGHWAY_DEFERRED", "0")
     app, wid, sid = observation_world
     entered, release = threading.Event(), threading.Event()
     real_record = app.state.arc.record_semantic_event
@@ -147,6 +156,7 @@ def test_cold_async_observer_is_durable_responsive_and_returns_call_context(
         assert any(item["path"] == str(destination) for item in artifacts)
     else:
         assert artifacts == []
+    flush_session(app, sid)  # tool-call and transform events are recorded behind the call
     segments = list(app.state.arc._live.iter_session_event_segments(sid))
     transforms = [
         item
@@ -171,6 +181,7 @@ def test_cancelled_async_observation_retires_its_core_worker_before_returning(
     monkeypatch: pytest.MonkeyPatch,
     phase: str,
 ) -> None:
+    monkeypatch.setenv("CLIO_ARC_HIGHWAY_DEFERRED", "0")  # the synchronous mode (see above)
     app, _wid, sid = observation_world
     entered, release, retired = threading.Event(), threading.Event(), threading.Event()
     real_record = app.state.arc.record_semantic_event
@@ -305,6 +316,7 @@ def test_interleaved_async_calls_keep_distinct_started_and_completed_identities(
         assert starts[0].input["label"] == label
         assert ends[0].structured_content == {"label": label}
         assert ends[0].duration_ms >= 0
+    flush_session(app, sid)  # tool-call and transform events are recorded behind the call
     segments = list(app.state.arc._live.iter_session_event_segments(sid))
     retained = [
         item.content["subject"]["call_id"]
@@ -313,3 +325,75 @@ def test_interleaved_async_calls_keep_distinct_started_and_completed_identities(
     ]
     assert sorted(retained) == sorted(identities.values())
     assert not getattr(app.state, "artifact_transform_failures", [])
+
+
+@pytest.mark.parametrize("phase", ["started", "completed"])
+def test_deferred_records_never_hold_the_call_and_still_land(
+    observation_world: tuple[FastAPI, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    """With the highway writer, a held ``tool.call.*`` record never holds the call.
+
+    The call returns (or, cancelled, settles) while clio-core has not confirmed its
+    record; the record lands once released, before the session's barrier returns.
+
+    SABOTAGE: return ``False`` from ``highway_writer.defer_event`` for deferred types and
+    the call waits for the held record (it never finishes while held).
+    """
+    monkeypatch.setenv("CLIO_ARC_HIGHWAY_DEFERRED", "1")
+    app, _wid, sid = observation_world
+    entered, release = threading.Event(), threading.Event()
+    arc = app.state.arc
+    real_on, real_record = arc.on_semantic_event, arc.record_semantic_event
+
+    def hold(event: Any) -> None:
+        if event.event_type == "tool.call." + phase:
+            entered.set()
+            assert release.wait(10), "the record was never released"
+
+    def on_event(event: Any) -> Any:
+        hold(event)
+        return real_on(event)
+
+    def record(event: Any) -> Any:
+        hold(event)
+        return real_record(event)
+
+    monkeypatch.setattr(arc, "on_semantic_event", on_event)
+    monkeypatch.setattr(arc, "record_semantic_event", record)
+
+    async def probe() -> str:
+        """Return at once."""
+        return "done"
+
+    (tool,) = instrument_tools(
+        [
+            native_tool(
+                probe,
+                name="deferred_observation",
+                args={},
+                desc="Observe deferral",
+                presentation="text",
+                domain="resources",
+            )
+        ]
+    )
+
+    async def exercise() -> str:
+        result = await asyncio.wait_for(tool.acall(), timeout=5)  # not held by the record
+        await _entered(entered)  # the writer is holding the record now
+        return result
+
+    try:
+        with active_turn_fixture(app, sid):
+            result = asyncio.run_coroutine_threadsafe(exercise(), app.state.mcp_app_loop).result(
+                timeout=15
+            )
+        assert result == "done"
+    finally:
+        release.set()
+    flush_session(app, sid, timeout=10)
+    segments = list(arc._live.iter_session_event_segments(sid))
+    types = [item.content.get("event_type") for item in segments]
+    assert "tool.call.started" in types and "tool.call.completed" in types

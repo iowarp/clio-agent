@@ -17,6 +17,7 @@ itself (:mod:`clio_agent.gact.routes.provider_catalog_routes`).
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -27,6 +28,11 @@ from clio_agent.gact.routes.provider_auth_claude import (
     claude_complete,
     claude_start,
     claude_status,
+)
+from clio_agent.gact.routes.provider_auth_copilot import (
+    copilot_complete,
+    copilot_start,
+    copilot_status,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.api_key_store import ProviderApiKeyStore
@@ -39,7 +45,12 @@ StartHandler = Callable[
     [LMProviderPreset, dict[str, Any], Any, list[LMProviderPreset]], Awaitable[dict[str, Any]]
 ]
 CompleteHandler = StartHandler
-StatusHandler = Callable[[LMProviderPreset, str, Any, list[LMProviderPreset]], dict[str, Any]]
+#: A status poll; one that must talk to the sign-in service (Copilot's GitHub
+#: device code) is async so it never blocks the event loop.
+StatusHandler = Callable[
+    [LMProviderPreset, str, Any, list[LMProviderPreset]],
+    dict[str, Any] | Awaitable[dict[str, Any]],
+]
 LogoutHandler = Callable[[LMProviderPreset, Any, list[LMProviderPreset]], Awaitable[dict[str, Any]]]
 
 
@@ -302,21 +313,25 @@ def _clear_api_key(preset: LMProviderPreset, app: Any) -> dict[str, Any]:
 
 
 # Claude Code drives its own CLI sign-in (#1454); CLIO never touches its credentials,
-# so there is still no Claude Code logout here (see ``supports_logout``).
+# so there is still no Claude Code logout here (see ``supports_logout``). Copilot
+# reuses CLIO's GitHub sign-in, whose single sign-out lives in Settings > Sources.
 _START: dict[str, StartHandler] = {
     "argonne": _argonne_start,
     "codex": _codex_start,
     "claude_code": claude_start,
+    "copilot": copilot_start,
 }
 _COMPLETE: dict[str, CompleteHandler] = {
     "argonne": _argonne_complete,
     "codex": _codex_complete,
     "claude_code": claude_complete,
+    "copilot": copilot_complete,
 }
 _STATUS: dict[str, StatusHandler] = {
     "argonne": _argonne_status,
     "codex": _codex_status,
     "claude_code": claude_status,
+    "copilot": copilot_status,
 }
 _LOGOUT: dict[str, LogoutHandler] = {"argonne": _argonne_logout, "codex": _codex_logout}
 
@@ -377,7 +392,10 @@ async def handle_auth_action(
                 405, error="unsupported", message=f"provider '{preset.id}' has no sign-in to poll."
             )
         flow_id = str(body.get("flow_id", ""))
-        return {"provider_id": preset.id, **status_handler(preset, flow_id, app, presets)}
+        polled = status_handler(preset, flow_id, app, presets)
+        if inspect.isawaitable(polled):
+            polled = await polled
+        return {"provider_id": preset.id, **polled}
     if action == "logout":
         logout_handler = _LOGOUT.get(preset.provider)
         if logout_handler is None:

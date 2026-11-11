@@ -8,6 +8,7 @@ from typing import cast
 from uuid import uuid4
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
+    CLIO_LAUNCHER,
     LAUNCHER_PRELUDE,
     claim_command,
     install_command,
@@ -19,11 +20,13 @@ from clio_agent.gact.infrastructure.controller_source import (
     controller_commit,
     deployment_version,
 )
+from clio_agent.gact.infrastructure.gpu_devices import LAUNCH_ACTIONS, check_gpu_devices
 from clio_agent.gact.infrastructure.gpu_share import share_launch
 from clio_agent.gact.infrastructure.model_instances import (
     ROUTER_SERVICE,
     engine_of,
     instance_label,
+    instance_name,
     is_named_instance,
     validate_service_id,
 )
@@ -228,18 +231,29 @@ def service_definitions(
             )
         ],
     )
-    named: list[ManagedServiceDefinition] = []
+    named: dict[str, list[ManagedServiceDefinition]] = {}
     for service_id in dict.fromkeys(instances):
         if is_named_instance(service_id) and engine_of(service_id) in MODEL_RUNTIME_SERVICES:
             engine = model_runtime_definition(engine_of(service_id), facts)
-            label = instance_label(engine.label, service_id)
-            named.append(engine.model_copy(update={"id": service_id, "label": label}))
+            named.setdefault(engine.id, []).append(
+                engine.model_copy(
+                    update={
+                        "id": service_id,
+                        "label": instance_label(engine.label, service_id),
+                        "supports_instances": False,
+                        "instance_of": engine.id,
+                        "instance_name": instance_name(service_id),
+                    }
+                )
+            )
     return [
         model_runtime_definition("vllm", facts),
-        *named,
+        *named.get("vllm", []),
         router_definition(facts),
         model_runtime_definition("llama_cpp", facts),
+        *named.get("llama_cpp", []),
         model_runtime_definition("ollama", facts),
+        *named.get("ollama", []),
         *monitoring_definitions(facts),
         web_search_definition(facts),
         searxng_definition(facts),
@@ -324,7 +338,11 @@ def build_driver_plan(
         # The model-runtime driver checks its own compatibility, so a missing
         # container runtime surfaces as the typed RuntimeUnavailableError. The
         # context is sized around it (context_sizing.deployment), and a vLLM
-        # GPU share is its memory utilization (gpu_share).
+        # GPU share is its memory utilization (gpu_share). A GPU pin must name
+        # this host's GPUs (gpu_devices), checked against the facts just probed.
+        if action in LAUNCH_ACTIONS:
+            check_gpu_devices(engine, configuration, facts.gpus)
+
         def model_plan(sized: dict[str, str]) -> DriverPlan:
             return build_model_runtime_plan(
                 service_id=service_id,
@@ -504,7 +522,7 @@ def _clio_agent_plan(
             program="bash",
             args=[
                 "-lc",
-                LAUNCHER_PRELUDE + 'export CLIO_PORT="$2"; ' + script,
+                LAUNCHER_PRELUDE + 'export CLIO_PORT="$2"; ' + CLIO_LAUNCHER + script,
                 "clio",
                 root,
                 str(port),
@@ -514,9 +532,9 @@ def _clio_agent_plan(
     if action == "status":
         return DriverPlan((status_command(root, port),), connection_port=port)
     if action == "logs":
-        return DriverPlan((launcher('"$bin/clio" logs'),), connection_port=port)
+        return DriverPlan((launcher("clio_launcher logs"),), connection_port=port)
     if action == "stop":
-        return DriverPlan((launcher('"$bin/clio" stop'),))
+        return DriverPlan((launcher("clio_launcher stop"),))
     if action == "uninstall":
         return DriverPlan(
             (
@@ -524,7 +542,7 @@ def _clio_agent_plan(
                     'marker="$root/.clio-managed-install"; '
                     'if [ ! -f "$marker" ]; then '
                     "echo 'Refusing to remove an unmarked install root' >&2; exit 73; fi; "
-                    '"$bin/clio" stop || true; rm -rf -- "$root"'
+                    'clio_launcher stop || true; rm -rf -- "$root"'
                 ),
             )
         )
@@ -570,6 +588,7 @@ def _clio_agent_plan(
         str(uuid4()),
         configuration.get("keep_running") == "true",
         configuration.get("desktop_id", ""),
+        target.label,
     )
     commands.append(start_owned_command(launch))
     return DriverPlan(

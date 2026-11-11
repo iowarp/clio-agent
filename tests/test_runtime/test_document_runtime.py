@@ -92,7 +92,7 @@ def test_python_failure_never_advertises_ready_runtime(
     )
     monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
 
-    def fail(cache: Path, uv: str) -> tuple[Path, dict[str, Any]]:
+    def fail(cache: Path, uv: str, **kwargs: Any) -> tuple[Path, dict[str, Any]]:
         raise runtime.DocumentRuntimeError("offline: dependency missing")
 
     monkeypatch.setattr(runtime, "_python_runtime", fail)
@@ -112,7 +112,10 @@ def test_javascript_failure_keeps_verified_python_and_reports_partial(
         "native_tools": {"soffice": {"status": "missing"}, "tesseract": {"status": "missing"}},
         "python": "prepared-python",
     }
-    monkeypatch.setattr(runtime, "_python_runtime", lambda cache, uv: (cache / "python", inventory))
+    monkeypatch.setattr(
+        runtime, "_python_runtime", lambda cache, uv, **kwargs: (cache / "python", inventory)
+    )
+    monkeypatch.setattr(runtime, "_probe", lambda python, **kwargs: inventory)
 
     def fail(*args: Any, **kwargs: Any) -> tuple[Path, Path]:
         raise runtime.DocumentRuntimeError("module resolution failed")
@@ -125,6 +128,91 @@ def test_javascript_failure_keeps_verified_python_and_reports_partial(
     assert result["capabilities"]["office_render_recalculate"] == "missing"
     assert Path(result["output_directory"]).is_relative_to(tmp_path)
     assert Path(result["output_directory"]).is_relative_to(tmp_path / ".tmp")
+
+
+def test_node_prepares_while_full_python_probe_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node starts from the installed environment before the slow import probe ends."""
+    from threading import Event
+
+    monkeypatch.setattr(
+        FileAccessPolicy, "from_env", classmethod(lambda cls: FileAccessPolicy((tmp_path,)))
+    )
+    monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
+    discovered = {
+        "node": str(tmp_path / "node"),
+        "native_tools": {
+            "soffice": {"status": "not_checked"},
+            "tesseract": {"status": "not_checked"},
+        },
+    }
+    probed = {
+        "node": str(tmp_path / "node"),
+        "native_tools": {"soffice": {"status": "available"}, "tesseract": {"status": "missing"}},
+    }
+    calls: list[bool] = []
+
+    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False) -> Any:
+        calls.append(discovery_only)
+        return cache / "python", dict(discovered)
+
+    node_started = Event()
+
+    def probe(python: Path, **kwargs: Any) -> dict[str, Any]:
+        assert node_started.wait(10), "the import probe blocked Node preparation"
+        return dict(probed)
+
+    def javascript(cache: Path, workspace: Path, inventory: dict[str, Any], **kwargs: Any) -> Any:
+        assert inventory["node"] == discovered["node"]
+        node_started.set()
+        return tmp_path / "work", tmp_path / "pnpm"
+
+    monkeypatch.setattr(runtime, "_python_runtime", python_runtime)
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_javascript_runtime", javascript)
+    monkeypatch.setattr(runtime, "publish_environment", lambda *args: None)
+    result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
+    assert calls == [True]
+    assert result["status"] == "ready" and result["javascript"]["status"] == "ready"
+    assert result["capabilities"]["office_render_recalculate"] == "available"
+
+
+def test_failed_full_probe_repairs_after_node_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe failure still gets the locked repair, once nothing runs from the environment."""
+    monkeypatch.setattr(
+        FileAccessPolicy, "from_env", classmethod(lambda cls: FileAccessPolicy((tmp_path,)))
+    )
+    monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
+    tools = {"soffice": {"status": "missing"}, "tesseract": {"status": "missing"}}
+    order: list[str] = []
+
+    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False) -> Any:
+        order.append("discover" if discovery_only else "repair")
+        return cache / "python", {
+            "node": "node",
+            "native_tools": tools,
+            "repaired": not discovery_only,
+        }
+
+    def probe(python: Path, **kwargs: Any) -> dict[str, Any]:
+        raise runtime.DocumentRuntimeError("pandas failed to import")
+
+    def javascript(*args: Any, **kwargs: Any) -> Any:
+        order.append("node")
+        return tmp_path / "work", tmp_path / "pnpm"
+
+    monkeypatch.setattr(runtime, "_python_runtime", python_runtime)
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_javascript_runtime", javascript)
+    monkeypatch.setattr(runtime, "publish_environment", lambda *args: None)
+    result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
+    assert order == ["discover", "node", "repair"]
+    assert result["repaired"] is True and result["javascript"]["status"] == "ready"
 
 
 def test_python_cache_reuse_still_probes_imports(
@@ -140,6 +228,64 @@ def test_python_cache_reuse_still_probes_imports(
     result, inventory = runtime._python_runtime(tmp_path, "missing-uv")
     assert result == python
     assert inventory["verified"]
+
+
+def _venv_from(tmp_path: Path, home: Path) -> Path:
+    import os
+
+    environment = tmp_path / "cache" / "python"
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (environment / "stale-marker").touch()
+    (environment / "pyvenv.cfg").write_text(f"home = {home}\nversion_info = 3.14.0\n")
+    return python
+
+
+@pytest.mark.parametrize("old_copy", ["gone", "still-present"])
+def test_moved_app_rebuilds_venv_on_its_own_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_copy: str
+) -> None:
+    """A venv built by a translocated or older app copy is rebuilt, never reused or wedged.
+
+    ``uv venv`` refuses an existing directory, so the stale one must go first; a still
+    present old copy must not keep serving its interpreter either.
+    """
+    old_home = tmp_path / "Old.app" / "python" / "bin"
+    if old_copy == "still-present":
+        old_home.mkdir(parents=True)
+    python = _venv_from(tmp_path, old_home)
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        assert not (python.parent.parent / "stale-marker").exists()
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(runtime, "_run", run)
+    monkeypatch.setattr(runtime, "bundled_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        runtime, "bundled_wheel_requirements", lambda *args: tmp_path / "requirements.txt"
+    )
+    monkeypatch.setattr(runtime, "_probe", lambda path: {"python": str(path)})
+    runtime._python_runtime(tmp_path / "cache", "uv")
+    assert commands[0][:2] == ["uv", "venv"]
+    assert commands[0][commands[0].index("--python") + 1] == runtime.sys.executable
+    assert "--reinstall" not in commands[1]
+
+
+def test_venv_from_this_interpreter_is_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The base check accepts the running interpreter, so a warm cache never rebuilds."""
+    import sys
+
+    python = _venv_from(tmp_path, Path(sys.executable).resolve().parent)
+    monkeypatch.setattr(runtime, "_run", lambda *args, **kwargs: pytest.fail("rebuilt"))
+    monkeypatch.setattr(runtime, "_probe", lambda path: {"python": str(path)})
+    result, _ = runtime._python_runtime(tmp_path / "cache", "uv")
+    assert result == python
+    assert (python.parent.parent / "stale-marker").exists()
 
 
 def test_execution_discovery_probes_current_files_each_time(
@@ -287,3 +433,74 @@ def test_failed_helper_exit_retains_manifest_result(
     assert seen["env"]["TEMP"] == str(tmp_path / ".tmp")
     assert seen["env"]["CLIO_DOCUMENT_SOFFICE"] == "prepared-soffice"
     assert seen["env"]["CLIO_DOCUMENT_CONFINED"] == "1"
+
+
+def _npm_tarball(path: Path, files: dict[str, str]) -> str:
+    import hashlib
+    import io
+    import tarfile
+
+    with tarfile.open(path, "w:gz") as archive:
+        for name, data in files.items():
+            member = tarfile.TarInfo(f"package/{name}")
+            member.size = len(data.encode())
+            archive.addfile(member, io.BytesIO(data.encode()))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("downloads", ["valid", "wrong-version", "tampered", "absent"])
+def test_installer_downloaded_pnpm_replaces_the_registry_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloads: str
+) -> None:
+    """The installer's pinned pnpm tarballs unpack offline; anything else uses the registry."""
+    folder = tmp_path / "installer-downloads"
+    folder.mkdir()
+    host = "@pnpm/exe.darwin-arm64"
+    monkeypatch.setattr(runtime, "_pnpm_host_package", lambda: host)
+    version = runtime.PNPM_VERSION if downloads != "wrong-version" else "old"
+    wrapper = {
+        "package.json": json.dumps({"version": version, "bin": {"pnpm": "pnpm"}}),
+        "pnpm": "#!/usr/bin/env node",
+    }
+    pins = {
+        "pnpm": _npm_tarball(folder / runtime.pnpm_tarball("pnpm"), wrapper),
+        host: _npm_tarball(
+            folder / runtime.pnpm_tarball(host), {"package.json": "{}", "pnpm": "native"}
+        ),
+    }
+    monkeypatch.setattr(runtime, "PNPM_PACKAGES", pins)
+    if downloads == "tampered":
+        (folder / runtime.pnpm_tarball(host)).write_bytes(b"changed")
+    if downloads != "absent":
+        monkeypatch.setenv("CLIO_INSTALL_DOWNLOADS", str(folder))
+    node = tmp_path / "node" / "bin" / "node"
+    npm = tmp_path / "node/lib/node_modules/npm/bin/npm-cli.js"
+    npm.parent.mkdir(parents=True)
+    npm.touch()
+    modules = tmp_path / "cache/javascript-tools/node_modules"
+    installs: list[list[str]] = []
+    messages: list[str] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        if "--prefix" in command:
+            installs.append(command)
+            (modules / "pnpm").mkdir(parents=True, exist_ok=True)
+            (modules / "pnpm/pnpm").write_text("registry")
+            (modules / "pnpm/package.json").write_text(
+                json.dumps({"version": runtime.PNPM_VERSION, "bin": {"pnpm": "pnpm"}})
+            )
+        return runtime.PNPM_VERSION if "--version" in command else ""
+
+    monkeypatch.setattr(runtime, "_run", run)
+    _, pnpm = runtime._javascript_runtime(
+        tmp_path / "cache", tmp_path, {"node": str(node)}, progress=messages.append
+    )
+    assert pnpm == modules / "pnpm/pnpm"
+    if downloads == "valid":
+        assert installs == []
+        assert pnpm.read_text() == "#!/usr/bin/env node"
+        assert (modules / host / "pnpm").read_text() == "native"
+    else:
+        assert len(installs) == 1
+        assert pnpm.read_text() == "registry"
+        assert any("could not be used" in m for m in messages) == (downloads == "wrong-version")

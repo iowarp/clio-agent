@@ -125,7 +125,6 @@ DYNAMIC_SECRET_VARS: dict[str, str] = {
 # RESOLVED decision 4). Keyed by variable name -> (owner, note).
 OWNED_ELSEWHERE: dict[str, tuple[str, str]] = {
     "CLIO_GACT_URL": ("gact-tui", "Base URL the TUI/desktop client dials the gact server on."),
-    "CLIO_PORT": ("gact-tui", "Port the desktop supervisor attaches to (raw server uses --port)."),
     "CLIO_SESSION_ID": ("gact-tui", "Session id the client pins a conversation to."),
     "CLIO_WORKSPACE_ID": ("gact-tui", "Workspace id the client scopes requests to."),
     "CLIO_RUN_LIVE": ("test-harness", "Opt-in flag for live-provider integration tests."),
@@ -140,6 +139,7 @@ _CAST_TYPES: dict[str, str] = {
     "as_int": "int",
     "as_float": "float",
     "as_csv": "list",
+    "as_mapping": "mapping",
     "as_str": "str",
 }
 

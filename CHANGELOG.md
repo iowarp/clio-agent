@@ -6,6 +6,280 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6-beta.1] - 2026-11-11
+
+### Upgrading from 0.9.5.1 or earlier
+
+**This release cannot open the data CLIO 0.9.5.1 or older saved.** Conversations,
+memory and artifacts kept in CLIO's store (clio-core) by 0.9.5.1, or by an earlier
+development build, do not show after the upgrade, and there is no converter. Files in
+your workspaces are not affected.
+
+- **The installer handles it.** `install.sh` and `install.ps1` check the store itself
+  before changing it. If 0.9.5.1 or older wrote it, they say so, show where it will be
+  kept, and ask "Move it aside now?" (yes by default). Without a terminal, or with
+  `--reset-old-data` (`-ResetOldData`), they move it and print what moved where. If
+  they cannot tell, they say so and move nothing unless you answer yes. If CLIO is
+  running, they move nothing and tell you to stop it and run the installer again.
+- **By hand**, for an upgrade made without the installer: stop CLIO (`clio stop`, or
+  quit CLIO Desktop), then run `clio reset-store` (or `clio-agent reset-store`).
+  `clio store-check` only says which version wrote your data. To do it without the
+  command, rename the `cte` folder in CLIO's data folder (for example to
+  `cte-before-<version>`) and any `sessions.json` the message names; `/v1/health`,
+  `clio-agent doctor` and `clio store-check` print the exact paths.
+- **Nothing is deleted.** The store is renamed on the same disk, to
+  `<data dir>/cte-before-<version>-<date>/hosts/<host>` (or beside the folder set as
+  `arc.cte.dir`); an old `sessions.json` conversation list, if there is one, is renamed
+  beside itself so the new store does not list conversations whose messages moved. If
+  a converter is ever written, the old data is still there; moved back, it opens
+  in CLIO 0.9.5.1 again.
+- **If CLIO starts on old data anyway**, it does not open it and writes nothing into
+  it: `/v1/health` and `clio-agent doctor` show an `arc_store_format` row (reason
+  `arc_store_format_old`) that says the data is from CLIO 0.9.5.1 or older and how to
+  move it aside, and the conversation list answers with the same message.
+  `clio-agent migrate` refuses such a store (exit 5).
+
+### Reconnect Google Drive after upgrading
+
+Drive sign-in has moved to a new Google client built into CLIO. If you connected
+Google Drive with 0.9.5.1 or earlier, you may need to sign in to Drive again: open
+**Connect data**, choose your Google account and select **Log in**. Your Drive
+sources keep their folders and settings and work again once you have signed in;
+nothing else needs to change. Distributors who set `CLIO_STORAGE_GOOGLE_CLIENT_ID` /
+`CLIO_STORAGE_GOOGLE_CLIENT_SECRET` are not affected.
+
+Google is still verifying the new client. Until it finishes, Drive sign-in works only
+for Google accounts the CLIO team has added; if Google refuses your sign-in, ask your
+CLIO contact to add your account.
+
+Known issue: on a fresh install with no conversations yet, attaching a newly connected
+Drive folder stops at "Choose a conversation to track this work"
+([iowarp/gact-tui#873](https://github.com/iowarp/gact-tui/issues/873)). Start a
+conversation first, then attach the folder. Signing in and existing Drive sources are
+not affected.
+
+### Added
+
+- `POST /v1/sessions/{sid}/move` with `{"workspace_id": "<target>"}` moves a
+  conversation or user branch to another workspace, keeping its session id, and
+  answers the moved session (v2/v3) after publishing `session.updated`. Its delegated
+  agent sessions and side sessions move with it, along with its tool-output folder.
+  User branches, workspace files, artifacts and workspace grants stay where they are.
+  Same workspace: `200`, nothing changes. Unknown session or workspace: `404
+  not_found`. Agent or side session: `409 move_not_allowed`. Turn or task active:
+  `409 session_has_active_work`. Advertised as `x_clio_session_move`.
+- `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio
+  store-check` / `clio reset-store`): which CLIO wrote this machine's store, and moving
+  it aside unchanged. Exit status of `store-check`: 0 nothing to do, 3 CLIO is running,
+  4 the store would not open, 5 written by 0.9.5.1 or older, 6 cannot tell.
+- `GET /v1/health` and `clio-agent doctor` carry an `arc_store_format` row; a server
+  started on a store written by 0.9.5.1 or older refuses it typed
+  (`arc_store_format_old`), and session reads answer `503 transcript_not_ready` with
+  that reason and the same message.
+- The workspace file viewer opens HDF5 files: `GET /v1/workspaces/{wid}/h5grove/`
+  `meta`, `attr`, `data`, `stats` and `paths` serve h5grove's API from clio-agent
+  itself (new dependency `h5grove`), advertised as `x_clio_hdf5_viewer`. Files
+  resolve as `/files/read` does, without its whole-file size cap; each slice is
+  bounded instead (`413 hdf5_selection_too_large`). External links, soft links and
+  virtual datasets are followed only into the workspace
+  (`403 hdf5_link_outside_workspace`, `hdf5_virtual_source_outside_workspace`)
+  (#1834).
+- `run_code(code, background=False, label="")`: the agent writes a Python script that
+  calls its own tools (`await tools.<group>.<tool>(...)`) in a persistent kernel and
+  reads only what it prints. Running a script is one approved action; its nested calls
+  are decided by the permission gate under the script's grant (covered in the
+  `code.covering_postures` modes; in `ask`, one question per script with the answer
+  `allow_script`, "Allow for the rest of this script"). A script keeps the approval mode
+  it was approved under. In plan mode it runs read-only where the sandbox enforces the
+  write fence, else it is refused with `code_plan_mode_unconfined`.
+- Background scripts: `run_code(background=True)` returns a task handle of kind `Code`
+  at once. The task row reports elapsed time, nested calls, memory and `task.progress`;
+  `task.notify` wakes the owning conversation at most once per
+  `code.notify_min_interval_s` (30 s), coalescing and never dropping messages. A script
+  outlives its turn and a child that started it; its questions never expire; a clean
+  shutdown settles it as cancelled with its output kept, and it is not resumed.
+- Streams, shipped as the builtin `streaming` plugin (required by `core`):
+  `open_stream`, `read_stream`, `stop_stream` and a `stream` kernel binding. A stream
+  is a workspace artifact `<name>.parquet` whose latest rows live in server memory,
+  saved as versions on open, every `flush_s`, at stop and at a clean shutdown. Views
+  bound to `artifact://<workspace>/<name>.parquet@latest` read it through
+  `GET /v1/streams/{id}`, `POST /v1/streams/{id}/table-query` and a watch lease
+  (`POST /v1/streams/{id}/watch`); `stream.updated` is announced only to watching
+  sessions. A view names a live file as `artifact://<workspace>/<name>@latest`; a
+  background script's file versions are paced by `artifacts.version_interval_s`.
+- Deferred tools: some tools are named in the prompt without their schemas and loaded
+  with `search_tools` (`tools.deferral`, `tools.defer_share`, `tools.defer_tokens`,
+  `tools.defer_builtins`, `tools.never_defer`). Plugins declare `defer`, `callers` and
+  `permission` on `tool` / `native_tool` and on `servers.<name>` in `plugin.json`, and
+  `kernel_bindings` with optional `host` modules (`sdk.host_call`).
+- Per-tool settings: `GET`/`PUT /v1/settings/tools` and
+  `POST /v1/settings/tools/rules/remove` back a plugin's Tools tab; deployments set
+  `tools.permissions` and `tools.callers`. A `deny` default removes the tool from the
+  agent (`tool_permission_deny`).
+- `recall_context(ids | query, limit)` returns the recorded steps a compaction replaced,
+  or matching earlier steps; results above `tools.recall_result_chars` (16,000) go to a
+  file the agent can search and read.
+- The session plan: `plan_enter`, `plan_update` (whole plan, one passage, or status
+  `done` / `abandoned`) and `plan_exit`, statuses `draft`, `approved`, `active`, `done`,
+  `abandoned`; the Work rail shows it, and `PUT /v1/sessions/{sid}/plan` saves the
+  person's edit, offered to the agent at its next step. A stale-plan note, an explore
+  suggestion, session facts and child-report instructions join the reminders.
+- Reminders are listed in Settings > Prompts and commands > Reminders, where each can
+  be switched off, edited and previewed; required ones cannot be switched off.
+
+### Changed
+
+- **macOS releases are Developer ID signed and notarized.** CLIO Desktop for macOS,
+  its sidecar and every binary in the bundled runtime (including native modules in the
+  offline document wheels) are signed with CLIO's Developer ID, hardened runtime and a
+  secure timestamp. The DMG and the app are notarized and stapled, so a downloaded DMG
+  opens without an "Open Anyway" step. A release whose signing, notarization or
+  Gatekeeper check fails is not published.
+- `max_concurrency` caps how many of a workflow's steps are in flight
+  (`0` means no step cap; model-call admission is separate),
+  and `timeout_s` is that step's deadline. A deadline is offered to editors as
+  `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
+  Merged `workflow_state` follows definition order, with
+  `workflow_state_conflict` rows when two steps set the same key differently.
+- **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
+  length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
+  for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
+  typed `arc_chunk_format_unsupported`, and its transcript answers
+  `503 messages_unavailable` with `cause: arc_store_format_old` and a message saying
+  what to do. Move the old store aside as described in
+  [Upgrading from 0.9.5.1 or earlier](#upgrading-from-0951-or-earlier).
+- The compaction prompt is part of CLIO core (`gact/compaction_prompt.md`). A value
+  still set for the removed `compaction.prompt_file` / `CLIO_COMPACTION_PROMPT_FILE`
+  fails the compaction with `compaction_prompt_invalid`. What a compaction keeps
+  verbatim is `compaction.keep.*`: the person's typed messages within `user_chars`
+  (80,000), the open request, the newest step, the plan and the todos; session facts
+  are offered again after it.
+- Permission questions no longer expire after 600 s: a question waits until it is
+  answered or its work is cancelled. An explicit deadline (`hooks.defer_timeout`) still
+  expires with `permission_request_timeout`.
+- The browser lets a navigation the person or the page makes load; before an agent
+  call reads or acts on a page whose host it may not use yet, it asks. A page is
+  blocked only for a refused scheme or a gate error.
+
+- CLIO Desktop requires macOS 15 or newer (was 14). iowarp-core 2.4.0, now required,
+  publishes macOS wheels for macOS 15 only; the installer, the bundle build
+  (`MACOSX_DEPLOYMENT_TARGET=15.0`) and the release startup checks moved with it.
+
+- `get_task_result` returns a result too big to inline as a file: `result` is
+  `null`, `result_file` gives its path, size, media type and typed `reason`, and
+  `result_excerpt` its beginning. The bound is
+  `limits.agent_task_output_digest_chars`. Version-1 `next_cursor` values still
+  read their pages; no new cursors are issued (#1844).
+- One workspace per folder: creating a workspace on a folder another workspace
+  pins, or moving one onto it, answers `409 workspace_root_conflict` naming that
+  workspace. A rename that resends the current folder never does (#1771).
+- A workspace root with a control or invisible format character is a
+  `400 invalid_request`, the same as a root that cannot be created; POST trims
+  surrounding whitespace from `root_path` (#1804).
+- A mid-stream reload shows a streamed part only once `message.part.added` has
+  announced it (#1772).
+- **Breaking:** `clio-agent serve` without `--port` listens on **17800**, not 8100.
+  The default port is one machine-wide setting, `gact.port` in the user
+  `config.yaml`, shared by the server, the `clio` launcher, Desktop and Web.
+  Precedence: `--port` > user `gact.port` > `CLIO_PORT` > 17800. A workspace
+  `.clio-agent/shared/config.yaml` no longer moves the port.
+  `python -I -m clio_agent.server_port` prints the resolved value. `clio --port N`
+  overrides it for one invocation, and remote deployments pass it explicitly.
+  Docker images and compose files keep their explicit `--port 8100`. Scripts that
+  reached a bare `clio-agent serve` on 8100 must pass `--port 8100` or set
+  `gact.port`.
+- The clio-core daemon binds its RPC and data ports to loopback (`127.0.0.1`)
+  instead of all interfaces. Only the clio-core child processes get
+  `CLIO_BIND_ADDR`; the server's own environment is unchanged.
+- `install.ps1 -Desktop` finishes a cold Windows install in under a minute (measured
+  51.6 to 58.1 s, download included, Defender real-time protection on). The Windows
+  setup carries only `gact-runtime.pack.json`; the runtime is a separate release asset,
+  `gact-runtime-<version>-windows-x64.tar.zst`, that the setup unpacks while
+  `install.ps1` downloads it, or fetches itself when run alone (#2063,
+  iowarp/gact-tui#1087).
+- The Load tools row names the tools it loaded, and count summaries read "1 file
+  matches", not "1 files match" (#2072, #2073).
+
+### Fixed
+
+- macOS: `clio`, `clio start` and `clio --web` start the server without `setsid(1)`,
+  and `clio stop` stops the whole process tree. CLIO never runs the `/usr/bin`
+  Command Line Tools stubs (`python3`, `git`, `install_name_tool`), so first launch
+  no longer asks to install developer tools. uv uses managed Python only, and
+  local native services (SearXNG, web search, model router, monitoring) build on
+  CLIO's own Python 3.14 instead of downloading a second CPython 3.12.
+- macOS Desktop: nothing writes into the signed app bundle at runtime (bytecode,
+  caches and installs go to `~/Library`). The bundled runtime is precompiled in
+  full and slimmed, and its Mach-O files are listed for signing.
+- Desktop bundles on all three OSes ship bytecode for the whole standard library and
+  for every module the server loads while starting and serving its API, so no
+  launch recompiles them in memory (about 1,500 modules, 1.4 s of CPU per launch,
+  +34 MB).
+- macOS: the Codex-based sandbox finds the bundled `codex` binary. When no write
+  fence is available, `clio start` warns and asks for confirmation on a terminal,
+  and `GET /v1/system/sandbox` reports `active`, a typed `reason`, a message and
+  the next step for the UI's start-up banner.
+- `/v1/health` reports readiness, and requests made while the server is starting
+  answer `503` with `Retry-After` and a `starting` status.
+- `install.sh --desktop` installs to `~/Applications` without a redundant DMG
+  verify, checks the app signature once, and accepts `--desktop-package` for a
+  local test DMG. `uninstall.sh` removes `libexec/clio` and, with `--purge-caches`,
+  CLIO's caches. With `--purge` it also removes clio-core's unedited `~/.clio`
+  seed and CLIO's perf stats there; clio-core children now keep that state in
+  CLIO's runtime state directory (`CLIO_STORAGE_ROOT`). `--purge` also removes the
+  host-wide clio-core records (`state/core-hosts`) unless that daemon is running,
+  and finds the macOS config in `~/Library/Application Support/clio-agent/config`
+  when no Agent is installed. New `--purge-data` removes the Agent data and state
+  roots (conversations, workspaces, the clio-core store, service environments, a
+  source install's clone), so `--purge --purge-caches --purge-data --desktop` leaves
+  nothing of CLIO behind on macOS.
+- `install.sh --source` never runs the macOS `/usr/bin/git` placeholder. It uses
+  `CLIO_GIT`, a real git, or the git bundled with an installed CLIO Desktop, and says
+  what to install when there is none. It checks out the recorded submodules with git
+  plumbing when that git has no `git submodule` command, as with the git bundled in
+  CLIO Desktop.
+- NDP no longer points at a dead backend. With `NDP_API_URL` unset, CLIO's
+  built-in NDP catalog advertised `http://155.101.6.191:8003` as its Endpoint,
+  which was never public and no longer answers. It now advertises the public
+  catalog, `https://nationaldataplatform.org/catalog`, which already served its
+  searches. Pelican, OSDF and S3 resources now fail at once with the setting to
+  add, instead of timing out against that host. Sources attached under the old
+  default stay valid.
+- The workbench file tree shows file sizes for local workspaces too. Uploads and
+  remote sources already reported them; local folder listings left them out.
+- NDP and EarthScope work without their MCP servers. The agents told the model it
+  could search the National Data Platform, but CLIO withheld the search tools until
+  a dataset or Endpoint was already attached, and EarthScope's skill needed the
+  clio-kit `ndp` and `geo` servers, which often did not mount. Agents carrying the
+  `ndp` plugin now always get NDP catalog search and organization lookup; Endpoint
+  operations, requests and uploads still load once the workspace has an NDP dataset
+  or saved Endpoint, and `connected_data_status` lists the configured NDP catalogs.
+  The marketplace pin moves to a version that makes `ndp` the NDP package with the
+  "Working with NDP" skill and an optional `run_code` NDP MCP server, adds an `ndp`
+  agent, and rebuilds `earthscope` on top of it. The default `standard` agent no
+  longer carries NDP search: choose the NDP agent or add the `ndp` plugin.
+- Windows protected execution qualifies on machines with a mapped network drive
+  or the OpenAI Codex app installed. The bundled Codex runtime moves to 0.167.0, and
+  native MXC requires 0.166.0 or later: earlier clients rejected CLIO's policy when
+  any mount could not be opened, and their legacy setup refresh failed while the
+  Codex app was running. A failed check now reports each backend's typed reason with
+  Codex's own error (`codex_mxc_launch_failed`, `codex_mxc_probe_timeout`, ...)
+  instead of `codex_enforcement_unverified` alone. A timeout is reported as itself,
+  not as a cleanup error. An explicit setup rechecks a cached failure. The installer
+  prints the failure without a Python traceback. The MXC receipt records the
+  installed Windows build.
+- An unreadable stored transcript answers `503 messages_unavailable` with a
+  `cause` (`storage_unreachable`, retryable; `transcript_corrupt`, not) on both the
+  full and paged message reads, instead of a 500 (#1805).
+- ALCF sign-in links open: the Globus request carries only the ALCF session
+  policy. A signed-out provider's empty model list says why (#1885).
+- A workspace's `mcp.yaml` is read from the workspace root, not the folder the
+  server was launched from (#1803).
+- An expert whose task inputs match nothing it was offered is refused with
+  reason `expert_inputs_unmappable` (#1812).
+- Flow runs record and report their concurrency bounds (#1903); one-line MCP
+  commands on Windows keep their backslashes (#1904).
+
 ## [0.9.5.1] - 2026-10-28
 
 ### Changed

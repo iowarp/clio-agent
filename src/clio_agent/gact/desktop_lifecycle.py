@@ -173,8 +173,14 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     import uvicorn
 
     from clio_agent.gact.auth import refuse_open_bind  # noqa: PLC0415
+    from clio_agent.runtime import windows_accept_guard  # noqa: PLC0415
 
     refuse_open_bind(host)
+    # A Windows client that aborts mid-accept must not close the listener
+    # (python/cpython#93821).
+    guard = windows_accept_guard.install()
+    log = logger.warning if guard == "unsupported" else logger.info
+    log("gact_accept_guard outcome=%s", guard)
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -261,17 +267,28 @@ async def release_runtime_after_drain(
     if boot is not None and not boot.done():
         logger.info("runtime.release_after_drain waiting=boot_attach")
         await asyncio.wait({boot})
+    from clio_agent.gact.recall_index import close_recall_index  # noqa: PLC0415
+
+    # Recall digest maintenance stops while its store is up (dirty sessions keep markers).
+    await asyncio.to_thread(close_recall_index, app)
     if not _app_owns_runtime_client(app):
         logger.info("runtime.release_after_drain outcome=not_owned")
         return "not_owned"
 
     from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
+    from clio_agent.gact import shutdown_budget  # noqa: PLC0415
 
     # Session writes made on the loop land before clio-core is released (bounded).
     sessions = getattr(app.state, "sessions", None)
     if sessions is not None and not await asyncio.to_thread(sessions.flush, 30.0):
         logger.error("runtime.release_after_drain reason=session_records_unflushed")
-    await asyncio.to_thread(release_runtime_client)
+    # The daemon stop fits inside the shutdown budget, so a slow daemon is stopped by
+    # its owner instead of outliving a process the budget watchdog ended.
+    ceiling_s = shutdown_budget.daemon_stop_ceiling(app)
+    if ceiling_s is None:
+        await asyncio.to_thread(release_runtime_client)
+    else:
+        await asyncio.to_thread(release_runtime_client, ceiling_s=ceiling_s)
     logger.info(
         "runtime.release_after_drain outcome=released owner=%s",
         getattr(app.state, "managed_shutdown_owner", None),

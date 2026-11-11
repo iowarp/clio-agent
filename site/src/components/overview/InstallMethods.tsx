@@ -2,24 +2,23 @@ import { useEffect, useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Command from './Command';
 
-/** Install commands. Source: install/install.sh, install/install.ps1 and site/public/install.md. */
-const SCRIPT_SH = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh';
-const SCRIPT_PS1 = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1';
+/** Install commands. The site serves install/{install,desktop}.{sh,ps1} (.github/workflows/pages.yml). */
+const SITE = 'https://clio.iowarp.ai';
 
 const METHODS = [
 	{
 		id: 'desktop',
 		label: 'Desktop app',
 		note: 'The same app as the download above, checked against the release checksums.',
-		unix: `curl -fsSL ${SCRIPT_SH} | bash -s -- --desktop`,
-		windows: `& ([scriptblock]::Create((irm ${SCRIPT_PS1}))) -Desktop`,
+		unix: `curl -fsSL ${SITE}/desktop.sh | bash`,
+		windows: `irm ${SITE}/desktop.ps1 | iex`,
 	},
 	{
 		id: 'terminal',
 		label: 'Web and servers',
 		note: 'Install the service and Web for servers or HPC. Run clio web, or clio start for a headless service. The legacy TUI is frozen and unsupported.',
-		unix: `curl -fsSL ${SCRIPT_SH} | bash`,
-		windows: `irm ${SCRIPT_PS1} | iex`,
+		unix: `curl -fsSL ${SITE}/install.sh | bash`,
+		windows: `irm ${SITE}/install.ps1 | iex`,
 	},
 ] as const;
 

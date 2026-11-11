@@ -56,19 +56,23 @@ class NativeProgress:
                         else None,
                     },
                 )
+                code_row = isinstance(output, dict) and str(output.get("type") or "").startswith(
+                    "clio.code."
+                )
+                # A background script's status is a line of its own, not shell output.
+                recorded = (
+                    TaskProgress(message=str(output.get("summary") or ""), output=reference)
+                    if code_row
+                    else TaskProgress(
+                        completed=completed,
+                        total=total,
+                        unit="bytes",
+                        message="Shell output available",
+                        output=reference,
+                    )
+                )
                 history.record_snapshot(
-                    current.model_copy(
-                        update={
-                            "updated_at": now(),
-                            "progress": TaskProgress(
-                                completed=completed,
-                                total=total,
-                                unit="bytes",
-                                message="Shell output available",
-                                output=reference,
-                            ),
-                        }
-                    ),
+                    current.model_copy(update={"updated_at": now(), "progress": recorded}),
                     observation_id=identity,
                 )
 
@@ -83,4 +87,7 @@ class NativeProgress:
                 type(error).__name__,
             )
             self.work.recovery.defer("native-output:" + identity, confirm)
+        if isinstance(output, dict) and str(output.get("type") or "").startswith("clio.code."):
+            # The task row reads the status message: a script's is its summary line.
+            message = str(output.get("summary") or "")
         await self.sdk.report_progress(progress, total, message)

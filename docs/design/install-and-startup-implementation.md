@@ -220,13 +220,48 @@ The same model is in the design document; it is repeated here so this plan reads
     clio-kit offers it, else the typed `mcp_prepare_provision_unsupported_launcher`), and keeps
     each server's visible state: `preparing` (phase `provision`, `launch` or `connect`), `ready`
     or `failed` with a typed `mcp_prepare_*` reason.
+  - On Windows the provision step runs outside the sandbox, because the AppContainer denies
+    the trampoline writes a `uv` build makes (#1991). `clio-kit mcp-server --prepare` (clio-kit
+    #402) prints one `clio-kit.mcp-prepare.v1` JSON line on stdout and its exit status maps to
+    a typed reason: 1 `mcp_prepare_provision_unknown_server`, 2 `mcp_prepare_provision_usage`,
+    10 `mcp_prepare_provision_failed`, 11 `mcp_prepare_provision_access_denied`, 12
+    `mcp_prepare_provision_path_too_long`, 13 `mcp_prepare_provision_network`, 14
+    `mcp_prepare_provision_uv_missing`. Only a clio-kit without `--prepare` falls back to
+    running its own build in the launcher's interpreter with the server's start left out;
+    those failures are typed from the build output (`access_denied` or `path_too_long`).
+    That build is atomic: an environment that is not complete is built into a relocatable
+    hidden sibling and renamed into place under a per-environment cross-process lock
+    (`<kit cache>/clio-environment-locks/`). Before every clio-kit prepare or start,
+    `tools/mcp_environment_repair.py` removes an environment an interrupted build or
+    removal left without its interpreter (`mcp_environment_repaired`), so it is rebuilt
+    instead of failing forever with uv's "not a valid Python environment"; one it cannot
+    replace fails typed `mcp_prepare_provision_environment_invalid`.
+    MCP build roots (`paths.mcp_build_cache_dir()`) move
+    to `%LOCALAPPDATA%\clio-m\<hash>` when the CLIO cache path is longer than 48 characters
+    (#1992); `owner.txt` there names the cache it serves.
+  - The same deep-home rule covers first-run provisioning beyond MCP builds. A new plugin
+    store (`paths.plugin_store_dir()`) goes to `%LOCALAPPDATA%\clio-p\<hash>` when
+    `<config>\plugins` is longer than 80 characters, so the default marketplace can be
+    cloned and its agents installed. Managed services on this machine
+    (`paths.service_data_root()`, for example SearXNG) go to `%LOCALAPPDATA%\clio-s\<hash>`
+    when the data root is longer than 72 characters. A store or `services` folder that
+    already exists at the long root stays where it is. Plugin git fetches pass
+    `core.longpaths`, and JSONL logs such as the semantic trace open extended-length paths.
   - `gact/mcp_readiness.py` starts a cold server once: the first start connects directly
     (`mcp_prepare_first_start_direct`) and lists over that connection.
   - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while
     the agent is still starting runs when it is ready. Boot lists stdio servers from the cache
     only (`mcp_namespace_not_prepared_at_boot`).
-  - A turn waits at most `tools.mcp.turn_prepare_grace_s` (2 s); a server still preparing is
-    offered through `wait_for_tools` and joins the agent's tools at its next step.
+  - A turn uses valid cached definitions immediately while execution starts in parallel.
+    Missing definitions join the conversation's preparation and real `tools/list` before
+    the initial model request; the old two-second grace and `wait_for_tools` fallback are
+    removed. A server cannot be silently omitted just because startup is slow. Genuine
+    `tools/list_changed` notifications still refresh tools from connected servers.
+    This boundary uses the declared transport for any stdio launcher, HTTP or legacy SSE.
+    HTTP/OAuth listings are read over the authenticated live connection, not persisted in
+    the stdio cache or shared between accounts. Saved sign-in, refresh and logout keep
+    their existing transport and credential owners; opening a conversation never opens
+    an interactive sign-in flow.
   - `GET /v1/mcp/servers?session_id=` rows carry `status` `preparing`/`failed`, `reason` and a
     `preparation` block; `POST /v1/sessions/{sid}/mcp/{namespace}/reconnect` restarts one.
   - Still for clio-kit: `mcp-server --prepare <name>` (build the locked environment and exit 0)

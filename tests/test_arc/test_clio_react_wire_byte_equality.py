@@ -31,7 +31,7 @@ from typing import Any
 import dspy
 from dspy.lm15 import Message, Request, TextPart, ToolCallPart, ToolResultPart
 
-from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE, ClioReAct
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.clio_react_record import fold_steps, read_steps
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, summarize
 
@@ -41,7 +41,6 @@ SESSION, SCOPE = "s1", "agentA"
 QUESTION = "find alpha"
 HEAD = Message(role="user", parts=(TextPart(text=QUESTION),))
 # An agent with tools is told once, ahead of the task, that a step may call several.
-NOTE = Message(role="user", parts=(TextPart(text=f"[clio: tool_use]\n{TOOL_USE_NOTE}"),))
 
 
 # ---- the independent reference -------------------------------------------------
@@ -180,7 +179,7 @@ def test_every_loop_call_is_equal_to_the_reference(arc):
     reference = expected_messages(_STEPS)
     assert len(engine.requests) == len(_STEPS) + 1
     for k, request in enumerate(engine.requests):
-        assert list(request.messages) == [NOTE, HEAD, *reference[: 2 * k]], f"call {k} diverged"
+        assert list(request.messages) == [HEAD, *reference[: 2 * k]], f"call {k} diverged"
 
 
 def test_prediction_messages_are_the_plane_fold(arc):
@@ -189,7 +188,7 @@ def test_prediction_messages_are_the_plane_fold(arc):
     pred, _ = _run_loop(arc, _agent(), _script(_STEPS))
     with live_plane_context(arc, session=SESSION, scope=SCOPE):
         folded = read_steps(arc, SESSION, SCOPE)
-    assert pred.messages[:2] == [NOTE, HEAD]
+    assert pred.messages[:1] == [HEAD]
     assert folded == pred.messages
 
 
@@ -214,7 +213,7 @@ def test_inputs_ride_the_head_once(arc):
     request's native tool list and are never rendered into the text."""
     _, engine = _run_loop(arc, _agent(), _script(_STEPS))
     for request in engine.requests:
-        assert request.messages[:2] == (NOTE, HEAD)
+        assert request.messages[:1] == (HEAD,)
         assert _text(request).count(QUESTION) == 1
         assert [t.name for t in request.tools] == ["search", "submit"]
         assert "submit" not in str(summarize(request.messages[1:2]))

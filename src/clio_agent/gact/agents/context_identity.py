@@ -34,11 +34,14 @@ def restore_context(
 
     No predecessor history is copied. A known empty epoch or tombstoned scope is
     intentional. Missing trace/proof and failed reads are distinct: errors propagate.
+    The note (the ``context_recovery_*`` reminders) is ``""`` when switched off; the
+    context is restored either way.
     """
     if arc.has_segments(session, scope):
         return ""
     import uuid
 
+    from clio_agent import injections
     from clio_agent.arc.context_restore import recorded_segments, unanswered_calls
     from clio_agent.arc.schema import Segment
     from clio_agent.gact import context
@@ -61,7 +64,7 @@ def restore_context(
     restored, unconfirmed, found = recorded_segments(
         reader(session) if callable(reader) else (), session, scope, retained_turns, confirmed
     )
-    source = "recorded context operations"
+    origin = "operations"
     if not found:
         if not allow_transcript:
             return ""
@@ -82,11 +85,12 @@ def restore_context(
         if not turn_id and rows and _get(rows[-1], "role") == "user":
             rows.pop()
         restored = transcript_segments(session, scope, rows)
-        source = "saved transcript; provider continuation is unavailable"
+        origin = "transcript"
     live = [segment for segment in restored if segment.status == "live"]
     recovered: list[Segment] = []
     pending: dict[str, Segment] = {}
     clock = max((segment.logical_time for segment in restored), default=0)
+    uncertain = injections.render("context_recovery_uncertain", {}, session_id=session) or ""
 
     def close_step(boundary: float | None) -> None:
         nonlocal clock
@@ -111,7 +115,7 @@ def restore_context(
                     content={
                         "call_id": call.content["id"],
                         "is_error": True,
-                        "text": "Operation outcome is uncertain after context loss. No operation was replayed; inspect retained handles and effects before retrying.",
+                        "text": uncertain,
                     },
                 )
             )
@@ -132,20 +136,25 @@ def restore_context(
         if restored:
             arc.restore_empty_context(session, scope, restored)
         return ""
-    note = "Recovered this session's context from " + source + ". No operation was replayed."
-    if unconfirmed:
-        note += " Prepared model input was found without independent delivery proof; its content remains outside model context until normal mailbox authorization and commitment."
-    notice = Segment(
-        session_id=session,
-        scope=scope,
-        kind="user",
-        step=0,
-        turn_id=turn_id,
-        order=max((segment.order for segment in restored), default=0) + 1,
-        logical_time=max((segment.logical_time for segment in restored), default=0) + 1,
-        content={"text": note, "actor": "algorithm", "source": "context_recovery"},
+    pieces = [
+        f"context_recovery_{origin}",
+        *(["context_recovery_unconfirmed"] if unconfirmed else []),
+    ]
+    note = " ".join(
+        text for piece in pieces if (text := injections.render(piece, {}, session_id=session))
     )
-    restored.append(notice)
+    if note:
+        notice = Segment(
+            session_id=session,
+            scope=scope,
+            kind="user",
+            step=0,
+            turn_id=turn_id,
+            order=max((segment.order for segment in restored), default=0) + 1,
+            logical_time=max((segment.logical_time for segment in restored), default=0) + 1,
+            content={"text": note, "actor": "algorithm", "source": "context_recovery"},
+        )
+        restored.append(notice)
     fold_steps(
         model_context_segments(
             [segment for segment in restored if segment.status == "live"], history, session, scope

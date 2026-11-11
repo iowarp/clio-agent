@@ -3,6 +3,9 @@
 The harness guides, it never decides: the call already ran exactly as the agent
 asked; when it failed, this tells the agent which same-named files exist under the
 allowed roots, and the agent chooses (owner decision, 2026-09-29).
+
+Each line is the reminder ``clio.reminder.path_hint`` (:mod:`clio_agent.injections`):
+a person can reword it or switch it off, and switched off no hint is looked for.
 """
 
 from __future__ import annotations
@@ -18,7 +21,12 @@ from clio_agent.tools.file_policy import FileAccessPolicy
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["missing_path_hint"]
+__all__ = ["PATH_HINT_MARKER", "PATH_HINT_SOURCE", "missing_path_hint"]
+
+#: The injection's source and its reminder (``clio.reminder.path_hint``).
+PATH_HINT_SOURCE = "path_hint"
+#: Heads the hint; the transcript and other code recognise it by this.
+PATH_HINT_MARKER = "[clio: path_hint]\n"
 
 _FILE_ARGUMENT_NAMES = {
     "file",
@@ -88,8 +96,13 @@ def missing_path_hint(args: Mapping[str, Any]) -> str:
 
     The harness guides, it never decides: the call already ran as the agent asked;
     this only tells the agent which same-named files exist under the allowed roots
-    (bounded walk, at most ``_HINT_MATCHES`` each). Empty when there is nothing to say.
+    (bounded walk, at most ``_HINT_MATCHES`` each). Empty when there is nothing to say,
+    or when the person switched the reminder off.
     """
+    from clio_agent import injections  # noqa: PLC0415 - tools load before gact
+
+    if not injections.active(PATH_HINT_SOURCE):
+        return ""
     try:
         policy = FileAccessPolicy.from_env()
     except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
@@ -112,5 +125,9 @@ def missing_path_hint(args: Mapping[str, Any]) -> str:
         )
         if matches:
             options = " or ".join(f"'{m}'" for m in sorted(set(matches)))
-            lines.append(f"argument '{key}': '{value}' does not exist. Did you mean {options}?")
-    return "[clio: path_hint]\n" + "\n".join(lines) if lines else ""
+            line = injections.render(
+                PATH_HINT_SOURCE, {"argument": key, "value": value, "options": options}
+            )
+            if line:
+                lines.append(line)
+    return PATH_HINT_MARKER + "\n".join(lines) if lines else ""

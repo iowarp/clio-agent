@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Callable
 
 from clio_agent import conf
@@ -107,6 +109,10 @@ class WorkspaceExecutorReaper:
         # executor for the whole expert lifetime, so the drain unit is the
         # turn, not the individual call.
         self._leases = leases if leases is not None else {}
+        # The share of ``_leases`` that only keeps a fleet resident (a conversation on
+        # screen, a session waiting on its user) -- no turn runs and no tool is bound.
+        # Those holds still block reaping but not a restart. Guarded by ``self._lock``.
+        self.residency: dict[str, int] = {}
         # #1033: roots with a deferred fleet restart (grant landed while the
         # executor was busy/leased). The drain-aware pass in ``reap_once`` fires
         # each one at the next safe boundary — NOT a second scheduler, the same
@@ -318,6 +324,13 @@ class WorkspaceExecutorReaper:
         resolved_at = self._resolved_at.get(root)
         return resolved_at is not None and (now - resolved_at) < self._ttl_s
 
+    def turn_leased(self, root: str) -> bool:
+        """Whether a live turn (not only a residency hold) leases ``root``.
+
+        MUST be called with the shared registry lock held.
+        """
+        return self._leases.get(root, 0) - self.residency.get(root, 0) > 0
+
     def request_restart(self, workspace_root: str) -> str:
         """Request a drain-aware restart of ``workspace_root``'s resident fleet (#1033).
 
@@ -325,10 +338,12 @@ class WorkspaceExecutorReaper:
         workspace-shared fleet child. Under the SHARED registry lock (so it can never race a
         concurrent get-or-create or the reaper's pass):
 
-        * idle + unleased → close the executor, close its per-child net channels, and evict it
-          from the registry so the next ``_active_tool_executor`` rebuilds lazily with the
-          widened ``effective_write_roots`` (returns :data:`RESTART_RESTARTED_LIVE`);
-        * busy or leased → NEVER close it mid-call; flag the root for a deferred restart that
+        * idle + no turn lease → close the executor, close its per-child net channels, and
+          evict it from the registry so the next ``_active_tool_executor`` rebuilds lazily
+          with the widened ``effective_write_roots`` (returns :data:`RESTART_RESTARTED_LIVE`).
+          A residency hold (:func:`residency_lease`) does not defer it: nothing is bound to
+          the fleet, and the hold keeps the root resident across the rebuild;
+        * busy or turn-leased → NEVER close it mid-call; flag the root for a deferred restart that
           the reaper's idle pass drains at the next safe boundary (returns
           :data:`RESTART_DEFERRED_BUSY`);
         * nothing resident → no-op; the next spawn reads the widened territory anyway (returns
@@ -348,7 +363,7 @@ class WorkspaceExecutorReaper:
                 self._pending_restarts.discard(root)
                 return RESTART_NO_RESIDENT
             try:
-                busy = bool(executor.busy) or self._leases.get(root, 0) > 0
+                busy = bool(executor.busy) or self.turn_leased(root)
             except Exception as exc:  # noqa: BLE001 - can't prove idle → defer, never close busy
                 trace.event(
                     "TOOLS",
@@ -373,6 +388,38 @@ class WorkspaceExecutorReaper:
         self._close_channels(root)
         trace.event("TOOLS", "workspace_fleet_restarted root=%s reason=grant_applied_live", root)
         return RESTART_RESTARTED_LIVE
+
+
+@contextmanager
+def residency_lease(agent: Any, root: str) -> Iterator[None]:
+    """Keep ``root``'s fleet resident without counting as a live turn.
+
+    Takes the agent's ordinary fleet lease (so the reaper keeps the fleet) and records
+    the hold as residency, so a data-access change or a write-root grant can still
+    restart that idle fleet. Without a reaper the hold stays a plain lease (typed
+    trace): it then blocks those changes, the conservative side.
+    """
+    from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
+
+    key = canonical_workspace_root(root)
+    with agent.lease_workspace_fleet(root, wait=False):
+        reaper = getattr(agent, "_workspace_reaper", None)
+        if reaper is None or not key:
+            trace.event("TOOLS", "workspace_fleet_residency_untracked root=%s", root)
+            yield
+            return
+        lock, _executors, _leases = agent._workspace_state()
+        with lock:
+            reaper.residency[key] = reaper.residency.get(key, 0) + 1
+        try:
+            yield
+        finally:
+            with lock:
+                remaining = reaper.residency.get(key, 1) - 1
+                if remaining <= 0:
+                    reaper.residency.pop(key, None)
+                else:
+                    reaper.residency[key] = remaining
 
 
 ReaperFactory = Callable[..., WorkspaceExecutorReaper]

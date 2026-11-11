@@ -143,8 +143,8 @@ class TestArgonneRef:
         login_calls: list[Any] = []
 
         class _FakeAuthParams:
-            def __init__(self, session_required_single_domain: Any = None) -> None:
-                self.session_required_single_domain = session_required_single_domain
+            def __init__(self, session_required_policies: Any = None) -> None:
+                self.session_required_policies = session_required_policies
 
         class _FakeGare:
             GlobusAuthorizationParameters = _FakeAuthParams

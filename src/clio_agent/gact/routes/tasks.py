@@ -100,14 +100,16 @@ def process_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
     agent_task = task["kind"] in {"Session", "Subagent"}
     child = app.state.sessions.get(owner["session_id"]) if agent_task else None
     flow = ((getattr(child, "metadata", None) or {}).get("agent_flow") or {}) if child else {}
+    # ``react`` is the agent loop itself (a ``self`` copy's stamp), never a flow run.
+    flow_id = str(flow.get("id") or "")
     return {
         **task,
         "id": task["handle"],
         "handle_id": task["handle"],
         "task_kind": task["kind"],
         # A child conversation that runs a flow: the UI opens its run view, not a chat.
-        "flow": task_flow_summary(app.state.task_history, task, str(flow["id"]))
-        if flow.get("id")
+        "flow": task_flow_summary(app.state.task_history, task, flow_id)
+        if flow_id and flow_id != "react"
         else None,
         # The model the child runs on and why, recorded when it was created.
         "model_choice": recorded_choice(app, owner["session_id"]) if agent_task else None,
@@ -211,6 +213,8 @@ def register_task_routes(app: FastAPI) -> None:
                 message_after=message_after,
                 message_before=message_before,
                 relation=relation,
+                # The runs list's "active" means queued, running or waiting, not merely open.
+                underway_only=active_only,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error

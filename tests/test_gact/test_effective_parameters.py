@@ -235,3 +235,33 @@ def test_the_real_vllm_startup_line_from_ares_resolves_auto_to_bfloat16() -> Non
 
     assert report["dtype"][0] == "bfloat16"
     assert report["tensor_parallel_size"][0] == "1"
+
+
+def test_a_gpu_pin_the_container_runtime_mapped_is_reported_as_launched() -> None:
+    """Docker/Podman get the pin as ``--gpus "device=1,2"``: no CUDA variable inside."""
+    rows = {
+        row.id: row
+        for row in assemble(
+            "vllm",
+            "cuda",
+            report={},
+            container_args=["--model", "m"],
+            container_env={"CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+            requested={"cuda_devices": "1,2"},
+        )
+    }
+    assert (rows["cuda_devices"].value, rows["cuda_devices"].source) == ("1,2", "launch_request")
+    assert "device mapping" in rows["cuda_devices"].detail
+
+    apptainer = {
+        row.id: row
+        for row in assemble(
+            "vllm",
+            "cuda",
+            report={},
+            container_args=["--model", "m"],
+            container_env={"CUDA_VISIBLE_DEVICES": "1,2"},
+            requested={"cuda_devices": "1,2"},
+        )
+    }
+    assert apptainer["cuda_devices"].source == "container_config"

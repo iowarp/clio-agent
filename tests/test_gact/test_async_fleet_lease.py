@@ -16,6 +16,7 @@ from clio_agent.agent import ClioAgent
 from clio_agent.gact import context
 from clio_agent.gact.runtime.globals import _async_tool_session_context, _gact_app_context
 from clio_agent.plugins.servers import register_server_set, server_set_declarations
+from clio_agent.runtime import source_policy_wait
 from clio_agent.tools.execution import get_active_tool_server_set, get_active_tool_workspace_root
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
@@ -173,11 +174,62 @@ async def test_cancellation_during_release_finishes_cleanup_before_settling(
 
 @pytest.mark.asyncio
 async def test_lease_rejection_does_not_enter_or_release_an_unacquired_lease(
-    owner: tuple[Any, ClioAgent, str, str],
+    owner: tuple[Any, ClioAgent, str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, agent, _root, _server_set = owner
-    agent._source_policy_changing = True
-    with _gact_app_context(app), pytest.raises(RuntimeError, match="connected-data access"):
+    monkeypatch.setattr(source_policy_wait, "SOURCE_POLICY_WAIT_S", 0.2)
+    agent._source_policy_changing = True  # an access change that never finishes
+    with _gact_app_context(app), pytest.raises(RuntimeError, match="still updating"):
         async with _async_tool_session_context("session"):
             pytest.fail("a rejected lease must not enter the turn")
+    assert agent._workspace_state()[2] == {}
+
+
+@pytest.mark.asyncio
+async def test_turn_waits_for_a_live_access_change_then_runs(
+    owner: tuple[Any, ClioAgent, str, str],
+) -> None:
+    """A message sent while a folder link swaps grants runs once the swap ends (no failure)."""
+    app, agent, root, _server_set = owner
+    lock, _, leases = agent._workspace_state()
+    with lock:
+        agent._source_policy_changing = True
+    entered = False
+
+    def finish_change() -> None:
+        with lock:
+            agent._source_policy_changing = False
+
+    timer = threading.Timer(0.2, finish_change)
+    timer.start()
+    try:
+        with _gact_app_context(app):
+            async with _async_tool_session_context("session"):
+                entered = True
+                assert not agent._source_policy_changing
+                assert leases == {canonical_workspace_root(root): 1}
+    finally:
+        timer.cancel()
+    assert entered and leases == {}
+
+
+def test_residency_hold_and_event_loop_callers_are_refused_at_once(
+    owner: tuple[Any, ClioAgent, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Holds that must not block keep the immediate refusal during an access change."""
+    from clio_agent.tools.reaper import residency_lease
+
+    _app, agent, root, _server_set = owner
+    monkeypatch.setattr(source_policy_wait, "SOURCE_POLICY_WAIT_S", 60.0)
+    agent._source_policy_changing = True
+    with pytest.raises(RuntimeError, match="retry after setup finishes"):
+        with residency_lease(agent, root):
+            pytest.fail("a residency hold must not wait for the change")
+
+    async def on_loop() -> None:
+        with agent.lease_workspace_fleet(root):
+            pytest.fail("the event loop must never sleep-wait for the change")
+
+    with pytest.raises(RuntimeError, match="retry after setup finishes"):
+        asyncio.run(on_loop())
     assert agent._workspace_state()[2] == {}

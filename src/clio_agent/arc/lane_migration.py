@@ -38,7 +38,11 @@ migration shows the originals.
 
 A session with no content-lane records is new and gets an empty index (put
 on its first write). A record that does not decode is a typed
-:class:`~clio_agent.arc.lane_index.ContextIndexError`, never an empty session.
+:class:`~clio_agent.arc.lane_index.ContextIndexError`, never an empty session; a record
+in the retired base64 frame is
+:class:`~clio_agent.arc.chunk_records.ChunkFormatUnsupportedError` (reset the state).
+Chunks are read and rewritten in the append-only record format
+(:mod:`clio_agent.arc.chunk_records`).
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 
+from clio_agent.arc.chunk_records import full_body, read_chunk
 from clio_agent.arc.context_view import fold_atoms
 from clio_agent.arc.lane_index import (
     INDEX_SCOPE,
@@ -60,7 +65,7 @@ from clio_agent.arc.lane_index import (
     parse_chunk,
 )
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
-from clio_agent.arc.schema import Segment, SegmentKind, decode_segments, encode_segments
+from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.arc.segments import ArcPersistError
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
@@ -92,14 +97,16 @@ def load_or_migrate(fold: FoldingSegmentStore, session_id: str) -> SessionIndex:
     prefix = fold._record_name(session_id, f"{WS_CONTENT_FAMILY}/")
     head = fold._record_name(session_id, "")
     chunks: dict[str, list[Segment]] = {}
-    for name, blob in store.scan("segments", prefix=prefix):
+    for name in store.scan_names("segments", prefix=prefix):
         scope = fold.scope_of_record(name[len(head) :])
         if parse_chunk(scope) is None:
             continue
         try:
-            chunks[scope] = decode_segments(blob)
+            parsed = read_chunk(store, "segments", name)
         except msgspec.DecodeError as exc:
             raise ContextIndexError(session_id, f"undecodable_legacy_chunk {scope}", exc) from exc
+        if parsed is not None:
+            chunks[scope] = parsed.segments
     if not chunks:
         return SessionIndex()
     _migrate_legacy_steps(fold, session_id, chunks)
@@ -135,14 +142,13 @@ def _drop_live_text_companions(
     removed = 0
     for scope in scopes:
         name = fold._record_name(session_id, scope)
-        raw = fold._store.get("segments", name)
-        if raw is None:
-            continue
         try:
-            held = decode_segments(raw)
+            parsed = read_chunk(fold._store, "segments", name)
         except msgspec.DecodeError as exc:
             raise ContextIndexError(session_id, f"undecodable_scope_record {scope}", exc) from exc
-        if held:
+        if parsed is None:
+            continue
+        if parsed.segments:
             continue  # a record with real segments is not a companion: never touched
         assert_store_write_off_loop("segments.delete", scope=scope)
         fold._store.delete("segments", name)
@@ -202,9 +208,8 @@ def _migrate_legacy_steps(
     for chunk in sorted(changed):
         assert_store_write_off_loop("segments.put", scope=chunk)
         try:
-            fold._store.put(
-                "segments", fold._record_name(session_id, chunk), encode_segments(chunks[chunk])
-            )
+            name = fold._record_name(session_id, chunk)  # the whole chunk, at offset 0
+            fold._store.put_at("segments", name, full_body(chunks[chunk]), 0)
         except LoopThreadStoreWrite:
             raise
         except Exception as exc:  # noqa: BLE001 - re-raised typed; the write failed

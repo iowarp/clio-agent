@@ -74,9 +74,14 @@ The gate decides in this order:
 
 3. **Interactive** — for an un-resolved non-read call (e.g. an LM-driven ReAct
    loop calling `fs_write_file` or `shell_bash` mid-turn), the gate
-   publishes a `permission.requested` event and blocks on a `threading.Event`
-   for up to `DEFAULT_TIMEOUT_S = 600.0` s (a timeout fails safe: `deny`; a call
-   with no driving session also fails closed to `deny` immediately). The TUI
+   publishes a `permission.requested` event and waits for the answer with no
+   expiry: the wait counts as the turn's progress, and only the answer or
+   cancelling the work ends it (`gact/permission_timeout.py`; the old 600 s
+   timeout is removed, taskable `run_code` CT13). A caller given an explicit
+   deadline (the PreToolUse hook defer, `hooks.defer_timeout`) is denied with
+   `permission_request_timeout` when it passes, which is not the same as the
+   person refusing. A call with no driving session fails closed to `deny`
+   immediately. The TUI
    renders a banner; the user resolves with a/d/s/w; the backend POSTs the
    resolution back; the gate returns `allow` or `deny`.
 
@@ -85,6 +90,60 @@ The gate decides in this order:
 > treated as non-read and routes to steps 2–3. Closing the headless case (no
 > interactive approver) for such calls is the job of the approval-mode work
 > (#1034); until then, give such tools a `read` tag or `readOnlyHint`.
+
+## Scripts and per-tool settings
+
+**A script is approved before it runs.** `run_code` is one non-read call: it asks the
+gate itself, with the script shown ("Run a Python script (N lines): ..."), in every
+approval mode except `bypass` (`gact/code_mode/tool.py`). That approval covers what the
+script does directly (`open()`, subprocesses) inside the write fence, as a shell
+approval covers its command.
+
+**Each call a script makes still meets the gate** with its own annotations
+(`gact/code_mode/grants.py`). Reads do not ask unless a rule or a default says so;
+denies hold. A nested non-read call that would ask is decided by the approval mode the
+script was accepted with (a change of mode while it runs does not change it):
+
+| Approval mode | Nested non-read calls |
+| --- | --- |
+| `bypass` | Run |
+| `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` (`code.covering_postures`) | Covered by the script's approval, recorded with `run_code_script_grant` |
+| `ask` | Each asks, one question per script at a time, showing the script; denial raises in the script |
+
+In `ask` mode the question offers "Allow for the rest of this script"
+(`allow_script`), which covers that script's remaining calls; the next `run_code` asks
+again. A tool whose rule or default is `ask` asks even under a covering mode. A
+background script's question belongs to its task: it is asked in the owner's
+conversation with the task's handle, and only an answer or cancelling the task ends
+the wait. In plan mode a script runs only where the sandbox enforces the write fence:
+its kernel may write only the session's scratch folder and temp, and its nested calls
+meet the plan-mode rules like direct calls; elsewhere `run_code` refuses with
+`code_plan_mode_unconfined`.
+
+**Every tool has a default permission** (`allow`, `ask` or `deny`), declared by its
+plugin (`native_tool(permission=...)`, `tool(permission=...)`,
+`servers.<name>.permission`, `servers.<name>.tools.<tool>.permission`) and replaced by
+the deployment's `tools.permissions` (tool name to permission; `CLIO_TOOLS_PERMISSIONS`
+as JSON). Undeclared, the tool's annotations and the approval mode decide. The gate's
+order lives in one place (`gact/runtime/tool_permission_layers.py`): a deny from any
+layer wins; then the person's rules (`/v1/policies`); then the tool's default; then the
+approval mode and a script's grant. So a plugin can keep `send_email` on `ask` in
+`auto-edits`; `bypass` skips a default's question but never a deny.
+
+**Deny hides the tool.** A tool whose default is `deny`, or that a person's rule names
+exactly and denies, is left out of the agent's tools: the tool list, the deferred
+catalog and the `run_code` stubs, traced `tool_permission_deny`; a call to it by name is
+refused with that reason (`gact/agents/tool_settings.py`). A wildcard deny rule keeps
+denying at the gate, call by call.
+
+**The plugin's Tools settings page** (`GET`/`PUT /v1/settings/tools`,
+`POST /v1/settings/tools/rules/remove`; `gact/tool_settings_page.py`) lists a plugin's
+tools grouped into read-only and write tools by their flags, with each tool's plugin
+default, the deployment value, the person's saved rules and their scope, and what
+happens in each approval mode for a direct call and for a call from a script. The
+person's permission is saved as a policy rule in `/v1/policies`; the I/O choice
+(`callers`: `direct`, `code` or `both`) is saved as `tools.callers` in the user
+`config.yaml`.
 
 ## TUI surface
 
@@ -177,6 +236,37 @@ The advisory `allowed_roots` and fence `write_roots` share the same territory
 resolver. Windows uses verified native MXC when available or the legacy
 restricted-account backend. A runtime upgrade invalidates version-specific proof.
 
+### Start-up acknowledgement when the fence is off
+
+CLIO fails open: when no fence resolves, the agent still runs, with only the
+advisory layer. Because that is a security risk, every start that leaves the
+fence off must be acknowledged by the user. `clio`, `clio web`, `clio start`
+and `clio restart` print a security warning once the server has resolved its
+backend. On an interactive terminal they ask
+`Continue without protected execution? [y/N]`; anything but yes stops a server
+the command started and exits 1. Runs without a terminal only warn, and
+`CLIO_ACCEPT_UNSANDBOXED=1` acknowledges without the prompt. Desktop and Web
+show the same verdict as a banner.
+
+`GET /v1/system/sandbox` carries the verdict. It answers during start-up,
+before the other `/v1` routes stop returning 503:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `active` | bool | Agent tools run inside an OS write fence now. False on the floor, and while a just-activated fence still needs a restart. |
+| `resolved` | bool | A server boot has resolved the backend. Until it is true, wait and ask again; do not warn yet. |
+| `mechanism` | string or null | `codex`, `landlock` or `none`; null until resolved. |
+| `reason` | string | Typed reason token, for example `codex_not_installed` or `sandbox_fence_pending_restart`. |
+| `acknowledgement_required` | bool | `resolved and not active`: show the warning and require acknowledgement. |
+| `warning` | string or null | Banner text, present exactly when `acknowledgement_required` is true. |
+| `summary` | string | Technical one-line description of the row. |
+| `next_action` | string | The step that turns protection on, for example reinstalling CLIO Desktop. |
+| `status` | `ready`, `degraded` or `unavailable` | The doctor row's state, as in `/v1/health`. |
+
+The same row in `GET /v1/health` `integrations[]` (`name: "sandbox"`) carries
+`active`, `acknowledgement_required`, `warning`, `reason`, `summary` and
+`next_action`; those three new fields are null on every other row.
+
 ### Windows preparation and progress
 
 The backend prepares Windows protection off the event loop before constructing
@@ -185,6 +275,16 @@ qualifies native MXC or checks existing restricted accounts without requesting
 UAC. Packaged installation and explicit **Set up protected execution** can request
 administrator approval for first-time legacy account creation. Missing or failed
 verification stays degraded; protection is never inferred from account presence.
+
+MXC refuses to launch packaged (MSIX) apps, so CLIO cannot qualify it while it
+runs on Microsoft Store Python, including a virtual environment built on it. Setup
+then reports `codex_mxc_packaged_python` at once instead of a launch failure. CLIO
+and `install.ps1` set `UV_MANAGED_PYTHON=1` on Windows so uv builds environments on
+its own Pythons. For a source checkout already built on Store Python, run
+`uv sync --managed-python`. When Codex no longer accepts the existing legacy
+accounts' setup, it waits for administrator setup instead of starting commands.
+CLIO reports this as `codex_windows_setup_required` and stops repeating that check
+at startup. Explicit **Set up protected execution** requests UAC to refresh the setup.
 
 Startup, installer, button and CLI call the same provisioning engine. Its shared
 runtime-access cache checks directory identity and the root ACL before reuse;
@@ -252,16 +352,45 @@ See [SSH contract and qualification](verification/ssh-agent-execution-2026-10-19
 Child egress defaults to **ALLOW + RECORD**: every spawned child routes through one
 clio-owned CONNECT-only proxy (`runtime/net_chokepoint.py`), and each connection is
 recorded as a trace-only `net.egress` event and joined into provenance as a
-`used web:<domain>@<time>` ingest edge. On the legacy Codex tier the OS fence forces external traffic
-through the proxy; native MXC records external proxy enforcement and direct host
-loopback separately; on Landlock/floor tiers egress is proxy-ENV
+`used web:<domain>@<time>` ingest edge. On the legacy Codex tier (Linux and Windows)
+CLIO labels egress `proxy-enforced`; native MXC records external proxy enforcement and direct host
+loopback separately; on macOS Codex and on Landlock/floor tiers egress is proxy-ENV
 cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge label never
 claims enforcement the tier can't provide.
+
+On macOS the Codex write fence does not restrict network routes. Tools that honor
+`HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) go through CLIO's
+proxy and are recorded. A client that ignores those variables (raw `ssh`, raw sockets,
+some Node `fetch` clients) connects directly: that connection works but is not
+recorded.
 
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
 `network_egress` permission request (grant-on-first-domain). The `host_pattern`
-vocabulary scopes a domain grant.
+vocabulary scopes a domain grant. Deny mode is decided at CLIO's proxy, so on macOS
+(and other `env-cooperative` tiers) it cannot stop a client that ignores the proxy
+variables; treat it as a policy for cooperating tools, not a network barrier there.
+
+### Local listeners
+
+The CLIO server listens on `127.0.0.1` at the `gact.port` (17800 by default) unless
+it is started with `--host`. The clio-core runtime it starts binds its RPC port
+(`9413` by default) and data port to loopback: CLIO sets `CLIO_BIND_ADDR=127.0.0.1`
+in the clio-core child environments only (`arc/clio_core_config.py`
+`pin_loopback_bind`), and keeps an explicit value set by a hand-authored multi-node
+setup. The server's own environment is not changed.
+
+clio-core's runtime web dashboard (`viz`, fixed port 8080 by default) is off in
+CLIO: the same helper sets `CLIO_VIZ_ENABLE=0`, which wins over any `cte.yaml`.
+CLIO does not use the dashboard, and with a fixed port, two homes or users on one
+computer (and a common dev server) would share 8080. An explicit
+`CLIO_VIZ_ENABLE=1` in the server's environment turns it back on for debugging.
+
+**Known gap:** clio-core's control channel, on the RPC port + 2 (`9415` by default),
+binds `tcp://*` (all interfaces) and ignores `CLIO_BIND_ADDR`
+(`ControlChannelLoop` in iowarp/clio-core `context-runtime/src/ipc_manager.cc`).
+It needs an upstream clio-core fix to use the same bind address; until then, a host
+firewall is the only control for that port.
 
 ### Grants on the record (#979)
 
@@ -277,8 +406,33 @@ A root grant widens the fence `write_roots` and restarts the workspace's residen
 fleet so an already-spawned, workspace-shared child picks up the new territory at a
 safe boundary (a busy fleet is never torn down mid-call — the restart defers and is
 reported as a typed `grant_restart_deferred_busy`, never silently — #1033). A denied
-`policy_violation` carries a
-static grant affordance (`next_action`) so the model may *ask* and the user decides.
+`policy_violation` carries the boundary diagnosis' message as its `next_action`, so
+the model may *ask* and the user decides.
+
+**Boundary feedback in the result (#1905).** A denial is diagnosed once, in the
+confinement layer (`runtime/sandbox_diagnosis.py`): a per-platform denial signature
+in stderr (PowerShell "Access to the path … is denied", `UnauthorizedAccessException`,
+`WinError 5`, `0x80070005`, errno 13/30/1, "Read-only file system", "Operation not
+permitted"; numeric codes match localized text), the denied paths from the denial
+lines or the command, and the territory check against the write roots that seam gave
+its fence. The shell and `run_code` attach it to their result as a typed `boundary`
+field (`kind`, `confidence`, `mechanism`, `paths`, `request_roots`, `message`,
+`signature`) only when there is one, and the model reads its `message`: the folder
+(nearest existing parent) and the retry with `access_paths` + `access_reason`.
+`confidence` is `confirmed` with paths outside the roots and `possible` with none
+found; a path inside the roots, or one the server's own account cannot write either,
+gets nothing, as does the floor (mechanism `none`). Exit 740 or "requires elevation"
+is `elevation_required`: no grant applies, and the agent tells the person the exact
+file to run. A confined stdio MCP server's failed call is diagnosed by the observer
+against the recomputed fleet roots at `possible` confidence, and its message is noted
+on the error (or appended to the returned error result). A narrowed territory (plan
+mode, a read-only task, a workflow step) names where the call may write instead of a
+retry. A confirmed `write_denied` with folders to ask for also raises the folder-access
+card (`gact/sandbox_folder_offer.py`, `origin: sandbox_boundary`): a pending permission
+that parks no call, so the session needs the person; allowing grants the folders, and a
+grant made another way (`POST /v1/workspaces/{wid}/grants`) settles the card (owner's
+review, CT41). No automatic rerun, no elevated lane;
+`artifact.policy_violation` reads the same diagnosis.
 
 ### Provenance tiers under the fence (#980)
 

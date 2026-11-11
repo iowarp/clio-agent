@@ -140,9 +140,12 @@ def try_steps(run_index: int) -> list[Any]:
 
 def record_advice(run_index: int, advice: str, source: str) -> None:
     """Record advice on try ``run_index``'s own scope, before it runs: a CLIO addition the
-    model is told and the UI shows."""
+    model is told and the UI shows, worded by the reminder ``clio.reminder.<source>``
+    (required: the advice may be the person's own comment on a draft)."""
+    from clio_agent import injections  # noqa: PLC0415
     from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
 
+    advice = injections.render(source, {"advice": advice}) or ""
     arc, session, base = _plane()
     # Inside a try the note carries its variants_id / try_index, like its injection part.
     note = _ctx.stamp_active_try({"text": advice, "source": source, "actor": "algorithm"})

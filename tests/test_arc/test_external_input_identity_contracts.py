@@ -18,6 +18,7 @@ from clio_agent.arc.task_types import BackendReference, QuestionReply, TaskSnaps
 from clio_agent.gact.external_tasks import ExternalConnection, ExternalTasks
 from clio_agent.gact.native_work import now
 from clio_agent.gact.questions import QuestionCommands
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.task_operations import TaskOperations
 from clio_agent.tools.task_client import TaskAwareClient, TaskSubmission, restore_native_call
 from tests.test_arc.test_conversation_owner_contracts import create_environment
@@ -71,7 +72,7 @@ async def accepted(
 
     def record() -> str:
         history = app.state.task_history
-        root = history.latest_assignment(app.state.sessions.list()[0].id)
+        root = history.latest_assignment(app.state.sessions.select(PageQuery(archived=None))[0].id)
         handle, stamp = "task_" + hashlib.sha256(task_id.encode()).hexdigest(), now()
         submission = TaskSubmission(
             handle=handle,

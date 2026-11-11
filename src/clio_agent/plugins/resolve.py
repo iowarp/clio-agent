@@ -18,16 +18,16 @@ resolution with errors raises :class:`ResolutionError` naming each one.
 
 from __future__ import annotations
 
-import hashlib
 import heapq
-import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from clio_agent.plugins.compose import ComposedPrompt, compose
+from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
+from clio_agent.plugins.kernel_bindings import resolution_rows as kernel_binding_rows
 from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
+from clio_agent.plugins.resolution_digest import resolution_digest
 from clio_agent.sdk.agent import CORE_PLUGIN, AgentSpec
 from clio_agent.sdk.versions import PluginRef, VersionRangeError
 
@@ -111,6 +111,7 @@ class Resolution:
     delta: dict[str, list[str]]
     diagnostics: list[dict[str, Any]]
     digest: str = ""
+    kernel_bindings: list[dict[str, Any]] = field(default_factory=list)
 
     def body(self) -> dict[str, Any]:
         return {
@@ -130,6 +131,7 @@ class Resolution:
             "workflow_state": self.workflow_state,
             "delta": self.delta,
             "diagnostics": self.diagnostics,
+            "kernel_bindings": self.kernel_bindings,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -137,8 +139,7 @@ class Resolution:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Resolution":
-        values = {key: data[key] for key in cls.__dataclass_fields__ if key in data}
-        return cls(**values)
+        return cls(**{key: data[key] for key in cls.__dataclass_fields__ if key in data})
 
     @property
     def plugin_ids(self) -> list[str]:
@@ -255,6 +256,7 @@ def _expand_remove(builder: _Builder, removals: set[str]) -> dict[str, dict[str,
     # A requirement that was removed (whether or not it had been pulled in yet)
     # takes its dependents with it; any other missing requirement is pulled in.
     gone = set(removed) | removals
+    unresolvable: set[str] = set()
     changed = True
     while changed:
         changed = False
@@ -267,11 +269,15 @@ def _expand_remove(builder: _Builder, removals: set[str]) -> dict[str, dict[str,
                     gone.add(plugin_id)
                     changed = True
                     break
-                if ref.id not in builder.entries:
+                if ref.id not in builder.entries and ref.id not in unresolvable:
                     builder.add(
                         ref, "required", plugin_id, entry.depth, wanted_by=f"plugin {plugin_id}"
                     )
-                    changed = True
+                    if ref.id in builder.entries:
+                        changed = True
+                    else:
+                        # Not installed: diagnosed once; retrying would never converge.
+                        unresolvable.add(ref.id)
     # A pack only groups its members: once none of them remains it leaves too,
     # unless it carries content of its own.
     for plugin_id, entry in list(builder.entries.items()):
@@ -301,7 +307,7 @@ def _order_hooks(entries: list[Entry], builder: _Builder) -> list[dict[str, Any]
         for hook in entry.record.hooks:
             row = {**_hook_dict(hook), "plugin": entry.record.id, "root": entry.record.root}
             # A Claude Code plugin's command hook reads and answers on that wire.
-            row["dialect"] = entry.record.format if hook.kind == "command" else ""
+            row["dialect"] = (hook.dialect or entry.record.format) if hook.kind == "command" else ""
             hooks.append((len(hooks), row))
     ids = {row["id"]: index for index, row in hooks}
     edges: dict[int, set[int]] = {index: set() for index, _ in hooks}
@@ -445,6 +451,11 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                     "root": record.root,
                     "description": tool.description,
                     "read_only": tool.read_only,
+                    "defer": tool.defer
+                    if tool.defer is not None
+                    else record.disclosure.get("defer"),
+                    "callers": tool.callers,
+                    "permission": tool.permission,
                 }
             )
         for name, spec in record.mcp_servers.items():
@@ -455,7 +466,17 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                     record.id,
                 )
                 continue
-            servers[name] = {"plugin": record.id, "root": record.root, "spec": spec}
+            disclosed = (record.disclosure.get("servers") or {}).get(name) or {}
+            servers[name] = {
+                "plugin": record.id,
+                "root": record.root,
+                "spec": spec,
+                "defer": disclosed.get("defer", record.disclosure.get("defer")),
+                "description": disclosed.get("description", ""),
+                "callers": disclosed.get("callers"),
+                "permission": disclosed.get("permission"),
+                "tools": dict(disclosed.get("tools") or {}),
+            }
         for skill in record.skills:
             if skill.id in skill_owner:
                 builder.error(
@@ -506,14 +527,9 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
         for catalog in record.catalogs:
             catalogs.append({"id": catalog.id, "plugin": record.id, "path": catalog.path})
         for command in record.commands:
-            commands.append(
-                {
-                    "id": command.id,
-                    "plugin": record.id,
-                    "path": command.path,
-                    "description": command.description,
-                }
-            )
+            # ``root``: the plugin folder ``${CLAUDE_PLUGIN_ROOT}`` and ``@`` lines resolve in.
+            row = {**asdict(command), "aliases": list(command.aliases), "root": record.root}
+            commands.append({**row, "plugin": record.id, "format": record.format})
         if record.workflow_state is not None:
             if workflow_state is not None:
                 builder.error(
@@ -536,26 +552,6 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
 
 
 #: Install locations: where a store keeps a plugin is not part of what resolved.
-_LOCATION_KEYS = frozenset({"root", "path"})
-
-
-def _without_locations(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {k: _without_locations(v) for k, v in value.items() if k not in _LOCATION_KEYS}
-    if isinstance(value, list):
-        return [_without_locations(v) for v in value]
-    return value
-
-
-def _digest(payload: Mapping[str, Any]) -> str:
-    """Content identity of a resolution: plugins, digests and prompt, not store paths."""
-
-    blob = json.dumps(
-        _without_locations(payload), sort_keys=True, separators=(",", ":"), default=str
-    )
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
 def _finish(
     builder: _Builder,
     *,
@@ -651,6 +647,7 @@ def _finish(
         workflow_state=collected["workflow_state"],
         delta=delta.to_dict(),
         diagnostics=[],
+        kernel_bindings=kernel_binding_rows(entry.record for entry in entries),
     )
     generators = {
         key: (lambda generator=generator: generator(resolution))
@@ -663,6 +660,9 @@ def _finish(
         tools=tool_names,
         plugins=plugin_ids,
         generators=generators,
+        budget_exempt=frozenset(
+            entry.record.id for entry in entries if entry.record.marketplace in PRODUCT_MARKETPLACES
+        ),
     )
     for warning in composed.warnings:
         builder.diagnostics.append(
@@ -673,7 +673,7 @@ def _finish(
     if errors:
         raise ResolutionError(errors)
     resolution.diagnostics = [row.to_dict() for row in builder.diagnostics]
-    resolution.digest = _digest(resolution.body())
+    resolution.digest = resolution_digest(resolution.body())
     return resolution
 
 

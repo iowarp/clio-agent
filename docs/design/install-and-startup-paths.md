@@ -27,7 +27,7 @@ install --source     # build from source
 |---|---|---|---|---|
 | 1 | `install.sh` / `install.ps1` (`curl \| bash`, `irm \| iex`) | Linux, macOS / Windows | `clio-agent` backend (PyPI), TUI (prebuilt release binary), web UI bundle (best-effort), `clio-kit`, launcher. **No desktop app.** | PyPI + GitHub Releases |
 | 2 | `desktop.ps1` | Windows | Desktop app: downloads the **bundled** NSIS setup, verifies SHA256, runs it silently. The bundled setup carries its own `clio-agent` runtime. | GitHub Releases |
-| 3 | `desktop.sh` | macOS only | Desktop app. Apple Silicon: bundled DMG. Intel: lite (attach-only) DMG. Needs macOS 14+. | GitHub Releases |
+| 3 | `desktop.sh` | macOS only | Desktop app. Apple Silicon: bundled DMG. Intel: lite (attach-only) DMG. Needs macOS 15+. | GitHub Releases |
 | 4 | Native installers (MSI/NSIS, DMG, deb, rpm, AppImage) | all | Desktop app. `-bundled` variants include the backend; the others (all AppImage, Intel DMG) are attach-only and need a separately installed `clio-agent` (`docs/INSTALL.md`). | GitHub Releases |
 | 5 | Build the desktop from source (`pnpm ... tauri:build`) | all | A bare binary with no runtime. On first launch the app falls back to the in-app install below. | `gact-tui` repo |
 
@@ -98,8 +98,9 @@ Workarounds used: Git Bash and Go first on PATH when launching the app;
 1. **Five entry points, with OS-specific scripts each** (`.ps1`/`.sh`/native).
    Fixes and optimizations apply to one path and miss the others.
 2. **The fast path is narrow.** The packed runtime (`gact-runtime.tar.zst`,
-   `runtime_pack.rs`) is `cfg(windows)`-only. Linux bundles deb/rpm only (no
-   bundled AppImage); macOS bundles Apple Silicon only.
+   `runtime_pack.rs`) is `cfg(windows)`-only in the desktop. Linux deb/rpm ship the
+   same archive and unpack it in their maintainer scripts (`install/linux-package`);
+   Linux bundles deb/rpm only (no bundled AppImage); macOS bundles Apple Silicon only.
 3. **Desktop and CLI installs are separate** and can leave two backends.
 4. **Source-build mode is a second implementation** of the install, with its own
    Python version, reinstall behavior, and prerequisites (git, go, bash).

@@ -14,11 +14,13 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import CoordinationGrant, TaskOwner, TaskSnapshot
 from clio_agent.flows.context import FlowContext
 from clio_agent.flows.outcomes import CallRefused
+from clio_agent.gact import child_report_fit
 from clio_agent.gact.assignment_evidence import select_assignment_evidence
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
 from clio_agent.sdk import Flow
+from tests._result_room import pin_result_room
 from tests.test_arc.test_assignment_evidence_contracts import commit_delegation, evidence_children
 from tests.test_arc.test_task_observation_compatibility import forbidden_cancel
 
@@ -103,8 +105,12 @@ async def test_finished_critic_tool_handoff_uses_real_delegation_commit_and_exac
     with pytest.raises(ValueError, match="before delegated input commitment"):
         await asyncio.to_thread(operations.result, reader, fetch.handle)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
+    pin_result_room(monkeypatch, 31)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(31 // 4))
     cursor = await asyncio.to_thread(commit_delegation, owner, critic)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "12000")
+    pin_result_room(monkeypatch, 12000)
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(12000 // 4))
     metadata = await asyncio.to_thread(
         operations.result,
         reader,

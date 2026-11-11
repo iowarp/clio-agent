@@ -29,7 +29,9 @@ path.
 
 The block is SERVER grounding prepended to the turn input — never user text, never model output
 — so it carries a stable, greppable marker (:data:`PLAN_MODE_REMINDER_MARKER`, the #881 marker
-discipline). ``turn.py`` calls :func:`plan_mode_reminder` from its enrichment step.
+discipline). ``turn.py`` calls :func:`plan_mode_reminder` from its enrichment step. Its wording is
+the reminder ``clio.reminder.plan_mode`` and its ``plan_mode_*`` pieces
+(``plugins/builtin/core/ai.iowarp.clio/injections/``); this module decides when the full contract is due.
 """
 
 from __future__ import annotations
@@ -267,7 +269,13 @@ def plan_mode_reminder(app: "FastAPI", sid: str, session: Any, *, force_full: bo
             guidance.full_interval,
         )
     return _plan_mode_reminder_block(
-        full=full, plan_file=plan_file, exists=exists, guidance=guidance, playbook=playbook
+        full=full,
+        plan_file=plan_file,
+        exists=exists,
+        guidance=guidance,
+        playbook=playbook,
+        app=app,
+        session_id=sid,
     )
 
 
@@ -377,12 +385,12 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
     def plan_exit(summary: str, recommendedMode: str = "", riskNotes: str = "") -> str:  # noqa: N803
         """Finish planning and hand the plan back to the user for approval to leave plan mode.
 
-        Call this ONCE, at the end of planning, when your plan file is complete. It does NOT take
-        the plan text — it reads the plan you wrote to the session's plan file. Provide a 1-2
+        Call it once, at the end of planning, when the plan is complete. It reads the plan
+        you wrote with plan_update from the session's plan file, so it takes no plan text. Provide a 1-2
         sentence ``summary``, optionally a ``recommendedMode`` (``auto`` = execute automatically,
         ``interactive`` = execute prompting per action, ``exit_only`` = leave plan mode but wait
-        before executing), and optional ``riskNotes``. This ENDS YOUR TURN: the user approves or
-        rejects out-of-band; on approval you are resumed with authorization to execute."""
+        before executing), and optional ``riskNotes``. Your turn ends here: the user approves or
+        rejects out-of-band, and on approval you are resumed with authorization to execute."""
 
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
@@ -403,6 +411,7 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
     return native_tool(
         plan_exit,
         name="plan_exit",
+        callers="direct",
         presentation="specialized",
         domain="planning",
         desc=plan_exit.__doc__,

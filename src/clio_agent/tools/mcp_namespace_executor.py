@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
-from clio_agent.tools.mcp_task_routing import record_route_healed, resolve_namespace_route
+from clio_agent.runtime import trace
+from clio_agent.tools.mcp_task_routing import (
+    MCP_PLAIN_SERVER_ON_PROXY,
+    record_route_healed,
+    resolve_namespace_route,
+)
 
 
 class AsyncNamespacePreparationMixin:
@@ -59,8 +64,9 @@ class AsyncNamespacePreparationMixin:
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
         """Merge freshly mounted definitions into the live flat tool table.
 
-        New names bump :attr:`tools_revision`, so an agent already running picks up a
-        server that finished preparing after its turn began (``live_tool_refresh``).
+        New names bump :attr:`tools_revision`, so a connected server's later tool-list
+        changes reach its agent (``live_tool_refresh``). Initial definitions are joined
+        before the first model request.
         """
 
         del namespace
@@ -185,6 +191,11 @@ class AsyncNamespacePreparationMixin:
         The one start of a cold server serves both the connection and the listing: a
         first start connects directly (``mcp_task_routing.first_start_direct``) and
         records the server's capability from that connection, so no heal restarts it.
+
+        A server that turns out not to support tasks has its tool calls served by the
+        proxy's one kept-alive backend, so the direct client is closed and the next
+        use connects through the proxy: prompts, resources and tool-list refreshes then
+        reach the same process the calls changed (DS34).
         """
 
         from clio_agent.tools.mcp_task_routing import (  # noqa: PLC0415
@@ -206,8 +217,35 @@ class AsyncNamespacePreparationMixin:
             listed = list(await client.list_tools())
             if self._namespace_direct_routes.get(namespace, False):
                 # A direct connection sees the server itself: its capability is definitive.
-                record_definitive_capability(namespace, client, listed)
+                capability = record_definitive_capability(namespace, client, listed)
+                if not capability.task_capable:
+                    await self._evict_namespace_client(namespace)
+                    trace.event("TOOLS", "%s namespace=%s", MCP_PLAIN_SERVER_ON_PROXY, namespace)
         return listed
+
+    async def list_namespace_prompts(self, namespace: str) -> list[Any]:
+        """``namespace``'s prompts over its persistent connection (:mod:`.mcp_prompts`)."""
+
+        from clio_agent.tools.mcp_prompts import list_prompts  # noqa: PLC0415
+
+        client = await self._prompt_client(namespace)
+        return await list_prompts(client, namespace, self.__dict__.setdefault("_clio_prompts", {}))
+
+    async def get_namespace_prompt(
+        self, namespace: str, name: str, arguments: Mapping[str, str]
+    ) -> Any:
+        """``prompts/get`` over ``namespace``'s persistent connection."""
+
+        client = await self._prompt_client(namespace)
+        return await client.get_prompt(name, dict(arguments))
+
+    async def _prompt_client(self, namespace: str) -> Any:
+        if self._closed or self._client is None:
+            raise RuntimeError("AsyncMCPToolExecutor is not running")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None:
+            raise ValueError(f"unknown MCP namespace {namespace!r}")
+        return await self._namespace_client(namespace, proxy)
 
     async def reset_namespace(self, namespace: str) -> None:
         """Close ``namespace``'s persistent connection so the next use starts it again."""
@@ -358,6 +396,22 @@ class SyncNamespacePreparationMixin:
         return self._run_while_server_works(
             self._async_executor.list_namespace_tools(namespace),
             action=f"namespace {namespace!r} connect and list",
+        )
+
+    def list_namespace_prompts(self, namespace: str) -> list[Any]:
+        """``namespace``'s prompts over its persistent connection."""
+
+        return self._run_while_server_works(
+            self._async_executor.list_namespace_prompts(namespace),
+            action=f"namespace {namespace!r} prompt list",
+        )
+
+    def get_namespace_prompt(self, namespace: str, name: str, arguments: Mapping[str, str]) -> Any:
+        """``prompts/get`` over ``namespace``'s persistent connection."""
+
+        return self._run_while_server_works(
+            self._async_executor.get_namespace_prompt(namespace, name, arguments),
+            action=f"prompt {namespace}/{name}",
         )
 
     def reset_namespace(self, namespace: str) -> None:

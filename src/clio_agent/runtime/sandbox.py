@@ -266,8 +266,19 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
     (``allow_upstream_proxy``). MXC permits direct host loopback, so its narrower
     external-egress guarantee is recorded separately rather than claiming all
     local connections are observed.
+
+    The macOS layer does not enable codex's managed proxy, so a child reaches CLIO's
+    chokepoint only through the proxy environment variables; a client that ignores them
+    connects directly, unrecorded and outside deny mode. That tier is therefore reported
+    ``env-cooperative``, never ``proxy``.
     """
     mxc = base_details.get("codex", {}).get("implementation") == "mxc"
+    if mxc:
+        net_enforcement = "proxy-external"
+    elif base_details.get("platform") == "darwin":
+        net_enforcement = NET_ENFORCEMENT_ENV_COOPERATIVE
+    else:
+        net_enforcement = NET_ENFORCEMENT_PROXY
     return SandboxResult(
         mechanism=MECHANISM_CODEX,
         active=True,
@@ -276,7 +287,7 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
             **base_details,
             "codex_binary": det.binary_path,
             "codex_version": det.version,
-            "net_enforcement": "proxy-external" if mxc else NET_ENFORCEMENT_PROXY,
+            "net_enforcement": net_enforcement,
             **({"host_loopback": "direct", "detached_children": "terminated"} if mxc else {}),
         },
     )
@@ -556,6 +567,14 @@ def install_sandbox(*, env: Optional[Mapping[str, str]] = None) -> SandboxResult
     return result
 
 
+def fence_enforced() -> bool:
+    """Whether this host's sandbox enforces the write fence (an active backend), so a
+    child's writes are confined to the territory it is given."""
+
+    state = current_state()
+    return state is not None and state.active and state.mechanism != MECHANISM_NONE
+
+
 def current_state() -> SandboxResult | None:
     """Return the confinement state resolved in THIS process, or ``None`` if never installed."""
     return _STATE
@@ -619,8 +638,19 @@ def fence_pending_restart() -> bool:
     return _FENCE_PENDING_RESTART
 
 
-# Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (ratchet); re-exported.
-from clio_agent.runtime.sandbox_doctor import emit_boot_state_event, probe_sandbox  # noqa: E402
+# Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (ratchet); re-exported
+# on first use. Importing the doctor pulls in config, the LM factory and the A2UI schemas
+# (about 0.55 s), which a tool server confining its first command paid on the call (2026-11).
+_DOCTOR_EXPORTS = frozenset({"emit_boot_state_event", "probe_sandbox"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DOCTOR_EXPORTS:
+        from clio_agent.runtime import sandbox_doctor  # noqa: PLC0415
+
+        return getattr(sandbox_doctor, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "MECHANISM_LANDLOCK",
@@ -656,6 +686,4 @@ __all__ = [
     "REASON_FENCE_PENDING_RESTART",
     "mark_fence_pending_restart",
     "fence_pending_restart",
-    "emit_boot_state_event",
-    "probe_sandbox",
-]
+]  # emit_boot_state_event and probe_sandbox resolve through __getattr__

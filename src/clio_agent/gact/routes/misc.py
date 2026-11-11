@@ -40,6 +40,7 @@ from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
+from clio_agent.gact.view_fleet import viewing
 from clio_agent.runtime.stream_audit import stream_audit
 
 # Connection-preamble events (server.connected / session.snapshot) carry this
@@ -505,6 +506,9 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 last_event_id = 0
             sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
             heartbeat_task: Optional[asyncio.Task] = None
+            # A live view keeps the conversation's prepared MCP servers (view_fleet).
+            view = viewing(app, sid)
+            await view.__aenter__()
             try:
                 # Heartbeat task — pumps a server.heartbeat event
                 # into the queue every 15s. SPEC §7.1.
@@ -528,6 +532,7 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             finally:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
+                await view.__aexit__(None, None, None)
 
         return StreamingResponse(
             event_stream(),

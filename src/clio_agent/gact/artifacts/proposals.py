@@ -525,7 +525,9 @@ def promote_proposal(
         outcome = _rejected(
             name,
             RejectionReason.OVER_CAP,
-            f"per-turn promotion cap ({proposals_per_turn()}) reached",
+            f"per-turn promotion cap ({proposals_per_turn()}) reached. A revision of an output "
+            "already promoted this turn reuses its slot; keep working scripts as ordinary "
+            "workspace files and group related companion files in one retained package.",
         )
         _emit_proposal_event(
             app,

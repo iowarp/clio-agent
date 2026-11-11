@@ -11,7 +11,9 @@ from uuid import uuid4
 from clio_agent.arc.task_types import QuestionDefinition, TaskOwner
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.child_report_fit import report_room
 from clio_agent.gact.off_loop import join_off_loop
+from clio_agent.gact.read_only_outcomes import outcomes_recorded
 from clio_agent.gact.task_access import TaskAccess
 from clio_agent.gact.task_tool_collection import collected as _collected
 from clio_agent.gact.tool_observation import CollectedTaskResult
@@ -89,6 +91,7 @@ def _tool(
         title=name.replace("_", " ").capitalize(),
         domain="tasks",
         read_only=read,
+        callers="direct",  # task, spawn and question controls are steps of the agent
     )
 
 
@@ -110,6 +113,7 @@ def build_task_tools() -> list[Any]:
         message_before: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        await outcomes_recorded(app)  # read-only calls' records, written behind replies
         value = await join_off_loop(
             app.state.task_operations.query,
             caller,
@@ -140,6 +144,7 @@ def build_task_tools() -> list[Any]:
         artifact_id: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        await outcomes_recorded(app)
         value = await app.state.task_operations.observe(
             caller,
             tasks,
@@ -161,10 +166,11 @@ def build_task_tools() -> list[Any]:
         interrupt_on_mail: bool = True,
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_operations.wait(
-            caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
-        )
-        return await app.state.task_history.io.run(_collected, app, caller, value)
+        with report_room():
+            value = await app.state.task_operations.wait(
+                caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
+            )
+            return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def cancel_tasks(tasks: str | list[str]) -> dict[str, Any]:
         app, caller = _runtime()
@@ -174,10 +180,11 @@ def build_task_tools() -> list[Any]:
         handle: str, cursor: str | None = None, select: list[str] | None = None
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_history.io.run(
-            app.state.task_operations.result, caller, handle, cursor, select
-        )
-        return await app.state.task_history.io.run(_collected, app, caller, value)
+        with report_room():
+            value = await app.state.task_history.io.run(
+                app.state.task_operations.result, caller, handle, cursor, select
+            )
+            return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def send_agent_message(
         target: str, message: str, reply_to: str | None = None
@@ -288,7 +295,7 @@ def build_task_tools() -> list[Any]:
                     "default": None,
                 },
             },
-            "Collect retained terminal output and publish its completion notices, or report pending. Optional select lists JSON Pointers, e.g. ['/workflow_state'], returning a pointer-keyed result object without paging unrelated report text. Escape key / as ~1 and ~ as ~0. Unselected dictionary reads list result_keys. Missing paths are errors. Follow next_cursor for bounded output; concatenate JSON chunks before parsing. The cursor pins source, selection and recipient; omit select on continuation or repeat it unchanged. A delegated evidence cursor reads only its committed snapshot. Later explicit reads remain possible.",
+            "Collect retained terminal output and publish its completion notices, or report pending. Optional select lists JSON Pointers, e.g. ['/workflow_state'], returning a pointer-keyed result object without paging unrelated report text. Escape key / as ~1 and ~ as ~0. Unselected dictionary reads list result_keys. Missing paths are errors. A result too big to return whole comes back as result_file (path, size) with its beginning in result_excerpt; read the file for more. An old next_cursor still reads its pages. Delegated evidence reads only its committed snapshot. Later explicit reads remain possible.",
             read=True,
         ),
         _tool(
@@ -335,8 +342,12 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
         allowFreeform: bool | None = None,  # noqa: N803 - released parameter
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        from clio_agent.gact.artifacts.observer_bridge import current_call_id, observer_call_id
         from clio_agent.gact.question_bundle import normalize_question_bundle
 
+        # The asking call's own id, read before the hand-off below, links the Question
+        # (and its interaction) to the tool row that asked it.
+        asking_call = TASK_CALL.get().invocation_id or observer_call_id() or current_call_id()
         bundle = normalize_question_bundle(questions) if questions is not None else None
 
         def post() -> dict[str, Any]:
@@ -352,7 +363,7 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
                         raise ValueError("surface_id must name an existing surface in this session")
                 if expiresInSeconds < 0:
                     raise ValueError("Question expiry must be nonnegative")
-                invocation = TASK_CALL.get().invocation_id or uuid4().hex
+                invocation = asking_call or uuid4().hex
                 handle = (
                     "task_"
                     + hashlib.sha256(

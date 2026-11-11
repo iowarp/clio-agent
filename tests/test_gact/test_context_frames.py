@@ -12,7 +12,7 @@ from clio_agent.gact.app import build_app
 
 # Every session runs its pinned plugin agent (the hermetic ``standard``); route its
 # module to each test's ``build_app(agent=...)`` host fake.
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 @dataclass
@@ -149,3 +149,126 @@ def test_capabilities_advertise_context_frames(client: TestClient) -> None:
     caps = client.get("/v1/capabilities").json()["capabilities"]
 
     assert caps["x_clio_context_frames"] is True
+
+
+def _message(mid: str, role: str, text: str, **tokens: int) -> Any:
+    from clio_agent.gact.types import Message, Part, Tokens
+
+    return Message(
+        id=mid,
+        session_id="",
+        role=role,
+        created_at="2026-11-10T00:00:00+00:00",
+        updated_at="2026-11-10T00:00:00+00:00",
+        parts=[Part(id=f"{mid}_p", type="text", text=text)],
+        tokens=Tokens(**tokens),
+    )
+
+
+def test_context_frame_message_items_ignore_provider_call_usage(client: TestClient) -> None:
+    """An assistant message's usage is the whole call (system prompt + history);
+    the frame item must count only what the message itself adds (gact-tui#739)."""
+
+    from clio_agent.gact.enrichment import _finalize_context_frame, _record_context_frame
+
+    app = client.app
+    sid = _create_session(client)
+    app.state.sessions.update(
+        sid,
+        metadata_patch={
+            "context_usage_by_scope": {
+                "standard": {"used_tokens": 38_000, "source": "provider", "turn_id": "t0"}
+            }
+        },
+    )
+    user_1 = _message("msg_user_1", "user", "hello")
+    answer = _message(
+        "msg_asst_1",
+        "assistant",
+        "Hi! " * 20,
+        input=4_000,
+        output=40,
+        cache_read=33_000,
+        cache_write=600,
+    )
+    user_2 = _message("msg_user_2", "user", "what is my name?")
+    app.state.messages[sid] = [user_1, answer, user_2]
+
+    frame = _record_context_frame(
+        app,
+        sid,
+        app.state.sessions.get(sid),
+        user_2,
+        user_text="what is my name?",
+        enriched_text="what is my name?",
+        context_error=None,
+    )
+
+    by_id = {item["source_id"]: item["tokens_estimated"] for item in frame["items"]}
+    assert by_id == {"msg_user_1": 1, "msg_asst_1": 20, "msg_user_2": 4}
+    assert frame["tokens_estimated"] == 25
+    assert frame["metadata"]["token_estimate"] == "chars_div_4"
+    assert frame["metadata"]["prompt_input_tokens"] == 38_000
+    assert frame["metadata"]["prompt_input_tokens_turn_id"] == "t0"
+
+    _finalize_context_frame(
+        app,
+        sid,
+        frame["id"],
+        "msg_asst_2",
+        "completed",
+        error_info=None,
+        prompt_usage={"used_tokens": 38_150, "source": "provider", "cache_read_tokens": 37_000},
+    )
+    meta = frame["metadata"]
+    assert meta["prompt_input_tokens"] == 38_150
+    assert meta["prompt_input_tokens_source"] == "provider"
+    assert meta["prompt_input_tokens_turn_id"] == user_2.id
+    assert meta["prompt_input_cache_read_tokens"] == 37_000
+    assert frame["tokens_estimated"] == 25
+
+
+def test_context_frame_total_skips_compacted_messages(client: TestClient) -> None:
+    from clio_agent.gact.enrichment import _record_context_frame
+    from clio_agent.gact.summarization_record import summarization_part
+    from clio_agent.gact.types import Message
+
+    app = client.app
+    sid = _create_session(client)
+    old = _message("msg_old", "assistant", "x" * 4_000)
+    checkpoint = Message(
+        id="msg_checkpoint",
+        session_id=sid,
+        role="assistant",
+        created_at="2026-11-10T00:00:01+00:00",
+        updated_at="2026-11-10T00:00:01+00:00",
+        parts=[
+            summarization_part(
+                "s" * 40,
+                trigger="manual",
+                compaction_id="cmp_1",
+                derived_from=["msg_old"],
+                compacted_message_ids=["msg_old"],
+            )
+        ],
+    )
+    user = _message("msg_user_9", "user", "next question")
+    app.state.messages[sid] = [old, checkpoint, user]
+
+    frame = _record_context_frame(
+        app,
+        sid,
+        app.state.sessions.get(sid),
+        user,
+        user_text="next question",
+        enriched_text="next question",
+        context_error=None,
+    )
+
+    items = {item["source_id"]: item for item in frame["items"]}
+    assert items["msg_old"]["included"] is False
+    assert items["msg_old"]["tokens_estimated"] == 1_000
+    assert frame["tokens_estimated"] == sum(
+        item["tokens_estimated"] for item in frame["items"] if item["included"]
+    )
+    assert frame["tokens_estimated"] < 1_000

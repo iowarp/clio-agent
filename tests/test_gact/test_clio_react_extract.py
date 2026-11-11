@@ -66,6 +66,25 @@ def test_outputs_the_loop_did_not_produce_are_extracted_after_enough_steps(
     assert "look 3" in str(engine.requests[-1].messages), "the extract sees the trajectory"
 
 
+def test_a_workflow_step_extracts_only_workflow_state_on_a_short_answer(
+    extract_config: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extract_config()
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.active_workflow_step",
+        lambda: {"run": "r", "step": "a"},
+    )
+    pred, engine = _run(
+        [Reply(text="from-a"), _extracted(workflow_state='{"shared": "from-a"}')],
+        "question -> answer, summary, workflow_state",
+    )
+
+    assert pred.answer == "from-a"
+    assert pred.workflow_state == '{"shared": "from-a"}'
+    assert not getattr(pred, "summary", None)
+    assert len(engine.requests) == 2
+
+
 def test_a_short_loop_does_not_extract(extract_config: Any) -> None:
     extract_config()
     pred, engine = _run([*_steps(2), Reply(text="The answer.")], "question -> answer, summary")
@@ -138,11 +157,11 @@ def test_a_submit_never_extracts(extract_config: Any) -> None:
 
 def test_the_extract_reads_the_agents_context_from_clio_core(extract_config: Any) -> None:
     """The extract sees exactly what the agent saw -- clio-core's context, including what
-    the harness recorded there (the tool-use note) -- not the loop's private step list."""
-    from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE
-
+    the harness recorded there (each step's call and result) -- not the loop's private
+    step list."""
     extract_config()
     script = [*_steps(4), _extracted(answer="Best found: 42.")]
     _pred, engine = _run(script, "question -> answer", max_iters=4)
 
-    assert TOOL_USE_NOTE[:60] in str(engine.requests[-1].messages)
+    sent = str(engine.requests[-1].messages)
+    assert all(f"look {i}" in sent for i in range(4))

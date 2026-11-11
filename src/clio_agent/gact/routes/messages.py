@@ -174,12 +174,20 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         live_parts = overlay_in_flight_part(app, sid, live_parts)
         now = datetime.now(timezone.utc).isoformat()
+        registry = getattr(app.state, "turn_transcripts", None)
+        transcript = registry.get(sid) if registry is not None else None
+        live = transcript if transcript is not None and transcript.message_id == msg_id else None
         return Message(
             id=msg_id,
-            turn_id=str(getattr(live_parts[0], "turn_id", "") or ""),
+            turn_id=(
+                live.turn_id
+                if live is not None
+                else str(getattr(live_parts[0], "turn_id", "") or "")
+            ),
             session_id=sid,
             role="assistant",
-            created_at=now,
+            # The reply's start, not this reload's instant (stable across reloads).
+            created_at=live.created_at_iso if live is not None else now,
             updated_at=now,
             parts=live_parts,
             metadata={"live": True, "status": "running"},
@@ -481,7 +489,13 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 (getattr(app.state, "live_assistant_message_ids", {}) or {}).get(sid) or ""
             )
             turn_task = app.state.in_flight_turns.get(sid)
-            owns_turn = turn_task is not None and not turn_task.done()
+            runner = getattr(app.state, "turn_runner", None)
+            # The turn runner owns the segment's reservation; ``in_flight_turns`` is a
+            # legacy view it no longer fills, so reading only that left every running
+            # call projected as ``unknown``.
+            owns_turn = (turn_task is not None and not turn_task.done()) or (
+                runner is not None and runner.busy(sid)
+            )
             paused = sess.status in {"waiting_user", "waiting_permission"}
             active_ids = frozenset({live_id}) if live_id and (owns_turn or paused) else frozenset()
             snapshot = transcript_entities(
@@ -494,6 +508,9 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             from clio_agent.gact.tool_execution_projection import join_task_executions
 
             snapshot["tools"] = join_task_executions(app, sid, snapshot["tools"])
+            from clio_agent.gact.permission_delivery import overlay_waiting_calls
+
+            snapshot["tools"] = overlay_waiting_calls(app, sid, snapshot["tools"])
             # Replay from before materialization so a concurrent task change is not lost.
             snapshot["cursor"] = projection_cursor
             # The paging cursor is a MESSAGE id and a different fact from the

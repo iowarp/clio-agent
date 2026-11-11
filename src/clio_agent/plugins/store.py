@@ -15,7 +15,8 @@ Trust (``docs/design/sdk/plugins-and-composition.md``, "External plugins and tru
   hooks, flows) is held as pending until the trust step runs again, while an
   update that changes only text (skills, fragments) applies to the next session.
 
-Layout under ``<config>/plugins/``::
+Layout under ``<config>/plugins/`` (on Windows a deep ``<config>`` moves a new store to
+``%LOCALAPPDATA%\\clio-p\\<hash>``, see :func:`clio_agent.paths.plugin_store_dir`)::
 
     state.json                     marketplaces, active and pending records, specs, trust
     snapshots/<market>/<digest>/   immutable copies the records point into
@@ -29,9 +30,13 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import logging
 import os
 import shutil
+import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +45,7 @@ from filelock import FileLock
 
 from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
 from clio_agent.plugins.claude_code import import_claude_plugin
+from clio_agent.plugins.commands import BUILTIN_ROOT
 from clio_agent.plugins.loader import PluginLoadError, load_plugin, tree_digests
 from clio_agent.plugins.manifest import within
 from clio_agent.plugins.marketplace import (
@@ -51,11 +57,12 @@ from clio_agent.plugins.marketplace import (
 from clio_agent.plugins.package_files import ignored_package_names, source_stamp
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.sources import SourceError, fetch
+from clio_agent.plugins.store_relocation import relocate_plugin_store
 from clio_agent.sdk.agent import AgentSpec
 from clio_agent.sdk.versions import PluginRef, valid_plugin_id
 
-BUILTIN_ROOT = Path(__file__).resolve().parent / "builtin"
 BUILTIN_MARKETPLACE = "clio-builtin"
+logger = logging.getLogger(__name__)
 USER_MARKETPLACE = "user"
 #: ``trusted_digests`` key for a marketplace's ``agents/`` folder (not a valid plugin id).
 AGENTS_DIGEST = "@agents"
@@ -136,14 +143,88 @@ def _copy_tree(source: Path, target: Path) -> None:
         # Another install of the same content finished first: its copy is identical.
 
 
-def builtin_records() -> list[PluginRecord]:
-    """Plugins that ship inside clio-agent itself (trusted like any pip package)."""
+#: The built-in records last loaded, with the (root, file stamp) they were loaded from.
+_BUILTIN_LOADED: tuple[tuple[str, str], tuple[PluginRecord, ...]] | None = None
+#: When the stamp was last taken; built-ins change only in a dev checkout, so the
+#: tree walk runs at most once per this many seconds, on its own thread.
+_BUILTIN_RECHECK_S = 2.0
+_builtin_checked_at = 0.0
+_builtin_recheck = threading.Lock()  # held by the one thread re-stamping the tree
+_builtin_executor: ThreadPoolExecutor | None = None
 
-    records = []
-    for child in sorted(BUILTIN_ROOT.iterdir()) if BUILTIN_ROOT.is_dir() else []:
-        if (child / "plugin.json").is_file():
-            records.append(load_plugin(child, marketplace=BUILTIN_MARKETPLACE, trusted=True))
+
+def _builtin_rechecker() -> ThreadPoolExecutor:
+    # A standing worker: starting a thread per check blocks the caller until it runs.
+    global _builtin_executor
+    if _builtin_executor is None:
+        _builtin_executor = ThreadPoolExecutor(1, thread_name_prefix="clio-builtin-plugins")
+    return _builtin_executor
+
+
+def _load_builtins(key: tuple[str, str]) -> tuple[PluginRecord, ...]:
+    global _BUILTIN_LOADED
+    records = tuple(
+        load_plugin(child, marketplace=BUILTIN_MARKETPLACE, trusted=True)
+        for child in sorted(BUILTIN_ROOT.iterdir())
+        if (child / "plugin.json").is_file()
+    )
+    _BUILTIN_LOADED = (key, records)
     return records
+
+
+def _recheck_builtins() -> None:
+    """Re-stamp the built-in tree and reload it if it moved (background thread)."""
+    global _builtin_checked_at
+    try:
+        key = (str(BUILTIN_ROOT), source_stamp(BUILTIN_ROOT))
+        loaded = _BUILTIN_LOADED
+        if loaded is None or loaded[0] != key:
+            _load_builtins(key)
+    except Exception:  # noqa: BLE001 - logged; loaded records stay, next due read retries
+        logger.warning("built-in plugin recheck failed", exc_info=True)
+    finally:
+        _builtin_checked_at = time.monotonic()
+        _builtin_recheck.release()
+
+
+def builtin_records() -> list[PluginRecord]:
+    """Plugins that ship inside clio-agent itself (trusted like any pip package).
+
+    Loading hashes and parses every built-in file; every catalog read (each MCP
+    listing, agent resolution and doctor pass) needs them. They are loaded again
+    only when the tree's file metadata (:func:`source_stamp`) moves. Once loaded, a
+    due check (every :data:`_BUILTIN_RECHECK_S`) runs on one background thread and
+    readers keep the loaded records meanwhile, so no request pays for the tree walk.
+    """
+
+    global _builtin_checked_at
+    loaded = _BUILTIN_LOADED
+    if loaded is not None and loaded[0][0] == str(BUILTIN_ROOT):
+        if time.monotonic() - _builtin_checked_at >= _BUILTIN_RECHECK_S and (
+            _builtin_recheck.acquire(blocking=False)
+        ):
+            _builtin_rechecker().submit(_recheck_builtins)
+        return list(loaded[1])
+    if not BUILTIN_ROOT.is_dir():
+        return []
+    key = (str(BUILTIN_ROOT), source_stamp(BUILTIN_ROOT))
+    records = _load_builtins(key)
+    _builtin_checked_at = time.monotonic()
+    return list(records)
+
+
+@dataclass
+class _StateView:
+    """One parsed ``state.json`` revision and what readers derived from it (read-only)."""
+
+    revision: tuple[int, int, int]
+    state: dict[str, Any]
+    installed: tuple[PluginRecord, ...] | None = None
+    specs: dict[str, AgentSpec] | None = None
+
+
+#: The latest :class:`_StateView` per ``state.json`` path, shared by every store on it.
+_STATE_VIEWS: dict[str, _StateView] = {}
 
 
 class PluginStore:
@@ -154,6 +235,7 @@ class PluginStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_path = root / "state.json"
         self.lock = FileLock(str(root / "state.lock"))
+        relocate_plugin_store(root, self.lock)  # a moved store: its recorded paths point here
 
     # ------------------------------------------------------------------ state
     def _empty(self) -> dict[str, Any]:
@@ -183,6 +265,38 @@ class PluginStore:
         temporary.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(temporary, self.state_path)
 
+    def revision(self) -> tuple[int, int, int]:
+        """An identity of the stored state that changes on every write.
+
+        Every write replaces ``state.json`` (``_write_state``), so its inode, size
+        and modification time change with it, whichever process wrote it. Readers
+        that cache what they derived from the store (A2UI catalogs) compare this
+        instead of relying on the writer to tell them.
+        """
+
+        try:
+            stat = self.state_path.stat()
+        except FileNotFoundError:
+            return (0, 0, 0)
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+    def _view(self) -> _StateView:
+        """The parsed state for readers, parsed again only when :meth:`revision` moves.
+
+        Shared and read-only: writers start from :meth:`read_state`, a private copy.
+        """
+
+        revision = self.revision()
+        key = str(self.state_path)
+        view = _STATE_VIEWS.get(key)
+        if view is not None and view.revision == revision and revision != (0, 0, 0):
+            return view
+        # A write between the stat and the read stores newer content under the older
+        # revision; the next read sees the newer revision and parses again.
+        view = _StateView(revision, self.read_state())
+        _STATE_VIEWS[key] = view
+        return view
+
     # ---------------------------------------------------------------- reading
     def marketplaces(self) -> dict[str, dict[str, Any]]:
         return dict(self.read_state()["marketplaces"])
@@ -190,8 +304,12 @@ class PluginStore:
     def records(self) -> list[PluginRecord]:
         """Every usable plugin record: built-ins first, then installed ones."""
 
-        state = self.read_state()
-        installed = [PluginRecord.from_dict(row) for row in state["plugins"].values()]
+        view = self._view()
+        installed = view.installed
+        if installed is None:
+            installed = view.installed = tuple(
+                PluginRecord.from_dict(row) for row in view.state["plugins"].values()
+            )
         return [*builtin_records(), *installed]
 
     def pending(self) -> list[PluginRecord]:
@@ -200,14 +318,19 @@ class PluginStore:
     def trusted(self, record: PluginRecord) -> bool:
         if record.marketplace == BUILTIN_MARKETPLACE:
             return True
-        market = self.read_state()["marketplaces"].get(record.marketplace) or {}
+        market = self._view().state["marketplaces"].get(record.marketplace) or {}
         if not market.get("trusted"):
             return False
         return (market.get("trusted_digests") or {}).get(record.id) == record.executable_digest
 
     def agent_specs(self) -> dict[str, AgentSpec]:
-        state = self.read_state()
-        return {key: AgentSpec.from_dict(value) for key, value in state["agents"].items()}
+        view = self._view()
+        specs = view.specs
+        if specs is None:
+            specs = view.specs = {
+                key: AgentSpec.from_dict(value) for key, value in view.state["agents"].items()
+            }
+        return dict(specs)
 
     def user_agents(self) -> dict[str, UserAgent]:
         base = self.root / "user-agents"

@@ -13,37 +13,6 @@ from clio_agent.gact.app import build_app
 # test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
-CALLER_AGENT = """
-from clio_agent.sdk import Agent
-
-
-class Caller(Agent):
-    id = "caller"
-    version = "1.0.0"
-    role = "an agent that calls commands"
-    plugins = Agent.plugins + ["workspace", "summaries"]
-"""
-
-
-def _write_agent_invocable_command(command_dir: Path, name: str, description: str) -> None:
-    """Write a minimal agent-invocable slash-command file to ``command_dir``."""
-
-    command_dir.mkdir(parents=True, exist_ok=True)
-    command_dir.joinpath(f"{name}.md").write_text(
-        "\n".join(
-            [
-                "---",
-                f"name: {name}",
-                f"title: {name.title()}",
-                f"description: {description}",
-                "agent-invocable: true",
-                "---",
-                f"Run {name}.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
@@ -57,41 +26,43 @@ def test_capabilities_advertise_prompt_registry(client: TestClient) -> None:
 
 
 def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
+    """The built-ins are the reminders, used verbatim (the chat, planner,
+    answer and expert prompts that nothing read were removed)."""
     listed = client.get("/v1/prompts")
 
     assert listed.status_code == 200
     prompts = {row["id"]: row for row in listed.json()["prompts"]}
-    assert "clio.chat" in prompts
-    assert "default" in prompts["clio.chat"]["profiles"]
-    assert "heavy" in prompts["clio.chat"]["profiles"]
-    assert "small_model" in prompts["clio.main.planner"]["profiles"]
+    assert "clio.reminder.child_report" in prompts and "clio.compaction" not in prompts
+    assert not {"clio.example", "clio.main.planner", "clio.main.answer"} & set(prompts)
 
-    resolved = client.get("/v1/prompts/clio.chat").json()["prompt"]
-    assert resolved["id"] == "clio.chat"
+    resolved = client.get("/v1/prompts/clio.reminder.child_report").json()["prompt"]
+    assert resolved["id"] == "clio.reminder.child_report"
     assert resolved["profile"] == "default"
-    assert "CLIO" in resolved["text"]
-    assert "Never claim a tool call" in resolved["text"]
+    assert resolved["text"].startswith("Your final answer reaches the agent that started you")
     assert resolved["scope"] == "builtin"
-    assert resolved["checksum"]
-    assert resolved["source_path"].startswith("package://clio_agent.prompt_packs.builtin/")
-    assert resolved["metadata"]["source"] == "packaged_prompt_file"
+    assert resolved["source_path"] == (
+        "package://clio_agent.plugins.builtin/core/ai.iowarp.clio/injections/child_report.md"
+    )
+    assert resolved["metadata"]["kind"] == "reminder"
 
-    heavy = client.get("/v1/prompts/clio.main.planner?profile=heavy").json()["prompt"]
-    assert heavy["profile"] == "heavy"
-    assert heavy["metadata"]["alignment"] == "public_reference_matrix"
-    assert "delegate to scoped child experts" in heavy["text"]
-    assert "declared tools and experts" in heavy["text"]
+
+_RENDER_ME = """Agents:
+{{ agents.available_tree }}
+Tools:
+{{ tools.available }}
+Memory: {{ memory.policy_summary }}"""
 
 
 def test_prompt_render_expands_safe_dynamic_placeholders(client: TestClient) -> None:
+    saved = client.put("/v1/prompts/clio.render_me", json={"profile": "heavy", "text": _RENDER_ME})
+    assert saved.status_code == 200, saved.text
     resp = client.post(
-        "/v1/prompts/clio.main.planner/render",
+        "/v1/prompts/clio.render_me/render",
         json={
             "profile": "heavy",
             "context": {
                 "agents.available_tree": "- main: Main agent\n- data: Data expert",
                 "tools.available": "- hdf5_list_datasets: inspect HDF5 files",
-                "commands.agent_invocable": "- /summarize: summarize data",
                 "memory.policy_summary": "same-workspace memory allowed with user intent",
                 "permissions.policy_summary": "ask before destructive actions",
                 "provider.current": "provider=test model=fake",
@@ -143,13 +114,13 @@ def test_prompt_validate_and_reload_endpoints(client: TestClient) -> None:
     reload_resp = client.post("/v1/prompts/reload", json={})
 
     assert reload_resp.status_code == 200, reload_resp.text
-    assert "clio.chat" in reload_resp.json()["reload"]["prompt_ids"]
+    assert "clio.reminder.child_report" in reload_resp.json()["reload"]["prompt_ids"]
     assert reload_resp.json()["reload"]["prompt_count"] >= 1
 
 
 def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestClient) -> None:
     resp = client.put(
-        "/v1/prompts/clio.chat",
+        "/v1/prompts/clio.example",
         json={
             "profile": "heavy",
             "title": "Heavy chat",
@@ -165,7 +136,7 @@ def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestCl
     saved = resp.json()["prompt"]
     assert saved["profiles"]["heavy"]["text"] == "Use detailed but grounded CLIO behavior."
 
-    resolved = client.get("/v1/prompts/clio.chat?profile=heavy").json()["prompt"]
+    resolved = client.get("/v1/prompts/clio.example?profile=heavy").json()["prompt"]
     assert resolved["text"] == "Use detailed but grounded CLIO behavior."
     assert resolved["title"] == "Heavy chat"
     assert resolved["scope"] == "global"
@@ -176,7 +147,7 @@ def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestCl
 
 def test_put_prompt_rejects_invalid_profile(client: TestClient) -> None:
     resp = client.put(
-        "/v1/prompts/clio.chat",
+        "/v1/prompts/clio.example",
         json={"profile": "../bad", "text": "bad"},
     )
 
@@ -190,28 +161,28 @@ def test_session_prompt_override_does_not_leak_to_other_sessions(tmp_path: Path)
         sid_a = c.post("/v1/sessions", json={"title": "A"}).json()["id"]
         sid_b = c.post("/v1/sessions", json={"title": "B"}).json()["id"]
         saved = c.put(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.reminder.child_report",
             json={
                 "scope": "session",
                 "session_id": sid_a,
                 "profile": "default",
-                "text": "Session A chat prompt.",
+                "text": "Session A child report.",
             },
         )
         assert saved.status_code == 200, saved.text
 
         prompt_a = c.get(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.reminder.child_report",
             params={"session_id": sid_a},
         ).json()["prompt"]
         prompt_b = c.get(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.reminder.child_report",
             params={"session_id": sid_b},
         ).json()["prompt"]
 
-    assert prompt_a["text"] == "Session A chat prompt."
+    assert prompt_a["text"] == "Session A child report."
     assert prompt_a["scope"] == "session"
-    assert "Session A chat prompt." not in prompt_b["text"]
+    assert "Session A child report." not in prompt_b["text"]
 
 
 def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
@@ -227,7 +198,7 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
             },
         ).json()["id"]
         saved = c.put(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.example",
             json={
                 "scope": "workspace",
                 "workspace_id": wid,
@@ -237,60 +208,14 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
         )
         assert saved.status_code == 200, saved.text
         prompt = c.get(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.example",
             params={"workspace_id": wid},
         ).json()["prompt"]
 
-    assert (workspace / ".clio-agent" / "shared" / "prompts" / "clio.chat--default.md").exists()
+    assert (workspace / ".clio-agent" / "shared" / "prompts" / "clio.example--default.md").exists()
     assert not (workspace / ".clio").exists()
     assert prompt["text"] == "Workspace chat prompt."
     assert prompt["scope"] == "workspace"
-
-
-def test_planner_render_context_uses_agent_scoped_commands(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The render context's ``commands.agent_invocable`` is the session agent's
-    scoped subset: the agent-invocable commands its plugins ship, never every
-    agent-invocable command file on disk (#770 C1)."""
-
-    from tests._plugin_fixtures import custom_marketplace
-
-    monkeypatch.chdir(tmp_path)
-    # A workspace command file no plugin ships: not invocable by the agent.
-    _write_agent_invocable_command(tmp_path / ".clio" / "commands", "other", "Some other command")
-    plugin_commands = tmp_path / "plugin-commands"
-    _write_agent_invocable_command(plugin_commands, "summarize", "Summarize a dataset")
-    custom_marketplace(
-        tmp_path,
-        monkeypatch,
-        plugins={
-            "summaries": {
-                "files": {
-                    "ai.iowarp.clio/commands/summarize.md": (
-                        plugin_commands / "summarize.md"
-                    ).read_text(encoding="utf-8")
-                }
-            }
-        },
-        agents={"caller.py": CALLER_AGENT},
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as c:
-        sid = c.post(
-            "/v1/sessions", json={"title": "t", "metadata": {"agent_ref": "clio/caller"}}
-        ).json()["id"]
-
-        rendered = c.post(
-            "/v1/prompts/clio.main.planner/render",
-            json={"session_id": sid},
-        ).json()["prompt"]
-
-    text = rendered["text"]
-    assert "/summarize" in text
-    assert "/other" not in text
 
 
 def test_provider_summary_serializes_dict_lm_config(

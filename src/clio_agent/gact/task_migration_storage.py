@@ -103,7 +103,10 @@ def finish_legacy_operations(
     if not rows:
         return
     history, store = app.state.task_history, app.state.connected_storage.store
-    sessions = {session.id: session for session in app.state.sessions.list()}
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    every = app.state.sessions.select(PageQuery(archived=None))  # a migration reads all
+    sessions = {session.id: session for session in every}
     for row in rows:
         with history.serialized():
             original = row.original

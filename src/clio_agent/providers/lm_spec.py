@@ -28,7 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.config import LMProviderConfig
     from clio_agent.gact.types import AgentDef
 
-__all__ = ["LMSpec", "spec_from_config", "build_spec"]
+__all__ = ["LMSpec", "spec_from_config", "build_spec", "same_provider_identity"]
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,9 @@ class LMSpec:
     provider: str
     model: str
     provider_id: str = ""
+    #: The saved custom model server this spec runs on (``LMProviderConfig.server_id``);
+    #: its address and key win over the preset ``provider_id``'s defaults.
+    server_id: str = ""
     api_base: str = ""
     credential_ref: str = ""
     provider_options: dict[str, str] = field(default_factory=dict)
@@ -109,6 +112,7 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
         provider=cfg.provider,
         model=cfg.model,
         provider_id=cfg.provider_id,
+        server_id=getattr(cfg, "server_id", "") or "",
         api_base=cfg.api_base,
         credential_ref="",
         provider_options=dict(cfg.provider_options),
@@ -162,6 +166,35 @@ def _opt_str(params: Mapping[str, Any], key: str, default: str | None) -> str | 
     return default
 
 
+def same_provider_identity(declared: str, default_spec: LMSpec) -> bool:
+    """Whether a declared provider names the same provider identity as ``default_spec``.
+
+    Identity is the preset id or saved model server id, never the wire kind: an
+    OpenRouter default (kind ``openai``) and the direct ``openai`` preset are
+    different providers with different endpoints, credentials and options. A bare
+    kind that names no preset (an older ``default_provider: argonne``) still
+    matches a default of that kind. An empty declaration inherits the default.
+    """
+
+    declared = declared.strip()
+    if not declared:
+        return True
+    if default_spec.server_id:
+        # A saved server's spec also carries its preset id; the bare preset is a
+        # different endpoint, so only the server id names this identity.
+        return declared == default_spec.server_id
+    if declared == default_spec.provider_id:
+        return True
+    from clio_agent.providers.catalog import get_provider, iter_providers  # noqa: PLC0415
+
+    preset = get_provider(declared)
+    if preset is not None:
+        return preset.id == default_spec.provider_id
+    if any(p.provider_kind == declared for p in iter_providers()):
+        return declared == default_spec.provider
+    return False
+
+
 def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
     """Derive an expert's :class:`LMSpec` from its ``AgentDef``.
 
@@ -195,9 +228,20 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
         provider=provider,
         model=model,
         provider_id=getattr(agent_def, "default_provider", "") or default_spec.provider_id,
+        # A declared provider is its own identity (a saved server id resolves itself);
+        # only an undeclared expert inherits the default profile's saved server.
+        server_id="" if getattr(agent_def, "default_provider", "") else default_spec.server_id,
         api_base=api_base,
         credential_ref=credential_ref,
-        provider_options=dict(default_spec.provider_options),
+        # Provider options (``show_diffusion``, ``api_version``, ...) are settings of
+        # one provider: an expert on another provider never inherits them.
+        provider_options=(
+            dict(default_spec.provider_options)
+            if same_provider_identity(
+                getattr(agent_def, "default_provider", "") or "", default_spec
+            )
+            else {}
+        ),
         transport=transport,
         temperature=_opt_float(params, "temperature", default_spec.temperature),
         max_tokens=_opt_int(params, "max_tokens", default_spec.max_tokens),

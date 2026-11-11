@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
-from clio_agent.providers import claude_code_engine, claude_code_expiry
+from clio_agent.providers import claude_code_conversation, claude_code_engine, claude_code_expiry
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
 
@@ -31,10 +31,10 @@ from tests import _fake_claude_sdk as fake
 @pytest.fixture(autouse=True)
 def _clean_pool() -> Any:
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def _paced_client(monkeypatch: pytest.MonkeyPatch, gaps: list[float]) -> None:

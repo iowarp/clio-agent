@@ -85,17 +85,20 @@ def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -
     assert not custom.exists()
     assert list(project.iterdir()) == []
 
+    # A workspace per folder (gact-tui#219), so the legacy client gets its own.
+    legacy_project = tmp_path / "legacy-project"
+    legacy_project.mkdir()
     legacy = c.post(
         "/v1/workspaces",
         json={
             "name": "legacy-client",
-            "root_path": str(project),
-            "storage_root": str(project / ".clio"),
+            "root_path": str(legacy_project),
+            "storage_root": str(legacy_project / ".clio"),
         },
     )
     assert legacy.status_code == 201
-    assert legacy.json()["storage_root"] == str(workspace_state_dir(project))
-    assert list(project.iterdir()) == []
+    assert legacy.json()["storage_root"] == str(workspace_state_dir(legacy_project))
+    assert list(legacy_project.iterdir()) == []
 
 
 # The per-workspace session/message mirror was DELETED in #771 (reader-less,
@@ -676,3 +679,63 @@ def test_default_workspace_setting_never_repoints_an_existing_ws_default(
     assert restarted.get("ws_default").root_path == str(Path.cwd())
     assert not elsewhere.exists()
     assert "reason=already_seeded" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("character", "code_point"),
+    [
+        ("\n", "U+000A"),
+        ("\t", "U+0009"),
+        ("\x00", "U+0000"),
+        ("\u200b", "U+200B"),
+        ("\u202e", "U+202E"),
+    ],
+)
+def test_create_workspace_rejects_control_character_root(
+    tmp_path: Path, character: str, code_point: str
+) -> None:
+    """#1193: a control or format character in the root is a typed 400; nothing is made."""
+    c = _client(tmp_path)
+    before = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
+    root = f"{tmp_path / 'clio-runs'}{character}dp"
+
+    response = c.post("/v1/workspaces", json={"name": "poisoned", "root_path": root})
+
+    assert response.status_code == 400
+    envelope = response.json()["error"]
+    assert envelope["error"] == "invalid_request"
+    assert envelope["details"] == {
+        "root_path": root,
+        "character": code_point,
+        "index": len(str(tmp_path / "clio-runs")),
+    }
+    assert envelope["recoverable"] is True
+    after = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
+    assert after == before
+    assert not (tmp_path / "clio-runs").exists()
+    assert [p.name for p in tmp_path.iterdir() if "clio-runs" in p.name] == []
+
+
+def test_patch_workspace_rejects_control_character_root(tmp_path: Path) -> None:
+    """#1193: PATCH refuses an embedded newline and keeps the old root."""
+    c = _client(tmp_path)
+    original = tmp_path / "original"
+    wid = c.post("/v1/workspaces", json={"name": "pinned", "root_path": str(original)}).json()["id"]
+
+    response = c.patch(f"/v1/workspaces/{wid}", json={"root_path": f"{tmp_path}/a\nb"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["character"] == "U+000A"
+    assert c.get(f"/v1/workspaces/{wid}").json()["root_path"] == str(original)
+
+
+def test_create_workspace_strips_root_whitespace(tmp_path: Path) -> None:
+    """POST trims surrounding whitespace from the root, as PATCH already does."""
+    c = _client(tmp_path)
+    root = tmp_path / "trimmed"
+
+    response = c.post("/v1/workspaces", json={"name": "trimmed", "root_path": f"  {root} \n"})
+
+    assert response.status_code == 201
+    assert response.json()["root_path"] == str(root)
+    assert root.is_dir()

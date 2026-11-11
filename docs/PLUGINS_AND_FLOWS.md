@@ -349,7 +349,7 @@ agent. User agents are addressed as `user/<id>`.
 A native marketplace is a folder (or git repository) with:
 
 ```text
-ai.iowarp.clio/marketplace.json   # {"name": ..., "description": ...}
+ai.iowarp.clio/marketplace.json   # {"name", "description", optional "plugins": [pinned git packages]}
 plugins/<id>/plugin.json ...      # one Agent Plugins package per folder
 agents/*.py                       # Agent classes
 ```
@@ -357,6 +357,12 @@ agents/*.py                       # Agent classes
 Agents are addressed as `<marketplace>/<id>`; a bare id works when it is
 unambiguous (the default marketplace wins a tie), and `@<range>` constrains the
 version. A single plugin folder can also be installed as its own marketplace.
+
+A package kept in another repository is listed in the index's `plugins`, pinned by
+commit in the same source shape a Claude Code marketplace uses:
+`{"name": "wtfp", "source": {"source": "git-subdir", "url": "https://github.com/o/r",
+"path": "clio-plugin", "sha": "<commit>"}}`. An unpinned source is
+`plugin_source_unpinned` and is not followed.
 
 The store lives at `<config>/plugins/` (override with `plugins.store_root` or
 `CLIO_PLUGIN_STORE`): `state.json` (marketplaces, records, pending updates,
@@ -417,8 +423,8 @@ source given special treatment:
 | `.claude-plugin/plugin.json` `dependencies` | Only dependencies and no content: a pack. Dependencies on a plugin with content: hard requirements |
 | `.mcp.json` | MCP servers; `${CLAUDE_PLUGIN_ROOT}` becomes `${PLUGIN_ROOT}` |
 | `skills/` | Skills, unchanged |
-| `hooks/hooks.json` | Command hooks on `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact`. Another event is the warning `hook_event_unmapped`; a matcher naming unmappable tools is `hook_matcher_unmapped`; a non-command hook is `hook_type_unsupported`. `codex.json`, `opencode.js` and similar files are ignored |
-| `agents/*.md` | Defined subagents. `tools` map through the table below and add the providing plugin; an unmappable tool is the error `tool_unmapped` and the subagent is skipped. `model:` and `effort:` become preferences |
+| `hooks/hooks.json` | Command hooks on `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `UserPromptExpansion` (matched on `plugin:command`), `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact`. Another event is the warning `hook_event_unmapped`; a matcher naming unmappable tools is `hook_matcher_unmapped`; a non-command hook is `hook_type_unsupported`. `codex.json`, `opencode.js` and similar files are ignored |
+| `agents/*.md` | Defined subagents. `tools` map through the table below and add the providing plugin; an unmappable tool is the warning `tool_unmapped` and only that tool is left out. `model:` and `effort:` become preferences |
 | `commands/*.md` | Commands |
 
 Tool mapping: `Read` → `fs_read_file`, `Glob` → `fs_list_directory`, `Grep` →
@@ -636,8 +642,12 @@ the handle cancels the flow and its subtree.
 
 A workflow is steps as data: each has an `id`, a `target` (a subagent, an
 installed agent, a flow, a tool or `self`), an optional `input`, the steps it
-waits on (`after`), a `description`, `options` (for a flow target only) and a
-`model`.
+waits on (`after`), an optional `timeout_s`
+deadline, a `description`, `options` (for a flow target only) and a `model`.
+The workflow may set `max_concurrency`. `0` means no cap on how many of this
+workflow's steps exist at once, including steps that have finished their model
+call and are still in a tool. The process-wide inference limiter still bounds
+child model calls on its own.
 
 ```python
 from clio_agent.sdk import Step, Workflow
@@ -662,7 +672,13 @@ empty unless the tool returns a mapping with `answer`, so `$<tool step>` and
 `inputs` pass empty text for other tool results.
 
 Every step whose dependencies completed starts at once, with no barrier. A
-step that waits on a failed or cancelled step is skipped. A step whose target
+positive `max_concurrency` is how many of those steps may be in flight; `0`
+starts every ready step. A step that waits on a failed or cancelled step is
+skipped. A `timeout_s` deadline cancels that step's assignment; the
+editors may repair it, and if nobody does the run ends `FlowStall("step_timeout")`.
+A deadline on a tool target stalls `timeout_requires_task`, because a tool call
+has no assignment to cancel. A cancellation that is not the deadline still ends
+the run cancelled. A step whose target
 is a named editor runs with `workflow_add_step(step_id, target, input, after,
 reason, options)` and `workflow_cancel_step(step_id, reason)`; these only
 propose, and the workflow reads the proposals from the editor's settled result,
@@ -679,7 +695,11 @@ an editor adds replaces the failed step for its dependents. If none repairs it,
 the workflow ends with `FlowStall("step_failed")`. A cancelled step ends the run
 cancelled. A completed workflow returns the answers of its final steps (then
 the earlier ones), `results` (each step's answer), `workflow` (steps with
-status and handle) and the merged `workflow_state`.
+status and handle) and the merged `workflow_state`. That merge walks completed
+steps in definition order, so the winner of a key does not depend on which
+child finished first. A key two steps set differently is a `conflicts` row and
+a `workflow_state_conflict` event (`key`, `earlier`, `later`, and the winner's
+definition `index`). `gather` still merges in call order.
 
 ### council and arena
 

@@ -93,7 +93,12 @@ def test_fence_only_preserves_failed_enforcement_without_a_ready_summary(
             "--protected-execution-only",
         ],
     )
-    with pytest.raises(installer.DocumentRuntimeError, match="Confined-write"):
+    with pytest.raises(SystemExit) as exited:
         installer.main()
-    assert '"status": "ready"' not in capsys.readouterr().out
+    assert exited.value.code == 1
+    captured = capsys.readouterr()
+    assert '"status": "ready"' not in captured.out
+    # The person sees the failure itself, not a Python traceback.
+    assert "CLIO runtime setup failed: Confined-write verification failed" in captured.err
+    assert "Traceback" not in captured.err
     assert not (tmp_path / "workspace").exists()

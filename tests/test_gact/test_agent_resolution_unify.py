@@ -253,3 +253,28 @@ def test_resolution_agent_def_is_the_executable_view(tmp_path: Path) -> None:
     assert agent.metadata["mcp_namespaces"] == sorted(resolution.mcp_servers)
     assert agent.metadata["flow"]["id"] == "react"
     assert agent.tier == 1 and agent.parent_id == ""
+
+
+def test_the_exact_view_shows_what_the_session_last_sent(tmp_path: Path) -> None:
+    """``?exact=1`` serves the session's last sent request, sized per tool and plugin."""
+    from dspy.lm15 import FunctionTool, Message, Request
+
+    from clio_agent.lm import sent_prompt
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        sid = _session(client)
+        assert client.get(f"/v1/sessions/{sid}/agent?exact=1").json()["exact"] is None
+        tool = FunctionTool("shell_bash", "Run a command.", {"type": "object"})
+        request = Request(
+            model="claude_code/m",
+            system="You are CLIO.",
+            messages=(Message.user("q"),),
+            tools=(tool,),
+        )
+        sent_prompt.remember(sid, "claude_code/m", request)
+        exact = client.get(f"/v1/sessions/{sid}/agent?exact=1").json()["exact"]
+        assert exact["system"] == "You are CLIO."
+        assert exact["sizes"]["per_tool"]["shell_bash"] > 0
+        assert "shell_bash" in exact["rendered_system"]  # the text engine's view
+        assert "exact" not in client.get(f"/v1/sessions/{sid}/agent").json()

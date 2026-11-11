@@ -8,7 +8,7 @@ import { Aside, CardGrid, LinkCard, FileTree, Steps } from '@astrojs/starlight/c
 This guide builds a small marketplace for a spectroscopy lab. Its plugin finds peaks in spectrum files, has a reviewer check them, and writes a report. By the end you will have used every common piece of a plugin.
 
 <Aside type="caution" title="Development build">
-The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+The SDK is included from CLIO v0.9.5. These pages describe v0.9.6-beta.1; see [Features and versions](/docs/versions/) for what v0.9.5.1 lacks.
 </Aside>
 
 You need a CLIO installation you can run `clio-agent` on, and a folder to work in. Plugin code runs inside CLIO, which provides `clio_agent.sdk`, so there is nothing else to install.
@@ -51,6 +51,25 @@ A marketplace needs one file that names it:
 ```
 
 Agents in this marketplace are addressed as `spectro-lab/<agent id>`.
+
+A plugin kept in another repository can be listed too, pinned by commit; installing the
+marketplace fetches it at that commit:
+
+```json title="spectro-lab/ai.iowarp.clio/marketplace.json"
+{
+  "name": "spectro-lab",
+  "description": "Our lab's spectroscopy plugin and agent.",
+  "plugins": [
+    {
+      "name": "wtfp",
+      "source": {"source": "git-subdir", "url": "https://github.com/JaimeCernuda/wtf-p",
+                 "path": "clio-plugin", "sha": "e23d3cf8f1967053ecedade0522b1a7dff6fe180"}
+    }
+  ]
+}
+```
+
+A source without a commit is reported and not followed.
 
 ## 2. Describe the plugin
 

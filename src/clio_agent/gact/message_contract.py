@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # The desktop's Deep Research execution mode is a product-level overlay.  Keep
 # the marketplace artifact id at the message-contract boundary so every client
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 # than merely changing routing flags on whichever base agent happens to be open.
 DEEP_RESEARCH_AGENT = "clio/deep-researcher"
 
-from clio_agent.gact.types import AgentRef, ModelRef, Part
+from clio_agent.gact.types import ModelRef, Part
 
 
 class MessageBehavior(BaseModel):
@@ -34,13 +34,23 @@ class PostMessageRequest(BaseModel):
     parts: list[Part] = Field(default_factory=list)
     text: Optional[str] = None
     model: Optional[ModelRef] = None
-    agent: Optional[AgentRef] = None
-    agent_id: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     client_message_id: str = ""
     idempotency_key: str = ""
     delivery: Literal["start", "steer", "auto"] = "auto"
     behavior: MessageBehavior = Field(default_factory=MessageBehavior)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_turn_agent_override(cls, data: Any) -> Any:
+        """The per-turn agent override is gone: a ``summon`` part starts a subagent."""
+
+        if isinstance(data, dict) and ({"agent", "agent_id"} & set(data)):
+            raise ValueError(
+                "agent and agent_id are no longer accepted: send a summon part "
+                '({"type": "summon", "target_kind": "subagent", "target": <name>})'
+            )
+        return data
 
     def extract_text(self) -> str:
         """Return ordered text parts, falling back to the legacy text field."""
@@ -57,13 +67,6 @@ class PostMessageRequest(BaseModel):
         """Return immutable workspace resource references supplied in this message."""
 
         return [part for part in self.parts if part.type == "resource_ref"]
-
-    def extract_agent_id(self) -> str:
-        """Return a per-turn agent override, if supplied."""
-
-        if self.agent is not None and self.agent.id:
-            return self.agent.id
-        return self.agent_id or ""
 
 
 class PostMessageResponse(BaseModel):

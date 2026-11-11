@@ -12,6 +12,11 @@ budget and the measured value. Steps without a budget stay report-only.
     python scripts/ci/check_budgets.py --timings timings.jsonl >> "$GITHUB_STEP_SUMMARY"
     python scripts/ci/check_budgets.py --startup results/ >> "$GITHUB_STEP_SUMMARY"
     python scripts/ci/check_budgets.py --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+    python scripts/ci/check_budgets.py --install-events events.jsonl --os macOS --job desktop-install
+
+``--install-events`` reads ``install.sh --desktop --progress json`` (one JSON object per
+line): each shared step (resolve, download, verify, install, prepare) and the total become
+the timing rows ``desktop install (<os>): <step>``, budgeted like any other step.
 """
 
 from __future__ import annotations
@@ -54,6 +59,44 @@ def check_timings(
                 verdict = _exceeded(label, measured, limit)
             checked.append((label, name, row.get("os", ""), measured, limit, verdict))
     return checked
+
+
+def install_event_rows(events: list[dict[str, Any]], os_name: str) -> list[dict[str, Any]]:
+    """Timing rows for the steps and total of one ``--progress json`` install."""
+    prefix = f"desktop install ({os_name}): "
+    rows = [
+        {
+            "name": prefix + event["step"],
+            "os": os_name,
+            "seconds": event.get("seconds", 0),
+            "outcome": "ok",
+        }
+        for event in events
+        if event.get("event") == "step" and event.get("state") == "end"
+    ]
+    summary = next((event for event in events if event.get("event") == "summary"), None)
+    if summary is None:
+        return rows
+    if not summary.get("ok") and summary.get("step"):
+        rows.append(
+            {
+                "name": prefix + summary["step"],
+                "os": os_name,
+                "seconds": summary.get("total", 0),
+                "outcome": "failed",
+                "exit_code": summary.get("error", ""),
+            }
+        )
+    rows.append(
+        {
+            "name": prefix + "total",
+            "os": os_name,
+            "seconds": summary.get("total", 0),
+            "outcome": "ok" if summary.get("ok") else "failed",
+            "exit_code": summary.get("error", 0),
+        }
+    )
+    return rows
 
 
 def _limit(rule: dict[str, Any]) -> str:
@@ -124,12 +167,16 @@ def main() -> int:
         "--desktop", type=Path, help="the directory holding evidence-*/receipt.json"
     )
     parser.add_argument(
+        "--install-events", type=Path, help="install.sh --desktop --progress json output"
+    )
+    parser.add_argument("--os", default="", help="the runner OS the install events came from")
+    parser.add_argument(
         "--job", default="", help="the matrix job: its required steps fail when not recorded"
     )
     parser.add_argument("--budgets", type=Path, default=BUDGETS)
     args = parser.parse_args()
-    if not (args.timings or args.startup or args.desktop):
-        parser.error("pass --timings, --startup or --desktop")
+    if not (args.timings or args.startup or args.desktop or args.install_events):
+        parser.error("pass --timings, --startup, --desktop or --install-events")
     budgets = json.loads(args.budgets.read_text(encoding="utf-8"))
     rows: list[tuple[str, ...]] = []
     if args.timings:
@@ -137,6 +184,20 @@ def main() -> int:
             args.timings.read_text(encoding="utf-8").splitlines() if args.timings.is_file() else []
         )
         recorded = [json.loads(line) for line in lines if line.strip()]
+        rows += check_timings(recorded, budgets["timings"], args.job)
+    if args.install_events:
+        lines = (
+            args.install_events.read_text(encoding="utf-8").splitlines()
+            if args.install_events.is_file()
+            else []
+        )
+        events = []
+        for line in lines:
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        recorded = install_event_rows(events, args.os)
         rows += check_timings(recorded, budgets["timings"], args.job)
     if args.startup:
         rows += check_startup(args.startup, budgets["startup"])

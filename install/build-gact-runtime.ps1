@@ -161,7 +161,7 @@ Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--c
 # dependencies are already installed from the `desktop` extra; the constraint
 # keeps any it adds on the lock (and check_bundle_matches_lock.py fails on a
 # package the lock does not cover).
-$webMcpProject = Invoke-Native -Exe $pyBin -Args @('-c', 'from clio_kit import get_servers_path; from clio_kit.component_store import server_project; print(server_project("web", get_servers_path()))') | Select-Object -Last 1
+$webMcpProject = Invoke-Native -Exe $pyBin -Args @('-c', 'from clio_kit import get_servers_path; from clio_kit.component_store import server_project; print(server_project(''web'', get_servers_path()))') | Select-Object -Last 1
 if (-not (Test-Path (Join-Path $webMcpProject 'pyproject.toml'))) {
   throw "build-gact-runtime: bundled CLIO Web Search MCP project missing at $webMcpProject"
 }
@@ -180,7 +180,62 @@ Remove-Item -LiteralPath $constraints -Force -ErrorAction SilentlyContinue
 $runtimeBin = Join-Path $Out 'bin'
 New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
 Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uv.exe') -Force
-Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
+# uvx.exe is uv's shim that runs the sibling uv as `uv tool run`; a renamed uv
+# copy still behaves as plain uv.
+$uvx = Join-Path (Split-Path -Parent $uv.Source) 'uvx.exe'
+if (-not (Test-Path -LiteralPath $uvx -PathType Leaf)) { throw "uvx.exe shim missing beside $($uv.Source)" }
+Copy-Item -LiteralPath $uvx -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
+
+# CLIO installs marketplace plugins with git, which a fresh Windows machine does
+# not have. Ship Git for Windows' MinGit (relocatable by design; entry point
+# git\cmd\git.exe), which clio_agent/runtime/git_executable.py falls back to when
+# the machine has no git of its own. Git Credential Manager stays (about 28 MB
+# unpacked, 11 MB compressed) so private repositories can still sign in; only
+# Scalar and the updater stub are removed.
+$mingitVersion = '2.56.0.4'
+$mingitTag = 'v2.56.0.windows.4'
+if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+  $mingitAsset = "MinGit-$mingitVersion-arm64.zip"
+  $mingitSha256 = '70f7649f78088c1db1d2f3571ca46a04d5bef06e4e9d56d8ed7f9829e8c6c4db'
+} else {
+  $mingitAsset = "MinGit-$mingitVersion-64-bit.zip"
+  $mingitSha256 = 'e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877'
+}
+$gitRoot = Join-Path $Out 'git'
+$mingitZip = Join-Path ([System.IO.Path]::GetTempPath()) $mingitAsset
+Write-Host "[build-gact-runtime] downloading $mingitAsset"
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/git-for-windows/git/releases/download/$mingitTag/$mingitAsset" -OutFile $mingitZip
+$mingitActual = (Get-FileHash -LiteralPath $mingitZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($mingitActual -ne $mingitSha256) {
+  throw "build-gact-runtime: $mingitAsset checksum $mingitActual, expected $mingitSha256"
+}
+Expand-Archive -LiteralPath $mingitZip -DestinationPath $gitRoot -Force
+Remove-Item -LiteralPath $mingitZip -Force
+foreach ($mingwBin in @('ucrt64\bin', 'clangarm64\bin', 'mingw64\bin')) {
+  $dir = Join-Path $gitRoot $mingwBin
+  if (-not (Test-Path -LiteralPath $dir)) { continue }
+  foreach ($name in @('scalar.exe', 'git-update-git-for-windows')) {
+    Remove-Item -LiteralPath (Join-Path $dir $name) -Force -ErrorAction SilentlyContinue
+  }
+}
+Remove-Item -LiteralPath (Join-Path $gitRoot 'cmd\scalar.exe') -Force -ErrorAction SilentlyContinue
+$bundledGit = Join-Path $gitRoot 'cmd\git.exe'
+if (-not (Test-Path -LiteralPath $bundledGit)) {
+  throw "build-gact-runtime: MinGit has no cmd\git.exe"
+}
+# MinGit's own system config is kept: credential.helper=manager and its include
+# of an installed Git for Windows' system config still apply. MinGit has no
+# git-lfs, so its required LFS filter would fail every LFS checkout; the Windows
+# certificate store (Schannel) lets enterprise roots work.
+$mingitConfig = Join-Path $gitRoot 'etc\gitconfig'
+Invoke-Native -Exe $bundledGit -Args @('config', '--file', $mingitConfig, '--remove-section', 'filter.lfs')
+Invoke-Native -Exe $bundledGit -Args @('config', '--file', $mingitConfig, 'http.sslBackend', 'schannel')
+$helper = (& $bundledGit config --file $mingitConfig --get credential.helper)
+if ($LASTEXITCODE -ne 0 -or $helper -ne 'manager') {
+  throw "build-gact-runtime: MinGit's credential.helper is '$helper', expected 'manager'"
+}
+Invoke-Native -Exe $bundledGit -Args @('--version')
+Write-Host "[build-gact-runtime] bundled git: $(Get-DirSizeMB $gitRoot) MB"
 
 $sizeBefore = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size before prune: $sizeBefore MB"
@@ -201,6 +256,22 @@ if (Test-Path $sitePkgs) {
       if (Test-Path $td) { Remove-Item -LiteralPath $td -Recurse -Force -ErrorAction SilentlyContinue }
     }
   }
+  # Files no run of CLIO reads (about 1,100 in 0.9.5.1): every one is another file
+  # to write, scan for malware and sign on install. Nested test suites (numpy's
+  # alone is about 490), the C/C++ headers for compiling against numpy or pyarrow,
+  # and the stdlib's IDLE and turtle demos. Same list in build-gact-runtime.sh.
+  # Type stubs (.pyi) stay: globus_sdk reads its own at import, and griffe
+  # merges them into FastMCP tool docs.
+  Get-ChildItem -LiteralPath $sitePkgs -Recurse -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -in @('tests', 'test') -and $_.Parent.FullName -ne $sitePkgs -and $_.Parent.Parent.FullName -ne $sitePkgs } |
+    Sort-Object { $_.FullName.Length } |
+    ForEach-Object { if (Test-Path -LiteralPath $_.FullName) { Remove-Item -LiteralPath $_.FullName -Recurse -Force } }
+  # litellm\proxy\_experimental\out is the litellm proxy's web dashboard (708 files); CLIO
+  # calls litellm as a library and never serves it.
+  foreach ($unread in @('pyarrow\include', 'numpy\_core\include', '..\idlelib', '..\turtledemo', 'litellm\proxy\_experimental\out')) {
+    $unreadDir = Join-Path $sitePkgs $unread
+    if (Test-Path -LiteralPath $unreadDir) { Remove-Item -LiteralPath $unreadDir -Recurse -Force }
+  }
   # *.dist-info/RECORD is KEPT: the desktop upgrades this runtime in place
   # with `uv pip install`, and without RECORD uv cannot uninstall the old
   # version -- stale modules and duplicate metadata survive the upgrade.
@@ -210,6 +281,21 @@ if (Test-Path $sitePkgs) {
   $benchDir = Join-Path $sitePkgs 'litellm\proxy\guardrails\guardrail_hooks\litellm_content_filter\guardrail_benchmarks'
   if (Test-Path -LiteralPath $benchDir) {
     Remove-Item -LiteralPath $benchDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  # Import and static libraries (.lib) are read only when linking a program, never when one
+  # runs (198 MB in 0.9.5.1, most of it iowarp_core's). Python's own python\libs is kept.
+  Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -eq '.lib' } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+  # Google's discovery documents for every Google API (107 MB in 0.9.5.1): CLIO builds
+  # only the Drive v3 client (gact/storage/drive_filesystem.py), read from this cache.
+  $discovery = Join-Path $sitePkgs 'googleapiclient\discovery_cache\documents'
+  if (Test-Path -LiteralPath $discovery) {
+    Get-ChildItem -LiteralPath $discovery -File | Where-Object { $_.Name -ne 'drive.v3.json' } |
+      ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+    if (-not (Test-Path -LiteralPath (Join-Path $discovery 'drive.v3.json'))) {
+      throw 'build-gact-runtime: googleapiclient has no drive.v3.json to keep'
+    }
   }
   Get-ChildItem -LiteralPath $pyRoot -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match '[()\[\]]' } |
@@ -235,6 +321,16 @@ if (Test-Path $scriptsDir) {
 # GACT entry. Keep real packaged runtimes: the Codex SDK provider executable
 # and iowarp-core's native daemon/tools. Removing clio_run.exe leaves imports
 # healthy but silently forces ARC to degrade when the first agent is built.
+# Playwright's node.exe is fetched, hash-checked, the first time the agent opens a browser
+# (gact/browser/driver.py), the same step as macOS and Linux. Staged before the sweep below,
+# which used to delete node.exe and leave Windows bundles with no browser driver at all.
+if (Test-Path $sitePkgs) {
+  & $pyBin -I -B (Join-Path $PSScriptRoot 'stage_playwright_node.py') $sitePkgs
+  if ($LASTEXITCODE -ne 0) { throw 'build-gact-runtime: staging Playwright''s Node.js failed' }
+  # pip, C/Cython build sources and dist-info markers, the same on every OS.
+  & $pyBin -I -B (Join-Path $PSScriptRoot 'prune_runtime.py') $sitePkgs
+  if ($LASTEXITCODE -ne 0) { throw 'build-gact-runtime: pruning unread runtime files failed' }
+}
 if (Test-Path $sitePkgs) {
   $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'
   $iowarpCoreBin = Join-Path $sitePkgs 'iowarp_core\bin'
@@ -260,39 +356,68 @@ $wheelBuilder = Join-Path $checkout 'install/build_document_wheels.py'
 $documentStack = Join-Path $pyRoot 'Lib/site-packages/clio_agent/runtime/document_stack'
 Invoke-Native -Exe $pyBin -Args @('-I', '-B', $wheelBuilder, '--stack', $documentStack, '--out', (Join-Path $Out 'document-wheels'), '--uv', $uv.Source)
 
+# Windows Defender scans every file an install writes, so the install's cost is its
+# file count. Lay the document environment, its Node packages and LibreOffice out
+# here, once: the installer unpacks them with the runtime and prepare adopts them
+# with a rename instead of creating them file by file (gact-tui#739).
+Write-Host "[build-gact-runtime] laying out the document environment and Node packages"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'build_document_env.py'), '--runtime', $Out, '--uv', $uv.Source, '--drop-wheels')
+Write-Host "[build-gact-runtime] laying out LibreOffice"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'lay_office.py'), '--runtime', $Out)
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'prune_documents.py'), '--runtime', $Out)
+
 # The Python Codex wheel contains only codex.exe. Ship the matching, verified
 # protected-execution helpers too; installation must not depend on an anonymous
 # GitHub API request that can be rate limited on a user's network.
 Write-Host "[build-gact-runtime] preparing matching Windows execution helpers"
 Invoke-Native -Exe $pyBin -Args @('-I', '-B', '-c', 'from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers; print(ensure_bundled_codex_windows_helpers())')
 
-# Prepare the real startup import graph in the release image, not on the
-# user's first launch. Compiling the entire distribution is both wasteful and
-# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
-# some optional provider paths exceed Windows' legacy path limit.
+# --- 4. generic runtime manifest ----------------------------------------
+# env reaches every child the server starts from this runtime: a helper that runs
+# the bundled python without -B would otherwise write .pyc into the install.
+$manifest = @{
+  schema = 1
+  exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent')
+  env = @{ PYTHONDONTWRITEBYTECODE = '1' }
+} | ConvertTo-Json -Compress -Depth 4
+[System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
+Write-Host "[build-gact-runtime] manifest: $manifest"
+
+# Prepare the real launch's bytecode in the release image, not on the user's
+# first launch: the startup graph, the first-party packages, the standard
+# library, and every module a real boot of this image imports (--launch-path
+# boots it, so it runs after runtime.json exists). Compiling all of
+# site-packages is both wasteful and invalid: some optional provider paths
+# exceed Windows' legacy path limit.
 Write-Host "[build-gact-runtime] compiling portable startup bytecode"
 $precompiler = Join-Path $checkout 'install/precompile_runtime.py'
-Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot)
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot, '--package', 'clio_agent', '--package', 'clio_kit', '--package', 'clio_schemas', '--stdlib', '--launch-path')
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
 }
 Write-Host "[build-gact-runtime] prepared $compiled bytecode files"
 
+# Pure-Python distributions import from one zip (with bytecode) instead of about
+# 10,000 separate files; native and path-reading packages stay extracted.
+foreach ($site in @($sitePkgs, (Join-Path $Out 'documents\python\Lib\site-packages'))) {
+  Write-Host "[build-gact-runtime] zipping pure-Python packages in $site"
+  Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'zip_site_packages.py'), '--site-packages', $site)
+}
+# The standard library's pure-Python modules import from python314.zip, one file
+# instead of about 1,100 (the same step on every OS).
+Write-Host "[build-gact-runtime] zipping the standard library"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'zip_stdlib.py'))
+
 $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
-
-# --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent') } |
-  ConvertTo-Json -Compress
-[System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
-Write-Host "[build-gact-runtime] manifest: $manifest"
 
 # --- 5. portability proof on the real object ----------------------------
 # A venv would leave a pyvenv.cfg pinning the build host's interpreter;
 # assert the failure mode is structurally absent, then boot the runtime
 # FROM A RELOCATED COPY -- the invariant the old script never proved.
-$venvCfg = @(Get-ChildItem -LiteralPath $Out -Recurse -Filter 'pyvenv.cfg' -ErrorAction SilentlyContinue)
+# documents\python is the relocatable document venv; prepare rewrites its home.
+$venvCfg = @(Get-ChildItem -LiteralPath (Join-Path $Out 'python') -Recurse -Filter 'pyvenv.cfg' -ErrorAction SilentlyContinue)
 if ($venvCfg.Count -gt 0) {
   throw "build-gact-runtime: pyvenv.cfg found -- runtime is venv-shaped, not portable"
 }
@@ -304,6 +429,31 @@ Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-m', 'clio_agent.gact', '--help
 Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
 $relocUv = Join-Path $reloc 'bin\uv.exe'
 Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
+# The bundled git must work through CLIO's resolver with no git on PATH.
+Write-Host "[build-gact-runtime] sanity (relocated): bundled git ls-remote without git on PATH"
+$gitProbe = @'
+from clio_agent.runtime.git_executable import resolve_git, run_git
+git = resolve_git()
+if git.source != "bundled":
+    raise SystemExit(f"build-gact-runtime: resolver chose {git.source} git {git.path}")
+run_git(["ls-remote", "https://github.com/iowarp/clio-agent-marketplace.git", "HEAD"],
+        check=True, capture_output=True, timeout=120)
+print(f"[build-gact-runtime] bundled git OK: {git.path}")
+'@
+# A script file, not -c: Windows PowerShell 5.1 mangles quotes in native arguments.
+$gitProbeFile = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-git-probe-" + [System.IO.Path]::GetRandomFileName() + ".py")
+[System.IO.File]::WriteAllText($gitProbeFile, $gitProbe)
+$previousPath = $env:PATH
+$previousGitExecPath = $env:GIT_EXEC_PATH
+try {
+  $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+  Remove-Item Env:GIT_EXEC_PATH -ErrorAction SilentlyContinue
+  Invoke-Native -Exe $relocPy -Args @('-I', '-B', $gitProbeFile)
+} finally {
+  $env:PATH = $previousPath
+  if ($null -ne $previousGitExecPath) { $env:GIT_EXEC_PATH = $previousGitExecPath }
+  Remove-Item -LiteralPath $gitProbeFile -Force -ErrorAction SilentlyContinue
+}
 # Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
 # the relocated image can launch clio-core and select the intended tiered
 # backend instead of degrading to LocalFS after installation.
@@ -371,9 +521,14 @@ $port = Get-Random -Minimum 24000 -Maximum 44000
 Write-Host "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$port"
 $srv = Start-Process -FilePath $relocPy -PassThru -WindowStyle Hidden `
   -ArgumentList @('-I', '-B', '-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
+# The gate proves the image boots, not how fast: a loaded builder can take minutes
+# to start a cold interpreter. Stop early if the server exits; otherwise allow
+# CLIO_RUNTIME_BOOT_GATE_SECONDS (default 300).
+$bootBudget = 300
+if ($env:CLIO_RUNTIME_BOOT_GATE_SECONDS) { $bootBudget = [int]$env:CLIO_RUNTIME_BOOT_GATE_SECONDS }
 $bootWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $bootOk = $false
-foreach ($i in 1..30) {
+while ($bootWatch.Elapsed.TotalSeconds -lt $bootBudget -and -not $srv.HasExited) {
   try {
     $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://127.0.0.1:$port/v1/capabilities"
     if ($resp.StatusCode -eq 200) { $bootOk = $true; break }
@@ -381,10 +536,14 @@ foreach ($i in 1..30) {
   Start-Sleep -Seconds 1
 }
 $bootWatch.Stop()
+$bootExited = $srv.HasExited
 Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $reloc -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $bootOk) {
-  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds"
+  if ($bootExited) {
+    throw "build-gact-runtime: relocated runtime exited before serving /v1/capabilities"
+  }
+  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within $bootBudget seconds"
 }
 Write-Host ("[build-gact-runtime] relocated cold boot ready in {0:N2}s" -f $bootWatch.Elapsed.TotalSeconds)
 

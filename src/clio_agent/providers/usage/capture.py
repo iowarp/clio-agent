@@ -15,6 +15,7 @@ from clio_agent.providers.usage.snapshot import USAGE_BOARD
 #: The fleet account the Claude Agent SDK and the Codex sign-in serve.
 CLAUDE_CODE_ACCOUNT = "claude_code"
 CODEX_ACCOUNT = "codex"
+COPILOT_ACCOUNT = "copilot"
 
 
 def record_rate_limit_usage(event: Any) -> None:
@@ -44,6 +45,7 @@ __all__ = [
     "record_codex_event",
     "CLAUDE_CODE_ACCOUNT",
     "CODEX_ACCOUNT",
+    "COPILOT_ACCOUNT",
     "record_codex_headers",
     "record_rate_limit_usage",
 ]

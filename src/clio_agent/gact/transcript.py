@@ -60,6 +60,8 @@ from clio_agent.gact.runtime.globals import (
     _new_part_id,
 )
 from clio_agent.gact.tap_step_verdicts import resolve_tap_step_verdict
+from clio_agent.gact.transcript_call_index import ToolCallIndex
+from clio_agent.gact.transcript_drops import report_dropped_empty_part
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -167,6 +169,10 @@ class TurnTranscript:
         self._reasoning_clock = ReasoningClock()
         self.turn_id = turn_id
         self.message_id: str = ""
+        # The reply starts when its turn opens: the assistant message's created_at is
+        # this instant (not its completion), so completed_at - created_at is the reply's
+        # real duration even when the first output arrives late.
+        self.started_at: float = time.time()
         self._publisher = publisher
         # #1337: the seal sink — called under the lock, NON-BLOCKING, with the dump of a
         # part that just became final (see ``_seal_locked``); ``None`` = no eager persist.
@@ -181,10 +187,14 @@ class TurnTranscript:
         # in place (never rebound) and closed text parts must mutate
         # ``Part.text`` in place (design §9 alias-view aliasing).
         self._parts: list[Part] = []
+        self._call_index = ToolCallIndex()  # a result's call, without a scan
         self._buffers: dict[str, list[str]] = {}
         self._open_part: Optional[Part] = None
         self._open_agent: str = ""
         self._open_field: str = ""
+        # Whether the open part has been announced: on its first non-whitespace
+        # chunk, so a whitespace-only part is never seen live (gact-tui#368).
+        self._open_announced: bool = False
         self._once_keys: set[str] = set()
         # (agent_id, field) -> closed non-empty final texts, for the identity
         # checks that replace finalize's content comparisons (design §3.1).
@@ -223,6 +233,12 @@ class TurnTranscript:
 
     # -- identity ------------------------------------------------------------
 
+    @property
+    def created_at_iso(self) -> str:
+        """The assistant message's ``created_at``: when this turn's reply started."""
+
+        return _iso_from_epoch(self.started_at)
+
     def ensure_message(self) -> str:
         """Mint the assistant message id + publish ``message.created`` ONCE.
 
@@ -246,7 +262,6 @@ class TurnTranscript:
                     f"(session={self.session_id!r} turn={self.turn_id!r})"
                 )
             self.message_id = _new_message_id("asst")
-            now = _iso_from_epoch(time.time())
             self._publisher.publish(
                 "message.created",
                 Message(
@@ -254,8 +269,8 @@ class TurnTranscript:
                     turn_id=self.turn_id,
                     session_id=self.session_id,
                     role="assistant",
-                    created_at=now,
-                    updated_at=now,
+                    created_at=self.created_at_iso,
+                    updated_at=_iso_from_epoch(time.time()),
                     parts=[],
                 ).to_wire(),
             )
@@ -332,12 +347,10 @@ class TurnTranscript:
             if not part.id:
                 part.id = _new_part_id()
             self._parts.append(part)
-            # #1337: a tool_call is final once its result lands (presentation deltas
-            # mutate it until then); the result itself is final only at finalize.
+            # #1337: a tool_call is final at its result; the result only at finalize.
             if part.type == "tool_result" and part.call_id:
-                for call_part in self._parts:
-                    if call_part.type == "tool_call" and call_part.call_id == part.call_id:
-                        self._seal_locked(call_part, "live")
+                for call_part in self._call_index.parts(self._parts, part.call_id):
+                    self._seal_locked(call_part, "live")
             effective_source = str(part.metadata.get("stream_source") or stream_source)
             self._publisher.publish(
                 "message.part.added",
@@ -438,8 +451,9 @@ class TurnTranscript:
 
         Opens a new part (type ``thinking`` for ``provider_thinking:*`` fields,
         else ``text``) when ``(agent_id, field)`` changes — closing the prior
-        part — publishes ``message.part.added`` on open and
-        ``message.part.delta`` per chunk (design §4 rows 2-3).
+        part — and publishes ``message.part.added`` on its first non-whitespace
+        chunk (held whitespace leads that delta, so deltas still sum to the stored
+        text) and ``message.part.delta`` per chunk (design §4 rows 2-3; gact-tui#368).
         """
 
         if not chunk:
@@ -467,12 +481,22 @@ class TurnTranscript:
                     },
                 )
                 self._reasoning_clock.start(part)
-                self._parts.append(part)
                 self._buffers[part.id] = []
                 self._open_part = part
                 self._open_agent = agent_id
                 self._open_field = field
+                self._open_announced = False
                 self._current_stream_part_id = part.id
+            self._buffers[part.id].append(chunk)
+            self._streamed.setdefault((agent_id, field), []).append(chunk)
+            self._raw_stream.append(chunk)
+            if not self._open_announced:
+                if not chunk.strip():
+                    return
+                # First real content: join the ledger (reload sees it), announce, send all held.
+                self._parts.append(part)
+                self._open_announced = True
+                chunk = "".join(self._buffers[part.id])
                 self._publisher.publish(
                     "message.part.added",
                     {
@@ -482,9 +506,6 @@ class TurnTranscript:
                         "part": part.to_wire(),
                     },
                 )
-            self._buffers[part.id].append(chunk)
-            self._streamed.setdefault((agent_id, field), []).append(chunk)
-            self._raw_stream.append(chunk)
             self._publisher.publish(
                 "message.part.delta",
                 {
@@ -783,20 +804,8 @@ class TurnTranscript:
                 if candidate is part:
                     del self._parts[index]
                     break
-            (logger.warning if part.type == "thinking" else logger.info)(  # gact-tui#362
-                "turn_transcript dropped_empty_part session=%s turn=%s part=%s type=%s",
-                self.session_id,
-                self.turn_id,
-                part.id,
-                part.type,
-            )
-            stream_audit(
-                "transcript.dropped_empty_part",
-                session_id=self.session_id,
-                turn_id=self.turn_id,
-                part_id=part.id,
-                part_type=part.type,
-                chars=len(buffered),
+            report_dropped_empty_part(
+                session_id=self.session_id, turn_id=self.turn_id, part=part, chars=len(buffered)
             )
             return
         # Keep alias views of this part current; text is verbatim (#881).

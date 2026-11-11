@@ -148,3 +148,22 @@ def test_the_account_route_refuses_bad_bodies_and_unknown_accounts(tmp_path) -> 
             "/v1/fleet/accounts/no-such-account", json={"delegation_allowed": True}
         )
         assert unknown.status_code == 404
+
+
+def test_a_model_the_person_picked_never_asks() -> None:
+    """A SPOTTER watcher's model chosen in settings is already the person's consent."""
+    app, asked = _app([])
+    assert asyncio.run(guard_spending(app, "child", _choice("openrouter", "person"))) is None
+    assert asked == []
+
+
+def test_a_saved_server_is_a_free_account_like_the_preset_it_is_reached_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from clio_agent.gact import local_server_store as store
+
+    monkeypatch.setattr(store, "user_config_path", lambda: tmp_path / "config.yaml")
+    entry = store.add_server(address="http://node:8001", label="vLLM spotter")
+    assert entry.id == "server-vllm-spotter"
+    assert delegation_allowed(entry.id) is True
+    assert delegation_allowed("server-unknown") is False

@@ -151,3 +151,64 @@ def test_an_inherited_model_the_fleet_does_not_list_keeps_running_and_says_so() 
     choice = _choose(inherited={"provider_id": "lm_studio", "model_id": "local"})
     assert choice.ran == {"provider_id": "lm_studio", "model_id": "local"}
     assert choice.reasons and "inherited model not checked: model_unknown" in choice.reasons[0]
+
+
+def test_a_fleet_role_preference_runs_the_role_model_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import fleet_settings
+
+    def settings(model: str | None) -> dict:
+        choice = {"provider_id": "claude_code", "model_id": model} if model else None
+        return {"revision": "r", "judges": {"explore": choice}, "search": None}
+
+    monkeypatch.setattr(fleet_settings, "fleet_settings", lambda: settings("claude-haiku-5-5"))
+    choice = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
+    assert choice.ran["model_id"] == "claude-haiku-5-5" and choice.source == "prefers"
+    assert "from subagent:explore, fleet role explore" in choice.reasons
+
+    monkeypatch.setattr(fleet_settings, "fleet_settings", lambda: settings(None))
+    unset = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
+    assert unset.source == "inherited" and unset.ran["model_id"] == "claude-opus-5-5"
+    assert "fleet role explore is not set; the caller's model runs" in unset.reasons
+
+
+def test_a_role_is_a_known_preference_field() -> None:
+    from clio_agent.sdk.model import Prefers
+
+    assert Prefers.from_dict({"role": "explore"}).to_dict() == {"role": "explore"}
+
+
+def test_list_models_marks_the_providers_fast_family_and_selection_ignores_it() -> None:
+    """A fast model is a fact the agent weighs; CLIO never picks a child's model by it.
+    SABOTAGE: make _is_fast return False and the first assertion fails."""
+    from clio_agent.gact.fleet import tools as fleet_tools
+
+    assert fleet_tools._is_fast(HAIKU) and not fleet_tools._is_fast(OPUS)
+    unset = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
+    assert unset.source == "inherited" and unset.ran["model_id"] == "claude-opus-5-5"
+
+
+def test_a_model_the_person_picked_is_recorded_as_theirs() -> None:
+    choice = choose_model(
+        FLEET,
+        explicit="haiku",
+        prefers_chain=[],
+        requires=Requires(),
+        attribution={},
+        inherited=PARENT,
+        explicit_source="person",
+    )
+    assert choice.source == "person" and choice.asked == "haiku"
+    assert choice.ran == {"provider_id": "claude_code", "model_id": "claude-haiku-5-5"}
+    with pytest.raises(ModelSelectionRefused) as refused:
+        choose_model(
+            FLEET,
+            explicit="nope",
+            prefers_chain=[],
+            requires=Requires(),
+            attribution={},
+            inherited=PARENT,
+            explicit_source="person",
+        )
+    assert refused.value.code == "model_unknown"

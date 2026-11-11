@@ -112,4 +112,7 @@ def register_storage_account_routes(
                 body.callback_url,
             )
         )
+        if completed and provider == "github":
+            # A new grant (possibly another account): clients holding the old one go.
+            service.github.clear()
         return {"authenticated": completed}

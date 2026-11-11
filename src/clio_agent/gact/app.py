@@ -4,11 +4,11 @@ Exposes the GACT contract documented in ``gact-tui/contract/SPEC.md``.
 
 Run via::
 
-    clio-agent-gact --host 127.0.0.1 --port 8100
+    clio-agent-gact --host 127.0.0.1 --port 17800
 
 Or::
 
-    uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 8100
+    uvicorn clio_agent.gact.app:app --host 127.0.0.1 --port 17800
 
 This is CLIO's single HTTP front door. The legacy ``clio_agent.ui.api``
 REST server has been removed; the ``clio-agent-api`` console script is now
@@ -58,7 +58,6 @@ import openai  # noqa: E402, F401
 import pyarrow  # noqa: E402, F401
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
@@ -349,6 +348,9 @@ from clio_agent.gact.providers.config import (  # noqa: E402,F401
     _provider_runtime_kind,
     _unsupported_model_ref_error,
 )
+from clio_agent.gact.providers.config import (  # noqa: E402
+    clear_session_model_refs as _clear_session_model_refs,
+)
 from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _lm_studio_api_root,
     _lm_studio_headers,
@@ -357,6 +359,7 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
 from clio_agent.gact.routes import artifact_workspace  # noqa: E402
 from clio_agent.gact.routes.a2ui import register_a2ui_routes  # noqa: E402
 from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
+from clio_agent.gact.routes.commands import register_command_routes  # noqa: E402
 from clio_agent.gact.routes.connected_storage import register_connected_storage_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
@@ -419,17 +422,6 @@ from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
     _stream_fallback_reason_capabilities,
 )
 
-# Slash-command table assembly moved to gact/runtime/commands.py (#714
-# decomposition) so routes/catalog.py and the prompt-render-context closure here
-# share one source. Imported under the legacy underscore names the render-context
-# closure already used.
-from clio_agent.gact.runtime.commands import (  # noqa: E402
-    command_context_for_request as _command_context_for_request,
-)
-from clio_agent.gact.runtime.commands import (  # noqa: E402
-    planner_command_rows as _planner_command_rows,
-)
-
 # Server-wide wire + limit constants (contract/backend version, inline-context
 # byte cap) moved to gact/runtime/constants.py (#714 decomposition) so the route
 # modules read them without importing back into app.py. Re-exported so existing
@@ -489,33 +481,6 @@ from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _sanitize_model_name,
 )
 
-# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
-from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
-    _TRAJECTORY_TOOL_ARGS_KEYS,
-    _TRAJECTORY_TOOL_NAME_KEYS,
-    _TRAJECTORY_TOOL_RESULT_KEYS,
-    _UNICODE_PATH_HYPHENS,
-    _merge_inferred_workflow_state,
-    _merge_non_empty_mapping,
-    _merge_workflow_state_mapping,
-    _normalize_pathlike_text,
-    _normalize_workflow_state_scalar,
-    _trajectory_key_index,
-    _value_has_semantic_content,
-)
-
-
-def _clear_session_model_refs(app: "FastAPI") -> None:
-    """Clear stale default/session model refs after a global LM provider swap."""
-
-    if (defaults := getattr(app.state, "session_defaults", None)) is not None:
-        defaults.clear_model_ref()
-    if (sessions := getattr(app.state, "sessions", None)) is not None:
-        for sess in sessions.list():
-            if not _model_ref_is_empty(sess.model):
-                sessions.update(sess.id, model={})
-
-
 # --------------------------------------------------------------------------- #
 # Turn-orchestration engine extracted to gact/turn.py (#714 decomposition).      #
 #                                                                               #
@@ -534,6 +499,21 @@ from clio_agent.gact.turn import (  # noqa: E402,F401
 )
 from clio_agent.gact.turn_runner import (  # noqa: E402
     install_turn_runner,
+)
+
+# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
+from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
+    _TRAJECTORY_TOOL_ARGS_KEYS,
+    _TRAJECTORY_TOOL_NAME_KEYS,
+    _TRAJECTORY_TOOL_RESULT_KEYS,
+    _UNICODE_PATH_HYPHENS,
+    _merge_inferred_workflow_state,
+    _merge_non_empty_mapping,
+    _merge_workflow_state_mapping,
+    _normalize_pathlike_text,
+    _normalize_workflow_state_scalar,
+    _trajectory_key_index,
+    _value_has_semantic_content,
 )
 
 # Alias kept so the thin ``build_app`` closure wrapper (which shadows the
@@ -557,15 +537,11 @@ _turn_start_background_user_turn = _start_background_user_turn
 from typing import Protocol
 
 from clio_agent.gact import agent_initialization
+from clio_agent.gact.browser.live import register_browser_routes
 from clio_agent.gact.catalog import (  # noqa: E402, F401
-    _command_search_roots,
-    _load_command_files_from_disk,
-    _normalize_file_command_id,
-    _parse_skill_frontmatter,
     _tool_owner_for_catalog,
     _tool_tags_for_catalog,
     _tool_visible_to_for_catalog,
-    _truthy_command_field,
 )
 from clio_agent.gact.events import EventBus
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
@@ -576,6 +552,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
+from clio_agent.gact.session_processes import close_all_processes
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 
 # Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
@@ -699,8 +676,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(_scheduler_tick(app))
         app.state.scheduler_task = task
 
+    from clio_agent.gact import capabilities_snapshot  # noqa: PLC0415
+
+    # Collect the capabilities snapshot now, so the first probe already finds it.
+    capabilities_snapshot.start(app)
     server_boot.start(app)  # clio-core attach + first doctor pass, both off-loop (typed rows)
-    from clio_agent.gact import task_runtime
+    from clio_agent.gact import highway_writer, task_runtime
 
     readiness: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     app.state.task_runtime_start = readiness
@@ -747,7 +728,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Settle turns and task owners while their durable stores are still alive.
         runtime_stop.set()
         task_cleanup_errors = await asyncio.shield(runtime_task)
-
+        await asyncio.to_thread(highway_writer.close_app_writer, app)  # bounded; Core still up
         # Release Core after verified worker retirement and before later executor joins.
         await desktop_lifecycle.release_runtime_after_drain(app)
 
@@ -762,6 +743,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "one or more MCP Apps failed explicit host cleanup; "
                 "child transport shutdown will run the server cleanup backstop"
             )
+        await asyncio.to_thread(close_all_processes)  # kernels and browsers (BR23)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -1011,7 +993,6 @@ def build_app(
         write_root=prompt_write_root,
     )
     app.state.memory_events = {}
-    app.state.command_audit = []
     # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
@@ -1057,6 +1038,10 @@ def build_app(
     # path -> ContextFile dict.
     app.state.context_files_path = session_store_path.parent / "context_files.json"
     app.state.context_files = _load_context_files(app.state.context_files_path)
+    # The system prompt in force per agent scope, which a compaction record names.
+    from clio_agent.gact.compaction import configure_system_prompt_store  # noqa: PLC0415
+
+    configure_system_prompt_store(session_store_path.parent / "system_prompts")
     # iowarp/clio-agent#331: per-turn context truth frames. These
     # capture what visible transcript/context attachments were
     # retained for a turn, plus model/agent/prompt provenance.
@@ -1148,7 +1133,7 @@ def build_app(
     # WITHOUT importing _make_permission_gate/_make_tool_observer from app.py
     # (which would reintroduce the no-cycle violation). Callers prefer the
     # already-installed app.state.pending_permission_gate/pending_tool_observer
-    # and fall back to these factories — mirroring _call_enabled_external_mcp_tool.
+    # and fall back to these factories.
     app.state.make_permission_gate = lambda: _make_permission_gate(app)
     app.state.make_tool_observer = lambda: _make_tool_observer(app)
     # MCP Apps receives the full FastMCP result through a separate private
@@ -1372,14 +1357,6 @@ def build_app(
             "\n".join(f"- {t['id']}: {t['description']}" for t in targets)
             or "(no defined subagents)"
         )
-        agent_def = resolve_session_agent(app, "", session_id=session_id)
-        commands = [
-            f"- {row.get('id')}: {row.get('description') or row.get('title')}"
-            for row in _planner_command_rows(
-                app, agent_def, *_command_context_for_request(app, session_id)
-            )
-        ]
-        context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
         return context
 
     # ---- /v1/sessions CRUD + delete -----------------------------------
@@ -1522,6 +1499,7 @@ def build_app(
     from clio_agent.gact.routes.tasks import register_task_routes
 
     register_task_routes(app)
+    register_browser_routes(app)  # the shared tab: pages, live view, allowing a host
     composer_runtime.register_composer_routes(app, deps)
     register_a2ui_routes(app, deps)
 
@@ -1607,13 +1585,11 @@ def build_app(
     # the direct-destructive-action guard through ``deps``.
     register_misc_routes(app, deps)
 
-    # ---- /v1/catalog/tools + /v1/tools + /v1/commands + dispatch -----
-    # The tool catalog (built-in + unified live) and the slash-command catalog +
-    # dispatch are owned by routes/catalog.py. The command-table assembly lives in
-    # runtime/commands.py (shared with the prompt-render-context closure here); the
-    # dispatch route reaches the message-ledger primitives, agent runner, and
-    # destructive-action guard through ``deps``.
+    # ---- /v1/catalog/tools + /v1/tools, then /v1/commands + dispatch -----
+    # The tool catalog is routes/catalog.py; the command table and its dispatch are
+    # routes/commands.py (the table itself is runtime/command_table.py).
     register_catalog_routes(app, deps)
+    register_command_routes(app, deps)
 
     # ---- /v1/providers (#15) + /v1/providers/lm ---
     # The LM-provider catalog (list/detail/auth/models/handshake) and the runtime
@@ -1651,29 +1627,10 @@ def build_app(
     # The Exception backstop is registered by install_error_envelope above,
     # paired with the middleware it must agree with.
 
-    # --- optional web UI (`clio web`): serve the built SPA bundle same-origin ---
-    # Gated on CLIO_WEB_DIR so the default server (TUI / headless API) is byte-for-
-    # byte unchanged unless web mode is explicitly enabled. Mounted LAST so every
-    # /v1 API route (and /docs, /openapi.json) registered above takes precedence;
-    # an SPA fallback serves index.html for unknown non-API paths so client-side
-    # (history) routing works. The bundle's API calls are same-origin (relative
-    # /v1/...), so no CORS/proxy is needed — this is the in-process equivalent of
-    # the docker clio-web nginx setup.
-    web_dir = _web_dir()
-    if web_dir and (Path(web_dir) / "index.html").is_file():
-        from fastapi.staticfiles import StaticFiles
-        from starlette.responses import FileResponse
+    # Optional web UI (`clio web`, CLIO_WEB_DIR), mounted LAST so every /v1 route wins.
+    from clio_agent.gact.web_mount import mount_web_ui  # noqa: PLC0415
 
-        class _SPAStaticFiles(StaticFiles):
-            async def get_response(self, path: str, scope: Any) -> Any:
-                try:
-                    return await super().get_response(path, scope)
-                except StarletteHTTPException as exc:
-                    if exc.status_code == 404:
-                        return FileResponse(Path(web_dir) / "index.html")
-                    raise
-
-        app.mount("/", _SPAStaticFiles(directory=web_dir, html=True), name="web")
+    mount_web_ui(app, _web_dir())
 
     return app
 
@@ -1702,7 +1659,7 @@ def __getattr__(name: str):
 
 def run_server(
     host: str = "127.0.0.1",
-    port: int = 8100,
+    port: int | None = None,
     *,
     reload: bool = False,
     no_agent: bool = False,
@@ -1719,16 +1676,19 @@ def run_server(
 
     Args:
         host: Bind host.
-        port: Bind port.
+        port: Bind port; ``None`` uses the configured default (``gact.port``).
         reload: uvicorn auto-reload on source changes (dev only).
         no_agent: Skip ClioAgent construction even when LM env is configured.
     """
     import uvicorn
 
-    # Resolve trace verbosity (file→env→default) and install the formatted log
-    # handler for the server process, now that the environment is settled.
-    trace.configure()
+    from clio_agent.server_port import claim_api_port  # noqa: PLC0415
 
+    port = claim_api_port(port)
+    trace.configure()  # trace verbosity (file -> env -> default) + the formatted log handler
+    from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
+
+    relocate_home()  # a moved home: its records point here before any store opens them
     # Always build a fresh app here — the module-level ``app`` symbol is
     # intentionally lazy (see __getattr__ above) so that just importing
     # ``clio_agent.gact.app`` doesn't pay build_app's cost. When the env
@@ -1765,7 +1725,7 @@ def main() -> None:
         description="CLIO's GACT v0.2 REST + SSE server.",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8100, type=int)
+    parser.add_argument("--port", default=None, type=int, help="port (default: gact.port)")
     parser.add_argument(
         "--reload",
         action="store_true",

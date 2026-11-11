@@ -9,6 +9,7 @@ on:
       - 'uv.lock'
       - 'external/gact-tui'
       - 'scripts/smoke_desktop_package.py'
+      - 'scripts/ci/runtime_bytecode_audit.py'
       - '.github/workflows/desktop-bundle-smoke.yml'
   workflow_dispatch: {}
 
@@ -52,10 +53,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb zlib1g-dev
       - name: Build the real portable runtime (Linux)
         if: runner.os == 'Linux'
-        run: bash install/build-gact-runtime.sh external/gact-tui/desktop/src-tauri/gact-runtime
+        run: |
+          bash install/build-gact-runtime.sh external/gact-tui/desktop/src-tauri/gact-runtime
+          bash install/pack-gact-runtime.sh
         env:
           CLIO_AGENT_SOURCE: ${{ github.workspace }}
       - name: Build and pack the real portable runtime (Windows)
@@ -86,10 +89,14 @@ jobs:
           fs.writeFileSync(path.join(ui, 'brand.config.local.json'), JSON.stringify({profile: 'clio', brandingRoot: path.join(root, 'branding')}));
           fs.cpSync(path.join(root, 'branding/clio/icons'), path.join(ui, 'desktop/src-tauri/icons'), {recursive: true});
           fs.cpSync(path.join(root, 'branding/clio/installer'), path.join(ui, 'desktop/src-tauri/installer'), {recursive: true});
-          const bundle = {createUpdaterArtifacts: false};
+          let bundle = {createUpdaterArtifacts: false};
           if (process.platform === 'win32') {
             const windowsPack = JSON.parse(fs.readFileSync(path.join(ui, 'desktop/src-tauri/tauri.bundled.windows-pack.conf.json'), 'utf8'));
             Object.assign(bundle, windowsPack.bundle);
+          }
+          if (process.platform === 'linux') {
+            // The release's Linux layout: one runtime archive and its maintainer scripts.
+            bundle = require(path.join(root, 'install/linux-package/tauri-overlay.cjs')).linuxPackageBundle(bundle, 'bundled');
           }
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'smoke-config.json'), JSON.stringify({version, bundle}));
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-source.json'), JSON.stringify({
@@ -114,6 +121,15 @@ jobs:
           packages=(external/gact-tui/desktop/src-tauri/target/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           sudo dpkg -i "${packages[0]}"
+          # Record the shipped bytecode before any launch can add to it (#1979). The
+          # package carries the runtime archive; its postinst unpacked it beside it.
+          pack="$(dpkg -L "$(dpkg-deb -f "${packages[0]}" Package)" | awk '/\/gact-runtime\.pack\.json$/ && !n++')"
+          test -n "$pack"
+          manifest="$(dirname "$pack")/gact-runtime/runtime.json"
+          test -f "$manifest"
+          echo "CLIO_INSTALLED_RUNTIME=$(dirname "$manifest")" >> "$GITHUB_ENV"
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py snapshot \
+            --runtime "$(dirname "$manifest")" --out "$RUNNER_TEMP/runtime-audit/before.json"
           # DEB has no managed-package post-install hook. Its first launch also
           # owns Office download (600s) and extraction (300s), unlike a warm
           # startup or the Windows launch after NSIS has prepared those files.
@@ -171,6 +187,11 @@ jobs:
             install_kind = 'fresh_ci_install'
           } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-timing.json" -Encoding utf8
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+          # NSIS has already run --prepare-runtime; record the bytecode before any launch (#1979).
+          $runtimeDir = Join-Path $installDir 'data/bundled-runtime/gact-runtime'
+          if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir 'runtime.json'))) { throw "No prepared runtime at $runtimeDir" }
+          "CLIO_INSTALLED_RUNTIME=$runtimeDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py snapshot --runtime $runtimeDir --out "$env:RUNNER_TEMP/runtime-audit/before.json"
           uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log" --agent-home "$installDir/data/clio-agent"
       - name: Measure subsequent Windows startup with the same managed packages
         if: runner.os == 'Windows'
@@ -178,6 +199,21 @@ jobs:
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
           uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence-repeat" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log" --agent-home "$installDir/data/clio-agent"
+      - name: Audit installed runtime bytecode and the clio-core log (Linux)
+        if: always() && runner.os == 'Linux' && env.CLIO_INSTALLED_RUNTIME != ''
+        shell: bash
+        run: |
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py report \
+            --runtime "$CLIO_INSTALLED_RUNTIME" --snapshot "$RUNNER_TEMP/runtime-audit/before.json" \
+            --log-root "$RUNNER_TEMP/startup-evidence/agent" --out "$RUNNER_TEMP/runtime-audit/report.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+      - name: Audit installed runtime bytecode and the clio-core log (Windows)
+        if: always() && runner.os == 'Windows' && env.CLIO_INSTALLED_RUNTIME != ''
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
+          uv run --no-project --python 3.14 scripts/ci/runtime_bytecode_audit.py report --runtime $env:CLIO_INSTALLED_RUNTIME --snapshot "$env:RUNNER_TEMP/runtime-audit/before.json" --log-root "$installDir/data/clio-agent" --out "$env:RUNNER_TEMP/runtime-audit/report.json" --summary $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Collect Windows installer diagnostics even before first launch
         if: always() && runner.os == 'Windows'
         shell: pwsh
@@ -222,5 +258,6 @@ jobs:
             ${{ runner.temp }}/installer-timeout-processes.json
             ${{ runner.temp }}/installer-timing.json
             ${{ runner.temp }}/startup-evidence-repeat/
+            ${{ runner.temp }}/runtime-audit/report.json
           if-no-files-found: warn
           retention-days: 7

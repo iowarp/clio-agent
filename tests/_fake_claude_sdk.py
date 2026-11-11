@@ -4,7 +4,10 @@ The engine dispatches on the SDK's message class NAMES, so the fakes carry the r
 ones (``StreamEvent``, ``AssistantMessage``, ``ResultMessage``, ``RateLimitEvent``,
 ``TextBlock``). :func:`install` puts the module in ``sys.modules``; every connected
 ``ClaudeSDKClient`` records its options and each ``query(prompt, session_id)``, and
-answers each query from a script (the same reply every time by default).
+answers each query from a script (the same reply every time by default). Like the real
+CLI, one client holds ONE conversation whatever the ``session_id`` (``held``), and
+``/clear`` empties it without a model call (it is not a scripted turn; ``clears``
+counts it, and :meth:`FakeSDK.queries` leaves it out).
 
 :func:`drive` runs one engine call through the REAL pooled session transport.
 """
@@ -145,6 +148,9 @@ def install(monkeypatch: pytest.MonkeyPatch, **config: Any) -> FakeSDK:
             state.constructed += 1
             self.options = options
             self.queries: list[tuple[Any, str]] = []
+            self.held: list[Any] = []  # the CLI's one conversation (prompts since /clear)
+            self.clears = 0
+            self._clearing = False
             self.disconnected = False
             state.clients.append(self)
 
@@ -165,11 +171,21 @@ def install(monkeypatch: pytest.MonkeyPatch, **config: Any) -> FakeSDK:
             self.options.kwargs["model"] = model
 
         async def query(self, prompt: Any, session_id: str = "default") -> None:
+            if prompt == "/clear":
+                self.clears += 1
+                self.held = []
+                self._clearing = True
+                return
             if not isinstance(prompt, str):
                 prompt = [message async for message in prompt]
             self.queries.append((prompt, session_id))
+            self.held.append(prompt)
 
         async def receive_response(self) -> Any:
+            if self._clearing:  # no model call: the CLI only answers with a result
+                self._clearing = False
+                yield ResultMessage(usage={"input_tokens": 0, "output_tokens": 0})
+                return
             for message in state.next_reply():
                 if isinstance(message, BaseException):
                     raise message

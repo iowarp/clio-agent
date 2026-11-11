@@ -1,9 +1,9 @@
 ---
 import { Aside } from '@astrojs/starlight/components';
-interface Props { features?: string; }
-const { features = 'Some controls pictured here' } = Astro.props;
+interface Props { features?: string; since?: string; }
+const { features = 'Some controls pictured here', since = 'v0.9.5' } = Astro.props;
 ---
-<Aside type="note" title="Newer than the published beta">
-  {features} require a development build and are not included in beta 5.2.
+<Aside type="note" title="Version note">
+  {features} need CLIO {since} or later.
   If your app looks different, <a href="/docs/versions/">check features and versions</a>.
 </Aside>

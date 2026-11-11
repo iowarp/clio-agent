@@ -17,10 +17,18 @@ second spawn when the session later connected. This module splits that work:
     provisioning is a file read.
   - A ``clio-kit mcp-server <name>`` launcher is prepared with
     ``clio-kit mcp-server --prepare <name>`` when the installed clio-kit offers that option
-    (it is detected from ``clio-kit mcp-server --help``). An older clio-kit builds the
+    (it is detected from ``clio-kit mcp-server --help``). Its one ``clio-kit.mcp-prepare.v1``
+    result line on stdout is read, and its exit status maps to a typed reason
+    (:data:`KIT_PREPARE_EXIT_REASONS`). Where builds run outside the
+    fence (Windows, :func:`builds_outside_fence`), an older clio-kit is prepared by running
+    its own build in the launcher's interpreter with the server's start left out
+    (:data:`_KIT_BUILD_SHIM`, a fallback only). Otherwise an older clio-kit builds the
     environment when the server starts, as before; the provision step then records the
     typed reason :data:`PROVISION_UNSUPPORTED_LAUNCHER` and moves on.
   - Any other launcher has nothing to provision (:data:`PROVISION_NOT_APPLICABLE`).
+
+  On Windows the provisioning command runs outside the sandbox: the AppContainer denies
+  the executable writes a ``uv`` build makes (#1991). The server still starts confined.
 
 * **Start**: the server is then started once; its tools are listed over that same
   connection (``gact.mcp_readiness``), not by a second, listing-only spawn.
@@ -41,12 +49,14 @@ import os
 import subprocess
 import threading
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from clio_agent.runtime import trace
+from clio_agent.tools.mcp_environment_repair import LOCKS_DIRNAME as _ENVIRONMENT_LOCKS_DIRNAME
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +83,47 @@ PROVISION_NO_PROGRESS = "mcp_prepare_provision_no_progress"
 START_FAILED = "mcp_prepare_start_failed"
 START_NO_PROGRESS = "mcp_prepare_start_no_progress"
 CACHE_LOCK_TIMEOUT = "mcp_prepare_cache_lock_timeout"
-
+PROVISION_ACCESS_DENIED = "mcp_prepare_provision_access_denied"
+PROVISION_PATH_TOO_LONG = "mcp_prepare_provision_path_too_long"
+PROVISION_UNKNOWN_SERVER = "mcp_prepare_provision_unknown_server"
+PROVISION_USAGE = "mcp_prepare_provision_usage"
+PROVISION_NETWORK = "mcp_prepare_provision_network"
+PROVISION_UV_MISSING = "mcp_prepare_provision_uv_missing"
+PROVISION_ENVIRONMENT_INVALID = "mcp_prepare_provision_environment_invalid"
 PREPARE_REASONS: dict[str, str] = {
     LAUNCHER_MISSING: "The server's launcher command is not installed or not on PATH.",
     PROVISION_FAILED: "Building the server's environment failed (see detail).",
+    PROVISION_ACCESS_DENIED: (
+        "Building the server's environment was denied writing its executables (Windows "
+        "'Failed to update Windows PE resources ... Access is denied'), as inside the "
+        "AppContainer sandbox or under antivirus quarantine (see detail)."
+    ),
+    PROVISION_PATH_TOO_LONG: (
+        "Building the server's environment hit the Windows path limit (WinError 206). "
+        "Use a shorter CLIO_AGENT_HOME or CLIO_KIT_CACHE_DIR, or enable Windows long paths."
+    ),
+    PROVISION_UNKNOWN_SERVER: (
+        "The installed clio-kit does not know this server (clio-kit 'mcp-server --prepare' "
+        "exit 1). Update clio-kit or correct the server name in the declaration."
+    ),
+    PROVISION_USAGE: (
+        "clio-kit rejected the preparation command as a usage error (exit 2), for example "
+        "a declaration that combines the server with --branch."
+    ),
+    PROVISION_NETWORK: (
+        "Building the server's environment could not download its packages (clio-kit "
+        "'mcp-server --prepare' exit 13: fetch, connect or DNS failure). Check network or "
+        "proxy access to the package index."
+    ),
+    PROVISION_UV_MISSING: (
+        "clio-kit could not find 'uv' to build the server's environment (exit 14). Install "
+        "uv or put it on PATH."
+    ),
+    PROVISION_ENVIRONMENT_INVALID: (
+        "The server's environment directory is not a valid Python environment (a build "
+        "or removal was interrupted) and could not be replaced: a file in it is held "
+        "open, or its lock stayed busy. It is retried on the next start (see detail)."
+    ),
     PROVISION_NO_PROGRESS: (
         "Building the server's environment stopped making progress, or ran past "
         "tools.mcp.provision_max_wait_s."
@@ -167,7 +214,7 @@ def project_environment_dir(project_dir: str) -> Path:
         pass
     digest = hashlib.sha256(os.path.normcase(str(resolved)).encode("utf-8")).hexdigest()[:16]
     name = resolved.parent.name if resolved.name in ("impl", "src", "") else resolved.name
-    return paths.user_cache_dir() / "mcp-project-envs" / f"{name or 'project'}-{digest}"
+    return paths.mcp_build_cache_dir() / "mcp-project-envs" / f"{name or 'project'}-{digest}"
 
 
 def _uv_run(command: str, args: Sequence[str]) -> Any:
@@ -206,6 +253,10 @@ class ProvisionPlan:
     env: dict[str, str] = field(default_factory=dict)
     marker_dir: str = ""
     fingerprint: str = ""
+    #: The command's exit status meaning "this launcher cannot provision" (0: none).
+    unsupported_exit: int = 0
+    #: ``clio-kit mcp-server --prepare``: one result line on stdout, typed exit codes.
+    kit_prepare: bool = False
 
 
 def _sync_argv(command: str, args: Sequence[str]) -> list[str]:
@@ -242,20 +293,25 @@ def _project_fingerprint(project_dir: str, argv: Sequence[str]) -> str:
     return digest.hexdigest()
 
 
-_PREPARE_OPTION: dict[str, bool] = {}
+_PREPARE_OPTION: dict[tuple[str, ...], bool] = {}
 _PREPARE_OPTION_LOCK = threading.Lock()
 
 
-def launcher_supports_prepare(command: str) -> bool:
-    """Whether this clio-kit offers ``mcp-server --prepare`` (read once from its help)."""
+def launcher_supports_prepare(command: str | Sequence[str]) -> bool:
+    """Whether this clio-kit offers ``mcp-server --prepare`` (read once from its help).
 
+    ``command`` is the launcher executable, or the full launcher prefix when clio-kit
+    runs through the desktop runtime's interpreter (``python -c <entry>``).
+    """
+
+    prefix = (command,) if isinstance(command, str) else tuple(command)
     with _PREPARE_OPTION_LOCK:
-        known = _PREPARE_OPTION.get(command)
+        known = _PREPARE_OPTION.get(prefix)
     if known is not None:
         return known
     try:
         done = subprocess.run(  # noqa: S603 - the declared launcher, fixed arguments
-            [command, "mcp-server", "--help"],
+            [*prefix, "mcp-server", "--help"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -266,8 +322,269 @@ def launcher_supports_prepare(command: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         supported = False
     with _PREPARE_OPTION_LOCK:
-        _PREPARE_OPTION[command] = supported
+        _PREPARE_OPTION[prefix] = supported
     return supported
+
+
+#: Exit status of :data:`_KIT_BUILD_SHIM` when this clio-kit lacks what it drives.
+_KIT_SHIM_UNSUPPORTED = 97
+
+#: Written by :data:`_KIT_BUILD_SHIM` when it could not replace an invalid environment.
+_ENVIRONMENT_REPAIR_FAILED = "clio environment repair failed"
+
+#: Builds a clio-kit server's environment without starting the server, for a clio-kit
+#: without ``mcp-server --prepare``. It runs ``clio-kit mcp-server <args>`` in the
+#: launcher's own interpreter with the final launch replaced by a no-op, so the build
+#: (materialize, ``uv sync --frozen``, cache upkeep) is exactly the one that the server's
+#: start would do; that start then finds the environment built.
+#:
+#: An environment that is not complete (absent, the empty directory clio-kit creates, or
+#: one an interrupted build or removal left without its interpreter) is built atomically:
+#: into a relocatable sibling ``.<name>.build-<pid>`` (``uv venv --relocatable``, then the
+#: same ``uv sync``), which is renamed into place under the environment's cross-process
+#: lock (:func:`clio_agent.tools.mcp_environment_repair.environment_lock`; the checks
+#: mirror :func:`~clio_agent.tools.mcp_environment_repair.environment_problem`). A crash
+#: leaves only the hidden sibling, never a half-built environment under the live name.
+#: A complete environment is synced in place (uv locks it itself). Where uv cannot build
+#: a relocatable environment, the invalid one is removed and built in place as before.
+_KIT_BUILD_SHIM = (
+    r"""
+import inspect, os, shutil, subprocess, sys, time
+from pathlib import Path
+try:
+    import clio_kit as kit
+    group, build = kit.main, kit._build_locked_environment
+    kit._run_child_command
+except (ImportError, AttributeError) as exc:
+    sys.stderr.write(f'clio-kit cannot build without starting: {exc!r}\n')
+    sys.exit(@UNSUPPORTED@)
+NT = os.name == 'nt'
+def problem(env):
+    try:
+        if not env.is_dir() or not any(env.iterdir()):
+            return None
+    except OSError:
+        return None
+    if not (env / 'pyvenv.cfg').is_file():
+        return 'no_pyvenv_cfg'
+    python = env / ('Scripts/python.exe' if NT else 'bin/python')
+    if not python.exists():
+        return 'no_interpreter'
+    if NT:
+        try:
+            with python.open('rb') as handle:
+                if handle.read(2) != b'MZ':
+                    return 'corrupt_interpreter'
+        except OSError:
+            return 'corrupt_interpreter'
+    return None
+def complete(env):
+    return (env / 'pyvenv.cfg').is_file() and problem(env) is None
+def relocatable(env):
+    try:
+        text = (env / 'pyvenv.cfg').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return any(line.replace(' ', '').lower() == 'relocatable=true' for line in text.splitlines())
+def lock(env, timeout=120.0):
+    root = env.parent.parent / '@LOCKS@'
+    root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(root / (env.name + '.lock'), os.O_RDWR | os.O_CREAT)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            if NT:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise OSError('lock busy for %.0fs: %s' % (timeout, env.name))
+            time.sleep(0.05)
+def unlock(fd):
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if NT:
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+def clear(env):
+    if not os.path.lexists(env):
+        return
+    try:
+        env.rmdir()
+        return
+    except OSError:
+        pass
+    aside = env.with_name('.%s.removed-%d-%d' % (env.name, os.getpid(), time.monotonic_ns()))
+    os.replace(env, aside)
+    shutil.rmtree(aside, ignore_errors=True)
+def place(staging, final):
+    for attempt in range(20):
+        try:
+            if complete(final):
+                shutil.rmtree(staging, ignore_errors=True)
+                return 'kept'
+            clear(final)
+            os.replace(staging, final)
+            return 'renamed'
+        except OSError:
+            if attempt == 19:
+                raise
+            time.sleep(0.5)
+PARAMS = list(inspect.signature(build).parameters)
+def atomic(*args, **kwargs):
+    # clio-kit releases differ: (runtime, runtime_project, entry_command, child_environment)
+    # or (uv, runtime_project, child_environment). Bind by name to serve both.
+    bound = {**dict(zip(PARAMS, args)), **kwargs}
+    env, project = bound.get('child_environment'), bound.get('runtime_project')
+    target = ''
+    if isinstance(env, dict) and project is not None and bound.get('runtime', 'python') == 'python':
+        target = env.get('UV_PROJECT_ENVIRONMENT', '')
+    if not target:
+        return build(*args, **kwargs)
+    final = Path(target)
+    if complete(final):
+        return build(*args, **kwargs)
+    why = problem(final) or ('empty' if final.is_dir() else 'absent')
+    staging = final.with_name('.%s.build-%d' % (final.name, os.getpid()))
+    shutil.rmtree(staging, ignore_errors=True)
+    uv = bound.get('uv') or getattr(kit, 'uv_command', lambda: 'uv')()
+    venv_env = {k: v for k, v in env.items() if k != 'UV_PROJECT_ENVIRONMENT'}
+    made = subprocess.run(
+        [uv, 'venv', '--relocatable', '--quiet', '--project', str(project), str(staging)],
+        env=venv_env, capture_output=True,
+    )
+    if made.returncode == 0:
+        ok = build(**{**bound, 'child_environment': {**env, 'UV_PROJECT_ENVIRONMENT': str(staging)}})
+        if not ok:
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
+        if complete(staging) and relocatable(staging):
+            try:
+                fd = lock(final)
+                try:
+                    outcome = place(staging, final)
+                finally:
+                    unlock(fd)
+            except OSError as exc:
+                shutil.rmtree(staging, ignore_errors=True)
+                sys.stderr.write('@REPAIR_FAILED@: %s (%s): %r\n' % (final, why, exc))
+                return False
+            sys.stderr.write('clio environment %s atomically: %s (was %s)\n'
+                             % (outcome, final.name, why))
+            return True
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        fd = lock(final)
+        try:
+            if problem(final):
+                clear(final)
+        finally:
+            unlock(fd)
+    except OSError as exc:
+        sys.stderr.write('@REPAIR_FAILED@: %s (%s): %r\n' % (final, why, exc))
+        return False
+    return build(*args, **kwargs)
+built = []
+def _build(*args, **kwargs):
+    ok = atomic(*args, **kwargs)
+    built.append(bool(ok))
+    return ok
+kit._build_locked_environment = _build
+kit._run_child_command = lambda *args, **kwargs: None
+try:
+    group.main(args=['mcp-server', *sys.argv[1:]], prog_name='clio-kit', standalone_mode=False)
+except SystemExit as exc:
+    if exc.code not in (0, None):
+        raise
+except Exception as exc:
+    sys.stderr.write(f'{exc}\n')
+    sys.exit(1)
+if False in built:
+    sys.stderr.write('clio-kit failed to build the server environment\n')
+    sys.exit(3)
+""".replace("@UNSUPPORTED@", str(_KIT_SHIM_UNSUPPORTED))
+    .replace("@LOCKS@", _ENVIRONMENT_LOCKS_DIRNAME)
+    .replace("@REPAIR_FAILED@", _ENVIRONMENT_REPAIR_FAILED)
+)
+
+
+def builds_outside_fence() -> bool:
+    """Whether MCP environments are built unconfined, before the confined server starts.
+
+    On Windows the fence (AppContainer, or the offline sandbox accounts) cannot host a
+    ``uv`` build: writing a console script's PE resources is denied (#1991). The build
+    is CLIO's own step, like installing the plugin, so it runs outside; the server it
+    builds for still starts confined. Elsewhere the fence hosts the build unchanged.
+    """
+
+    return os.name == "nt"
+
+
+def _uv_tool_python(launcher: Path) -> Path | None:
+    """The interpreter of a ``uv tool install`` console script in uv's tool bin folder."""
+
+    bin_dirs = [os.environ.get("UV_TOOL_BIN_DIR", ""), str(Path.home() / ".local" / "bin")]
+    parent = os.path.normcase(str(launcher.parent))
+    if not any(value and os.path.normcase(str(Path(value))) == parent for value in bin_dirs):
+        return None
+    tools = os.environ.get("UV_TOOL_DIR") or ""
+    if not tools:
+        roaming = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        tools = str(Path(roaming) / "uv" / "tools") if os.name == "nt" else ""
+    if not tools:
+        data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        tools = str(Path(data) / "uv" / "tools")
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    python = Path(tools) / launcher.stem / scripts / ("python.exe" if os.name == "nt" else "python")
+    return python if python.is_file() else None
+
+
+def launcher_interpreter(resolved_command: str) -> str | None:
+    """The Python interpreter that runs the ``clio-kit`` console script ``resolved_command``.
+
+    A script in a virtual environment sits beside its interpreter; a ``uv tool``
+    script runs its tool environment's interpreter. Anything else is unknown (``None``).
+    """
+
+    launcher = Path(resolved_command)
+    sibling = launcher.with_name("python.exe" if os.name == "nt" else "python")
+    if sibling.is_file() and (launcher.parent.parent / "pyvenv.cfg").is_file():
+        return str(sibling)
+    tool = _uv_tool_python(launcher)
+    return str(tool) if tool is not None else None
+
+
+def _kit_build_plan(interpreter: str, args: Sequence[str], env: Mapping[str, str]) -> ProvisionPlan:
+    return ProvisionPlan(
+        argv=(interpreter, "-c", _KIT_BUILD_SHIM, *[str(arg) for arg in args[1:]]),
+        env=dict(env),
+        unsupported_exit=_KIT_SHIM_UNSUPPORTED,
+    )
+
+
+def _clio_kit_plan(
+    prefix: tuple[str, ...], interpreter: str | None, args: Sequence[str], env: Mapping[str, str]
+) -> ProvisionPlan | str:
+    """``mcp-server --prepare`` when offered, else the build shim where builds run outside."""
+
+    if launcher_supports_prepare(prefix if len(prefix) > 1 else prefix[0]):
+        return ProvisionPlan(
+            argv=(*prefix, "mcp-server", "--prepare", args[1]), env=dict(env), kit_prepare=True
+        )
+    if builds_outside_fence() and interpreter:
+        return _kit_build_plan(interpreter, args, env)
+    return PROVISION_UNSUPPORTED_LAUNCHER
 
 
 def provision_plan(spec: Any, resolved_command: str) -> ProvisionPlan | str:
@@ -290,10 +607,33 @@ def provision_plan(spec: Any, resolved_command: str) -> ProvisionPlan | str:
             fingerprint=_project_fingerprint(launcher.project_dir, argv),
         )
     if _launcher_name(command) == "clio-kit" and len(args) >= 2 and args[0] == "mcp-server":
-        if not launcher_supports_prepare(resolved_command):
-            return PROVISION_UNSUPPORTED_LAUNCHER
-        return ProvisionPlan(argv=(resolved_command, "mcp-server", "--prepare", args[1]))
+        interpreter = launcher_interpreter(resolved_command) if builds_outside_fence() else None
+        return _clio_kit_plan((resolved_command,), interpreter, args, {})
     return PROVISION_NOT_APPLICABLE
+
+
+def bundled_provision_plan(
+    launcher: tuple[str, Sequence[str], Mapping[str, str]],
+) -> ProvisionPlan | str:
+    """The provisioning plan for a server the desktop runtime starts with its own interpreter.
+
+    ``launcher`` is :func:`~clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher`'s
+    result. A preinstalled adapter (the Web Search MCP) has nothing to build; a bundled
+    clio-kit server is prepared through the same interpreter, with the same environment
+    (bundled ``uv`` on ``PATH``, ``CLIO_KIT_CACHE_DIR``) as the server's start.
+    """
+
+    from clio_agent.tools.desktop_mcp_runtime import CLIO_KIT_ENTRY  # noqa: PLC0415
+
+    executable, argv, env = launcher
+    argv = [str(value) for value in argv]
+    if argv[:2] != ["-c", CLIO_KIT_ENTRY]:
+        return PROVISION_NOT_APPLICABLE
+    args = argv[2:]
+    if len(args) < 2 or args[0] != "mcp-server":
+        return PROVISION_NOT_APPLICABLE
+    prefix = (str(executable), "-c", CLIO_KIT_ENTRY)
+    return _clio_kit_plan(prefix, str(executable), args, env)
 
 
 def provision_max_wait_s() -> float:
@@ -311,36 +651,134 @@ def provision_max_wait_s() -> float:
 
 
 def _marker_matches(plan: ProvisionPlan) -> bool:
+    from clio_agent.tools.mcp_environment_repair import environment_problem  # noqa: PLC0415
+
     if not plan.marker_dir or not plan.fingerprint:
         return False
     try:
         recorded = json.loads((Path(plan.marker_dir) / _MARKER).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(recorded, dict) and recorded.get("fingerprint") == plan.fingerprint
+    if not isinstance(recorded, dict) or recorded.get("fingerprint") != plan.fingerprint:
+        return False
+    # A recorded build whose environment was since damaged is built again.
+    environment = Path(plan.marker_dir)
+    return (environment / "pyvenv.cfg").is_file() and environment_problem(environment) is None
 
 
 def _write_marker(plan: ProvisionPlan) -> None:
     if not plan.marker_dir or not plan.fingerprint:
         return
     marker = Path(plan.marker_dir) / _MARKER
+    partial = marker.with_name(f"{_MARKER}.{os.getpid()}.tmp")
     try:
-        marker.write_text(
+        partial.write_text(
             json.dumps({"fingerprint": plan.fingerprint, "argv": list(plan.argv[1:])}),
             encoding="utf-8",
         )
+        os.replace(partial, marker)  # never a half-written marker
     except OSError as exc:  # the environment is built; only the shortcut is lost
+        partial.unlink(missing_ok=True)
         trace.event("TOOLS", "mcp_prepare_marker_unwritable path=%s error=%r", marker, exc)
 
 
-def _run_provision(namespace: str, plan: ProvisionPlan, env: dict[str, str], cwd: str) -> None:
-    """Run ``plan`` while its process tree works (typed failure otherwise)."""
+def _plan_label(plan: ProvisionPlan) -> str:
+    """A short name for ``plan``'s command in failures (never the build shim's source)."""
+
+    if plan.unsupported_exit:
+        return f"clio-kit mcp-server {' '.join(plan.argv[3:])} (build only)"
+    if plan.kit_prepare:
+        return f"clio-kit mcp-server --prepare {plan.argv[-1]}"
+    return " ".join(plan.argv[:2])
+
+
+#: ``clio-kit mcp-server --prepare`` exit status -> typed reason (clio-kit #402 contract).
+KIT_PREPARE_EXIT_REASONS: dict[int, str] = {
+    1: PROVISION_UNKNOWN_SERVER,
+    2: PROVISION_USAGE,
+    10: PROVISION_FAILED,
+    11: PROVISION_ACCESS_DENIED,
+    12: PROVISION_PATH_TOO_LONG,
+    13: PROVISION_NETWORK,
+    14: PROVISION_UV_MISSING,
+}
+#: The same contract's ``error`` kinds, for an exit status outside the table above.
+_KIT_PREPARE_ERROR_REASONS: dict[str, str] = {
+    "unknown_server": PROVISION_UNKNOWN_SERVER,
+    "build_failed": PROVISION_FAILED,
+    "access_denied": PROVISION_ACCESS_DENIED,
+    "path_too_long": PROVISION_PATH_TOO_LONG,
+    "network": PROVISION_NETWORK,
+    "uv_missing": PROVISION_UV_MISSING,
+}
+KIT_PREPARE_SCHEMA = "clio-kit.mcp-prepare.v1"
+
+
+def kit_prepare_result(stdout: str) -> dict[str, Any] | None:
+    """The ``clio-kit.mcp-prepare.v1`` result line in ``stdout`` (the last one), if any."""
+
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value.get("schema") == KIT_PREPARE_SCHEMA:
+            return value
+    return None
+
+
+def kit_prepare_reason(returncode: int, result: Mapping[str, Any] | None, output: str) -> str:
+    """The typed reason of a failed ``--prepare``: its exit code, then its result's kind."""
+
+    reason = KIT_PREPARE_EXIT_REASONS.get(returncode)
+    if reason is None and result is not None:
+        reason = _KIT_PREPARE_ERROR_REASONS.get(str(result.get("error") or ""))
+    return reason or _failure_reason(output)
+
+
+def _failure_reason(output: str) -> str:
+    """The typed reason a failed build's ``output`` names (Windows-specific causes)."""
+
+    lowered = output.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            _ENVIRONMENT_REPAIR_FAILED,
+            "not a valid python environment",
+            "failed to query python interpreter",
+        )
+    ):
+        return PROVISION_ENVIRONMENT_INVALID
+    if "windows pe resources" in lowered:
+        return PROVISION_ACCESS_DENIED
+    if any(
+        marker in lowered
+        for marker in ("os error 206", "winerror 206", "filename or extension is too long")
+    ):
+        return PROVISION_PATH_TOO_LONG
+    return PROVISION_FAILED
+
+
+class _UnsupportedLauncher(Exception):
+    """The provisioning command reported :attr:`ProvisionPlan.unsupported_exit`."""
+
+
+def _spawn(plan: ProvisionPlan, cwd: str) -> Any:
+    """``plan``'s spawn: unconfined where builds run outside the fence, else confined."""
 
     from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
-    from clio_agent.runtime.progress import ProcessTreeWork, progressed  # noqa: PLC0415
-    from clio_agent.tools.mcp_server_progress import mcp_no_progress_s  # noqa: PLC0415
 
-    confined = sandbox.wrap_confined(
+    if builds_outside_fence():
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        return _Unconfined(
+            command=plan.argv[0],
+            args=list(plan.argv[1:]),
+            popen_kwargs={"creationflags": flags} if flags else {},
+        )
+    return sandbox.wrap_confined(
         plan.argv[0],
         list(plan.argv[1:]),
         write_roots=sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=None),
@@ -349,6 +787,57 @@ def _run_provision(namespace: str, plan: ProvisionPlan, env: dict[str, str], cwd
         pdeathsig=True,
         cwd=cwd,
     )
+
+
+@dataclass
+class _Unconfined:
+    """An unconfined spawn with :class:`~clio_agent.runtime.sandbox.ConfinedSpawn`'s shape."""
+
+    command: str
+    args: list[str]
+    env_overlay: dict[str, str] = field(default_factory=dict)
+    popen_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    def release(self) -> None:
+        """Nothing to release: no egress channel was opened."""
+
+
+def _kill_tree(process: subprocess.Popen[bytes]) -> None:
+    import psutil  # noqa: PLC0415
+
+    try:
+        children = psutil.Process(process.pid).children(recursive=True)
+    except psutil.Error:
+        children = []
+    for child in children:
+        try:
+            child.kill()
+        except psutil.Error:
+            continue
+    process.kill()
+    process.wait()
+
+
+def _run_provision(
+    namespace: str, plan: ProvisionPlan, env: dict[str, str], cwd: str
+) -> dict[str, Any] | None:
+    """Run ``plan`` while its process tree works (typed failure otherwise).
+
+    Returns the ``clio-kit.mcp-prepare.v1`` result of a ``--prepare`` plan (else ``None``).
+    """
+
+    from clio_agent.runtime.progress import ProcessTreeWork, progressed  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import mcp_no_progress_s  # noqa: PLC0415
+
+    confined = _spawn(plan, cwd)
+    label = _plan_label(plan)
+    trace.event(
+        "TOOLS",
+        "mcp_prepare_provision_start namespace=%s command=%s fence=%s",
+        namespace,
+        label,
+        "outside" if isinstance(confined, _Unconfined) else "confined",
+    )
     try:
         process = subprocess.Popen(  # noqa: S603 - declared launcher, composed argv
             [confined.command, *confined.args],
@@ -356,19 +845,27 @@ def _run_provision(namespace: str, plan: ProvisionPlan, env: dict[str, str], cwd
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            # ``--prepare`` keeps stdout for its one result line; uv's output is on stderr.
+            stderr=subprocess.PIPE if plan.kit_prepare else subprocess.STDOUT,
             **confined.popen_kwargs,
         )
     except OSError as exc:
         confined.release()
         raise PrepareError(LAUNCHER_MISSING, f"{plan.argv[0]}: {exc}") from exc
     output: list[bytes] = []
-    reader = threading.Thread(
-        target=lambda: output.extend(iter(lambda: process.stdout.read(4096), b"")),  # type: ignore[union-attr]
-        name=f"clio-provision-{namespace}",
-        daemon=True,
-    )
-    reader.start()
+    errors: list[bytes] = []
+    readers = [
+        threading.Thread(
+            target=lambda stream, sink: sink.extend(iter(lambda: stream.read(4096), b"")),
+            args=(stream, sink),
+            name=f"clio-provision-{namespace}",
+            daemon=True,
+        )
+        for stream, sink in ((process.stdout, output), (process.stderr, errors))
+        if stream is not None
+    ]
+    for reader in readers:
+        reader.start()
     tree = ProcessTreeWork(process.pid)
     window, ceiling = mcp_no_progress_s(), provision_max_wait_s()
     started = last_check = time.monotonic()
@@ -381,23 +878,65 @@ def _run_provision(namespace: str, plan: ProvisionPlan, env: dict[str, str], cwd
                 continue
             work = tree.sample()
             if not progressed(work, last) or now - started >= ceiling:
-                process.kill()
-                process.wait()
+                _kill_tree(process)
                 why = "no progress" if now - started < ceiling else "ceiling reached"
                 raise PrepareError(
-                    PROVISION_NO_PROGRESS,
-                    f"{' '.join(plan.argv[:2])} {why} after {now - started:.0f}s",
+                    PROVISION_NO_PROGRESS, f"{label} {why} after {now - started:.0f}s"
                 )
             last, last_check = work, now
     finally:
-        reader.join(timeout=5)
+        for reader in readers:
+            reader.join(timeout=5)
         confined.release()
-    if process.returncode != 0:
-        tail = b"".join(output).decode("utf-8", errors="replace").strip()[-1500:]
+    stdout = b"".join(output).decode("utf-8", errors="replace").strip()
+    stderr = b"".join(errors).decode("utf-8", errors="replace").strip()
+    if plan.kit_prepare:
+        result = kit_prepare_result(stdout)
+        if process.returncode == 0:
+            return result
+        detail = str((result or {}).get("detail") or "") or (stderr or stdout)[-1500:]
         raise PrepareError(
-            PROVISION_FAILED,
-            f"{' '.join(plan.argv[:2])} exited {process.returncode}: {tail}",
+            kit_prepare_reason(process.returncode, result, f"{stderr}\n{stdout}"),
+            f"{label} exited {process.returncode}: {detail}",
         )
+    if process.returncode != 0:
+        text = stdout
+        if plan.unsupported_exit and process.returncode == plan.unsupported_exit:
+            raise _UnsupportedLauncher(text[-500:])
+        raise PrepareError(
+            _failure_reason(text), f"{label} exited {process.returncode}: {text[-1500:]}"
+        )
+    return None
+
+
+@contextmanager
+def _owned_environment(environment: str) -> Iterator[None]:
+    """Hold CLIO's own ``uv`` project environment's lock while it is built.
+
+    Builds of one environment are serialized across processes, and one an interrupted
+    build left invalid is removed first, so ``uv sync`` rebuilds it instead of refusing it.
+    Empty ``environment`` (a declared or clio-kit environment) does nothing.
+    """
+
+    if not environment:
+        yield
+        return
+    from clio_agent.tools.mcp_environment_repair import (  # noqa: PLC0415
+        LOCKS_DIRNAME,
+        environment_lock,
+        repair_environment,
+    )
+
+    target = Path(environment)
+    lock_root = target.parent / LOCKS_DIRNAME
+    ceiling = provision_max_wait_s()
+    with environment_lock(lock_root, target.name, timeout=ceiling) as locked:
+        if not locked:
+            raise PrepareError(
+                CACHE_LOCK_TIMEOUT, f"{target.name}: another build held it past {ceiling:.0f}s"
+            )
+        repair_environment(target, lock_root, lock_held=True)
+        yield
 
 
 def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
@@ -411,8 +950,7 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
             stopped making progress.
     """
 
-    import shutil  # noqa: PLC0415
-
+    from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher  # noqa: PLC0415
     from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
         acquire_launcher_cache_lock,
         uses_shared_launcher_cache,
@@ -422,10 +960,19 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
 
     if getattr(spec, "transport", "") != "stdio" or not getattr(spec, "command", ""):
         return PROVISION_NOT_APPLICABLE
-    resolved = shutil.which(str(spec.command))
-    if not resolved:
-        raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
-    plan = provision_plan(spec, resolved)
+    # The desktop runtime ships clio-kit and the Web Search adapter as modules of its
+    # interpreter, not as console scripts on PATH; the server's start
+    # (``mcp_config.transport_for``) prefers them, so provisioning must too.
+    bundled = bundled_module_launcher(str(spec.command), [str(arg) for arg in spec.args])
+    if bundled is not None:
+        plan = bundled_provision_plan(bundled)
+    else:
+        from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+
+        resolved = real_which(str(spec.command))
+        if not resolved:
+            raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
+        plan = provision_plan(spec, resolved)
     if isinstance(plan, str):
         if plan == PROVISION_UNSUPPORTED_LAUNCHER:
             trace.event("TOOLS", "%s namespace=%s launcher=%s", plan, namespace, spec.command)
@@ -440,18 +987,41 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
         env["UV_CACHE_DIR"] = str(uv_cache)
     work_dir = cwd or os.getcwd()
     started = time.monotonic()
-    if uses_shared_launcher_cache(spec):
-        with acquire_launcher_cache_lock(namespace):
-            _run_provision(namespace, plan, env, work_dir)
-    else:
-        _run_provision(namespace, plan, env, work_dir)
+    try:
+        with _owned_environment(plan.env.get(_ENV_VAR, "")):
+            if uses_shared_launcher_cache(spec):
+                with acquire_launcher_cache_lock(namespace):
+                    result = _run_provision(namespace, plan, env, work_dir)
+            else:
+                result = _run_provision(namespace, plan, env, work_dir)
+    except _UnsupportedLauncher as exc:
+        trace.event(
+            "TOOLS",
+            "%s namespace=%s launcher=%s detail=%s",
+            PROVISION_UNSUPPORTED_LAUNCHER,
+            namespace,
+            spec.command,
+            str(exc)[-300:],
+        )
+        return PROVISION_UNSUPPORTED_LAUNCHER
     _write_marker(plan)
+    if result is not None:
+        trace.event(
+            "TOOLS",
+            "mcp_prepare_kit_result namespace=%s status=%s environment=%s kit_seconds=%s",
+            namespace,
+            result.get("status"),
+            result.get("environment", ""),
+            result.get("seconds", ""),
+        )
+        if result.get("status") == "not_applicable":
+            return PROVISION_NOT_APPLICABLE
     trace.event(
         "TOOLS",
         "mcp_prepare_provisioned namespace=%s seconds=%.1f argv=%s",
         namespace,
         time.monotonic() - started,
-        " ".join(plan.argv[:2]),
+        _plan_label(plan),
     )
     return PROVISIONED
 
@@ -622,16 +1192,25 @@ __all__ = [
     "PREPARE_REASONS",
     "PREPARING",
     "PROVISIONED",
+    "PROVISION_ACCESS_DENIED",
     "PROVISION_CACHED",
+    "PROVISION_ENVIRONMENT_INVALID",
+    "PROVISION_NETWORK",
     "PROVISION_NOT_APPLICABLE",
+    "PROVISION_PATH_TOO_LONG",
+    "PROVISION_UNKNOWN_SERVER",
     "PROVISION_UNSUPPORTED_LAUNCHER",
+    "PROVISION_USAGE",
+    "PROVISION_UV_MISSING",
     "READY",
     "PrepareError",
     "Preparation",
     "ProvisionPlan",
+    "builds_outside_fence",
     "classify",
     "forget",
     "is_preparing",
+    "launcher_interpreter",
     "launcher_supports_prepare",
     "notify_listed",
     "observe_listings",

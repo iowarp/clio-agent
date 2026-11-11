@@ -218,8 +218,11 @@ class ResolvedLMSpec:
             lifetime.
         """
         resolver = cred_resolver if cred_resolver is not None else CredentialResolver()
+        # A saved model server's key is its own (``server_id`` resolves the server's
+        # stored / deployment key); never its preset's.
         key = resolver.resolve(
-            self.spec.provider_id or self.spec.provider, self.spec.credential_ref
+            self.config_skeleton.server_id or self.spec.provider_id or self.spec.provider,
+            self.spec.credential_ref,
         )
         config = copy.copy(self.config_skeleton)
         if self._default_ref:
@@ -253,6 +256,9 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
         # convenience resolution apply, exactly as if the caller had passed
         # only ``provider=`` directly.
         "provider_id": spec.provider_id,
+        # The saved model server survives the round trip: its address and key, never
+        # the preset's defaults (or LM Studio's).
+        "server_id": spec.server_id,
         "api_base": spec.api_base,
         "model": spec.model,
         "provider_options": dict(spec.provider_options),

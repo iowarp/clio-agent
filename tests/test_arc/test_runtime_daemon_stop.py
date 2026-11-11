@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.arc import runtime_stop, storage
+from clio_agent.arc import runtime_ownership, runtime_stop, storage
 from clio_agent.arc.clio_core_liveness import (
     SOCKET_PROBE_UNAVAILABLE_REASON,
     runtime_socket_status,
@@ -43,6 +43,19 @@ def fake_iowarp_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> types.S
     return fake
 
 
+@pytest.fixture()
+def own_the_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stop under test is of a daemon this home started.
+
+    ``stop_runtime_daemon`` runs ``clio_run stop`` only for a daemon this state
+    directory owns (``runtime_ownership.stop_guard``); these tests exercise that clean-stop
+    sequence, so the guard passes. Unowned and foreign-listener stops are covered in
+    ``test_runtime_ownership.py``.
+    """
+    monkeypatch.setattr(runtime_ownership, "stop_guard", lambda _port: "owned")
+
+
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_runtime_daemon_uses_spawn_helpers(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -81,6 +94,7 @@ def test_stop_runtime_daemon_uses_spawn_helpers(
     assert env[lib_var].split(os.pathsep)[0] == fake_iowarp_core.get_lib_dir()
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -111,6 +125,7 @@ def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
     assert any("launcher_not_found" in record.getMessage() for record in caplog.records)
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_runtime_daemon_reaps_helper_as_soon_as_runtime_is_down(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -156,6 +171,7 @@ def test_stop_stall_budget_fits_desktop_supervisor_window() -> None:
     assert runtime_stop._DEFAULT_STOP_NO_PROGRESS_S < 30.0
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_outcome_reports_clean_stop(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -176,6 +192,7 @@ def test_stop_outcome_reports_clean_stop(
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_stop_outcome_reports_stall_kill(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -216,6 +233,7 @@ def test_stop_outcome_reports_stall_kill(
     assert killed == [True]
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_helper_exiting_while_the_daemon_still_stops_is_not_a_kill(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -246,6 +264,7 @@ def test_a_helper_exiting_while_the_daemon_still_stops_is_not_a_kill(
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -288,6 +307,7 @@ def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_daemon_making_no_progress_is_killed_loudly(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -314,6 +334,7 @@ def test_a_daemon_making_no_progress_is_killed_loudly(
     assert killed == [True]
 
 
+@pytest.mark.usefixtures("own_the_daemon")
 def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
@@ -400,6 +421,103 @@ def test_the_stop_no_progress_window_is_configurable(monkeypatch: pytest.MonkeyP
     assert runtime_stop.stop_no_progress_s() == 2.5
     monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "0")
     assert runtime_stop.stop_no_progress_s() == runtime_stop._DEFAULT_STOP_NO_PROGRESS_S
+
+
+def test_the_stop_ack_window_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``arc.liveness.stop_ack_s`` sets the window; a non-positive value keeps 3 s."""
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_ACK_S", "1.5")
+    assert runtime_stop.stop_ack_s() == 1.5
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_ACK_S", "-1")
+    assert runtime_stop.stop_ack_s() == runtime_stop._DEFAULT_STOP_ACK_S
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX graceful signal")
+@pytest.mark.usefixtures("own_the_daemon")
+def test_an_undelivered_stop_request_is_delivered_as_sigterm(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``clio_run stop`` can lose its request (clio-core, another home's daemon started
+    later): the helper then waits forever and the idle daemon's CPU reads as progress, so
+    Quit waited for the ceiling. A daemon still serving after the ack window is sent
+    SIGTERM -- its own graceful stop -- and the stop ends clean, without a hard kill.
+
+    **Sabotage:** drop the SIGTERM -> the wait runs to the ceiling and hard-kills.
+    """
+    import subprocess
+
+    import psutil
+
+    class HungHelper:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    daemon = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        pidfile = tmp_path / "daemon.pid"
+        ctime = psutil.Process(daemon.pid).create_time()
+        pidfile.write_text(f"{daemon.pid} {ctime!r}", encoding="utf-8")
+        monkeypatch.setattr(storage, "_daemon_pidfile", lambda: pidfile)
+        monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: HungHelper())
+        monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+        monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: daemon.poll() is None)
+        monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
+        monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
+        monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_ACK_S", "0.2")
+        monkeypatch.setattr(
+            storage, "_kill_daemon_pidfile", lambda: pytest.fail("must not hard-kill")
+        )
+
+        outcome = runtime_stop.stop_runtime_daemon("", "error", ceiling_s=10.0)
+
+        assert outcome == runtime_stop.StopOutcome(stopped=True, path="term_stop")
+        assert daemon.wait(timeout=5) == -15  # ended by the SIGTERM
+    finally:
+        if daemon.poll() is None:
+            daemon.kill()
+            daemon.wait(timeout=10)
+
+
+@pytest.mark.usefixtures("own_the_daemon")
+def test_a_daemon_that_frees_its_port_in_the_ack_window_gets_no_signal(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delivered stop frees the port within the window: no SIGTERM, a plain clean stop."""
+
+    class ExitedProcess:
+        def poll(self) -> int:
+            return 0
+
+    alive = {"until": time.monotonic() + 0.1}
+    (tmp_path / "daemon.pid").write_text("4242 ", encoding="utf-8")
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(
+        runtime_stop, "_runtime_alive", lambda port: time.monotonic() < alive["until"]
+    )
+    monkeypatch.setattr(
+        runtime_stop, "_daemon_process_alive", lambda pid, ct: time.monotonic() < alive["until"]
+    )
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
+    monkeypatch.setattr(
+        runtime_stop, "_signal_graceful_stop", lambda pid, ct: pytest.fail("must not signal")
+    )
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: pytest.fail("must not hard-kill"))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
 
 
 _SILENT_LISTENER = (

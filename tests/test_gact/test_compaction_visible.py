@@ -3,7 +3,7 @@
 Every test drives the real :class:`ClioReAct` loop inside a real gact turn
 (``POST /v1/sessions/{sid}/messages``) on real clio-core, with one scripted engine that
 records every request the loop sends. The summarizer LM is the app agent's
-``_run_chat_agent`` (scripted here: it is a separate LM call, not the loop).
+the summarizer model (scripted here: it is a separate LM call, not the loop).
 
 What is pinned:
 
@@ -13,7 +13,7 @@ What is pinned:
 * ``compaction.started`` then ``compaction.completed`` (trigger ``auto``) on the
   highway and the v3 wire; a record that cannot be written emits ``compaction.failed``
   and folds nothing;
-* ``recall_context`` returns a compacted step byte-exact from clio-core;
+* ``recall_context`` returns a compacted step as clio-core recorded it;
 * a manual/panel compaction (``POST /compact?scope=``) gives the same events and
   record; ``/context/compact`` is gone;
 * a stored legacy ``compaction`` part renders as the summarization injection;
@@ -44,6 +44,7 @@ import json
 import re
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -61,8 +62,14 @@ from clio_agent.gact.agents.tool_instrumentation import instrument_tools
 from clio_agent.gact.app import build_app
 from clio_agent.gact.protocol.v3.event import event_to_v3
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
+from clio_agent.gact.recall_context_tool import _readable as recall_readable
 from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.summarization_record import as_summarization
+from tests._compaction_summary import (
+    keep_open_request_only,
+    request_text,
+    summary_lm,
+)
 from tests._harness import install_scripted_module
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, summarize
 from tests.turn_signals import post_turn_and_wait
@@ -70,6 +77,15 @@ from tests.turn_signals import post_turn_and_wait
 SCOPE = "standard"  # the session agent: its react scope and primary agent id
 WINDOW = 1000
 SUMMARY = "SUMMARY: searched q0 and q1; hits HITS-q0, HITS-q1."
+
+
+@pytest.fixture(autouse=True)
+def _fixed_result_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests script ``_last_prompt_tokens`` by read count for compaction's own
+    measurements; sizing each tool result reads it too, so its room is pinned here."""
+    from tests._result_room import pin_result_room
+
+    pin_result_room(monkeypatch, 100_000)
 
 
 class SummarizerAgent:
@@ -82,7 +98,11 @@ class SummarizerAgent:
     def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover - unused
         raise AssertionError("the turn runs the scripted ClioReAct module")
 
-    def _run_chat_agent(self, prompt: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.summary
 
@@ -115,7 +135,12 @@ def _install_loop(
     """Every turn runs a real ClioReAct over the next script (requests recorded)."""
 
     def run(question: str, session_id: str, **_kwargs: Any) -> Any:
-        lm, engine = scripted_lm(scripts.pop(0))
+        # The loop's own model answers the compaction request (it continues the loop's
+        # request); the app's summarizer fake writes the checkpoint it returns.
+        summarizer = ctx.active_app().state.agent
+        lm, engine = scripted_lm(
+            scripts.pop(0), compaction=lambda req: summarizer.checkpoint(request_text(req))
+        )
         engines.append(engine)
         tokens = [
             ctx.set_react_scope(SCOPE),
@@ -199,6 +224,18 @@ def _kinds(message: dict[str, Any]) -> list[str]:
     return out
 
 
+FACTS_HEAD = "[clio: session_facts]"
+
+
+def _short_session_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One short line of session facts, so results and messages stay small and exact."""
+    from clio_agent.gact.agents import composition
+
+    monkeypatch.setattr(
+        composition, "_runtime_active_workspace_context", lambda app, session_id="": "Root: /ws"
+    )
+
+
 def _patch_tokens(monkeypatch: pytest.MonkeyPatch, high_on: set[int]) -> _PromptTokens:
     reads = _PromptTokens(high_on)
     monkeypatch.setattr(context_tokens, "_last_prompt_tokens", reads)
@@ -209,6 +246,7 @@ def test_auto_compaction_mid_turn_shows_summary_then_question_and_reloads_the_sa
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, client, summarizer, events = app_env
+    _short_session_facts(monkeypatch)
     sid = _session(client)
     engines: list[ScriptedEngine] = []
     _install_loop(
@@ -234,7 +272,7 @@ def test_auto_compaction_mid_turn_shows_summary_then_question_and_reloads_the_sa
     [cmp] = [e for e in _compaction_events(events) if e.event_type == "compaction.completed"]
     recall = (
         f'[The steps this summary replaced are kept in full: recall_context(ids=["'
-        f'{cmp.payload["compaction_id"]}"]) returns them byte-exact; '
+        f'{cmp.payload["compaction_id"]}"]) returns the text they recorded; '
         + (
             'recall_context(query="...") searches them.]'
             if app.state.arc.segment_search_is_semantic()
@@ -246,13 +284,16 @@ def test_auto_compaction_mid_turn_shows_summary_then_question_and_reloads_the_sa
     summary_text = f"[earlier context]\n{record_part.text}"
     # The request right after the fold: system + summary + the question verbatim.
     assert requests[2].system == requests[0].system
+    # The session's facts come back after the fold (a working-state injection).
+    [facts] = [m for m in _texts(requests[0].messages) if m[1][0][1].startswith(FACTS_HEAD)]
     assert _texts(requests[2].messages) == [
         ("user", [("text", summary_text)]),
+        facts,
         _texts([head])[0],
     ]
     # ... and the next one adds the new step (and nothing compacted).
-    assert _texts(requests[3].messages)[:2] == _texts(requests[2].messages)
-    assert _texts(requests[3].messages)[2:] == [
+    assert _texts(requests[3].messages)[:3] == _texts(requests[2].messages)
+    assert _texts(requests[3].messages)[3:] == [
         ("assistant", [("text", "look up q2"), ("call", "call_2_0", "search", {"q": "q2"})]),
         ("tool", [("result", "call_2_0", "HITS-q2", False)]),
     ]
@@ -442,10 +483,22 @@ def test_a_failed_fold_retracts_the_record_and_records_a_notice_the_model_never_
     assert "near LA?" in seeded and notice_text not in seeded
 
 
+def _recalled_steps(text: str) -> dict[str, dict[str, Any]]:
+    """recall_context's text by step id: ``--- <id> (<label>[, compacted])`` then the text."""
+    steps: dict[str, dict[str, Any]] = {}
+    for block in text.split("\n--- ")[1:]:
+        header, _, body = block.partition("\n")
+        step_id, _, rest = header.partition(" (")
+        label, _, flag = rest.rstrip(")").partition(", ")
+        steps[step_id] = {"label": label, "compacted": flag == "compacted", "text": body}
+    return steps
+
+
 def test_recall_context_returns_a_compacted_step_byte_exact(
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, client, _summarizer, events = app_env
+    _short_session_facts(monkeypatch)
     sid = _session(client)
     engines: list[ScriptedEngine] = []
     scripts = [_three_step_turn()]
@@ -468,23 +521,21 @@ def test_recall_context_returns_a_compacted_step_byte_exact(
 
     [(_, [(_, _, recalled_text, is_error)])] = _texts(by_ids.messages[-1:])
     assert not is_error
-    recalled = {row["id"]: row for row in json.loads(recalled_text)}
+    recalled = _recalled_steps(recalled_text)
     history = {s.id: s for s in app.state.arc.list_segments(sid, SCOPE, include_tombstoned=True)}
     replaced = [history[i] for i in recalled]
     assert replaced and all(s.status == "tombstoned" for s in replaced)
     assert all(recalled[s.id]["compacted"] for s in replaced)
-    for seg in replaced:  # byte-exact: the stored content, as clio-core holds it
-        assert json.dumps(recalled[seg.id]["content"], sort_keys=True) == json.dumps(
-            seg.content, sort_keys=True
-        )
-    obs = [row for row in recalled.values() if row["kind"] == "observation"][0]
+    for seg in replaced:  # exact: each step's text as clio-core holds it
+        assert recalled[seg.id]["text"] == recall_readable(seg)
+    obs = [row for row in recalled.values() if row["label"] == "result"][0]
     first_result = _texts(engines[0].requests[1].messages)[-1]
-    assert first_result == ("tool", [("result", "call_0_0", obs["content"]["text"], False)])
+    assert first_result == ("tool", [("result", "call_0_0", obs["text"], False)])
 
     if search_enabled:
         by_query = engines[1].requests[2]
         [(_, [(_, _, searched_text, searched_error)])] = _texts(by_query.messages[-1:])
-        assert not searched_error and json.loads(searched_text)
+        assert not searched_error and _recalled_steps(searched_text)
     else:
         from clio_agent.arc.memory_segments import SearchUnavailableError
         from clio_agent.gact.recall_context_tool import recall_atoms
@@ -564,6 +615,9 @@ def test_a_stored_compaction_part_renders_as_the_summarization_injection() -> No
         "call_id": "",
         "trigger": "auto",
         "compaction_id": "mem_1",
+        # The record's wire metadata (clio-schemas InjectionMetadata); the
+        # synthetic/memory_event_id keys stay server-side.
+        "metadata": {"compacted_message_ids": ["m1"]},
     }
     row = Message(
         id="msg_compact_1",
@@ -602,7 +656,9 @@ def test_keeping_the_last_two_turns_keeps_them_verbatim_after_the_summary(
     assert "question 0" not in rest and "answer 0" not in rest
     for n in (1, 2):  # the last two turns, verbatim
         assert f"question {n}" in rest and f"answer {n}" in texts[1:]
-    assert "question 0" in summarizer.prompts[0] and "question 1" not in summarizer.prompts[0]
+    # The summarizer reads the whole context (it continues the loop's request), kept
+    # turns included; the prompt says what comes back verbatim.
+    assert "question 0" in summarizer.prompts[0] and "question 1" in summarizer.prompts[0]
     kept = [m for m in _texts(before.messages) if "question 1" in str(m)]
     assert kept and kept[0] in _texts(after.messages)
     assert any("question 3" in str(m) for m in _texts(after.messages)[-3:])
@@ -626,17 +682,22 @@ def test_the_summary_renders_first_even_when_the_oldest_context_is_kept(
     after = _texts(engines[2].requests[1].messages)
     flat = [text for _role, parts in after for _k, text, *_ in parts]
     assert flat[0].startswith("[earlier context]\n")
-    assert "HITS-q2" in summarizer.prompts[0] and "question 0" not in summarizer.prompts[0]
+    # The whole context, the kept oldest turn included (see above).
+    assert "HITS-q2" in summarizer.prompts[0] and "question 0" in summarizer.prompts[0]
     assert any("question 0" in t for t in flat[1:]) and "answer 1" in flat
     assert "question 2" in flat[-1]
 
 
-def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
+def test_a_manual_compaction_during_a_running_turn_is_refused_busy(
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A manual compaction during a turn writes its record into the turn's message;
-    the turn settles before the fold lands. Live must still equal reload: the record is
-    published into that message (a ``message.created`` upsert after the turn settled)."""
+    """Delete and rollback refuse while a turn runs; a manual compaction folded the running
+    loop's context under it, its record written into the turn's message while the turn
+    kept writing. It is refused 409 ``session_busy`` and folds nothing (the loop compacts
+    its own context at its step boundaries); once the turn settles the same request
+    compacts.
+
+    SABOTAGE: ``compaction_session.compaction_slot`` reserves nothing -> 200 mid-turn."""
     from tests.turn_signals import wait_for_terminal_status
 
     app, client, _summarizer, events = app_env
@@ -650,7 +711,13 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
 
     def run(question: str, session_id: str, **_kwargs: Any) -> Any:
         lm, _engine = scripted_lm([calls(("slow", {"q": "x"}), text="wait"), Reply(text="done")])
-        tokens = [ctx.set_react_scope(SCOPE), ctx.set_react_session(session_id)]
+        # Something to fold: a CLIO note recorded ahead of the question (the open
+        # turn's question itself is kept verbatim).
+        tokens = [
+            ctx.set_react_scope(SCOPE),
+            ctx.set_react_session(session_id),
+            ctx.set_turn_injections([("replan", "An earlier note about the approach.")]),
+        ]
         try:
             with dspy.context(lm=lm):
                 tools = instrument_tools([dspy.Tool(slow, name="slow")])
@@ -659,45 +726,36 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
             for token in reversed(tokens):
                 ctx.reset(token)
 
-    install_scripted_module(monkeypatch, run, commit_input=False)
-    _patch_tokens(monkeypatch, high_on=set())
-    bus = app.state.bus
-    cursor = bus.latest_event_id(sid)
-    ack = client.post(
-        f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "go"}]}
-    )
-    assert ack.status_code == 202, ack.text
-    assert ack.json()["task_handle"]
-    assert started.wait(120), "the turn never reached its tool"
+    # A failure before the release must not leave the turn blocked in its tool forever.
+    try:
+        install_scripted_module(monkeypatch, run, commit_input=False)
+        _patch_tokens(monkeypatch, high_on=set())
+        bus = app.state.bus
+        cursor = bus.latest_event_id(sid)
+        ack = client.post(
+            f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "go"}]}
+        )
+        assert ack.status_code == 202, ack.text
+        assert started.wait(120), "the turn never reached its tool"
 
-    real_fold = app.state.arc.summarize_segments
-    settled: list[int] = []
+        before = [s.id for s in _live(app, sid)]
+        r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
+        assert r.status_code == 409 and r.json()["error"]["error"] == "session_busy", r.text
+        assert [s.id for s in _live(app, sid)] == before
+        assert not _compaction_events(events)
 
-    def fold_after_the_turn_settled(*args: Any, **kwargs: Any) -> Any:
         release.set()
         assert wait_for_terminal_status(bus, sid, after_event_id=cursor) == "idle"
-        settled.append(bus.latest_event_id(sid))
-        return real_fold(*args, **kwargs)
-
-    monkeypatch.setattr(app.state.arc, "summarize_segments", fold_after_the_turn_settled)
-    r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
-    assert r.status_code == 200, r.text
-    [done] = r.json()["compactions"]
-    assert settled, "the fold did not wait for the turn"
-
-    live_wire = _transcript(client, sid)
-    [assistant] = [m for m in live_wire if m["role"] == "assistant"]
-    assert assistant["id"] == done["message_id"]
-    assert [p["id"] for p in assistant["parts"] if _is_record(p)] == [done["part_id"]]
-    assert _reload(app, client, sid) == live_wire
-    upserts = [
-        e
-        for e in bus.session_events_since(sid, cursor=settled[0] + 1)
-        if e.type == "message.created" and e.payload.get("id") == done["message_id"]
-    ]
-    assert upserts and any(_is_record(p) for p in upserts[-1].payload["parts"])
-    seq = [e.event_type for e in _compaction_events(events)]
-    assert seq == ["compaction.started", "compaction.completed"]
+        deadline = time.monotonic() + 10
+        while app.state.turn_runner.busy(sid):  # the turn retires after it reads idle
+            assert time.monotonic() < deadline, "the turn never released the session"
+            time.sleep(0.01)
+        r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
+        assert r.status_code == 200 and r.json()["compactions"], r.text
+        seq = [e.event_type for e in _compaction_events(events)]
+        assert seq == ["compaction.started", "compaction.completed"]
+    finally:
+        release.set()
 
 
 def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
@@ -725,3 +783,9 @@ def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
         "manual",
     )
     assert not (parsed.model_extra or {})
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

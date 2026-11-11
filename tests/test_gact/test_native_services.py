@@ -132,6 +132,90 @@ def test_xpu_layers_add_ons_over_the_host_vllm_build() -> None:
     assert "install_probe()" not in plain["launcher"]
 
 
+def test_cuda_devices_pin_a_cuda_instance_through_its_environment() -> None:
+    manifest = json.loads(
+        build_driver_plan(
+            service_id="vllm@spotter",
+            action="install",
+            variant_id="native-cuda",
+            configuration={"model": "/data/models/qualified", "param.cuda_devices": "1"},
+            facts=facts(),
+        )
+        .commands[-1]
+        .stdin
+    )["manifest"]
+    assert manifest["environment"]["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_one_native_vllm_spans_its_pinned_gpus_in_nvidia_smi_order() -> None:
+    manifest = json.loads(
+        build_driver_plan(
+            service_id="vllm@big",
+            action="install",
+            variant_id="native-cuda",
+            configuration={
+                "model": "/data/models/qualified",
+                "param.cuda_devices": "2,3",
+                "param.tensor_parallel_size": "2",
+            },
+            facts=facts(),
+        )
+        .commands[-1]
+        .stdin
+    )["manifest"]
+    assert manifest["environment"]["CUDA_VISIBLE_DEVICES"] == "2,3"
+    assert manifest["environment"]["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    arguments = manifest["arguments"]
+    assert arguments[arguments.index("--tensor-parallel-size") + 1] == "2"
+
+
+@pytest.mark.parametrize(
+    ("engine", "system", "backend", "pid", "variable"),
+    [
+        ("llama_cpp", "linux", "cuda", "cuda_devices", "CUDA_VISIBLE_DEVICES"),
+        # llama.cpp's native ROCm build is the Windows one; Linux ROCm hosts use the container.
+        ("llama_cpp", "windows", "rocm", "rocm_devices", "HIP_VISIBLE_DEVICES"),
+        ("ollama", "linux", "cuda", "cuda_devices", "CUDA_VISIBLE_DEVICES"),
+        ("ollama", "linux", "rocm", "rocm_devices", "ROCR_VISIBLE_DEVICES"),
+    ],
+)
+def test_native_llama_and_ollama_get_their_pin_in_the_launch_environment(
+    engine: str, system: str, backend: str, pid: str, variable: str
+) -> None:
+    from clio_agent.gact.infrastructure.native_model_services import (  # noqa: PLC0415
+        native_model_plan,
+    )
+
+    accelerator = "amd" if backend == "rocm" else "nvidia"
+    root = "C:/data" if system == "windows" else "/data"
+    # Native Windows installs run beside the active CLIO, so that host is the local one.
+    host = (
+        {"os": system, "target_id": "local", "agent_data_root": f"{root}/clio"}
+        if system == "windows"
+        else {}
+    )
+    model = (
+        {"model_path": f"{root}/models/q.gguf", "param.split_mode": "layer"}
+        if engine == "llama_cpp"
+        else {"model": "qwen2.5:0.5b"}
+    )
+    started = native_model_plan(
+        engine,  # type: ignore[arg-type]
+        "clio-llama-cpp" if engine == "llama_cpp" else "clio-ollama",
+        "start",
+        f"native-{system}-{backend}",
+        {**model, "port": "41010", f"param.{pid}": "1,2", "native_owner": "o"},
+        facts(accelerator=accelerator, **host),
+        None,
+        None,
+    )
+    action = json.loads(started.commands[-1].stdin)  # the supervisor's transmitted action
+    launch = json.loads(action["runtime_files"]["runtime.json"])
+    assert launch["environment"][variable] == "1,2"
+    if engine == "llama_cpp":
+        assert launch["flags"][launch["flags"].index("--split-mode") + 1] == "layer"
+
+
 def test_xpu_setup_lines_are_part_of_the_reusable_identity() -> None:
     first = json.loads(xpu_plan().commands[-1].stdin)["manifest"]["definition_version"]
     other = json.loads(xpu_plan(host_setup="module load frameworks/2025.3.1").commands[-1].stdin)
@@ -542,8 +626,13 @@ def test_plain_launcher_survives_vllm_spawning_its_engine_core(tmp_path: Path) -
     assert result.stdout.split() == ["served", "0"], result.stderr
 
 
-def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> None:
+def test_service_worker_exposes_its_environment_tools_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """vLLM's flashinfer JIT runs ``ninja`` from the service venv (live: FileNotFoundError)."""
+    monkeypatch.setitem(
+        node_service.worker_environment.__globals__, "clt_free_tools", lambda root: ""
+    )
     env = node_service.worker_environment(
         tmp_path,
         {"environment": {"VLLM_CPU_KVCACHE_SPACE": "4"}},
@@ -555,7 +644,7 @@ def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> N
         "/bin",
     ]
     assert "VIRTUAL_ENV" not in env and "PYTHONPATH" not in env
-    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["TMPDIR"] == str(node_service.platform_helper().service_tmp(tmp_path))
     assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"
 
 

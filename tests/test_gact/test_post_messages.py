@@ -37,7 +37,7 @@ from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 # Default sessions run their plugin agent (clio/standard); route it to each
 # test's ``build_app(agent=...)`` host fake (agent=None ingress paths return their
 # structured 503 before any module is built, so they are unaffected).
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 REVIEWER_AGENT = """
@@ -151,15 +151,16 @@ class SlowClioAgent(FakeClioAgent):
 class BlockingClioAgent(FakeClioAgent):
     """Hold one real background turn open at a deterministic checkpoint."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, timeout_s: float = 5.0) -> None:
         super().__init__(answer="released")
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.timeout_s = timeout_s
 
     def forward(self, question: str, session_id: str) -> Any:
         self.calls.append((question, session_id))
         self.entered.set()
-        if not self.release.wait(timeout=5.0):
+        if not self.release.wait(timeout=self.timeout_s):
             raise TimeoutError("test did not release blocked turn")
         return FakePrediction(answer=self.answer)
 
@@ -965,103 +966,19 @@ def test_post_message_runs_the_sessions_plugin_agent(
     assert sess["status"] == "idle"
 
 
-def test_post_message_agent_override_runs_another_agent_for_one_turn(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str, str]] = []
-
-    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        calls.append((agent_def.id, question, session_id))
-        return FakePrediction(
-            answer="OVERRIDE_AGENT_OK",
-            selected_expert=agent_def.id,
-            routing_rationale="per-turn agent override",
-        )
-
-    _reviewer_marketplace(tmp_path, monkeypatch)
-    monkeypatch.setattr(BUILD, runner_module_builder(fake_runner))
-    agent = FakeClioAgent(answer="the session agent should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
-        ack = c.post(
-            f"/v1/sessions/{sid}/messages",
-            json={
-                "parts": [{"type": "text", "text": "hi"}],
-                "agent": {"id": "clio/reviewer"},
-            },
-        )
-        assert ack.status_code == 202, ack.text
-        assert ack.json()["task_handle"]
-        user_id = ack.json()["message_id"]
-
-        deadline = time.monotonic() + 30
-        assistant = None
-        user_msg = None
-        while time.monotonic() < deadline:
-            msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            user_msg = next((m for m in msgs if m["id"] == user_id), None)
-            for i, m in enumerate(msgs):
-                if m["id"] == user_id and i > 0 and msgs[i - 1]["role"] == "assistant":
-                    assistant = msgs[i - 1]
-                    break
-            if assistant is not None:
-                break
-            time.sleep(0.05)
-        assert assistant is not None
-        assert user_msg is not None
-        agent_pin = c.get(f"/v1/sessions/{sid}/agent").json()
-
-    assert agent.calls == []
-    assert calls == [("reviewer", "hi", sid)]
-    # The override is for one turn: the session stays on its own agent.
-    assert agent_pin["resolution"]["agent"]["ref"] == "clio/standard"
-    assert [part["type"] for part in assistant["parts"]] == ["text"]
-    assert assistant["parts"][0]["text"] == "OVERRIDE_AGENT_OK"
-    routing_events = _routing_decision_events(app, sid)
-    assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "reviewer"
-    assert assistant["metadata"]["agent_override"] == {
-        "requested_agent_id": "clio/reviewer",
-        "session_agent_id": "standard",
-        "effective_agent_id": "reviewer",
-        "scope": "turn",
-    }
-    assert user_msg["metadata"]["agent_override"] == {
-        "requested_agent_id": "clio/reviewer",
-        "session_agent_id": "standard",
-        "scope": "turn",
-    }
-
-
-def test_post_message_agent_id_override_reports_structured_error_without_mutating_session(
-    client: TestClient,
-    fake_agent: FakeClioAgent,
-) -> None:
-    from .conftest import complete_turn
+def test_post_message_refuses_the_removed_agent_override(client: TestClient) -> None:
+    """A per-turn agent override is refused, never ignored: summon parts replace it."""
 
     sid = _create_session(client)
-    assistant = complete_turn(
-        client,
-        sid,
-        "hi",
-        json_override={"agent_id": "clio/missing-agent"},
-    )
-    agent_pin = client.get(f"/v1/sessions/{sid}/agent").json()
-
-    assert fake_agent.calls == []
-    assert agent_pin["resolution"]["agent"]["ref"] == "clio/standard"
-    assert assistant["stop_reason"] == "error"
-    # No parts: the routing decision is a semantic event (a0e1d9a9).
-    assert assistant["parts"] == []
-    routing_events = _routing_decision_events(client.app, sid)
-    assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "clio/missing-agent"
-    assert assistant["error_info"]["error"] == "agent_unavailable"
-    assert assistant["error_info"]["details"]["agent_ref"] == "clio/missing-agent"
-    assert assistant["metadata"]["agent_override"]["requested_agent_id"] == "clio/missing-agent"
-    assert assistant["metadata"]["agent_override"]["session_agent_id"] == "standard"
+    for field in ("agent_id", "agent"):
+        value = "clio/other" if field == "agent_id" else {"id": "clio/other"}
+        resp = client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "hi"}], field: value},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "summon part" in resp.text
+    assert client.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
 
 
 def test_post_message_session_agent_answers_without_keyword_routing(

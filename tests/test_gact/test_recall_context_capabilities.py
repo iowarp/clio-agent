@@ -1,8 +1,11 @@
-"""Recall exposes supported modes rather than inviting known-unavailable searches."""
+"""Recall exposes supported modes rather than inviting known-unavailable searches.
+
+What recall reads back (real segment shapes on real clio-core) is pinned in
+``test_recall_context_reads.py``; this stand-in plane only toggles the search capability.
+"""
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,7 +20,7 @@ from clio_agent.gact.summarization_record import recall_line
 def test_recall_schema_and_summary_match_the_actual_context_capability(
     monkeypatch: pytest.MonkeyPatch, search_enabled: bool
 ) -> None:
-    """ID recall remains available and byte-exact with or without an indexer."""
+    """ID recall remains available with or without an indexer."""
     segment = SimpleNamespace(
         id="step1",
         scope="main",
@@ -36,14 +39,14 @@ def test_recall_schema_and_summary_match_the_actual_context_capability(
     )
     app = SimpleNamespace(state=SimpleNamespace(arc=arc))
     monkeypatch.setattr(context, "active_app", lambda: app)
-    monkeypatch.setattr(recall, "_plane", lambda: (arc, "session"))
+    monkeypatch.setattr(recall, "_plane", lambda: (arc, "session", None))
     tool: Any = recall.build_recall_context_tool()
     assert set(tool.args) == ({"ids", "query", "limit"} if search_enabled else {"ids"})
-    assert json.loads(tool(ids=["step1"]))[0]["content"] == segment.content
+    assert tool(ids=["step1"]).endswith("--- step1 (result, compacted)\nretained original evidence")
     footer = recall_line("cmp_example", search_enabled=search_enabled)
     assert 'recall_context(ids=["cmp_example"])' in footer
     if search_enabled:
-        assert json.loads(tool(query="evidence"))[0]["id"] == "step1"
+        assert "--- step1 (result" in tool(query="evidence")
         assert 'recall_context(query="...")' in footer
     else:
         assert "unavailable" in tool.desc

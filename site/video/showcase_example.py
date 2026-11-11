@@ -29,12 +29,11 @@ def seed_example(app: FastAPI, root: Path) -> dict[str, Any]:
     session = app.state.sessions.create(
         workspace_id=workspace.id, title="Morning bike imbalance · synthetic example"
     )
-    references = (
-        Path(__file__).resolve().parents[2]
-        / "src/clio_agent/gact/builtin_skills/create-dashboard/references"
+    site = Path(__file__).resolve().parents[1]
+    shutil.copy2(site / "public/datasets/bike-stations.csv", root / "bike-stations.csv")
+    shutil.copy2(
+        site / "video/showcase-data/bike-station-report.json", root / "bike-station-report.json"
     )
-    for name in ("bike-stations.csv", "bike-station-report.json"):
-        shutil.copy2(references / name, root / name)
     remember_client_capabilities(
         app,
         session.id,

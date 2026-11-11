@@ -83,7 +83,7 @@ def _sources(app: FastAPI, workspace_id: str, directory: str) -> list[dict[str, 
                     "display_path": name,
                     "type": "file",
                     "internal": False,
-                    "size": item.size,
+                    **({"size": item.size} if item.size is not None else {}),
                     "source_id": source.id,
                 }
     return list(entries.values())
@@ -178,6 +178,11 @@ def _local_children(
                     }
                     if is_directory and workspace_read_redaction_reason(Path(relative)):
                         row["redacted"] = "sandbox_child_cache"
+                    if not is_directory:
+                        try:
+                            row["size"] = child.stat().st_size
+                        except OSError:
+                            pass
                     yield row
                 except OSError:
                     continue

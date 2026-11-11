@@ -18,7 +18,7 @@ import pytest
 from dspy.lm15 import DocumentPart, ImagePart, Message, Request, TextPart
 
 from clio_agent.lm.call_trace import call_record
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
 
@@ -29,10 +29,10 @@ _PDF_B64 = base64.b64encode(b"%PDF-1.4 body").decode("ascii")
 @pytest.fixture(autouse=True)
 def _clean_pool() -> Any:
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def _multimodal_request() -> Request:

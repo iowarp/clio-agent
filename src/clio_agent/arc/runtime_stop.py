@@ -31,12 +31,14 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
+from clio_agent.arc.clio_core_config import pin_core_child_env
 from clio_agent.arc.clio_core_liveness import (
     _resolve_runtime_port,
     _runtime_alive,
@@ -54,6 +56,11 @@ logger = logging.getLogger(__name__)
 # Configurable (``arc.liveness.stop_no_progress_s``), see :func:`stop_no_progress_s`.
 _DEFAULT_STOP_NO_PROGRESS_S = 15.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
+# A daemon that received ``clio_run stop`` frees its port within about 2 s; one still
+# serving after this window never got the request, and the helper waits for it forever
+# (clio-core loses the request when another home's daemon started later). See
+# :func:`stop_ack_s`.
+_DEFAULT_STOP_ACK_S = 3.0
 
 
 def stop_no_progress_s() -> float:
@@ -71,6 +78,43 @@ def stop_no_progress_s() -> float:
         cast=conf.as_float,
     )
     return value if value > 0 else _DEFAULT_STOP_NO_PROGRESS_S
+
+
+def stop_ack_s() -> float:
+    """``arc.liveness.stop_ack_s`` / ``CLIO_ARC_LIVENESS_STOP_ACK_S`` (3 s).
+
+    How long a daemon may keep serving its port after ``clio_run stop`` before the
+    request counts as undelivered and the daemon is sent SIGTERM, which runs the same
+    graceful teardown. A non-positive value keeps the default.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    value = conf.resolve(
+        "arc.liveness.stop_ack_s",
+        env="CLIO_ARC_LIVENESS_STOP_ACK_S",
+        default=_DEFAULT_STOP_ACK_S,
+        cast=conf.as_float,
+    )
+    return value if value > 0 else _DEFAULT_STOP_ACK_S
+
+
+def _signal_graceful_stop(pid: int, recorded_create_time: float | None) -> bool:
+    """Send SIGTERM to the verified daemon; whether it was sent.
+
+    clio-core handles SIGTERM as a graceful stop (the same teardown ``clio_run stop``
+    requests), and a second request while it already tears down is harmless. Windows has
+    no graceful signal (``terminate`` is a hard kill), so nothing is sent there.
+    """
+    if os.name == "nt" or not _daemon_process_alive(pid, recorded_create_time):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        logger.warning(
+            "clio-core daemon SIGTERM failed (pid=%d error=%s: %s)", pid, type(exc).__name__, exc
+        )
+        return False
+    return True
 
 
 def _daemon_process_alive(pid: int | None, recorded_create_time: float | None) -> bool:
@@ -96,7 +140,14 @@ def _daemon_process_alive(pid: int | None, recorded_create_time: float | None) -
 
 
 StopPath = Literal[
-    "clean_stop", "stall_kill", "helper_failed_kill", "launcher_missing_kill", "error_kill"
+    "clean_stop",
+    "term_stop",
+    "stall_kill",
+    "helper_failed_kill",
+    "launcher_missing_kill",
+    "error_kill",
+    "not_owned",
+    "foreign_listener_kill",
 ]
 
 
@@ -105,12 +156,13 @@ class StopOutcome:
     """Result of one :func:`stop_runtime_daemon` attempt.
 
     Attributes:
-        stopped: Whether the clean ``clio_run stop`` handshake observed the
-            runtime port free itself (no hard pidfile kill was needed).
+        stopped: Whether the runtime port freed and the daemon exited on its own
+            graceful teardown (no hard pidfile kill was needed).
         path: Which of the stop paths this attempt took -- a structured
             reason for the trace/log, never a control-flow signal (every
             degraded path here already carries its own typed reason, #775
-            no-silent-fallback).
+            no-silent-fallback). ``term_stop`` is a clean stop that needed
+            SIGTERM because the ``clio_run stop`` request never reached the daemon.
     """
 
     stopped: bool
@@ -297,18 +349,45 @@ def cleanup_runtime_after_client_crash(
         time.sleep(min(0.1, max(deadline - time.monotonic(), 0.0)))
 
 
-def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
+def stop_runtime_daemon(
+    config_path: str, log_level: str, *, ceiling_s: float | None = None
+) -> StopOutcome:
     """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback.
+
+    ``ceiling_s`` bounds the wait for the clean stop whatever the daemon's CPU does
+    (default ``arc.liveness.max_wait_s``): a wedged daemon spins, which reads as work.
 
     Mirrors the spawn path: the launcher name (``.exe`` on Windows) comes from
     ``_runtime_launcher_path`` and the shared-library env var (``PATH`` /
     ``DYLD_LIBRARY_PATH`` / ``LD_LIBRARY_PATH``) from ``_dynamic_library_env_var``,
     so the clean stop works on every platform the spawn does (issue #765).
+
+    Only a daemon this state directory started is stopped (:mod:`runtime_ownership`):
+    ``clio_run stop`` reaches whatever daemon serves the port, so it is skipped when no
+    daemon of ours runs (``not_owned``) or another user's or home's daemon holds the
+    port (``foreign_listener_kill``: our own pidfile daemon alone is killed).
     """
-    from clio_agent.arc import storage  # noqa: PLC0415 - lazy: storage imports this module
+    from clio_agent.arc import runtime_ownership, storage  # noqa: PLC0415 - import cycle
+
+    guard = runtime_ownership.stop_guard(_resolve_runtime_port(config_path))
+    if guard != "owned":
+        logger.warning(
+            "clio-core daemon stop skipped (reason=%s guard=%s): %s",
+            runtime_ownership.DAEMON_NOT_OWNED,
+            guard,
+            "no daemon this home started is running"
+            if guard == "not_owned"
+            else "another home's daemon holds the port; killing only this home's daemon",
+        )
+        if guard == "foreign_listener":
+            storage._kill_daemon_pidfile()
+        with contextlib.suppress(OSError):
+            storage._daemon_pidfile().unlink()
+        path: StopPath = "not_owned" if guard == "not_owned" else "foreign_listener_kill"
+        return StopOutcome(stopped=False, path=path)
 
     stopped = False
-    path: StopPath = "error_kill"
+    path = "error_kill"
     try:
         parts = storage._daemon_pidfile().read_text(encoding="utf-8").split()
     except OSError:
@@ -340,6 +419,7 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
             env.setdefault("CTP_LOG_LEVEL", log_level)
             if config_path:
                 env["CLIO_SERVER_CONF"] = config_path
+            pin_core_child_env(env)
             runtime_port = _resolve_runtime_port(config_path)
             stop_process = subprocess.Popen(  # noqa: S603 - fixed launcher path
                 [exe, "stop"],
@@ -362,8 +442,10 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
             from clio_agent.arc.daemon_progress import max_wait_s  # noqa: PLC0415 - cycle
             from clio_agent.runtime.progress import process_work  # noqa: PLC0415
 
-            ceiling = max_wait_s()
+            ceiling = max_wait_s() if ceiling_s is None else ceiling_s
             no_progress_s = stop_no_progress_s()
+            ack_s = stop_ack_s()
+            signalled = False
             started = window = time.monotonic()
             last_work = process_work(daemon_pid) if daemon_pid is not None else None
             while True:
@@ -374,7 +456,7 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                     and not _daemon_process_alive(daemon_pid, recorded_create_time)
                 ):
                     stopped = True
-                    path = "clean_stop"
+                    path = "term_stop" if signalled else "clean_stop"
                     break
                 # The helper FAILING (non-zero exit: it could not load the config or
                 # reach the daemon) means the stop request was never delivered: the
@@ -392,6 +474,23 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                     path = "helper_failed_kill"
                     break
                 now = time.monotonic()
+                # Still serving its port after the ack window: the request was lost (the
+                # helper then waits on the daemon for good, and the idle daemon's CPU
+                # reads as progress until the ceiling). Deliver the stop as SIGTERM.
+                if (
+                    not signalled
+                    and daemon_pid is not None
+                    and alive
+                    and now - started >= ack_s
+                    and _signal_graceful_stop(daemon_pid, recorded_create_time)
+                ):
+                    signalled = True
+                    logger.warning(
+                        "clio-core daemon still serving port %d %.1fs after clio_run stop "
+                        "(reason=stop_undelivered); sent SIGTERM for a graceful stop",
+                        runtime_port,
+                        now - started,
+                    )
                 if now - window >= no_progress_s:
                     work = process_work(daemon_pid) if daemon_pid is not None else None
                     if work is None or last_work is None or work - last_work < 0.01:
@@ -406,9 +505,10 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                     last_work, window = work, now
                 if now - started >= ceiling:
                     logger.warning(
-                        "clio-core daemon still stopping after %.0fs (arc.liveness.max_wait_s); "
+                        "clio-core daemon still stopping after %.0fs (ceiling %.0fs); "
                         "killing it -- data not yet flushed may be lost",
                         now - started,
+                        ceiling,
                     )
                     path = "stall_kill"
                     break

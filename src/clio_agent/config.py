@@ -30,7 +30,6 @@ import logging
 import os
 from dataclasses import dataclass, field
 from ipaddress import ip_address
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, cast
 from urllib.parse import urlparse
 
@@ -109,75 +108,31 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = _registry_provider_defaults()
 # Environment variable names for cloud provider API keys.
 _CLOUD_API_KEY_ENV: dict[str, str] = _registry_cloud_api_key_env()
 
-ENV_FILE_LOADED_KEY = "CLIO_ENV_FILE_LOADED"
-
-
-def load_project_env_file(
-    path: str | os.PathLike[str] | None = None,
-    *,
-    override: bool = False,
-) -> Path | None:
-    """Load CLIO environment defaults from a dotenv-style file.
-
-    This keeps host/model defaults outside Python code while making direct
-    commands like ``uv run src/clio_agent/ui/cli.py`` pick up the repo-local
-    configuration. Existing process environment variables win unless
-    ``override`` is true.
-    """
-    env_file = _resolve_env_file(path)
-    if env_file is None or not env_file.exists():
-        return None
-
-    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_env_line(raw_line)
-        if parsed is None:
-            continue
-        key, value = parsed
-        if override or key not in os.environ:
-            os.environ[key] = value
-
-    os.environ[ENV_FILE_LOADED_KEY] = str(env_file)
-    return env_file
-
-
-def _resolve_env_file(path: str | os.PathLike[str] | None) -> Path | None:
-    explicit = path or os.environ.get("CLIO_ENV_FILE", "")
-    if explicit:
-        return Path(explicit).expanduser().resolve(strict=False)
-
-    cwd_env = Path.cwd() / ".env"
-    if cwd_env.exists():
-        return cwd_env.resolve(strict=False)
-
-    repo_env = Path(__file__).resolve().parents[2] / ".env"
-    if repo_env.exists():
-        return repo_env.resolve(strict=False)
-    return None
-
-
-def _parse_env_line(line: str) -> tuple[str, str] | None:
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
-        return None
-    if stripped.startswith("export "):
-        stripped = stripped.removeprefix("export ").strip()
-    if "=" not in stripped:
-        return None
-
-    key, value = stripped.split("=", 1)
-    key = key.strip()
-    if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
-        return None
-
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        value = value[1:-1]
-    return key, value
-
-
 # ============================================================================
 # MULTI-PROVIDER CONFIGURATION
 # ============================================================================
+
+
+class UnknownLMProviderError(ValueError):
+    """An explicit provider identity names no catalog preset and no saved model server.
+
+    Typed (``error_type``) so a background caller records the reason instead of the
+    message; never answered by falling back to a default provider (LM Studio).
+    """
+
+    error_type = "lm_provider_unknown"
+
+
+def _saved_server(server_id: str) -> Any:
+    """The saved custom model server with this id (``None`` for anything else)."""
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+
+    try:
+        entry = local_server_store.get_server(server_id)
+    except (local_server_store.LocalServerStoreError, paths.HomeDirectoryUnavailable):
+        return None
+    return entry if entry is not None and entry.preset_id and entry.custom else None
 
 
 @dataclass
@@ -202,6 +157,11 @@ class LMProviderConfig:
     # catalog owns the one list of kinds, so it isn't re-typed here too.
     provider: ProviderKind = "lm_studio"
     provider_id: str = ""
+    #: A saved custom model server (``server-<slug>``) this config runs on: the
+    #: provider identity whose address and key it uses. ``provider_id`` is then the
+    #: server's preset (its protocol); this keeps the server itself, so any re-derived
+    #: spec/config reaches the server's address with its key, never the preset's.
+    server_id: str = ""
     api_base: str = ""
     model: str = ""
     api_key: str = ""
@@ -279,16 +239,40 @@ class LMProviderConfig:
         preset = _catalog_provider(identity)
         if preset is None and not self.provider_id:
             preset = _catalog_kind_default(identity)
+        if preset is None and self.provider_id and not self.server_id:
+            # A saved model server (``server-<slug>``, e.g. a CLIO-managed vllm@<name>)
+            # speaks its preset's protocol at its own address with its own key.
+            self.server_id = self.provider_id if _saved_server(self.provider_id) else ""
+        if self.server_id:
+            server = _saved_server(self.server_id)
+            if server is None:
+                raise UnknownLMProviderError(
+                    f"Unknown LM provider {self.server_id!r}: no saved model server has "
+                    "this id; choose another model"
+                )
+            preset = _catalog_provider(server.preset_id)
+            if preset is None:
+                raise UnknownLMProviderError(
+                    f"Saved model server {server.id!r} names unknown preset {server.preset_id!r}"
+                )
+            if not self.api_base:
+                self.api_base = server.address
         if preset is not None:
             self.provider_id = preset.id
             self.provider = cast(Any, preset.provider_kind)
             defaults = _catalog_provider_defaults(preset)
             if self.provider_options:
+                # Stored/inherited options may name another provider's settings
+                # (a config saved under OpenRouter, then run on Codex): drop and log
+                # those rather than refuse the run. PUT /v1/providers/lm validates a
+                # person's request strictly before it reaches here.
                 self.provider_options = _normalize_provider_options(
-                    preset.id, self.provider_options
+                    preset.id, self.provider_options, drop_unknown=True
                 )
         else:
-            raise ValueError(f"Unknown LM provider {identity!r}; configure a supported provider")
+            raise UnknownLMProviderError(
+                f"Unknown LM provider {identity!r}; configure a supported provider"
+            )
         from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
 
         self.thinking_level = claude_code.shipped_default_thinking_level(
@@ -313,8 +297,11 @@ class LMProviderConfig:
             # ``or defaults["api_key"]`` preserves the local-provider
             # placeholder (e.g. "lm-studio") — a provider default, not a
             # credential — so behaviour stays byte-identical.
+            # A saved server's key is its own (its stored key / deployment key),
+            # never the preset's or another provider's env var.
             self.api_key = (
-                _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
+                _credentials.resolve(self.server_id or self.provider_id or self.provider, "")
+                or defaults["api_key"]
             )
         # Zero means no client output cap (#1323).
         if self.max_tokens < 0:
@@ -552,6 +539,11 @@ def load_config_from_env() -> LMProviderConfig:
     presence_penalty = conf.resolve(
         "lm.presence_penalty", env="CLIO_LM_PRESENCE_PENALTY", default=None, cast=conf.as_float
     )
+    # The person's non-secret provider options (show_diffusion, api_version, ...),
+    # written by the model picker's bind; validated against the preset at construction.
+    provider_options = conf.resolve(
+        "lm.provider_options", env="CLIO_LM_PROVIDER_OPTIONS", default=None, cast=conf.as_mapping
+    )
 
     kwargs: dict = {
         "provider": provider,
@@ -576,6 +568,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["min_p"] = min_p
     if presence_penalty is not None:
         kwargs["presence_penalty"] = presence_penalty
+    if provider_options:
+        kwargs["provider_options"] = {str(k): str(v) for k, v in provider_options.items()}
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
     if claude_code_transport:

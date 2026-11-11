@@ -22,7 +22,8 @@ are effective (:mod:`clio_agent.providers.capabilities.accessor`).
   used exactly this placement for ``top_k``/``min_p``), and it is also where
   this module places a dialect's own non-OpenAI-standard thinking field
   (llama.cpp/vLLM ``reasoning_effort``/``chat_template_kwargs``, Ollama
-  ``think``, OpenRouter ``reasoning``/``provider``) -- LiteLLM has no
+  ``think``, OpenRouter ``reasoning``/``provider``, Inception
+  ``reasoning_effort``) -- LiteLLM has no
   dedicated translator for any of these fields on these dialects, so
   ``extra_body`` is the only placement LiteLLM is documented to forward
   as-is. This is a documented assumption (no live server call is in scope for
@@ -88,6 +89,7 @@ _DIALECT_NATIVE_TOP_LEVEL_FIELDS: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"reasoning_effort", "thinking"}),
     "codex": frozenset({"codex_reasoning_effort"}),
     "claude_code": frozenset({"claude_code_thinking"}),
+    "copilot": frozenset({"copilot_reasoning_effort"}),
 }
 
 
@@ -222,10 +224,12 @@ def _unknown_levels_wire(dialect: str, level: str) -> dict[str, Any]:
     sends nothing and the caller records the level as unknown, not unsupported.
     """
 
-    if dialect in {"openai", "anthropic", "lm_studio", "llama_cpp", "ollama"}:
+    if dialect in {"openai", "anthropic", "lm_studio", "llama_cpp", "ollama", "inception"}:
         return {"reasoning_effort": level}
     if dialect == "codex":
         return {"codex_reasoning_effort": level}
+    if dialect == "copilot":
+        return {"copilot_reasoning_effort": level}
     if dialect == "openrouter":
         return {"reasoning": {"effort": level}}
     if dialect == "claude_code":
@@ -354,6 +358,15 @@ def thinking_wire(
         value = _effort_value(decision, wire_level)
         return {"reasoning_effort": value} if value is not None else {}
 
+    if dialect == "inception":
+        # Mercury's effort vocabulary (instant/low/medium/high) is the model's
+        # own: effort_by_level spells it (e.g. CLIO "minimal" -> "instant").
+        # Reasoning is always on, so there is no "off" to send.
+        if off:
+            return {}
+        value = _effort_value(decision, wire_level)
+        return {"reasoning_effort": value} if value is not None else {}
+
     if dialect == "anthropic":
         if off:
             return {}  # the API default is thinking off; nothing to send.
@@ -374,6 +387,14 @@ def thinking_wire(
             return {"codex_reasoning_effort": "none"}
         value = _effort_value(decision, wire_level)
         return {"codex_reasoning_effort": value} if value is not None else {}
+
+    if dialect == "copilot":
+        # The SDK's per-session reasoning_effort; off is sent only for a model
+        # that lists "none" itself (off_sendable, above).
+        if off:
+            return {"copilot_reasoning_effort": "none"}
+        value = _effort_value(decision, wire_level)
+        return {"copilot_reasoning_effort": value} if value is not None else {}
 
     if dialect == "claude_code":
         if off:

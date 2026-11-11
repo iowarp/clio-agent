@@ -40,6 +40,7 @@ _SELF_REGISTERING_MODELS = ("claude_code/",)
 
 def route_pieces(pieces: list[Piece], *, unclosed: bool = False) -> None:
     """Send one chunk's routed pieces to the live lanes."""
+    from clio_agent.lm.call_timing import first_piece  # noqa: PLC0415
     from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
         note_lm_activity,
         note_lm_answer_delta,
@@ -47,6 +48,7 @@ def route_pieces(pieces: list[Piece], *, unclosed: bool = False) -> None:
         note_lm_token_event,
     )
 
+    first_piece()
     note_lm_activity()
     text = thinking = ""
     for piece in pieces:

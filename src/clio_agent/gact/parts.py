@@ -100,6 +100,10 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_message_delivery: bool = False
     x_clio_pending_steers: bool = False
     x_clio_queued_messages: bool = False
+    # GET /v1/workspaces/{wid}/h5grove/* for the HDF5 file viewer.
+    x_clio_hdf5_viewer: bool = False
+    # POST /v1/sessions/{sid}/move: re-home a conversation in another workspace.
+    x_clio_session_move: bool = False
     x_clio_resources: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -149,6 +153,12 @@ class Part(DocumentPartFields):
     resource_id: str = ""
     resource_revision: str = ""
     delivery_preference: str = ""
+
+    # summon -- the person named what handles this message (``target_kind`` ``subagent``,
+    # ``workflow``, ``flow`` or ``server``; ``target`` its name). The server acts only on these parts, never on an
+    # ``@`` the person typed without picking it.
+    target_kind: str = ""
+    target: str = ""
 
     # context_ref -- a server-resolved reference to existing context in this
     # session's workspace. ``id`` remains the message-part identity; ``ref_id``

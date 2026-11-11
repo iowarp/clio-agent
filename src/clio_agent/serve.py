@@ -54,6 +54,7 @@ import httpx
 from filelock import FileLock
 
 from clio_agent.paths import user_state_dir
+from clio_agent.server_port import configured_port
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +348,7 @@ def _probe_health(base_url: str, *, timeout_s: float = 1.0) -> bool:
 
 
 def ensure_server(
-    port: int = 8100,
+    port: int | None = None,
     host: str = "127.0.0.1",
     *,
     timeout_s: float = 90.0,
@@ -362,7 +363,7 @@ def ensure_server(
     or ``timeout_s`` elapses.
 
     Args:
-        port: TCP port to probe/serve on. Defaults to 8100 (the gact default).
+        port: TCP port to probe/serve on; ``None`` uses the configured ``gact.port``.
         host: Bind/probe host. Defaults to ``127.0.0.1``.
         timeout_s: Max seconds to wait for a freshly spawned server to become healthy.
 
@@ -375,6 +376,7 @@ def ensure_server(
         ServerStartTimeout: If a spawned server does not become healthy in time (the
             partially-started process is torn down before this is raised).
     """
+    port = configured_port() if port is None else port
     base_url = server_base_url(host, port)
     pidfile = _pidfile_path(port)
 
@@ -669,7 +671,7 @@ def _graceful_stop(
 
 
 def stop_server(
-    port: int = 8100,
+    port: int | None = None,
     host: str = "127.0.0.1",
     *,
     no_progress_s: float | None = None,
@@ -691,7 +693,7 @@ def stop_server(
     its ``kill_reason`` and logged as a warning, never silently.
 
     Args:
-        port: Port whose recorded server should be stopped. Defaults to 8100.
+        port: Port whose recorded server should be stopped; ``None`` uses ``gact.port``.
         host: Host the server was bound to (the shutdown request goes to its loopback).
         no_progress_s: The no-progress window; defaults to
             ``arc.liveness.stop_no_progress_s`` (15 s).
@@ -701,6 +703,7 @@ def stop_server(
         ``killed``, ``no_server``, ``corrupt_pidfile``, ``dead_pid``, ``unverifiable``, or
         ``not_ours``.
     """
+    port = configured_port() if port is None else port
     pidfile = _pidfile_path(port)
     record = _read_pidfile(pidfile)
 

@@ -21,8 +21,10 @@ carries the typed :class:`dspy.lm15.Request` across as text and brings tool call
 from __future__ import annotations
 
 import json
+import logging
 import re
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,32 +38,78 @@ from dspy.lm15 import (
     ToolResultPart,
 )
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
+    "CALLABLE_TOOL_DEFS",
+    "CALLABLE_TOOLS",
+    "ToolSchemas",
     "INVALID_TOOL_CALL",
+    "callable_tools",
     "FENCE",
     "TURN_REMINDER",
     "StreamSplitter",
     "render_messages",
     "render_system",
     "split_reply",
+    "turn_reminder",
 ]
 
 #: The fence that opens the tool-call block (closed by a line of three backticks).
 FENCE = "```tool_calls"
 #: The reserved tool name carrying a block that did not parse (its input: error, raw).
 INVALID_TOOL_CALL = "clio_invalid_tool_calls"
+#: Every tool the running agent may call, listed or not: a deferred tool that
+#: search_tools loaded is callable without being listed. Recognizing a broken call block
+#: (a call to one of these tools) needs the whole set, not only the listed tools.
+CALLABLE_TOOLS: ContextVar[frozenset[str]] = ContextVar("clio_callable_tools", default=frozenset())
+
+
+def callable_tools(listed: Collection[str]) -> frozenset[str]:
+    """``listed`` plus every tool the running agent may call unlisted."""
+    return frozenset(listed) | CALLABLE_TOOLS.get()
+
+
+#: The running agent's tools by name, so a tool it calls unlisted (a deferred tool loaded
+#: with search_tools) is read against its own parameter schema.
+CALLABLE_TOOL_DEFS: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "clio_callable_tool_defs", default=None
+)
+
+
+class ToolSchemas(dict):  # type: ignore[type-arg]
+    """Listed tools' parameter schemas; an unlisted callable tool's on first use.
+
+    Without it a loaded deferred tool had no schema, so the invoke protocol read every
+    parameter as text: ``recall_context(ids=[...])`` arrived as the string ``'[...]'``
+    and was refused (L1R, 2026-11-04).
+    """
+
+    def get(self, name: Any, default: Any = None) -> Any:  # type: ignore[override]
+        if name in self:
+            return self[name]
+        tool = (CALLABLE_TOOL_DEFS.get() or {}).get(name)
+        if tool is None:
+            return default
+        try:
+            schema = tool.format_as_litellm_function_call()["function"]["parameters"]
+        except (AttributeError, KeyError, TypeError) as exc:
+            logger.warning("No parameter schema for unlisted tool %s: %s", name, exc)
+            return default
+        self[name] = schema
+        return schema
+
 
 _TOOL_RULES = """\
 # How you act
 
-Your only way to look anything up, read or change data, or run an analysis is to call the
-tools in the Available tools list below -- there are no other capabilities. When the
-request needs information you have not observed in this conversation, call the tools
-that get it; do not answer from memory.
+You act by calling the tools in the Available tools list below. They are your only way
+to look anything up, read or change data, or run an analysis, so when the request needs
+information you have not observed in this conversation, call the tools that get it
+rather than answering from memory.
 
-These tools are NOT function calls of your own runtime: you call them by writing plain
-text in your reply. Write your message, then end it with exactly one block that lists
-every call for this step:
+You call them by writing plain text: end your message with one block that lists every
+call for this step:
 
 ```tool_calls
 [{"name": "<tool name>", "arguments": {<arguments as a JSON object>}}]
@@ -74,34 +122,52 @@ I'll check both sources.
 [{"name": "search_catalog", "arguments": {"query": "stations near Ridgecrest"}}, {"name": "read_notes", "arguments": {"path": "notes/site.md"}}]
 ```
 
-(Those two names only illustrate the format -- call only names from the Available tools
-list.) All calls in one block run at the same time; you see all their results together in
-the next message. Stop your reply immediately after the closing fence. Do not author
-new [tool results] sections or simulate later turns: only the host supplies actual
-observations. If a call needs another call's output, emit only the prerequisite now,
-then use its real result on the next step. Never invent a result or placeholder handle.
-A message that ends without a block is your final answer."""
+(Those two names only illustrate the format; the names you call come from the Available
+tools list.) All calls in one block run at the same time and their results come back
+together in the next message, so put every call that does not need another call's
+result into the same block, and make a call that needs one in a later step, once the
+real result has arrived. Results come only from the host, so stop after the closing
+fence. A message that ends without a block is your final answer."""
+
+#: Added when the agent can load deferred tools: a loaded tool is callable unlisted.
+_LOADED_TOOLS_RULE = (
+    "Some tools are named in your instructions but not listed here; search_tools loads "
+    "them. A tool whose schema a search_tools result returned is callable in the same way "
+    "as a listed one, from the step after that result."
+)
 
 #: Appended to every user or tool-result turn the transport sends (never to the
-#: system prompt), so the model is reminded where its tools are at each step.
+#: system prompt): the call syntax, and a nudge to make each step as wide as it can be.
 TURN_REMINDER = (
-    "(You act only through the Available tools. To call them, end your message with one "
-    "complete fenced block: an opening line of three backticks followed by tool_calls, "
-    "the JSON list on the next line, then a closing line of three backticks. Include BOTH "
-    "fences; a JSON list alone or XML invoke/parameter tags are not calls. "
-    "A JSON object wrapping a tool_calls list, XML <tool_calls> tags or [tool_calls] tags "
-    "are not calls either. "
-    "A single JSON call object also needs the complete fenced JSON list. "
-    "Underscores are not tool-call fences. "
-    "Stop after the closing fence and wait for host observations; do not simulate "
-    "tool results or later turns. Dependent calls require the preceding real result. "
+    "(To call tools, end your message with one fenced block: an opening line of three "
+    "backticks followed by tool_calls, the JSON list of calls on the next line, then a "
+    "closing line of three backticks; stop after it. First work out what you need next, "
+    "then put every call that does not depend on another's result into this one block. "
     "If no calls are needed, answer normally.)"
 )
 
 
+def turn_reminder() -> str:
+    """The call-syntax reminder of the configured protocol (``lm.text_tool_protocol``)."""
+    from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+    return (
+        invoke_calls.INVOKE_REMINDER
+        if invoke_calls.text_tool_protocol() == "invoke"
+        else TURN_REMINDER
+    )
+
+
 def render_system(system: str | None, tools: Sequence[Any]) -> str:
-    """The system prompt followed by the tool rules and the tool list."""
-    parts = [system.strip()] if system and system.strip() else []
+    """The tool rules and the tool list, then the system prompt.
+
+    The tools come first, as in Anthropic's own request order (tools, system,
+    messages): both are the same for every session of an agent. The session's own
+    facts (the workspace, its write roots) are not in the system prompt; they ride the
+    conversation as the ``session_facts`` injection, so the provider's prompt-cache
+    prefix is shared across sessions.
+    """
+    parts: list[str] = []
     functions = [t for t in tools if isinstance(t, FunctionTool)]
     if functions:
         listing = "\n".join(
@@ -109,7 +175,15 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
             f"{json.dumps(t.parameters, sort_keys=True)}"
             for t in functions
         )
-        parts.append(f"{_TOOL_RULES}\n\n# Available tools\n\n{listing}")
+        from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+        invoke = invoke_calls.text_tool_protocol() == "invoke"
+        rules = invoke_calls.INVOKE_RULES if invoke else _TOOL_RULES
+        if any(t.name == "search_tools" for t in functions):
+            rules += f"\n\n{_LOADED_TOOLS_RULE}"
+        parts.append(f"{rules}\n\n# Available tools\n\n{listing}")
+    if system and system.strip():
+        parts.append(system.strip())
     return "\n\n".join(parts)
 
 
@@ -154,7 +228,14 @@ def _render_message(message: Message, media: _Media) -> str:
             for p in message.parts
             if isinstance(p, ToolCallPart)
         ]
-        block = f"\n{FENCE}\n{json.dumps(calls)}\n```" if calls else ""
+        from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+        if not calls:
+            block = ""
+        elif invoke_calls.text_tool_protocol() == "invoke":
+            block = "\n" + invoke_calls.render_invoke([(c["name"], c["arguments"]) for c in calls])
+        else:
+            block = f"\n{FENCE}\n{json.dumps(calls)}\n```"
         return f"[assistant]\n{text}{block}".rstrip()
     body = _content_text(message.parts, media)
     return f"[{message.role}]\n{body}" if body else ""
@@ -185,12 +266,32 @@ class ReplySplit:
 
     text: str
     calls: list[ToolCallPart] = field(default_factory=list)
+    #: What the model wrote past its call block; never run or shown (invoke protocol).
+    overrun: str = ""
 
 
 def split_reply(
-    reply: str, *, call_prefix: str, available_tools: Collection[str] = ()
+    reply: str,
+    *,
+    call_prefix: str,
+    available_tools: Collection[str] = (),
+    schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ReplySplit:
-    """Split a reply into visible text and tool calls (never repaired; see module doc)."""
+    """Split a reply into visible text and tool calls (never repaired; see module doc).
+
+    Under the ``invoke`` protocol (``lm.text_tool_protocol``) a ``<function_calls>``
+    block is the step's calls (:mod:`~clio_agent.lm.engines.invoke_calls`); a fenced
+    JSON block is still read when there is none.
+    """
+    from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+    if invoke_calls.text_tool_protocol() == "invoke":
+        known = callable_tools(available_tools) if available_tools else frozenset()
+        found = invoke_calls.parse_invoke_calls(reply, schemas or {}, known)
+        if found is not None:
+            split = _invoke_split(found, call_prefix)
+            split.overrun = found.overrun
+            return split
     fences = list(re.finditer(r"(?m)^[ \t]*(?P<fence>```tool_calls)[ \t]*(?=\r?$)", reply))
     if len(fences) > 1:
         return _invalid_reply(
@@ -264,6 +365,31 @@ def split_reply(
     return ReplySplit(text=text, calls=parts)
 
 
+def _invoke_split(found: Any, call_prefix: str) -> ReplySplit:
+    """An invoke-protocol reply as a split. A fenced JSON block beside the calls is the
+    same calls written twice when it is empty or equal to them (dropped, on the record);
+    a different one is refused, since which to run is not the host's to guess."""
+    if found.error:
+        return _invalid_reply(found.text, found.raw, found.error, call_prefix)
+    text, calls = found.text, [{"name": n, "arguments": a} for n, a in found.calls]
+    fence = re.search(r"(?ms)^[ \t]*```tool_calls[ \t]*\r?\n(.*?)^[ \t]*```", text)
+    if fence:
+        try:
+            listed = json.loads(fence[1])
+        except ValueError:
+            listed = None
+        if listed not in ([], calls):
+            return _invalid_reply(text, fence[0], "calls written both as a function_calls block "
+                                  "and as a tool_calls block; write each call once, in one "
+                                  "function_calls block", call_prefix)  # fmt: skip
+        logger.info("invoke reply carried a duplicate tool_calls block; dropped (%d calls)",
+                    len(listed or []))  # fmt: skip
+        text = (text[: fence.start()] + text[fence.end() :]).strip()
+    return ReplySplit(
+        text=text, calls=[_call(c, f"{call_prefix}_{i}") for i, c in enumerate(calls)]
+    )
+
+
 def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
     """Reject observed native call shapes without inferring or executing their arguments."""
     if not available_tools:
@@ -320,14 +446,15 @@ def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
 
     Ordinary JSON answers and fenced examples stay answers. Only a whole call list
     or single call object for this request's tools followed by an unmatched closing fence is rejected,
-    including the live reply whose opening fence became ``_tool_calls``.
+    including live replies whose opening fence became ``_tool_calls`` or lost its
+    backticks (``tool_calls``).
     """
     raw = reply.strip()
     if not available_tools or not raw.endswith("\n```") or "```" in raw[:-3]:
         return False
     body = raw[:-3]
-    if body.startswith("_tool_calls\n"):
-        body = body.removeprefix("_tool_calls\n")
+    for opener in ("_tool_calls\n", "tool_calls\n"):
+        body = body.removeprefix(opener)
     try:
         calls = json.loads(body)
     except ValueError:
@@ -418,8 +545,33 @@ _INVOKE_MARKUP = re.compile(
     r"""(?:\s*</function_calls>)?""",
     re.DOTALL,
 )
-_INVOKE_OPENER = re.compile(r"""<function_calls>|<invoke\s+name=""")
-_INVOKE_OPENERS = ("<function_calls>", "<invoke name=")
+#: Where call markup begins, an invoke opener or the pieces of a call whose opener was
+#: lost (the invoke protocol: L1's answers began with streamed "</function_cal" pieces),
+#: or a line that begins with the container's word written without its markup
+#: (``function_calls="" invoke name="run_code">``, ``function_calls: invoke run_code``):
+#: what is left of a call block whose tags were lost, never prose. The service may also
+#: replace call markup the model wrote as text with ``<invoke_tool_placeholder>`` tags,
+#: and models write an invented ``<invoke:shell_bash>`` opener beside a real block.
+_INVOKE_OPENER = re.compile(
+    r"""</?function_calls>|<invoke\s+name=|<parameter\s+name=|</invoke>"""
+    r"""|</?invoke_tool_placeholder>|</?invoke:[\w.-]+>"""
+    r"""|(?<![^\n])[ \t]*<?/?function_calls\b"""
+)
+_INVOKE_OPENERS = (
+    "<function_calls>",
+    "</function_calls>",
+    "<invoke name=",
+    "<invoke:",
+    "</invoke:",
+    "<parameter name=",
+    "</invoke>",
+    "<invoke_tool_placeholder>",
+    "</invoke_tool_placeholder>",
+)
+#: The container's word at a line start, held back while the line could still become it.
+_CALL_WORDS = ("function_calls", "<function_calls", "</function_calls")
+#: An invented ``<invoke:NAME`` opener still being written, held back until its ``>``.
+_UNFINISHED_INVOKE_NAME = re.compile(r"</?invoke:[\w.-]*$")
 
 
 def _without_invoke_markup(text: str) -> tuple[str, int]:
@@ -429,9 +581,14 @@ def _without_invoke_markup(text: str) -> tuple[str, int]:
     cleaned, removed = _INVOKE_MARKUP.subn("", text)
     if opener := _INVOKE_OPENER.search(cleaned):
         return cleaned[: opener.start()], removed
+    if unfinished := _UNFINISHED_INVOKE_NAME.search(cleaned):
+        return cleaned[: unfinished.start()], removed
     for n in range(min(max(map(len, _INVOKE_OPENERS)) - 1, len(cleaned)), 0, -1):
         if any(o.startswith(cleaned[-n:]) for o in _INVOKE_OPENERS):
             return cleaned[:-n], removed
+    last = cleaned.rsplit("\n", 1)[-1]
+    if (word := last.lstrip(" \t")) and any(w.startswith(word) for w in _CALL_WORDS):
+        return cleaned[: len(cleaned) - len(last)], removed
     return cleaned, removed
 
 
@@ -460,12 +617,18 @@ class StreamSplitter:
     A call the model also wrote as invoke markup in its prose is not shown: only the
     fenced block runs. ``dropped_invoke_markup`` counts those fragments, for the audit;
     ``dropped_fence_words`` counts lines that were only the fence's corrupted spelling.
+
+    Under the invoke protocol the markup is the call, so ``known`` names the callable
+    tools: from the first ``<invoke>`` of one of them nothing more streams, as at the
+    fence. Text past the block is never the step's (:func:`~clio_agent.lm.engines.
+    invoke_calls.call_block_end`), and is not shown while it is still being written.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, known: Collection[str] = ()) -> None:
         self._buffer = ""
         self._shown = 0
         self._stopped = False
+        self._known = frozenset(known)
         self.dropped_invoke_markup = 0
         self.dropped_fence_words = 0
 
@@ -475,6 +638,10 @@ class StreamSplitter:
             return ""
         self._buffer += chunk
         fence_at = self._buffer.find(FENCE)
+        if (block_at := self._call_block_at()) is not None and (
+            fence_at < 0 or block_at < fence_at
+        ):
+            fence_at = block_at
         if fence_at >= 0:
             self._stopped = True
             safe = self._buffer[:fence_at]
@@ -487,6 +654,23 @@ class StreamSplitter:
         out = safe[self._shown :]
         self._shown = max(self._shown, len(safe))
         return out
+
+    def _call_block_at(self) -> int | None:
+        """Where the call block of a known tool begins in the buffer, if one has begun."""
+        if not self._known:
+            return None
+        from clio_agent.lm.engines.invoke_calls import _FENCED, _INVOKE_OPEN  # noqa: PLC0415
+
+        fences = [m.span() for m in _FENCED.finditer(self._buffer)]
+        for opened in _INVOKE_OPEN.finditer(self._buffer):
+            if any(a <= opened.start() < b for a, b in fences):
+                continue  # an example in a code block
+            if opened["name"] not in self._known:
+                continue  # markup that is data: shown as before, without the markup
+            container = self._buffer.rfind("<function_calls>", 0, opened.start())
+            gap = self._buffer[container + len("<function_calls>") : opened.start()]
+            return container if container >= 0 and not gap.strip() else opened.start()
+        return None
 
 
 def _partial_fence_len(text: str) -> int:

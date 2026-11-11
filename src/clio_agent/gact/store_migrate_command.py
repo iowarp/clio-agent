@@ -14,7 +14,9 @@ the whole result as one object instead. A second run is a no-op (every line read
 Exit status: 0 when nothing is owed afterwards (or the platform runs without clio-core),
 1 when a migration failed, 3 when the store is in use by a running CLIO
 (``store_in_use``: stop it, or start it and its boot runs the owed migrations once),
-4 when clio-core could not be opened (``store_unavailable``).
+4 when clio-core could not be opened (``store_unavailable``), 5 when the store was
+written by CLIO 0.9.5.1 or older (``arc_store_format_old``: nothing is migrated; move it
+aside with ``clio-agent reset-store``, :mod:`clio_agent.gact.store_reset_command`).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from clio_agent.arc.init_degradation import ArcStoreUnavailableError
+from clio_agent.arc.store_format import ArcStoreFormatOldError
 from clio_agent.errors import ClioError
 from clio_agent.gact import store_migrations
 from clio_agent.gact.store_migrations import (
@@ -38,7 +41,7 @@ from clio_agent.gact.store_migrations import (
     run_migration,
 )
 
-EXIT_OK, EXIT_FAILED, EXIT_IN_USE, EXIT_UNAVAILABLE = 0, 1, 3, 4
+EXIT_OK, EXIT_FAILED, EXIT_IN_USE, EXIT_UNAVAILABLE, EXIT_OLD_STORE = 0, 1, 3, 4, 5
 #: Failures a migration reports typed (``migration_failed``); anything else is a bug and
 #: propagates with its traceback (the store is still released).
 MIGRATION_ERRORS = (ClioError, OSError, RuntimeError, ValueError, TimeoutError)
@@ -66,7 +69,9 @@ def _open_core() -> Any:
     from clio_agent.gact.transcript_file import resolve_transcript_file  # noqa: PLC0415
 
     data_dir = str(paths.arc_data_dir())
-    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
+    store = make_arc_store(data_dir=data_dir)
+    _refuse_old_store(store)  # before any migration reads (or writes) a record
+    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=store)
     # No restore: a fresh TaskHistory holds no cached trees, the task-event lane must be
     # copied before any tree loads, and without the task-index marker restore IS the
     # build's full replay, which the task_index_build migration runs (and times).
@@ -74,6 +79,18 @@ def _open_core() -> Any:
         arc=arc, task_history=TaskHistory(arc), transcript_file=resolve_transcript_file()
     )
     return SimpleNamespace(state=state)
+
+
+def _refuse_old_store(store: Any) -> None:
+    """Raise :class:`ArcStoreFormatOldError` for a store CLIO 0.9.5.1 or older wrote."""
+    from clio_agent.arc.store_format import inspect_store  # noqa: PLC0415
+    from clio_agent.gact.store_aside import locate  # noqa: PLC0415
+    from clio_agent.gact.store_format_boot import old_store_message  # noqa: PLC0415
+
+    verdict = inspect_store(store)
+    if verdict.verdict == "old":
+        summary, next_action = old_store_message(locate())
+        raise ArcStoreFormatOldError(f"{summary} {next_action}", verdict.as_dict())
 
 
 def _attach_app(core: Any) -> Any:
@@ -144,6 +161,12 @@ def run_migrations(emit: Callable[[str], None] = print) -> tuple[int, dict[str, 
             "reason": "store_unavailable",
             "error": repr(exc),
         }
+    except ArcStoreFormatOldError as exc:  # typed: nothing here can be migrated
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        _close_store(SimpleNamespace(state=SimpleNamespace()))  # release clio-core
+        emit(f"migrate status=refused reason={exc.error_type}: {exc.message}")
+        return EXIT_OLD_STORE, {"status": "refused", "reason": exc.error_type}
     emit(f"migrate step=open_store status=done seconds={time.monotonic() - started:.3f}")
     results: list[MigrationResult] = []
     try:
@@ -201,7 +224,7 @@ def main(arguments: Sequence[str] = ()) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print one JSON result object.")
     args = parser.parse_args(list(arguments))
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
 
     load_project_env_file()
     stream = sys.stderr if args.json else sys.stdout  # --json: progress on stderr

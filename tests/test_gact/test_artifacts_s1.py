@@ -395,13 +395,35 @@ def test_session_index_stamp_and_rehydrate_roundtrip(tmp_path):
     assert index["names_truncated"] is False
 
 
+def test_session_index_names_only_this_sessions_artifacts(tmp_path):
+    """#1199: a sibling session in the same workspace never lands in this badge."""
+    app, first, _arc = _make_app(tmp_path)
+    second = app.state.sessions.create(workspace_id="ws1", title="sibling")
+    for sess, name in ((first, "density.md"), (second, "plot.png")):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        mint_tool_declared_outputs(
+            app,
+            sess.id,
+            tool_name="t",
+            effective_args={"output_path": str(path)},
+            call_id=f"c-{name}",
+            workspace_id="ws1",
+        )
+
+    assert set(rehydrate_session_index(app, first.id)["names"]) == {"density.md"}
+    second_index = rehydrate_session_index(app, second.id)
+    assert set(second_index["names"]) == {"plot.png"}
+    assert second_index["count"] == 1
+
+
 def test_session_index_is_bounded():
     reg = ArtifactRegistry()
     for i in range(70):
-        reg.fold_payload(
-            _payload(event_id=f"e{i}", name=f"f{i:03d}.png", version=1, sha=f"{i:064x}")
-        )
-    index = build_session_index(reg, "ws1")
+        payload = _payload(event_id=f"e{i}", name=f"f{i:03d}.png", version=1, sha=f"{i:064x}")
+        payload["producer"] = {"session_id": "s1"}
+        reg.fold_payload(payload)
+    index = build_session_index(reg, "ws1", "s1")
     assert index["count"] == 70
     assert len(index["names"]) == 64  # _SESSION_INDEX_NAME_CAP
     assert index["names_truncated"] is True

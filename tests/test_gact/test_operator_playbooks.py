@@ -402,8 +402,9 @@ def test_playbook_narrows_web_fetch_live_through_make_permission_gate(tmp_path: 
 
 def test_playbook_never_strands_plan_exit_or_plan_file(tmp_path: Path) -> None:
     """The playbook narrowing composes with plan mode WITHOUT stranding it: plan_exit is exempt
-    (anti-lockout — a playbook can never lock the model in plan mode) and the sole plan-file write
-    carve-out (@70) still outranks the playbook deny, even though the active step allows neither."""
+    (anti-lockout — a playbook can never lock the model in plan mode), and the plan is written by
+    plan_update, a CLIO tool the gate does not narrow, even though the active step allows
+    neither. A file tool cannot write the plan in plan mode at all."""
     app, sess = _plan_session(tmp_path)
     step = PlaybookStep(name="triage", tools_allowed=("fs_read_file",))
     record_playbook(app, sess.id, Playbook(name="ir", steps=(step,)))
@@ -419,8 +420,12 @@ def test_playbook_never_strands_plan_exit_or_plan_file(tmp_path: Path) -> None:
         )
         == "allow"
     )
-    # the plan-file write still resolves allow — the @70 carve-out outranks the playbook deny
-    # so plan mode is never stranded (composition).
+    # The plan is still writable: plan_update writes it under the active playbook.
+    from clio_agent.gact.session_plan import update_plan
+
+    assert update_plan(app, sess.id, content="# Plan\n- triage: open")["plan_file"] == plan_file
+    assert "triage: open" in Path(plan_file).read_text(encoding="utf-8")
+    # A file tool is not the way in: the write is denied in plan mode.
     assert (
         _policy_action_for_tool(
             app,
@@ -430,7 +435,7 @@ def test_playbook_never_strands_plan_exit_or_plan_file(tmp_path: Path) -> None:
             args={"path": plan_file},
             mode="plan",
         )
-        == "allow"
+        == "deny"
     )
 
 

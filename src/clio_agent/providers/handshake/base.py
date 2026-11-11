@@ -184,7 +184,7 @@ class ProviderHandshake(abc.ABC):
         it is reported as ``ConnectivityState.TIMEOUT`` -- slow or unresponsive, which is
         not the same as a server that is not running.
         """
-        report = await self._handshake_once(ctx, scale=1.0)
+        report = await self._memoized_once(ctx, scale=1.0)
         if report.error_code != SERVER_NOT_ANSWERING:
             return report
         logger.warning(
@@ -193,7 +193,7 @@ class ProviderHandshake(abc.ABC):
             ctx.api_base,
             SLOW_RETRY_SCALE,
         )
-        retry = await self._handshake_once(ctx, scale=SLOW_RETRY_SCALE)
+        retry = await self._memoized_once(ctx, scale=SLOW_RETRY_SCALE)
         if retry.error_code != SERVER_NOT_ANSWERING:
             return retry
         error = (
@@ -207,6 +207,13 @@ class ProviderHandshake(abc.ABC):
             ctx.api_base,
         )
         return replace(retry, connectivity=ConnectivityState.TIMEOUT, error=error)
+
+    async def _memoized_once(self, ctx: HandshakeContext, *, scale: float) -> HandshakeReport:
+        """One pass whose rows share each catalog read (see :mod:`..handshake_memo`)."""
+        from clio_agent.providers.handshake_memo import handshake_pass  # noqa: PLC0415
+
+        with handshake_pass():
+            return await self._handshake_once(ctx, scale=scale)
 
     async def _handshake_once(self, ctx: HandshakeContext, *, scale: float) -> HandshakeReport:
         """One pass of the phase sequence with every HTTP bound multiplied by ``scale``."""

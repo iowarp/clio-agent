@@ -93,6 +93,13 @@ If the upstream speaks JSON-RPC, gRPC, a subprocess, a custom HTTP
 shape — anything LiteLLM doesn't natively handle — you write a
 `CustomLLM` and register it.
 
+> **Subscription SDK/CLI transports don't use this shape any more.**
+> Codex, Claude Code and GitHub Copilot are DSPy 3.4 engine pairs that
+> `create_lm()` builds directly, with no LiteLLM in the call path. A new
+> provider that drives a vendor SDK or CLI with the user's own plan
+> follows [Case 3](#case-3--a-subscription-sdk-or-cli-transport-engine-pair).
+> The `CustomLLM` walkthrough below is kept for plain non-HTTP wires.
+
 Worked example: **Codex** (`src/clio_agent/providers/codex_litellm.py`).
 
 ### 1. Implement the CustomLLM
@@ -232,11 +239,137 @@ Drop a `docs/providers/myprovider.md` similar to
 [`codex.md`](codex.md) — install / auth / troubleshooting. Link it
 from the root [`README.md`](../../README.md).
 
+## Case 3 — a subscription SDK or CLI transport (engine pair)
+
+Use this when the provider runs the vendor's own SDK or CLI with the
+user's plan (Claude Code, Codex, GitHub Copilot). The vendor runtime is
+a **model transport only**: CLIO's agent loop and MCP/tool gateway stay
+the only tool path. Worked example: **GitHub Copilot**
+(`src/clio_agent/providers/copilot/`, [copilot.md](copilot.md)).
+
+### 1. Catalog and dependency
+
+- Add the kind to `ProviderKind` in `providers/catalog_types.py` and a
+  `Provider(...)` row in `catalog.py` with `auth_method="subscription"`,
+  `requires_api_key=False`, `inner_loop_owner="clio"` and
+  `suggested_model=""` when the list is discovered live.
+- Add the kind to `CLIO_CUSTOM_LITELLM_PROVIDERS` in
+  `providers/custom_transports.py`, so capability lookups never ask
+  LiteLLM about it.
+- Put the SDK in an optional extra in `pyproject.toml` (refresh
+  `uv.lock`) and register it in `providers/dependencies.py`
+  (`PROVIDER_SUPPORT` and an `ensure_<kind>_support` that stages any
+  runtime at install time; a turn never downloads).
+  Install only through `_ensure_dependency` (and updates only through
+  `components/updater.py`): on a sealed desktop runtime they write to the
+  package overlay (`runtime/package_overlay.py`), never into the app
+  bundle. A child that runs the SDK's own module (such as Copilot's
+  `download-runtime`) must use `package_overlay.module_command` so it
+  sees the overlay.
+- If the SDK must move forward between CLIO releases, add it to
+  `providers/components/registry.py` **and**
+  `USER_UPDATABLE_COMPONENTS` in `scripts/check_bundle_matches_lock.py`
+  (a test fails when they drift), then `components/client_binary.py`,
+  `components/verify.py` (`_VERIFIERS`) and `support_restore.py`.
+
+### 2. Isolation options
+
+Build the SDK client and session kwargs in ONE module
+(`providers/copilot/options.py`) and switch off, explicitly, every
+vendor feature that can act on the machine or read ambient state:
+built-in/custom/MCP tools, skills, memory, hooks, instruction files,
+config discovery, git, session stores, autopilot and compaction. Never
+let the SDK read the machine's own vendor login. Pin every flag in a
+test (`tests/test_providers/test_copilot_options.py`).
+
+### 3. Engine pair and sessions
+
+- `providers/<kind>/engine.py`: an `Async<Kind>Engine` / `<Kind>Engine`
+  pair implementing `complete`/`stream` over `dspy.lm15.Request` and
+  returning a typed `Response`. Render tools and messages with
+  `lm/engines/text_tools.py`, and stream and assemble the reply with
+  the Claude Code engine's turn helpers (`_Turn`, `_assemble` in
+  `providers/claude_code_engine.py`), which split the text from the
+  fenced `tool_calls` block.
+- `providers/<kind>/sessions.py`: one pooled runtime per GACT session
+  with a reaper, release on session terminal status
+  (`providers/session_lifecycle.py`) and `on_client_dropped` signalling,
+  and one vendor session per conversation through
+  `providers/claude_code_conversation.py` (append-only deltas, typed
+  reset reasons on `provider.stateful`).
+- Errors: transport faults and stalls raise `dspy.lm15` types (DSPy
+  retries them); a refused sign-in, missing seat, disabled model or
+  exhausted plan raise typed CLIO errors with a stable `reason`
+  (`providers/copilot/errors.py`), never retried.
+
+### 4. Factory and effort
+
+- `lm/factory.py`: a `_<kind>_lm()` that builds
+  `dspy.LM(f"<kind>/{model}", engine=..., async_engine=...)`, and one
+  dispatch line in `create_lm()`.
+- Effort: a dialect in `providers/capabilities/dialects/<kind>.py`
+  built only from what the vendor reports, plus its entries in
+  `providers/capabilities/endpoint.py` and `lm/dialect_wire.py`.
+
+### 5. Sign-in, readiness and the bind gate
+
+- A sign-in adapter `gact/routes/provider_auth_<kind>.py` with
+  `start`/`status`/`complete`, registered in the kind maps of
+  `gact/routes/provider_auth.py`. The generic gact-tui sign-in panel
+  renders whatever `start` returns (`device` and/or `browser`), so no
+  new UI is needed. Copilot reuses CLIO's GitHub account: the adapter
+  hands sign-in to the storage GitHub device flow and registers a token
+  source at startup.
+- A readiness function in the `readiness_by_kind` map of
+  `gact/routes/providers.py`, and the subscription gate in
+  `gact/providers/bind_configuration.py` (`_apply_subscription_gate`)
+  so `PUT /v1/providers/lm` refuses a signed-out or unready provider
+  with a typed code.
+- The handshake (`providers/handshake/__init__.py`, `cli_catalog.py`),
+  `_CLI_CATALOG_KINDS` in `gact/provider_catalog.py`, the doctor probe
+  (`runtime/lm_provider_probe.py`) and the stream failure messages
+  (`gact/stream_failures.py`, `providers/terminal_signal_catalog.py`).
+
+### 6. Live model discovery
+
+`providers/model_discovery/<kind>.py` lists the account's models and
+returns a `ProviderDiscoveryResult` under its own source in
+`model_discovery/overlay.py`; wire it into `model_discovery/refresh.py`.
+Rows the account cannot use are `rejected` with a typed code, never
+silently dropped. A malformed overlay is reported, never treated as
+empty.
+
+### 7. Usage and quota
+
+Plug into `providers/usage/` (account id in `capture.py`, a reader in
+`readers.py`, a poller module) and add the plan-limit reason to
+`gact/fleet/exhaustion.py`. A missing or renamed quota field is an
+unreadable reading, never zero.
+
+### 8. gact-tui
+
+In `web/src/lib/provider-presentation.ts`, add the provider's label,
+summary, logo id (artwork rules in `web/public/provider-logos/README.md`)
+and, for a service-managed client, its vendor in
+`providerManagedClientVendor`. That enables the client-update panel and
+the update-before-refresh path. Bump `external/gact-tui`.
+
+### 9. Tests and docs
+
+- A fake SDK (`tests/_fake_copilot_sdk.py`) installed in `sys.modules`,
+  so no test needs the vendor package, a network or a sign-in.
+- Options, engine/session, auth/discovery, route/readiness and usage
+  tests (`tests/test_providers/test_copilot_*.py`,
+  `tests/test_gact/test_copilot_provider_routes.py`).
+- `docs/providers/<kind>.md` (setup, prerequisites outside CLIO,
+  troubleshooting) and a row in [README.md](README.md).
+
 ## Design rules
 
-- **All LM calls go through DSPy → LiteLLM.** No raw `requests.post`
-  side channels. If LiteLLM can't reach your upstream natively, write
-  a `CustomLLM` — don't bypass the abstraction.
+- **All LM calls go through DSPy.** No raw `requests.post` side
+  channels. HTTP providers go through LiteLLM (natively or via a
+  `CustomLLM`); subscription SDK/CLI transports are DSPy engine pairs
+  (Case 3). Don't bypass either abstraction.
 - **One source of truth.** The catalog is it. `PROVIDER_DEFAULTS`,
   `_LM_PRESETS`, and `_PROVIDER_MODELS` are derived views — never edit
   them directly.

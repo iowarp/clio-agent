@@ -273,6 +273,14 @@ def test_missing_and_version_mismatch(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.timeout(10)
+def test_missing_requirement_fails_instead_of_spinning(tmp_path: Path) -> None:
+    github = plugin(tmp_path, "github", ext={"requires": ["shell"]})
+    with pytest.raises(ResolutionError, match="plugin_not_installed") as raised:
+        resolve_agent(_catalog(tmp_path, github), _spec("github"), marketplace="test")
+    assert str(raised.value).count("'shell' is not installed") == 1
+
+
 def test_user_delta_add_then_remove(tmp_path: Path) -> None:
     pdf = plugin(tmp_path, "pdf")
     resolved = resolve_agent(
@@ -409,7 +417,7 @@ def test_a_fragment_scoped_to_root_or_delegated_sessions_reaches_only_those(
     session's prompt is built, so one resolution serves a root session and a delegated
     copy of it with different guidance; an unknown scope is a load error."""
 
-    from clio_agent.plugins.compose import prompt_text_without
+    from clio_agent.plugins.compose_final import final_prompt_text
 
     team = plugin(
         tmp_path,
@@ -433,8 +441,9 @@ def test_a_fragment_scoped_to_root_or_delegated_sessions_reaches_only_those(
         for row in section["fragments"]
     }
     assert scopes["team.person"] == "root" and scopes["team.child"] == "delegated"
-    root = prompt_text_without(resolution.prompt_text, resolution.prompt, set())
-    child = prompt_text_without(resolution.prompt_text, resolution.prompt, set(), delegated=True)
+    tools = resolution.tool_names
+    root = final_prompt_text(resolution.prompt_text, resolution.prompt, tools, delegated=False)
+    child = final_prompt_text(resolution.prompt_text, resolution.prompt, tools, delegated=True)
     assert "Draw views" in root and "Report to your delegator" not in root
     assert "Report to your delegator" in child and "Draw views" not in child
     assert "Cite sources." in root and "Cite sources." in child

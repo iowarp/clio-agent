@@ -47,7 +47,7 @@ async def accept_call(ctx: FlowContext, call: FlowCall) -> str:
                 "handle": handle,
                 "session_id": task.owner.session_id,
                 "status": "accepted",
-                **({"together": call.together} if call.together else {}),
+                **call.group(),
             },
         )
         return handle
@@ -68,7 +68,7 @@ async def accept_call(ctx: FlowContext, call: FlowCall) -> str:
                 "kind": call.kind,
                 "target": call.name,
                 "status": "dispatching",
-                **({"together": call.together} if call.together else {}),
+                **call.group(),
             },
         )
         if call.evidence:
@@ -89,6 +89,7 @@ async def accept_call(ctx: FlowContext, call: FlowCall) -> str:
             session_metadata=session_metadata,
             parent_handle=ctx.root_handle,
             model=call.model,
+            execution_deadline=call.execution_deadline,
         )
     except AdmissionClosed as exc:
         await ctx.journal.record_call(
@@ -138,7 +139,7 @@ async def accept_call(ctx: FlowContext, call: FlowCall) -> str:
                     "handle": handle,
                     "session_id": task.owner.session_id,
                     "status": "accepted",
-                    **({"together": call.together} if call.together else {}),
+                    **call.group(),
                 },
             )
             return handle
@@ -173,7 +174,7 @@ async def accept_call(ctx: FlowContext, call: FlowCall) -> str:
             "handle": handle,
             "session_id": accepted.get("session_id", ""),
             "status": "accepted",
-            **({"together": call.together} if call.together else {}),
+            **call.group(),
         },
     )
     return handle

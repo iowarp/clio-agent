@@ -15,6 +15,7 @@ from clio_agent.providers.model_discovery.claude_code import (
     discover_claude_code,
 )
 from clio_agent.providers.model_discovery.codex import discover_codex
+from clio_agent.providers.model_discovery.copilot import discover_copilot
 from clio_agent.providers.model_discovery.http import discover_http
 from clio_agent.providers.model_discovery.overlay import (
     OverlayMalformedError,
@@ -33,7 +34,7 @@ REFRESH_PER_PROVIDER_DEADLINE_S = 90.0
 
 
 async def refresh_subscription_catalogs_at_startup() -> None:
-    """Populate Codex and Claude catalogs once, off the server's boot path."""
+    """Populate the subscription catalogs (Codex, Claude Code, Copilot) once, off boot."""
 
     from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
     from clio_agent.providers.model_discovery.claude_code_catalog import (  # noqa: PLC0415
@@ -44,7 +45,7 @@ async def refresh_subscription_catalogs_at_startup() -> None:
     await asyncio.to_thread(refresh_online_catalogs)
     presets = [
         preset
-        for provider_id in ("codex", "claude_code")
+        for provider_id in ("codex", "claude_code", "copilot")
         if (preset := get_provider(provider_id)) is not None and is_provider_configured(preset)
     ]
     if not any(preset.provider_kind == "claude_code" for preset in presets):
@@ -107,6 +108,7 @@ def is_provider_configured(preset: Provider) -> bool:
     spend its (bounded) wall-clock on providers nobody has set up:
 
     * codex: a stored, signed-in Codex credential must exist.
+    * copilot: the Copilot SDK is installed and CLIO is signed in to GitHub.
     * claude_code: the Claude Agent SDK and its bundled CLI must be installed.
     * argonne: a stored Globus token must exist.
     * a host-credential provider (Vertex AI, Bedrock): its credential chain must
@@ -120,6 +122,14 @@ def is_provider_configured(preset: Provider) -> bool:
         from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
 
         return direct_signed_in()
+    if preset.provider_kind == "copilot":
+        import importlib.util  # noqa: PLC0415
+
+        if importlib.util.find_spec("copilot") is None:
+            return False
+        from clio_agent.providers.copilot.auth import signed_in  # noqa: PLC0415
+
+        return signed_in()
     if preset.provider_kind == "claude_code":
         import importlib.util  # noqa: PLC0415
 
@@ -190,6 +200,14 @@ async def refresh_all(
     async def _discover(preset: Provider) -> ProviderDiscoveryResult:
         if preset.provider_kind == "codex":
             return await asyncio.to_thread(discover_codex)
+        if preset.provider_kind == "copilot":
+            if explicit_presets:
+                from clio_agent.providers.dependencies import (  # noqa: PLC0415
+                    ensure_copilot_support,
+                )
+
+                await asyncio.to_thread(ensure_copilot_support)
+            return await asyncio.to_thread(discover_copilot)
         if preset.provider_kind == "claude_code":
             if explicit_presets:
                 from clio_agent.providers.dependencies import (  # noqa: PLC0415
@@ -286,7 +304,7 @@ def build_refresh_provider_models_tool() -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def refresh_provider_models() -> dict[str, Any]:
-        """Refresh the LM provider model catalogs against each account's REAL
+        """Refresh the LM provider model catalogs against each account's real
         current state (codex's live backend model list, claude_code's maintained
         catalog plus a CLI sign-in check, every configured HTTP backend's live
         models endpoint) and report what changed. Returns

@@ -43,6 +43,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from clio_agent.arc.clio_core_config import CORE_BIND_ADDR_ENV
 from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
     CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
@@ -69,7 +70,8 @@ _NATIVE_WAIT_ENV = "CLIO_WAIT_SERVER"
 # environment at ``clio_init``; the library defaults it to 0.0.0.0). CLIO's client
 # talks only to the daemon on this host, so it binds loopback unless the person set
 # the variable themselves (F001: an ephemeral 0.0.0.0 listener in the server process).
-_NATIVE_BIND_ENV = "BIND_ADDR"
+# clio-core reads only the ``CLIO_``-prefixed name; a bare ``BIND_ADDR`` is ignored.
+_NATIVE_BIND_ENV = CORE_BIND_ADDR_ENV
 _LOOPBACK_BIND = "127.0.0.1"
 
 
@@ -189,6 +191,28 @@ class ClioCoreAttachError(RuntimeError):
         )
 
 
+def seed_default_config() -> str:
+    """Seed and return the default config; a refused store location is published.
+
+    :func:`~clio_agent.arc.clio_core_config.default_cte_config_path` relocates a moved
+    data folder's store or refuses it (:mod:`clio_agent.arc.clio_core_relocate`) before
+    any daemon is spawned; the refusal becomes ``unavailable`` with its typed reason
+    (``cte_store_location_in_use`` / ``cte_store_location_mismatch``) on the
+    ``clio_core_attach`` row and an :class:`ArcStoreUnavailableError`.
+    """
+    from clio_agent.arc.clio_core_config import default_cte_config_path  # noqa: PLC0415
+    from clio_agent.arc.clio_core_relocate import CteStoreLocationError  # noqa: PLC0415
+    from clio_agent.arc.init_degradation import ArcStoreUnavailableError  # noqa: PLC0415
+
+    try:
+        return default_cte_config_path()
+    except CteStoreLocationError as refused:
+        config = str(refused.config_path)
+        failure = ArcStoreUnavailableError(error=refused, config_path=config)
+        mark_unavailable(failure.reason, str(refused), config, None)
+        raise failure from refused
+
+
 def build_tracked_store(
     cfg: str,
     *,
@@ -258,6 +282,10 @@ def export_client_config(config_path: str) -> None:
     spawned with that same variable, so exporting it here makes the daemon, the
     client, and the liveness probe read ONE file. One clio-core client per process,
     so a process-wide export is exact.
+
+    The loopback bind is NOT exported here: it is set only in the clio-core children's
+    environments and, for this process's native client, only while it initializes
+    (:func:`attach_native_client`), so agent tools and other children never inherit it.
     """
     if config_path:
         os.environ["CLIO_SERVER_CONF"] = config_path
@@ -290,8 +318,10 @@ def attach_native_client(
     making no progress (or at the ceiling) and ``clio_core_client_attach_failed`` when
     the native client gave up sooner.
 
-    LOOPBACK. The native client opens a listener of its own, bound to ``$BIND_ADDR``
-    (library default 0.0.0.0); it is exported as 127.0.0.1 first unless already set.
+    LOOPBACK. The native client opens a listener of its own during init, bound to
+    ``$CLIO_BIND_ADDR`` (library default 0.0.0.0). Unless it is already set, it is
+    127.0.0.1 for the init only and removed again afterwards, so it never stays in this
+    server's environment for its children to inherit.
 
     NEVER EXITS THE PROCESS. The native client ends the process (``exit(1)``) on some
     startup failures instead of returning (:mod:`clio_agent.arc.clio_core_native_preflight`).
@@ -308,7 +338,6 @@ def attach_native_client(
     mode = (getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient  # type: ignore[attr-defined]
     window = attach_window_s()
     preflight.remove_embedded_runtime_env(os.environ)
-    os.environ.setdefault(_NATIVE_BIND_ENV, _LOOPBACK_BIND)
     check = preflight.preflight_native_client(
         cte, config_path=config_path, no_progress_s=preflight.preflight_window_s(window)
     )
@@ -334,7 +363,14 @@ def attach_native_client(
         logger.error("%s reason=%s", error, reason)
         raise error
     os.environ[_NATIVE_WAIT_ENV] = f"{window:g}"  # one native client per process
-    failure = _handshake_while_daemon_progresses(client_init, mode, window)
+    pinned = not os.environ.get(_NATIVE_BIND_ENV)
+    if pinned:
+        os.environ[_NATIVE_BIND_ENV] = _LOOPBACK_BIND
+    try:
+        failure = _handshake_while_daemon_progresses(client_init, mode, window)
+    finally:
+        if pinned:
+            os.environ.pop(_NATIVE_BIND_ENV, None)
     if failure is None:
         return
     on_failure()

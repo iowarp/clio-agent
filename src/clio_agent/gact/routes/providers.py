@@ -37,13 +37,16 @@ on :class:`~clio_agent.gact.routes.deps.GactDeps`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.util
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact import shared_result
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.claude_code_auth_reprobe import (
     claude_code_overlay_verified,
@@ -53,6 +56,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.local_server_store import with_saved_address
 from clio_agent.gact.model_selection import surrogate_selection_error
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.providers import response_settings
 from clio_agent.gact.providers.bind_configuration import prepare_bind_configuration
 from clio_agent.gact.providers.config import (
@@ -71,9 +75,11 @@ from clio_agent.gact.providers.selection_store import (
     selection_status_fields,
 )
 from clio_agent.gact.routes.provider_auth import supports_logout
+from clio_agent.gact.routes.provider_auth_copilot import copilot_readiness
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
 from clio_agent.gact.server_boot import process_arc_off_loop
+from clio_agent.gact.shared_result import SharedResults
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -87,6 +93,49 @@ from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+#: A provider list this young is shared by every read; older, the next read collects
+#: anew (no stale answers: a sign-in finished elsewhere shows within this window).
+PROVIDERS_FRESH_S = 2.0
+PROVIDERS = "providers"
+
+
+def _provider_results(app: FastAPI) -> SharedResults[dict[str, Any]]:
+    return shared_result.for_app(
+        app, PROVIDERS, fresh_s=PROVIDERS_FRESH_S, stale_s=PROVIDERS_FRESH_S, max_entries=2
+    )
+
+
+class ProviderWriteInvalidation:
+    """Discards the shared ``GET /v1/providers`` list around every provider write.
+
+    Sign-in, keys, saved servers, model refreshes and binds all live under
+    ``/v1/providers``; a read made after any of them returns must see it. Raw ASGI,
+    so the reads it does not touch pay one comparison.
+    """
+
+    def __init__(self, app: Any, *, state: Any) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") in {"GET", "HEAD", "OPTIONS"}
+            or not str(scope.get("path") or "").startswith("/v1/providers")
+        ):
+            await self.app(scope, receive, send)
+            return
+        self._invalidate()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self._invalidate()
+
+    def _invalidate(self) -> None:
+        owner = (getattr(self.state, "shared_results", None) or {}).get(PROVIDERS)
+        if owner is not None:
+            owner.invalidate()
 
 
 def _lmstudio_flash_attention_enabled() -> bool:
@@ -126,6 +175,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.providers.catalog import as_lm_presets as _build_lm_presets
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
+    app.add_middleware(ProviderWriteInvalidation, state=app.state)
 
     # Per-provider model catalogs. Hand-curated rather than introspected
     # because most upstreams either don't expose a /models endpoint or
@@ -189,6 +239,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "",
         )
 
+    # Subscription kinds whose models come only from a verified account read.
+    readiness_by_kind: dict[str, Callable[..., tuple[str, str, bool, str]]] = {
+        "codex": _codex_readiness,
+        "claude_code": _claude_code_readiness,
+        "copilot": functools.partial(copilot_readiness, app),
+    }
+
     def _provider_auth_state(preset: "LMProviderPreset") -> tuple[list[str], bool]:
         """Return (auth_methods, is_authenticated) for a preset.
 
@@ -203,11 +260,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
           catalog check.
         - local (lm_studio/ollama): no auth required.
         """
-        if preset.provider == "codex":
-            _, _, verified, _ = _codex_readiness()
-            return ["subscription"], verified
-        if preset.provider == "claude_code":
-            _, _, verified, _ = _claude_code_readiness()
+        if preset.provider in readiness_by_kind:
+            _, _, verified, _ = readiness_by_kind[preset.provider]()
             return ["subscription"], verified
         if preset.provider == "argonne":
             authed = False
@@ -237,9 +291,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         (e.g. codex's ``gpt-5.6-sol``) instead of a snapshot that may already be
         rejected (#1184). CLI-provider candidates are never automatic defaults;
         only a fresh account discovery supplies one."""
-        if preset.provider in {"codex", "claude_code"}:
-            readiness = _codex_readiness if preset.provider == "codex" else _claude_code_readiness
-            _, _, verified, default_model = readiness()
+        if preset.provider in readiness_by_kind:
+            _, _, verified, default_model = readiness_by_kind[preset.provider]()
             return default_model if verified else ""
 
         from clio_agent.providers import model_discovery  # noqa: PLC0415
@@ -274,7 +327,15 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         and decide whether to surface a "Login" affordance.
         """
 
-        return {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]}
+        # Each row probes credentials, model overlays and saved addresses on disk;
+        # concurrent reads share one collection off the event loop
+        # (:data:`PROVIDERS_FRESH_S`), and every provider write discards it
+        # (:class:`ProviderWriteInvalidation`).
+        startup_check = getattr(app.state, "provider_catalog_startup_task", None)
+        return await _provider_results(app).get(
+            (startup_check is None or startup_check.done(),),
+            lambda: {"providers": [_provider_to_wire(p) for p in _LM_PRESETS]},
+        )
 
     # GET /v1/providers/{provider_id} is registered after the literal
     # /v1/providers/lm route so the LM configuration endpoint keeps
@@ -304,15 +365,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True
-        if preset.provider == "codex":
-            status, message, verified, default_model = _codex_readiness()
-            update["status"] = status
-            update["status_message"] = message
-            update["is_authenticated"] = verified
-            update["suggested_model"] = default_model
-            return preset.model_copy(update=update)
-        if preset.provider == "claude_code":
-            status, message, verified, default_model = _claude_code_readiness()
+        if preset.provider in readiness_by_kind:
+            status, message, verified, default_model = readiness_by_kind[preset.provider]()
             update["status"] = status
             update["status_message"] = message
             update["is_authenticated"] = verified
@@ -453,7 +507,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         await reprobe_for_provider_list(app)
-        return _lm_provider_info()
+        # The preset rows read provider credentials and overlays from disk.
+        return await run_off_loop(_lm_provider_info)
 
     async def _apply_lm_provider(req: LMProviderRequest) -> LMProviderInfo:
         """Reconfigure the LM in-place. Rebuilds DSPy + the
@@ -543,10 +598,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         try:
             from clio_agent.config import create_lm  # noqa: PLC0415
 
-            cfg, thinking_only = await prepare_bind_configuration(
-                app, req, _codex_readiness, _claude_code_readiness
+            cfg, reused_binding = await prepare_bind_configuration(
+                app, req, _codex_readiness, _claude_code_readiness, readiness_by_kind["copilot"]
             )
-            if not thinking_only:
+            if not reused_binding:
                 await asyncio.get_running_loop().run_in_executor(None, _apply_lm_studio_load_config)
             # Build the new LMs + adapter for the singleton main agent. The
             # process-global dspy default is deliberately NOT rewritten here
@@ -689,7 +744,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # PREVIOUS provider's capability evidence -- a sticky cache deciding what
         # bytes reach a model it never described. The next GET /v1/provider-catalog
         # repopulates it; until then the planner correctly finds no evidence.
-        if not thinking_only:
+        if not reused_binding:
             app.state.provider_catalog = None
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).

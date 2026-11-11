@@ -28,6 +28,8 @@ def test_installer_records_only_complete_provisioning(
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
     monkeypatch.setattr(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
@@ -57,6 +59,10 @@ def test_installer_records_only_complete_provisioning(
             "Office rendering is ready.",
             "Preparing and checking the GitHub command-line tool...",
             "GitHub command-line tool is ready.",
+            "Preparing and checking ripgrep for file search...",
+            "ripgrep is ready.",
+            "Preparing and checking Tectonic for LaTeX builds...",
+            "Tectonic is ready.",
             "Preparing and checking protected execution...",
         }
         assert stages[-1] == "All managed runtime packages are installed and verified."
@@ -102,6 +108,8 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
     monkeypatch.setattr(installer, "prepare_office_runtime", office)
     monkeypatch.setattr(installer, "ensure_github_cli", github)
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
     monkeypatch.setattr(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
@@ -149,6 +157,8 @@ def test_installer_failure_waits_for_other_work_without_publishing_success(
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
     monkeypatch.setattr(installer, "prepare_office_runtime", office)
     monkeypatch.setattr(installer, "ensure_github_cli", github)
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
     stages: list[str] = []
     with pytest.raises(RuntimeError, match=f"{failed_step} failed"):
         installer.install_document_runtime(
@@ -178,6 +188,8 @@ def test_installer_explicit_setup_is_forwarded_and_failed_setup_has_no_receipt(
     )
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
 
     def fence(**kwargs: Any) -> dict[str, str]:
         assert kwargs["allow_elevation"] is setup
@@ -235,6 +247,8 @@ def test_bootstrap_prepares_real_package_stage_without_fence_or_receipt(
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
 
     def unexpected(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Cache preparation must leave protection and receipt to the installer")
@@ -244,3 +258,67 @@ def test_bootstrap_prepares_real_package_stage_without_fence_or_receipt(
     prepared = installer.prepare_managed_packages(tmp_path / "workspace", cache_root=tmp_path)
     assert prepared["capabilities"]["office_render_recalculate"] == "available"
     assert "protected_execution" not in prepared["native_tools"]
+
+
+def test_store_upgrade_runs_while_packages_are_prepared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``migrate`` overlaps the package step; the summary waits for both.
+
+    clio-core is entered from the main thread: a worker thread's native handles outlive
+    it and nanobind reports them leaked at exit.
+    """
+    import sys
+    import threading
+
+    both_running = Barrier(2, timeout=10)
+
+    def install(workspace: Path, **kwargs: Any) -> dict[str, Any]:
+        both_running.wait()
+        return {"status": "ready", "runtime_id": "locked", "native_tools": {"soffice": {}}}
+
+    def migrate(args: Any, emit: Any) -> dict[str, Any]:
+        assert threading.current_thread() is threading.main_thread()
+        both_running.wait()
+        emit("migrate status=done ran=0 seconds=0.000")
+        return {"status": "done", "seconds": 0.0}
+
+    monkeypatch.setattr(installer, "install_document_runtime", install)
+    monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
+    monkeypatch.setattr(
+        installer, "collect_snapshots_after_install", lambda: {"status": "collected"}
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
+    )
+    installer._main()
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["status"] == "ready"
+    assert summary["store_migrations"] == {"status": "done", "seconds": 0.0}
+
+
+def test_failed_package_step_waits_for_store_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed install never exits while ``migrate`` still holds clio-core."""
+    import sys
+
+    released = Event()
+
+    def install(workspace: Path, **kwargs: Any) -> dict[str, Any]:
+        raise installer.DocumentRuntimeError("Office download failed")
+
+    def migrate(args: Any, emit: Any) -> dict[str, Any]:
+        released.wait(0.2)
+        released.set()
+        return {"status": "done"}
+
+    monkeypatch.setattr(installer, "install_document_runtime", install)
+    monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(
+        sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
+    )
+    with pytest.raises(installer.DocumentRuntimeError, match="Office"):
+        installer._main()
+    assert released.is_set()

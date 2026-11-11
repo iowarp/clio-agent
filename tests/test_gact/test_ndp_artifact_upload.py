@@ -38,6 +38,7 @@ from clio_agent.gact.storage.store import SourceStore
 from tests._marketplace import MARKETPLACE_ROOT
 
 REAL_CONNECTED_DATA = MARKETPLACE_ROOT / "plugins" / "connected-data"
+REAL_NDP = MARKETPLACE_ROOT / "plugins" / "ndp"
 
 
 def _parameter(name: str, location: str, kind: str = "string") -> dict[str, Any]:
@@ -305,7 +306,7 @@ def test_three_artifacts_form_one_dataset_with_verified_bytes(
     catalog = SkillCatalog(
         home=tmp_path / "skill-home",
         cwd=tmp_path,
-        plugin_skills=[("connected-data", str(REAL_CONNECTED_DATA / "skills"))],
+        plugin_skills=[("ndp", str(REAL_NDP / "skills"))],
     )
     skill = catalog.resolve("work-with-ndp").skill
     assert skill is not None
@@ -568,7 +569,7 @@ class NdpAuthor(Agent):
     id = "ndp-author"
     version = "1.0.0"
     role = "an agent that publishes artifacts to the National Data Platform"
-    plugins = Agent.plugins + ["connected-data"]
+    plugins = Agent.plugins + ["ndp"]
 """
 
 
@@ -588,11 +589,12 @@ def test_ndp_authoring_reference_is_loadable_as_a_skill_resource(
     from tests._plugin_fixtures import custom_marketplace
 
     marketplace = custom_marketplace(tmp_path, monkeypatch, agents={"ndp_author.py": _NDP_AGENT})
-    shutil.copytree(
-        REAL_CONNECTED_DATA,
-        marketplace / "plugins" / "connected-data",
-        ignore=shutil.ignore_patterns("__pycache__", "tests"),
-    )
+    for name, real in (("connected-data", REAL_CONNECTED_DATA), ("ndp", REAL_NDP)):
+        shutil.copytree(
+            real,
+            marketplace / "plugins" / name,
+            ignore=shutil.ignore_patterns("__pycache__", "tests"),
+        )
     plugin_resolution = PluginService().resolve("clio/ndp-author", pin=False)
     assert "connected_data_ndp_upload_artifact" in plugin_resolution.tool_names
     agent = resolution_agent_def(plugin_resolution)

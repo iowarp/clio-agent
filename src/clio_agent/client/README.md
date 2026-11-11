@@ -1,7 +1,7 @@
 # clio_agent.client
 
 Typed Python client for the GACT v1 API — talk to a running clio
-backend (default `http://127.0.0.1:8100`) from code. Pure client: it
+backend (default `http://127.0.0.1:17800`, the `gact.port` setting) from code. Pure client: it
 never imports the gact server. Wire shapes follow the reconciled
 contract (`gact-tui/contract/SPEC.md`).
 
@@ -10,7 +10,7 @@ contract (`gact-tui/contract/SPEC.md`).
 ```python
 from clio_agent.client import ClioClient, MessageCompleted, MessagePartDelta
 
-with ClioClient("http://127.0.0.1:8100") as client:
+with ClioClient("http://127.0.0.1:17800") as client:
     # Capability truth: probe before using optional surfaces.
     caps = client.capabilities()
     assert caps.supports("sessions")

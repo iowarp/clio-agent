@@ -178,7 +178,7 @@ def cycle(call: Any, root: Path, wid: str, agents: list[str], number: int) -> An
         f"Call query_tasks(kind='Session',{SCOPE}) and identify its running handle {run}. "
         f"Call observe_tasks(tasks={[run, shell]!r},notify=true,{SCOPE}). "
         f"Call wait_tasks(tasks={[run, shell]!r},return_when='any',timeout_s=0.1,{SCOPE}); "
-        "expiry must only end your wait. Read fs_read_file(filepath="
+        "expiry must only end your wait. Read fs_read_file(path="
         f"{str(root / 'workspace/sentinel.txt')!r}) while both are running. Then finish. "
         "On automatic completion/mail wake, report new outcomes once and finish without ACKs.",
         ["query_tasks", "observe_tasks", "wait_tasks", "fs_read_file"],

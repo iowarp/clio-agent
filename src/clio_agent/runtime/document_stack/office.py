@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import io
 import logging
+import os
 import platform
 import shutil
 import ssl
@@ -16,6 +17,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -24,10 +26,26 @@ from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
     from . import office_compat
-    from .process import DocumentError, _cleanup_profile, inherit_parent_access, run
+    from .process import (
+        DocumentError,
+        _cleanup_profile,
+        inherit_parent_access,
+        new_office_profile,
+        office_profile_key,
+        office_profile_template,
+        run,
+    )
 else:
     import office_compat
-    from process import DocumentError, _cleanup_profile, inherit_parent_access, run
+    from process import (
+        DocumentError,
+        _cleanup_profile,
+        inherit_parent_access,
+        new_office_profile,
+        office_profile_key,
+        office_profile_template,
+        run,
+    )
 
 VERSION = "26.2.6"
 # Published by The Document Foundation at each download URL's .sha256 endpoint.
@@ -64,6 +82,11 @@ ASSETS = {
     ),
 }
 MAX_DOWNLOAD = 600 * 1024 * 1024
+# Bundled extensions a headless converter never loads: the Calc NLP solver and the
+# MediaWiki publisher (about 3,000 files together).
+UNREAD_EXTENSIONS = frozenset({"nlpsolver", "wiki-publisher"})
+# A laid-out image's first-start profile, kept beside the image (build_profile_starter).
+PROFILE_STARTER = "office-profile.zip"
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +107,54 @@ def asset() -> tuple[str, str, str]:
     name = f"LibreOffice_{VERSION}_{suffix}"
     url = f"https://download.documentfoundation.org/libreoffice/stable/{VERSION}/{directory}/{name}"
     return url, name, checksum
+
+
+INSTALLER_DOWNLOADS = "CLIO_INSTALL_DOWNLOADS"
+#: Advertised in the release's install plan (``scripts/release_install_plan.py``): this
+#: app waits for a download still in progress, so the installer may prepare before
+#: its own downloads finish.
+INSTALLER_PLAN_CAPABILITY = "waits-for-partial-downloads"
+#: A partial download that stops growing for this long is abandoned; the app fetches it.
+_INSTALLER_STALL_S = 60.0
+
+
+def _await_installer_file(candidate: Path) -> None:
+    """Wait while the installer still writes ``NAME.part``, renamed to ``NAME`` when verified."""
+    partial = candidate.with_name(candidate.name + ".part")
+    size, changed = -1, time.monotonic()
+    while not candidate.exists():
+        try:
+            current = partial.stat().st_size
+        except OSError:
+            return
+        if current != size:
+            size, changed = current, time.monotonic()
+        elif time.monotonic() - changed > _INSTALLER_STALL_S:
+            logger.warning("installer download %s stalled; fetching it here", candidate.name)
+            return
+        time.sleep(0.25)
+
+
+def installer_download(name: str, checksum: str) -> Path | None:
+    """The installer's concurrent download of this exact file, when it has one.
+
+    ``install.sh --desktop`` fetches LibreOffice while the app downloads and names the
+    folder in ``CLIO_INSTALL_DOWNLOADS``; only a file whose bytes match the pin counts.
+    A download still in progress is waited for rather than fetched a second time.
+    """
+    folder = os.environ.get(INSTALLER_DOWNLOADS, "")
+    if not folder or Path(name).name != name:
+        return None
+    candidate = Path(folder) / name
+    _await_installer_file(candidate)
+    try:
+        if not candidate.is_file() or candidate.is_symlink():
+            return None
+        with candidate.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError:
+        return None
+    return candidate if digest == checksum else None
 
 
 def executable(root: Path) -> Path | None:
@@ -207,6 +278,20 @@ def _extract_linux(archive: Path, root: Path) -> None:
                 contents.extractall(root, members=members, filter="data")
 
 
+def _copy_app_bundle(source: Path, target: Path) -> None:
+    """Copy a signed macOS app out of its image with its signature metadata intact.
+
+    ``shutil.copytree`` cannot copy extended attributes on macOS (``os.listxattr``
+    is Linux-only), which drops the ``com.apple.cs.*`` signatures of non-Mach-O
+    files. ``ditto`` keeps xattrs, ACLs and symlinks, and is part of base macOS.
+    """
+    ditto = Path("/usr/bin/ditto")
+    if ditto.is_file():
+        run([str(ditto), str(source), str(target)], cwd=target.parent, timeout=300)
+    else:
+        shutil.copytree(source, target, symlinks=True)
+
+
 def _extract(archive: Path, root: Path) -> None:
     if platform.system() == "Windows":
         from importlib import import_module
@@ -223,6 +308,8 @@ def _extract(archive: Path, root: Path) -> None:
                     str(archive),
                     "-readonly",
                     "-nobrowse",
+                    # The image's SHA-256 is already pinned and checked; skip a second full read.
+                    "-noverify",
                     "-mountpoint",
                     str(mount),
                 ],
@@ -230,48 +317,229 @@ def _extract(archive: Path, root: Path) -> None:
                 timeout=120,
             )
             try:
-                shutil.copytree(mount / "LibreOffice.app", root / "LibreOffice.app", symlinks=True)
+                _copy_app_bundle(mount / "LibreOffice.app", root / "LibreOffice.app")
             finally:
                 run(["/usr/bin/hdiutil", "detach", str(mount)], cwd=root, timeout=30)
     else:
         _extract_linux(archive, root)
 
 
-def _verify_office(executable_path: Path, *, cwd: Path) -> None:
-    """Probe without joining another Office instance or touching the user's profile."""
+def _remove_tree(path: Path) -> int:
+    files = sum(len(names) for _, _, names in os.walk(path))
+    shutil.rmtree(path)
+    return files
+
+
+def prune_unread(image: Path) -> int:
+    """Remove the parts of an extracted LibreOffice that headless conversion never reads.
+
+    Every installed file costs a write and, on Windows, an antivirus scan (gact-tui#739).
+    The same list applies to all platforms' layouts: the offline help, the
+    ``UNREAD_EXTENSIONS`` and the non-English UI translations (``resource/<lang>``).
+    The application, filters, fonts, dictionaries and English (``en*``) stay, so
+    conversions are unchanged. Returns the number of files removed.
+
+    macOS is skipped: LibreOffice.app is TDF's notarized bundle, and removing any
+    sealed resource fails ``codesign --verify`` and Gatekeeper.
+    """
+    if platform.system() == "Darwin":
+        return 0
+    removed = 0
+    for directory, names, _ in os.walk(image):
+        path = Path(directory)
+        if path.name == "extensions":
+            for name in sorted(UNREAD_EXTENSIONS.intersection(names)):
+                removed += _remove_tree(path / name)
+        elif path.name == "resource":
+            for name in sorted(names):
+                if not name.lower().startswith("en") and (path / name / "LC_MESSAGES").is_dir():
+                    removed += _remove_tree(path / name)
+        elif "program" in names and "help" in names:
+            removed += _remove_tree(path / "help")
+        # Translations and extensions are near the top of every layout; skip the rest.
+        names[:] = [
+            name
+            for name in names
+            if (path / name).exists() and len((path / name).relative_to(image).parts) < 6
+        ]
+    return removed
+
+
+def _seed_document(path: Path) -> None:
+    """Write the smallest Word document, so seeding loads the OOXML import and PDF export."""
+    package = "http://schemas.openxmlformats.org/package/2006"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            f'<Types xmlns="{package}/content-types">'
+            '<Default Extension="rels" '
+            'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/'
+            'vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        )
+        archive.writestr(
+            "_rels/.rels",
+            f'<Relationships xmlns="{package}/relationships"><Relationship Id="r1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+            'officeDocument" Target="word/document.xml"/></Relationships>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>CLIO</w:t></w:r></w:p></w:body></w:document>",
+        )
+
+
+def _publish_profile(work: Path, template: Path) -> None:
+    """Keep a verified first-start profile under its Office build's key."""
+    pdf = work / "seed.pdf"
+    settings = work / "profile" / "user" / "registrymodifications.xcu"
+    if not pdf.is_file() or not pdf.stat().st_size:
+        raise DocumentError("LibreOffice returned without converting the seed document")
+    if "MacroSecurityLevel" not in settings.read_text(encoding="utf-8", errors="replace"):
+        raise DocumentError("LibreOffice dropped the private profile's macro security setting")
+    shutil.rmtree(template, ignore_errors=True)
+    template.mkdir(parents=True)
+    for attempt in range(20):
+        try:
+            (work / "profile").rename(template / "profile")
+            return
+        except OSError as error:
+            if getattr(error, "winerror", None) not in {5, 32} or attempt == 19:
+                raise DocumentError(f"Could not keep the seeded Office profile: {error}") from error
+            time.sleep(0.1)
+
+
+def _start_profile(profile: Path, starter: Path | None) -> None:
+    """Begin from the profile laid out with this Office image, else from an empty one."""
+    if starter is not None:
+        try:
+            with zipfile.ZipFile(starter) as archive:
+                archive.extractall(profile)
+            return
+        except (OSError, zipfile.BadZipFile) as error:
+            logger.warning("reason=office_profile_starter_unusable: %s", error)
+            shutil.rmtree(profile, ignore_errors=True)
+    new_office_profile(profile)
+
+
+def build_profile_starter(executable_path: Path, archive: Path) -> int:
+    """Archive a first-start profile for an Office image laid out at release time.
+
+    Building the profile's extension registry takes a fresh LibreOffice several
+    seconds; prepare starts its verifying conversion from this archive instead.
+    The profile holds no paths or device caches, so it relocates with the image.
+    """
+    with tempfile.TemporaryDirectory(prefix="lo-starter-") as temporary:
+        templates = Path(temporary)
+        _verify_office(executable_path, cwd=executable_path.parent, profile_templates=templates)
+        profile = office_profile_template(executable_path, templates)
+        if profile is None:
+            raise DocumentError("LibreOffice did not leave a seeded profile")
+        partial = archive.with_name(archive.name + ".part")
+        members = sorted(path for path in (profile / "user").rglob("*") if path.is_file())
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for path in members:
+                bundle.write(path, path.relative_to(profile).as_posix())
+        partial.replace(archive)
+        return len(members)
+
+
+def _verify_office(
+    executable_path: Path,
+    *,
+    cwd: Path,
+    profile_templates: Path | None = None,
+    profile_starter: Path | None = None,
+) -> None:
+    """Probe without joining another Office instance or touching the user's profile.
+
+    With ``profile_templates`` the probe is one real conversion instead of
+    ``--version``, done once per Office build. That pays the cold first load of
+    the conversion libraries during preparation and keeps its first-start profile,
+    which every later conversion copies instead of rebuilding. A build that already
+    has its seeded profile has converted successfully and is not probed again.
+    ``profile_starter`` is the profile archive laid out with this Office image.
+    """
     # A real Windows first launch can exhaust the native probe deadline while
     # the same binary verifies promptly after its timed-out process tree retires.
-    # Recover once with a new profile; keep the deadline and fail closed when
-    # neither attempt verifies. Other failures and platforms are not retried.
-    attempts = 2 if platform.system() == "Windows" else 1
-    for attempt in range(attempts):
-        temporary = tempfile.TemporaryDirectory(prefix="lo-version-")
-        try:
-            profile = Path(temporary.name).resolve() / "profile"
-            run(
-                [
-                    str(executable_path),
-                    f"-env:UserInstallation={profile.as_uri()}",
-                    "--headless",
-                    "--nologo",
-                    "--norestore",
-                    "--version",
-                ],
-                cwd=cwd,
-                timeout=30,
-            )
+    # A macOS first launch is likewise delayed by the one-time Gatekeeper/XProtect
+    # assessment of the freshly copied app. Recover once with a new profile; keep
+    # the deadline and fail closed when neither attempt verifies. Other failures
+    # and Linux are not retried.
+    if profile_templates is not None:
+        profile_templates.mkdir(parents=True, exist_ok=True)
+        key = office_profile_key(executable_path)
+        lock = FileLock(str(profile_templates / f"{key}.lock"), timeout=600)
+        lock.acquire()
+    try:
+        if (
+            profile_templates is not None
+            and office_profile_template(executable_path, profile_templates) is not None
+        ):
+            # This exact build already converted a document when it was seeded.
             return
-        except DocumentError as error:
-            if attempt + 1 == attempts or not isinstance(
-                error.__cause__, subprocess.TimeoutExpired
-            ):
-                raise
-            logger.warning(
-                "reason=office_probe_timeout_retry: %s; retrying once with a fresh private profile",
-                error,
+        seed = profile_templates is not None
+        attempts = 2 if platform.system() in {"Windows", "Darwin"} else 1
+        for attempt in range(attempts):
+            temporary = tempfile.TemporaryDirectory(
+                prefix="lo-seed-" if seed else "lo-version-",
+                dir=profile_templates if seed else None,
             )
-        finally:
-            _cleanup_profile(temporary)
+            try:
+                work = Path(temporary.name).resolve()
+                profile = work / "profile"
+                if seed:
+                    # The kept profile must stay readable to confined document workers.
+                    inherit_parent_access(work)
+                    _start_profile(profile, profile_starter)
+                    _seed_document(work / "seed.docx")
+                    arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
+                    arguments += ["--outdir", str(work), str(work / "seed.docx")]
+                else:
+                    arguments = ["--norestore", "--version"]
+                run(
+                    [
+                        str(executable_path),
+                        f"-env:UserInstallation={profile.as_uri()}",
+                        "--headless",
+                        "--nologo",
+                        *arguments,
+                    ],
+                    cwd=cwd,
+                    timeout=120 if seed else 30,
+                )
+                if seed:
+                    _publish_profile(work, profile_templates / key)
+                return
+            except DocumentError as error:
+                if attempt + 1 == attempts or not isinstance(
+                    error.__cause__, subprocess.TimeoutExpired
+                ):
+                    raise
+                logger.warning(
+                    "reason=office_probe_timeout_retry: %s; "
+                    "retrying once with a fresh private profile",
+                    error,
+                )
+            finally:
+                _cleanup_profile(temporary)
+    finally:
+        if profile_templates is not None:
+            lock.release()
+
+
+def seed_profile(executable_path: Path, profile_templates: Path) -> None:
+    """Seed a native LibreOffice's first-start profile; conversions still work without it."""
+    try:
+        if office_profile_template(executable_path, profile_templates) is None:
+            _verify_office(
+                executable_path,
+                cwd=executable_path.parent,
+                profile_templates=profile_templates,
+            )
+    except (DocumentError, OSError) as error:
+        logger.warning("reason=office_profile_seed_failed: %s", error)
 
 
 def _publish_image(image: Path, root: Path) -> None:
@@ -292,7 +560,12 @@ def _publish_image(image: Path, root: Path) -> None:
             time.sleep(0.1)
 
 
-def ensure_office(root: Path) -> str:
+def ensure_office(
+    root: Path,
+    *,
+    profile_templates: Path | None = None,
+    profile_starter: Path | None = None,
+) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
     The tree includes LibreOffice's license/notices. On Linux, Office runs on its
@@ -311,7 +584,12 @@ def ensure_office(root: Path) -> str:
                         "Private LibreOffice launcher disappeared during preparation"
                     )
             inherit_parent_access(root)
-            _verify_office(existing, cwd=root)
+            _verify_office(
+                existing,
+                cwd=root,
+                profile_templates=profile_templates,
+                profile_starter=profile_starter,
+            )
             return str(existing)
         url, name, checksum = asset()
         downloads = root.parent / "downloads"
@@ -321,24 +599,30 @@ def ensure_office(root: Path) -> str:
         if archive.is_file():
             with archive.open("rb") as stream:
                 cached = hashlib.file_digest(stream, "sha256").hexdigest() == checksum
+        source = archive
         if not cached:
-            partial = archive.with_suffix(archive.suffix + ".part")
-            _download(url, partial, checksum)
-            partial.replace(archive)
+            prefetched = installer_download(name, checksum)
+            if prefetched is not None:
+                source = prefetched
+            else:
+                partial = archive.with_suffix(archive.suffix + ".part")
+                _download(url, partial, checksum)
+                partial.replace(archive)
         with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
             staging = Path(temporary)
             inherit_parent_access(staging)
             image = staging / "image"
             image.mkdir()
             try:
-                _extract(archive, image)
+                _extract(source, image)
+                prune_unread(image)
                 if office_compat.supported():
                     office_compat.prepare(image, download=_download, deb_data=_deb_data)
                 inherit_parent_access(image)
                 candidate = executable(image)
                 if candidate is None:
                     raise DocumentError("LibreOffice image contains no supported executable")
-                _verify_office(candidate, cwd=image)
+                _verify_office(candidate, cwd=image, profile_templates=profile_templates)
                 _publish_image(image, root)
             except (OSError, ValueError, tarfile.TarError) as exc:
                 raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc

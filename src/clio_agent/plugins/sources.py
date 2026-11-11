@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from clio_agent.runtime.git_executable import GitUnavailableError, run_git
 
 
 class SourceError(RuntimeError):
@@ -91,15 +94,20 @@ def _check_declared(url: str) -> None:
 
 def _git(args: list[str], cwd: Path | None = None, timeout: int = 600) -> str:
     verb = " ".join(a for a in args if not a.startswith(("-", "protocol.")))[:40]
+    if os.name == "nt":
+        # A marketplace's deepest files can pass MAX_PATH below a long store root.
+        args = ["-c", "core.longpaths=true", *args]
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed git argv
-            ["git", *args],
+        completed = run_git(
+            args,
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
+    except GitUnavailableError as exc:
+        raise SourceError(f"git {verb} failed: {exc}") from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SourceError(f"git {verb} failed: {exc}") from exc
     if completed.returncode != 0:
@@ -157,7 +165,10 @@ def fetch(
         return FetchedSource(path=target, url=url, commit=commit, local=False)
     staging = cache / f".{key}.partial"
     shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True)
+    try:
+        staging.mkdir(parents=True)
+    except OSError as exc:
+        raise SourceError(f"cannot create the fetch folder {staging}: {exc}") from exc
     _git(["init", "-q"], cwd=staging, timeout=60)
     _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
     wanted = commit or ref or "HEAD"

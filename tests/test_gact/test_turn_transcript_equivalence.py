@@ -29,7 +29,7 @@ from tests._harness import emit_live_text, install_scripted_module
 # #948 S4b: default sessions run their pinned plugin agent; route it to each
 # scenario's ``build_app(agent=...)`` host fake (the streamed scenarios install
 # their own scripted module, which streams through the LM token hooks).
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "turn_transcript_pr1"
 _GOLDEN_REGEN = os.environ.get("CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN") == "1"

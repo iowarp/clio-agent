@@ -75,15 +75,28 @@ how a viewer follows the selection.
   caption="The agent's case browser for a 48-case sweep, asked for in plain words. The heatmap and the table select a case, and the 3D view shows its design; here case 12."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
+## Live sources
+
+Most dashboards show data fixed when they were built. A dashboard can also read a
+**live source** and update by itself while it is open:
+
+- a **stream**, written by a background script that watches a job, an instrument or a
+  device;
+- a file followed at its newest version, so the view moves to each new version.
+
+Ask for it in plain words, such as "keep an eye on the run and show me how it's
+doing". A view bound to a stream that has stopped says so and shows its last rows. See
+[Watch something live](/docs/live-sources/).
+
 ## Find the export buttons
 
-The **down-arrow download icon** is at the upper right of the dashboard viewer,
-on the same bar as **Preview**, **Versions**, and **Lineage**. Click it to choose
-the format. This is different from downloading the original dashboard definition.
+The dashboard viewer's toolbar has one **Download** button, which saves the
+original dashboard definition. Open the menu beside **Open in a browser tab** to
+find **Export to…** for the other formats.
 
 <Capture client:visible image={await captureImage(exportMenu)}
-  alt="Dashboard viewer download menu showing PNG image, HTML dashboard, and Original file"
-  caption="Click the down-arrow icon in the viewer toolbar. Choose PNG image (displayed view) or HTML dashboard (all tabs and data). Original file saves the editable dashboard definition."
+  alt="Dashboard viewer open menu showing Export to PNG image and Export to HTML dashboard"
+  caption="Choose Export to PNG image (displayed view) or Export to HTML dashboard (all tabs and data). The Download button beside it saves the editable dashboard definition."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 | Choose | What you receive | Use it for |
@@ -125,7 +138,8 @@ refused with a message naming its size; raise the limit in
 [Configuration](/docs/configuration/) if you need a larger file.
 
 The saved report cannot call a live agent. External services and uncaptured media
-do not become available merely because you export it. If the recipient also
+do not become available merely because you export it. A chart bound to a live source
+keeps the rows its source had saved when you exported it, and does not update. If the recipient also
 needs your questions, the recorded work, and supporting files,
 [export the session](/docs/exports/) instead.
 

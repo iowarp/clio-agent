@@ -74,7 +74,7 @@ tables. Source columns wider than the displayed viewport still require
 horizontal scrolling in the interactive report; PNG preserves the displayed
 columns. It is not a spreadsheet export.
 
-![Actual composed dashboard PNG](../../site/src/assets/captures/bike-station-report.png)
+The actual composed dashboard PNG from this check was later removed from the site in `5e3442d9`. It remains in history at [`site/src/assets/captures/bike-station-report.png` (5af0d46d)](https://github.com/iowarp/clio-agent/blob/5af0d46d/site/src/assets/captures/bike-station-report.png).
 
 A real downloaded HTML report was reopened in a fresh Chromium process with
 networking disabled. It retained five station markers and all five 13-column

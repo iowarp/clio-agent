@@ -19,10 +19,10 @@ from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
+from clio_agent.gact.call_effects import pop_previous_content, record_call_effects
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
-from clio_agent.gact.file_changes import pop_previous_content, record_file_change
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -50,13 +50,19 @@ from clio_agent.gact.tool_call_merge import (
     _tool_calls_from_handoff_rows as _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.tool_completion_delivery import terminal_tool_delivery
-from clio_agent.gact.tool_observer_parts import completed_tool_metadata, completed_tool_text
+from clio_agent.gact.tool_observer_parts import (
+    completed_tool_metadata,
+    completed_tool_outcome,
+    completed_tool_text,
+)
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
+from clio_agent.runtime.lm_activity import in_live_chunk_order
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.mcp_results import content_blocks_for_wire
 from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.tool_observation import REFUSED_CALL, claim_call_identity
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -70,6 +76,7 @@ _OBSERVER_CALL_IDS: ContextVar[str | None] = ContextVar("observer_call_id", defa
 _OBSERVER_CALL_T0: ContextVar[float | None] = ContextVar("observer_call_started", default=None)
 
 
+from clio_agent.gact.tool_call_nesting import live_call_metadata, nested_call_fields
 from clio_agent.gact.tool_event_identity import (
     _tool_call_event_key as _tool_call_event_key,
 )
@@ -277,12 +284,16 @@ def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     if transcript is not None:
         # #767 PR1: append through the single-writer ledger — it closes its own
         # open text, mints ids, and publishes message.part.added itself.
-        # Each phase owns one row; the terminal return remains a later event.
-        if part.type == "expert_handoff":
-            transcript.upsert_delegation_part(part)
-        else:
-            transcript.append_part(part)
-        _mirror_transcript_state(app, sid, transcript)
+        # Each phase owns one row; the terminal return remains a later event. The row
+        # lands behind the step's streamed text still queued, never inside it.
+        def append() -> None:
+            if part.type == "expert_handoff":
+                transcript.upsert_delegation_part(part)
+            else:
+                transcript.append_part(part)
+            _mirror_transcript_state(app, sid, transcript)
+
+        in_live_chunk_order(append)
         return
     msg_id = _ensure_live_assistant_message(app, sid)
     live_parts = getattr(app.state, "live_assistant_parts", None)
@@ -339,9 +350,13 @@ def _append_live_assistant_part_once(
         # never closes streamed text — the boundary close runs only when the key is fresh.
         if transcript.has_part_key(key):
             return False
-        appended = transcript.append_part_once(key, part)
-        _mirror_transcript_state(app, sid, transcript)
-        return appended is not None
+
+        def append() -> bool:
+            appended = transcript.append_part_once(key, part)
+            _mirror_transcript_state(app, sid, transcript)
+            return appended is not None
+
+        return in_live_chunk_order(append)
 
     live_keys = getattr(app.state, "live_assistant_part_keys", None)
     if live_keys is None:
@@ -528,7 +543,9 @@ def _make_tool_observer(app: "FastAPI"):
         # server/group; fall back to the owner outside a react scope (#732).
         invoking_expert = _ctx.active_react_scope() or tool_owner
         if phase == "started":
-            call_id = f"call_{uuid.uuid4().hex[:12]}"
+            # The identity a pending permission request already named, so the
+            # waiting call and its running/finished row are one entity.
+            call_id = claim_call_identity() or f"call_{uuid.uuid4().hex[:12]}"
             # Concurrent coroutines must retain their own call identity and clock.
             _OBSERVER_CALL_IDS.set(call_id)
             report_observer_call(call_id)
@@ -553,6 +570,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "telemetry_source": "live_observer",
                 **representation_fields,
                 **tool_title_fields,
+                **nested_call_fields(),
             }
             _emit_semantic_event(
                 app,
@@ -594,12 +612,7 @@ def _make_tool_observer(app: "FastAPI"):
                     step_id=thought_step_id,
                     head=raw_step_thought[:120],
                 )
-            call_metadata = {
-                "started_at": _iso_from_epoch(started_at),
-                "stream_source": "live",
-                "telemetry_source": "live_observer",
-                **({"thought_step_id": thought_step_id} if thought_step_id else {}),
-            }
+            call_metadata = live_call_metadata(_iso_from_epoch(started_at), thought_step_id)
             # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
             # -- never a hardcoded tool name in this generic path.
             metadata_resolver = tool_call_metadata_resolver(name)
@@ -644,6 +657,8 @@ def _make_tool_observer(app: "FastAPI"):
                 completion_error = completed_after_cancel_error(name, completion_error)
                 cancellation_metadata = {"execution_cancellation": "best_effort"}
             ok = completion_error is None
+            # Refused or stopped is not the tool failing: recorded as its own outcome.
+            outcome = completed_tool_outcome(completion_error, result, refused=REFUSED_CALL.get())
             # A native tool may DECLARE its typed structured payload (P5; the model's
             # return value is unchanged). Read + cleared once per completed call so it
             # never leaks onto a later call; else the MCP-shaped extraction below.
@@ -658,7 +673,13 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             result, presentation = completed_presentation(
-                name, args, result, structured_content, terminal_output, error=completion_error
+                name,
+                args,
+                result,
+                structured_content,
+                terminal_output,
+                error=completion_error,
+                outcome=outcome,
             )
             status = completion_status(name, ok, completed_after_cancel, result, presentation)
             result_summary = f"Tool {name} {status}."
@@ -683,6 +704,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "completed_at": _iso_from_epoch(completed_epoch),
                 "tool": name,
                 "ok": ok,
+                **({"outcome": outcome} if outcome else {}),
                 "presentation": presentation,
                 "duration_ms": duration_ms,
                 "cached": False,
@@ -692,11 +714,11 @@ def _make_tool_observer(app: "FastAPI"):
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
+                **nested_call_fields(),  # a script's call nests under it from any first event
             }
-            # Append to the per-session ledger FIRST -- before the (potentially
-            # I/O-bound, e.g. durable-trace-writing) semantic emit + live parts --
-            # so the turn handler's post-forward drain never races a slow emit and
-            # drops tools_called from the assistant message metadata.
+            # Append to the per-session ledger FIRST -- before the (potentially I/O-bound)
+            # semantic emit + live parts -- so the turn handler's post-forward drain never
+            # races a slow emit and drops tools_called from the assistant message metadata.
             ledger = getattr(app.state, "tool_call_ledger", None)
             if ledger is not None and not completed_after_cancel:
                 ledger.setdefault(sid, []).append(
@@ -773,11 +795,12 @@ def _make_tool_observer(app: "FastAPI"):
                                 completed_at=_iso_from_epoch(completed_epoch),
                                 cancellation=cancellation_metadata,
                                 provenance=provenance,
+                                outcome=outcome,
                             ),
                         ),
                     )
                 # A write that ran is on disk even if the turn was cancelled meanwhile.
-                record_file_change(app, sid, name, call_id, error, result, prev, invoking_expert)
+                record_call_effects(app, sid, name, call_id, error, result, prev, invoking_expert)
         return None
 
     return observe

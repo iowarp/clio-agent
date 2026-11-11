@@ -35,6 +35,7 @@ from clio_agent.plugins import authored
 from clio_agent.plugins.check import check
 from clio_agent.plugins.resolve import Delta
 from clio_agent.plugins.store import BUILTIN_MARKETPLACE, StoreError
+from clio_agent.tools.tool_settings import self_gated
 
 
 def _authored_by_clio(store: Any, market: str, snapshot: Path) -> str:
@@ -290,24 +291,26 @@ async def make_plugin(name: str, files: dict[str, str]) -> dict[str, Any]:
 
 
 def build_make_plugin_tool() -> Any:
-    return native_tool(
-        make_plugin,
-        name="make_plugin",
-        domain="tasks",
-        title="Make plugin",
-        desc=(
-            "Write a plugin from its files (plugin.json and its code, as the author-a-flow "
-            "skill describes), check it and install it. Returns its flow ids; run_flow "
-            "starts them. The first run asks the person to trust it (not under bypass). "
-            "Calling it again with changed files makes a new version, asked about again."
-        ),
-        args={
-            "name": {"type": "string", "description": "The plugin's name, as in plugin.json."},
-            "files": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "Each file's path inside the plugin, mapped to its text.",
+    return self_gated(
+        native_tool(
+            make_plugin,
+            name="make_plugin",
+            domain="tasks",
+            title="Make plugin",
+            desc=(
+                "Write a plugin from its files (plugin.json and its code, as the author-a-flow "
+                "skill describes), check it and install it. Returns its flow ids; run_flow "
+                "starts them. The first run asks the person to trust it (not under bypass). "
+                "Calling it again with changed files makes a new version, asked about again."
+            ),
+            args={
+                "name": {"type": "string", "description": "The plugin's name, as in plugin.json."},
+                "files": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "Each file's path inside the plugin, mapped to its text.",
+                },
             },
-        },
-        presentation="tasks",
+            presentation="tasks",
+        )
     )

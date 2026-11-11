@@ -97,7 +97,7 @@ def test_failed_call_does_not_assert_external_use(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("tool_name", "args", "expected_args"),
     [
-        ("fs_read_file", {"filepath": "source.csv"}, ["filepath"]),
+        ("fs_read_file", {"path": "source.csv"}, ["path"]),
         ("geo_filter_points_by_radius", {"data_path": "source.csv"}, ["data_path"]),
         (
             "pandas_merge_datasets",
@@ -163,7 +163,7 @@ def test_edit_records_its_external_source_and_write_consumes_nothing(tmp_path: P
     consumed = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(existing), "old_string": "old", "new_string": "new"},
+        args={"path": str(existing), "old_string": "old", "new_string": "new"},
         workspace_id="ws1",
         turn_id="",
         trace_id="",
@@ -173,7 +173,7 @@ def test_edit_records_its_external_source_and_write_consumes_nothing(tmp_path: P
     created = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(tmp_path.parent / "new.txt"), "content": "new"},
+        args={"path": str(tmp_path.parent / "new.txt"), "content": "new"},
         workspace_id="ws1",
         turn_id="",
         trace_id="",
@@ -242,7 +242,7 @@ def test_output_free_read_activity_and_external_source_survive_reload(tmp_path: 
         app,
         session.id,
         tool_name="fs_read_file",
-        args={"filepath": str(external)},
+        args={"path": str(external)},
         call_id="read-only",
         ok=True,
         result={"content": "value\n42\n"},

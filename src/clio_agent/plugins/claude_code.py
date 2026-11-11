@@ -28,14 +28,15 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.plugins.command_text import expand_plugin_text
+from clio_agent.plugins.commands import read_commands
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
 from clio_agent.plugins.loader import _skills, referenced_files, tree_digests
 from clio_agent.plugins.manifest import validate_server, within
 from clio_agent.plugins.records import (
-    CommandRecord,
     Diagnostic,
     HookRecord,
     PluginRecord,
+    SkillRecord,
     SubagentRecord,
 )
 from clio_agent.sdk.versions import PluginRef, VersionRangeError, valid_plugin_id
@@ -43,7 +44,7 @@ from clio_agent.sdk.versions import PluginRef, VersionRangeError, valid_plugin_i
 #: Claude Code tool name -> (CLIO tool names, the plugin that provides them).
 TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
     "Read": (("fs_read_file",), "workspace"),
-    "Glob": (("fs_list_directory",), "workspace"),
+    "Glob": (("fs_glob",), "workspace"),
     "Grep": (("fs_search_text",), "workspace"),
     "Edit": (("fs_edit_file",), "workspace"),
     "MultiEdit": (("fs_edit_file",), "workspace"),
@@ -58,10 +59,8 @@ TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
 #: Claude Code tools whose CLIO counterpart covers only part of their behavior. Each
 #: use is reported as a ``tool_mapped_lossy`` warning naming what the import loses.
 LOSSY_TOOL_MAP: dict[str, str] = {
-    "Glob": "Glob matches paths recursively by pattern; fs_list_directory lists one "
-    "folder's immediate entries (fs_search_text's file_glob narrows files by pattern)",
-    "Grep": "Grep matches regular expressions with output modes; fs_search_text "
-    "matches literal text and returns bounded line-numbered context",
+    "Grep": "Grep's multiline mode and its -A/-B split context have no fs_search_text "
+    "counterpart; its regex, glob and files/content/count modes map directly",
 }
 
 #: Claude Code hook event -> CLIO hook event. Others are reported as unmapped.
@@ -231,7 +230,9 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
                         )
                     )
                     continue
-                command = str(entry.get("command") or "").replace(_PLUGIN_ROOT, str(root))
+                command = str(entry.get("command") or "")
+                for variable in (_PLUGIN_ROOT, "${PLUGIN_ROOT}"):
+                    command = command.replace(variable, str(root))
                 try:
                     argv = shlex.split(command)
                 except ValueError as exc:
@@ -254,12 +255,53 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
                         args=tuple(argv[1:]),
                         tools=pattern,
                         timeout_ms=int(float(entry.get("timeout") or 30) * 1000),
+                        dialect="claude-code",
                     )
                 )
     return hooks, diagnostics, scripts
 
 
-def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diagnostic]]:
+def _preloaded_skills(
+    meta: dict[str, Any], name: str, plugin: str, skills: dict[str, SkillRecord]
+) -> tuple[str, list[Diagnostic]]:
+    """The ``skills:`` an agent preloads, as Claude Code injects them: each one's whole text."""
+
+    listed = meta.get("skills")
+    listed = listed if isinstance(listed, list) else [listed] if listed else []
+    blocks: list[str] = []
+    missing: list[str] = []
+    for raw in (str(item).strip() for item in listed):
+        skill = skills.get(raw.split(":", 1)[1] if raw.startswith(f"{plugin}:") else raw)
+        if skill is None:
+            missing.append(raw)
+            continue
+        try:
+            _, body = split_frontmatter(Path(skill.path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, FrontmatterError):
+            missing.append(raw)
+            continue
+        directory = Path(skill.path).parent
+        blocks.append(
+            f"# Skill: {skill.id}\nSkill directory (use as SKILL_ROOT): {directory}\n{body.strip()}"
+        )
+    found = (
+        [
+            Diagnostic(
+                "warning",
+                "skill_unmapped",
+                f"subagent {name!r} preloads skills this plugin does not have: {', '.join(missing)}",
+                plugin,
+            )
+        ]
+        if missing
+        else []
+    )
+    return "\n\n".join(blocks), found
+
+
+def _subagents(
+    root: Path, plugin: str, skills: dict[str, SkillRecord] | None = None
+) -> tuple[list[SubagentRecord], list[Diagnostic]]:
     base = root / "agents"
     if not base.is_dir():
         return [], []
@@ -294,15 +336,17 @@ def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diag
             tokens = [str(t).strip() for t in listed]
             diagnostics.extend(lossy_diagnostic(tokens, f"subagent {name!r}", plugin))
         if unmapped:
+            # The agent still imports, with the tools CLIO has; the rest are named here.
             diagnostics.append(
                 Diagnostic(
-                    "error",
+                    "warning",
                     "tool_unmapped",
-                    f"subagent {name!r} uses tools with no CLIO equivalent: {', '.join(unmapped)}",
+                    f"subagent {name!r} runs without {', '.join(unmapped)}: no CLIO equivalent",
                     plugin,
                 )
             )
-            continue
+        preloaded, skill_diags = _preloaded_skills(meta, name, plugin, skills or {})
+        diagnostics.extend(skill_diags)
         prefers = {"model": str(meta["model"])} if meta.get("model") else {}
         if meta.get("effort"):
             prefers["effort"] = str(meta["effort"])
@@ -310,7 +354,9 @@ def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diag
             SubagentRecord(
                 id=name,
                 description=str(meta.get("description") or ""),
-                prompt=expand_plugin_text(body.strip(), root),
+                prompt=expand_plugin_text(
+                    "\n\n".join(part for part in (body.strip(), preloaded) if part), root
+                ),
                 plugins=(plugin, *providers),
                 tools=tuple(tool_names) if raw_tools is not None else None,
                 prefers=prefers,
@@ -319,22 +365,29 @@ def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diag
     return out, diagnostics
 
 
-def _commands(root: Path) -> list[CommandRecord]:
-    base = root / "commands"
-    if not base.is_dir():
-        return []
-    out = []
-    for path in sorted(base.glob("*.md")):
-        try:
-            meta, _ = split_frontmatter(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, FrontmatterError):
-            meta = None
-        out.append(
-            CommandRecord(
-                id=path.stem, description=str((meta or {}).get("description") or ""), path=str(path)
-            )
+#: Claude Code plugin parts with no CLIO counterpart: named, never dropped silently.
+_UNMAPPED_FOLDERS = {"output-styles": "output styles"}
+_UNMAPPED_MANIFEST_KEYS = {"outputStyles": "output styles", "lspServers": "language servers"}
+
+
+def _unmapped_components(root: Path, manifest: dict[str, Any], plugin: str) -> list[Diagnostic]:
+    found = [
+        f"{folder}/ ({what})"
+        for folder, what in _UNMAPPED_FOLDERS.items()
+        if (root / folder).is_dir()
+    ]
+    found += [
+        f"{key} ({what})" for key, what in _UNMAPPED_MANIFEST_KEYS.items() if manifest.get(key)
+    ]
+    return [
+        Diagnostic(
+            "warning",
+            "component_unmapped",
+            f"{item} has no CLIO equivalent and does not load",
+            plugin,
         )
-    return out
+        for item in found
+    ]
 
 
 def import_claude_plugin(
@@ -369,9 +422,10 @@ def import_claude_plugin(
     skills, skill_diags = _skills(root, plugin, only)
     servers, server_diags = _servers(root, plugin)
     hooks, hook_diags, scripts = _hooks(root, plugin)
-    subagents, subagent_diags = _subagents(root, plugin)
-    commands = _commands(root)
-    diagnostics += skill_diags + server_diags + hook_diags + subagent_diags
+    subagents, subagent_diags = _subagents(root, plugin, {skill.id: skill for skill in skills})
+    commands, command_diags = read_commands(root / "commands", plugin)
+    command_diags += _unmapped_components(root, manifest, plugin)
+    diagnostics += skill_diags + server_diags + hook_diags + subagent_diags + command_diags
     executable = list(_EXECUTABLE_GLOBS) + [p.relative_to(root).as_posix() for p in scripts]
     referenced = referenced_files(root, servers)
     exec_digest, text_digest = tree_digests(root, executable, referenced=referenced)

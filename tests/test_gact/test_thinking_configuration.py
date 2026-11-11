@@ -8,7 +8,8 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.config import LMProviderConfig
 from clio_agent.gact.providers.bind_configuration import (
-    _thinking_configuration,
+    _connection_neutral,
+    _reused_binding,
     prepare_bind_configuration,
 )
 from clio_agent.gact.types import LMProviderRequest
@@ -70,7 +71,7 @@ def test_thinking_reset_restores_the_same_models_shipped_default(
         "clio_agent.providers.capabilities.dialects.claude_code.shipped_default_effort_for_model",
         shipped_default,
     )
-    cfg = _thinking_configuration(app, req)
+    cfg = _reused_binding(app, req)
     assert cfg is not None
     assert cfg.thinking_level == "low"
     assert old.thinking_level == "medium"
@@ -78,7 +79,7 @@ def test_thinking_reset_restores_the_same_models_shipped_default(
         "clio_agent.providers.capabilities.dialects.claude_code.shipped_default_effort_for_model",
         lambda _model: None,
     )
-    unknown_default = _thinking_configuration(app, req)
+    unknown_default = _reused_binding(app, req)
     assert unknown_default is not None
     assert unknown_default.thinking_level is None
 
@@ -96,9 +97,66 @@ def test_connection_or_other_setting_changes_cannot_use_the_thinking_path() -> N
         {"thinking_budget": 2048},
         {"turn_timeout_s": 60},
     ):
-        assert _thinking_configuration(app, req.model_copy(update=change)) is None, change
+        assert _reused_binding(app, req.model_copy(update=change)) is None, change
     omitted = LMProviderRequest.model_validate(req.model_dump(exclude={"thinking_level"}))
-    assert _thinking_configuration(app, omitted) is None
+    assert _reused_binding(app, omitted) is None
+
+
+def _bound_openrouter() -> tuple[FastAPI, LMProviderConfig, LMProviderRequest]:
+    cfg = LMProviderConfig(
+        provider="openai",
+        provider_id="openrouter",
+        api_base="https://openrouter.ai/api/v1",
+        model="inception/mercury-3",
+        api_key="saved-key",
+    )
+    cfg.context_window = 128000
+    app = FastAPI()
+    app.state.agent = SimpleNamespace(_provider_config=cfg)
+    app.state.lm_config = None
+    req = LMProviderRequest(
+        provider=cfg.provider,
+        provider_id=cfg.provider_id,
+        api_base=cfg.api_base,
+        model=cfg.model,
+        provider_options={"show_diffusion": "on"},
+    )
+    return app, cfg, req
+
+
+@pytest.mark.asyncio
+async def test_show_diffusion_change_reuses_the_binding_without_a_provider_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, old, req = _bound_openrouter()
+
+    async def unexpected_handshake(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("A per-request option does not re-run the provider check")
+
+    def unexpected_readiness() -> tuple[str, str, bool, str]:
+        raise AssertionError("A per-request option does not probe sign-in")
+
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", unexpected_handshake)
+    cfg, reused = await prepare_bind_configuration(
+        app, req, unexpected_readiness, unexpected_readiness
+    )
+    assert reused
+    assert cfg is not old
+    assert cfg.provider_options == {"show_diffusion": "on"}
+    assert old.provider_options == {}
+    assert cfg.api_key == "saved-key"
+    assert cfg.context_window == 128000
+
+
+def test_unchanged_or_connection_option_saves_still_run_the_provider_check() -> None:
+    app, old, req = _bound_openrouter()
+    old.provider_options = {"show_diffusion": "on"}
+    assert _reused_binding(app, req) is None
+    assert _reused_binding(app, req.model_copy(update={"model": "inception/mercury-2"})) is None
+    assert _connection_neutral("openrouter", {"show_diffusion"})
+    assert not _connection_neutral("vertex_ai", {"vertex_location"})
+    assert not _connection_neutral("azure", {"api_version"})
+    assert not _connection_neutral("unknown-provider", {"show_diffusion"})
 
 
 @pytest.mark.asyncio

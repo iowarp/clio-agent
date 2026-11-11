@@ -197,8 +197,45 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
             if payload.get("presentation") is not None
             else {}
         ),
+        **(
+            {"parent_call_id": str(payload["parent_call_id"])}
+            if payload.get("parent_call_id")
+            else {}
+        ),
     }
     return _Projection("tool.upserted", projected, entity_id)
+
+
+def _tool_waiting(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+    """A call held by a pending permission: the row it keeps once it runs or is refused."""
+
+    del session
+    entity_id = str(payload.get("call_id") or "")
+    projected = {
+        "id": entity_id,
+        "session_id": event.session_id,
+        "name": str(payload.get("tool") or "Tool"),
+        "state": "pending",
+        "input": payload.get("args"),
+        **(
+            {"permission_id": str(payload["permission_id"])} if payload.get("permission_id") else {}
+        ),
+        **(
+            {"parent_call_id": str(payload["parent_call_id"])}
+            if payload.get("parent_call_id")
+            else {}
+        ),
+    }
+    return _Projection("tool.upserted", projected, entity_id)
+
+
+def _tool_resumed(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+    """A running call that waited for its own approval runs again once allowed."""
+
+    projected = _tool_waiting(event, payload, session)
+    return _Projection(
+        projected.event_type, {**projected.payload, "state": "running"}, projected.entity_id
+    )
 
 
 def _tool_progress(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
@@ -243,12 +280,15 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
     if isinstance(payload.get("execution"), Mapping):
         return _Projection("tool.upserted", dict(payload["execution"]), entity_id)
     ok = bool(payload.get("ok"))
+    outcome = payload.get("outcome")
     projected = {
         "id": entity_id,
         "session_id": event.session_id,
         "name": str(payload.get("tool") or "Tool"),
         **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
-        "state": "succeeded" if ok else "failed",
+        "state": (
+            "succeeded" if ok else outcome if outcome in {"cancelled", "denied"} else "failed"
+        ),
         "completed_at": str(payload.get("completed_at") or event.occurred_at),
         "output": payload.get("result"),
         **(
@@ -265,6 +305,11 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
         ),
         "duration_ms": payload.get("duration_ms"),
         **({"error": str(payload["error"])} if payload.get("error") else {}),
+        **(
+            {"parent_call_id": str(payload["parent_call_id"])}
+            if payload.get("parent_call_id")
+            else {}
+        ),
     }
     return _Projection("tool.upserted", projected, entity_id)
 
@@ -278,6 +323,12 @@ def _permission_requested(event: Event, payload: dict[str, Any], session: Any) -
     del session
     tool_call = _mapping(payload.get("tool_call"))
     entity_id = str(payload.get("permission_id") or payload.get("id") or "")
+    invocation_id = str(
+        payload.get("invocation_id")
+        or tool_call.get("invocation_id")
+        or tool_call.get("call_id")
+        or ""
+    )
     projected = {
         "id": entity_id,
         "session_id": str(payload.get("session_id") or event.session_id),
@@ -293,6 +344,8 @@ def _permission_requested(event: Event, payload: dict[str, Any], session: Any) -
         "created_at": str(payload.get("created_at") or event.occurred_at),
         **({"reason": str(payload["reason"])} if payload.get("reason") else {}),
         **({"risk": str(payload["risk"])} if payload.get("risk") else {}),
+        # The held call's tool entity id, as the interaction's ``source.invocation_id``.
+        **({"invocation_id": invocation_id} if invocation_id else {}),
     }
     return _Projection("approval.upserted", projected, entity_id)
 
@@ -404,6 +457,8 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "message.part.completed": _message_block_completed,
     "message.completed": _message_completed,
     "tool.call.started": _tool_started,
+    "tool.call.waiting": _tool_waiting,
+    "tool.call.resumed": _tool_resumed,
     "tool.call.progress": _tool_progress,
     "tool.presentation.delta": _tool_presentation_delta,
     "tool.call.completed": _tool_completed,

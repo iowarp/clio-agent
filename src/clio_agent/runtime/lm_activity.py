@@ -31,6 +31,7 @@ tokens, dead socket) even for the session that owns the call.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from typing import Any
 from clio_agent import conf
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
+
+logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 # Per-session in-flight tracker. Keyed by GACT session id; the ``""`` key holds
@@ -118,6 +121,48 @@ def set_live_chunk_emitter(
     _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup, begin_call))
 
 
+#: The turn's async canvas publisher (``emit_canvas(text, agent_id, step, shape)``): the
+#: REPLACE lane next to the append-only answer lane, for snapshot-shaped (diffusion)
+#: streams. Bound beside the chunk emitter and scheduled on the chunk emitter's loop.
+_LIVE_CANVAS_EMITTER: ContextVar[Any] = ContextVar("clio_live_canvas_emitter", default=None)
+
+
+def set_live_canvas_emitter(emit_canvas: Any) -> None:
+    """Bind the turn's async canvas publisher (dies with the turn's context)."""
+    _LIVE_CANVAS_EMITTER.set(emit_canvas)
+
+
+def note_lm_answer_canvas(text: str, step: int, shape: str = "snapshot") -> bool:
+    """Show the whole current answer canvas of a snapshot stream (replace, never append).
+
+    A diffusion model streams each denoising step as the full current text. ``shape``
+    says what the canvas holds: ``snapshot`` (the latest diffusion step) or ``append``
+    (the text accumulated so far, when the steps read as appended deltas). The
+    canvas is display-only: it is never recorded in the transcript, ARC or the
+    session store -- the stream's FINAL text reaches them once through
+    :func:`note_lm_answer_delta`. ``False`` (nothing shown) off-turn, while deltas
+    are redirected to a variant's own lane (which receives only the final text),
+    or when no canvas publisher is bound.
+    """
+    chunks = _LIVE_CHUNK_EMITTER.get()
+    emit_canvas = _LIVE_CANVAS_EMITTER.get()
+    if not text or chunks is None or chunks[3] is None or emit_canvas is None:
+        return False
+    from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
+
+    agent_id = active_react_scope() or ""
+    stream_audit(
+        "bridge.answer_canvas",
+        agent_id=agent_id,
+        step=step,
+        shape=shape,
+        canvas_len=len(text),
+        head=text[:120],
+    )
+    asyncio.run_coroutine_threadsafe(emit_canvas(text, agent_id or None, step, shape), chunks[0])
+    return True
+
+
 def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any, Any] | None] | None:
     """Send this context's streamed deltas to ``emit_coro`` instead of the turn's lane.
 
@@ -165,6 +210,39 @@ def after_live_chunks(operation: Callable[[], Any]) -> None:
     except TimeoutError:
         boundary.cancel()
         raise
+
+
+def in_live_chunk_order[T](operation: Callable[[], T]) -> T:
+    """Run a transcript append in order with this context's streamed deltas.
+
+    Streamed deltas reach the transcript as callbacks scheduled on the emitter loop,
+    while a part appended from an agent worker thread (a tool call row) would land at
+    once, ahead of deltas still queued: the step's text was cut around its own tool row
+    ("...58.47" | tool | "%, ..."). Off the loop with an emitter bound, the append is
+    scheduled behind the queued deltas and awaited; otherwise it runs here.
+    """
+    emitter = _LIVE_CHUNK_EMITTER.get()
+    if emitter is None:
+        return operation()
+    loop = emitter[0]
+    try:
+        current = asyncio.get_running_loop()
+    except RuntimeError:
+        current = None
+    if current is loop or loop.is_closed() or not loop.is_running():
+        return operation()
+
+    async def append() -> T:
+        return operation()
+
+    boundary = asyncio.run_coroutine_threadsafe(append(), loop)
+    try:
+        return boundary.result(timeout=10)
+    except TimeoutError:
+        if boundary.cancel():
+            logger.warning("live part append ran unordered reason=emitter_loop_unresponsive")
+            return operation()
+        return boundary.result()
 
 
 def note_lm_call_start() -> None:
@@ -256,7 +334,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
                 duplicate_suppressed=False,
                 duplicate_reason="react_kind_unresolved",
                 head=text[:120],
-                full_text=text[:12000],
             )
         # #878: a `kind: react` expert's redundant EXTRACT reasoning/answer is
         # gated STRUCTURALLY on the declared module.kind (never the field name).
@@ -281,7 +358,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
                 duplicate_suppressed=True,
                 duplicate_reason="nonvisible_contract_field",
                 head=text[:120],
-                full_text=text[:12000],
             )
             trace.HF_ON and trace.hot(
                 "STREAM-SSE",
@@ -328,7 +404,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
             normalized_event="turn.text.delta",
             duplicate_suppressed=False,
             head=text[:120],
-            full_text=text[:12000],
         )
         trace.HF_ON and trace.hot(
             "STREAM-SSE",
@@ -375,7 +450,6 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
             normalized_event="turn.trace.delta",
             duplicate_suppressed=False,
             head=text[:120],
-            full_text=text[:12000],
         )
         asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
     except Exception:  # noqa: BLE001,S110 - live streaming is best-effort, never break the call
@@ -460,53 +534,6 @@ def inter_token_idle_seconds() -> float:
     except (ValueError, TypeError):
         return _DEFAULT_INTER_TOKEN_IDLE_S
     return value if value > 0 else _DEFAULT_INTER_TOKEN_IDLE_S
-
-
-def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
-    """Emit a durable ``lm.call.started`` BEFORE the call returns.
-
-    The ``lm.call`` capture (``lm/call_trace.py``) records on ``on_lm_end``, AFTER
-    the call returns, so a HUNG call (LM Studio stall) is never recorded -- a
-    hole in the canonical trace. This start-marker carries the full request
-    ``messages`` up front, so a stall shows up as a ``lm.call.started`` with no
-    matching ``lm.call`` (completed): the wedged call and its exact input are
-    first-class in the trace, not reconstructed. Durable-only (detail off),
-    best-effort, never breaks a call.
-    """
-
-    try:
-        from clio_agent.gact.context import (  # noqa: PLC0415
-            active_app,
-            active_session_id,
-            active_trace_id,
-            active_turn_id,
-        )
-        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
-        return
-    app = active_app()
-    sid = active_session_id()
-    if app is None or not sid:
-        return
-    model = str(getattr(instance, "model", "") or "")
-    messages: Any = None
-    if isinstance(inputs, dict):
-        messages = inputs.get("messages") or inputs.get("prompt")
-    try:
-        _emit_semantic_event(
-            app,
-            sid,
-            "lm.call.started",
-            turn_id=active_turn_id(),
-            trace_id=active_trace_id(),
-            status="running",
-            summary=f"LM call started ({model or 'lm'}).",
-            provider={"model_id": model},
-            payload={"call_id": str(call_id), "model": model, "messages": messages},
-            detail_level="off",
-        )
-    except Exception:  # noqa: BLE001,S110 - capture must never break a call
-        pass
 
 
 def note_lm_start() -> None:

@@ -1,21 +1,10 @@
-"""The compaction summarizer prompt is a template file researchers swap (no code change).
+"""The compaction prompt is part of CLIO core (``gact/compaction_prompt.md``).
 
 On a real app over real clio-core, through ``POST /v1/sessions/{sid}/compact``: the
-packaged default is used when nothing is configured; a configured file is used
-instead (the summarizer LM's prompt is exactly its rendering); the placeholders are
-filled; an edit applies at the next compaction; a missing or invalid file fails the
-compaction typed (``compaction.failed`` + a notice, nothing folded) and is a
-``misconfigured`` doctor row -- never a fallback to the default.
-
-SABOTAGE (run manually, each turns the named test red):
-
-* ``compaction_prompt.configured_prompt_path``: ignore the configured value ->
-  ``test_a_configured_file_is_the_prompt``.
-* ``compaction_prompt.load_prompt_template``: fall back to the packaged default on a
-  missing file -> ``test_a_missing_or_invalid_file_fails_typed_and_folds_nothing``.
-* ``compaction_prompt._validate``: drop the unknown-placeholder check ->
-  ``test_a_missing_or_invalid_file_fails_typed_and_folds_nothing``.
-* cache the template on first read -> ``test_an_edit_applies_at_the_next_compaction``.
+summarizer's last message is exactly the core template's rendering, after the scope's
+own context; the placeholders are filled; the removed ``compaction.prompt_file``
+setting still set fails the compaction typed (``compaction.failed`` + a notice, nothing
+folded) and is a ``misconfigured`` doctor row -- never ignored.
 """
 
 from __future__ import annotations
@@ -29,19 +18,33 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.compaction_prompt import probe_compaction_prompt, render_compaction_prompt
+from clio_agent.compaction_prompt import (
+    PROMPT_ID,
+    probe_compaction_prompt,
+    render_compaction_prompt,
+)
 from clio_agent.gact.app import build_app
+from clio_agent.gact.compaction_policy import keep_policy, kept_verbatim
 from clio_agent.runtime.status import IntegrationState
+from tests._compaction_summary import keep_open_request_only, split_seen
 
 from .test_compaction import _SCOPE, _CapturingAgent, _seed, _text_message
 from .test_post_messages import _create_session
 
 REPO = Path(__file__).resolve().parents[2]
-PACKAGED = REPO / "src" / "clio_agent" / "prompt_packs" / "builtin" / "compaction.md"
+PACKAGED = REPO / "src" / "clio_agent" / "gact" / "compaction_prompt.md"
+
+
+def _shipped_body() -> str:
+    return PACKAGED.read_text(encoding="utf-8")
 
 
 def _compact(
-    tmp_path: Path, texts: list[str], *, focus: str = "", files: dict[str, Any] | None = None
+    tmp_path: Path,
+    texts: list[str],
+    *,
+    focus: str = "",
+    files: dict[str, Any] | None = None,
 ) -> tuple[Any, list[str], list[Any], str]:
     """One manual compaction on a fresh session; ``(response, prompts, events, sid)``."""
     agent = _CapturingAgent()
@@ -59,70 +62,79 @@ def _compact(
     return response, agent.prompts, events, sid
 
 
-def test_the_packaged_default_is_the_prompt_when_nothing_is_configured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_the_core_template_is_the_prompt(
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.delenv("CLIO_COMPACTION_PROMPT_FILE", raising=False)
     response, prompts, _events, _sid = _compact(tmp_path, ["DEFAULT-ROW"])
     assert response.status_code == 200, response.text
-    [prompt] = prompts
-    template = PACKAGED.read_text(encoding="utf-8")
-    assert prompt == template.format_map(
-        {"transcript": "USER: DEFAULT-ROW", "focus": "", "files": ""}
+    [(history, prompt)] = [split_seen(p) for p in prompts]
+    assert history == "USER: DEFAULT-ROW"  # the scope's own context, then the prompt
+    kept = kept_verbatim(keep_policy())
+    expected = (
+        (_shipped_body().replace("{{focus}}", "").replace("{{files}}", ""))
+        .replace("{{kept}}", kept)
+        .strip()
     )
-    assert prompt.startswith("Create an evidence-preserving compact memory")
+    assert prompt == expected
+    assert prompt.startswith("The context window is nearly full")
 
 
-def test_a_configured_file_is_the_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    custom = tmp_path / "my_prompt.md"
-    custom.write_text("RESEARCH RULES {{literal}}\n{transcript}\nEND", encoding="utf-8")
-    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
-    response, prompts, _events, _sid = _compact(tmp_path, ["CUSTOM-ROW"])
-    assert response.status_code == 200, response.text
-    assert prompts == ["RESEARCH RULES {literal}\nUSER: CUSTOM-ROW\nEND"]
-
-
-def test_focus_and_files_fill_their_placeholders(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_what_comes_back_verbatim_is_said_from_the_keep_policy(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    custom = tmp_path / "p.md"
-    custom.write_text("R{focus}{files}\n<<{transcript}>>", encoding="utf-8")
-    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
+    """The prompt tells the model what it need not restate. It said the newest step and
+    the plan, todos and session facts come back whatever the keep policy was, so with
+    them switched off (the working-state ablation) the summary left them out and nothing
+    brought them back.
+
+    SABOTAGE: ship the fixed sentence again -> the switched-off case still names them."""
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_USER_CHARS", "80000")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_LAST_STEPS", "1")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_WORKING_STATE", "true")
+    default = render_compaction_prompt()
+    assert (
+        "need not restate it: the system instructions, the messages the person typed (the "
+        "newest ones, as many as fit), the newest step of work and the session plan, todo "
+        "checklist and session facts when they exist." in default
+    )
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_USER_CHARS", "0")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_LAST_STEPS", "0")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_WORKING_STATE", "false")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_LAST_TURNS", "2")
+    off = render_compaction_prompt()
+    assert (
+        "need not restate it: the system instructions, the person's request of a turn in "
+        "progress and the last 2 whole turns." in off
+    )
+    assert "plan" not in off.split("Record what happened")[0]
+    assert "{{" not in default and "{{" not in off
+
+
+def test_focus_and_files_fill_their_placeholders(tmp_path: Path) -> None:
     files = {"a.csv": {"path": "a.csv", "display_path": "data/a.csv", "mode": "read"}}
     response, prompts, _events, _sid = _compact(tmp_path, ["ROW"], focus="units", files=files)
     assert response.status_code == 200, response.text
-    assert prompts == [
-        "R\n\nFocus the summary on: units"
+    [prompt] = [split_seen(p)[1] for p in prompts]
+    assert prompt.endswith(
+        "\n\nFocus the summary on: units"
         "\n\n--- attached session files ---\n- path=data/a.csv; mode=read\n--- end files ---"
-        "\n<<USER: ROW>>"
-    ]
-    assert render_compaction_prompt("T") == "R\n<<T>>"  # empty sections render nothing
+    )
 
 
-@pytest.mark.parametrize(
-    ("content", "problem"),
-    [
-        (None, "the file does not exist"),
-        ("rules {transcript} and {model}", "unknown placeholder {model}"),
-        ("rules with no transcript", "no {transcript} placeholder"),
-        ("rules {transcript} {", "invalid template"),
-        ("rules {transcript!r}", "unknown placeholder {transcript}"),
-    ],
-)
-def test_a_missing_or_invalid_file_fails_typed_and_folds_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | None, problem: str
+def test_the_removed_setting_fails_typed_and_folds_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    custom = tmp_path / "broken.md"
-    if content is not None:
-        custom.write_text(content, encoding="utf-8")
-    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
+    """SABOTAGE: drop the ``_removed_setting`` check in ``load_prompt_template`` and the
+    compaction runs with the old setting silently ignored."""
+    problem = "compaction.prompt_file (CLIO_COMPACTION_PROMPT_FILE) was"
+    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", "/old/compaction.md")
     response, prompts, events, sid = _compact(tmp_path, ["ROW"])
 
     assert response.status_code == 500, response.text
     error = response.json()["error"]
     assert error["error"] == "compaction_prompt_invalid"
-    assert error["details"]["path"] == str(custom) and problem in error["details"]["problem"]
-    assert prompts == []  # no LM call, no fallback to the packaged default
+    assert error["details"]["prompt_id"] == PROMPT_ID and problem in error["details"]["problem"]
+    assert prompts == []  # no LM call, no fallback to the shipped text
     seq = [e for e in events if e.event_type.startswith("compaction.")]
     assert [e.event_type for e in seq] == ["compaction.started", "compaction.failed"]
     assert seq[1].payload["error"]["code"] == "compaction_prompt_invalid"
@@ -131,42 +143,20 @@ def test_a_missing_or_invalid_file_fails_typed_and_folds_nothing(
     assert [(s.kind, s.content["text"]) for s in live] == [("user", "ROW")]
     [notice] = [p for m in app.state.messages[sid] for p in m.parts if p.type == "notice"]
     assert (notice.code, notice.source) == ("compaction_prompt_invalid", "compaction_failed")
-    assert str(custom) in notice.text
+    assert PROMPT_ID in notice.text
 
 
-def test_an_edit_applies_at_the_next_compaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    custom = tmp_path / "p.md"
-    custom.write_text("FIRST {transcript}", encoding="utf-8")
-    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
-    agent = _CapturingAgent()
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as client:
-        sid = _create_session(client)
-        _seed(client, sid, [_text_message("msg_a", sid, "A")])
-        assert client.post(f"/v1/sessions/{sid}/compact", json={}).status_code == 200
-        custom.write_text("SECOND {transcript}", encoding="utf-8")
-        app.state.arc.append_segment(sid, _SCOPE, "user", {"text": "B"}, turn_id="t2")
-        assert client.post(f"/v1/sessions/{sid}/compact", json={}).status_code == 200
-    assert [p.split(" ", 1)[0] for p in agent.prompts] == ["FIRST", "SECOND"]
-
-
-def test_the_doctor_row_validates_the_configured_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_doctor_row_validates_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     from clio_agent.runtime.status import RuntimeProbe
 
     monkeypatch.delenv("CLIO_COMPACTION_PROMPT_FILE", raising=False)
     ready = probe_compaction_prompt()
-    assert (ready.state, ready.details["path"]) == (IntegrationState.READY, str(PACKAGED))
+    assert (ready.state, ready.details["prompt_id"]) == (IntegrationState.READY, PROMPT_ID)
 
-    missing = tmp_path / "nope.md"
-    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(missing))
+    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", "/old/compaction.md")
     row = probe_compaction_prompt()
     assert row.state is IntegrationState.MISCONFIGURED
-    assert row.details == {"path": str(missing), "problem": "the file does not exist"}
-    assert row.config_source == "compaction.prompt_file"
+    assert row.details["scope"] == "settings" and "was removed" in row.details["problem"]
     # The runtime report (clio-agent doctor, /v1/health) carries the row.
     monkeypatch.setattr(RuntimeProbe, "probe_gateway", _fake_gateway)
     report = RuntimeProbe(env={}).collect(include_process_census=False)
@@ -202,5 +192,27 @@ def test_the_default_template_ships_in_the_wheel() -> None:
         ["git", "ls-files", "--error-unmatch", rel], cwd=REPO, check=False, capture_output=True
     )
     assert tracked.returncode == 0, f"{rel} is not tracked"
-    packaged = resources.files("clio_agent.prompt_packs.builtin") / "compaction.md"
+    packaged = resources.files("clio_agent.gact") / "compaction_prompt.md"
     assert packaged.is_file()
+
+
+def test_the_exact_evidence_index_reads_tool_evidence_whole() -> None:
+    """A long tool result reaches the code-computed evidence index as it was in the
+    context. SABOTAGE: cut the result text in ``_message_lines`` and this fails."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import compaction
+
+    result = "row " * 2_000
+    part = SimpleNamespace(
+        name="fs_read_file", is_error=False, content=[SimpleNamespace(text=result)]
+    )
+    message = SimpleNamespace(role="tool", parts=[type("ToolResultPart", (), vars(part))()])
+    [line] = compaction._message_lines(message)
+    assert line.endswith(result)
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

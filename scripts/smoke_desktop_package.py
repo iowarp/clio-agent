@@ -15,6 +15,7 @@ import os
 import platform
 import subprocess
 import time
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -50,11 +51,15 @@ def healthy_arc(health: dict[str, Any]) -> bool:
 
 def backend_connection(process: psutil.Process) -> tuple[str, str] | None:
     """Read only the launched descendant's endpoint and transient auth credential."""
-    args = process.cmdline()
-    if "clio_agent.gact" not in args or "--port" not in args:
+    try:
+        args = process.cmdline()
+        if "clio_agent.gact" not in args or "--port" not in args:
+            return None
+        port = int(args[args.index("--port") + 1])
+        token = process.environ().get("CLIO_AUTH_TOKEN", "")
+    except psutil.AccessDenied:
+        # A short-lived helper macOS will not let us read (seen mid-exec); not the backend.
         return None
-    port = int(args[args.index("--port") + 1])
-    token = process.environ().get("CLIO_AUTH_TOKEN", "")
     if not token or not 0 < port < 65536:
         return None
     return f"http://127.0.0.1:{port}", token
@@ -249,7 +254,14 @@ def smoke(
                             encoding="utf-8",
                         )
                         executable = require_bundled_python(candidate)
-                    except (psutil.NoSuchProcess, URLError, TimeoutError):
+                    except (
+                        psutil.NoSuchProcess,
+                        URLError,
+                        TimeoutError,
+                        ConnectionError,
+                        HTTPException,
+                    ):
+                        # A server still starting can reset or drop the connection.
                         continue
                     ready_seconds = time.perf_counter() - launched_at
                     # Readiness alone can precede an immediate native WebView crash.

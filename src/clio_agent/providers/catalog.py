@@ -17,6 +17,7 @@ automatically and the gact modal picks the new preset up at the next
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from clio_agent.providers.catalog_types import (
@@ -24,6 +25,8 @@ from clio_agent.providers.catalog_types import (
     ProviderConfigurationField,
 )
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
+
+logger = logging.getLogger(__name__)
 
 # -- the catalog ------------------------------------------------------
 #
@@ -37,6 +40,20 @@ from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITE
 # Vision/tool/thinking support comes from the effective capabilities
 # (`providers.capabilities.accessor.get_effective_capabilities`, Part 5.5),
 # never a static per-provider flag.
+
+#: ``show_diffusion``: stream a diffusion model's denoising steps. A
+#: provider-level switch; it reaches the wire only for a model whose record
+#: states a ``snapshot`` stream shape (:mod:`clio_agent.lm.diffusion`).
+SHOW_DIFFUSION_OPTION = "show_diffusion"
+_SHOW_DIFFUSION_FIELD = ProviderConfigurationField(
+    SHOW_DIFFUSION_OPTION,
+    "Show diffusion",
+    "Stream each denoising step of a diffusion model (such as Mercury) in place. "
+    "Only the final answer is stored.",
+    "off",
+    options=("off", "on"),
+    affects_connection=False,
+)
 
 #: Canonical provider list. Ordered roughly local-first -> cloud -> ALCF
 #: so gact's modal lists them in a sensible order.
@@ -129,6 +146,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="anthropic",
+        fast_model_family="haiku",
         label="Anthropic API",
         description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
         provider_kind="anthropic",
@@ -241,6 +259,24 @@ PROVIDERS: tuple[Provider, ...] = (
         api_key_env="OPENROUTER_API_KEY",
         # GET /api/v1/key describes the calling key; 401 for a bad one.
         key_check_path="/key",
+        configuration_fields=(_SHOW_DIFFUSION_FIELD,),
+    ),
+    Provider(
+        id="inception",
+        label="Inception (Mercury)",
+        description=(
+            "Inception's Mercury diffusion language models. Requires an "
+            "INCEPTION_API_KEY. Turn on Show diffusion to watch an answer "
+            "denoise in place while it streams."
+        ),
+        provider_kind="openai",
+        # LiteLLM's native inception provider (InceptionChatConfig) forwards
+        # reasoning_effort and diffusing as request-body fields.
+        litellm_prefix="inception",
+        api_base="https://api.inceptionlabs.ai/v1",
+        suggested_model="",
+        api_key_env="INCEPTION_API_KEY",
+        configuration_fields=(_SHOW_DIFFUSION_FIELD,),
     ),
     Provider(
         id="amsc_mag",
@@ -294,6 +330,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="claude_code",
+        fast_model_family="haiku",
         billing="subscription",
         label="Claude Code",
         description=(
@@ -351,6 +388,30 @@ PROVIDERS: tuple[Provider, ...] = (
         # session — see build_sdk_options); Claude Code is a bare model
         # engine, never its own inner loop. Explicit (matches the dataclass
         # default) so the ruling is documented on the record itself.
+        inner_loop_owner="clio",
+    ),
+    Provider(
+        id="copilot",
+        billing="subscription",
+        label="GitHub Copilot",
+        description=(
+            "Uses your GitHub Copilot plan through the GitHub Copilot SDK, signed in "
+            "with CLIO's GitHub account (never this machine's own Copilot login). The "
+            "models your plan and organization policy allow are listed live; premium "
+            "models draw on the monthly premium-request allowance."
+        ),
+        provider_kind="copilot",
+        litellm_prefix="copilot",
+        api_base="copilot://sdk",
+        # The plan's models come from the runtime's live list_models(); no bundled list.
+        suggested_model="",
+        requires_api_key=False,
+        auth_method="subscription",
+        auth_label="GitHub",
+        is_kind_default=True,
+        supports_live_catalog=False,
+        # The SDK runs with every built-in tool excluded (copilot/options.py):
+        # CLIO's own loop drives each turn and every tool goes through CLIO's gateway.
         inner_loop_owner="clio",
     ),
     # ----- argonne ALCF ----------------------------------------------
@@ -460,8 +521,16 @@ def get_provider(provider_id: str) -> Provider | None:
     return None
 
 
-def normalize_provider_options(provider_id: str, options: dict[str, Any]) -> dict[str, str]:
-    """Validate and normalize the non-secret LiteLLM options for a provider."""
+def normalize_provider_options(
+    provider_id: str, options: dict[str, Any], *, drop_unknown: bool = False
+) -> dict[str, str]:
+    """Validate and normalize the non-secret LiteLLM options for a provider.
+
+    ``drop_unknown`` drops (and logs) option keys the provider does not declare
+    instead of rejecting them. Stored or inherited settings use it, so an option
+    saved under another provider (``show_diffusion`` after switching from
+    OpenRouter to Codex) never stops a run; a person's request stays strict.
+    """
 
     provider = get_provider(provider_id)
     if provider is None:
@@ -470,13 +539,25 @@ def normalize_provider_options(provider_id: str, options: dict[str, Any]) -> dic
         return {}
     fields = {field.id: field for field in provider.configuration_fields}
     unknown = sorted(set(options) - set(fields))
-    if unknown:
+    if unknown and drop_unknown:
+        logger.warning(
+            "⚑ PROVIDER-OPTIONS reason=provider_option_unsupported provider=%s dropped=%s",
+            provider.id,
+            ",".join(unknown),
+        )
+        options = {key: value for key, value in options.items() if key in fields}
+    elif unknown:
         raise ValueError(f"unsupported options for {provider.id}: {', '.join(unknown)}")
     normalized: dict[str, str] = {}
     for key, raw_value in options.items():
         value = str(raw_value).strip()
         if len(value) > 512 or "\x00" in value or "\n" in value or "\r" in value:
             raise ValueError(f"invalid value for provider option: {key}")
+        allowed = fields[key].options
+        if value and allowed and value not in allowed:
+            raise ValueError(
+                f"invalid value for provider option {key}: expected one of {', '.join(allowed)}"
+            )
         if value:
             normalized[key] = value
     missing = [
@@ -586,6 +667,7 @@ def as_lm_presets() -> list[Any]:
                     description=field.description,
                     placeholder=field.placeholder,
                     required=field.required,
+                    options=list(field.options),
                 )
                 for field in p.configuration_fields
             ],

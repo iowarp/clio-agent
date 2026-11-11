@@ -7,11 +7,11 @@ import json
 import re
 from typing import Any
 
-from clio_agent import conf
 from clio_agent.gact.task_access import TaskAccess, TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import encode_cursor
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_output_pages import output_page, validate_output_cursor, workflow_state
+from clio_agent.tools.result_room import result_room
 
 
 def read_observations(
@@ -46,10 +46,10 @@ def read_observations(
         validate_output_cursor(output)
     rows: list[dict[str, Any]] = []
     settled, any_settled, has_more = True, False, False
-    bound = conf.resolve(
-        "limits.tool_result_chars", env="CLIO_TOOL_RESULT_CHARS", default=12000, cast=conf.as_int
-    )
-    budget = bound if bound > 0 else None
+    # A page is one result in the reading model's context (at least a character, so a
+    # cursor always advances); the transcript preview bound is not the model's.
+    bound = max(1, result_room().chars)
+    budget: int | None = bound
     start = previous.get("scan_start", 0)
     if type(start) is not int or not 0 <= start < len(handles):
         raise ValueError("Observation cursor has an invalid scan position")

@@ -18,7 +18,8 @@ is already confirmed); the memory backend has no durable state to confirm.
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -139,9 +140,14 @@ class MemoryBackend:
 
     # ---- transforms --------------------------------------------------------
 
-    def transform(self, call_id: str) -> Optional[Any]:
-        """The TransformRecord for ``call_id``, or ``None``."""
+    def transform(self, call_id: str, *, cached_only: bool = False) -> Optional[Any]:
+        """The TransformRecord for ``call_id``, or ``None`` (memory is its own cache)."""
         return self._transforms.get(call_id)
+
+    @contextmanager
+    def writes_behind(self, _defer: Any) -> Iterator[None]:
+        """No store behind memory: nothing to queue."""
+        yield
 
     def add_transform(self, record: Any, *, pending: Optional[PendingWrite] = None) -> None:
         """Store a new TransformRecord (the caller checked ``call_id`` is new)."""

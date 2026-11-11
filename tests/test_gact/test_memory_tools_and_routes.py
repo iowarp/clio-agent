@@ -205,7 +205,7 @@ def test_memory_off_withholds_the_tools_and_the_snapshot(client: TestClient) -> 
 
 def test_a_workspace_without_account_memory_sees_only_its_project(client: TestClient) -> None:
     app = client.app
-    workspace = app.state.workspaces.create(name="lab", root_path=str(Path.cwd()))
+    workspace = app.state.workspaces.create(name="lab")
     resp = client.put(f"/v1/workspaces/{workspace.id}/memory", json={"use_account_memory": False})
     assert resp.json() == {"use_account_memory": False}
     session = app.state.sessions.create(workspace_id=workspace.id, title="t")
@@ -281,7 +281,7 @@ def test_manual_memory_creation_is_user_authored_and_logged_without_a_model(
     assert any(row["state"] == "failed" for row in manual_rows)
     assert "background" in runs and runs["next_cursor"] is None
 
-    workspace = client.app.state.workspaces.create(name="memory-project", root_path=str(Path.cwd()))
+    workspace = client.app.state.workspaces.create(name="memory-project")
     project = client.post(
         "/v1/memory/documents",
         json={
@@ -432,6 +432,7 @@ def test_the_curator_is_never_offered_for_delegation(client: TestClient) -> None
 def test_the_turn_path_withholds_tools_and_their_guidance(client: TestClient) -> None:
     from clio_agent.gact.agents.prompt_basis import turn_agent_def
     from clio_agent.gact.agents.resolution import session_resolution, withhold_session_tools
+    from clio_agent.plugins.compose_final import final_prompt_text
 
     app = client.app
     root = _root(app)
@@ -448,9 +449,13 @@ def test_the_turn_path_withholds_tools_and_their_guidance(client: TestClient) ->
     ):
         resolution = session_resolution(app, session.id)
         turn_def, built = turn_agent_def(app, session.id, resolution)
-        agent = withhold_session_tools(app, session.id, turn_def, resolution, built)
+        agent = withhold_session_tools(app, session.id, turn_def)
         assert kept <= set(agent.tools) and not gone & set(agent.tools)
-        assert ("create_memory" in agent.system_prompt) == ("create_memory" in kept)
+        # The builder composes the prompt for the final tools, so guidance leaves with them.
+        prompt = final_prompt_text(
+            agent.system_prompt, built.prompt, agent.tools, delegated=session is child
+        )
+        assert ("create_memory" in prompt) == ("create_memory" in kept)
 
 
 def test_a_scope_is_read_exactly_and_one_document_exports_alone(client: TestClient) -> None:

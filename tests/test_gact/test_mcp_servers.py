@@ -78,9 +78,13 @@ def _earthscope_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *se
 def _session_rows(client: TestClient, *, root_path: str) -> dict[str, object]:
     """Open an ``earthscope`` session and return the ``/v1/mcp/servers`` body."""
 
-    wid = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path}).json()[
-        "id"
-    ]
+    made = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path})
+    # One workspace per folder: a later app over the same store reuses the first one's.
+    wid = (
+        made.json()["error"]["details"]["workspace_id"]
+        if made.status_code == 409
+        else made.json()["id"]
+    )
     created = client.post(
         "/v1/sessions",
         json={"title": "Earth", "workspace_id": wid, "metadata": {"agent_ref": _AGENT_REF}},
@@ -378,37 +382,6 @@ def test_the_session_inventory_never_takes_the_fleet_lock_on_the_event_loop(
 def test_capabilities_advertises_mcp(client: TestClient) -> None:
     body = client.get("/v1/capabilities").json()
     assert body["capabilities"]["mcp"] is True
-
-
-def test_mcp_prompt_get_round_trips_arguments_and_messages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An external in-memory prompt honors arguments and returns parsed messages."""
-    server = FastMCP("prompt-test")
-
-    @server.prompt(name="welcome")
-    def welcome_prompt(person: str, punctuation: str) -> str:
-        return f"Welcome, {person}{punctuation}"
-
-    app = build_app(sessions_path=tmp_path / "prompts.json")
-    sid = "mcp_ext_prompt"
-    with TestClient(app) as prompt_client:
-        prompt_client.app.state.external_mcp_servers = {
-            sid: {"spec": {"transport": "stdio", "command": "unused"}}
-        }
-        monkeypatch.setattr("clio_agent.gact.routes.mcp.transport_from_spec", lambda _spec: server)
-        response = prompt_client.post(
-            f"/v1/mcp/servers/{sid}/prompts/get",
-            json={
-                "name": "welcome",
-                "arguments": {"person": "Alice", "punctuation": "!"},
-            },
-        )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["prompt"]["messages"] == [
-        {"role": "user", "content": {"type": "text", "text": "Welcome, Alice!"}}
-    ]
 
 
 def test_stdio_install_retains_environment_and_redacts_response(

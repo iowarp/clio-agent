@@ -39,13 +39,20 @@ bash "$KIT_DIR/00_preflight.sh" || { log "preflight failed (FORCE=1 to override)
 [ "${STAGE_UP:-1}" = 1 ] && { bash "$KIT_DIR/01_stage_up.sh" || finish 1; }
 bash "$KIT_DIR/02_services_up.sh" || finish 1
 smoke=0; bash "$KIT_DIR/03_attention_smoke.sh" || smoke=$?
+# SPOTTER must finish one real review on its chosen model before any OPAL work.
+[ "$smoke" = 0 ] && { bash "$KIT_DIR/03b_spotter_smoke.sh" || smoke=$?; }
 bash "$KIT_DIR/tunnel.sh" || true
 if [ "$smoke" = 0 ] && [ "${RUN_OPAL:-1}" = 1 ]; then
   if ! { bash "$KIT_DIR/04_stage_opal_data.sh" && bash "$KIT_DIR/05_opal_run.sh"; }; then
     log "OPAL run did not complete (receipts in $EVIDENCE/opal; rerun resumes)"
   fi
+  # Let the last SPOTTER reviews finish, then measure them and export the sessions.
+  sleep "${SPOTTER_DRAIN_S:-600}"
+  "$CLIO_SRC/.venv/bin/python" -I "$KIT_DIR/spotter_eval.py" "${SPOTTER_MODE:-shared}-$JOB_TAG" || true
+  bash "$KIT_DIR/07_export_sessions.sh" || true
 elif [ "$smoke" != 0 ]; then
-  log "attention smoke FAILED: OPAL not started; CLIO stays up for diagnosis until the deadline"
+  log "a smoke gate FAILED: OPAL not started; CLIO stays up for diagnosis until the deadline"
+  bash "$KIT_DIR/07_export_sessions.sh" || true
 fi
 end_flag="$ROOT/run/END-$JOB_TAG"; rm -f "$end_flag"
 log "serving; end early with: touch $end_flag"

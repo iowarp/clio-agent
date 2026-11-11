@@ -28,7 +28,7 @@ Supported:
 |---|---|---|
 | Windows 10 or 11, x64 | yes | yes |
 | Windows on ARM | yes (the x64 app, through emulation) | yes |
-| macOS 14 or newer, Apple Silicon | yes | yes |
+| macOS 15 or newer, Apple Silicon | yes | yes |
 | macOS, Intel | no desktop app yet | yes |
 | Linux x86_64 or aarch64 with `apt` or `dnf`/`rpm` | yes | yes |
 | Linux without a package manager | no | yes |
@@ -45,7 +45,7 @@ Use `bash` on macOS and Linux, never `sh`. The Desktop installer download is che
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 - Linux installs the `.deb` or `.rpm` with the system package manager and asks for the
@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/inst
 Windows (PowerShell):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+irm https://clio.iowarp.ai/desktop.ps1 | iex
 ```
 
 The CLIO Desktop installer window opens. The person clicks through it; its pages ask
@@ -68,13 +68,13 @@ about the model provider and the computers to use. Wait for it to close.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 ```
 
 This needs only `curl` (or PowerShell). The installer brings its own `uv` and Python;
@@ -85,8 +85,9 @@ person how to add it for their shell.
 
 ### Choosing a release
 
-Add these after `--desktop` (or alone for the service install). On Windows, use the
-`& ([scriptblock]::Create((irm <url>))) <options>` form to pass options.
+Pass them after `bash -s --` (`curl -fsSL https://clio.iowarp.ai/desktop.sh | bash -s -- --dev`).
+On Windows, use `& ([scriptblock]::Create((irm <url>))) <options>`, e.g.
+`& ([scriptblock]::Create((irm https://clio.iowarp.ai/desktop.ps1))) -Dev`.
 
 | Option | Installs |
 |---|---|
@@ -120,8 +121,10 @@ browser at http://127.0.0.1:17800. `clio stop` stops the service.
 - Stop at the first error. Show the person the last lines of the output.
 - Do not work around a checksum mismatch, a signature error, or an unsupported system.
   Those are reasons not to install.
-- On macOS, the app is ad-hoc signed. If macOS blocks the first launch, the person opens
-  **System Settings → Privacy & Security → Open Anyway**. Do not remove quarantine
+- On macOS, the app is ad-hoc signed. If macOS blocks the first launch of a browser
+  download, the person chooses **Done**, then opens **System Settings → Privacy &
+  Security**, scrolls to **Security** and chooses **Open Anyway** (macOS 15 and newer
+  no longer accept Control-click → Open). Do not remove quarantine
   attributes or change Gatekeeper settings.
 - For a service install, `clio report` prints a diagnostics bundle the person can attach
   to an issue at https://github.com/iowarp/clio-agent/issues.
@@ -130,6 +133,8 @@ browser at http://127.0.0.1:17800. `clio stop` stops the service.
 ## 6. Remove
 
 Service install: `clio uninstall` (add `--purge` to also remove settings and stored
-credentials). Desktop app: uninstall it like any other app on that system.
+credentials, `--purge-caches` to also remove the cache folder). Desktop app on macOS: quit
+it, then run the uninstaller with `--desktop` (or drag it from `~/Applications` to the
+Trash). Elsewhere, uninstall it like any other app on that system.
 
 More: https://clio.iowarp.ai/docs/install/

@@ -32,7 +32,6 @@ from clio_agent.gact.resource_processing import (
     ResourceProcessingRecord,
 )
 from clio_agent.gact.resource_tools import (
-    ResourceQueryError,
     list_workspace_resources,
     read_workspace_resource_structure,
 )
@@ -895,11 +894,10 @@ def test_a_truncated_derivative_manifest_is_announced_in_the_attachment_block(
 # --------------------------------------------------------------------------- #
 
 
-def test_the_workspace_resource_listing_cap_is_configurable(tmp_path: Path) -> None:
-    """``resources.list_max_records`` bounds the listing and reports truncation.
+def test_the_workspace_resource_listing_pages_through_every_resource(tmp_path: Path) -> None:
+    """``resources.list_max_records`` is the page size; ``next_offset`` reaches the rest.
 
-    Was a bare ``rows[:100]`` literal in ``resource_tools``. **Sabotage:**
-    restore the literal -> both rows come back and ``truncated`` stays False.
+    **Sabotage:** drop the offset from the slice -> the second page repeats the first.
     """
 
     set_config("resources.list_max_records", 1)
@@ -909,23 +907,24 @@ def test_the_workspace_resource_listing_cap_is_configurable(tmp_path: Path) -> N
         _upload(client, workspace_id, name="one.md", content=b"# one\n")
         _upload(client, workspace_id, name="two.md", content=b"# two\n")
 
-        listed = list_workspace_resources(app, workspace_id)
+        first = list_workspace_resources(app, workspace_id)
+        second = list_workspace_resources(app, workspace_id, offset=first["next_offset"])
+        both = list_workspace_resources(app, workspace_id, limit=5)
 
-    assert len(listed["resources"]) == 1
-    assert listed["truncated"] is True
+    assert [row["name"] for row in first["resources"]] == ["two.md"]
+    assert first["truncated"] is True and first["next_offset"] == 1 and first["total"] == 2
+    assert [row["name"] for row in second["resources"]] == ["one.md"]
+    assert second["next_offset"] is None and second["truncated"] is False
+    assert [row["name"] for row in both["resources"]] == ["two.md", "one.md"]
 
 
-def test_the_structured_node_ceiling_is_configurable(tmp_path: Path) -> None:
-    """``resources.structure_node_max_bytes`` bounds ONE structured node.
+def test_a_large_structured_node_is_served_whole(tmp_path: Path) -> None:
+    """A node above the retired 2 MiB ceiling is returned whole, not refused.
 
-    Was a bare ``_MAX_NODE_BYTES = 2 * 1024 * 1024`` module literal. The node
-    below is ~4 KiB encoded: it passes under the shipped 2 MiB default and must
-    be refused once the deployment lowers the ceiling to the 1 KiB floor.
-    **Sabotage:** restore the literal -> the refusal never fires and the node
-    is served.
+    **Sabotage:** restore a byte ceiling on ``node`` -> the read raises.
     """
 
-    big_text = "x" * 4096
+    big_text = "x" * (3 * 1024 * 1024)
     result = {
         **_STRUCTURED_RESULT,
         "document": {
@@ -943,18 +942,11 @@ def test_the_structured_node_ceiling_is_configurable(tmp_path: Path) -> None:
     with TestClient(app) as client:
         workspace_id = _workspace(client, tmp_path / "workspace")
         resource = _upload(client, workspace_id, name="big.md", content=b"# big\n")
-        resource_id = str(resource["id"])
+        served = read_workspace_resource_structure(
+            app, workspace_id, str(resource["id"]), "texts", 0
+        )
 
-        # Under the shipped default the node is served...
-        served = read_workspace_resource_structure(app, workspace_id, resource_id, "texts", 0)
-        assert served["node"]["text"] == big_text
-
-        # ...and the deployment can refuse it by lowering the ceiling.
-        set_config("resources.structure_node_max_bytes", 1024)
-        with pytest.raises(ResourceQueryError) as excinfo:
-            read_workspace_resource_structure(app, workspace_id, resource_id, "texts", 0)
-
-    assert excinfo.value.code == "structure_node_too_large"
+    assert served["node"]["text"] == big_text
 
 
 def test_converter_activity_window_bounds_are_configuration() -> None:

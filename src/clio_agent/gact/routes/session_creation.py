@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import session_warmup
 from clio_agent.gact.agents.resolution import SessionAgentUnavailable, prepare_session_agent
-from clio_agent.gact.off_loop import join_off_loop
+from clio_agent.gact.off_loop import join_on
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes.search_assistant import register_search_assistant_routes
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.session_defaults import apply_default_effort
 from clio_agent.gact.spotter_watcher import sync_watcher_for_mode
 from clio_agent.gact.types import CreateSessionRequest, ErrorEnvelope, ErrorInfo, Session
+
+if TYPE_CHECKING:
+    from clio_agent.gact.sessions import Session as StoredSession
 
 
 def register_session_creation_route(app: FastAPI) -> None:
@@ -42,36 +46,43 @@ def register_session_creation_route(app: FastAPI) -> None:
         metadata = dict(req.metadata)
         apply_default_effort(metadata, defaults)  # provenance-stamped starting level
         requested = req.agent.id if req.agent is not None and req.agent.id else ""
-        try:
-            resolution = await join_off_loop(prepare_session_agent, app, metadata, requested)
-        except SessionAgentUnavailable as exc:
-            raise HTTPException(status_code=422, detail=agent_unavailable_envelope(exc)) from exc
         if "model" in supplied:
             model = req.model.model_dump(exclude_none=True) if req.model else None
         elif defaults.provider_id or defaults.model_id:
             model = {"provider_id": defaults.provider_id, "model_id": defaults.model_id}
         else:
             model = None
-        sess = await join_off_loop(
-            app.state.sessions.create,
-            workspace_id=wid,
-            title=req.title,
-            metadata=metadata,
-            model=model,
-            agent={"id": resolution.agent["id"]},
-            mode=req.mode if "mode" in supplied else defaults.mode,
-            edit_mode=req.edit_mode if "edit_mode" in supplied else defaults.edit_mode,
-            routing_mode=(
-                req.routing_mode if "routing_mode" in supplied else defaults.routing_mode
-            ),
-            approval_mode=(
-                req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
-            ),
-        )
-        bringup_timing.timer_for_session(app, sess.id).start_phase("session.create")
-        # Session creation inherits territory and emits no fabricated grant (#979.2).
-        await asyncio.to_thread(sync_watcher_for_mode, app, sess)
-        bringup_timing.timer_for_session(app, sess.id).end_phase("session.create")
+
+        def prepare_and_create() -> StoredSession:
+            # One off-loop job on the creation executor: each hop through the shared
+            # pool waited behind every queued read, which multiplied a flood's delay.
+            resolution = prepare_session_agent(app, metadata, requested)
+            sess = app.state.sessions.create(
+                workspace_id=wid,
+                title=req.title,
+                metadata=metadata,
+                model=model,
+                agent={"id": resolution.agent["id"]},
+                mode=req.mode if "mode" in supplied else defaults.mode,
+                edit_mode=req.edit_mode if "edit_mode" in supplied else defaults.edit_mode,
+                routing_mode=(
+                    req.routing_mode if "routing_mode" in supplied else defaults.routing_mode
+                ),
+                approval_mode=(
+                    req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
+                ),
+            )
+            timer = bringup_timing.timer_for_session(app, sess.id)
+            timer.start_phase("session.create")
+            # Session creation inherits territory and emits no fabricated grant (#979.2).
+            sync_watcher_for_mode(app, sess)
+            timer.end_phase("session.create")
+            return sess
+
+        try:
+            sess = await join_on(creation_executor(app), prepare_and_create)
+        except SessionAgentUnavailable as exc:
+            raise HTTPException(status_code=422, detail=agent_unavailable_envelope(exc)) from exc
         # Start the session's servers now, not on its first message.
         session_warmup.start_session_warmup(app, sess.id, trigger="session_created")
         return project_for_request(
@@ -79,6 +90,29 @@ def register_session_creation_route(app: FastAPI) -> None:
             v3=lambda: JSONResponse(content=session_to_v3(sess), status_code=201),
             v2=lambda: Session(**sess.to_wire()),
         )
+
+
+#: Workers for session creation; creation is short, so a few keep it off the shared pool.
+_CREATION_WORKERS = 4
+
+
+def creation_executor(app: FastAPI) -> ThreadPoolExecutor:
+    """The app's session-creation executor (created on first use, on the loop)."""
+
+    executor = getattr(app.state, "session_creation_executor", None)
+    if executor is None:
+        executor = ThreadPoolExecutor(_CREATION_WORKERS, thread_name_prefix="gact-session-create")
+        app.state.session_creation_executor = executor
+    return executor
+
+
+def close_creation_executor(app: FastAPI) -> None:
+    """Stop accepting creations and let the running ones finish (shutdown)."""
+
+    executor = getattr(app.state, "session_creation_executor", None)
+    if executor is not None:
+        app.state.session_creation_executor = None
+        executor.shutdown(wait=False)
 
 
 def agent_unavailable_envelope(exc: SessionAgentUnavailable) -> dict[str, object]:

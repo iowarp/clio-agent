@@ -59,6 +59,7 @@ def bundled_wheel_requirements(runtime: Path | None, stack: Path, project: Path)
             or entry["source_hash"] not in {source.get("hash") for source in sources}
             or not re.fullmatch(r"[A-Za-z0-9_.+!-]+\.whl", filename)
             or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("codesigned_from", digest)))
         ):
             raise ValueError(f"Bundled document wheel has invalid locked metadata: {name}")
         wheel = directory / filename
@@ -69,9 +70,14 @@ def bundled_wheel_requirements(runtime: Path | None, stack: Path, project: Path)
         if actual != digest:
             raise ValueError(f"Bundled document wheel checksum mismatch: {name}")
         locked_wheel_hashes = {source.get("hash") for source in package.get("wheels", [])}
+        # A macOS release signs native members of the wheel for notarization
+        # (scripts/macos_sign_runtime.py) and records the locked download it
+        # started from; the app's code signature seals both the wheel and this
+        # manifest.
+        original = entry.get("codesigned_from", actual)
         if (
             entry["source_hash"] in locked_wheel_hashes
-            and f"sha256:{actual}" != entry["source_hash"]
+            and f"sha256:{original}" != entry["source_hash"]
         ):
             raise ValueError(f"Bundled document wheel differs from the locked download: {name}")
         requirements.append(f"{name}=={version} --hash=sha256:{digest}\n")

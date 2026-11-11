@@ -37,6 +37,8 @@ HOOK_EVENTS: dict[str, str] = {
     "tool_result": "PostToolUse",
     "tool_batch": "PostToolBatch",
     "prompt_submit": "UserPromptSubmit",
+    # A typed command, before it reaches the model (``plugin:command`` in ``command_name``).
+    "prompt_expansion": "UserPromptExpansion",
     "stop": "Stop",
     "answer": "Answer",
     "session_start": "SessionStart",

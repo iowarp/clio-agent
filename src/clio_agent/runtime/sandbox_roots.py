@@ -6,7 +6,7 @@ owns the single source of writable territory: the base is the ADVISORY
 :attr:`clio_agent.tools.file_policy.FileAccessPolicy.allowed_roots` (the same source the
 tool-boundary check reads), so the OS fence territory can never be narrower than what
 file_policy already permits — anti-drift by construction (owner decision #974.6). The
-fence then ADDS the caches a spawned launcher needs (tempdir + clio + tool caches) so
+fence then ADDS the caches a spawned launcher needs (tempdir unless ``paths.allow_system_temp`` is off + clio + tool caches) so
 confinement never false-positives on a legitimate ``uv``/``npm`` cache write.
 """
 
@@ -171,6 +171,21 @@ def _platform_tool_cache_dirs() -> list[Path]:
     return dirs
 
 
+def read_only_write_roots() -> tuple[Path, ...]:
+    """The writable territory of a read-only child (a plan-mode ``run_code`` kernel): the
+    session's own scratch folder (TD56) and the system temp folders, never the workspace,
+    the allowed roots or CLIO's own state."""
+    from clio_agent.runtime.session_scratch import (  # noqa: PLC0415 - avoid cycle
+        active_scratch_dir,
+        system_temp_roots,
+    )
+
+    scratch = active_scratch_dir()
+    roots = [scratch] if scratch is not None else []
+    roots.extend(temp for temp in system_temp_roots() if temp not in roots)
+    return tuple(roots)
+
+
 def effective_write_roots(
     profile: Profile,
     *,
@@ -193,15 +208,27 @@ def effective_write_roots(
     ``from_env``); ``workspace_root`` includes an explicit root (shell computes it per
     invocation). Returns a deduped, order-stable tuple (advisory roots first).
     """
-    import tempfile  # noqa: PLC0415 - cheap, only on this path
-
+    from clio_agent.runtime.session_scratch import (  # noqa: PLC0415 - avoid cycle
+        active_scratch_dir,
+        system_temp_roots,
+    )
     from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415 - avoid cycle
+    from clio_agent.tools.write_scope import active_tool_read_only  # noqa: PLC0415
 
+    if profile == PROFILE_SHELL and active_tool_read_only():
+        # A read-only session's shell (an explore child): reads anything, writes only
+        # its scratch and temp, as a plan-mode run_code kernel.
+        return read_only_write_roots()
     if policy is None:
         policy = (
             FileAccessPolicy.from_mapping(env) if env is not None else FileAccessPolicy.from_env()
         )
     roots: list[Path] = list(policy.allowed_roots)
+    scratch = active_scratch_dir()
+    if profile == PROFILE_FLEET and scratch is not None:
+        # The fleet is shared by every session of the workspace: one session's own scratch
+        # folder (TD56), which the advisory policy carries for that session, stays out.
+        roots = [root for root in roots if root != scratch]
 
     def _add(path: Path) -> None:
         resolved = path.expanduser()
@@ -216,7 +243,10 @@ def effective_write_roots(
         roots = list(narrowed)
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-        _add(Path(tempfile.gettempdir()))
+        if scratch is not None:
+            _add(scratch)  # the session's own scratch folder (TD56), whatever policy is given
+        for temp in system_temp_roots():
+            _add(temp)
         _add(paths.user_cache_dir())
         _add(paths.user_config_dir())
         return tuple(roots)
@@ -227,7 +257,8 @@ def effective_write_roots(
     # NEXT spawn — union the live registry so the fence territory widens without a restart.
     for granted in granted_write_roots(workspace_root):
         _add(granted)
-    _add(Path(tempfile.gettempdir()))
+    for temp in system_temp_roots():
+        _add(temp)
 
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -241,6 +272,12 @@ def effective_write_roots(
         from clio_agent.tools.mcp_config import _mcp_uv_cache_dir  # noqa: PLC0415 - avoid cycle
 
         _add(_mcp_uv_cache_dir())
+        # A deep home's MCP builds sit under a short root outside the cache (WinError 206).
+        _add(paths.mcp_build_cache_dir())
+        from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415 - avoid cycle
+
+        # Plugin servers keep PLUGIN_DATA in the store, which a deep home puts outside it.
+        _add(plugin_store_root() / "data")
         for cache in _platform_tool_cache_dirs():
             _add(cache)
 
@@ -254,6 +291,7 @@ __all__ = [
     "clear_write_root_grants",
     "effective_write_roots",
     "granted_write_roots",
+    "read_only_write_roots",
     "register_write_root_grant",
     "revoke_write_root_grant",
 ]

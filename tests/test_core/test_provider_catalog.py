@@ -176,6 +176,7 @@ class TestDerivedViews:
             "argonne",
             "codex",
             "claude_code",
+            "copilot",
         }
 
     def test_provider_defaults_have_required_keys(self) -> None:
@@ -207,6 +208,7 @@ class TestDerivedViews:
             "azure_openai": "AZURE_API_KEY",
             "gemini": "GOOGLE_API_KEY",
             "nvidia_nim": "NVIDIA_NIM_API_KEY",
+            "inception": "INCEPTION_API_KEY",
         }
 
     def test_lm_presets_includes_every_provider(self) -> None:

@@ -54,3 +54,68 @@ def test_startup_graph_compiles_only_selected_roots(
     changed = importlib.util.module_from_spec(changed_spec)
     changed_spec.loader.exec_module(changed)
     assert changed.value == 43
+
+
+def test_named_packages_are_compiled_whole_inside_the_runtime_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lazily imported first-party modules ship bytecode instead of compiling every launch."""
+    script = Path(__file__).resolve().parents[2] / "install/precompile_runtime.py"
+    spec = importlib.util.spec_from_file_location("_precompile_packages", script)
+    assert spec and spec.loader
+    compiler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(compiler)
+    python_root = tmp_path / "runtime"
+    package = python_root / "site-packages" / "_clio_lazy_pkg"
+    lazy = package / "tools" / "lazy.py"
+    lazy.parent.mkdir(parents=True)
+    for file in (package / "__init__.py", package / "tools" / "__init__.py", lazy):
+        file.write_text("value = 1\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere" / "_clio_outside_pkg"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "__init__.py").write_text("value = 2\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(python_root / "site-packages"))
+    monkeypatch.syspath_prepend(str(elsewhere.parent))
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    assert compiler.precompile_packages(python_root, ["_clio_lazy_pkg", "_clio_outside_pkg"]) == 3
+
+    bytecode = Path(importlib.util.cache_from_source(str(lazy))).read_bytes()
+    assert struct.unpack_from("<I", bytecode, 4)[0] == 3  # CHECKED_HASH
+    assert marshal.loads(bytecode[16:]).co_filename == (
+        "gact-runtime/python/site-packages/_clio_lazy_pkg/tools/lazy.py"
+    )
+    assert not Path(importlib.util.cache_from_source(str(elsewhere / "__init__.py"))).exists()
+    with pytest.raises(RuntimeError, match="not an importable package"):
+        compiler.precompile_packages(python_root, ["_clio_no_such_pkg"])
+
+
+def test_launch_path_compiles_only_loaded_sources_inside_the_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Modules the booted server loaded ship bytecode; extensions and outside files do not."""
+    script = Path(__file__).resolve().parents[2] / "install/precompile_runtime.py"
+    spec = importlib.util.spec_from_file_location("_precompile_launch_path", script)
+    assert spec and spec.loader
+    compiler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(compiler)
+    python_root = tmp_path / "runtime"
+    loaded = python_root / "site-packages" / "uvicorn" / "loops" / "auto.py"
+    loaded.parent.mkdir(parents=True)
+    loaded.write_text("value = 1\n", encoding="utf-8")
+    extension = loaded.with_name("_speedups.so")
+    extension.write_bytes(b"")
+    outside = tmp_path / "outside.py"
+    outside.write_text("value = 2\n", encoding="utf-8")
+    recorded = [str(loaded), str(extension), str(outside), str(python_root / "gone.py")]
+    monkeypatch.setattr(compiler, "_boot_and_read_api", lambda home, timeout: recorded)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    assert compiler.precompile_launch_path(python_root) == 1
+
+    bytecode = Path(importlib.util.cache_from_source(str(loaded))).read_bytes()
+    assert struct.unpack_from("<I", bytecode, 4)[0] == 3  # CHECKED_HASH
+    assert not Path(importlib.util.cache_from_source(str(outside))).exists()
+    monkeypatch.setattr(compiler, "_boot_and_read_api", lambda home, timeout: [])
+    with pytest.raises(RuntimeError, match="recorded no loaded modules"):
+        compiler.precompile_launch_path(python_root)

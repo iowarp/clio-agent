@@ -30,9 +30,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.arc.chunk_records import read_segments
 from clio_agent.arc.lane_chunking import chunk_scope
 from clio_agent.arc.lane_generations import current_base
-from clio_agent.arc.schema import Segment, decode_segments
+from clio_agent.arc.schema import Segment
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     fully_retracted,
@@ -40,6 +41,7 @@ from clio_agent.gact.part_atoms import (
     reproduce_message_wire,
     retracted_part_ids,
 )
+from clio_agent.gact.transcript_unreadable import typed_transcript_read
 from clio_agent.gact.types import Message
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -122,8 +124,9 @@ def _read_chunk(store: Any, session_id: str, scope: str) -> list[Segment]:
     with store._lock_for(session_id, scope):
         if key in store._loaded:
             return list(store._scopes.get(key) or [])
-        raw = store._store.get("segments", store._record_name(session_id, scope))
-    return decode_segments(raw) if raw else []
+        name = store._record_name(session_id, scope)
+    # Lock-free: a chunk read mid-append ends at its last whole record (chunk_records).
+    return read_segments(store._store, session_id, scope, name)
 
 
 def _assemble(contents: list[dict[str, Any]], *, drop_leading: int) -> list[Message]:
@@ -199,7 +202,8 @@ def read_message_page(
     """The page from the resident copy or the lane; ``None`` means page the full ledger.
 
     Runs off the event loop (it may wait for the lane lock and read clio-core).
-    Raises :class:`PageCursorNotFound` for an unknown ``before``.
+    Raises :class:`PageCursorNotFound` for an unknown ``before``, and
+    :class:`~clio_agent.gact.messages.LedgerReadError` for an unreadable lane.
     """
 
     from clio_agent.gact.transcript_file import _canonical_log_arc  # noqa: PLC0415
@@ -218,9 +222,10 @@ def read_message_page(
         )
         return None
     arc = _canonical_log_arc(app, session_id)  # typed not-ready errors while attaching
-    page = read_lane_page(
-        arc, session_id, limit=limit, before=before, include_system=include_system
-    )
+    with typed_transcript_read(session_id):  # #1172: an unreadable lane is a typed 503
+        page = read_lane_page(
+            arc, session_id, limit=limit, before=before, include_system=include_system
+        )
     history = getattr(app.state, "task_history", None)
     if history is not None:
         from clio_agent.gact.session_store import project_committed_feedback  # noqa: PLC0415

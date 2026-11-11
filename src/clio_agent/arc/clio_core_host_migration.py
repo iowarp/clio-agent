@@ -21,9 +21,14 @@ by rename on the same filesystem (never a copy), when all of these hold:
 
 A move renames each entry; if one rename fails, the entries already moved are
 put back and the failure is logged (``*_migration_failed``). Every outcome other
-than the no-op is logged with its typed reason. The moved ``cte.yaml`` has its
-own absolute paths (file tier, metadata log, conf dir) pointed at the new
-directory, the only change made to it.
+than the no-op is logged with its typed reason. The moved store's own records of
+its location are then pointed at the new directory by
+:func:`clio_agent.arc.clio_core_relocate.relocate_store`: ``cte.yaml`` (the file
+tier, metadata log, index log and conf dir, its only change), clio-core's pool log
+and file bdev model, and the capacity journal's digest of ``cte.yaml`` (left naming
+the old text, managed growth would read the config as a person's edit). A pool log
+of an unknown format is left as it is (``cte_pool_log_not_relocated``): clio-core
+takes every pool the config composes from the config.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ CTE_STORE_MIGRATED = "cte_store_migrated_to_host_dir"
 CTE_STORE_MIGRATION_SKIPPED_SHARED = "cte_store_migration_skipped_shared"
 CTE_STORE_MIGRATION_SKIPPED_IN_USE = "cte_store_migration_skipped_in_use"
 CTE_STORE_MIGRATION_FAILED = "cte_store_migration_failed"
+CTE_STORE_MIGRATION_RELOCATION_INCOMPLETE = "cte_store_migration_relocation_incomplete"
 RUNTIME_STATE_MIGRATED = "runtime_state_migrated_to_host_dir"
 RUNTIME_STATE_MIGRATION_SKIPPED_SHARED = "runtime_state_migration_skipped_shared"
 RUNTIME_STATE_MIGRATION_SKIPPED_IN_USE = "runtime_state_migration_skipped_in_use"
@@ -93,7 +99,6 @@ def migrate_legacy_cte_store(legacy_dir: Path, host_dir: Path, *, runtime_root: 
     entries = [entry for entry in legacy_dir.iterdir() if entry.name != "hosts"]
     try:
         _move_all(entries, host_dir)
-        _relocate_config(host_dir / "cte.yaml", legacy_dir, host_dir)
     except OSError as exc:
         logger.warning(
             "reason=%s store=%s host_dir=%s error=%s (the old store was left in place)",
@@ -103,6 +108,7 @@ def migrate_legacy_cte_store(legacy_dir: Path, host_dir: Path, *, runtime_root: 
             exc,
         )
         return CTE_STORE_MIGRATION_FAILED
+    _relocate_store(legacy_dir, host_dir)
     logger.warning(
         "reason=%s from=%s to=%s entries=%d",
         CTE_STORE_MIGRATED,
@@ -200,21 +206,58 @@ def _move_all(entries: list[Path], destination: Path) -> None:
         raise
 
 
-def _relocate_config(config: Path, legacy_dir: Path, host_dir: Path) -> None:
-    """Point the moved config's own absolute paths at the new directory."""
+def _relocate_store(legacy_dir: Path, host_dir: Path) -> None:
+    """Point the moved store's records of its location at ``host_dir``.
 
+    Nothing uses the store (checked before the move). A failure is logged, typed; the
+    start that follows (:func:`clio_agent.arc.clio_core_relocate.ensure_store_location`)
+    finishes the relocation, ``cte.yaml`` being rewritten last.
+    """
+    from clio_agent.arc import clio_core_relocate as relocate  # noqa: PLC0415 - cycle
+
+    old = legacy_dir.as_posix().rstrip("/")
+    try:
+        try:
+            relocate.relocate_store(host_dir, old)
+        except relocate.WalFormatError as exc:
+            logger.warning(
+                "reason=%s store=%s error=%s (the pool log is left as it is; clio-core "
+                "takes every pool cte.yaml composes from cte.yaml)",
+                relocate.CTE_POOL_LOG_NOT_RELOCATED,
+                host_dir,
+                exc,
+            )
+            relocate.relocate_store(host_dir, old, rewrite_pool_log=False)
+        _relocate_config(host_dir / "cte.yaml", legacy_dir, host_dir)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "reason=%s store=%s error=%s (moved; its location records are finished at "
+            "this start, before clio-core starts)",
+            CTE_STORE_MIGRATION_RELOCATION_INCOMPLETE,
+            host_dir,
+            exc,
+        )
+
+
+def _relocate_config(config: Path, legacy_dir: Path, host_dir: Path) -> None:
+    """Point the config's native-spelled paths (Windows separators) at the new directory.
+
+    The POSIX spelling CLIO writes is relocated with the rest of the store; a person may
+    have written the native one. The capacity journal follows the config.
+    """
+
+    native = str(legacy_dir).rstrip("\\/") + os.sep
+    if native == legacy_dir.as_posix().rstrip("/") + "/":
+        return  # POSIX: one spelling, already relocated (a second pass would nest it)
     text = config.read_text(encoding="utf-8")
-    relocated = text
-    # The POSIX spelling (what CLIO writes) and the native one; on POSIX they are
-    # the same string, which must be replaced once, not twice.
-    spellings = {
-        legacy_dir.as_posix().rstrip("/") + "/": host_dir.as_posix().rstrip("/") + "/",
-        str(legacy_dir).rstrip("\\/") + os.sep: str(host_dir).rstrip("\\/") + os.sep,
-    }
-    for old, new in spellings.items():
-        relocated = relocated.replace(old, new)
+    # One pass: the new directory lies inside the old one, and a replaced path is not
+    # scanned again.
+    relocated = text.replace(native, str(host_dir).rstrip("\\/") + os.sep)
     if relocated != text:
+        from clio_agent.arc.clio_core_growth import rekey_managed_capacity  # noqa: PLC0415
+
         config.write_text(relocated, encoding="utf-8")
+        rekey_managed_capacity(config, text, relocated)
 
 
 def _config_port(config: Path) -> int | None:

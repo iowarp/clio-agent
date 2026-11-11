@@ -18,13 +18,17 @@ on iowarp-core 2.3.2: every put that grows a blob adds one storage block rounded
 whole 4 KiB pages, and every later put of that blob appends the blob's whole block
 list to the ``metadata.log`` write-ahead log, which is truncated only after a full
 metadata snapshot completes and is otherwise replayed into daemon memory on start. The
-ARC lanes re-put a chunk after each append, so a 512-atom chunk of 1.4 KB
+ARC lanes then re-put a whole chunk after each append, so a 512-atom chunk of 1.4 KB
 atoms grew 512 blocks, wrote 10 MiB of metadata log (73 bytes + 80 per block per put)
 and held its data in about three times its size in pages. With size classes a growing
 record gains a block only when it crosses a class: the same 5,120 appends wrote
 8 MiB of metadata log instead of 100 MiB, and the daemon stayed at 56 MiB resident
 instead of 589 MiB. Each class is a whole number of pages and at most a quarter above
 the record's own page-rounded size, which is what clio-core allocates for it anyway.
+
+Segment-list records (every ARC scope and lane chunk) do not use this frame: they are
+append-only raw records written at an offset (:mod:`clio_agent.arc.chunk_records`),
+which grow in the same size classes. The frame stays for every other whole record.
 """
 
 from __future__ import annotations
@@ -37,9 +41,12 @@ from collections.abc import Callable
 from clio_agent.errors import ClioError
 
 __all__ = [
+    "CORRUPT_BLOB_ERRORS",
+    "TRANSIENT_BLOB_ERRORS",
     "BlobDecodeError",
     "BlobFrameError",
     "BlobNameDecodeError",
+    "BlobReadError",
     "frame",
     "read_framed_blob",
     "size_class",
@@ -101,6 +108,30 @@ class BlobDecodeError(ClioError):
         )
 
 
+class BlobReadError(ClioError):
+    """clio-core lists a blob (non-zero size) but reading it failed (#1172).
+
+    The binding raises a bare ``RuntimeError("GetBlob operation failed")`` here,
+    typically while the store is unreachable or restarting, so the read may succeed
+    on a retry. Naming it keeps it from escaping as an unexplained 500.
+    """
+
+    reason = "clio_core_blob_unreadable"
+
+    def __init__(self, name: str, exc: Exception) -> None:
+        super().__init__(
+            f"clio-core blob {name!r} is present but its read failed: {exc}",
+            error_type=self.reason,
+            details={"name": name, "cause": str(exc)},
+        )
+
+
+#: A read that failed and may succeed on a retry (the store did not answer).
+TRANSIENT_BLOB_ERRORS: tuple[type[ClioError], ...] = (BlobReadError,)
+#: Stored bytes that cannot be turned back into the record, even after the retry.
+CORRUPT_BLOB_ERRORS: tuple[type[ClioError], ...] = (BlobFrameError, BlobDecodeError)
+
+
 def frame(data: bytes) -> bytes:
     """The stored body of ``data``: its base64 text behind a length header."""
     text = base64.b64encode(data)
@@ -131,14 +162,22 @@ def read_framed_blob(name: str, reported_size: int, read: Callable[[int], bytes 
 
     Both reads undergo strict decoding. Genuinely truncated or malformed data
     remains an error; this operation changes neither stored bytes nor metadata.
+    A read the store fails is raised as :class:`BlobReadError`.
     """
-    raw = read(reported_size)
+
+    def checked(length: int) -> bytes | str:
+        try:
+            return read(length)
+        except RuntimeError as exc:  # the binding's bare "GetBlob operation failed"
+            raise BlobReadError(name, exc) from exc
+
+    raw = checked(reported_size)
     try:
         return unframe(name, raw)
     except BlobFrameError as error:
         body = raw.encode("ascii") if isinstance(raw, str) else bytes(raw)
         required = body.index(_SEP) + 1 + int(error.details["declared"])
-        value = unframe(name, read(required))
+        value = unframe(name, checked(required))
         _logger.warning(
             "reason=clio_core_blob_size_stale name=%s reported=%s framed=%s",
             name,

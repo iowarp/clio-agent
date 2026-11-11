@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,8 +23,13 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     prepare_office_runtime,
 )
-from clio_agent.runtime.execution_environment import publish_environment
+from clio_agent.runtime.execution_environment import (
+    protect_bundled_runtime,
+    publish_environment,
+)
 from clio_agent.runtime.github_cli import ensure_github_cli
+from clio_agent.runtime.ripgrep import ensure_ripgrep
+from clio_agent.runtime.tectonic import ensure_tectonic
 
 
 def prepare_protected_execution(
@@ -51,6 +58,7 @@ def prepare_managed_packages(
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Prepare package caches without qualifying protection or saving an install receipt."""
+    protect_bundled_runtime()
     workspace.mkdir(parents=True, exist_ok=True)
     # These installers own separate cache trees and locks. Overlap the native
     # downloads/extraction with Python/Node preparation, without changing the
@@ -74,10 +82,24 @@ def prepare_managed_packages(
         report("GitHub command-line tool is ready.")
         return github
 
+    def prepare_ripgrep() -> Path:
+        report("Preparing and checking ripgrep for file search...")
+        ripgrep = ensure_ripgrep()
+        report("ripgrep is ready.")
+        return ripgrep
+
+    def prepare_tectonic() -> Path:
+        report("Preparing and checking Tectonic for LaTeX builds...")
+        tectonic = ensure_tectonic()
+        report("Tectonic is ready.")
+        return tectonic
+
     with package_preparation.preparing(cache_root):
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-install") as workers:
             office_job = workers.submit(prepare_office)
             github_job = workers.submit(prepare_github)
+            ripgrep_job = workers.submit(prepare_ripgrep)
+            tectonic_job = workers.submit(prepare_tectonic)
             result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
             if result["javascript"]["status"] != "ready":
                 raise DocumentRuntimeError(
@@ -85,6 +107,8 @@ def prepare_managed_packages(
                 )
             office = office_job.result()
             github = github_job.result()
+            ripgrep = ripgrep_job.result()
+            tectonic = tectonic_job.result()
         result["native_tools"]["soffice"] = {"status": "available", "path": office}
         result["capabilities"]["office_render_recalculate"] = "available"
         result["native_tools"]["gh"] = {
@@ -92,6 +116,8 @@ def prepare_managed_packages(
             "path": str(github),
             "authentication": "clio_account",
         }
+        result["native_tools"]["rg"] = {"status": "available", "path": str(ripgrep)}
+        result["native_tools"]["tectonic"] = {"status": "available", "path": str(tectonic)}
     return result
 
 
@@ -111,8 +137,25 @@ def install_document_runtime(
         else None
     )
     reused = result is not None
+    protection: dict[str, Any] | None = None
     if result is None:
-        result = prepare_managed_packages(workspace, cache_root=cache_root, progress=progress)
+        # The fence check touches only the bundled runtime, tool and temp roots, never
+        # the package caches, so it runs while the packages are prepared.
+        progress_lock = Lock()
+
+        def report(message: str) -> None:
+            if progress is not None:
+                with progress_lock:
+                    progress(message)
+
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-protection") as checking:
+            protection_job = checking.submit(
+                prepare_protected_execution,
+                progress=report,
+                setup_protected_execution=setup_protected_execution,
+            )
+            result = prepare_managed_packages(workspace, cache_root=cache_root, progress=report)
+            protection = protection_job.result()
     else:
         from clio_agent.runtime.document_stack.process import scratch_root
         from clio_agent.tools.file_policy import FileAccessPolicy
@@ -127,11 +170,11 @@ def install_document_runtime(
             progress(
                 "Verified installation unchanged; reusing Office, Python, Node.js and GitHub packages."
             )
-    result["native_tools"].update(
-        prepare_protected_execution(
+    if protection is None:
+        protection = prepare_protected_execution(
             progress=progress, setup_protected_execution=setup_protected_execution
         )
-    )
+    result["native_tools"].update(protection)
     if not reused:
         save_install_receipt(workspace, result, cache_root=cache_root)
     if progress is not None:
@@ -157,8 +200,55 @@ def prune_after_install() -> dict[str, Any]:
     return {"status": "pruned", "freed_bytes": pruned.bytes_freed, "evicted": pruned.count}
 
 
+def collect_snapshots_after_install() -> dict[str, Any]:
+    """Remove superseded marketplace snapshots at the end of an install or upgrade.
+
+    Gated like the MCP cache prune: skipped with a typed reason while a peer clio
+    process (a running server, which may read a snapshot) is alive; ``clio-agent doctor
+    --gc`` collects the same snapshots on demand.
+    """
+    from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
+    from clio_agent.plugins.snapshot_gc import collect_superseded_snapshots  # noqa: PLC0415
+    from clio_agent.runtime.disk_gc import live_peer_clio_processes  # noqa: PLC0415
+
+    if list(live_peer_clio_processes()):
+        return {"status": "skipped", "reason": "marketplace_snapshots_skipped_live"}
+    try:
+        collected = collect_superseded_snapshots(plugin_store_root())
+    except (OSError, ValueError) as error:
+        return {"status": "failed", "reason": "marketplace_snapshot_gc_failed", "error": str(error)}
+    return {
+        "status": "collected",
+        "freed_bytes": collected.bytes_freed,
+        "removed": len(collected.removed),
+        "kept": collected.kept,
+    }
+
+
+def _report_warnings() -> None:
+    """Send CLIO's warnings to stderr, where Desktop and the installers keep them.
+
+    Without a handler Python prints only bare messages of WARNING and above, losing
+    their logger and the typed ``reason=`` they carry.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    owner = logging.getLogger("clio_agent")
+    owner.addHandler(handler)
+    owner.setLevel(logging.WARNING)
+
+
 def main() -> None:
-    """Run the shared installer step; an incomplete setup exits unsuccessfully."""
+    """Run the installer step; a failed step exits 1 with its message, not a traceback."""
+    _report_warnings()
+    try:
+        _main()
+    except DocumentRuntimeError as error:
+        print(f"CLIO runtime setup failed: {error}", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
+
+
+def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=paths.user_data_dir() / "workspace")
     parser.add_argument(
@@ -194,15 +284,28 @@ def main() -> None:
         return
     # This standalone installer owns its workspace. Never widen a running agent's policy.
     os.environ["CLIO_ALLOWED_ROOTS"] = str(args.workspace.resolve())
-    result = install_document_runtime(
-        args.workspace,
-        progress=lambda message: print(message, flush=True),
-        setup_protected_execution=args.setup_protected_execution,
-        reuse_installed=args.reuse_installed,
-    )
+    output_lock = Lock()
+
+    def emit(message: str) -> None:
+        with output_lock:
+            print(message, flush=True)
+
     # The install-time prepare (not the per-start reuse check) also upgrades the store,
     # so the desktop's first start after an install or upgrade only checks the markers.
-    migrations = _run_store_migrations(args)
+    # The store reads none of the packages, so it is upgraded while they are prepared.
+    # clio-core is entered from the main thread, as before: from any other thread each
+    # native call is handed to a persistent native worker (arc/native_threads.py).
+    # Leaving this block waits for the packages too, so neither outlives the other.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-packages") as installing:
+        installation = installing.submit(
+            install_document_runtime,
+            args.workspace,
+            progress=emit,
+            setup_protected_execution=args.setup_protected_execution,
+            reuse_installed=args.reuse_installed,
+        )
+        migrations = _run_store_migrations(args, emit)
+        result = installation.result()
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
@@ -212,11 +315,14 @@ def main() -> None:
     if not args.reuse_installed:
         # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
         summary["mcp_cache"] = prune_after_install()
+        summary["marketplace_snapshots"] = collect_snapshots_after_install()
     print(json.dumps(summary), flush=True)
 
 
-def _run_store_migrations(args: argparse.Namespace) -> dict[str, Any]:
-    """``clio-agent migrate`` as this installer's last step, reported typed.
+def _run_store_migrations(
+    args: argparse.Namespace, emit: Callable[[str], None] = print
+) -> dict[str, Any]:
+    """``clio-agent migrate`` alongside this installer's package step, reported typed.
 
     A refusal or failure does not fail the package install: the server's next boot runs
     an owed migration once and its ``store_migrations`` health row reports the outcome.
@@ -226,8 +332,8 @@ def _run_store_migrations(args: argparse.Namespace) -> dict[str, Any]:
         return {"status": "skipped", "reason": reason}
     from clio_agent.gact.store_migrate_command import run_migrations  # noqa: PLC0415
 
-    print("Upgrading the CLIO store (clio-agent migrate)...", flush=True)
-    _code, payload = run_migrations(lambda line: print(line, flush=True))
+    emit("Upgrading the CLIO store (clio-agent migrate)...")
+    _code, payload = run_migrations(emit)
     return {key: payload[key] for key in ("status", "reason", "seconds") if key in payload}
 
 

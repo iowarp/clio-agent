@@ -39,7 +39,6 @@ from clio_agent.gact.runtime.globals import (
     _ContextFileAccessError,
     _iso_from_epoch,
     _new_message_id,
-    _session_agent_id,
     _TurnCancelled,
     _TurnTimedOut,
     _UnsupportedSessionAgent,
@@ -236,7 +235,6 @@ async def _run_turn_in_background(
     sid: str,
     user_text: str,
     user_msg: "Message",
-    turn_agent_id: str = "",
     transcript_job: Optional[DeferredTranscriptJob] = None,
 ) -> Any:
     """Drive an agent turn off the request thread.
@@ -259,9 +257,9 @@ async def _run_turn_in_background(
         # do anything useful. Don't raise — the publishing path
         # would crash and pollute logs with no client to notify.
         return
-    # #1215 S5: first-turn bring-up phase from "the background task started
+    # #1215 S5: the turn's bring-up phase from "the background task started
     # running" to "turn.started published" (see the end_phase call below).
-    bringup_timing.timer_for_session(app, sid).start_phase("turn.accept_gap")
+    bringup_timing.begin_turn(app, sid).start_phase("turn.accept_gap")
 
     # #767 Phase B: the turn's whole working set lives on one mutable ``TurnState``
     # threaded through the closures + body (formerly ~40 function-scope locals).
@@ -272,7 +270,7 @@ async def _run_turn_in_background(
         sid,
         user_text,
         user_msg,
-        turn_agent_id,
+        "",
         sess=sess,
         bus=bus,
     )
@@ -406,10 +404,6 @@ async def _run_turn_in_background(
         # expert_handoffs and returns the prediction (TRICKY #2: pred is a seam
         # return value, ``state.pred = forward_turn(state)``).
         state.pred = await forward_turn(state)
-        # #1215 S5: bring-up as far as instrumented (fleet.mount not wired yet,
-        # #1215 stays open) ends here on the success path; a failed first turn's
-        # still-open timer settles later via the registry's LRU eviction.
-        bringup_timing.finish_bringup(state.app, state.sid)
 
         if not await _apply_turn_prediction(
             state, _drain_observed_tool_calls, _update_retry_attempt
@@ -589,7 +583,6 @@ def _start_background_user_turn(
     request_parts: Optional[list[Part]] = None,
     metadata: Optional[dict[str, Any]] = None,
     prev_status: str = "idle",
-    turn_agent_id: str = "",
     user_msg_id: str = "",
     user_created_at: str = "",
     message_role: Literal["user", "system"] = "user",
@@ -653,12 +646,6 @@ def _start_background_user_turn(
                 "native_model_dispatch": native_dispatch,
             }
             user_metadata["image_parts"] = _image_part_summaries(user_parts)
-        if turn_agent_id:
-            user_metadata["agent_override"] = {
-                "requested_agent_id": turn_agent_id,
-                "session_agent_id": _session_agent_id(sess),
-                "scope": "turn",
-            }
         user_msg_id = user_msg_id or _new_message_id("user")
         user_msg = Message(
             id=user_msg_id,
@@ -684,7 +671,6 @@ def _start_background_user_turn(
                     else None
                 ),
                 "text": user_text,
-                "agent_id": turn_agent_id,
                 "metadata": user_metadata,
                 "message": user_msg.model_dump(mode="json"),
                 **({"supersedes_input": retry_binding} if retry_binding is not None else {}),

@@ -76,11 +76,14 @@ An empty term is still sent as a required `terms` parameter. Catalog errors are
 reported with their real HTTP status. Searches showing more than 500 datasets
 ask the user to refine the query rather than silently implying completeness.
 
-The shared built-in `work-with-ndp` skill is discovered by the default agent;
-agents declaring `connect-data` also receive it through the existing skill
-resolver, preserving workspace overrides and specialist scopes. Root agents get
-`connected_data_ndp_organizations` and `connected_data_search_ndp`. To connect a
-server-observed result they use the ordinary `connected_data_connect` tool:
+The `work-with-ndp` skill ("Working with NDP") belongs to the marketplace `ndp`
+plugin, which the `ndp` agent carries and other agents can add; the default
+`standard` agent does not claim NDP tools. Agents carrying the plugin get
+`connected_data_ndp_organizations` and `connected_data_search_ndp` in every
+workspace: catalog discovery needs no attached dataset, saved Endpoint, sign-in
+or MCP server. The clio-kit `ndp` MCP server is an optional `run_code`
+(`callers: "code"`) extra. To connect a server-observed result they use the
+ordinary `connected_data_connect` tool:
 
 ```json
 {"provider":"ndp","root":"<dataset-id>","label":"<dataset-title>",
@@ -102,6 +105,15 @@ Configure the deployment's actual Endpoints on the CLIO service, for example:
 ```dotenv
 CLIO_STORAGE_NDP_ENDPOINTS='[{"id":"lab","name":"Lab Endpoint","url":"https://your-endpoint.example/api","server":"local","authenticated":true}]'
 ```
+
+Without that setting CLIO has one built-in catalog, `ndp`. There is no public
+Endpoint API; each Endpoint belongs to an institution. The built-in catalog
+searches the public CKAN catalog at `https://nationaldataplatform.org/catalog`
+and advertises that address, unless `NDP_API_URL` names an Endpoint API to put
+behind it. Without an Endpoint API, HTTP(S) resources read normally, and
+Pelican, OSDF and S3 resources fail with a message naming the setting to add.
+Sources attached under the retired `http://155.101.6.191:8003` default keep
+their identity.
 
 The example address is a placeholder. Use the actual ep-api base URL, including
 any reverse-proxy prefix. `server` selects the existing NDP client's `local` or

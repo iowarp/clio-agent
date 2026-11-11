@@ -7,14 +7,9 @@ prev: false
 next: false
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { CONTACT_EMAIL, RESPONSIBLE_ORGANIZATION } from '../../lib/legal';
 
-<Aside type="note" title="Publication review">
-  This policy is prepared for review. The responsible organization and private
-  contact address must be confirmed before publication.
-</Aside>
-
-**Last updated: October 4, 2026**
+**Last updated: November 9, 2026**
 
 CLIO is an open-source AI workspace developed by the Gnosis Research Center at
 Illinois Tech as part of IOWarp. This policy explains how the CLIO software and
@@ -150,8 +145,10 @@ CLIO does not include a product-usage telemetry service. See the
 
 For information stored in an institution's or another operator's installation,
 contact that operator about access, correction, export, or deletion requests.
-For project privacy questions, the private contact address will be added before
-this policy is published. Never post sensitive information in a public issue.
+The CLIO project, this website, and this policy are the responsibility of the
+{RESPONSIBLE_ORGANIZATION}. For project privacy questions or requests, email
+<a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. Never post sensitive
+information in a public issue.
 
 Updates to this policy will appear here with a revised date. A new use of Google
 data outside the permissions and purposes already disclosed requires a new

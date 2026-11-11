@@ -1,27 +1,27 @@
 {
-  "captured": "2026-10-10",
+  "captured": "2026-11-11",
   "theme": "light",
   "scale": 1,
-  "agent_base": "99655c3ed31a90efbaaa3873cd8d92e0b1b70eb4",
-  "ui_revision": "d539ce4cf8bf6f2e9665fe1d21adfdeee41c93ce",
+  "agent_base": "409d8280fbc9c268f9a2b71b74c4b8ee36da2527",
+  "ui_revision": "96dbbd2e1d9ac819b480c94217b0fa64606f44eb",
   "synthetic_only": true,
   "model_run": false,
   "captures": [
     {
       "file": "current-dashboard.png",
-      "sha256": "7dfc940be1255574a2507986f4cbd71069ba1bd307225a0a3ad0bf630bb624a9"
+      "sha256": "5fc3cffbad7b1e3ca004b777392c727ae4b411cc84eb17c2f18da8439f94385a"
     },
     {
       "file": "current-data.png",
-      "sha256": "be4cc9ecb0851507c93e6dd61ae42fc4739633057694191069d24831cd6a9bcd"
+      "sha256": "fb72569a5c382de416862a17ce73bef08b87326829d3bd0185a3ef703808671b"
     },
     {
       "file": "current-lineage.png",
-      "sha256": "a9da395161e6755fec8891a33ba2f16603e15e95b482c64c579fd2b9a1d32a4d"
+      "sha256": "32c6bf39bf58c755f2eb82fe9c0aff818eb73ee7aff8ff79e4029333baebf4e2"
     },
     {
       "file": "current-report.png",
-      "sha256": "a0b4109cbfe2fef59c85a44ecb30f4a16b869614dfa16d0047683ec5f29cf066"
+      "sha256": "53327997fb4ebb7306ffe0d82fe172a3d80ce02d7374f72d66072dd22e814943"
     }
   ],
   "observability_review": "Test-only fictional fixture: four child agents and twelve tool calls, not a model run",
@@ -59,6 +59,31 @@
       {
         "file": "docs-memory-off.png",
         "sha256": "bdc10b81edc39554d7ccf58f0ff39ce7a6076951502885ad990cc64bd1dd5594"
+      }
+    ]
+  },
+  "sandbox_folders": {
+    "captured": "2026-11-06",
+    "theme": "light",
+    "scale": 2,
+    "model_run": true,
+    "source": "live verification, docs/design/sdk/tool-calling-ledger.md CT41-CT42 (tool-directed copy; mechanism only)",
+    "captures": [
+      {
+        "file": "docs-permissions-folder-card.png",
+        "sha256": "74fe88f715ce93f7403a35ad9abf0ae01ada39389795a67905a6ecac204986f6"
+      },
+      {
+        "file": "docs-permissions-blocked-notice.png",
+        "sha256": "40a646a61b5295c785bd2ec1607c6ab03b218b439b0f975df415348c880395c6"
+      },
+      {
+        "file": "docs-permissions-allow-dialog.png",
+        "sha256": "564b74f57afdd8d96d88aaa744659a7b633a781c5ad12c6ddb027b12e4cc73b1"
+      },
+      {
+        "file": "docs-permissions-allowed-folders.png",
+        "sha256": "9bfbacb1bd7eedaedf7a9561b61fddee036cb0f87b65e4f953fff744ed476bfe"
       }
     ]
   }

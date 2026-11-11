@@ -29,10 +29,9 @@ at that key. What remains genuinely owned here is the same as before:
   race). The popped entry is marked ``_dead`` so a late caller's connect is
   REFUSED (typed, retryable) rather than silently reconnecting a slot+CLI
   invisible to the pool.
-* **Kept conversations.** A popped entry's client takes every SDK conversation
-  it held with it; the release announces the drop synchronously
-  (:meth:`~clio_agent.providers.claude_code_sessions._StreamClientEntry.announce_dropped`)
-  so the engine never plans a delta against it, exactly like
+* **Kept conversations.** A popped entry's client takes the conversation it held
+  with it (:meth:`~clio_agent.providers.claude_code_sessions._StreamClientEntry
+  .forget_conversation`), so no delta is planned against it, exactly like
   :func:`~clio_agent.providers.claude_code_stream_bounds.reap_idle_session_entry`
   does for the idle-TTL path.
 """
@@ -129,7 +128,7 @@ def release_session_resources_nonblocking(pool: "ClaudeStreamClientPool", sessio
             )
         return
     model = entry._model or ""  # noqa: SLF001
-    entry.announce_dropped()
+    entry.forget_conversation()
     entry.close_nonblocking()
     if stream_audit_enabled():
         stream_audit(

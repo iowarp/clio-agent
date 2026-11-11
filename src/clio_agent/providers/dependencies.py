@@ -8,11 +8,15 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from packaging.requirements import Requirement
+
+from clio_agent.runtime import package_overlay
 
 #: The distribution CLIO's own extras (``pyproject.toml``
 #: ``[project.optional-dependencies]``) are declared under -- the only source
@@ -74,11 +78,62 @@ def _uv_executable(python_executable: str) -> str | None:
     return clio_tool("uv", python_executable)
 
 
-def _install_command(python_executable: str, requirements: Sequence[str]) -> list[str]:
+def _install_command(
+    python_executable: str,
+    requirements: Sequence[str],
+    *,
+    target: Path | None = None,
+    constraints: Path | None = None,
+) -> list[str]:
+    """The installer argv: in place, or into ``target`` pinned to ``constraints``."""
     uv = _uv_executable(python_executable)
+    placement: list[str] = []
+    if target is not None:
+        placement = ["--target", str(target)]
+        if constraints is not None:
+            placement += ["--constraint", str(constraints)]
     if uv:
-        return [uv, "pip", "install", "--python", python_executable, *requirements]
-    return [python_executable, "-m", "pip", "install", *requirements]
+        if target is not None:
+            placement.append("--compile-bytecode")
+        return [uv, "pip", "install", "--python", python_executable, *placement, *requirements]
+    if target is not None:
+        placement.append("--upgrade")
+    return [python_executable, "-m", "pip", "install", *placement, *requirements]
+
+
+def _overlay_constraints(overlay: Path, requirements: Sequence[str], workdir: Path) -> Path:
+    """Pin every runtime distribution except the requested ones, so ``--target``
+    adds what the runtime lacks and never a second copy of what it ships."""
+    requested = {package_overlay.normalized_name(Requirement(entry).name) for entry in requirements}
+    pins = [
+        pin
+        for pin in package_overlay.runtime_constraints(overlay)
+        if pin.split("==", 1)[0] not in requested
+    ]
+    constraints = workdir / "constraints.txt"
+    constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
+    return constraints
+
+
+def _run_installer(
+    executable: str, requirements: Sequence[str], display_name: str
+) -> subprocess.CompletedProcess[str]:
+    """Install in place, or into the package overlay of a sealed desktop runtime."""
+    overlay = package_overlay.overlay_for(executable)
+    if overlay is None:
+        return _run_install_command(_install_command(executable, requirements))
+    overlay.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="clio-agent-overlay-") as tmp:
+        constraints = _overlay_constraints(overlay, requirements, Path(tmp))
+        command = _install_command(
+            executable, requirements, target=overlay, constraints=constraints
+        )
+        result = _run_install_command(command)
+    if result.returncode == 0:
+        package_overlay.prune_duplicates(overlay)
+        package_overlay.prune_stale(overlay)
+        package_overlay.prepend(overlay)
+    return result
 
 
 def _bounded_install_error(result: subprocess.CompletedProcess[str]) -> str:
@@ -125,9 +180,8 @@ def _ensure_dependency(
         if _module_available(module_name):
             return False
 
-        command = _install_command(executable, requirements)
         try:
-            result = _run_install_command(command)
+            result = _run_installer(executable, requirements, display_name)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ProviderDependencyInstallError(
                 f"could not start the {display_name} installer: {exc}"
@@ -201,6 +255,7 @@ PROVIDER_SUPPORT: Mapping[str, ProviderSupport] = {
     "claude_code": ProviderSupport(
         "claude_code", "claude_agent_sdk", ("claude-agent-sdk",), "Claude Code"
     ),
+    "copilot": ProviderSupport("copilot", "copilot", ("github-copilot-sdk",), "GitHub Copilot"),
 }
 
 
@@ -212,14 +267,24 @@ def support_installed(provider_kind: str) -> bool:
 def _recorded(provider_kind: str, installed: bool) -> bool:
     """Record a support this call installed, so a runtime change cannot lose it.
 
+    It also forgets every cached client selection, so the CLI the install just
+    provided is found without a restart.
+
     Only an install CLIO just performed is recorded -- support the runtime
     already carried (the desktop bundles ALCF sign-in) is not the person's
     install. A failed record is logged and reported by
     :mod:`clio_agent.providers.support_record`; the install itself stands.
     """
     if installed:
+        from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
+            reset_client_cache,
+        )
         from clio_agent.providers.support_record import record_support  # noqa: PLC0415
 
+        # A client selection cached before the install (``claude_no_cli``,
+        # ``copilot_no_runtime``) must not outlive it, or sign-in and model
+        # discovery keep reporting the support missing until a restart.
+        reset_client_cache()
         record_support(provider_kind)
     return installed
 
@@ -286,13 +351,57 @@ def ensure_claude_code_support(*, python_executable: str | None = None) -> bool:
     return _recorded("claude_code", installed)
 
 
+def ensure_copilot_support(*, python_executable: str | None = None) -> bool:
+    """Ensure the backend has the GitHub Copilot SDK and its staged runtime.
+
+    The SDK release comes from CLIO's own ``copilot`` extra. The runtime the
+    SDK pins is staged here, on the person's Install action, so a turn never
+    downloads it (``COPILOT_SKIP_CLI_DOWNLOAD`` is set for every client).
+    Returns ``True`` when this call installed the SDK or staged the runtime.
+    """
+    target = python_executable or sys.executable
+    installed = ensure_provider_extra(
+        extra_name="copilot",
+        module_name=PROVIDER_SUPPORT["copilot"].module,
+        display_name="GitHub Copilot support",
+        python_executable=target,
+    )
+    from clio_agent.providers.copilot.runtime import staged_runtime_path  # noqa: PLC0415
+
+    if target == sys.executable and staged_runtime_path():
+        return _recorded("copilot", installed)
+    overlay = package_overlay.overlay_for(target)
+    download = (
+        package_overlay.module_command(target, overlay, "copilot", "download-runtime")
+        if overlay is not None
+        else [target, "-m", "copilot", "download-runtime"]
+    )
+    try:
+        result = _run_install_command(download)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProviderDependencyInstallError(
+            f"GitHub Copilot runtime could not be staged: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        raise ProviderDependencyInstallError(
+            f"GitHub Copilot runtime could not be staged: {_bounded_install_error(result)}"
+        )
+    return _recorded("copilot", True)
+
+
 #: Provider kind -> its installer. The single generic seam the route dispatches
 #: through (``ensure_provider_support``) so adding a new installable provider
 #: is a registry entry here, never a new route-level special case.
 _PROVIDER_INSTALLERS: Mapping[str, Callable[..., bool]] = {
     "argonne": ensure_argonne_support,
     "claude_code": ensure_claude_code_support,
+    "copilot": ensure_copilot_support,
 }
+
+
+def provider_support_installable(provider_kind: str) -> bool:
+    """Whether CLIO has an installer for ``provider_kind``'s runtime support."""
+    return provider_kind in _PROVIDER_INSTALLERS
 
 
 def ensure_provider_support(provider_kind: str, *, python_executable: str | None = None) -> bool:

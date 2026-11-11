@@ -19,11 +19,13 @@ __all__ = ["BatchPutError", "PutRecord"]
 
 @dataclass(frozen=True)
 class PutRecord:
-    """One record of a batch put (same arguments as ``ARCStore.put``)."""
+    """One record of a batch put (the arguments of ``ARCStore.put``, or of
+    ``ARCStore.put_at`` when ``offset`` is set: raw bytes put at that offset)."""
 
     name: str
     data: bytes
     search_text: str | None = None
+    offset: int | None = None
 
 
 class BatchPutError(ClioError):

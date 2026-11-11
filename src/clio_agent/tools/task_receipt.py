@@ -34,7 +34,7 @@ def accepted_result(receipt: dict[str, Any]) -> AcceptedTaskResult:
                 and receipt.get("retry_safe") is False
             )
         )
-        or receipt.get("kind") not in {"MCP", "Shell", "Download", "Indexing"}
+        or receipt.get("kind") not in {"MCP", "Shell", "Download", "Indexing", "Code"}
         or not str(receipt.get("handle", "")).startswith("task_")
     ):
         raise ValueError("Invalid CLIO task acceptance receipt")

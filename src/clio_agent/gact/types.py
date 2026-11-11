@@ -79,6 +79,11 @@ class Integration(BaseModel):
     endpoint: Optional[str] = None
     required: bool = True
     reason: Optional[str] = None  # typed row reason, e.g. clio_core_starting (additive)
+    # Sandbox row only (None elsewhere): whether agent tools are OS-fenced now, whether the
+    # user must acknowledge running without a fence, and the banner text when they must.
+    active: Optional[bool] = None
+    acknowledgement_required: Optional[bool] = None
+    warning: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -512,6 +517,12 @@ class UpdateSessionRequest(BaseModel):
     archived: Optional[bool] = None
 
 
+class MoveSessionRequest(BaseModel):
+    """POST /v1/sessions/{sid}/move body: the workspace the conversation moves to."""
+
+    workspace_id: str = Field(min_length=1)
+
+
 class ListSessionsResponse(BaseModel):
     """GET /v1/sessions body.
 
@@ -648,7 +659,6 @@ class AgentDef(BaseModel):
     fanout: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
-    commands: list[str] = Field(default_factory=list)
     capability_refs: list[AgentCapabilityRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
@@ -691,6 +701,7 @@ ToolDomain = Literal[
     "messaging",
     "interaction",
     "science",
+    "browser",
 ]
 
 

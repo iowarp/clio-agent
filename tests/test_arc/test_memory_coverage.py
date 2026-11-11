@@ -1,7 +1,7 @@
 """Additional ARC Memory tests for coverage of uncovered paths.
 
 Covers: index lifecycle (no cap; release eviction), get_invocation (cache miss path),
-get_session_invocations, get_lsm_stats, clear_cache, clear_all,
+get_lsm_stats, clear_cache, clear_all,
 _parse_timestamp (string timestamps).
 """
 
@@ -93,24 +93,6 @@ class TestGetInvocation:
         """get_invocation should return None for missing trace."""
         result = arc.get_invocation("nonexistent")
         assert result is None
-
-
-class TestGetSessionInvocations:
-    """Test get_session_invocations."""
-
-    def test_returns_session_invocations(self, arc):
-        """Should return invocations for the given session."""
-        arc.store_invocation(_inv("t1", session_id="s1"))
-        arc.store_invocation(_inv("t2", session_id="s1"))
-        arc.store_invocation(_inv("t3", session_id="s2"))
-
-        result = arc.get_session_invocations("s1")
-        assert len(result) >= 1
-
-    def test_empty_session(self, arc):
-        """Should return empty list for session with no invocations."""
-        result = arc.get_session_invocations("empty")
-        assert result == []
 
 
 class TestLsmStats:

@@ -50,6 +50,8 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from clio_agent.providers import turn_activity
+
 if TYPE_CHECKING:
     from clio_agent.providers.claude_code_sessions import (
         ClaudeStreamClientPool,
@@ -79,7 +81,9 @@ def session_idle_ttl_s() -> float:
     """Idle TTL (seconds) for a pooled entry before the next ``entry_for`` sweep reaps it.
 
     Resolved via ``providers.claude_code.stream_idle_ttl_s`` /
-    ``CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S`` (file → env → default 15.0s).
+    ``CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S`` (file → env → default 300 s: between turns,
+    as long as the provider's prompt cache lasts; a turn's own connection is never
+    reaped while the turn runs, and a queued connect reclaims idle ones at once).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -87,7 +91,7 @@ def session_idle_ttl_s() -> float:
         conf.resolve(
             "providers.claude_code.stream_idle_ttl_s",
             env="CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S",
-            default=15.0,
+            default=300.0,
             cast=conf.as_float,
         )
     )
@@ -246,9 +250,13 @@ async def await_connect_slot(
 
 
 def sweep_idle_session_entries(
-    pool: "ClaudeStreamClientPool", ttl_s: float | None = None
+    pool: "ClaudeStreamClientPool", ttl_s: float | None = None, *, include_active: bool = False
 ) -> list[tuple[str, "_StreamClientEntry"]]:
     """Pop every entry of ``pool`` idle >= ``ttl_s`` (default :func:`session_idle_ttl_s`).
+
+    An entry whose session has a turn running (:mod:`clio_agent.providers.turn_activity`)
+    is kept unless ``include_active``: between two model calls of one turn it is idle
+    only because a tool is running, and dropping it would re-send the whole prompt.
 
     Returns the evicted ``(session_id, entry)`` pairs — teardown + the
     stateful-registry notification (:func:`reap_idle_session_entry`) happen
@@ -260,8 +268,11 @@ def sweep_idle_session_entries(
     with pool._guard:  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
         for session_id, entry in list(pool._entries.items()):  # noqa: SLF001
             idle = entry.idle_for()
-            if idle is not None and idle >= resolved_ttl:
-                evicted.append((session_id, entry))
+            if idle is None or idle < resolved_ttl:
+                continue
+            if not include_active and turn_activity.active(session_id):
+                continue
+            evicted.append((session_id, entry))
         for session_id, _entry in evicted:
             del pool._entries[session_id]  # noqa: SLF001
     for _session_id, entry in evicted:
@@ -278,7 +289,7 @@ def reap_idle_session_entry(session_id: str, entry: "_StreamClientEntry") -> Non
     )
 
     model = entry._model or ""  # noqa: SLF001
-    entry.announce_dropped()
+    entry.forget_conversation()
     entry.close_nonblocking()
     if stream_audit_enabled():
         stream_audit(

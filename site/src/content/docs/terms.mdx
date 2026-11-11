@@ -7,14 +7,9 @@ prev: false
 next: false
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { CONTACT_EMAIL, RESPONSIBLE_ORGANIZATION } from '../../lib/legal';
 
-<Aside type="note" title="Publication review">
-  These terms are prepared for review. The responsible organization and private
-  contact address must be confirmed before publication.
-</Aside>
-
-**Last updated: October 4, 2026**
+**Last updated: November 9, 2026**
 
 These terms cover the CLIO website at [clio.iowarp.ai](https://clio.iowarp.ai/) and
 the project's connection-registration and support services. CLIO is an
@@ -98,9 +93,10 @@ permissions, and uninstall CLIO. Follow the [data removal guide](/docs/uninstall
 to remove information from your installation; deleting the application alone may
 leave workspace data and backups behind.
 
-The project's responsible organization and private contact address will be
-confirmed before these terms are published. For an installation run by another
-operator, contact that operator for its service terms and support.
+The CLIO project and these terms are the responsibility of the
+{RESPONSIBLE_ORGANIZATION}. For questions about these terms, email
+<a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. For an installation run
+by another operator, contact that operator for its service terms and support.
 
 Revised terms will be posted on this page with an updated date and apply to
 subsequent use of project services. They do not change the license attached to

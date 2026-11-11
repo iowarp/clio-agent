@@ -20,8 +20,13 @@ idle TTL (:func:`~clio_agent.providers.claude_code_stream_bounds
 .session_idle_ttl_s` — the existing knob; no other timeout exists here), sweeps,
 and closes every reaped client with ``disconnect()`` (the B14 teardown). It
 does not poll: the pool wakes it whenever an entry is inserted or a call
-finishes (:meth:`IdleSessionReaper.wake`), which are the only moments a new
-idle deadline appears. With no entries left it exits, and the next wake starts
+finishes (:meth:`IdleSessionReaper.wake`), and a session's turn ending wakes it
+too (:func:`~clio_agent.providers.turn_activity.subscribe_ended`), which are the
+only moments a new idle deadline appears. An idle entry whose session still has
+a turn running is never reaped, so it sets no TTL deadline (only a bounded
+backstop re-check), and every sleep is timed at least
+:data:`MIN_REAPER_WAIT_S`: the thread cannot spin while a turn waits on a long
+tool or a permission prompt. With no entries left it exits, and the next wake starts
 it again, so an empty pool holds no thread. A reaped session's next turn mints
 a fresh entry through ``entry_for`` and reconnects transparently.
 
@@ -44,6 +49,7 @@ import threading
 import weakref
 from typing import TYPE_CHECKING
 
+from clio_agent.providers import turn_activity
 from clio_agent.providers.claude_code_stream_bounds import (
     reap_idle_session_entry,
     session_idle_ttl_s,
@@ -57,21 +63,39 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["IdleSessionReaper", "next_idle_deadline_s"]
 
+#: Shortest timed sleep of the reaper. A deadline that is already due (an entry that
+#: became idle-past-TTL after the sweep) is swept on the next pass, never by a 0 s wait.
+MIN_REAPER_WAIT_S = 0.5
+#: Longest gap between re-checks of an entry whose session has a turn running. Turn end
+#: wakes the reaper (``turn_activity.subscribe_ended``); this re-check is only a backstop.
+ACTIVE_TURN_RECHECK_MAX_S = 60.0
+
+
+def _active_turn_recheck_s(ttl_s: float) -> float:
+    return min(max(ttl_s, MIN_REAPER_WAIT_S), ACTIVE_TURN_RECHECK_MAX_S)
+
 
 def next_idle_deadline_s(pool: "ClaudeStreamClientPool", ttl_s: float) -> float | None:
-    """Seconds until the soonest idle entry of ``pool`` reaches ``ttl_s``.
+    """Seconds until the reaper should next sweep ``pool``, under the sweep's own rules.
 
     Returns ``None`` when no entry is idle. An entry with a call in flight has
-    no deadline yet; the pool wakes the reaper when that call finishes.
+    no deadline yet; the pool wakes the reaper when that call finishes. An idle
+    entry whose session has a turn running is never swept
+    (:func:`~clio_agent.providers.claude_code_stream_bounds.sweep_idle_session_entries`),
+    so it contributes no TTL deadline: turn end wakes the reaper, and a bounded
+    re-check (never ``0``) backs that up.
     """
     soonest: float | None = None
     with pool._guard:  # noqa: SLF001 - owner-split sibling of claude_code_sessions
-        entries = list(pool._entries.values())  # noqa: SLF001
-    for entry in entries:
+        entries = list(pool._entries.items())  # noqa: SLF001
+    for session_id, entry in entries:
         idle = entry.idle_for()
         if idle is None:
             continue
-        remaining = max(0.0, ttl_s - idle)
+        if turn_activity.active(session_id):
+            remaining = max(ttl_s - idle, _active_turn_recheck_s(ttl_s))
+        else:
+            remaining = max(0.0, ttl_s - idle)
         if soonest is None or remaining < soonest:
             soonest = remaining
     return soonest
@@ -90,12 +114,26 @@ class IdleSessionReaper:
         self._thread: threading.Thread | None = None
         self._wake_pending = False
         self._stopping = False
+        turn_activity.subscribe_ended(self._turn_ended)
 
     @property
     def running(self) -> bool:
         """Whether the reaper thread is currently alive."""
         with self._cond:
             return self._thread is not None and self._thread.is_alive()
+
+    def _turn_ended(self, session_id: str) -> None:
+        """A session's turn ended: its idle entry is reapable now, so re-arm the timer.
+
+        Only nudges a running thread. A stopped thread means the pool held no entries,
+        and inserting one starts the thread through :meth:`wake`.
+        """
+        del session_id
+        with self._cond:
+            if self._stopping or self._thread is None or not self._thread.is_alive():
+                return
+            self._wake_pending = True
+            self._cond.notify_all()
 
     def wake(self) -> None:
         """Tell the reaper a new idle deadline may exist; start the thread if needed.
@@ -133,7 +171,11 @@ class IdleSessionReaper:
             self._wake_pending = False
 
     def _run(self) -> None:
-        """Thread body: sweep, then sleep until the next deadline or a wake."""
+        """Thread body: sweep, then sleep until the next deadline or a wake.
+
+        The TTL is resolved once per pass, and every pass ends in a wake or a timed
+        sleep of at least :data:`MIN_REAPER_WAIT_S`, so the loop cannot spin.
+        """
         while True:
             with self._cond:
                 if self._stopping:
@@ -159,6 +201,8 @@ class IdleSessionReaper:
                     # this thread gone and starts a new one.
                     self._thread = None
                     return
+                if deadline is not None:
+                    deadline = max(deadline, MIN_REAPER_WAIT_S)
                 self._cond.wait(timeout=deadline)
 
     @staticmethod

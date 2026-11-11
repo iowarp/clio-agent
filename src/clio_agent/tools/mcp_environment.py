@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 __all__ = ["stdio_environment"]
 
@@ -40,10 +41,26 @@ def stdio_environment(
 
         # Reuse the same short content-addressed runtime cache as Desktop.
         # Nesting projects beneath the redirected Windows profile adds another
-        # workspace hash and exceeds MAX_PATH while copying locked projects.
+        # workspace hash and exceeds MAX_PATH while copying locked projects; a deep
+        # CLIO_AGENT_HOME gets a short build root for the same reason.
         if not env.get("CLIO_KIT_CACHE_DIR"):
-            env["CLIO_KIT_CACHE_DIR"] = str(paths.user_cache_dir() / "mcp-runtime")
+            env["CLIO_KIT_CACHE_DIR"] = str(paths.mcp_build_cache_dir() / "mcp-runtime")
+        from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
+            remove_stale_environments,
+        )
+        from clio_agent.tools.mcp_environment_repair import (  # noqa: PLC0415
+            repair_invalid_environments,
+        )
+
+        # An environment built at another location (a moved cache) is rebuilt, never run;
+        # one an interrupted build or removal left invalid is rebuilt, never refused.
+        remove_stale_environments(Path(env["CLIO_KIT_CACHE_DIR"]))
+        repair_invalid_environments(Path(env["CLIO_KIT_CACHE_DIR"]))
     for name in ("PYTHONHOME", "PYTHONPATH"):
         if name not in spec_env:
             env.pop(name, None)
+    from clio_agent.runtime.git_executable import with_bundled_git  # noqa: PLC0415
+
+    # ``uvx git+https://...`` launchers run git by name; a fresh Mac has only the placeholder.
+    with_bundled_git(env)
     return env

@@ -9,12 +9,11 @@ This engine carries the typed request across:
   text (:mod:`clio_agent.lm.engines.text_tools`) and the reply's one ``tool_calls``
   block comes back as typed calls. Images and documents (PDFs) ride as native content
   blocks next to the text.
-* **One session per conversation.** Inside an agent loop the SDK session for
-  ``(session, scope, model, cwd, thinking)`` is kept
-  (:class:`~clio_agent.lm.engines.conversations.ConversationRegistry`): append-only
-  calls send only the new messages under the same session id; anything else opens a
-  new session and sends in full, with a typed reset reason on the ``provider.stateful``
-  audit row.
+* **One conversation per client.** Inside an agent loop the pooled client's
+  conversation is kept (:mod:`.claude_code_conversation`): an append-only call sends
+  only the new messages; anything else clears the CLI and sends in full, with a typed
+  reset reason on the ``provider.stateful`` audit row. Calls outside a loop run on the
+  session's side client.
 * **Streaming.** Thinking deltas as thinking, text deltas held back at the tool-call
   block, then the calls, then usage (cache reads and writes included).
 * **Errors.** Transport failures and timeouts raise ``dspy.lm15`` types, so DSPy owns
@@ -27,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import threading
 import uuid
@@ -56,19 +54,26 @@ from dspy.lm15 import (
 )
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
-from clio_agent.lm.engines.conversations import ConversationRegistry, Send, conversation_key
+from clio_agent.lm.engines.conversations import conversation_key
+from clio_agent.lm.engines.invoke_calls import text_tool_protocol
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
-    TURN_REMINDER,
     ReplySplit,
     StreamSplitter,
+    ToolSchemas,
+    callable_tools,
     render_messages,
     render_system,
     split_reply,
+    turn_reminder,
 )
 from clio_agent.providers import claude_code_bridge as _bridge
 from clio_agent.providers.claude_code_audit import emit_call_started, emit_call_usage
+from clio_agent.providers.claude_code_clear import side_key
+from clio_agent.providers.claude_code_conversation import Send, plan, record_sent
+from clio_agent.providers.claude_code_conversation import reset as reset_conversation
+from clio_agent.providers.claude_code_cwd import session_cwd
 from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
 from clio_agent.providers.claude_code_multimodal import native_blocks
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk, thinking_key
@@ -81,7 +86,6 @@ from clio_agent.providers.claude_code_result_errors import (
 from clio_agent.providers.claude_code_sessions import (
     _STREAM_CLIENT_POOL,
     _active_gact_session_id,
-    on_client_dropped,
     transient_transport_error_message,
     transient_transport_error_types,
 )
@@ -104,28 +108,6 @@ _PROTOCOL_WORD = re.compile(r"_[a-z][a-z0-9_]*")
 _PROTOCOL_LINES = re.compile(r"(?:[ \t]*(?:_[a-z][a-z0-9_]*)?[ \t]*\r?\n)+")
 
 
-def _capacity() -> int:
-    """Max kept Claude Code sessions (``providers.claude_code.stateful_capacity``)."""
-    from clio_agent import conf  # noqa: PLC0415
-
-    return max(
-        1,
-        int(
-            conf.resolve(
-                "providers.claude_code.stateful_capacity",
-                env="CLIO_CLAUDE_CODE_STATEFUL_CAPACITY",
-                default=128.0,
-                cast=conf.as_float,
-            )
-        ),
-    )
-
-
-_CONVERSATIONS = ConversationRegistry(_capacity)
-# A dropped pooled client takes every SDK conversation it held with it.
-on_client_dropped(lambda session: _CONVERSATIONS.reset_session(session, "session_evicted"))
-
-
 class AsyncClaudeCodeEngine:
     """Async Claude Code engine (see the module docstring)."""
 
@@ -143,7 +125,7 @@ class AsyncClaudeCodeEngine:
     ) -> None:
         self.model = model
         self.thinking = thinking
-        self.cwd = cwd or os.getcwd()
+        self.cwd = cwd  # None: the session's workspace (claude_code_cwd)
         self.idle_timeout_s = idle_timeout_s
 
     def idle_timeout(self) -> float:
@@ -166,24 +148,29 @@ class AsyncClaudeCodeEngine:
     async def stream(self, request: Request) -> AsyncGenerator[Any, None]:
         """Run one query, yielding lm15 stream events."""
         system = render_system(request.system, request.tools)
-        key = conversation_key(self.model, self.cwd, thinking_key(self.thinking) or "")
-        send = _CONVERSATIONS.plan(key, request, system)
-        async for event in self._query(request, system, send):
+        cwd = self.cwd or session_cwd(_active_gact_session_id())
+        identity = (self.model, cwd, thinking_key(self.thinking) or "")
+        kept = conversation_key(*identity) is not None
+        async for event in self._query(request, system, cwd, identity, kept):
             yield event
 
     async def aclose(self) -> None:
         """Nothing to release: the pooled clients belong to their GACT sessions."""
 
-    async def _query(self, request: Request, system: str, send: Send) -> AsyncGenerator[Any, None]:
+    async def _query(
+        self, request: Request, system: str, cwd: str, identity: tuple[str, ...], kept: bool
+    ) -> AsyncGenerator[Any, None]:
         # The one SDK import seam: installs once when absent, else a typed
         # ClaudeCodeCLIUnavailableError -- never a raw ImportError mid-call.
         await asyncio.to_thread(require_claude_agent_sdk)
-        body, media = render_messages(send.messages, media=(ImagePart, DocumentPart))
-        if request.tools:
-            body = f"{body}{chr(10) * 2}{TURN_REMINDER}"
-        blocks = native_blocks(media)  # typed refusal (size, type, egress) before any send
+        gact_session = _active_gact_session_id()
+        # One-shot calls run on the session's side client: never on an agent's conversation.
+        pool_key = gact_session if kept else side_key(gact_session)
+        entry = _STREAM_CLIENT_POOL.entry_for(session_id=pool_key, gact_session_id=pool_key)
+        send = plan(entry, request, system, identity, kept=kept)
+        body, blocks = _payload(request, send)  # typed refusal before any send
         session_id = send.handle or uuid.uuid4().hex
-        _audit(send, self.model, len(request.messages), session_id)
+        _audit(send, self.model, len(request.messages), session_id, pool_key)
         call_index = _next_call_index()
         emit_call_started(
             call_id=send.call_id,
@@ -192,17 +179,22 @@ class AsyncClaudeCodeEngine:
             transport="sdk",
             prompt=body,
         )
-        gact_session = _active_gact_session_id()
         turn = _Turn(
             self.model,
             call_index,
             session_id,
-            available_tools=frozenset(
-                tool.name for tool in request.tools if isinstance(tool, FunctionTool)
+            available_tools=callable_tools(
+                [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
+            ),
+            schemas=ToolSchemas(
+                {
+                    tool.name: tool.parameters
+                    for tool in request.tools
+                    if isinstance(tool, FunctionTool)
+                }
             ),
         )
         yield StreamStartEvent(model=request.model)
-        entry = _STREAM_CLIENT_POOL.entry_for(session_id=gact_session, gact_session_id=gact_session)
         received = False
         try:
             for attempt in range(2):
@@ -215,9 +207,10 @@ class AsyncClaudeCodeEngine:
                             idle_timeout=self.idle_timeout(),
                             on_construct=_STREAM_CLIENT_POOL.bump_construct,
                             model=self.model,
-                            cwd=self.cwd,
+                            cwd=cwd,
                             thinking=self.thinking,
                             system_prompt=system,
+                            fresh=send.handle is None,
                         )
                     ) as messages:
                         async for message in messages:
@@ -231,7 +224,8 @@ class AsyncClaudeCodeEngine:
                     # The session's pooled entry was released (an abandoned stream, a
                     # turn-end release, the idle sweep) after this call took it and
                     # before anything was sent. Its typed error is retryable: take the
-                    # session's fresh entry once. On the record, never silent.
+                    # session's fresh entry once and plan again against it (it holds
+                    # no conversation, so the send is full). On the record, never silent.
                     if received or attempt or DEAD_ENTRY_MARKER not in str(exc):
                         raise
                     logger.info(
@@ -241,20 +235,23 @@ class AsyncClaudeCodeEngine:
                         gact_session,
                     )
                     entry = _STREAM_CLIENT_POOL.entry_for(
-                        session_id=gact_session, gact_session_id=gact_session
+                        session_id=pool_key, gact_session_id=pool_key
                     )
+                    send = plan(entry, request, system, identity, kept=kept)
+                    body, blocks = _payload(request, send)
+                    session_id = send.handle or session_id
         except TimeoutError as exc:  # typed by claude_code_expiry: connect vs stream idle
-            _reset(send)
+            _reset(entry, send)
             raise LMTimeoutError(f"{exc} (model={self.model})") from exc
         except transient_transport_error_types() as exc:
-            _reset(send)
+            _reset(entry, send)
             raise ServerError(
                 transient_transport_error_message(
                     self.model, exc, call_index=call_index, stderr_tail=entry.stderr_ring.tail()
                 )
             ) from exc
         except BaseException:
-            _reset(send)
+            _reset(entry, send)
             raise
         finally:
             emit_call_usage(
@@ -266,20 +263,26 @@ class AsyncClaudeCodeEngine:
                 output_chars=len(turn.reply),
             )
         closing = turn.finish(send.call_id)  # records this call's cost share
-        # Recorded after the query: connecting it may have dropped an older client.
-        if send.key is not None:
-            if turn.protocol_error:
-                _reset(send)
-            elif turn.provider_compacted:
-                _CONVERSATIONS.reset(send.key, "provider_compacted")
-            elif send.handle is None:
-                _CONVERSATIONS.opened(send.key, session_id, request, system)
-            else:
-                _CONVERSATIONS.continued(send.key, request)
-        # A one-shot session (outside a loop) is never continued; released ones are gone.
-        _forget_costs([session_id] if send.key is None else _CONVERSATIONS.take_released())
+        if not send.kept:
+            _forget_costs([session_id])  # a one-shot conversation is never continued
+        elif turn.protocol_error:
+            _reset(entry, send)
+        elif turn.provider_compacted:
+            reset_conversation(entry, "provider_compacted")
+        elif turn.overran:
+            reset_conversation(entry, "reply_past_calls")
+        elif replaced := record_sent(entry, send, session_id, request, system):
+            _forget_costs([replaced])  # the conversation it replaced is over
         for out in closing:
             yield out
+
+
+def _payload(request: Request, send: Send) -> tuple[str, Any]:
+    """The text body and native media blocks of ``send``'s messages."""
+    body, media = render_messages(send.messages, media=(ImagePart, DocumentPart))
+    if request.tools:
+        body = f"{body}{chr(10) * 2}{turn_reminder()}"
+    return body, native_blocks(media)
 
 
 class ClaudeCodeEngine(AsyncClaudeCodeEngine):
@@ -311,6 +314,11 @@ class ClaudeCodeEngine(AsyncClaudeCodeEngine):
 class _Turn:
     """Folds the SDK's messages into lm15 deltas, usage and the final reply."""
 
+    #: Names the transport in this turn's own errors.
+    label = "claude agent sdk"
+    #: Anthropic usage: the SDK's ``input_tokens`` leaves out the cache read and written.
+    input_excludes_cache = True
+
     def __init__(
         self,
         model: str,
@@ -318,11 +326,13 @@ class _Turn:
         session_id: str = "",
         *,
         available_tools: frozenset[str] = frozenset(),
+        schemas: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.call_index = call_index
         self.session_id = session_id
         self.available_tools = available_tools
+        self.schemas = schemas or {}
         self.events = 0
         self.redacted_tokens = 0
         self.reply = ""
@@ -333,7 +343,10 @@ class _Turn:
         # The CLI compacted its own session (``compact_boundary``): its context no longer
         # matches clio-core's, so the conversation is reset after this call.
         self.provider_compacted = False
-        self._splitter = StreamSplitter()
+        # The model wrote on past its call block; the CLI's history holds the invented rest.
+        self.overran = False
+        invoke = text_tool_protocol() == "invoke"
+        self._splitter = StreamSplitter(available_tools if invoke else ())
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
         self._held = ""  # streamed text held back while it could still be non-progress
@@ -360,20 +373,7 @@ class _Turn:
                 )
             text = stream_event_text(message.event)
             if text:
-                cutoff = self._progress.cutoff(text)
-                if cutoff is not None:
-                    self.protocol_error = "formatting_only_repetition"
-                    self.reply = (self.reply + text[:cutoff])[:4096]
-                    self._held = ""  # never shown
-                    return out
-                self.reply += text
-                if self._progress.undecided:
-                    self._held += text
-                    return out
-                release, self._held = self._without_word_preamble(self._held, text), ""
-                shown = self._splitter.push(release)
-                if shown:
-                    out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
+                self._on_text(text, out)
             return out
         if kind == "AssistantMessage":
             self.assistant_error = getattr(message, "error", None) or self.assistant_error
@@ -406,6 +406,23 @@ class _Turn:
             _audit_message("provider.message_unhandled", self.model, message)
         return []
 
+    def _on_text(self, text: str, out: list[Any]) -> None:
+        """Fold one streamed text delta: held back while undecided, split at the fence."""
+        cutoff = self._progress.cutoff(text)
+        if cutoff is not None:
+            self.protocol_error = "formatting_only_repetition"
+            self.reply = (self.reply + text[:cutoff])[:4096]
+            self._held = ""  # never shown
+            return
+        self.reply += text
+        if self._progress.undecided:
+            self._held += text
+            return
+        release, self._held = self._without_word_preamble(self._held, text), ""
+        shown = self._splitter.push(release)
+        if shown:
+            out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
+
     def _without_word_preamble(self, held: str, text: str) -> str:
         """Text released to the splitter. In the reply's first release, opening lines of
         protocol words (``_projectid_placeholder`` a few times, then prose) and one such word
@@ -428,6 +445,25 @@ class _Turn:
         if getattr(message, "stop_reason", None):
             self.stop_reason = str(message.stop_reason)
 
+    def _end_usage(self) -> Usage:
+        """The call's usage in lm15's convention for a provider not named ``anthropic``.
+
+        lm15 and DSPy read ``input_tokens`` as the whole prompt, with the cache counts as
+        parts of it (``prompt_tokens``, the context reading, the cost split). Anthropic
+        reports the uncached rest only, so the cache read and written are added here.
+        """
+        cache_read = self.usage.get("cache_read_input_tokens")
+        cache_write = self.usage.get("cache_creation_input_tokens")
+        input_tokens = self.usage.get("input_tokens")
+        if input_tokens is not None and self.input_excludes_cache:
+            input_tokens = int(input_tokens) + int(cache_read or 0) + int(cache_write or 0)
+        return Usage(
+            input_tokens=input_tokens,
+            output_tokens=self.usage.get("output_tokens"),
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+
     def finish(self, call_id: str) -> list[Any]:
         reply = self.reply or self.fallback
         # Some SDK routes return only an assembled AssistantMessage/ResultMessage.
@@ -441,7 +477,7 @@ class _Turn:
             self.protocol_error = "formatting_only_repetition"
             reply = reply[:4096]
         if not reply.strip():
-            raise ServerError(f"claude agent sdk returned empty content (model={self.model})")
+            raise ServerError(f"{self.label} returned empty content (model={self.model})")
         out: list[Any] = []
         if not self.reply and not self.protocol_error:
             shown = self._splitter.push(self.fallback)
@@ -466,7 +502,10 @@ class _Turn:
             )
             if self.protocol_error
             else split_reply(
-                reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
+                reply,
+                call_prefix=f"call_{call_id[:8]}",
+                available_tools=self.available_tools,
+                schemas=self.schemas,
             )
         )
         if self.dropped_word:
@@ -513,6 +552,20 @@ class _Turn:
                 dropped,
                 len(split.calls),
             )
+        if split.overrun:
+            # Written past the call block, before any result existed (invented results,
+            # prose about them, more calls): never run or shown. On the record.
+            self.overran = True
+            logger.info(
+                "provider reply text dropped past call block reason=reply_past_calls "
+                "model=%s call_id=%s chars=%d invented_results=%s later_calls=%d calls=%d",
+                self.model,
+                call_id,
+                len(split.overrun),
+                "[tool results]" in split.overrun or "<function_results>" in split.overrun,
+                split.overrun.count("<invoke "),
+                len(split.calls),
+            )
         for index, call in enumerate(split.calls):
             out.append(
                 StreamDeltaEvent(
@@ -528,12 +581,7 @@ class _Turn:
         out.append(
             StreamEndEvent(
                 finish_reason=finish or ("tool_call" if split.calls else "stop"),
-                usage=Usage(
-                    input_tokens=self.usage.get("input_tokens"),
-                    output_tokens=self.usage.get("output_tokens"),
-                    cache_read_tokens=self.usage.get("cache_read_input_tokens"),
-                    cache_write_tokens=self.usage.get("cache_creation_input_tokens"),
-                ),
+                usage=self._end_usage(),
                 # The SDK's own subscription-priced cost (absent when it reported none).
                 provider_data=_cost_data(self.usage, self.session_id),
             )
@@ -622,17 +670,17 @@ def _audit_message(stage: str, model: str, message: Any) -> None:
     )
 
 
-def _reset(send: Send) -> None:
-    """A failed query leaves the session in an unknown state: resend in full next."""
-    if send.key is not None:
-        _CONVERSATIONS.reset(send.key, "provider_error")
+def _reset(entry: Any, send: Send) -> None:
+    """A failed query leaves the conversation in an unknown state: resend in full next."""
+    if send.kept:
+        reset_conversation(entry, "provider_error")
 
 
-def _audit(send: Send, model: str, total: int, session_id: str) -> None:
+def _audit(send: Send, model: str, total: int, session_id: str, conversation: str) -> None:
     """One ``provider.stateful`` audit row per call inside an agent loop."""
     from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled  # noqa: PLC0415
 
-    if send.key is None or not stream_audit_enabled():
+    if not send.kept or not stream_audit_enabled():
         return
     row: dict[str, Any] = {
         "provider": "claude_code_sdk",
@@ -642,7 +690,7 @@ def _audit(send: Send, model: str, total: int, session_id: str) -> None:
         "stateful_mode": "delta" if send.handle else "full",
         "total_messages": total,
         "sent_messages": len(send.messages),
-        "conversation": "::".join(send.key[:2]),
+        "conversation": conversation,
         "session_id": session_id,
     }
     if send.reason is not None:

@@ -24,7 +24,7 @@ from clio_agent.gact.protocol.v3.message import part_to_v3_block
 from clio_agent.sdk import HOOK_EVENTS
 from tests.test_gact._hook_fixtures import make_command_dispatcher
 
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 @dataclass

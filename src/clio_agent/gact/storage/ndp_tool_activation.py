@@ -6,11 +6,14 @@ from clio_agent.gact import context
 
 
 def session_ndp_tools_enabled() -> bool:
-    """Enable NDP schemas only for an owned, active source in this workspace.
+    """Enable NDP Endpoint operation schemas only for an owned, active source here.
 
-    Read local connection records on each turn build. Account sign-in, catalog
-    configuration, retained downloads and other workspaces do not activate NDP.
-    No authentication, upstream discovery or network requests are performed.
+    Catalog discovery and Endpoint connection are not gated: an agent opts in by
+    claiming them (the ndp plugin). Operations, requests and uploads need an NDP
+    dataset or saved Endpoint in this workspace. Read local connection records on
+    each turn build. Account sign-in, catalog configuration, retained downloads and
+    other workspaces do not activate them. No authentication, upstream discovery or
+    network requests are performed.
     """
     app, sid = context.active_app(), context.active_session_id()
     session = app.state.sessions.get(sid) if app is not None and sid else None

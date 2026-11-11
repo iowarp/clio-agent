@@ -51,6 +51,7 @@ from typing import Any, Callable, Optional, Sequence
 # naming) lives in the sibling :mod:`sandbox_codex_profile` module (extracted to keep this file under
 # its size ratchet). Re-exported below so this module's public surface is unchanged — callers keep
 # importing these names from ``sandbox_codex``.
+from .sandbox_codex_probe import EnforcementVerdict
 from .sandbox_codex_profile import (
     CODEX_LAYER_GLOB,
     CODEX_LAYER_KEEP,
@@ -74,8 +75,11 @@ CODEX_MIN_SUPPORTED_VERSION = (0, 145, 0)
 CODEX_BINARY_NAME = "codex"
 
 #: The desktop-bundled codex payload's path, relative to the runtime root
-#: (``clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root()``).
+#: (``clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root()``), on Windows.
 _BUNDLED_CODEX_RELATIVE = ("python", "Lib", "site-packages", "codex_cli_bin", "bin", "codex.exe")
+#: The same payload in a POSIX (macOS/Linux) runtime: ``python/lib/python3.X/site-packages``
+#: holds an extensionless ``codex``.
+_BUNDLED_CODEX_POSIX_TAIL = ("site-packages", "codex_cli_bin", "bin", CODEX_BINARY_NAME)
 
 #: Typed ``CodexDetection.source`` labels -- distinguishes the desktop-shipped binary from one
 #: resolved off PATH, so the row/logs can tell a fresh user install apart from the bundled one.
@@ -201,15 +205,30 @@ def _bundled_codex_root() -> Optional[Path]:
     return resolve_bundled_runtime_root()
 
 
-def _wheel_codex_binary() -> Optional[Path]:
-    """Find the active Python wheel's Windows binary without importing or running it."""
+def _bundled_codex_binary(root: Path, platform: str = sys.platform) -> Path:
+    """The bundled codex binary's expected path under the runtime ``root`` for ``platform``."""
+    if platform.startswith("win"):
+        return Path(root, *_BUNDLED_CODEX_RELATIVE)
+    lib = Path(root, "python", "lib")
+    own = lib / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    candidates = [own, *sorted(lib.glob("python3.*"), reverse=True)] if lib.is_dir() else [own]
+    for version_dir in candidates:
+        binary = version_dir.joinpath(*_BUNDLED_CODEX_POSIX_TAIL)
+        if binary.is_file():
+            return binary
+    return own.joinpath(*_BUNDLED_CODEX_POSIX_TAIL)
+
+
+def _wheel_codex_binary(platform: str = sys.platform) -> Optional[Path]:
+    """Find the active Python wheel's codex binary without importing or running it."""
     try:
         spec = importlib.util.find_spec("codex_cli_bin")
     except (ImportError, ValueError):
         return None
     if spec is None or not spec.origin:
         return None
-    binary = Path(spec.origin).parent / "bin" / "codex.exe"
+    name = "codex.exe" if platform.startswith("win") else CODEX_BINARY_NAME
+    binary = Path(spec.origin).parent / "bin" / name
     return binary if binary.is_file() else None
 
 
@@ -224,12 +243,14 @@ def detect_codex(
     """Probe for the codex runtime + its version. DETECTION ONLY.
 
     Never spawns a fence. Every dependency is injectable so the ladder is unit-testable without
-    a real codex install. The desktop bundles its own ``codex.exe`` (under the relocatable
-    runtime's ``python/Lib/site-packages/codex_cli_bin/bin/``, resolved via ``bundled_root`` —
+    a real codex install. The desktop bundles its own codex (under the relocatable runtime's
+    ``python/Lib/site-packages/codex_cli_bin/bin/codex.exe`` on Windows and
+    ``python/lib/python3.X/site-packages/codex_cli_bin/bin/codex`` on macOS/Linux, resolved
+    via ``bundled_root`` —
     defaults to :func:`_bundled_codex_root`); when this process runs from that bundled runtime
     AND the bundled binary exists on disk, it is preferred FIRST (:data:`CODEX_SOURCE_BUNDLED`) —
     a desktop install must not depend on the user separately installing codex on PATH. Otherwise
-    checks the active Python wheel on Windows (:data:`CODEX_SOURCE_BUNDLED`), including
+    checks the active Python wheel on every platform (:data:`CODEX_SOURCE_BUNDLED`), including
     source/venv installs without a Desktop runtime manifest. Only installations without
     their own runtime use PATH (:data:`CODEX_SOURCE_PATH`); an older ambient client must
     not mask CLIO's qualified native backend. On win32 the
@@ -242,7 +263,7 @@ def detect_codex(
     :attr:`CodexDetection.bundled_codex_absent` rather than silently swallowed.
     """
     root = bundled_root()
-    bundled_binary = Path(root, *_BUNDLED_CODEX_RELATIVE) if root is not None else None
+    bundled_binary = _bundled_codex_binary(root, platform) if root is not None else None
     bundled_codex_absent = False
     if bundled_binary is not None and bundled_binary.is_file():
         binary = str(bundled_binary)
@@ -258,7 +279,9 @@ def detect_codex(
             if platform.startswith("win")
             else (CODEX_BINARY_NAME,)
         )
-        wheel = wheel_binary() if platform.startswith("win") else None
+        # CLIO's own dependency ships the binary on every platform; prefer it over PATH so a
+        # source/venv install (e.g. a Linux HPC node) never depends on a separate codex install.
+        wheel = wheel_binary()
         if wheel is not None:
             binary = str(wheel)
             source = CODEX_SOURCE_BUNDLED
@@ -485,6 +508,10 @@ REASON_CODEX_WINDOWS_UNPROVISIONED = "codex_windows_unprovisioned"
 REASON_CODEX_ENFORCEMENT_VERIFIED = "codex_enforcement_verified"
 REASON_CODEX_ENFORCEMENT_UNVERIFIED = "codex_enforcement_unverified"
 REASON_CODEX_ENFORCEMENT_ESCAPED = "codex_enforcement_escaped"
+#: Codex holds an existing account setup it no longer accepts (an older setup marker)
+#: and waits for its elevated setup instead of starting the command.
+REASON_CODEX_WINDOWS_SETUP_REQUIRED = "codex_windows_setup_required"
+_SETUP_REQUIRED_TEXT = "sandbox setup required"
 
 #: Bounded spawn timeout for the enforcement probe — a hung codex must never stall setup.
 _CODEX_PROBE_TIMEOUT_S = 60
@@ -559,12 +586,14 @@ def verify_codex_enforcement(
     try:
         return run(binary, write_root)
     except Exception as exc:  # noqa: BLE001 — any failure ⇒ enforcement unproven, never a false-green
-        logger.info(
+        logger.warning(
             "codex enforcement verify failed reason=%s error=%r",
             REASON_CODEX_ENFORCEMENT_UNVERIFIED,
             exc,
         )
-        return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+        return EnforcementVerdict(
+            False, REASON_CODEX_ENFORCEMENT_UNVERIFIED, f"the check could not run: {exc!r}"
+        )
 
 
 def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, str]:
@@ -582,12 +611,19 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
     ``write_root`` is the caller's declared territory (threaded for parity
     with :func:`verify_codex_enforcement`); the probe self-provisions its temp allow dir.
     """
-    import subprocess  # noqa: PLC0415 - only on this path
-    import tempfile  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415 - only on this path
 
+    from .sandbox_codex_probe import run_probe  # noqa: PLC0415
+
+    # Cleanup never replaces the outcome: a helper killed at the deadline may still
+    # hold a handle for a moment.
     with (
-        tempfile.TemporaryDirectory(prefix="clio-agent-codex-allow-") as allow,
-        tempfile.TemporaryDirectory(prefix="clio-agent-codex-out-") as outside,
+        tempfile.TemporaryDirectory(
+            prefix="clio-agent-codex-allow-", ignore_cleanup_errors=True
+        ) as allow,
+        tempfile.TemporaryDirectory(
+            prefix="clio-agent-codex-out-", ignore_cleanup_errors=True
+        ) as outside,
     ):
         outside_target = Path(outside) / "denied.txt"
         started_target = Path(allow) / "started.txt"
@@ -601,29 +637,85 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
             "/c",
             f"type nul > started.txt && type nul > {relative_outside}",
         ]
-        # Codex delegates ACL work to background helpers. Captured pipe handles
-        # can outlive the command on Windows; file witnesses provide the proof.
-        proc = subprocess.run(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=_CODEX_PROBE_TIMEOUT_S,
-            check=False,
-        )
+        # Codex delegates ACL work to background helpers, so stderr goes to a file
+        # (a pipe can outlive the command on Windows); file witnesses provide the proof.
+        log_marks = _sandbox_log_marks()
+        run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
         if outside_target.exists():
             # The confined child wrote OUTSIDE its territory — the fence did not hold.
-            return False, REASON_CODEX_ENFORCEMENT_ESCAPED
-        if not started_target.is_file() or proc.returncode == 0:
+            return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_ESCAPED, run.describe())
+        if not started_target.is_file() and (required := _setup_required_since(log_marks)):
+            # Codex wants its elevated setup again and waits instead of failing.
+            logger.warning(
+                "codex verification unproven reason=%s %s | %s",
+                REASON_CODEX_WINDOWS_SETUP_REQUIRED,
+                required,
+                run.describe(),
+            )
+            return EnforcementVerdict(
+                False,
+                REASON_CODEX_WINDOWS_SETUP_REQUIRED,
+                "Codex requires its one-time administrator setup again before it starts "
+                f"commands as the existing sandbox accounts (Codex log: {required})",
+            )
+        if not started_target.is_file() or run.returncode == 0:
             # Missing outside output alone is not proof: the launcher may never
             # have started the child or the command may not have executed.
-            logger.info(
-                "codex verification unproven child_started=%s returncode=%s",
-                started_target.is_file(),
-                proc.returncode,
+            started = started_target.is_file()
+            detail = (
+                f"the test command ran but its outside write was not refused ({run.describe()})"
+                if started
+                else f"Codex did not start the test command ({run.describe()})"
             )
-            return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+            logger.warning(
+                "codex verification unproven reason=%s child_started=%s %s",
+                REASON_CODEX_ENFORCEMENT_UNVERIFIED,
+                started,
+                run.describe(),
+            )
+            return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_UNVERIFIED, detail)
         # Child spawned and the out-of-root write did not land ⇒ the fence is genuinely in force.
-        return True, REASON_CODEX_ENFORCEMENT_VERIFIED
+        return EnforcementVerdict(True, REASON_CODEX_ENFORCEMENT_VERIFIED)
+
+
+def _sandbox_log_dir() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / ".sandbox"
+
+
+def _sandbox_log_marks() -> dict[Path, int]:
+    """The current size of each Codex sandbox log, so a check reads only its own lines."""
+    try:
+        return {path: path.stat().st_size for path in _sandbox_log_dir().glob("sandbox.*.log")}
+    except OSError:
+        return {}
+
+
+def _setup_required_since(marks: dict[Path, int]) -> str:
+    """Codex's 'sandbox setup required' line written after ``marks``, or ``""``."""
+    try:
+        logs = sorted(_sandbox_log_dir().glob("sandbox.*.log"))
+    except OSError:
+        return ""
+    for path in logs:
+        try:
+            with path.open("rb") as stream:
+                stream.seek(marks.get(path, 0))
+                text = stream.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if _SETUP_REQUIRED_TEXT in line:
+                return line.split("] ", 1)[-1].strip()
+    return ""
+
+
+def codex_setup_refresh_required(version: str, *, marker_reader: Any = None) -> bool:
+    """Whether this Codex's last legacy check found its account setup out of date."""
+    marker = (marker_reader if marker_reader is not None else _read_codex_marker)() or {}
+    return (
+        marker.get("enforcement_reason") == REASON_CODEX_WINDOWS_SETUP_REQUIRED
+        and marker.get("codex_version") == version
+    )
 
 
 def _codex_marker_path() -> Path:
@@ -702,7 +794,7 @@ def codex_windows_gate(
     check = provisioned if provisioned is not None else codex_windows_provisioned
     ok, _reason = check(platform=platform)
     if not ok:
-        return False, REASON_CODEX_WINDOWS_UNPROVISIONED
+        return False, _packaged_or(REASON_CODEX_WINDOWS_UNPROVISIONED, platform, version)
     read = marker_reader if marker_reader is not None else _read_codex_marker
     marker = read()
     if (
@@ -710,8 +802,22 @@ def codex_windows_gate(
         or marker.get("enforcement_verified") is not True
         or (version and marker.get("codex_version") != version)
     ):
-        return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+        return False, _packaged_or(REASON_CODEX_ENFORCEMENT_UNVERIFIED, platform, version)
     return True, REASON_CODEX_WINDOWS_PROVISIONED
+
+
+def _packaged_or(reason: str, platform: str, version: str) -> str:
+    """Name a packaged CLIO interpreter, the cause native MXC setup reports, when it applies."""
+    if platform.startswith("win") and version:
+        from clio_agent.runtime.sandbox_codex_mxc import (  # noqa: PLC0415
+            MXC_MIN_VERSION,
+            REASON_MXC_PACKAGED_PYTHON,
+            packaged_python,
+        )
+
+        if parse_version(version) >= MXC_MIN_VERSION and packaged_python():
+            return REASON_MXC_PACKAGED_PYTHON
+    return reason
 
 
 __all__ = [
@@ -734,6 +840,7 @@ __all__ = [
     "REASON_CODEX_VERSION_PROBE_UNRESPONSIVE",
     "REASON_CODEX_VERSION_UNSUPPORTED",
     "REASON_CODEX_WINDOWS_PROVISIONED",
+    "REASON_CODEX_WINDOWS_SETUP_REQUIRED",
     "REASON_CODEX_WINDOWS_UNPROVISIONED",
     "REASON_NOT_WINDOWS",
     "CodexDetection",
@@ -741,6 +848,7 @@ __all__ = [
     "CodexSpawnError",
     "codex_layer_name",
     "codex_prefix",
+    "codex_setup_refresh_required",
     "codex_windows_gate",
     "codex_windows_provisioned",
     "compose_codex_spawn",

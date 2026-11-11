@@ -194,11 +194,15 @@ def choose_model(
     requires: Requires,
     attribution: dict[str, list[str]],
     inherited: dict[str, str],
+    explicit_source: ChoiceSource = "explicit",
 ) -> ModelChoice:
     """Choose the model a child runs on (the order in the module docstring).
 
     ``inherited`` is the caller's ``{provider_id, model_id}``; empty ids mean the
     caller runs on the server's active model, which a child then shares.
+    ``explicit_source`` records who named ``explicit``: ``"person"`` when the
+    person picked it in settings (a SPOTTER watcher's model), which the
+    spending guard treats as already consented.
 
     Raises:
         ModelSelectionRefused: An explicit model, or the inherited one, cannot
@@ -217,7 +221,7 @@ def choose_model(
     if effort:
         reasons.append(f"effort {effort} from {effort_origin}")
     if explicit.strip():
-        candidate = Candidate(explicit.strip(), "explicit", effort=effort)
+        candidate = Candidate(explicit.strip(), explicit_source, effort=effort)
         entry = check_candidate(
             entries,
             candidate,
@@ -227,17 +231,17 @@ def choose_model(
         )
         return _choice(explicit, entry, candidate, reasons)
     for preference in prefers_chain:
-        ref = str(preference.get("model") or "")
+        ref = str(preference.get("model") or "") or _role_model(preference, reasons)
         if not ref:
             continue
         provider = str(preference.get("provider") or "")
         if provider and "/" not in ref:
             ref = f"{provider}/{ref}"
+        origin = str(preference.get("source") or "")
+        if preference.get("role") and not preference.get("model"):
+            origin = f"{origin}, fleet role {preference['role']}".lstrip(", ")
         candidate = Candidate(
-            ref,
-            "prefers",
-            origin=str(preference.get("source") or ""),
-            effort=str(preference.get("effort") or effort),
+            ref, "prefers", origin=origin, effort=str(preference.get("effort") or effort)
         )
         try:
             entry = check_candidate(
@@ -279,6 +283,24 @@ def choose_model(
             )
         raise
     return _choice("", entry, candidate, reasons)
+
+
+def _role_model(preference: dict[str, Any], reasons: list[str]) -> str:
+    """The ``account/model`` a preference's fleet role names, or "" when it names none.
+
+    An unset role is recorded and the selection goes on to the next preference, and
+    finally to the caller's model.
+    """
+    role = str(preference.get("role") or "")
+    if not role:
+        return ""
+    from clio_agent.gact.fleet_settings import ROLES, fleet_settings  # noqa: PLC0415
+
+    choice = fleet_settings()["judges"].get(role) if role in ROLES else None
+    if not choice:
+        reasons.append(f"fleet role {role} is not set; the caller's model runs")
+        return ""
+    return f"{choice['provider_id']}/{choice['model_id']}"
 
 
 def _choice(asked: str, entry: FleetEntry, candidate: Candidate, reasons: list[str]) -> ModelChoice:

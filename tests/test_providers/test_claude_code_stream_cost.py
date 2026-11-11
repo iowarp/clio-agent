@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.claude_code_bridge import sdk_result_usage
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
@@ -23,10 +23,10 @@ from tests import _fake_claude_sdk as fake
 @pytest.fixture(autouse=True)
 def _clean_pool() -> Any:
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def test_the_sdk_reported_cost_is_kept_beside_the_tokens() -> None:
@@ -76,5 +76,6 @@ async def test_the_engine_usage_keeps_cache_reads_and_writes_apart(
     fake.install(monkeypatch, reply=lambda: fake.answer("Hello", usage=usage))
     response = await fake.drive(fake.request())
 
-    assert (response.usage.input_tokens, response.usage.output_tokens) == (120, 45)
+    # Anthropic's input leaves the cache out; the engine reports the whole prompt.
+    assert (response.usage.input_tokens, response.usage.output_tokens) == (120 + 10 + 30, 45)
     assert (response.usage.cache_read_tokens, response.usage.cache_write_tokens) == (10, 30)

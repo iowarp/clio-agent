@@ -7,6 +7,13 @@
 #   install.sh --dev --source  source at `develop`
 #   install.sh --desktop       the desktop app, bundled with its agent (Apple Silicon macOS, Linux);
 #                              --dev and --version pick the release as above
+#   install.sh --desktop-package <file|https URL> [--desktop-sha256 <hex>]
+#                              a pre-release desktop test build (for example a CI artifact)
+#                              instead of a release; a URL needs --desktop-sha256
+#   install.sh --reset-old-data  move data CLIO 0.9.5.1 or older wrote aside without asking
+#                              (this release cannot open it; it is kept, never deleted)
+#   --progress json            with --desktop: one JSON event per line on stdout (each
+#                              step's begin/end and seconds, bytes, a summary)
 #
 # --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
 # checkout in place, on whatever branch it is; streamed (`curl ... | bash`) it clones.
@@ -23,6 +30,8 @@
 #   CLIO_INSTALLER_REF pin launcher scripts (default: the installed release's tag)
 #   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.11.1)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
+#   CLIO_DESKTOP_DIR   macOS app folder     (default: $HOME/Applications)
+#   CLIO_INSTALL_PROGRESS  human | json     (default: human; as --progress)
 #
 # NOTE: invoke via `bash` (not `sh`). On Debian/Ubuntu `sh` is dash,
 # which doesn't support `set -o pipefail`. The one-liner in the README
@@ -40,8 +49,10 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 1
 fi
 set -euo pipefail
+# The PATH this person's shell gave us, before the installer prepends its own bin dir.
+CALLER_PATH="${PATH:-}"
 
-usage() { sed -n '2,20p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,34p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
 OPT_SOURCE=0
 OPT_DEV=0
@@ -49,6 +60,10 @@ OPT_VERSION=""
 OPT_REF=""
 OPT_DESKTOP=0
 OPT_DOWNLOAD_ONLY=""
+OPT_DESKTOP_PACKAGE="${CLIO_DESKTOP_PACKAGE:-}"
+OPT_DESKTOP_SHA256="${CLIO_DESKTOP_SHA256:-}"
+OPT_RESET_OLD_DATA=0
+OPT_PROGRESS="${CLIO_INSTALL_PROGRESS:-human}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --source|-Source) OPT_SOURCE=1 ;;
@@ -58,7 +73,12 @@ while [ $# -gt 0 ]; do
     --ref|-Ref) OPT_REF="${2:?--ref needs a value}"; shift ;;
     --ref=*) OPT_REF="${1#*=}" ;;
     --desktop|-Desktop) OPT_DESKTOP=1 ;;
+    --desktop-package) OPT_DESKTOP_PACKAGE="${2:?--desktop-package needs a file or URL}"; shift ;;
+    --desktop-sha256) OPT_DESKTOP_SHA256="${2:?--desktop-sha256 needs a SHA-256}"; shift ;;
     --download-only|-DownloadOnly) OPT_DOWNLOAD_ONLY="${2:?--download-only needs a directory}"; shift ;;
+    --reset-old-data|-ResetOldData) OPT_RESET_OLD_DATA=1 ;;
+    --progress|-Progress) OPT_PROGRESS="${2:?--progress needs human or json}"; shift ;;
+    --progress=*) OPT_PROGRESS="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "clio installer: unknown option '$1' (try --help)" >&2; exit 2 ;;
   esac
@@ -66,9 +86,15 @@ while [ $# -gt 0 ]; do
 done
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
-say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
+case "$OPT_PROGRESS" in
+  human) PROGRESS_JSON=0 ;;
+  json) PROGRESS_JSON=1 ;;
+  *) echo "clio installer: --progress takes human or json" >&2; exit 2 ;;
+esac
+# With --progress json, stdout carries only JSON events; messages go to stderr.
+say()  { if [ "${PROGRESS_JSON:-0}" = 1 ]; then printf "${GREEN}==>${RESET} %s\n" "$*" >&2; else printf "${GREEN}==>${RESET} %s\n" "$*"; fi; }
 warn() { printf "${YELLOW}!! ${RESET} %s\n" "$*" >&2; }
-die()  { printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit 1; }
+die()  { printf "${RED}xx ${RESET} %s\n" "$*" >&2; FAILURE="$*"; exit 1; }
 # die_with CODE MESSAGE: die, keeping the failed command's exit status.
 die_with() { local code="$1"; shift; printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit "$code"; }
 
@@ -92,10 +118,90 @@ release_tag() {
 
 # ---------- desktop app (--desktop) -----------------------------------
 # The released desktop installer carries its own agent, so --desktop needs no Python,
-# uv or git: it picks the release, downloads the bundled installer for this OS and
-# CPU, verifies it against the release's checksum manifest, and installs it.
-# --download-only DIR stops after the verified download.
+# uv or git. Every OS runs the same steps, each timed and reported (install.ps1 too):
+#   resolve   pick the release; read its checksum manifest and install plan
+#   download  fetch the app and the plan's files (LibreOffice, pnpm) at the same time;
+#             macOS unpacks the app archive while it arrives
+#   verify    check every download against the release's SHA-256 manifest
+#   install   put the app in place (macOS: check its signature first)
+#   prepare   do the first launch's setup now, from the files already downloaded
+# --download-only DIR stops after verify. --progress json prints one JSON event per
+# line on stdout (step begin/end, download bytes, a final summary with each step's
+# seconds), and the readable messages on stderr.
 REPO_URL=https://github.com/iowarp/clio-agent
+DESKTOP_SCRATCH=""
+DESKTOP_STAGING=""
+DESKTOP_DEST=""
+DESKTOP_JOBS=""
+DESKTOP_MONITOR=""
+DESKTOP_APP_FILE=""
+DESKTOP_PLAN_BYTES=0
+# The plan's app waits for a download in progress, so preparing need not wait for them.
+DESKTOP_PLAN_WAITS=0
+STEP_NAME=""
+STEP_START=""
+STEP_TIMES=""
+RUN_START=""
+RUN_BYTES=0
+
+now() {
+  local t
+  t="$(date +%s.%N 2>/dev/null || true)"
+  if [[ "$t" =~ ^[0-9]+\.[0-9][0-9][0-9] ]]; then printf '%s' "${BASH_REMATCH[0]}"; else printf '%s.000' "$(date +%s)"; fi
+}
+seconds_since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+json_text() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+emit() { [ "$PROGRESS_JSON" = 0 ] || printf '%s\n' "$1"; }
+
+# step NAME ends the running step and starts NAME; an empty NAME only ends it.
+step() {
+  if [ -n "$STEP_NAME" ]; then
+    local seconds
+    seconds="$(seconds_since "$STEP_START")"
+    STEP_TIMES="$STEP_TIMES${STEP_TIMES:+,}\"$STEP_NAME\":$seconds"
+    emit "{\"event\":\"step\",\"step\":\"$STEP_NAME\",\"state\":\"end\",\"seconds\":$seconds}"
+  fi
+  STEP_NAME="$1"
+  STEP_START="$(now)"
+  [ -n "$RUN_START" ] || RUN_START="$STEP_START"
+  [ -z "$1" ] || emit "{\"event\":\"step\",\"step\":\"$1\",\"state\":\"begin\"}"
+}
+
+# finish_run true|false [ERROR]: the summary, once, after the last step or a failure.
+finish_run() {
+  [ -n "$RUN_START" ] || return 0
+  local failed="$STEP_NAME" total
+  if [ "$1" = true ]; then step ""; else STEP_NAME=""; fi
+  total="$(seconds_since "$RUN_START")"
+  RUN_START=""
+  if [ "$1" = true ]; then
+    emit "{\"event\":\"summary\",\"ok\":true,\"seconds\":{$STEP_TIMES},\"total\":$total,\"bytes\":$RUN_BYTES}"
+    say "Done in $total s ($(printf '%s' "$STEP_TIMES" | tr -d '"' | sed 's/:/ /g; s/,/ s, /g') s)."
+  else
+    emit "{\"event\":\"summary\",\"ok\":false,\"step\":\"$failed\",\"error\":$(json_text "$2"),\"seconds\":{$STEP_TIMES},\"total\":$total,\"bytes\":$RUN_BYTES}"
+  fi
+}
+
+desktop_cleanup() {
+  local code=$? pid
+  # A job is a subshell; its curl would outlive it and keep writing into the scratch.
+  for pid in $DESKTOP_MONITOR $DESKTOP_JOBS; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
+  if [ -n "$DESKTOP_SCRATCH" ]; then
+    [ ! -d "$DESKTOP_SCRATCH/mount" ] || hdiutil detach "$DESKTOP_SCRATCH/mount" -quiet 2>/dev/null || true
+    rm -rf "$DESKTOP_SCRATCH"
+  fi
+  [ -z "$DESKTOP_STAGING" ] || rm -rf "$DESKTOP_STAGING"
+  [ "$code" = 0 ] || finish_run false "${FAILURE:-exit status $code}"
+}
+
+desktop_scratch() {
+  DESKTOP_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/clio-desktop.XXXXXXXX")"
+  mkdir "$DESKTOP_SCRATCH/downloads"
+  trap desktop_cleanup EXIT
+}
 
 desktop_tag() {
   if [ -n "${OPT_VERSION:-${CLIO_VERSION:-}}" ]; then
@@ -127,65 +233,294 @@ manifest_sha() {
 file_sha() {
   if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
+sha_stream() {
+  if have sha256sum; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi
+}
+
+# fetch_hashed URL FILE [curl options]: download URL to FILE, hashing the bytes as they
+# arrive (FILE.sha), so verifying needs no second pass over the file. An interrupted
+# download starts again once, from the beginning (curl cannot rewind into the hash).
+fetch_hashed() {
+  local url="$1" file="$2" attempt status
+  shift 2
+  for attempt in 1 2; do
+    rm -f "$file" "$file.sha"
+    curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$@" "$url" \
+      | tee "$file" | sha_stream > "$file.sha" && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
+    [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ] || [ "${status[2]}" != 0 ] || return 0
+    [ "$attempt" = 2 ] || [ "${status[0]}" = 22 ] || continue
+    break
+  done
+  rm -f "$file" "$file.sha"
+  return 1
+}
+
+is_sha() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
+
+file_bytes() { local n; n="$(wc -c < "$1" 2>/dev/null || echo 0)"; echo $(( n + 0 )); }
+
+# Bytes downloaded so far, and expected in all (the app's size comes from its response).
+downloaded_bytes() {
+  local total=0 file
+  # The streamed archive is removed once verified; app.bytes keeps its size.
+  if [ -f "$DESKTOP_APP_FILE" ]; then total=$(file_bytes "$DESKTOP_APP_FILE")
+  elif [ -f "$DESKTOP_SCRATCH/app.bytes" ]; then total=$(( $(cat "$DESKTOP_SCRATCH/app.bytes") + 0 )); fi
+  for file in "$DESKTOP_SCRATCH"/downloads/*; do
+    [ ! -f "$file" ] || total=$(( total + $(file_bytes "$file") ))
+  done
+  echo "$total"
+}
+expected_bytes() {
+  local app=0
+  [ ! -f "$DESKTOP_SCRATCH/app.headers" ] \
+    || app="$(tr -d '\r' < "$DESKTOP_SCRATCH/app.headers" | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }')"
+  echo $(( app + DESKTOP_PLAN_BYTES ))
+}
+megabytes() { awk -v n="$1" 'BEGIN { printf "%.0f", n / 1000000 }'; }
+
+# A line every 5 s (2 s as JSON) while the downloads run, so a long one never looks hung.
+download_monitor() {
+  local interval=5 last=0 bytes total
+  [ "$PROGRESS_JSON" = 0 ] || interval=2
+  # sleep must not hold the output open after the monitor is stopped.
+  while sleep "$interval" </dev/null >/dev/null 2>&1; do
+    bytes="$(downloaded_bytes)"; total="$(expected_bytes)"
+    emit "{\"event\":\"progress\",\"step\":\"download\",\"bytes\":$bytes,\"total\":$total}"
+    [ "$total" -gt 0 ] && total=" of $(megabytes "$total")" || total=""
+    say "Downloaded $(megabytes "$bytes")$total MB ($(awk -v d=$(( bytes - last )) -v s="$interval" 'BEGIN { printf "%.1f", d / s / 1000000 }') MB/s)"
+    last="$bytes"
+    # Downloads can outlast the app's and run on through prepare; stop once all landed.
+    total="$(expected_bytes)"
+    [ ! -f "$DESKTOP_SCRATCH/app.headers" ] || [ "$bytes" -lt "$total" ] || break
+  done
+}
+start_job() { "$@" & DESKTOP_JOBS="$DESKTOP_JOBS $!"; }
+start_monitor() { download_monitor & DESKTOP_MONITOR=$!; }
+
+# The release's install plan lists what the first launch would fetch (LibreOffice, pnpm)
+# as "kind sha256 bytes name url"; only well-formed lines count. A "capability WORD" line
+# says what the plan's app can do with them.
+plan_entries() {
+  awk 'NF == 5 && length($2) == 64 && $2 ~ /^[0-9a-f]+$/ && $3 ~ /^[0-9]+$/ \
+       && $4 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ && $5 ~ /^https:\/\// { print $2, $3, $4, $5 }' "$1"
+}
+plan_capable() { [ -n "$1" ] && awk -v want="$2" '$1 == "capability" && $2 == want { found=1 } END { exit !found }' "$1"; }
+
+# Root preparing for a sudo user cannot hand its private scratch files over.
+plan_usable() { [ "$(id -u)" != 0 ] || [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; }
+
+fetch_plan() {  # TAG MANIFEST TRIPLE -> the plan file, or nothing
+  local name="install-plan.$3.bundled.txt" expected
+  expected="$(manifest_sha "$2" "$name")"
+  is_sha "$expected" || return 0
+  if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$REPO_URL/releases/download/$1/$name" -o "$DESKTOP_SCRATCH/plan" \
+     && [ "$(file_sha "$DESKTOP_SCRATCH/plan")" = "$expected" ]; then
+    printf '%s' "$DESKTOP_SCRATCH/plan"
+  else
+    warn "could not read the release's install plan; the app downloads what it needs while preparing"
+  fi
+}
+
+prefetch() {  # SHA NAME URL: a failure only means the app fetches it itself later
+  local file="$DESKTOP_SCRATCH/downloads/$2"
+  # NAME.part while it downloads, NAME once verified: the app waits on that (office.py).
+  if fetch_hashed "$3" "$file.part" 2>/dev/null && [ "$(cat "$file.part.sha")" = "$1" ]; then
+    mv "$file.part" "$file"
+    rm -f "$file.part.sha"
+  else
+    rm -f "$file.part" "$file.part.sha"
+    warn "could not fetch $2 ahead of time; the app downloads it while preparing"
+  fi
+}
+
+start_prefetch() {  # PLAN
+  local sha bytes name url names=""
+  [ -n "$1" ] || return 0
+  while read -r sha bytes name url; do
+    DESKTOP_PLAN_BYTES=$(( DESKTOP_PLAN_BYTES + bytes ))
+    names="$names${names:+, }$name"
+    start_job prefetch "$sha" "$name" "$url"
+  done < <(plan_entries "$1")
+  [ -z "$names" ] || say "Fetching what the first launch needs at the same time: $names"
+}
+
+finish_downloads() {
+  local pid
+  for pid in $DESKTOP_JOBS; do wait "$pid" 2>/dev/null || true; done
+  [ -z "$DESKTOP_MONITOR" ] || { kill "$DESKTOP_MONITOR" 2>/dev/null; wait "$DESKTOP_MONITOR" 2>/dev/null; } || true
+  DESKTOP_JOBS=""
+  DESKTOP_MONITOR=""
+  RUN_BYTES="$(downloaded_bytes)"
+}
+
+# A desktop test build that is not a release (a CI artifact): its checksum comes from the
+# person who built it, and its version from the app itself. A file a browser downloaded is
+# quarantined, which Gatekeeper refuses for a test build that is not notarized; the person
+# chose this file explicitly, so the installed copy is not quarantined (as a curl download).
+install_desktop_package() {
+  local package="$OPT_DESKTOP_PACKAGE" sha os file app_dir version=""
+  sha="$(printf '%s' "$OPT_DESKTOP_SHA256" | tr 'A-F' 'a-f')"
+  [ -z "$sha" ] || is_sha "$sha" || die "--desktop-sha256 must be a SHA-256 (64 hex digits)"
+  [ -z "$OPT_DOWNLOAD_ONLY" ] || die "--download-only selects a release; --desktop-package is already a file"
+  os="$(uname -s)"
+  desktop_scratch
+  step resolve
+  case "$os:${package%%\?*}" in
+    Darwin:*.dmg|Darwin:*.aar|Darwin:*.tar.gz|Linux:*.deb|Linux:*.rpm) ;;
+    *) die "--desktop-package on $os takes a $( [ "$os" = Darwin ] && echo .dmg, .app.aar or .app.tar.gz || echo .deb or .rpm )" ;;
+  esac
+  [ "$os" != Darwin ] || mac_destination
+  case "$package" in
+    https://*)
+      [ -n "$sha" ] || die "a --desktop-package URL needs --desktop-sha256"
+      have curl || die "curl is required"
+      file="${package%%\?*}"; file="$DESKTOP_SCRATCH/${file##*/}"
+      step download
+      say "Downloading the CLIO Desktop test build ($package)"
+      DESKTOP_APP_FILE="$file"
+      start_monitor
+      curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -D "$DESKTOP_SCRATCH/app.headers" "$package" -o "$file" \
+        || die "could not download $package"
+      finish_downloads ;;
+    *://*) die "--desktop-package must be a local file or an https URL" ;;
+    *) [ -f "$package" ] || die "no such desktop package: $package"; file="$package" ;;
+  esac
+  step verify
+  if [ -n "$sha" ]; then
+    [ "$(file_sha "$file")" = "$sha" ] || die "desktop package checksum mismatch; nothing installed"
+  else
+    warn "no --desktop-sha256 given: installing $file unverified"
+  fi
+  step install
+  case "$file" in
+    *.dmg) install_desktop_mac "$file" --noqtn ;;
+    *.aar|*.tar.gz)
+      mac_staging
+      say "Unpacking CLIO Desktop into $DESKTOP_DEST..."
+      mac_unpack "$file" "$DESKTOP_STAGING" < "$file" || die "could not unpack $file; nothing installed"
+      mac_install_staged ;;
+    *) install_desktop_linux "$file" ;;
+  esac
+  step prepare
+  if [ "$os" = Darwin ]; then
+    app_dir="$DESKTOP_DEST/CLIO Desktop.app"
+    version="$(plutil -extract CFBundleShortVersionString raw -o - "$app_dir/Contents/Info.plist" 2>/dev/null || true)"
+    say "Installed the CLIO Desktop test build ${version:+$version }(not a release)"
+    prepare_desktop "" "$app_dir/Contents/MacOS/clio-desktop"
+  else
+    prepare_desktop "" /usr/bin/clio-desktop
+  fi
+  finish_run true
+}
+
+# The macOS release asset: the app as an Apple Archive, unpacked while it downloads;
+# releases before it have the updater's .app.tar.gz, which streams the same way; the
+# disk image is the fallback, and what --download-only keeps. CLIO_DESKTOP_FORMAT
+# (aar, tar.gz or dmg) picks one, for comparisons.
+mac_release_asset() {  # MANIFEST VERSION -> the asset name
+  local stem="CLIO.Desktop-aarch64-apple-darwin-bundled.app" format dmg="CLIO.Desktop_${2}_aarch64-bundled.dmg"
+  if [ -n "$OPT_DOWNLOAD_ONLY" ]; then printf '%s' "$dmg"; return; fi
+  for format in ${CLIO_DESKTOP_FORMAT:-aar tar.gz dmg}; do
+    case "$format" in
+      aar|tar.gz) [ -z "$(manifest_sha "$1" "$stem.$format")" ] || { printf '%s' "$stem.$format"; return; } ;;
+      dmg) printf '%s' "$dmg"; return ;;
+      *) die "CLIO_DESKTOP_FORMAT must be aar, tar.gz or dmg" ;;
+    esac
+  done
+  die "this release has no $CLIO_DESKTOP_FORMAT desktop asset"
+}
 
 install_desktop() {
+  if [ -n "$OPT_DESKTOP_PACKAGE" ]; then install_desktop_package; return; fi
   [ "$OPT_SOURCE" = 0 ] || die "--desktop installs a released app; --source builds the agent only (build the app from gact-tui)"
   have curl || die "curl is required"
-  local os cpu tag version asset manifest scratch
+  local os cpu tag version asset triple expected url plan=""
   os="$(uname -s)"; cpu="$(uname -m)"
+  desktop_scratch
+  step resolve
+  case "$os" in
+    Darwin)
+      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ] || die "CLIO Desktop requires macOS 15 or newer"
+      # uname can describe the Rosetta shell rather than the physical machine.
+      [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ] \
+        || die "CLIO Desktop is not available for Intel Macs yet; install CLIO without --desktop instead"
+      triple=aarch64-apple-darwin ;;
+    Linux)
+      case "$cpu" in
+        x86_64|amd64) triple=x86_64-unknown-linux-gnu ;;
+        aarch64|arm64) triple=aarch64-unknown-linux-gnu ;;
+        *) die "unsupported processor: $cpu" ;;
+      esac
+      have dpkg || have rpm || die "this Linux has neither dpkg nor rpm; download a desktop package from $REPO_URL/releases" ;;
+    *) die "unsupported OS for --desktop: $os (use install.ps1 -Desktop on Windows)" ;;
+  esac
   tag="$(desktop_tag)"
   [ -n "$tag" ] || die "could not find a CLIO release on GitHub"
   version="${tag#v}"
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+|-beta\.[0-9]+(\.[0-9]+)?|(a|rc)[0-9]+)?$ ]] \
     || die "invalid release version: $tag"
-  case "$os" in
-    Darwin)
-      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] || die "CLIO Desktop requires macOS 14 or newer"
-      # uname can describe the Rosetta shell rather than the physical machine.
-      [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ] \
-        || die "CLIO Desktop is not available for Intel Macs yet; install CLIO without --desktop instead"
-      asset="CLIO.Desktop_${version}_aarch64-bundled.dmg"; manifest="SHA256SUMS.aarch64-apple-darwin.bundled.txt" ;;
-    Linux)
-      local triple deb_arch rpm_arch
-      case "$cpu" in
-        x86_64|amd64) triple=x86_64-unknown-linux-gnu; deb_arch=amd64; rpm_arch=x86_64 ;;
-        aarch64|arm64) triple=aarch64-unknown-linux-gnu; deb_arch=arm64; rpm_arch=aarch64 ;;
-        *) die "unsupported processor: $cpu" ;;
-      esac
-      manifest="SHA256SUMS.${triple}.bundled.txt"
-      if have dpkg; then
-        asset="CLIO.Desktop_${version}_${deb_arch}-bundled.deb"
-      elif have rpm; then
-        asset="CLIO.Desktop-${version}-1.${rpm_arch}-bundled.rpm"
-      else
-        die "this Linux has neither dpkg nor rpm; download a desktop package from $REPO_URL/releases/tag/$tag"
-      fi ;;
-    *) die "unsupported OS for --desktop: $os (use install.ps1 -Desktop on Windows)" ;;
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$REPO_URL/releases/download/$tag/SHA256SUMS.$triple.bundled.txt" -o "$DESKTOP_SCRATCH/checksums" \
+    || die "could not download the release checksums (SHA256SUMS.$triple.bundled.txt)"
+  case "$triple" in
+    *-apple-darwin) asset="$(mac_release_asset "$DESKTOP_SCRATCH/checksums" "$version")" ;;
+    x86_64-*) if have dpkg; then asset="CLIO.Desktop_${version}_amd64-bundled.deb"; else asset="CLIO.Desktop-${version}-1.x86_64-bundled.rpm"; fi ;;
+    aarch64-*) if have dpkg; then asset="CLIO.Desktop_${version}_arm64-bundled.deb"; else asset="CLIO.Desktop-${version}-1.aarch64-bundled.rpm"; fi ;;
   esac
-  scratch="$(mktemp -d "${TMPDIR:-/tmp}/clio-desktop.XXXXXXXX")"
-  # shellcheck disable=SC2064 # expand now: the trap must remove this run's directory
-  trap "[ -d '$scratch/mount' ] && hdiutil detach '$scratch/mount' -quiet 2>/dev/null; rm -rf '$scratch'" EXIT
-  say "Downloading CLIO Desktop $tag ($asset)"
-  curl --proto '=https' --tlsv1.2 -fL --progress-bar --retry 3 "$REPO_URL/releases/download/$tag/$asset" -o "$scratch/$asset" \
-    || die "could not download $asset from release $tag"
-  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$REPO_URL/releases/download/$tag/$manifest" -o "$scratch/checksums" \
-    || die "could not download the release checksums ($manifest)"
-  local expected
-  expected="$(manifest_sha "$scratch/checksums" "$asset")"
-  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "release checksum missing or ambiguous for $asset; nothing installed"
-  [ "$(file_sha "$scratch/$asset")" = "$expected" ] || die "download checksum mismatch; nothing installed"
+  expected="$(manifest_sha "$DESKTOP_SCRATCH/checksums" "$asset" | tr 'A-F' 'a-f')"
+  is_sha "$expected" || die "release checksum missing or ambiguous for $asset; nothing installed"
+  if [ -z "$OPT_DOWNLOAD_ONLY" ]; then
+    [ "$os" != Darwin ] || mac_destination
+    ! plan_usable || plan="$(fetch_plan "$tag" "$DESKTOP_SCRATCH/checksums" "$triple")"
+    ! plan_capable "$plan" waits-for-partial-downloads || DESKTOP_PLAN_WAITS=1
+  fi
+  url="$REPO_URL/releases/download/$tag/$asset"
+  step download
+  start_prefetch "$plan"
+  case "$asset" in
+    *.aar|*.tar.gz)
+      say "Downloading CLIO Desktop $tag ($asset), unpacking it into $DESKTOP_DEST as it arrives"
+      DESKTOP_APP_FILE="$DESKTOP_SCRATCH/app.part"
+      start_monitor
+      mac_stream "$url" ;;
+    *)
+      say "Downloading CLIO Desktop $tag ($asset)"
+      DESKTOP_APP_FILE="$DESKTOP_SCRATCH/$asset"
+      start_monitor
+      fetch_hashed "$url" "$DESKTOP_APP_FILE" -D "$DESKTOP_SCRATCH/app.headers" \
+        || die "could not download $asset from release $tag" ;;
+  esac
+  # The app is what the next steps need. Its first-launch files keep downloading through
+  # them when the app waits for them; an older app would fetch them a second time.
+  [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
+  step verify
+  case "$asset" in
+    *.aar|*.tar.gz) [ "$(cat "$DESKTOP_SCRATCH/app.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed"
+      if [ -z "$OPT_DOWNLOAD_ONLY" ]; then
+        file_bytes "$DESKTOP_APP_FILE" > "$DESKTOP_SCRATCH/app.bytes"
+        rm -f "$DESKTOP_APP_FILE"
+      fi ;;
+    *) [ "$(cat "$DESKTOP_APP_FILE.sha")" = "$expected" ] || die "download checksum mismatch; nothing installed" ;;
+  esac
   if [ -n "$OPT_DOWNLOAD_ONLY" ]; then
     mkdir -p "$OPT_DOWNLOAD_ONLY"
-    cp "$scratch/$asset" "$OPT_DOWNLOAD_ONLY/$asset"
+    cp "$DESKTOP_APP_FILE" "$OPT_DOWNLOAD_ONLY/$asset"
     say "Verified download: $OPT_DOWNLOAD_ONLY/$asset"
+    finish_run true
     return 0
   fi
-  case "$os" in
-    Darwin) install_desktop_mac "$scratch" "$asset"
-      prepare_desktop "$tag" "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app/Contents/MacOS/clio-desktop" ;;
-    Linux) install_desktop_linux "$scratch/$asset"
-      prepare_desktop "$tag" /usr/bin/clio-desktop ;;
+  step install
+  case "$asset" in
+    *.aar|*.tar.gz) mac_install_staged ;;
+    *.dmg) install_desktop_mac "$DESKTOP_APP_FILE" ;;
+    *) install_desktop_linux "$DESKTOP_APP_FILE" ;;
   esac
+  step prepare
+  case "$os" in
+    Darwin) prepare_desktop "$tag" "$DESKTOP_DEST/CLIO Desktop.app/Contents/MacOS/clio-desktop" "$DESKTOP_SCRATCH/downloads" ;;
+    Linux) prepare_desktop "$tag" /usr/bin/clio-desktop "$DESKTOP_SCRATCH/downloads" ;;
+  esac
+  finish_downloads
+  finish_run true
 }
 
 # Releases before 0.9.5 have no --prepare-runtime on macOS and Linux; there an unknown
@@ -198,67 +533,207 @@ desktop_prepares() {
 }
 
 # What a first launch would do before the agent starts (its tool packages, Office),
-# done now, as the person who will open the app, as the Windows installer does.
+# done now, as the person who will open the app, as the Windows installer does. DOWNLOADS
+# holds the release plan's files fetched with the app; the app uses those whose SHA-256
+# matches its own pins instead of downloading them again.
+# An empty tag is a current test build, which can.
+# No bytecode is written while preparing: releases up to 0.9.5.1 compile .pyc files into
+# the signed bundle (#1979), which breaks the signature the install just checked.
 prepare_desktop() {
-  local tag="$1" desktop="$2"
-  desktop_prepares "$tag" || return 0
+  local tag="$1" desktop="$2" downloads="${3:-}" out=1
+  [ -z "$tag" ] || desktop_prepares "$tag" || return 0
   [ -x "$desktop" ] || { say "warning: $desktop not found; the app prepares itself on first launch"; return 0; }
+  [ "${PROGRESS_JSON:-0}" = 0 ] || out=2
   say "Preparing the desktop's agent and its tools"
-  local run=("$desktop" --prepare-runtime)
+  local run=(env PYTHONDONTWRITEBYTECODE=1 "$desktop" --prepare-runtime)
   if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-    run=(sudo -u "$SUDO_USER" -H "$desktop" --prepare-runtime)
+    run=(sudo -u "$SUDO_USER" -H "${run[@]}")
+  elif [ -n "$downloads" ]; then
+    run=(env PYTHONDONTWRITEBYTECODE=1 "CLIO_INSTALL_DOWNLOADS=$downloads" "$desktop" --prepare-runtime)
   fi
-  if "${run[@]}"; then
+  if "${run[@]}" >&"$out"; then
     say "The desktop is ready to open."
   else
     say "warning: the desktop's preparation did not finish (above); the app finishes it on first launch"
   fi
 }
 
+# A mirror+file: source names a file of mirrors; the first one serves the download.
+apt_mirror_uri() {  # URI -> an http(s) URI, or nothing
+  local uri="$1" list base
+  case "$uri" in
+    http://*|https://*) printf '%s' "$uri"; return ;;
+    mirror+file:/*) ;;
+    *) return 0 ;;
+  esac
+  list="${uri#mirror+file:}"
+  while [ ! -f "$list" ] && [ "$list" != "${list%/*}" ]; do list="${list%/*}"; done
+  [ -f "$list" ] || return 0
+  base="$(awk '$1 ~ /^https?:\/\// { print $1; exit }' "$list")"
+  [ -z "$base" ] || printf '%s/%s' "${base%/}" "${uri#mirror+file:"$list"/}"
+}
+
+# apt fetches the desktop's system libraries (WebKitGTK, GStreamer: ~70 packages on a
+# system without them) one at a time from one mirror, where one slow response stalls the
+# rest. They are fetched 8 at a time into a private archive directory instead, a stalled
+# transfer restarting; apt then checks each against its signed index (size and hash)
+# and fetches any that are missing or wrong itself. Behind an apt proxy apt does it all.
+apt_prefetch() {  # SUDO PACKAGE DIR
+  local sudo="$1" package="$2" dir="$3" uri name size rest url count=0 bytes=0
+  mkdir -p "$dir/partial"
+  apt-config dump > "$dir/config" 2>/dev/null || true
+  ! grep -qiE '^Acquire::[a-z]+::Proxy "[^"]' "$dir/config" || return 1
+  $sudo apt-get install -y -qq --print-uris "$package" 2>/dev/null > "$dir/uris" || return 1
+  while read -r uri name size rest; do
+    url="$(apt_mirror_uri "${uri//\'/}")"
+    [ -n "$url" ] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]] || continue
+    printf '%s %s\n' "$dir/$name" "$url"
+    size="${size//[^0-9]/}"; count=$(( count + 1 )); bytes=$(( bytes + ${size:-0} ))
+  done < "$dir/uris" > "$dir/fetch"
+  [ "$count" -gt 0 ] || return 0
+  say "Fetching $count system packages CLIO Desktop needs ($(megabytes "$bytes") MB), 8 at a time"
+  # shellcheck disable=SC2016
+  xargs -P 8 -n 2 sh -c 'curl -fsSL --connect-timeout 10 --speed-limit 50000 --speed-time 10 --retry 3 \
+      -o "$0.part" "$1" && mv "$0.part" "$0" || rm -f "$0.part"; exit 0' < "$dir/fetch"
+}
+
 install_desktop_linux() {
-  local package="$1" sudo=""
+  local package="$1" sudo="" out=1 archives=()
+  [ "$PROGRESS_JSON" = 0 ] || out=2
   [ "$(id -u)" = 0 ] || { have sudo || die "installing $package needs root; run as root or install sudo"; sudo=sudo; }
   case "$package" in
     *.deb)
-      if have apt-get; then $sudo apt-get install -y "$package" || die "apt-get could not install $package"
-      else $sudo dpkg -i "$package" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
+      if have apt-get; then
+        ! apt_prefetch "$sudo" "$package" "$DESKTOP_SCRATCH/apt" || archives=(-o "Dir::Cache::Archives=$DESKTOP_SCRATCH/apt/")
+        $sudo apt-get install -y ${archives[@]+"${archives[@]}"} "$package" >&"$out" || die "apt-get could not install $package"
+      else $sudo dpkg -i "$package" >&"$out" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
     *.rpm)
-      if have dnf; then $sudo dnf install -y "$package" || die "dnf could not install $package"
-      else $sudo rpm -U --replacepkgs "$package" || die "rpm could not install $package"; fi ;;
+      if have dnf; then $sudo dnf install -y "$package" >&"$out" || die "dnf could not install $package"
+      else $sudo rpm -U --replacepkgs "$package" >&"$out" || die "rpm could not install $package"; fi ;;
   esac
+  linux_runtime_ready "$sudo" "$out"
   say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."
 }
 
-install_desktop_mac() {
-  local scratch="$1" asset="$2" destination app staging backup=""
-  pgrep -x clio-desktop >/dev/null && die "Quit CLIO Desktop before installing."
-  hdiutil verify "$scratch/$asset" >/dev/null || die "the disk image failed verification"
-  mkdir "$scratch/mount"
-  hdiutil attach "$scratch/$asset" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
-  app="$scratch/mount/CLIO Desktop.app"
-  [ -d "$app" ] || die "the disk image does not contain CLIO Desktop.app"
-  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
-  destination="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
-  case "$destination" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
-  mkdir -p "$destination"
-  staging="$(mktemp -d "$destination/.clio-install.XXXXXXXX")"
-  ditto "$app" "$staging/CLIO Desktop.app"
-  codesign --verify --deep --strict "$staging/CLIO Desktop.app" || die "the copied app failed its signature check"
-  if [ -e "$destination/CLIO Desktop.app" ]; then
-    backup="$destination/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
-    mv "$destination/CLIO Desktop.app" "$backup"
-  fi
-  if ! mv "$staging/CLIO Desktop.app" "$destination/CLIO Desktop.app"; then
-    [ -z "$backup" ] || mv "$backup" "$destination/CLIO Desktop.app"
-    die "could not install the app; the previous app was restored"
-  fi
-  rmdir "$staging"
-  say "Installed: $destination/CLIO Desktop.app"
-  [ -z "$backup" ] || say "Previous app kept: $backup"
-  say "Open CLIO Desktop from Applications. macOS may ask once: Privacy & Security > Open Anyway."
+# A bundled package unpacks its runtime archive in its postinst. Run that step again:
+# rpm erases the files of the package it upgrades after the new %post, which removes
+# what the first upgrade from an exploded-runtime rpm unpacked. It does nothing when the
+# runtime already matches the archive.
+linux_runtime_ready() {  # SUDO OUT
+  local root="/usr/lib/CLIO Desktop"
+  [ -f "$root/gact-runtime.pack.json" ] || return 0
+  [ -f "$root/gact-runtime.unpack.sh" ] || die "the CLIO Desktop package has no runtime unpacker"
+  $1 sh "$root/gact-runtime.unpack.sh" >&"$2" \
+    || die "the CLIO runtime could not be unpacked; reinstall the clio-desktop package"
+  [ -f "$root/gact-runtime/runtime.json" ] || die "the CLIO runtime is missing after install"
 }
 
-if [ "$OPT_DESKTOP" = 1 ]; then
+# A CLIO Desktop running from DESTINATION would be replaced under it. One running from
+# elsewhere (another copy) is left alone; one whose path cannot be read counts as here.
+desktop_running_in() {
+  local pids pid path real=""
+  pids="$(pgrep -x clio-desktop 2>/dev/null)" || return 1
+  [ -n "$pids" ] || return 0
+  [ ! -d "$1" ] || real="$(cd -P "$1" && pwd)"
+  for pid in $pids; do
+    path="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+    case "$path" in
+      "$1"/*) return 0 ;;
+      /*) [ -z "$real" ] || case "$path" in "$real"/*) return 0 ;; esac ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+mac_destination() {
+  DESKTOP_DEST="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
+  case "$DESKTOP_DEST" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
+  ! desktop_running_in "$DESKTOP_DEST/CLIO Desktop.app" || die "Quit CLIO Desktop before installing."
+}
+
+# The new app is assembled beside the old one, on the same volume, so it moves in at once.
+mac_staging() {
+  mkdir -p "$DESKTOP_DEST"
+  [ -z "$DESKTOP_STAGING" ] || rm -rf "$DESKTOP_STAGING"
+  DESKTOP_STAGING="$(mktemp -d "$DESKTOP_DEST/.clio-install.XXXXXXXX")"
+}
+
+# mac_unpack NAME DIR: unpack the app archive on stdin. Both tools refuse absolute paths,
+# `..` and writing through links; nothing they write is used before its checksum and the
+# app's signature pass.
+mac_unpack() {
+  case "$1" in
+    *.aar) aa extract -d "$2" ;;
+    *) tar -xzf - -C "$2" ;;
+  esac
+}
+
+# Unpack the app as it downloads; the same bytes are hashed for the verify step and
+# counted for progress. An interrupted download starts again once, from the beginning.
+mac_stream() {
+  local url="$1" attempt hasher
+  for attempt in 1 2; do
+    mac_staging
+    rm -f "$DESKTOP_SCRATCH/app.part" "$DESKTOP_SCRATCH/app.sha" "$DESKTOP_SCRATCH/app.fifo"
+    mkfifo "$DESKTOP_SCRATCH/app.fifo"
+    { shasum -a 256 | awk '{ print $1 }' > "$DESKTOP_SCRATCH/app.sha"; } < "$DESKTOP_SCRATCH/app.fifo" &
+    hasher=$!
+    if curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 -D "$DESKTOP_SCRATCH/app.headers" "$url" \
+         | tee "$DESKTOP_SCRATCH/app.fifo" "$DESKTOP_SCRATCH/app.part" \
+         | mac_unpack "$url" "$DESKTOP_STAGING"; then
+      wait "$hasher"
+      return 0
+    fi
+    wait "$hasher" 2>/dev/null || true
+    [ "$attempt" = 2 ] || warn "the download was interrupted; starting it again"
+  done
+  die "could not download or unpack $url; nothing installed"
+}
+
+# Check the staged app's signature once, then swap it in, keeping the previous app. The
+# check finishes before anything runs from the bundle: preparing runs the app, and a
+# release whose runtime writes into its own bundle (#1979) would fail a check still
+# reading it, which then removed a working app.
+mac_install_staged() {
+  local app="$DESKTOP_STAGING/CLIO Desktop.app" backup=""
+  [ -d "$app" ] || die "the download does not contain CLIO Desktop.app; nothing installed"
+  say "Checking the app's signature..."
+  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
+  say "Signature valid."
+  if [ -e "$DESKTOP_DEST/CLIO Desktop.app" ]; then
+    backup="$DESKTOP_DEST/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
+    mv "$DESKTOP_DEST/CLIO Desktop.app" "$backup"
+  fi
+  if ! mv "$app" "$DESKTOP_DEST/CLIO Desktop.app"; then
+    [ -z "$backup" ] || mv "$backup" "$DESKTOP_DEST/CLIO Desktop.app"
+    die "could not install the app; the previous app was restored"
+  fi
+  rm -rf "$DESKTOP_STAGING"
+  DESKTOP_STAGING=""
+  say "Installed: $DESKTOP_DEST/CLIO Desktop.app"
+  [ -z "$backup" ] || say "Previous app kept: $backup"
+  # curl does not quarantine what it downloads, so Gatekeeper does not prompt for this copy.
+  say "Open it from $DESKTOP_DEST in Finder, or run: open \"$DESKTOP_DEST/CLIO Desktop.app\""
+}
+
+# install_desktop_mac IMAGE [--noqtn]: copy the app out of a disk image (--noqtn leaves
+# quarantine off the copy). The image's SHA-256 is already checked, so attach skips its
+# own checksum pass (-noverify).
+install_desktop_mac() {
+  local image="$1" ditto_flags=("${@:2}")
+  mkdir "$DESKTOP_SCRATCH/mount"
+  say "Opening the disk image"
+  hdiutil attach "$image" -readonly -nobrowse -noverify -mountpoint "$DESKTOP_SCRATCH/mount" -quiet \
+    || die "could not open the disk image $image"
+  [ -d "$DESKTOP_SCRATCH/mount/CLIO Desktop.app" ] || die "the disk image does not contain CLIO Desktop.app"
+  mac_staging
+  say "Copying CLIO Desktop into $DESKTOP_DEST (about 1.7 GB; this takes a few minutes)..."
+  ditto ${ditto_flags[@]+"${ditto_flags[@]}"} "$DESKTOP_SCRATCH/mount/CLIO Desktop.app" "$DESKTOP_STAGING/CLIO Desktop.app"
+  mac_install_staged
+}
+
+if [ "$OPT_DESKTOP" = 1 ] || [ -n "$OPT_DESKTOP_PACKAGE" ]; then
   install_desktop
   exit 0
 fi
@@ -311,6 +786,11 @@ case "$(uname -s)" in
   Darwin*) OS=darwin ;;
   *) die "unsupported OS: $(uname -s) (use install.ps1 on Windows)" ;;
 esac
+# uv's interpreter discovery runs /usr/bin/python3, which on a Mac without the
+# Command Line Tools is a stub that opens their install dialog. Use uv's own Pythons.
+if [ "$OS" = darwin ]; then
+  export UV_MANAGED_PYTHON="${UV_MANAGED_PYTHON:-1}"
+fi
 case "$(uname -m)" in
   x86_64|amd64)  ARCH=amd64 ;;
   arm64|aarch64) ARCH=arm64 ;;
@@ -328,8 +808,58 @@ if ! have uv; then
     || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
   export PATH="$BIN_DIR:$PATH"
 fi
+
+# A fresh Mac's /usr/bin/git is a placeholder: running it opens the "Install Command
+# Line Developer Tools" dialog. Decided from the filesystem, never by running it.
+macos_git_placeholder() {
+  local developer link
+  [ "$OS" = darwin ] || return 1
+  [ "$1" = /usr/bin/git ] || return 1
+  link="$(readlink /var/db/xcode_select_link 2>/dev/null || true)"
+  for developer in "${DEVELOPER_DIR:-}" "$link" /Applications/Xcode.app/Contents/Developer \
+      /Library/Developer/CommandLineTools; do
+    [ -n "$developer" ] && [ -f "$developer/usr/bin/git" ] && return 1
+  done
+  return 0
+}
+
+# The git --source uses, as CLIO resolves it (runtime/git_executable.py): CLIO_GIT, a
+# real git on PATH, else the git bundled with an installed CLIO Desktop.
+source_git() {
+  local candidate app
+  if [ -n "${CLIO_GIT:-}" ]; then
+    if [ -x "$CLIO_GIT" ]; then printf '%s' "$CLIO_GIT"; fi
+    return 0
+  fi
+  candidate="$(command -v git 2>/dev/null || true)"
+  if [ -n "$candidate" ] && ! macos_git_placeholder "$candidate"; then
+    printf '%s' "$candidate"
+    return
+  fi
+  for app in "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app" "/Applications/CLIO Desktop.app"; do
+    candidate="$app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  done
+  # No git: an empty answer, not a failure, so `set -e` reaches the guidance below.
+  return 0
+}
+
 if [ "$OPT_SOURCE" = 1 ]; then
-  have git || die "git is required for --source"
+  SOURCE_GIT="$(source_git)"
+  if [ -z "$SOURCE_GIT" ]; then
+    [ "$OS" = darwin ] \
+      && die "git is required for --source. This Mac has none (/usr/bin/git only offers the Command Line Tools). Install CLIO Desktop first (install.sh --desktop), whose git --source uses, or the Command Line Tools (xcode-select --install), or set CLIO_GIT"
+    die "git is required for --source"
+  fi
+  if [ "$SOURCE_GIT" != "$(command -v git 2>/dev/null || true)" ]; then
+    # This script's git calls and uv's (the git-pinned dependencies) find this git
+    # first on PATH; a bundled one must not use another git's helpers.
+    git_shim="$(mktemp -d "${TMPDIR:-/tmp}/clio-git.XXXXXXXX")"
+    printf '#!/bin/sh\nunset GIT_EXEC_PATH\nexec "%s" "$@"\n' "$SOURCE_GIT" > "$git_shim/git"
+    chmod +x "$git_shim/git"
+    export PATH="$git_shim:$PATH"
+    say "Using git: $SOURCE_GIT"
+  fi
 fi
 
 # The checkout this script runs from, when it runs from one (not when streamed).
@@ -410,6 +940,40 @@ clone_changes() {
     }'
 }
 
+# Check out each submodule of the clone at $1 at the commit it records, recursively.
+# This uses only commands every git has, for a git without `git submodule`, which is a
+# shell script: CLIO Desktop's bundled git ships the git binary and its HTTPS helpers only.
+checkout_submodules() {
+  local src="$1" key path name url commit
+  [ -f "$src/.gitmodules" ] || return 0
+  git -C "$src" config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r key path; do
+    name="${key#submodule.}"
+    name="${name%.path}"
+    url="$(git -C "$src" config -f .gitmodules --get "submodule.$name.url")" || exit 1
+    commit="$(git -C "$src" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
+    [ -n "$commit" ] || continue
+    if [ ! -e "$src/$path/.git" ]; then
+      git init -q "$src/$path" && git -C "$src/$path" remote add origin "$url" || exit 1
+    fi
+    if ! git -C "$src/$path" cat-file -e "$commit^{commit}" 2>/dev/null; then
+      git -C "$src/$path" fetch -q --depth 1 origin "$commit" || exit 1
+    fi
+    git -C "$src/$path" checkout -q --detach "$commit" && checkout_submodules "$src/$path" || exit 1
+  done
+}
+
+# `git submodule update --init --recursive` for the clone at $1 (further arguments go to
+# it), or checkout_submodules when this git has no `git submodule`.
+update_submodules() {
+  local src="$1"
+  shift
+  if [ -e "$(git --exec-path)/git-submodule" ]; then
+    git -C "$src" submodule update --init --recursive "$@"
+  else
+    checkout_submodules "$src"
+  fi
+}
+
 # Bring this installer's clone at $1 to ref $2: fetch it, check it out detached, update
 # the submodules. Local changes to tracked files (submodules included) refuse it.
 update_source_clone() {
@@ -427,18 +991,26 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
     || die "could not fetch '$ref' into '$src' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
   git -C "$src" checkout -q --detach FETCH_HEAD \
     || die "could not check out '$ref' in '$src' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)"
-  git -C "$src" submodule update --init --recursive --depth 1 \
+  update_submodules "$src" --depth 1 \
     || die "could not update the submodules of '$src' to '$ref' (git's message is above); run this installer again"
 }
 
 # Release installs carry Web; source installs provide the service without a frontend build.
 # The legacy TUI is frozen and unsupported. Do not build or download it here.
-on_exit() { [ -z "${lockdir:-}" ] || rm -rf "$lockdir"; }
+on_exit() {
+  [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
+  [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
+}
 trap on_exit EXIT
 
 # ---------- install clio-agent ----------------------------------------
 VENV="$PREFIX/clio-agent/.venv"
 SRC=""
+# The CLIO this install replaces, named if the data check below cannot tell.
+PREVIOUS_VERSION=""
+if [ -x "$VENV/bin/python" ]; then
+  PREVIOUS_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
+fi
 
 if [ "$OPT_SOURCE" = 1 ]; then
   if [ -n "$CHECKOUT" ] && [ -z "$OPT_REF" ]; then
@@ -452,7 +1024,8 @@ if [ "$OPT_SOURCE" = 1 ]; then
       rm -rf "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
     fi
     ln -sfn "$SRC" "$PREFIX/clio-agent"
-    git -C "$SRC" submodule update --init --recursive
+    update_submodules "$SRC" \
+      || die "could not update the submodules of '$SRC' (git's message is above); run this installer again"
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --python "$py" --extra argonne --extra flowcept)
   else
@@ -462,14 +1035,15 @@ if [ "$OPT_SOURCE" = 1 ]; then
       update_source_clone "$SRC" "$ref"
     else
       say "Cloning clio-agent at $ref"
-      if ! git clone --quiet --recurse-submodules --shallow-submodules --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
+      if ! git clone --quiet --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
         # A commit is not a branch or tag: fetch it by id.
         rm -rf "$SRC"
         git init -q "$SRC" && git -C "$SRC" remote add origin "$CLIO_REPO" \
           && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
-          && git -C "$SRC" submodule update --init --recursive --depth 1 \
           || die "could not fetch clio-agent at '$ref' from $CLIO_REPO: check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
       fi
+      update_submodules "$SRC" --depth 1 \
+        || die "could not fetch the submodules of clio-agent at '$ref' (git's message is above); run this installer again"
     fi
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
@@ -558,6 +1132,66 @@ if [ -x "$VENV/bin/python" ]; then
   CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
 fi
 
+# ---------- data an older CLIO wrote: moved aside, never deleted ------
+# This release cannot open what CLIO 0.9.5.1 or older stored. `store-check` reads the
+# store itself and says so in plain words (exit 5: written by 0.9.5.1 or older; 6 or
+# 4: cannot tell; 3: CLIO is running). Old data is moved aside after a yes (without
+# asking with --reset-old-data or when no terminal can ask); data whose writer cannot
+# be told is moved only after a yes. `reset-store --yes` renames it, keeping every byte.
+
+# Whether the person can be asked: output on a terminal and a terminal to read from
+# (the script itself may be stdin, as in `curl ... | bash`).
+can_ask() { [ -t 1 ] && { : < /dev/tty; } 2>/dev/null; }
+
+# ask_yes QUESTION DEFAULT: 0 for yes; an empty answer is DEFAULT (y or n).
+ask_yes() {
+  local answer=""
+  printf '%s ' "$1"
+  IFS= read -r answer < /dev/tty || answer=""
+  answer="$(printf '%s' "${answer:-$2}" | tr '[:upper:]' '[:lower:]')"
+  case "$answer" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+move_old_data_aside() {
+  local status=0
+  "$VENV/bin/python" -m clio_agent.gact.store_reset_command reset --yes || status=$?
+  [ "$status" = 0 ] \
+    || warn "Your data was not moved (exit $status, the reason is above). CLIO reports it when it starts; 'clio reset-store' moves it later."
+}
+
+check_old_data() {
+  "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.gact.store_reset_command") else 3)' 2>/dev/null \
+    || return 0  # a release before the check: its store is its own
+  say "Checking which CLIO version wrote your data"
+  local status=0
+  "$VENV/bin/python" -m clio_agent.gact.store_reset_command check || status=$?
+  case "$status" in
+    0) return 0 ;;
+    3) warn "CLIO is running, so your data was not checked. This release cannot open data written by CLIO 0.9.5.1 or older: stop CLIO ('clio stop', or quit CLIO Desktop) and run this installer again, or run 'clio reset-store' if CLIO says your data is from an older version."
+       return 0 ;;
+    5)
+      if [ "$OPT_RESET_OLD_DATA" = 1 ]; then
+        say "Moving it aside (--reset-old-data)"
+      elif can_ask; then
+        if ! ask_yes "Move it aside now? [Y/n]" y; then
+          warn "Your data was left in place. CLIO $CLIO_INSTALLED_VERSION cannot open it and says so when it starts. To move it later: 'clio stop', then 'clio reset-store'."
+          return 0
+        fi
+      else
+        say "No terminal to ask on: moving it aside (pass --reset-old-data to say so explicitly)"
+      fi ;;
+    *)
+      warn "The installer cannot tell whether your data must be moved aside, so it does not move it on its own."
+      [ -z "$PREVIOUS_VERSION" ] || say "The CLIO this install replaced was $PREVIOUS_VERSION."
+      if ! { can_ask && ask_yes "Move it aside anyway? [y/N]" n; }; then
+        warn "Your data was left in place. If CLIO says it was written by CLIO 0.9.5.1 or older, stop CLIO and run 'clio reset-store'."
+        return 0
+      fi ;;
+  esac
+  move_old_data_aside
+}
+check_old_data
+
 # ---------- upgrade the store: migrations run here, never at boot ------
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
@@ -569,6 +1203,7 @@ if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.ut
   case "$migrate_status" in
     0) ;;
     3) warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')" ;;
+    5) warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside" ;;
     *) warn "clio-agent migrate failed (exit $migrate_status, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
   esac
   doc_flags=(--skip-store-migrations)
@@ -681,19 +1316,47 @@ chmod +x "$PREFIX/uninstall.sh"
 
 # ---------- finishing notes -------------------------------------------
 say "Done."
+# macOS defaults to zsh; name the startup file of the shell this person actually uses.
+case "$(basename "${SHELL:-}")" in
+  zsh)  shell_rc="$HOME/.zshrc"; completion_line="autoload -Uz compinit && compinit; source <(clio completion zsh)" ;;
+  bash) if [ "$OS" = darwin ]; then shell_rc="$HOME/.bash_profile"; else shell_rc="$HOME/.bashrc"; fi
+        completion_line="source <(clio completion bash)" ;;
+  *)    shell_rc="" ;;
+esac
+case ":$CALLER_PATH:" in
+  *":$BIN_DIR:"*) path_step="$BIN_DIR is already on your PATH." ;;
+  *) if [ -n "$shell_rc" ]; then
+       path_step="Add $BIN_DIR to your PATH: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> \"$shell_rc\""
+     else
+       path_step="Add $BIN_DIR to your PATH in your shell's startup file."
+     fi ;;
+esac
+if [ -n "$shell_rc" ]; then
+  completion_step="Tab-completion:    echo '$completion_line' >> \"$shell_rc\""
+else
+  completion_step="Tab-completion:    clio completion bash|zsh prints a script for your shell"
+fi
+if [ -f "$PREFIX/clio-agent/web/index.html" ]; then
+  frontend="Web; Desktop is available with --desktop"
+  run_step="Run:   clio (Web), or clio start (headless service)"
+else
+  # Source installs carry no frontend build; say so instead of pointing at Web.
+  frontend="none (source install); Desktop is available with --desktop"
+  run_step="Run:   clio start (headless service); for Web set CLIO_WEB_DIR to a built web dist"
+fi
 clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
 cat <<EOF
 
 Installed to:        $PREFIX
 Launcher:            $LAUNCHER
 clio-agent:          $clio_src
-Frontend:            Web (release installs); Desktop is available with --desktop
+Frontend:            $frontend
 
 Next steps:
-  1. Make sure $BIN_DIR is on your PATH.
-  2. Run:   clio (Web), or clio start (headless service)
+  1. $path_step
+  2. $run_step
   3. Manage the server: clio status | clio restart | clio logs
-  4. Tab-completion:    clio completion bash >> ~/.bashrc   (or zsh)
+  4. $completion_step
   5. Uninstall:         clio uninstall   (add --purge to drop config)
 
 EOF

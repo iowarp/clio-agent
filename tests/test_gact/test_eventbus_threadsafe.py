@@ -118,3 +118,44 @@ def test_publish_without_bound_loop_still_records_history() -> None:
     bus = EventBus()
     bus.publish(Event(type="message.created", session_id="s1", payload={}))
     assert [ev.type for ev in bus._history["s1"]] == ["message.created"]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_publish_is_delivered_before_a_later_loop_publish() -> None:
+    """A worker thread's event, bridged onto the loop, keeps its place ahead of an event
+    the loop publishes after it: history order is id order, and a subscriber that
+    connects in between gets both (the replay filter skipped the late one before).
+
+    SABOTAGE: deliver the bridged event itself (``call_soon_threadsafe(self._deliver,
+    event)``) and the loop's later event is recorded first -> red."""
+    bus = EventBus()
+    seen: list[str] = []
+
+    async def first_reader() -> None:  # binds the owning loop
+        async for ev in bus.subscribe("s1"):
+            seen.append(ev.type)
+            if len(seen) == 2:
+                break
+
+    reader = asyncio.create_task(first_reader())
+    await asyncio.sleep(0)
+    worker = threading.Thread(
+        target=lambda: bus.publish(Event(type="semantic.event", session_id="s1", payload={}))
+    )
+    worker.start()
+    worker.join()  # published, its delivery still queued on the loop
+    bus.publish(Event(type="message.created", session_id="s1", payload={}))
+    late: list[Event] = []
+
+    async def late_reader() -> None:  # connects while the bridged delivery is pending
+        async for ev in bus.subscribe("s1"):
+            late.append(ev)
+            if len(late) == 2:
+                break
+
+    await asyncio.wait_for(asyncio.gather(reader, late_reader()), timeout=5)
+    history = bus._history["s1"]
+    assert [e.type for e in history] == ["semantic.event", "message.created"]
+    assert [e.id for e in history] == sorted(e.id for e in history)
+    assert seen == ["semantic.event", "message.created"]
+    assert [e.type for e in late] == ["semantic.event", "message.created"]

@@ -1,8 +1,9 @@
 """Shared plumbing of the stateful engines (Codex direct sockets, Claude Code sessions).
 
-The conversation logic itself lives in
-:class:`clio_agent.lm.engines.conversations.ConversationRegistry` (typed messages, one
-kept provider conversation per agent scope). This module holds what every engine and
+Each engine keeps its conversations where they live (Codex in its direct engine,
+Claude Code on the pooled client that holds it:
+:mod:`clio_agent.providers.claude_code_conversation`); the shared keying and delta rule
+is :mod:`clio_agent.lm.engines.conversations`. This module holds what every engine and
 the agent loop share:
 
 * the typed reset-reason catalog (:data:`STATEFUL_RESET_REASONS`) -- a restart is a
@@ -63,6 +64,14 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
             "reset: the session is restarted with a full send."
         ),
     },
+    "conversation_cleared": {
+        "category": "stateful_reset",
+        "description": (
+            "Another conversation of this session was opened on the same Claude Code "
+            "client, which cleared the CLI's history (one client holds one conversation). "
+            "The next call of this one is a full send."
+        ),
+    },
     "session_evicted": {
         "category": "stateful_reset",
         "description": (
@@ -88,6 +97,15 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
             "``thread/compacted`` notification), so the thread no longer holds what "
             "clio sent. clio-core is the context system, so the thread is abandoned "
             "and the next call is a full send on a fresh session."
+        ),
+    },
+    "reply_past_calls": {
+        "category": "stateful_reset",
+        "description": (
+            "The model wrote on past its call block (the text transport has no stop "
+            "sequence): results and prose it invented before any result existed. Only "
+            "the block ran, but the CLI's own history keeps the whole reply, so the "
+            "next call is a full send of what clio recorded, without the invented part."
         ),
     },
 }

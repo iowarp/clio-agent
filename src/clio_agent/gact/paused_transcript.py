@@ -37,7 +37,7 @@ def persist_paused_transcript(
         turn_id=state.turn_id,
         session_id=state.sid,
         role="assistant",
-        created_at=now,
+        created_at=state.transcript.created_at_iso,
         updated_at=now,
         parts=state.transcript.finalize(),
         tokens=Tokens(**state.turn_tokens),

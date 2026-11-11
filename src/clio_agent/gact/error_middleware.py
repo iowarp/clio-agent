@@ -85,6 +85,54 @@ def unhandled_error_envelope(exc: BaseException) -> ErrorEnvelope:
     )
 
 
+# Readable before the task runtime is up: readiness, identity, shutdown, and the sandbox
+# verdict the launcher and UI must show (and have acknowledged) at start-up.
+_AVAILABLE_WHILE_STARTING = frozenset(
+    {
+        "/v1/health",
+        "/v1/capabilities",
+        "/v1/server/shutdown",
+        "/v1/desktop/shutdown",
+        "/v1/system/sandbox",
+    }
+)
+STARTUP_RETRY_AFTER_S = 1
+
+
+def _startup_refusal(app: object, failed: bool) -> JSONResponse:
+    """The 503 for an API call that needs the task runtime before it is ready.
+
+    While starting it says so unambiguously: ``details.readiness`` matches
+    ``/v1/health``'s ``readiness``, ``details.starting`` lists what is still coming up,
+    and ``Retry-After`` tells a client when to ask again.
+    """
+    if failed:
+        info = ErrorInfo(
+            error="task_runtime_unavailable",
+            message="Durable task services are unavailable.",
+            details={"readiness": "failed"},
+            recoverable=True,
+        )
+        return JSONResponse(
+            status_code=503, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
+        )
+    from clio_agent.gact import boot_timing  # noqa: PLC0415 - keep the middleware import light
+
+    _, pending = boot_timing.readiness(app)
+    info = ErrorInfo(
+        error="task_runtime_starting",
+        message="Durable task services are starting.",
+        details={"readiness": "starting", "starting": pending or ["task_runtime"]},
+        recoverable=True,
+        retry_after_s=STARTUP_RETRY_AFTER_S,
+    )
+    return JSONResponse(
+        status_code=503,
+        content=ErrorEnvelope(error=info).model_dump(exclude_none=True),
+        headers={"Retry-After": str(STARTUP_RETRY_AFTER_S)},
+    )
+
+
 class EnvelopeErrorMiddleware:
     """Return the GACT error envelope from inside the CORS layer.
 
@@ -100,30 +148,19 @@ class EnvelopeErrorMiddleware:
             await self.app(scope, receive, send)
             return
 
-        state = getattr(scope.get("app"), "state", None)
-        starting = getattr(state, "task_runtime_start", None)
-        if starting is not None and scope.get("path") not in {
-            "/v1/health",
-            "/v1/capabilities",
-            "/v1/server/shutdown",
-            "/v1/desktop/shutdown",
-        }:
+        app = scope.get("app")
+        starting = getattr(getattr(app, "state", None), "task_runtime_start", None)
+        path = str(scope.get("path") or "")
+        # Only the API waits for the task runtime: the web UI's shell and assets load at
+        # once, so it can show the startup state instead of a raw JSON 503.
+        if (
+            starting is not None
+            and path.startswith("/v1/")
+            and path not in _AVAILABLE_WHILE_STARTING
+        ):
             failed = starting.done() and (starting.cancelled() or starting.exception() is not None)
             if failed or not starting.done():
-                reason = "task_runtime_unavailable" if failed else "task_runtime_starting"
-                response = JSONResponse(
-                    status_code=503,
-                    content=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error=reason,
-                            message="Durable task services are unavailable."
-                            if failed
-                            else "Durable task services are starting.",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-                await response(scope, receive, send)
+                await _startup_refusal(app, failed)(scope, receive, send)
                 return
 
         response_started = False

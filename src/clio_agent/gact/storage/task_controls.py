@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from clio_agent.arc.task_types import TaskOwner, TaskSnapshot
 from clio_agent.gact.storage.models import TransferOperation
 from clio_agent.gact.task_migration_storage import source_operation_identity
+from clio_agent.gact.task_publication import HUMAN_SOURCE_INVOCATION
 from clio_agent.tools.task_call_context import permission_snapshot
 
 
@@ -57,7 +58,7 @@ async def submit_source_action(
                     + record.source.label,
                     app.state.human_principal,
                     predecessor=assignment,
-                    invocation_id="source-ui:" + uuid4().hex,
+                    invocation_id=HUMAN_SOURCE_INVOCATION + uuid4().hex,
                 )
         workspace = app.state.workspaces.get(workspace_id)
         return assignment, record, workspace, permission_snapshot(app, session_id)
@@ -79,7 +80,7 @@ async def submit_source_action(
             assignment_id=assignment.handle,
             parent_handle=assignment.handle,
         ),
-        invocation_id="source-ui:" + uuid4().hex,
+        invocation_id=HUMAN_SOURCE_INVOCATION + uuid4().hex,
         workspace=workspace.root_path,
         permissions=permissions,
         confinement={},

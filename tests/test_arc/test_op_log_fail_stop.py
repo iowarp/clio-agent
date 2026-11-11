@@ -38,10 +38,11 @@ def test_the_fold_store_applies_nothing_when_the_op_log_fails(tmp_path: Path) ->
 
 def test_the_base_store_applies_nothing_when_the_op_log_fails(tmp_path: Path) -> None:
     store = SegmentStore(_clio_core(str(tmp_path)), op_logger=None)
-    kept = store.append(SID, "_events", "semantic_event", {"text": "e1"})
+    # A context scope: highway lanes (``_events``) log no arc.op (replay.logs_context_op).
+    kept = store.append(SID, "notes", "user", {"text": "e1"})
     store._op_logger = _refuse  # the trace fails from here on
 
     with pytest.raises(ContextOpLogError):
-        store.append(SID, "_events", "semantic_event", {"text": "e2"})
+        store.append(SID, "notes", "user", {"text": "e2"})
 
-    assert [s.id for s in store.render(SID, "_events")] == [kept.id]
+    assert [s.id for s in store.render(SID, "notes")] == [kept.id]

@@ -19,6 +19,7 @@ from clio_agent.arc.task_types import (
 from clio_agent.gact import context
 from clio_agent.gact.conversation_assignments import ConversationOutcome
 from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS
 from clio_agent.gact.session_input import accept_session_input, input_delivery
 
 SOURCE = "hook_defer"
@@ -252,7 +253,7 @@ def respond(app: Any, task: TaskSnapshot, action: str, grantor: str) -> dict[str
     TaskAccess(
         app.state.task_history, TaskCaller("", app.state.human_principal, human_action=True)
     ).require(task.handle, "control")
-    if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
+    if action not in STANDARD_ANSWERS:
         raise ValueError("Unsupported hook approval action")
     captured = binding(app, task)
     validate_decision(app, captured, action.startswith("allow"))

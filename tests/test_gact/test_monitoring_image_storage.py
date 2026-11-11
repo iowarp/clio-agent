@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -326,7 +327,7 @@ def test_explicit_rootless_data_deletion_stays_inside_owned_folder(
         calls.append(args)
         if args[0] == "info":
             return json.dumps({"host": {"security": {"rootless": True}}})
-        assert args[:3] == ["unshare", "python3", "-c"] and args[-1] == str(data)
+        assert args[:3] == ["unshare", sys.executable, "-c"] and args[-1] == str(data)
         data.rmdir()
         return ""
 

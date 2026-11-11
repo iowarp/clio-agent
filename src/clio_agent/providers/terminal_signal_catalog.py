@@ -28,6 +28,7 @@ from __future__ import annotations
 from clio_agent.providers.claude_code_plan_limit import PLAN_LIMIT_SIGNAL
 from clio_agent.providers.claude_code_safety_refusal import SAFETY_REFUSAL_SIGNAL
 from clio_agent.providers.codex.errors import CODEX_PLAN_LIMIT_SIGNAL
+from clio_agent.providers.copilot.errors import COPILOT_PLAN_LIMIT_SIGNAL
 from clio_agent.providers.terminal_signal import TerminalProviderSignal
 
 __all__ = ["TERMINAL_PROVIDER_SIGNALS"]
@@ -39,4 +40,5 @@ TERMINAL_PROVIDER_SIGNALS: tuple[TerminalProviderSignal, ...] = (
     PLAN_LIMIT_SIGNAL,
     SAFETY_REFUSAL_SIGNAL,
     CODEX_PLAN_LIMIT_SIGNAL,
+    COPILOT_PLAN_LIMIT_SIGNAL,
 )

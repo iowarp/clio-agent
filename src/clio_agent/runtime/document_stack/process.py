@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -15,6 +16,55 @@ from typing import Any
 
 class DocumentError(RuntimeError):
     """A document operation failed without producing verified output."""
+
+
+# LibreOffice reads user settings from <UserInstallation>/user, not the profile root.
+# OpenCL only accelerates interactive Calc; its per-machine device test costs a
+# headless conversion several seconds and would tie a seeded profile to one GPU.
+OFFICE_PROFILE_SETTINGS = (
+    '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
+    '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
+    '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>'
+    '<item oor:path="/org.openoffice.Office.Common/Misc">'
+    '<prop oor:name="UseOpenCL" oor:op="fuse"><value>false</value></prop></item>'
+    "</oor:items>"
+)
+
+
+def office_profile_key(executable: str | Path) -> str:
+    """Name the seeded profile for one Office build; the profile itself is relocatable."""
+    path = Path(executable).resolve()
+    info = path.stat()
+    return hashlib.sha256(f"{path.name}:{info.st_size}:{info.st_mtime_ns}".encode()).hexdigest()[
+        :16
+    ]
+
+
+def office_profile_template(executable: str | Path, templates: Path | None = None) -> Path | None:
+    """Return this build's seeded first-start profile, if prepare created one."""
+    if templates is None and (configured := os.environ.get("CLIO_DOCUMENT_OFFICE_PROFILES")):
+        templates = Path(configured)
+    if templates is None:
+        return None
+    try:
+        profile = templates / office_profile_key(executable) / "profile"
+        return profile if (profile / "user" / "registrymodifications.xcu").is_file() else None
+    except OSError:
+        return None
+
+
+def new_office_profile(profile: Path, template: Path | None = None) -> None:
+    """Start from the seeded profile when readable; otherwise LibreOffice builds one."""
+    if template is not None:
+        try:
+            shutil.copytree(template, profile)
+            return
+        except OSError:
+            shutil.rmtree(profile, ignore_errors=True)
+    (profile / "user").mkdir(parents=True)
+    (profile / "user" / "registrymodifications.xcu").write_text(
+        OFFICE_PROFILE_SETTINGS, encoding="utf-8"
+    )
 
 
 def _windows_dacl_protected(path: Path) -> bool:
@@ -85,9 +135,14 @@ def run(
     env: dict[str, str] | None = None,
     windows_command_line: str | None = None,
 ) -> str:
-    """Run without a shell, allowing explicit Windows quoting for non-CRT parsers."""
+    """Run without a shell, allowing explicit Windows quoting for non-CRT parsers.
+
+    Children never write bytecode: LibreOffice's embedded Python would otherwise
+    write ``.pyc`` into its application tree and break macOS's code-signature seal.
+    """
     if windows_command_line is not None and os.name != "nt":
         raise DocumentError("An explicit Windows command line requires Windows")
+    env = {**(os.environ if env is None else env), "PYTHONDONTWRITEBYTECODE": "1"}
     flags: dict[str, Any] = {}
     if os.name == "nt":
         flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -180,8 +235,13 @@ def office_convert(
     execute: Callable[[list[str], Path], None] | None = None,
     executable_path: str | None = None,
     workspace: Path | None = None,
+    profile_templates: Path | None = None,
 ) -> Path:
-    """Convert a copy using a fresh LibreOffice profile; never overwrite the source."""
+    """Convert a copy using a fresh LibreOffice profile; never overwrite the source.
+
+    The fresh profile is a copy of the one seeded during prepare, so each call
+    skips LibreOffice's first-start profile build.
+    """
     executable = executable_path or find_native("soffice")
     if not executable:
         if os.environ.get("CLIO_DOCUMENT_CONFINED") == "1":
@@ -217,14 +277,7 @@ def office_convert(
             # Profiles created inside the worker keep their private ACL instead.
             inherit_parent_access(Path(temporary.name))
         profile = Path(temporary.name).resolve() / "profile"
-        profile.mkdir()
-        (profile / "registrymodifications.xcu").write_text(
-            '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
-            '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
-            '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
-            "</item></oor:items>",
-            encoding="utf-8",
-        )
+        new_office_profile(profile, office_profile_template(executable, profile_templates))
         command = [
             executable,
             f"-env:UserInstallation={profile.as_uri()}",

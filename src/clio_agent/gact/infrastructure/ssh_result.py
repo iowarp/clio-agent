@@ -23,6 +23,7 @@ class SshOutputSpill(TypedDict):
     path: NotRequired[str]
     relative_path: NotRequired[str]
     error: NotRequired[str]
+    note: NotRequired[str]
 
 
 class SshCommandEchoOmitted(TypedDict):

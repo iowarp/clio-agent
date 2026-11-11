@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.9.5.1"
+version = "0.9.6b1"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -40,6 +40,8 @@ classifiers = [
 
 dependencies = [
     "pyyaml>=6.0.3,<7",
+    # Injection text is a sandboxed Jinja template (clio_agent.injections.template).
+    "jinja2>=3.1.6,<4",
     # Runtime preparation must also work for pip-installed Clio without a host uv.
     "uv>=0.13.4,<1",
     "truststore==0.10.4",
@@ -59,7 +61,7 @@ dependencies = [
     # never an upper bound. The backend gates new models by client version, so
     # runtimes update this in place past the lock from the provider panel, and
     # the provider-sdk-bump workflow moves the floor + lock weekly.
-    "openai-codex-cli-bin>=0.162.1",
+    "openai-codex-cli-bin>=0.167.0",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
@@ -69,7 +71,7 @@ dependencies = [
     "fastmcp-tasks==4.1.2",
     "mcp==2.2.0",  # reviewed native Tasks wire/client contract
     "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
-    "clio-schemas==0.6.0",
+    "clio-schemas==0.7.0b1",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -81,6 +83,13 @@ dependencies = [
     "packaging>=24.0",
     "requests>=2.31.0",
     "h5py>=3.10.0",
+    # The workspace file viewer's HDF5 data route (gact/hdf5_view.py): metadata and
+    # bounded slices, so a large file is never read whole.
+    "h5grove>=4.0.0",
+    # The in-app browser (gact/browser/): imported only when the service starts. Its
+    # Chromium build is downloaded on first use into CLIO's cache, never at install time.
+    # Exact: the service relies on 1.64's screencast, show_actions(style=) and get_by_ref.
+    "playwright==1.64.1",
     "pyarrow>=14.0.0",
     # Artifact table-query LTTB downsampling (gact/artifacts/lttb.py). Already present
     # transitively (matplotlib/pyarrow); declared now that first-party code imports it.
@@ -108,7 +117,7 @@ dependencies = [
     # Windows IPC/memory and storage correctness fixes.
     # 2.3.2 adds capacity queries and stable async target registration required
     # for bounded automatic recovery of full managed conversation storage.
-    "iowarp-core~=2.3.2",
+    "iowarp-core~=2.4.0",
     # Cross-platform process lifecycle for the shared clio-core runtime daemon
     # (connect-or-spawn + last-one-out release). clio-core deploys identically on
     # Linux/macOS/Windows (per upstream), so only the host-side primitives differ:
@@ -218,6 +227,16 @@ claude-code = [
     "claude-agent-sdk>=0.2.159",
 ]
 
+copilot = [
+    # Optional GitHub Copilot SDK transport (providers/copilot): a persistent
+    # Copilot runtime session used PURELY as a model transport -- CLIO keeps
+    # its own tools, prompts and gateway. Auth is the user's GitHub account
+    # signed in through CLIO (the vault token), never the machine's Copilot login.
+    # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
+    # never an upper bound; updated in place from the provider panel.
+    "github-copilot-sdk>=1.0.29",
+]
+
 flowcept = [
     # Optional queryable agentic-provenance provider. CLIO imports it only
     # when provenance.agentic.providers includes "flowcept".
@@ -241,7 +260,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,adios,argonne,claude-code,desktop,flowcept,dev]",
+    "clio-agent[optimizers,adios,argonne,claude-code,copilot,desktop,flowcept,dev]",
 ]
 
 [dependency-groups]
@@ -253,6 +272,8 @@ install-bootstrap = [
     "packaging>=23.0",
     "psutil>=5.9.0",  # bounded subprocess-tree cleanup if first Office startup times out
     "pyyaml>=6.0.3,<7",
+    # Injection text is a sandboxed Jinja template (clio_agent.injections.template).
+    "jinja2>=3.1.6,<4",
     "truststore==0.10.4",
     "zstandard==0.25.0",
 ]

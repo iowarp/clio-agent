@@ -148,6 +148,11 @@ def test_transcript_blocks_are_located_with_heat_runs_inside_their_text() -> Non
         for lo, hi, value in block["runs"]:
             assert 0 <= lo < hi <= len(text)
             assert value > 0
+        # Every token's start, kept or not, so the UI can average a line over all of them.
+        starts = block["token_starts"]
+        assert starts == sorted(starts) and all(0 <= start < len(text) for start in starts)
+        assert len(starts) <= block["tokens"]
+        assert {lo for lo, _, _ in block["runs"]} <= set(starts)
     # the selected output itself is never an anchor
     assert not any(b["part_id"] == "call_sel" and b["field"] == "thought" for b in result["blocks"])
 

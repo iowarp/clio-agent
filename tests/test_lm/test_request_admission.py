@@ -356,7 +356,8 @@ def test_real_stream_cancel_closes_socket_before_releasing_budget(
         try:
             with dspy.context(send_stream=send):
                 task = asyncio.create_task(lm.acall(_request(lm)))
-            assert await asyncio.to_thread(state["started"].wait, 5)
+            # A start signal, not a speed limit: a loaded shard can take seconds to connect.
+            assert await asyncio.to_thread(state["started"].wait, 30)
             await receive.receive()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -388,7 +389,7 @@ def test_session_stop_closes_real_http_stream_on_the_persistent_lm_loop(
     killed: list[int] = []
 
     def stop() -> None:
-        assert state["started"].wait(5)
+        assert state["started"].wait(30)
         killed.append(abort_session_streams("admission-test"))
 
     stopper = threading.Thread(target=stop)

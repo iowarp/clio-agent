@@ -20,7 +20,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -277,6 +277,11 @@ class SessionStore:
         self._cache_cap = cache_capacity()
         self._lifecycle_observer: Callable[[str, Session], None] | None = None
         self._initializing: set[str] = set()
+        # Bumped by every row write/forget (under ``self._lock``); ``_written`` keeps
+        # each session's latest stamp so an unlocked row read can tell whether a
+        # write raced it (:meth:`_load_rows`).
+        self._write_stamp = 0
+        self._written: dict[str, int] = {}
 
     # ---- lifecycle ----------------------------------------------------
 
@@ -326,6 +331,40 @@ class SessionStore:
                 rows.append(held)
         return rows
 
+    def _load_rows(self, ids: "builtins.list[str]") -> "builtins.list[Session]":
+        """:meth:`_sessions` without holding ``self._lock`` across the store reads.
+
+        The bodies are read (one clio-core read each) and decoded unlocked, so a
+        burst of list requests does not queue every other session read and write
+        behind its store round trips. Rows are adopted under the lock: a row someone
+        holds wins, and a body whose session was written or forgotten after the read
+        began is read again under the lock, so a stale body never replaces a write.
+        """
+
+        with self._lock:
+            stamp = self._write_stamp
+            missing = [
+                sid for sid in ids if (self._cache.get(sid) or self._identity.get(sid)) is None
+            ]
+        bodies = self._records.bodies_for(missing) if missing else {}
+        decoded = {sid: self._decode(sid, body) for sid, body in bodies.items()}
+        with self._lock:
+            rows: builtins.list[Session] = []
+            for sid in ids:
+                held = self._cache.get(sid) or self._identity.get(sid)
+                if held is None:
+                    if self._written.get(sid, 0) > stamp:
+                        held = self._row(sid)
+                    elif (held := decoded.get(sid)) is not None:
+                        self._identity[sid] = held
+                if held is not None:
+                    rows.append(held)
+            return rows
+
+    def _mark_written(self, sid: str) -> None:
+        self._write_stamp += 1
+        self._written[sid] = self._write_stamp
+
     def bind_store(self, store: Any) -> None:
         """Keep the records in ``store`` (clio-core) from now on (off the server loop)."""
         self._records.bind(store)
@@ -333,6 +372,8 @@ class SessionStore:
     def expect_store(self) -> None:
         """A clio-core store will be bound: reads wait for it (a server's boot)."""
         self._records.expect_store()
+
+    readable = property(lambda self: self._records.readable)  # a read returns without waiting
 
     def flush(self, timeout: float = 120.0) -> bool:
         """Wait until every session write has landed in the store."""
@@ -348,6 +389,7 @@ class SessionStore:
 
     def _persist(self, session: Session) -> None:
         """Write this one session's record; on failure the next read reloads it."""
+        self._mark_written(session.id)
         try:
             self._records.put(record_columns(session), json.dumps(asdict(session), sort_keys=True))
         except BaseException:
@@ -356,6 +398,7 @@ class SessionStore:
         self._remember(session)
 
     def _forget(self, sid: str) -> None:
+        self._mark_written(sid)
         self._cache.pop(sid, None)
         self._identity.pop(sid, None)
 
@@ -578,53 +621,49 @@ class SessionStore:
                 return "SessionStart process settlement is unconfirmed; no replay or successor was launched."
         return None
 
-    def list(
-        self,
-        *,
-        workspace_id: Optional[str] = None,
-    ) -> list[Session]:
-        """Every session (reads every record: prefer :meth:`page` / :meth:`ids`)."""
-
-        with self._lock:
-            ids = self._records.select(PageQuery(workspace_id=workspace_id, archived=None))
-            return self._sessions(ids)
-
     def page(self, query: PageQuery) -> tuple["builtins.list[Session]", Optional[str], int]:
         """One page newest interaction first, the next cursor, the total (bad cursor:
         :class:`~clio_agent.gact.session_records.InvalidCursorError`)."""
 
-        with self._lock:
-            ids, next_cursor, total = self._records.page(query)
-            return self._sessions(ids), next_cursor, total
+        ids, next_cursor, total = self._records.page(query)
+        return self._load_rows(ids), next_cursor, total
 
     def select(self, query: PageQuery) -> "builtins.list[Session]":
         """Every session matching ``query`` (no paging), newest created first."""
 
-        with self._lock:
-            return self._sessions(self._records.select(query))
+        return self._load_rows(self._records.select(query))
 
-    def related(self, *, family_of: str = "") -> "builtins.list[Session]":
-        """``family_of``'s conversation tree, else the sessions waiting on a person
-        and their ancestors (:meth:`SessionRecords.related_ids`), by index only."""
-
-        with self._lock:
-            return self._sessions(self._records.related_ids(family_of))
+    def related(
+        self, *, family_of: str = "", waiting: Iterable[str] = ()
+    ) -> "builtins.list[Session]":
+        """``family_of``'s tree, else who waits on a person (:meth:`SessionRecords.related_ids`)."""
+        return self._load_rows(self._records.related_ids(family_of, waiting))
 
     def import_legacy(self) -> dict[str, Any]:
         """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""
         return self._records.import_legacy(self._path)
 
-    def ids(self) -> "builtins.list[str]":
-        """Every session id, without reading a row."""
+    def ids(self, query: PageQuery | None = None) -> "builtins.list[str]":
+        """Every session id (matching ``query``), from the index: no row is read."""
+        # The index has its own lock; holding the row lock too would queue this
+        # behind every row read and write.
+        return self._records.ids() if query is None else self._records.select(query)
 
+    @property
+    def index(self) -> SessionRecords:
+        """The session index: columns, totals and unfilled rows, without a row read."""
+        return self._records
+
+    def reindex(self, ids: "builtins.list[str]") -> int:
+        """Recompute (fill) the named sessions' index columns from their rows."""
         with self._lock:
-            return self._records.ids()
+            rows = [record_columns(row) for row in self._sessions(ids)]
+            return self._records.reindex(rows, attempted=ids)
 
     def child_ids_by_parent(self) -> dict[str, "builtins.list[str]"]:
         """``{parent id: [child ids]}`` from the parent column, without reading rows."""
 
-        with self._lock:
-            return self._records.child_ids_by_parent()
+        return self._records.child_ids_by_parent()  # the index's own lock (see ids)
 
     def most_recent(self) -> Optional[Session]:
         """The newest created session, or ``None``."""
@@ -671,10 +710,13 @@ class SessionStore:
         agent: Optional[dict[str, str]] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
         archived: Optional[bool] = None,
+        workspace_id: Optional[str] = None,
     ) -> Optional[Session]:
         """Mutate a session in place.
 
-        Any field left ``None`` is untouched. ``metadata_patch``
+        Any field left ``None`` is untouched. ``workspace_id`` re-homes the
+        session (``POST /v1/sessions/{sid}/move`` owns the guards and the
+        session-owned state that follows it); an empty value is refused. ``metadata_patch``
         merges into existing metadata; message marks merge per ID,
         other keys shallowly, without clobbering the rest. The
         ``add_tokens_*`` / ``add_cost_usd`` params accumulate onto
@@ -753,6 +795,10 @@ class SessionStore:
                 sess.metadata = merge_session_metadata(sess.metadata, metadata_patch)
             if archived is not None:
                 sess.archived = bool(archived)
+            if workspace_id is not None:
+                if not workspace_id:
+                    raise ValueError("a session's workspace_id cannot be empty")
+                sess.workspace_id = workspace_id
             now = _utcnow_iso()
             if message_count is not None:
                 sess.last_interaction_at = now

@@ -45,7 +45,7 @@ import logging
 import os
 import re
 import socket
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,9 +53,11 @@ import yaml
 
 from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc import clio_core_indexer as _indexer
+from clio_agent.arc import clio_core_relocate as _relocate
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
+from clio_agent.arc.clio_core_threads import core_threads, ensure_seeded_threads
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,7 @@ def host_key() -> str:
     return _HOST_KEY_UNSAFE.sub("-", label).strip("-") or "localhost"
 
 
-def runtime_state_dir() -> Path:
+def runtime_state_dir(*, create: bool = True) -> Path:
     """Return the directory holding THIS machine's clio-core runtime bookkeeping.
 
     This is where the connect-or-spawn lifecycle keeps its coordination state: the
@@ -96,12 +98,16 @@ def runtime_state_dir() -> Path:
     this at its own directory, and its spawn lock / pidfile / registry / last-one-out
     stop all move coherently with it. The directory is created if absent.
 
-    Returns the state directory, creating it if absent.
+    ``create=False`` is for read-only probes (the flood monitor's background poll):
+    they must not resurrect a state directory that its owner has already removed.
+
+    Returns the state directory, creating it if absent unless ``create`` is false.
     """
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
     if override:
         state = Path(override).expanduser()
-        state.mkdir(parents=True, exist_ok=True)
+        if create:
+            state.mkdir(parents=True, exist_ok=True)
         return state
     from clio_agent import paths  # noqa: PLC0415
 
@@ -117,14 +123,17 @@ def runtime_state_dir() -> Path:
     if legacy.exists() and not state.exists():
         logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
         state = legacy
-    state.mkdir(parents=True, exist_ok=True)
+    if create:
+        state.mkdir(parents=True, exist_ok=True)
     return state
 
 
-# Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
-# dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
-# is the cold spill target, durable across daemon restarts (``restart``, the metadata log
-# and ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`).
+# Default clio-core CTE config: a RAM working arena (the ``ram`` bdev, clio-core's
+# working memory, not a data tier) and ONE file data tier (score 1.0) on the OS data
+# dir, durable across daemon restarts (``restart``, the metadata log and
+# ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`). A blob is in
+# memory by default; clio-core moves it to the file tier under memory pressure or when it
+# goes unused.
 #
 # MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
 # clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of
@@ -142,7 +151,7 @@ _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 networking:
   port: {core_port}
 runtime:
-  num_threads: 4
+  num_threads: {core_threads}
   conf_dir: "{conf_dir}"
 compose:
   - mod_name: clio_bdev
@@ -175,8 +184,57 @@ compose:
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
 _DEFAULT_CTE_CORE_PORT = 9413
 
+# clio-core binds its RPC servers on every interface (0.0.0.0) unless
+# ``CLIO_BIND_ADDR`` names an address. CLIO's runtime is single-node and serves only
+# this machine's own processes, so it is pinned to loopback; an explicit value
+# (for a hand-authored multi-node hostfile) is respected. Only clio-core child
+# environments are pinned; the server's own ``os.environ`` is left alone.
+# Known gap: clio-core's control channel (port base+2, ``ControlChannelLoop`` in
+# ``context-runtime/src/ipc_manager.cc``) binds ``tcp://*`` and ignores this
+# variable (iowarp/clio-core#1355); ``arc.core_control_port`` keeps it off the
+# network until the upstream fix ships (removal: iowarp/clio-agent#2038).
+CORE_BIND_ADDR_ENV = "CLIO_BIND_ADDR"
+CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
 
-# The path suffix identifying the ram hot tier inside a clio-core ``compose`` block.
+
+def pin_loopback_bind(env: MutableMapping[str, str]) -> None:
+    """Bind the clio-core runtime started or attached under ``env`` to loopback.
+
+    The daemon, its ``stop`` command and the native preflight must agree, so every
+    child environment that reaches clio-core goes through here.
+    """
+    if not env.get(CORE_BIND_ADDR_ENV):
+        env[CORE_BIND_ADDR_ENV] = CORE_LOOPBACK_BIND_ADDR
+
+
+# clio-core keeps runtime state that the config does not name (bdev perf stats,
+# for one) under ``CLIO_STORAGE_ROOT``, which defaults to ~/.clio. Children get
+# this machine's runtime state directory instead, so the state stays with
+# CLIO's own data and is removed with it. An explicit value is respected.
+CORE_STORAGE_ROOT_ENV = "CLIO_STORAGE_ROOT"
+
+# `clio_run runtime start` also serves a web dashboard on fixed port 8080 by default.
+# CLIO never uses it, and a fixed port collides between two homes or users on one
+# machine and with common dev servers, so CLIO's children run without it. The
+# environment wins over any cte.yaml, including ones generated before this; an
+# explicit value is respected.
+CORE_VIZ_ENABLE_ENV = "CLIO_VIZ_ENABLE"
+
+
+def pin_core_child_env(env: MutableMapping[str, str]) -> None:
+    """Prepare ``env`` for a clio-core child.
+
+    Loopback bind, a CLIO-owned storage root, and no runtime dashboard.
+    """
+    pin_loopback_bind(env)
+    if not env.get(CORE_STORAGE_ROOT_ENV):
+        env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
+    if not env.get(CORE_VIZ_ENABLE_ENV):
+        env[CORE_VIZ_ENABLE_ENV] = "0"
+
+
+# The path suffix identifying a ram data tier (hand-authored or older configs; the
+# generated config has none) inside a clio-core ``compose`` block.
 _RAM_TIER_PATH_SUFFIX = "cte_ram_tier"
 
 # Binary-multiplier unit table for clio-core capacity strings. Values are used only
@@ -334,11 +392,14 @@ def default_cte_config_path() -> str:
     """Seed (if absent) and return the default clio-core CTE config path.
 
     Lives under the OS data dir (:func:`clio_agent.paths.user_data_dir` ``/cte``) and
-    declares a DRAM hot tier + a file cold tier, so ARC's clio-core backend is a
-    self-managed memory↔disk hierarchy by default — no LocalFS, no manual config.
+    declares a bounded RAM working arena and one durable file data tier, so ARC's
+    clio-core backend needs no LocalFS and no manual config.
 
     Written **once** (only when absent): an existing ``cte.yaml`` is never rewritten, so
-    a user's explicit values survive untouched. A stale file still carrying ``0g`` is
+    a user's explicit values survive untouched -- except the paths of a store whose
+    data folder was moved, which point at the old location until
+    :func:`clio_agent.arc.clio_core_relocate.ensure_store_location` relocates them
+    (or refuses, typed, before clio-core starts). A stale file still carrying ``0g`` is
     surfaced by the doctor (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`)
     rather than silently mutated (#890).
     """
@@ -355,9 +416,11 @@ def default_cte_config_path() -> str:
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if cfg.is_file():
+        _relocate.ensure_store_location(cte_dir)  # a moved data folder: relocated, or refused
         _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
         _indexer.ensure_seeded_config_indexed(cfg, cte_dir / "indexer_index.log")  # pre-#905
         _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
+        ensure_seeded_threads(cfg)  # a seed from before arc.core_threads
     else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:
@@ -365,6 +428,7 @@ def default_cte_config_path() -> str:
         cfg.write_text(
             _DEFAULT_CTE_CONFIG_TEMPLATE.format(
                 core_port=_default_cte_core_port(),
+                core_threads=core_threads(),
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
                 file_capacity=_default_cte_file_capacity(cte_dir),
@@ -381,29 +445,33 @@ def default_cte_config_path() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Doctor support: read the effective ram hot-tier cap WITHOUT seeding a file.
+# Doctor support: read the effective RAM bounds WITHOUT seeding a file.
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
 class RamTierCap:
-    """The effective clio-core ram hot-tier cap the ARC backend will run with.
+    """The effective clio-core RAM bounds the ARC backend will run with.
+
+    The generated config keeps data on one file tier, so its only RAM bound is the ram
+    bdev ``capacity`` (the memory budget). A hand-authored or older config may also
+    declare a ram *data* tier (a storage path ending ``cte_ram_tier``); its
+    ``capacity_limit`` is :attr:`cap`.
 
     Attributes:
         config_path: The ``cte.yaml`` the runtime would use (may not exist yet).
         file_exists: Whether that config file is present on disk.
-        cap: The ram tier ``capacity_limit`` string (from the file when present, else
-            the bounded default the generator would write); ``None`` if the file exists
-            but declares no ram tier.
+        cap: The ram data tier's ``capacity_limit`` string; ``None`` when there is no
+            ram data tier (the generated disk-only default, or no file yet).
         source: Where ``cap`` came from (``"file:<path>"`` or ``"generator-default"``).
         unbounded: True when ``cap`` parses to zero — the ``0g`` = 80%-DRAM footgun.
         parse_error: A fail-loud message when ``cap`` is present but unparseable, else
             ``None``.
-        bdev_capacity: The ram *bdev* ``capacity`` string, surfaced for visibility
-            (#906 — the 12.3 GiB incident's stale config carried ``0g`` in TWO places).
-            ``"0g"`` here is the device ceiling and is the proven-safe generated
-            default WHEN the tier ``capacity_limit`` is bounded (the tier limit is the
-            spill trigger — see the module docstring); it is reported, not judged.
+        bdev_capacity: The ram *bdev* ``capacity`` string: the memory budget, the hard
+            ceiling of clio-core's working memory. The generator writes the
+            ``arc.cte.ram_capacity`` budget (default 1GB); ``"0g"`` means up to 80% of
+            system DRAM (#906 — the 12.3 GiB incident's stale config carried ``0g`` in
+            TWO places), which the topology rules of :func:`boot_check_ram_cap` flag.
     """
 
     config_path: str
@@ -419,10 +487,10 @@ class RamTierCap:
 def _read_ram_caps_from_file(path: Path) -> tuple[str | None, str | None, str | None]:
     """Return ``(tier_capacity_limit, ram_bdev_capacity, final_tier_capacity)``.
 
-    Reads the clio-core ``compose`` block: the ram hot tier's ``capacity_limit``
-    (the storage tier whose path ends with :data:`_RAM_TIER_PATH_SUFFIX` — the
-    spill trigger, #890), the ram bdev module's ``capacity`` (the device
-    ceiling, #906), and the FINAL tier's ``capacity_limit`` (lowest ``score``
+    Reads the clio-core ``compose`` block: a ram data tier's ``capacity_limit``
+    (the storage tier whose path ends with :data:`_RAM_TIER_PATH_SUFFIX`, #890;
+    hand-authored or older configs only), the ram bdev module's ``capacity`` (the
+    memory budget, #906), and the FINAL tier's ``capacity_limit`` (lowest ``score``
     — the layer that must be unbounded per the topology rule; a bounded final
     layer fills and fails writes, proven live on the #893 gate). Any is
     ``None`` when absent; all are ``None`` on a missing/invalid file (never
@@ -485,7 +553,7 @@ def _resolve_config_path(env: Mapping[str, str]) -> Path:
 def effective_ram_cap(
     *, env: Mapping[str, str], config_path: str | Path | None = None
 ) -> RamTierCap:
-    """Report the effective ram hot-tier cap for the doctor (read-only, no seeding).
+    """Report the effective RAM bounds for the doctor (read-only, no seeding).
 
     When the config file exists its declared ram cap is authoritative; when it does not
     yet exist the bounded default the generator *would* write is reported. A ``0g`` cap
@@ -547,8 +615,9 @@ CLIO_CORE_RAM_UNCAPPED = "clio_core_ram_uncapped"
 CLIO_CORE_TIER_TOPOLOGY = "clio_core_tier_topology"
 
 _BOOT_REMEDIATION = (
-    "set arc.cte.ram_capacity / CLIO_ARC_CTE_RAM_CAPACITY and regenerate, or edit "
-    "capacity_limit under storage[cte_ram_tier] in the config file"
+    "set arc.cte.ram_capacity / CLIO_ARC_CTE_RAM_CAPACITY and delete the stale config so "
+    "it regenerates (disk-only data), or in the config file bound the capacity of the "
+    "bdev_type: ram module and the capacity_limit of any hand-authored ram data tier"
 )
 
 
@@ -596,9 +665,10 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
     # agent grow to clio-core's HPC default of 80% of system DRAM) and must
     # leave spill headroom above the tier limit (>= 2x proven by the
     # bounded-ceiling probe; ceiling == tier is the proven rc=13 deadlock).
-    # The FINAL tier must at least absorb one full hot-tier spill. (The
-    # intended final-layer rule is unbounded, but clio-core rejects
-    # capacity_limit=0 on non-ram tiers — see _default_cte_file_capacity.)
+    # With a hand-authored ram data tier, the FINAL tier must at least hold
+    # everything that tier can spill. (The intended final-layer rule is
+    # unbounded, but clio-core rejects capacity_limit=0 on non-ram tiers — see
+    # _default_cte_file_capacity.)
     topology = []
     tier_ok = cap.cap is not None and not cap.unbounded and cap.parse_error is None
     if cap.bdev_capacity is not None and not _is_bounded(cap.bdev_capacity):
@@ -627,7 +697,7 @@ def boot_check_ram_cap(config_path: str | Path, *, env: Mapping[str, str]) -> Ra
     ):
         topology.append(
             f"final tier capacity_limit {cap.final_tier_capacity!r} is <= the ram tier "
-            f"cap {cap.cap!r} — the hierarchy cannot absorb one full hot-tier spill "
+            f"cap {cap.cap!r} — the hierarchy cannot absorb one full spill of the ram tier "
             "and writes will fail with PutBlob rc=13 when it fills"
         )
     if topology:

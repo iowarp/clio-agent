@@ -29,6 +29,27 @@ def test_last_prompt_usage_normalizes_litellm_cache_details() -> None:
     }
 
 
+def test_usage_from_turn_calls_reads_an_engine_lms_cache_writes() -> None:
+    """SABOTAGE: drop ``cache_creation_tokens`` from the write keys -> cache_write 0 -> red.
+
+    dspy's engine-LM ``usage_dict`` reports writes as
+    ``prompt_tokens_details.cache_creation_tokens`` (live Copilot: 15049 of 15059)."""
+    calls = [
+        {
+            "model": "copilot/claude-haiku-4.5",
+            "usage": {
+                "prompt_tokens": 15059,
+                "completion_tokens": 120,
+                "prompt_tokens_details": {"cached_tokens": 0, "cache_creation_tokens": 15049},
+            },
+        }
+    ]
+    with _turn(calls):
+        result = usage._usage_from_turn_calls(0)
+
+    assert (result["cache_read"], result["cache_write"]) == (0, 15049)
+
+
 def test_usage_from_turn_calls_reads_dspys_own_top_level_cost_field() -> None:
     """Root-cause regression (#775): dspy.clients.base_lm._process_lm_response
     records a REAL provider cost as the history entry's own top-level "cost"

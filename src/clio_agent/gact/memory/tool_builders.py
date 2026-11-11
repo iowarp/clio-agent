@@ -58,7 +58,8 @@ def build_memory_read_tool() -> Any:
 
 
 def build_create_memory_tool() -> Any:
-    """``create_memory``: remember a fact the user asked to remember."""
+    """``create_memory``: remember a fact the user asked to remember, or stated about
+    themselves or how they want the assistant to work."""
 
     def create_memory(
         subject: str, fact: str, category: str, scope: str = "user", reason: str = ""
@@ -68,9 +69,14 @@ def build_create_memory_tool() -> Any:
     return _native(
         create_memory,
         name="create_memory",
+        callers="direct",
         title="Remember",
         representation="row",
-        desc="Remember a fact because the user asked you to. It is filed under its subject.",
+        desc=(
+            "Remember a fact the user asked you to remember, or a lasting fact they stated "
+            "about themselves (profile) or how they want you to work (preferences). It is "
+            "filed under its subject."
+        ),
         args={
             "subject": {"type": "string", "description": "What the fact is about."},
             "fact": {"type": "string", "description": "The fact, as one sentence."},
@@ -79,7 +85,7 @@ def build_create_memory_tool() -> Any:
                 "type": "string",
                 "description": "user (about the user everywhere) or project (this workspace).",
             },
-            "reason": {"type": "string", "description": "What the user asked."},
+            "reason": {"type": "string", "description": "What the user asked or stated."},
         },
     )
 
@@ -93,13 +99,17 @@ def build_update_memory_tool() -> Any:
     return _native(
         update_memory,
         name="update_memory",
+        callers="direct",
         title="Correct memory",
         representation="row",
-        desc="Replace a remembered fact with the corrected one the user gave.",
+        desc=(
+            "Replace a remembered fact with the corrected one the user gave or stated "
+            "(for example a new role or name)."
+        ),
         args={
             "fact_id": {"type": "string", "description": "The id of the fact to replace."},
             "fact": {"type": "string", "description": "The corrected fact."},
-            "reason": {"type": "string", "description": "What the user asked."},
+            "reason": {"type": "string", "description": "What the user asked or stated."},
         },
     )
 
@@ -113,6 +123,7 @@ def build_forget_memory_tool() -> Any:
     return _native(
         forget_memory,
         name="forget_memory",
+        callers="direct",
         title="Forget",
         representation="row",
         desc="Forget a fact (by fact_id) or a whole document (by name) the user asked to forget.",

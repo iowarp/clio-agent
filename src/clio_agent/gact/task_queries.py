@@ -30,6 +30,38 @@ def _ordered_after(
         yield ordering[index]
 
 
+#: Activities of open work that is queued, running or waiting for input or approval.
+#: An open conversation that is idle, yielded, stopped, interrupted or unreachable is not.
+_UNDERWAY_ACTIVITIES = frozenset(
+    {
+        "busy",
+        "executing",
+        "submitting",
+        "stopping",
+        "cancelling",
+        "recovering",
+        "queued",
+        "pending",
+        "waiting_for_input",
+        "input_required",
+        "paused",
+    }
+)
+#: Statuses that say the same for open work that reports no activity.
+_UNDERWAY_STATUSES = frozenset(
+    {"accepted", "queued", "running", "working", "active", "input_required", "paused"}
+)
+
+
+def underway(task: TaskSnapshot) -> bool:
+    """Whether ``task`` is queued, running or waiting, not merely open."""
+    if task.terminal_at is not None:
+        return False
+    if task.activity:
+        return task.activity in _UNDERWAY_ACTIVITIES
+    return task.status in _UNDERWAY_STATUSES
+
+
 def _direct_child(history: TaskHistory, task: TaskSnapshot, session_id: str) -> bool:
     """Match one assignment edge, including children owned by another session."""
     parent = history.task_snapshot(task.owner.parent_handle) if task.owner.parent_handle else None
@@ -56,8 +88,13 @@ def query_tasks(
     message_after: str | None = None,
     message_before: str | None = None,
     relation: str = "tree",
+    underway_only: bool = False,
 ) -> dict[str, Any]:
-    """Return authorized filtered snapshots; pages never disclose hidden counts."""
+    """Return authorized filtered snapshots; pages never disclose hidden counts.
+
+    ``active_only`` keeps open work, including idle and stopped conversations;
+    ``underway_only`` keeps only work that is queued, running or waiting (:func:`underway`).
+    """
     if limit < 1:
         raise ValueError("limit must be positive")
     if relation not in {"tree", "direct"}:
@@ -89,6 +126,8 @@ def query_tasks(
     }
     if relation == "direct":
         filters["relation"] = relation
+    if underway_only:
+        filters["underway_only"] = True
     if start is not None or end is not None:
         filters.update(
             message_after=start.isoformat() if start is not None else None,
@@ -121,11 +160,13 @@ def query_tasks(
                     caller.session_id,
                     human_id=caller.human_id,
                     kind=canonical_kind,
-                    active_only=active_only,
+                    active_only=active_only or underway_only,
                 ),
             )
             if relation == "direct"
-            else access.query_orders(scope, kind=canonical_kind, active_only=active_only)
+            else access.query_orders(
+                scope, kind=canonical_kind, active_only=active_only or underway_only
+            )
         )
         total: int | None = (
             len(orders[0])
@@ -136,6 +177,12 @@ def query_tasks(
             and not content_filter
             else None
         )
+        if total is not None and underway_only:  # open orderings are small; count what shows
+            total = sum(
+                1
+                for _, key in orders[0]
+                if (task := self.history.task_snapshot(key)) is not None and underway(task)
+            )
         if handle is not None:
             resolved = self.history.resolve_handle(handle)
             task = self.history.task_snapshot(resolved) if resolved is not None else None
@@ -177,6 +224,7 @@ def query_tasks(
                 and current.owner.assignment_id != agent
             )
             or (active_only and current.terminal_at is not None)
+            or (underway_only and not underway(current))
             or (
                 content_filter
                 and not self._matches_text(

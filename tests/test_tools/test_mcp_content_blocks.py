@@ -32,7 +32,7 @@ from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 
 from clio_agent.tools.execution import SyncMCPToolExecutor
-from clio_agent.tools.mcp_executor import _raster_dimensions
+from clio_agent.tools.mcp_result_text import _raster_dimensions
 from clio_agent.tools.mcp_results import (
     CONTENT_BLOCK_ELISION_REASON,
     MAX_CONTENT_BLOCK_BYTES,

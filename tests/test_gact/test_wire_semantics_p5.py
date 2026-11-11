@@ -14,6 +14,7 @@ from starlette.datastructures import State
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.semantic_events import SemanticEvent
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.types import Message, Part
 
 
@@ -86,7 +87,7 @@ def test_session_create_does_not_accept_an_unconfirmed_lifecycle(
     """A failed Core lifecycle write leaves no newly accepted session row."""
     with _client(tmp_path, raise_server_exceptions=False) as (client, state):
         original = state.arc.record_semantic_event
-        before = [row.id for row in state.sessions.list()]
+        before = [row.id for row in state.sessions.select(PageQuery(archived=None))]
         attempted: list[str] = []
 
         def reject(event: SemanticEvent) -> Any:
@@ -99,7 +100,7 @@ def test_session_create_does_not_accept_an_unconfirmed_lifecycle(
         response = client.post("/v1/sessions", json={"title": "Unconfirmed creation"})
         assert response.status_code == 500, response.text
         assert len(attempted) == 1
-        assert [row.id for row in state.sessions.list()] == before
+        assert [row.id for row in state.sessions.select(PageQuery(archived=None))] == before
         assert list(state.arc._live.iter_session_event_segments(attempted[0])) == []
 
 

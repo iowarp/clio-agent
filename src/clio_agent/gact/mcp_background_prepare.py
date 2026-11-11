@@ -1,4 +1,4 @@
-"""Prepare MCP servers in the background, so no request waits for a server it may not use.
+"""Start MCP servers early and obtain definitions before composing a model request.
 
 Opening a conversation, creating a session, changing its agent and starting a turn all
 ask for the agent's MCP servers here (:mod:`clio_agent.gact.session_warmup`). Each
@@ -6,11 +6,11 @@ server is prepared once per workspace fleet at a time -- provisioned, started on
 listed over that connection (:func:`clio_agent.gact.mcp_readiness.
 mount_namespace_for_session`) -- and every caller joins the one preparation in flight.
 
-A turn (:func:`prepare_for_turn`) waits at most ``tools.mcp.turn_prepare_grace_s`` for
-the servers its agent declares. One still preparing after that is handed to the agent
-as *preparing*: its tools join the agent's tool list at the next step once they are
-listed (``agents.live_tool_refresh``), and the agent can wait for it explicitly with
-``wait_for_tools`` (:mod:`clio_agent.gact.agents.wait_for_tools`).
+A turn calls :func:`prepare_for_turn` only for missing definitions. It joins the
+preparation already running, including its real tools/list, before building the first
+request. Valid cached definitions need no wait; the conversation warm-up starts their
+execution servers independently. The existing transport owns launch, connection,
+authentication and progress limits for every server type.
 """
 
 from __future__ import annotations
@@ -24,27 +24,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GRACE_S = 2.0
-
-#: A turn started while some of its agent's servers were still preparing.
-MCP_PREPARE_TURN_NOT_WAITING = "mcp_prepare_turn_not_waiting"
-
 _lock = threading.Lock()
 _inflight: dict[tuple[int, str], concurrent.futures.Future[Mapping[str, Any]]] = {}
-
-
-def turn_prepare_grace_s() -> float:
-    """``tools.mcp.turn_prepare_grace_s`` (2 s): how long a turn waits for a cold server."""
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    value = conf.resolve(
-        "tools.mcp.turn_prepare_grace_s",
-        env="CLIO_MCP_TURN_PREPARE_GRACE_S",
-        default=_DEFAULT_GRACE_S,
-        cast=conf.as_float,
-    )
-    return max(0.0, value)
 
 
 def prepare_in_background(
@@ -128,47 +109,42 @@ def failure_reason(namespace: str, exc: BaseException) -> str:
     return str(row.get("reason") or mcp_prepare.classify(exc, str(row.get("phase") or "")))
 
 
-def prepare_for_turn(
-    tool_executor: Any, specs: Mapping[str, Any], *, grace_s: float | None = None
-) -> tuple[set[str], dict[str, str]]:
-    """Prepare ``specs`` without making the turn wait past the grace period.
+def prepare_for_turn(tool_executor: Any, specs: Mapping[str, Any]) -> dict[str, str]:
+    """Join missing tool listings before the first request; return typed failures.
 
-    Returns:
-        ``(preparing, failures)``: the namespaces still preparing when the grace ran
-        out, and a typed reason for each that failed within it.
+    ``specs`` contains only namespaces whose definitions are not already known.
+    Start every preparation before joining any, so servers prepare concurrently.
+    A cold server must answer tools/list; a grace period cannot safely substitute
+    for its schemas. The connection's existing progress limits bound a stalled
+    server, and failures remain visible through the normal readiness boundary.
     """
 
     if not specs:
-        return set(), {}
-    wait_s = turn_prepare_grace_s() if grace_s is None else grace_s
+        return {}
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
+    from clio_agent.runtime.cancellation import cancellation_requested  # noqa: PLC0415
+
     futures = {ns: prepare_in_background(tool_executor, ns, spec) for ns, spec in specs.items()}
-    concurrent.futures.wait(list(futures.values()), timeout=wait_s)
-    preparing: set[str] = set()
+    pending = set(futures.values())
+    while pending:
+        if cancellation_requested():
+            # The conversation warm-up can be shared with another turn. Stop this
+            # waiter, not the shared connection it is still preparing.
+            raise CancellationError("Stopped while preparing MCP tools")
+        _done, pending = concurrent.futures.wait(
+            pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+        )
     failures: dict[str, str] = {}
     for namespace, future in futures.items():
-        if not future.done():
-            preparing.add(namespace)
-            continue
+        # exception() joins the same connection/listing as the conversation warm-up.
         exc = future.exception()
         if exc is not None:
             failures[namespace] = failure_reason(namespace, exc)
-    if preparing:
-        from clio_agent.runtime import trace  # noqa: PLC0415
-
-        trace.event(
-            "TOOLS",
-            "%s namespaces=%s grace_s=%.1f",
-            MCP_PREPARE_TURN_NOT_WAITING,
-            ",".join(sorted(preparing)),
-            wait_s,
-        )
-    return preparing, failures
+    return failures
 
 
 __all__ = [
-    "MCP_PREPARE_TURN_NOT_WAITING",
     "failure_reason",
     "prepare_for_turn",
     "prepare_in_background",
-    "turn_prepare_grace_s",
 ]

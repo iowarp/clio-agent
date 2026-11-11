@@ -3,17 +3,22 @@
 A compaction changes only what the model sees, so the transcript records it as what it
 is to the agent: harness data the agent was given (an injection, shown with a syringe).
 Its ``text`` is exactly the summary text the model gets (ending with one line that names
-the recall tool), ``trigger`` says who asked (``auto`` | ``manual``), ``compaction_id``
-correlates it with the ``compaction.*`` events, and its metadata keeps the replaced
-clio-core ids (``derived_from``) and the transcript rows it stands in for in a summarizer
-prompt (``compacted_message_ids``).
+the recall tool: the reminder ``clio.reminder.summarization``), ``trigger`` says who asked
+(``auto`` | ``manual``), ``compaction_id`` correlates it with the ``compaction.*`` events,
+and its metadata keeps the replaced clio-core ids (``derived_from``), the transcript
+rows it stands in for in a summarizer prompt (``compacted_message_ids``), the rows the
+agent still sees verbatim beside it (``kept_message_ids``) and, when the agent recorded
+one, the system prompt in force (``system_prompt``). The v3 wire forwards these as the
+injection block's ``metadata`` (:data:`WIRE_METADATA_KEYS`).
 
 A compaction that fails is recorded where it happened too, as a ``notice`` part
 (``source: "compaction_failed"``, plain-language ``text``, the error ``code``,
 ``compaction_id``, ``trigger``): a UI/provenance record the model is never told. An
 auto compaction the loop stops repeating (the context stayed over the threshold right
 after one) is a ``notice`` too (``source: "compaction_skipped"``, the skip reason as
-``code``, the ``compaction_id`` of the compaction that did not get it under).
+``code``, the ``compaction_id`` of the compaction that did not get it under). Both
+notices' wording is the reminder of the same name; switched off, no notice is written
+(the ``compaction.*`` event and the audit still record what happened).
 
 The ``compaction`` part this replaces is never written any more. A stored transcript
 that still holds one is read through :func:`as_summarization` (every reader) and
@@ -36,6 +41,7 @@ __all__ = [
     "COMPACTION_SKIPPED_SOURCE",
     "RECALL_TOOL",
     "SUMMARIZATION_SOURCE",
+    "WIRE_METADATA_KEYS",
     "SummarizationRecord",
     "as_summarization",
     "failure_notice_part",
@@ -46,6 +52,7 @@ __all__ = [
     "row_summarization",
     "skipped_notice_part",
     "summarization_part",
+    "summary_text",
 ]
 
 #: The injection ``source`` of a compaction record.
@@ -56,6 +63,8 @@ COMPACTION_FAILED_SOURCE = "compaction_failed"
 COMPACTION_SKIPPED_SOURCE = "compaction_skipped"
 #: The agent-callable tool that returns what a summary replaced.
 RECALL_TOOL = "recall_context"
+#: The record metadata the v3 wire carries (clio-schemas ``InjectionMetadata``).
+WIRE_METADATA_KEYS = ("derived_from", "compacted_message_ids", "kept_message_ids", "system_prompt")
 
 
 @dataclass(frozen=True)
@@ -80,16 +89,22 @@ class SummarizationRecord:
 
 
 def recall_line(compaction_id: str, *, search_enabled: bool = True) -> str:
-    """The last line of every summary: how the agent gets the originals back."""
-    return (
-        f'[The steps this summary replaced are kept in full: {RECALL_TOOL}(ids=["'
-        f'{compaction_id}"]) returns them byte-exact; '
-        + (
-            f'{RECALL_TOOL}(query="...") searches them.]'
-            if search_enabled
-            else "text search is unavailable here. Use ids, not a query.]"
-        )
-    )
+    """The last line of every summary: how the agent gets the originals back.
+
+    The reminder ``clio.reminder.summarization`` (``summarization_ids_only`` when the
+    context store cannot search text). It is required, so it is never switched off.
+    """
+    from clio_agent import injections  # noqa: PLC0415
+
+    source = SUMMARIZATION_SOURCE if search_enabled else f"{SUMMARIZATION_SOURCE}_ids_only"
+    line = injections.render(source, {"recall_tool": RECALL_TOOL, "compaction_id": compaction_id})
+    return line or ""  # ``None`` only if an override drops ``x_required`` (traced)
+
+
+def summary_text(summary: str, compaction_id: str, *, search_enabled: bool = True) -> str:
+    """The text a compaction's summary stands for: the summary, then its recall line."""
+    line = recall_line(compaction_id, search_enabled=search_enabled)
+    return f"{summary}\n\n{line}" if line else summary
 
 
 def summarization_part(
@@ -99,6 +114,8 @@ def summarization_part(
     compaction_id: str,
     derived_from: Sequence[str],
     compacted_message_ids: Sequence[str],
+    kept_message_ids: Sequence[str] = (),
+    system_prompt: str = "",
     agent_id: str = "",
 ) -> Part:
     """Build the record part for one compaction (``text``: what the model gets)."""
@@ -107,6 +124,9 @@ def summarization_part(
     part.compaction_id = compaction_id
     part.metadata["derived_from"] = list(derived_from)
     part.metadata["compacted_message_ids"] = list(compacted_message_ids)
+    part.metadata["kept_message_ids"] = list(kept_message_ids)
+    if system_prompt:
+        part.metadata["system_prompt"] = system_prompt
     return part
 
 
@@ -216,8 +236,11 @@ def legacy_compaction_block(part: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(f"not a compaction part: {part.get('type')!r}")
     projected = {k: v for k, v in part.items() if k not in {"summary", "auto"}}
     projected.pop("compacted_message_ids", None)
+    metadata = dict(part.get("metadata") or {})
+    metadata.setdefault("compacted_message_ids", list(record.compacted_message_ids))
     return {
         **projected,
+        "metadata": metadata,
         "type": "injection",
         "source": SUMMARIZATION_SOURCE,
         "text": record.text,

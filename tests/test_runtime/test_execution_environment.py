@@ -10,6 +10,11 @@ import pytest
 from clio_agent.runtime import execution_environment as execution
 
 
+def _without_clio_tools(environment: dict[str, str]) -> dict[str, str]:
+    """The environment less CLIO's own interpreter and uv (tested on their own)."""
+    return {k: v for k, v in environment.items() if k not in execution.CLIO_TOOL_VARIABLES}
+
+
 def test_prepared_shell_uses_uv_python_and_pnpm_without_host_tools(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     cache = tmp_path / "cache"
@@ -35,7 +40,8 @@ def test_prepared_shell_uses_uv_python_and_pnpm_without_host_tools(tmp_path: Pat
     assert environment["CLIO_EXECUTION_PYTHON"] == str(cache / "python")
     assert "UV_PYTHON" not in environment
     assert environment["PATH"].split(os.pathsep)[0] == str(cache / "shell-bin")
-    assert execution.shell_environment(tmp_path / "different") == {}
+    assert _without_clio_tools(execution.shell_environment(tmp_path / "different")) == {}
+    assert environment["CLIO_PYTHON"] == str(cache / "python")  # run_code's interpreter
     scratch = workspace / ".tmp" / "clio-documents"
     assert Path(runtime["scratch_directory"]) == scratch
     assert scratch.is_dir()
@@ -108,7 +114,7 @@ def test_shell_keeps_the_existing_host_github_cli_and_account_environment(
         raise AssertionError("An existing host gh takes precedence over the managed CLI")
 
     monkeypatch.setattr(execution, "installed_github_cli", lookup)
-    assert execution.shell_environment(tmp_path) == {}
+    assert _without_clio_tools(execution.shell_environment(tmp_path)) == {}
     assert os.environ["GH_CONFIG_DIR"] == "/host/account"
 
 
@@ -119,7 +125,7 @@ def test_shell_can_find_installed_gh_before_document_preparation(
     monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
     executable = tmp_path / "managed cli" / "gh"
     monkeypatch.setattr(execution, "installed_github_cli", lambda: executable)
-    environment = execution.shell_environment(tmp_path / "workspace")
+    environment = _without_clio_tools(execution.shell_environment(tmp_path / "workspace"))
     assert environment == {
         "PATH": os.pathsep.join([str(executable.parent), "/host/bin"]),
         "CLIO_EXECUTION_PATH": str(executable.parent),
@@ -135,7 +141,7 @@ def test_github_fallback_retains_prepared_workspace_tools(
     monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
     executable = tmp_path / "gh" / "gh"
     monkeypatch.setattr(execution, "installed_github_cli", lambda: executable)
-    environment = execution.shell_environment(tmp_path)
+    environment = _without_clio_tools(execution.shell_environment(tmp_path))
     expected = os.pathsep.join([str(executable.parent), "/prepared/bin"])
     assert environment == {"PATH": expected, "CLIO_EXECUTION_PATH": expected}
     assert original == {"PATH": "/prepared/bin", "CLIO_EXECUTION_PATH": "/prepared/bin"}
@@ -146,4 +152,51 @@ def test_shell_without_any_gh_still_runs_other_commands(
 ) -> None:
     monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
     monkeypatch.setattr(execution, "installed_github_cli", lambda: None)
-    assert execution.shell_environment(tmp_path) == {}
+    assert _without_clio_tools(execution.shell_environment(tmp_path)) == {}
+
+
+def test_every_shell_names_clios_own_python_and_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host may have no Python or uv; CLIO brings its own, and a command (a plugin's
+    server, for one) uses those, with uv's cache kept in CLIO's scratch."""
+    import sys
+
+    from clio_agent.gact.infrastructure import native_service_platform
+
+    bundled_uv = tmp_path / "runtime" / "bin" / "uv"
+    monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
+    monkeypatch.setattr(execution, "installed_github_cli", lambda: None)
+    monkeypatch.setattr(
+        native_service_platform, "clio_tool", lambda name, python=None: str(bundled_uv)
+    )
+    monkeypatch.setattr(execution, "_session_temp", lambda _sid: {"TMPDIR": str(tmp_path / "s")})
+    environment = execution.shell_environment(tmp_path / "workspace")
+    assert environment["CLIO_PYTHON"] == sys.executable  # nothing prepared: CLIO's own
+    assert environment["CLIO_UV"] == str(bundled_uv)
+    assert environment["UV_CACHE_DIR"] == str(tmp_path / "s" / "uv-cache")
+    prepared = {"CLIO_EXECUTION_PYTHON": "/clio/python/bin/python", "UV_CACHE_DIR": "/ws/.tmp/uv"}
+    monkeypatch.setitem(execution._ENVIRONMENTS, (tmp_path / "w2").resolve(), prepared)
+    environment = execution.shell_environment(tmp_path / "w2")
+    assert environment["CLIO_PYTHON"] == "/clio/python/bin/python"  # the run_code interpreter
+    assert environment["UV_CACHE_DIR"] == "/ws/.tmp/uv"  # the prepared cache is kept
+
+
+def test_bundled_runtime_children_never_write_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signed bundle stays sealed even when the supervisor did not apply runtime.json env."""
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    monkeypatch.setattr(execution.sys, "dont_write_bytecode", False)
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path / "missing"))
+    monkeypatch.setattr(execution.sys, "executable", str(tmp_path / "host" / "bin" / "python"))
+
+    assert execution.protect_bundled_runtime() is False
+    assert "PYTHONDONTWRITEBYTECODE" not in os.environ
+
+    (tmp_path / "runtime.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path))
+
+    assert execution.protect_bundled_runtime() is True
+    assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert execution.sys.dont_write_bytecode is True

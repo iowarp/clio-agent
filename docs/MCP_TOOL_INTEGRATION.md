@@ -253,16 +253,58 @@ def analyze_dataset(filepath: str, dataset_name: str) -> dict:
     """
 ```
 
-### 4. Dynamic Discovery
+### 4. Progressive disclosure (deferred tools)
 
-Main agent doesn't load all tool schemas at startup. Instead:
+An agent always knows every tool it has; only some schemas wait until needed
+(`gact/agents/deferred_tools.py`). Each tool is either listed (its schema is in the
+tool list every step) or deferred. A deferred tool stays callable, and the system
+prompt names it under "Tools you load when needed": one line per server or plugin
+with its description, then its tool names.
 
-```python
-# At startup: only load gateway's list_capabilities tool (~400 tokens)
-# When routing to DataExpert: load HDF5 tools (~2K tokens)
-# When routing to HPCExpert: load SLURM tools (~2K tokens)
-# Result: context overhead drops from ~47K to ~400-2K tokens
-```
+What is deferred:
+
+- an MCP server whose plugin declares `defer` in its `plugin.json` extension
+  (`"ai.iowarp.clio": {"servers": {"<name>": {"defer": true, "description": "..."}}}`);
+  undeclared, a server is deferred when its schemas exceed the smaller of
+  `tools.defer_tokens` (4,000) and `tools.defer_share` (0.05) of the model's context
+  window. The prompt line uses the declared `description`, else the server's MCP
+  `instructions`, else the plugin's description;
+- a native or Python tool whose plugin says nothing, while `tools.defer_builtins` is on
+  (the default); `native_tool(name, defer=False)` or `tool(defer=False)` keeps it listed;
+- never the core loop, `tools.never_defer`: `search_tools`, `ask_user`, `load_skill`,
+  `submit`, `run_code`, `wait_tasks`, the spawn tools, `write_todos`, the plan tools,
+  `fs_*`, `shell_*`, `memory_search` and `memory_read`.
+
+`search_tools(query, limit)` returns the schemas of deferred tools: `select:a,b` for
+exact names, `+term rest` to require `term` in the name, or keywords (BM25); an exact
+name anywhere in a query comes first. `limit` defaults to `tools.search_limit` (5), at
+most `tools.search_max` (20). A loaded tool can be called from the next step, and it
+joins the tool list when an applied plugin change next rebuilds the prompt; a
+compaction keeps the cached tool list. When an agent cannot call `search_tools`,
+nothing is deferred and the trace records `tools_deferral_unavailable`;
+`tools.deferral: false` lists every tool. Inside `run_code`, deferred tools have stubs
+like any other, so a script needs no search first.
+
+### 5. Result size and spill
+
+One tool result is shown whole when it fits the room one result has in the calling
+model's context window (`tools/result_room.py`): the smaller of `tools.result_share`
+(0.125, about 25,000 tokens on a 200,000-token window) of the window and the room left
+before compaction. With an unknown window the room is `tools.unknown_window_result_tokens`
+(25,000), traced `tool_result_window_unknown`.
+
+A result that does not fit is saved whole to the session's tool-output folder
+(`tools/mcp_result_projection.py`), and the model gets its first characters after a
+note marked `[clio: result_spilled]`: how long the result is, how much is shown, and
+where the rest is, with the exact `fs_read_file(path=..., offset=...)` that continues a
+text file, or a search for a JSON one. The note's wording is the reminder
+`clio.reminder.result_spilled` and its pieces. The stored evidence is never cut; the
+transcript preview has its own bound (`limits.tool_result_chars`).
+
+Tools that size their own result (`fs_read_file`, `fs_search_text`, the shell) fill the
+same room and say how to continue. `tools.full_result` names tools whose whole result is
+the point of the call (`load_skill`). `recall_context` uses a fixed size instead,
+`tools.recall_result_chars` (16,000 characters), with the same file and note past it.
 
 ---
 

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.plugins.claude_code import import_claude_plugin
+from clio_agent.plugins.library import is_library_manifest
 from clio_agent.plugins.loader import (
     PluginImportError,
     PluginLoadError,
@@ -63,14 +64,32 @@ class MarketplaceContents:
     diagnostics: list[Diagnostic] = field(default_factory=list)
 
 
+def _library_manifest(root: Path) -> bool:
+    """Whether ``root/plugin.json`` is a Clio Coder library manifest (``manifestVersion``)."""
+
+    try:
+        manifest = json.loads((root / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    ext = (
+        (manifest.get("extensions") or {}).get("ai.iowarp.clio")
+        if isinstance(manifest, dict)
+        else None
+    )
+    return isinstance(ext, dict) and is_library_manifest(ext)
+
+
 def detect_format(root: Path) -> str:
     if (root / CLAUDE_INDEX).is_file():
         return "claude-code"
     if (root / NATIVE_INDEX).is_file() or (root / "plugins").is_dir():
         return "agent-plugins"
+    claude = (root / ".claude-plugin" / "plugin.json").is_file()
     if (root / "plugin.json").is_file():
-        return "plugin"
-    if (root / ".claude-plugin" / "plugin.json").is_file():
+        # A package that ships for several hosts: its Claude Code form (commands,
+        # agents, hooks) is the one CLIO runs, not the library dialect beside it.
+        return "claude-code-plugin" if claude and _library_manifest(root) else "plugin"
+    if claude:
         return "claude-code-plugin"
     # Skills on their own (a skills/ folder, or one skill's folder): a plugin of skills.
     if (root / "SKILL.md").is_file() or any((root / "skills").glob("*/SKILL.md")):
@@ -106,6 +125,35 @@ def _pin_from_source(source: Any, entry: dict[str, Any]) -> GitPin | None:
     return None
 
 
+def _add_git_plugin(contents: MarketplaceContents, entry: dict[str, Any]) -> None:
+    """Record one index entry's git source as a pinned plugin, or say why it is not."""
+
+    plugin_name = str(entry.get("name") or "")
+    source = entry.get("source")
+    pin = _pin_from_source(source, entry)
+    if pin is None or not pin.url:
+        contents.diagnostics.append(
+            Diagnostic(
+                "error",
+                "plugin_source_unsupported",
+                f"unsupported plugin source {source!r}",
+                plugin_name,
+            )
+        )
+        return
+    if not pin.commit:
+        contents.diagnostics.append(
+            Diagnostic(
+                "error",
+                "plugin_source_unpinned",
+                f"git source {pin.url} is not pinned by commit; it is not followed",
+                plugin_name,
+            )
+        )
+        return
+    contents.git_plugins.append(pin)
+
+
 def read_claude_marketplace(root: Path, name_hint: str = "") -> MarketplaceContents:
     data = json.loads((root / CLAUDE_INDEX).read_text(encoding="utf-8"))
     # The install name (the store's key, e.g. a federation pin's name) wins over the index's own.
@@ -132,28 +180,7 @@ def read_claude_marketplace(root: Path, name_hint: str = "") -> MarketplaceConte
                 continue
             contents.plugins.append(import_claude_plugin(path, entry=entry, marketplace=name))
             continue
-        pin = _pin_from_source(source, entry)
-        if pin is None or not pin.url:
-            contents.diagnostics.append(
-                Diagnostic(
-                    "error",
-                    "plugin_source_unsupported",
-                    f"unsupported plugin source {source!r}",
-                    plugin_name,
-                )
-            )
-            continue
-        if not pin.commit:
-            contents.diagnostics.append(
-                Diagnostic(
-                    "error",
-                    "plugin_source_unpinned",
-                    f"git source {pin.url} is not pinned by commit; it is not followed",
-                    plugin_name,
-                )
-            )
-            continue
-        contents.git_plugins.append(pin)
+        _add_git_plugin(contents, entry)
     federation = root / CLAUDE_FEDERATION
     if federation.is_file():
         try:
@@ -254,6 +281,11 @@ def read_native_marketplace(
         format="agent-plugins",
         description=str(index.get("description") or ""),
     )
+    # A package kept in another repository is listed in the index, pinned by commit,
+    # in the same shape a Claude Code marketplace uses ({"source": "git-subdir", ...}).
+    for entry in index.get("plugins") or []:
+        if isinstance(entry, dict):
+            _add_git_plugin(contents, entry)
     plugins_dir = root / "plugins"
     for child in sorted(plugins_dir.iterdir()) if plugins_dir.is_dir() else []:
         kind = detect_format(child) if child.is_dir() else ""
@@ -308,6 +340,14 @@ def read_marketplace(root: Path, *, trusted: bool, name_hint: str = "") -> Marke
         )
     if kind == "claude-code-plugin":
         record = import_claude_plugin(root, marketplace=name_hint or root.name)
+        if (root / "plugin.json").is_file():
+            skipped = Diagnostic(
+                "warning",
+                "plugin_dialect_skipped",
+                "plugin.json is a Clio Coder library manifest; the .claude-plugin package loads",
+                record.id,
+            )
+            record = replace(record, diagnostics=(*record.diagnostics, skipped))
         return MarketplaceContents(
             name=name_hint or record.id, format="claude-code", plugins=[record]
         )

@@ -29,12 +29,18 @@ Example:
 """
 
 import os
+import sys
 
-from clio_agent import _dspy_lazy_proxies
+from clio_agent.runtime import package_overlay as _package_overlay
+
+# Before anything imports a package CLIO installed outside a sealed desktop runtime.
+_package_overlay.activate()
+
+from clio_agent import _dspy_lazy_proxies  # noqa: E402
 
 _dspy_lazy_proxies.install()
 
-__version__ = "0.9.5.1"
+__version__ = "0.9.6b1"
 __author__ = "IOWarp Team"
 
 __all__ = [
@@ -60,12 +66,17 @@ def _avoid_windows_wmi_platform_probe() -> None:
         import platform
 
         if getattr(platform, "_uname_cache", None) is None:
+            # ``machine`` is Python's own non-WMI answer; the Copilot SDK names its
+            # runtime from it and refuses an empty one.
+            machine = os.environ.get("PROCESSOR_ARCHITEW6432", "") or os.environ.get(
+                "PROCESSOR_ARCHITECTURE", ""
+            )
             platform._uname_cache = platform.uname_result(  # type: ignore[attr-defined]
                 "Windows",
                 os.environ.get("COMPUTERNAME", ""),
                 "",
                 "",
-                "",
+                machine,
             )
         processor = os.environ.get("PROCESSOR_IDENTIFIER", "") or os.environ.get(
             "PROCESSOR_ARCHITECTURE",
@@ -131,6 +142,27 @@ def _default_litellm_local_cost_map() -> None:
 
 
 _default_litellm_local_cost_map()
+
+
+def _default_uv_managed_python() -> None:
+    """Keep every ``uv`` CLIO starts on macOS and Windows on uv-managed Pythons.
+
+    On macOS uv's interpreter discovery executes ``/usr/bin/python3``; on a Mac without
+    the Command Line Tools that is a stub which opens their install dialog. On Windows
+    uv otherwise prefers an installed Microsoft Store Python over downloading one, and
+    a packaged (MSIX) interpreter cannot run inside protected execution (MXC refuses
+    to launch packaged apps). Children inherit this, so ``uv sync``/``uv tool
+    install``/``uv run`` use uv-managed Pythons. ``UV_MANAGED_PYTHON`` (not
+    ``UV_PYTHON_PREFERENCE``, which uv refuses next to an explicit
+    ``--no-managed-python``) still yields to such a flag or an explicit interpreter
+    path, and ``setdefault`` keeps an operator's explicit choice.
+    """
+
+    if sys.platform in ("darwin", "win32"):
+        os.environ.setdefault("UV_MANAGED_PYTHON", "1")
+
+
+_default_uv_managed_python()
 
 
 # PEP 562 lazy attribute access. ``from clio_agent import ClioAgent``

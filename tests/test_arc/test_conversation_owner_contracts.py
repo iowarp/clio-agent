@@ -48,6 +48,7 @@ from clio_agent.gact.question_surface import answer_question
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.semantic_events import NoopSemanticTraceBackend, SemanticEventSink
 from clio_agent.gact.session_input import withdraw_message_inputs
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import CreatePreparedChild
 from clio_agent.gact.task_access import TaskCaller
@@ -56,6 +57,7 @@ from clio_agent.gact.turn_runner import TurnRunner
 from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.plugins.service import PluginService
 from clio_agent.tools.task_client import TaskSubmission, restore_native_call
+from tests._result_room import pin_result_room
 
 
 @pytest.mark.asyncio
@@ -65,12 +67,12 @@ async def test_spawn_strategy_is_validated_before_child_creation_and_immutable(
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     caller = TaskCaller(root.owner.session_id, "human")
-    before = len(app.state.sessions.list())
+    before = len(app.state.sessions.select(PageQuery(archived=None)))
     invalid = await owner.spawn(
         caller, "Draft", "writer", "bad", strategy={"variant": "best_of_n", "n": 2}
     )
     assert invalid["accepted"] is False and invalid["reason"] == "invalid_strategy"
-    assert len(app.state.sessions.list()) == before
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before
     strategy = {"variant": "refine", "n": 2, "rubric": "Clear answer", "judge": "user"}
     accepted = await owner.spawn(
         caller, "Original child assignment", "writer", "good", strategy=strategy
@@ -92,7 +94,7 @@ async def test_spawn_strategy_is_validated_before_child_creation_and_immutable(
             "good",
             strategy={**strategy, "rubric": "Different"},
         )
-    assert len(app.state.sessions.list()) == before + 1
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before + 1
     await owner.recovery.drain()
 
 
@@ -900,7 +902,7 @@ async def test_rendered_mail_batches_count_the_initial_head_and_retain_overflow(
     from dspy.lm15 import ImagePart, TextPart
     from dspy.lm15 import Message as ModelMessage
 
-    monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "120")
+    pin_result_room(monkeypatch, 120)
     app, owner, root = await create_environment(arc, tmp_path)
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=="
 

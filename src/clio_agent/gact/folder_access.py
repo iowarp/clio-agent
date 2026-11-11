@@ -16,9 +16,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import permission_timeout
-from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.permission_delivery import publish_permission_event, publish_waiting_call
+from clio_agent.gact.permission_evidence import permission_identity
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.runtime.check_scope import checked
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
+from clio_agent.tools.tool_observation import call_identity_claimed, peek_call_identity
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -49,14 +52,15 @@ def bind_folder_gate(app: FastAPI, gate: Callable[..., str]) -> Callable[..., st
     return grounded
 
 
+@checked
 def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
     """Return denied folders for declared built-in path arguments, without reading files."""
     paths: list[tuple[str, bool]] = []
     if name in {"fs_read_file", "fs_write_file", "fs_edit_file"}:
-        value = args.get("filepath")
+        value = args.get("path")
         if isinstance(value, str) and value:
             paths.append((value, False))
-    elif name in {"fs_list_directory", "fs_search_text"}:
+    elif name in {"fs_list_directory", "fs_search_text", "fs_glob"}:
         value = args.get("path") or "."
         if isinstance(value, str) and value:
             paths.append((value, Path(value).expanduser().is_dir()))
@@ -86,6 +90,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
             "fs_read_file",
             "fs_list_directory",
             "fs_search_text",
+            "fs_glob",
             "shell_bash",
         }
         policy._check_connected_storage(path, field="path", write=not reads_source)
@@ -136,12 +141,21 @@ def request_folder_access(
             return DenyDecision(f"Folder access denied by policy: {folder}")
     pid = f"perm_{uuid.uuid4().hex[:12]}"
     event = threading.Event()
+    # The held call's own identity: the waiting row it projects now is the row that
+    # later runs, finishes or is denied (and links the permission to it).
+    call_id = peek_call_identity()
+    running = call_identity_claimed()
     row: dict[str, Any] = {
         "id": pid,
         "kind": FOLDER_ACCESS_KIND,
         "session_id": sid,
+        **permission_identity(app, sid),
         "workspace_id": wid,
-        "tool_call": {"tool_name": name, "input": dict(args)},
+        "tool_call": {
+            "tool_name": name,
+            "input": dict(args),
+            **({"call_id": call_id} if call_id else {}),
+        },
         "summary": "Allow access to another folder?"
         if len(folders) == 1
         else "Allow access to these folders?",
@@ -154,8 +168,8 @@ def request_folder_access(
             "workspace_id": wid,
             "operation": name,
             "command": str(args.get("command") or ""),
-            "paths": [str(args["filepath"])]
-            if "filepath" in args
+            "paths": [str(args["path"])]
+            if "path" in args
             else list(args.get("access_paths") or []),
             "cwd": str(args.get("cwd") or getattr(session, "workspace_root", "") or ""),
             "reason": str(
@@ -171,6 +185,8 @@ def request_folder_access(
     app.state.permissions[pid] = row
     enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
     publish_permission_event(app, "permission.requested", owner_session_id=sid, payload=row)
+    if call_id:
+        publish_waiting_call(app, row)
     if decision := permission_timeout.wait_for_permission(
         app, pid, row, event, tool_name=name, cancelled=cancelled
     ):
@@ -178,6 +194,8 @@ def request_folder_access(
     if row.get("action") == "allow_workspace":
         # Recheck immediately before dispatch; a concurrent revoke is not an approval.
         if not requested_folders(name, args):
+            if running and call_id:  # a call already running reads as running again
+                publish_waiting_call(app, row, resumed=True)
             return "allow"
         return DenyDecision("Folder access was revoked before the operation could start")
     return DenyDecision(

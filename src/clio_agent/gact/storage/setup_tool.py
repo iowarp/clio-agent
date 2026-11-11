@@ -17,10 +17,10 @@ def connected_data_status() -> dict[str, Any]:
     If needed, present an account's login_action in an ordinary A2UI Button in
     the answer; only the user click opens private sign-in. No credentials are
     returned. Check again after the user completes setup; do not poll.
-    NDP-specific tools are enabled on the next turn only when this workspace
-    has a connected NDP dataset or a visible saved NDP Endpoint. Otherwise use
-    Attach > NDP to select a dataset or connect an Endpoint first. Signing in
-    alone does not activate those tools.
+    With the ndp plugin, NDP catalog search needs no attached dataset, saved
+    Endpoint or sign-in. NDP Endpoint operations, requests and uploads are
+    enabled on the next turn once this workspace has a connected NDP dataset
+    or a visible saved NDP Endpoint.
     """
     app = context.active_app()
     sid = context.active_session_id()
@@ -126,8 +126,6 @@ def session_data_status(app: Any, sid: str) -> dict[str, Any]:
                 "owner": source.owner.model_dump(mode="json"),
             }
         )
-    from clio_agent.gact.storage.ndp_tool_activation import session_ndp_tools_enabled
-
     return {
         "status": "available",
         "clio_id": service.store.clio_id,
@@ -150,9 +148,7 @@ def session_data_status(app: Any, sid: str) -> dict[str, Any]:
         "ndp_catalogs": [
             {"id": item.id, "name": item.name, "scope": item.server}
             for item in service.ndp.endpoints()
-        ]
-        if session_ndp_tools_enabled()
-        else [],
+        ],
         "ndp_endpoints": [
             row.model_dump(exclude={"schema_document", "principal"})
             for row in service.ndp_endpoints.connections(session.workspace_id)
@@ -236,7 +232,10 @@ def connected_data_open(
     Linked files use fsspec; downloaded files use the approved baseline.
     This does not authorize new sources or expose credentials. Linked paths are
     virtual CLIO paths, not operating-system mounts for shell commands.
+    A listed file with a null size has a size the provider reports only when it is
+    read (for example a Google Doc exported as PDF); it is still readable.
     """
+    from clio_agent.gact.agents.session_inventory import running_operations
     from clio_agent.gact.storage.linked import linked_file
     from clio_agent.gact.storage.models import Manifest
     from clio_agent.gact.storage.references import folder_entries, source_resource
@@ -250,6 +249,12 @@ def connected_data_open(
     record = service.get(session.workspace_id, source_id, connected=linked)
     manifest_id = record.linked_manifest_id if linked else record.manifest_id
     if not manifest_id or (not linked and not record.source.local_path):
+        if running := running_operations(app, source_id):
+            raise ValueError(
+                f"{running[0]['kind'].capitalize()} of this source is still "
+                f"{running[0]['state']} (task {running[0]['handle']}). Call wait_tasks "
+                "with that handle, then open it again."
+            )
         raise ValueError(
             "This source has not been linked or downloaded. Use connected_data_download, "
             "wait for its task, then open with linked=false; or use an existing Link "

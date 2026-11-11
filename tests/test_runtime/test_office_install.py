@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,11 +148,11 @@ def test_renderer_probe_uses_and_cleans_an_exclusive_profile_on_failure(
     assert all(not profile.parent.exists() for profile in profiles)
 
 
-@pytest.mark.parametrize("system,expected_attempts", [("Windows", 2), ("Linux", 1), ("Darwin", 1)])
-def test_renderer_probe_timeout_has_one_windows_recovery(
+@pytest.mark.parametrize("system,expected_attempts", [("Windows", 2), ("Linux", 1), ("Darwin", 2)])
+def test_renderer_probe_timeout_has_one_native_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, expected_attempts: int
 ) -> None:
-    """Only a native Windows timeout can retry, after the first profile is retired."""
+    """Only a native Windows or macOS timeout can retry, after the first profile is retired."""
     from urllib.parse import unquote, urlparse
 
     profiles: list[Path] = []
@@ -173,7 +174,7 @@ def test_renderer_probe_timeout_has_one_windows_recovery(
 
     monkeypatch.setattr(office.platform, "system", lambda: system)
     monkeypatch.setattr(office, "run", probe)
-    if system == "Windows":
+    if expected_attempts == 2:
         office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
     else:
         with pytest.raises(DocumentError, match="exceeded 30 seconds"):
@@ -366,3 +367,153 @@ def test_conversion_profile_uses_allowed_temp_instead_of_nested_artifact_path(
     assert result == output / "source.pdf"
     assert source.read_bytes() == b"source preserved"
     assert observed and not observed[0].exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="ditto is part of base macOS")
+def test_macos_app_copy_keeps_bundle_symlinks_and_contents(tmp_path: Path) -> None:
+    """The app leaves its disk image through ditto, which keeps signature xattrs."""
+    source = tmp_path / "image" / "LibreOffice.app"
+    binary = source / "Contents" / "MacOS" / "soffice"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    (source / "Contents" / "Frameworks").symlink_to("MacOS")
+    target = tmp_path / "cache" / "LibreOffice.app"
+    target.parent.mkdir()
+
+    office._copy_app_bundle(source, target)
+
+    assert (target / "Contents" / "Frameworks").is_symlink()
+    assert (target / "Contents" / "MacOS" / "soffice").stat().st_mode & 0o111
+
+
+def test_app_copy_uses_ditto_and_falls_back_without_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(office, "run", lambda command, **_: calls.append(command) or "")
+    source = tmp_path / "LibreOffice.app"
+    (source / "Contents").mkdir(parents=True)
+    target = tmp_path / "out" / "LibreOffice.app"
+    target.parent.mkdir()
+    real_is_file = Path.is_file
+
+    monkeypatch.setattr(
+        Path, "is_file", lambda self: str(self) == "/usr/bin/ditto" or real_is_file(self)
+    )
+    office._copy_app_bundle(source, target)
+    assert calls == [["/usr/bin/ditto", str(source), str(target)]]
+
+    monkeypatch.setattr(
+        Path, "is_file", lambda self: str(self) != "/usr/bin/ditto" and real_is_file(self)
+    )
+    office._copy_app_bundle(source, target)
+    assert (target / "Contents").is_dir() and len(calls) == 1
+
+
+@pytest.mark.parametrize("state", ["valid", "tampered", "symlink", "path", "unset"])
+def test_installer_download_counts_only_the_pinned_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    import hashlib
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    real = folder / "real.dmg"
+    real.write_bytes(b"office")
+    checksum = hashlib.sha256(b"office").hexdigest()
+    name = "real.dmg"
+    if state == "tampered":
+        real.write_bytes(b"other")
+    elif state == "symlink":
+        (folder / "link.dmg").symlink_to(real)
+        name = "link.dmg"
+    elif state == "path":
+        name = "../downloads/real.dmg"
+    if state != "unset":
+        monkeypatch.setenv(office.INSTALLER_DOWNLOADS, str(folder))
+    else:
+        monkeypatch.delenv(office.INSTALLER_DOWNLOADS, raising=False)
+    expected = real if state == "valid" else None
+    assert office.installer_download(name, checksum) == expected
+
+
+@pytest.mark.parametrize("outcome", ["lands", "abandoned", "stalls"])
+def test_installer_download_waits_for_a_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """The installer may still be writing NAME.part when the app prepares."""
+    import hashlib
+    import threading
+
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    partial = folder / "office.dmg.part"
+    partial.write_bytes(b"off")
+    checksum = hashlib.sha256(b"office").hexdigest()
+    monkeypatch.setenv(office.INSTALLER_DOWNLOADS, str(folder))
+    monkeypatch.setattr(office, "_INSTALLER_STALL_S", 0.5)
+
+    def finish() -> None:
+        partial.write_bytes(b"office")
+        if outcome == "lands":
+            partial.rename(folder / "office.dmg")
+        else:
+            partial.unlink()
+
+    timer = threading.Timer(0.3, finish)
+    if outcome != "stalls":
+        timer.start()
+    try:
+        found = office.installer_download("office.dmg", checksum)
+    finally:
+        timer.cancel()
+    assert found == (folder / "office.dmg" if outcome == "lands" else None)
+
+
+def test_installer_download_replaces_the_network_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    folder = tmp_path / "installer"
+    folder.mkdir()
+    prefetched = folder / "LibreOffice.dmg"
+    prefetched.write_bytes(b"office image")
+    checksum = hashlib.sha256(b"office image").hexdigest()
+    monkeypatch.setenv(office.INSTALLER_DOWNLOADS, str(folder))
+    monkeypatch.setattr(
+        office, "asset", lambda: ("https://example.invalid/o", prefetched.name, checksum)
+    )
+    monkeypatch.setattr(office, "_download", lambda *a: pytest.fail("fetched from network"))
+    monkeypatch.setattr(office.office_compat, "supported", lambda: False)
+    monkeypatch.setattr(office, "_verify_office", lambda *a, **kw: None)
+    extracted: list[Path] = []
+
+    def extract(archive: Path, image: Path) -> None:
+        extracted.append(archive)
+        program = image / "LibreOffice.app/Contents/MacOS/soffice"
+        program.parent.mkdir(parents=True)
+        program.write_text("")
+        program.chmod(0o755)
+
+    monkeypatch.setattr(office, "_extract", extract)
+    monkeypatch.setattr(office, "executable", lambda root: next(root.rglob("soffice"), None))
+    root = tmp_path / "runtime" / "office"
+    assert office.ensure_office(root).endswith("soffice")
+    assert extracted == [prefetched]
+    assert prefetched.read_bytes() == b"office image"
+
+
+def test_macos_image_attach_skips_the_redundant_verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(office.platform, "system", lambda: "Darwin")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(office, "run", lambda command, **_: commands.append(command) or "")
+    monkeypatch.setattr(office, "_copy_app_bundle", lambda source, target: None)
+    root = tmp_path / "image"
+    root.mkdir()
+    office._extract(tmp_path / "office.dmg", root)
+    assert commands[0][:2] == ["/usr/bin/hdiutil", "attach"]
+    assert "-noverify" in commands[0]

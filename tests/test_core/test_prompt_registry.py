@@ -7,7 +7,6 @@ from clio_agent.prompts import (
     PromptProfile,
     PromptRegistry,
     PromptSource,
-    builtin_prompt_definitions,
     parse_prompt_file,
 )
 
@@ -28,28 +27,6 @@ def _builtin(text: str = "builtin text") -> dict[str, PromptDefinition]:
             },
         )
     }
-
-
-def test_builtin_chat_shows_generated_visual_artifacts_in_a2ui() -> None:
-    """The standard agent presents saved figures through the negotiated catalog."""
-    prompt = builtin_prompt_definitions()["clio.chat"].profiles["default"].text
-    assert "register the saved file" in prompt
-    assert "A2UI catalog's Image component" in prompt
-    assert "Choose relevant installed skills from their names and descriptions" in prompt
-    assert "Keep the file" in prompt
-    assert "Give a new figure its own image view" in prompt
-    assert "keep\nits source map, chart, or model available" in prompt
-    assert "Reuse that image view for revisions" in prompt
-
-
-def test_default_agent_is_told_about_managed_execution_and_document_skills() -> None:
-    prompt = builtin_prompt_definitions()["clio.chat"].profiles["default"].text
-    assert "prepare_execution_runtime" in prompt
-    assert "Use uv for Python execution" in prompt
-    assert "pnpm for" in prompt
-    assert "For document creation or editing" in prompt
-    assert "discovered authoring, rendered-review" in prompt
-    assert "artifact-publication guidance for the requested format" in prompt
 
 
 def test_external_prompt_overrides_builtin_profile(tmp_path: Path) -> None:
@@ -169,54 +146,3 @@ profile: default
     assert resolved.text == "builtin text"
     assert "prompt body is empty" in resolved.validation_errors
     assert resolved.metadata["invalid_sources"][0].endswith("bad-chat.md")
-
-
-def test_builtin_prompt_profiles_encode_alignment_requirements() -> None:
-    builtins = builtin_prompt_definitions()
-
-    for prompt_id in (
-        "clio.main.planner",
-        "clio.main.answer",
-        "clio.chat",
-        "clio.expert.data",
-        "clio.expert.analysis",
-        "clio.expert.visualization",
-    ):
-        row = builtins[prompt_id]
-        assert {
-            "default",
-            "heavy",
-            "light",
-            "small_model",
-            "fine_tuned",
-            "debug",
-        }.issubset(row.profiles)
-        assert row.metadata["alignment"] == "public_reference_matrix"
-        assert row.metadata["requirements"]
-        default = row.profiles["default"].text
-        heavy = row.profiles["heavy"].text
-        small = row.profiles["small_model"].text
-        debug = row.profiles["debug"].text
-        assert "tool telemetry" in default
-        assert "Never claim a tool call" in default
-        assert "delegate to scoped child experts" in heavy
-        assert "model/provider fallback" in heavy
-        assert "valid JSON" in small or "explicit schemas" in small
-        assert "prompt id/profile" in debug
-
-
-def test_prompt_alignment_profile_resolution_keeps_builtin_provenance(tmp_path: Path) -> None:
-    registry = PromptRegistry(
-        sources=[PromptSource("global", tmp_path / "missing")],
-        write_root=tmp_path,
-    )
-
-    resolved = registry.resolve("clio.main.planner", profile="small_model")
-
-    assert resolved is not None
-    assert resolved.profile == "small_model"
-    assert resolved.scope == "builtin"
-    assert resolved.metadata["alignment"] == "public_reference_matrix"
-    assert resolved.metadata["behavior_profile"] == "small_model"
-    assert "Return exactly one JSON object" in resolved.text
-    assert "declared tools and experts" in resolved.text

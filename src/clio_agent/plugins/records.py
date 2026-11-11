@@ -52,6 +52,11 @@ class ToolRecord:
     attr: str = ""
     description: str = ""
     read_only: bool = False
+    defer: bool | None = None
+    #: Declared ``direct`` / ``code`` / ``both``; None: not declared.
+    callers: str | None = None
+    #: Declared default permission ``allow`` / ``ask`` / ``deny``; None: not declared.
+    permission: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,8 @@ class HookRecord:
     before: tuple[str, ...] = ()
     after: tuple[str, ...] = ()
     fail_closed: bool = False
+    #: ``claude-code``: a ``hooks/hooks.json`` command, run on Claude Code's wire.
+    dialect: str = ""
 
 
 @dataclass(frozen=True)
@@ -124,12 +131,44 @@ class CommandRecord:
     id: str
     description: str
     path: str
+    #: The subfolder of ``commands/`` the file sits in (``frontend``), shown beside its name.
+    label: str = ""
+    #: A built-in handler the file names (core plugin only).
+    handler: str = ""
+    aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkflowRecord:
+    """A declared workflow (``ai.iowarp.clio/workflows/<id>.json``, :mod:`.workflows`)."""
+
+    id: str
+    description: str
+    path: str
+    #: ``{"name", "description", "required"}`` per input the steps' ``{name}`` use.
+    inputs: tuple[dict[str, Any], ...] = ()
+    #: The steps as :class:`clio_agent.sdk.workflow.Workflow` validates them.
+    steps: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
 class CatalogRecord:
     id: str
     path: str
+
+
+@dataclass(frozen=True)
+class KernelBindingRecord:
+    """Python a plugin binds into ``run_code``'s kernel under ``name`` (read, never imported)."""
+
+    name: str
+    source: str
+    text: str
+    digest: str
+    requires: tuple[str, ...] = ()
+    #: Plugin Python (under ``ai.iowarp.clio/``) whose ``@host_call`` functions answer the
+    #: binding's reserved calls in the server (trusted plugins only); empty: none.
+    host: str = ""
 
 
 @dataclass(frozen=True)
@@ -155,7 +194,9 @@ class PluginRecord:
     flows: tuple[FlowRecord, ...] = ()
     fragments: tuple[FragmentRecord, ...] = ()
     commands: tuple[CommandRecord, ...] = ()
+    workflows: tuple[WorkflowRecord, ...] = ()
     catalogs: tuple[CatalogRecord, ...] = ()
+    kernel_bindings: tuple[KernelBindingRecord, ...] = ()
     workflow_state: dict[str, Any] | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
     executable_digest: str = ""
@@ -163,6 +204,9 @@ class PluginRecord:
     keywords: tuple[str, ...] = ()
     #: Python parts present but not imported, because the plugin is not trusted yet.
     python_pending: bool = False
+    #: Tool disclosure from the ``ai.iowarp.clio`` extension: ``defer`` for the whole
+    #: plugin and ``servers`` (per MCP server: ``defer``, ``description``).
+    disclosure: dict[str, Any] = field(default_factory=dict)
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -192,7 +236,18 @@ class PluginRecord:
             out = []
             for row in data.get(key) or []:
                 values = dict(row)
-                for name in ("args", "before", "after", "plugins", "when_tools", "when_plugins"):
+                for name in (
+                    "args",
+                    "before",
+                    "after",
+                    "plugins",
+                    "when_tools",
+                    "when_plugins",
+                    "requires",
+                    "aliases",
+                    "inputs",
+                    "steps",
+                ):
                     if name in values and isinstance(values[name], list):
                         values[name] = tuple(values[name])
                 if kind is SubagentRecord and isinstance(values.get("tools"), list):
@@ -220,11 +275,14 @@ class PluginRecord:
             flows=rows("flows", FlowRecord),
             fragments=rows("fragments", FragmentRecord),
             commands=rows("commands", CommandRecord),
+            workflows=rows("workflows", WorkflowRecord),
             catalogs=rows("catalogs", CatalogRecord),
+            kernel_bindings=rows("kernel_bindings", KernelBindingRecord),
             workflow_state=data.get("workflow_state"),
             diagnostics=rows("diagnostics", Diagnostic),
             executable_digest=data.get("executable_digest") or "",
             text_digest=data.get("text_digest") or "",
             keywords=tuple(data.get("keywords") or ()),
             python_pending=bool(data.get("python_pending")),
+            disclosure=dict(data.get("disclosure") or {}),
         )

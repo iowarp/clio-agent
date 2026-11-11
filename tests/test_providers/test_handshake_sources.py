@@ -280,3 +280,87 @@ def test_db_record_report_does_not_store_a_served_context_as_the_model_limit() -
     )
     db_mod.record_report(rep)
     assert db_mod.lookup_context("/models/Qwen3-4B") is None
+
+
+# ---- one catalog check reads each source once (handshake_memo) ----
+def test_a_handshake_pass_indexes_the_db_once_and_rereads_after_its_own_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.providers.handshake_memo import handshake_pass
+
+    loads: list[Path] = []
+    real_load = db_mod._load_merged
+
+    def _counting(path: Path) -> dict:
+        loads.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(db_mod, "_load_merged", _counting)
+    with handshake_pass():
+        assert db_mod.lookup_context("openai/gpt-4o") == 128000
+        assert db_mod.lookup_context("gpt-4o") == 128000
+        assert db_mod.lookup_output("acme/unknown") is None
+        assert len(loads) == 1
+        db_mod.record("acme/new-in-pass", context=4242)
+        assert db_mod.lookup_context("acme/new-in-pass") == 4242
+    loads.clear()
+    db_mod.lookup_context("openai/gpt-4o")
+    db_mod.lookup_context("openai/gpt-4o")
+    assert len(loads) == 2  # outside a pass every lookup reads fresh
+
+
+def test_record_report_writes_the_db_once_for_every_live_model(
+    isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        Fact,
+        ModelCapabilities,
+    )
+    from clio_agent.providers.handshake.model import (
+        AuthState,
+        ConnectivityState,
+        DiscoveredModel,
+        HandshakeReport,
+    )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+    ids = [f"vendor/live-{n}" for n in range(5)]
+    for n, model_id in enumerate(ids):
+        invalidation.record_model_capabilities(
+            ModelCapabilities(
+                model_key=model_id,
+                context_max=Fact(value=1000 + n, source="server_report", observed_at=now),
+            )
+        )
+        invalidation.record_deployment_capabilities(
+            DeploymentCapabilities(
+                provider_id="p",
+                api_base="",
+                model_id=model_id,
+                model_key=Fact(value=model_id, source="server_report", observed_at=now),
+            )
+        )
+    writes: list[Path] = []
+    real_write = Path.write_text
+
+    def _counting(self: Path, *args: object, **kwargs: object) -> int:
+        if self == isolated_db:
+            writes.append(self)
+        return real_write(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _counting)
+    db_mod.record_report(
+        HandshakeReport(
+            provider_id="p",
+            provider_kind="openai",
+            connectivity=ConnectivityState.OK,
+            auth=AuthState.OK,
+            api_base="",
+            models=tuple(DiscoveredModel(id=model_id) for model_id in ids),
+        )
+    )
+    assert len(writes) == 1
+    assert [db_mod.lookup_context(model_id) for model_id in ids] == [1000, 1001, 1002, 1003, 1004]

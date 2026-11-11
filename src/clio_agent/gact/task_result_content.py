@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
-from clio_agent import conf
 from clio_agent.arc.task_types import AssignmentDetails, AssignmentEvidence, CoreReference
+from clio_agent.gact.child_report_fit import report_fits
 from clio_agent.gact.result_selection import result_keys, select_fields, validate_selection
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor, encode_cursor
@@ -93,8 +94,14 @@ def result_page(
     mode: str,
     position: dict[str, Any],
     select: list[str] | None = None,
+    save: Callable[[Any, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Read deterministic JSON pages; fragments explicitly require concatenation before parsing."""
+    """Return a result whole, or saved to a file by ``save`` when it is too big (#1844).
+
+    ``position`` is a version-1 cursor from an earlier release (they sit in committed
+    delegation history); it still reads deterministic JSON pages whose fragments
+    require concatenation before parsing. Without ``save`` a big result pages too.
+    """
     if position and CoreReference.model_validate(position["reference"]) != reference:
         raise ValueError("Pinned result reference changed")
     selection = validate_selection(select)
@@ -109,17 +116,22 @@ def result_page(
     offset = position.get("offset", 0)
     if offset > len(encoded):
         raise ValueError("Result cursor offset is outside its pinned content")
-    bound = conf.resolve(
-        "limits.tool_result_chars", env="CLIO_TOOL_RESULT_CHARS", default=12000, cast=conf.as_int
-    )
+    # Pages of a version-1 cursor, and of a result with nowhere to be saved, are one tool
+    # result each (at least a character, so a page always advances); a result that fits
+    # the parent's context is returned whole.
+    from clio_agent.tools.result_room import result_room  # noqa: PLC0415
+
+    bound = max(1, result_room().chars)
     result: dict[str, Any] = {"result_reference": reference.model_dump(mode="json")}
     if selection is not None:
         result["result_selection"] = selection
     elif isinstance(original, dict):
         result.update(result_keys(original))
-    if not position and (bound <= 0 or len(encoded) <= bound):
+    if not position and report_fits(encoded):
         return {**result, "result": value, "next_cursor": None}
-    end = min(len(encoded), offset + bound) if bound > 0 else len(encoded)
+    if not position and save is not None:
+        return {**result, **save(value, encoded)}
+    end = min(len(encoded), offset + bound)
     result.update(
         result={"preview": encoded[offset:end], "truncated": end < len(encoded)},
         chunk_field="result.preview",

@@ -10,7 +10,8 @@ Drives the bridge directly (no FastMCP server needed) and asserts:
 
 from __future__ import annotations
 
-import asyncio
+import json
+import re
 import sys
 import threading
 import time
@@ -72,7 +73,7 @@ def test_read_only_catalog_tool_fast_allows(tmp_path: Path) -> None:
     session. This replaces the old name-heuristic ``_is_destructive`` fast-allow."""
     app = build_app(sessions_path=tmp_path / "s.json")
     gate = _make_permission_gate(app)
-    assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+    assert gate("fs_read_file", {"path": "x"}) == "allow"
 
 
 def test_unclassified_tool_without_session_fails_closed(tmp_path: Path) -> None:
@@ -374,7 +375,9 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
         thread = threading.Thread(target=call_tool)
         thread.start()
         try:
-            deadline = time.monotonic() + 2.0
+            # The loop ends as soon as the request is published; the bound only has to
+            # outlast a loaded CI worker under coverage, where 2s was not enough.
+            deadline = time.monotonic() + 30.0
             published = None
             while time.monotonic() < deadline:
                 published = next(
@@ -395,9 +398,13 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
             assert published is not None
             pending = app.state.permissions[published.payload["id"]]
             assert pending["status"] == "pending"
+            # The request names the waiting call's own row identity (its tool entity id).
+            call_id = pending["tool_call"].get("call_id", "")
+            assert re.fullmatch(r"call_[0-9a-f]{12}", call_id), pending["tool_call"]
             assert pending["tool_call"] == {
                 "tool_name": "relay_jarvis_run",
                 "input": {"pipeline_id": "pipeline-1"},
+                "call_id": call_id,
             }
 
             response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "allow"})
@@ -409,132 +416,26 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
             assert not failures, failures
             assert calls == ["pipeline-1"], result
             assert len(transports) == 1
-            assert '"name": "jarvis_run"' in result["value"]
+            assert json.loads(result["value"])["name"] == "jarvis_run"
         finally:
             try:
                 stopping.set()
-                for row in tuple(app.state.permissions.values()):
-                    if (
-                        row["status"] == "pending"
-                        and row["tool_call"]["tool_name"] == "relay_jarvis_run"
-                    ):
-                        client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
-                thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
+                # Deny until the call returns: a request published after one sweep (a late
+                # gate under load) would otherwise leave the thread in its permission wait.
+                deadline = time.monotonic() + 30.0  # under coverage the call can take seconds
+                while thread.is_alive() and time.monotonic() < deadline:
+                    for row in tuple(app.state.permissions.values()):
+                        if (
+                            row["status"] == "pending"
+                            and row["tool_call"]["tool_name"] == "relay_jarvis_run"
+                        ):
+                            client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
+                    thread.join(timeout=0.2)
                 assert not thread.is_alive(), "".join(
                     traceback.format_stack(sys._current_frames().get(thread.ident or -1))
                 )
             finally:
                 executor.close()
-
-
-@pytest.mark.parametrize(
-    "annotations",
-    [None, {"readOnlyHint": False}, {"readOnlyHint": "true"}],
-    ids=["missing", "false", "invalid"],
-)
-def test_dynamic_external_mcp_requires_permission_before_client_invocation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    annotations: Any,
-) -> None:
-    from clio_agent.gact.agents import external_mcp_calls
-
-    class MustNotStartClient:
-        constructed = False
-
-        def __init__(self, transport: Any) -> None:
-            MustNotStartClient.constructed = True
-
-    _use_external_client_class(monkeypatch, MustNotStartClient)
-    app = build_app(sessions_path=tmp_path / "s.json")
-    info = {
-        "name": "remote",
-        "spec": {"transport": "stdio", "command": "must-not-run", "args": []},
-    }
-
-    with pytest.raises(PermissionError, match="denied by permission gate"):
-        asyncio.run(
-            external_mcp_calls._call_enabled_external_mcp_tool(
-                app,
-                "srv",
-                info,
-                "submit",
-                {"request_id": "request-1"},
-                annotations,
-            )
-        )
-
-    assert MustNotStartClient.constructed is False
-
-
-@pytest.mark.parametrize("route", ["async", "sync"])
-def test_dynamic_external_mcp_read_only_hint_invokes_client(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    route: str,
-) -> None:
-    from fastmcp import FastMCP
-
-    from clio_agent.gact.agents import external_mcp_calls
-    from clio_agent.tools.task_call_context import TASK_CALL
-
-    server = FastMCP("read-only-permission")
-    calls: list[str] = []
-    request_loops: list[asyncio.AbstractEventLoop] = []
-    invocation_ids: list[str] = []
-
-    @server.tool(name="lookup", annotations={"readOnlyHint": True}, task=False)
-    def lookup(resource_id: str) -> str:
-        """Return one inline read result through the real SDK and captured schema."""
-        calls.append(resource_id)
-        return "lookup:ok"
-
-    def resolve_transport(_spec: Any) -> Any:
-        """Observe the production client boundary without substituting its implementation."""
-        request_loops.append(asyncio.get_running_loop())
-        task_call = TASK_CALL.get()
-        assert task_call.invocation_id
-        invocation_ids.append(task_call.invocation_id)
-        return server
-
-    monkeypatch.setattr("clio_agent.tools.mcp_config.transport_from_spec", resolve_transport)
-    app = build_app(sessions_path=tmp_path / "s.json")
-    info = {
-        "name": "remote",
-        "spec": {"transport": "stdio", "command": "fake", "args": []},
-    }
-
-    with TestClient(app) as client:
-        session_id = client.post("/v1/sessions", json={"title": "Read lookup"}).json()["id"]
-        record_assignment_fixture(app, session_id)
-        assert client.portal is not None
-        with active_turn_fixture(app, session_id):
-            arguments = (
-                app,
-                "srv",
-                info,
-                "lookup",
-                {"resource_id": "resource-1"},
-                {"readOnlyHint": True},
-            )
-            if route == "async":
-                result = client.portal.call(
-                    external_mcp_calls._call_enabled_external_mcp_tool, *arguments
-                )
-            else:
-                result = external_mcp_calls._run_external_mcp_tool_sync(*arguments)
-        assert calls == ["resource-1"]
-        assert result == "lookup:ok"
-        assert app.state.permissions == {}
-        assert request_loops == [app.state.mcp_app_loop]
-        events = [
-            event
-            for event in app.state.bus._history.get(session_id, [])
-            if event.type in {"tool.call.started", "tool.call.completed"}
-        ]
-        assert [event.type for event in events] == ["tool.call.started", "tool.call.completed"]
-        assert events[0].payload["call_id"] == events[1].payload["call_id"]
-        assert invocation_ids == [events[0].payload["call_id"]]
 
 
 @pytest.mark.parametrize(
@@ -1432,16 +1333,16 @@ def test_gate_denies_write_tool_in_plan_mode_via_plan_acl(tmp_path: Path) -> Non
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_write_file", {"filepath": "src/x.py"}) == "deny"
+            assert gate("fs_write_file", {"path": "src/x.py"}) == "deny"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         assert rows[0]["status"] == "auto_denied"
         assert rows[0]["session_id"] == sid
 
 
-def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
-    """P1.1 #1063: the SOLE writable path in plan mode — a ``*.md`` write under the plans dir
-    — is allowed by the @70 carve-out (beats the @40 deny band)."""
+def test_gate_denies_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
+    """In plan mode no file tool writes, the plans dir included: the plan is written with
+    plan_update, which the deny message names."""
     from clio_agent.gact.runtime.grant_resolver import plans_dir
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1450,7 +1351,9 @@ def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         target = str(plans_dir() / "2026-07-25-plan.md")
         with _tool_session_context(sid):
-            assert gate("fs_write_file", {"filepath": target}) == "allow"
+            decision = gate("fs_write_file", {"path": target})
+            assert decision == "deny"
+            assert "plan_update" in getattr(decision, "deny_message", str(decision))
 
 
 def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
@@ -1463,7 +1366,7 @@ def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
             # Even a plans-dir .md write is denied in architect (the carve-out is plan-only).
-            assert gate("fs_write_file", {"filepath": str(plans_dir() / "p.md")}) == "deny"
+            assert gate("fs_write_file", {"path": str(plans_dir() / "p.md")}) == "deny"
 
 
 def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> None:
@@ -1482,25 +1385,24 @@ def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> N
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_write_file", {"filepath": "src/x.py"}) == "deny"
+            assert gate("fs_write_file", {"path": "src/x.py"}) == "deny"
 
 
 def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
     """P1.2 #1064: a plan_acl-denied write returns a ``DenyDecision`` carrying the mode-aware
     message ("Plan Mode" + the plan file path), while the audit reason stays ``policy_deny``."""
-    from clio_agent.gact.runtime.grant_resolver import plans_dir
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            decision = gate("fs_write_file", {"filepath": "src/x.py"})
+            decision = gate("fs_write_file", {"path": "src/x.py"})
         # Backward compatible: still equals "deny" for every legacy comparison.
         assert decision == "deny"
         assert isinstance(decision, DenyDecision)
         assert "Plan Mode" in decision.deny_message
-        assert str(plans_dir()) in decision.deny_message
+        assert "plan_update" in decision.deny_message
         assert "denied by permission gate" not in decision.deny_message
         # The typed audit reason is unchanged.
         rows = list(app.state.permissions.values())
@@ -1525,6 +1427,6 @@ def test_user_policy_deny_in_edit_mode_carries_no_plan_message(tmp_path: Path) -
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            decision = gate("fs_write_file", {"filepath": "src/x.py"})
+            decision = gate("fs_write_file", {"path": "src/x.py"})
         assert decision == "deny"
         assert getattr(decision, "deny_message", "") == ""

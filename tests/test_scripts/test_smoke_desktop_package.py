@@ -97,6 +97,15 @@ def test_backend_requires_the_module_port_and_token(tmp_path: Path) -> None:
     assert smoke.backend_connection(process) is None
 
 
+def test_backend_skips_a_descendant_it_cannot_read(tmp_path: Path) -> None:
+    process = backend(tmp_path)
+    process.cmdline.side_effect = psutil.AccessDenied(123)
+    assert smoke.backend_connection(process) is None
+    process.cmdline.side_effect = None
+    process.environ.side_effect = psutil.AccessDenied(123)
+    assert smoke.backend_connection(process) is None
+
+
 def test_runtime_cannot_be_replaced_with_a_development_interpreter(tmp_path: Path) -> None:
     process = backend(tmp_path)
     assert smoke.require_bundled_python(process) == str((tmp_path / "runtime/python").resolve())
@@ -160,9 +169,9 @@ def test_cleanup_stops_a_real_owned_tree_and_preserves_an_unrelated_process(tmp_
             child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize(("crash", "reset"), [(False, False), (True, False), (False, True)])
 def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash: bool, reset: bool
 ) -> None:
     candidate = backend(tmp_path)
     desktop = tmp_path / "desktop.exe"
@@ -182,7 +191,13 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
     cleanup = Mock()
     monkeypatch.setattr(smoke, "stop_owned", cleanup)
 
+    real_popen = subprocess.Popen
+
     def launch(*args: object, **kwargs: object) -> Mock:
+        # Popen is patched module-wide; pass incidental calls (e.g. platform's
+        # lazy `uname -p`) through so only the desktop launch is faked.
+        if args and args[0] != [str(desktop.resolve())]:
+            return real_popen(*args, **kwargs)  # type: ignore[call-overload]
         log = kwargs["stdout"]
         log.write(b"private-test-token\n")  # type: ignore[union-attr]
         native_log.write_text("backend: private-test-token\n")
@@ -191,8 +206,13 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
     monkeypatch.setattr(smoke.subprocess, "Popen", launch)
     requests: list[object] = []
 
+    resets = [ConnectionResetError(54, "Connection reset by peer")] if reset else []
+
     def response(request: object, **kwargs: object) -> io.BytesIO:
         requests.append(request)
+        if resets:
+            # A backend still starting resets the first probe; the smoke retries.
+            raise resets.pop()
         if request.full_url.endswith("/v1/health"):
             return io.BytesIO(
                 b'{"integrations":[{"name":"arc","status":"ready"},{"name":"clio_core_attach","status":"ready"}]}'

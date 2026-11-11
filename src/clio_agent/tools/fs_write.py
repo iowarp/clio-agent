@@ -10,7 +10,7 @@ from clio_agent.platform_paths import win_extended_path
 from clio_agent.tools.file_policy import validate_non_empty_string, validate_write_path
 
 
-def write_text_with_policy(filepath: str, new_content: str) -> dict[str, Any]:
+def write_text_with_policy(path: str, new_content: str) -> dict[str, Any]:
     """Write text after enforcing CLIO's write file policy.
 
     This is the single implementation behind the agent's ``fs_write_file`` and
@@ -35,25 +35,24 @@ def write_text_with_policy(filepath: str, new_content: str) -> dict[str, Any]:
     ``artifact.created`` record from it (#966 S1 seam b).
     """
 
-    validate_non_empty_string(filepath, field="filepath")
-    safe = validate_write_path(filepath, field="filepath")
-    path = Path(safe)
+    validate_non_empty_string(path, field="path")
+    target = Path(validate_write_path(path, field="path"))
     body = new_content if isinstance(new_content, str) else str(new_content)
     # A validated parent directory can still be short enough to pass policy
     # while the full target path (parent + filename) exceeds Windows' 260-char
     # ``MAX_PATH`` -- win_extended_path is a no-op off win32.
-    with open(win_extended_path(path), "w", encoding="utf-8", newline="") as handle:
+    with open(win_extended_path(target), "w", encoding="utf-8", newline="") as handle:
         handle.write(body)
-    with open(win_extended_path(path), "rb") as handle:
+    with open(win_extended_path(target), "rb") as handle:
         on_disk = handle.read()
     return {
-        "path": str(path),
+        "path": str(target),
         # #1247: the same value under the RECOGNIZED result-designation key.
         # The designation vocabulary deliberately excludes bare ``path`` (it
         # commonly echoes an INPUT). The writer KNOWS it wrote; declaring
         # ``written_path`` makes seam (a) mint the agent's writes, which is what
         # puts the generated edge on the transform record.
-        "written_path": str(path),
+        "written_path": str(target),
         "size_bytes": len(on_disk),
         "sha256": hashlib.sha256(on_disk).hexdigest(),
         "ok": True,

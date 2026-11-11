@@ -134,6 +134,38 @@ actions. Use the task's cancellation control when you intend to stop that work.
 Long-running goals can also park until a task finishes and resume when its result
 arrives. See [Goals, loops and scheduled work](/docs/long-running-work/).
 
+## Follow the session plan
+
+For larger work the agent can keep a **session plan**: a Markdown document with its
+approach, the threads of work and what it has found. It is separate from the todo
+list, which tracks individual steps.
+
+- **Planning first.** In Plan mode, or when the agent decides you should approve an
+  approach before anything changes, it writes the plan while only reading, then asks
+  you to approve it.
+- **Planning while working.** Outside Plan mode the agent can write a plan to carry out
+  itself and keep it current as findings change its direction.
+
+The plan appears in the **Plan** section of **Work**, with its status, the plan file's
+name and the plan itself:
+
+| Status | Meaning |
+| --- | --- |
+| **Draft, in plan mode** | Being written in Plan mode. |
+| **Approved, being worked on** | You approved it, and the agent is carrying it out. |
+| **active** | The agent wrote it outside Plan mode to carry out itself. Nobody approved it. |
+| **Done** or **Abandoned** | The agent closed it. |
+
+Choose **Edit plan** to change it yourself, then **Save plan**. The agent receives your
+version at its next step, marked as your edit, and treats it as your direction.
+
+While a plan is open, the agent is reminded of it when it changes and after its context
+is compacted. If an active plan goes 25 steps without an update to it or to the todo
+list, the agent gets a
+one-line note and decides whether the plan needs one. When the agent marks a plan done,
+CLIO tells it how many threads the plan still marks as open or active, or that no thread
+carries a state such as `[open]` or `[closed]`.
+
 ## Focus on current todos
 
 Pending and in-progress items appear first. **Show completed** reveals finished

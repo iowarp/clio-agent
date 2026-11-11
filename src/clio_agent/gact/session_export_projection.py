@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from copy import deepcopy
 from typing import Any
 
@@ -89,4 +90,40 @@ def archive_transcript_views(transcript: dict[str, Any]) -> dict[str, Any]:
                     # from the bounded message preview. Execution state is separate.
                     tool["presentation"].pop("status", None)
         views[sid] = projection
+    return views
+
+
+def with_minted_artifacts(views: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Add each session's minted artifacts to its view, as the live conversation has them.
+
+    A view's artifacts come from the transcript's artifact parts, so a file a tool minted
+    and an answer shows by its ``artifact://`` link (a browser screenshot) had no record
+    offline, and the page said the image was unavailable although the export carried it.
+    """
+    for entry in manifest.get("artifacts") or ():
+        sid = str((entry.get("producer") or {}).get("session_id") or "")
+        artifact_id = str(entry.get("artifact_id") or "")
+        view = views.get(sid)
+        if view is None or not artifact_id:
+            continue
+        known = view.setdefault("artifacts", [])
+        if any(isinstance(item, dict) and item.get("id") == artifact_id for item in known):
+            continue
+        name = str(entry.get("name") or artifact_id)
+        media_type = (
+            mimetypes.guess_type(name)[0] or mimetypes.guess_type(str(entry.get("path") or ""))[0]
+        )
+        size = (entry.get("evidence") or {}).get("size_bytes")
+        known.append(
+            {
+                "id": artifact_id,
+                "session_id": sid,
+                "workspace_id": str(entry.get("workspace_id") or ""),
+                "name": name,
+                "media_type": media_type or "application/octet-stream",
+                "uri": f"artifact://{artifact_id}",
+                **({"version": entry["version"]} if isinstance(entry.get("version"), int) else {}),
+                **({"size": size} if isinstance(size, int) else {}),
+            }
+        )
     return views

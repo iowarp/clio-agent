@@ -2,9 +2,8 @@
 
 ``routes/mcp.py`` is at its size-ratchet baseline, so handshake and server-detail
 row shapes live here instead of inline in the route. Handshake rows retain
-``server/discover`` data, inventory rows shape tools/resources/prompts, and
-``prompts/get`` results retain SDK aliases (#1111, #1117), so the endpoints surface *what*
-answered — not merely that something did (#1111).
+``server/discover`` data and inventory rows shape tools/resources (#1111, #1117), so the
+endpoints surface *what* answered — not merely that something did (#1111).
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
-from clio_agent.tools.mcp_runtime import wire_value
 
 if TYPE_CHECKING:
     from clio_agent.providers.handshake.mcp import MCPServerReport
@@ -22,7 +20,6 @@ __all__ = [
     "bundled_server_tool_rows",
     "handshake_server_row",
     "mcp_inventory_row",
-    "mcp_prompt_result_row",
 ]
 
 
@@ -99,7 +96,7 @@ def bundled_server_tool_rows(short_name: str) -> list[dict[str, Any]]:
 def mcp_inventory_row(
     item: Any,
     *,
-    kind: Literal["tools", "resources", "prompts"],
+    kind: Literal["tools", "resources"],
 ) -> dict[str, Any]:
     """Shape one FastMCP list result for a GACT server-detail inventory."""
     if kind == "tools":
@@ -117,18 +114,4 @@ def mcp_inventory_row(
             "name": getattr(item, "name", "") or uri,
             "description": getattr(item, "description", "") or "",
         }
-    if kind == "prompts":
-        return {
-            "id": item.name,
-            "name": item.name,
-            "description": getattr(item, "description", "") or "",
-        }
     raise ValueError(f"unsupported MCP inventory kind: {kind!r}")
-
-
-def mcp_prompt_result_row(result: Any) -> dict[str, Any]:
-    """Convert a FastMCP ``prompts/get`` result to its alias-preserving wire row."""
-    row = wire_value(result, mode="mcp_results", exclude_none=True)
-    if not isinstance(row, dict):
-        raise TypeError(f"MCP prompt result did not serialize to an object: {type(row).__name__}")
-    return row

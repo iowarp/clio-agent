@@ -66,6 +66,7 @@ _FACT_FIELDS: tuple[str, ...] = (
     "parameters",
     "catalog_pricing",
     "hf_repo",
+    "stream_shape",
 )
 
 

@@ -53,8 +53,11 @@ The install script puts the backend, interfaces, and logs in one folder.
 
 | System | Install folder |
 |---|---|
-| macOS and Linux | `~/.local/share/clio` |
-| Windows | `%LOCALAPPDATA%\clio` |
+| macOS | `~/Library/Application Support/clio-agent/data/app` |
+| Linux | `~/.local/share/clio-agent/app` |
+| Windows | `%LOCALAPPDATA%\clio-agent\data\app` |
+
+Installs made before 0.9.5 keep using `~/.local/share/clio` (`%LOCALAPPDATA%\clio` on Windows).
 
 Set `CLIO_PREFIX` before installing to change it. See [Install](/docs/install/).
 
@@ -105,6 +108,7 @@ These are the settings most people need. Each is read when the backend starts.
 | `CLIO_GACT_ALLOWED_HOSTS` | `gact.allowed_hosts` | Extra host names the backend accepts from clients without a token, for LAN or Docker use. Names only, comma-separated. |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | Browser origins allowed to call the backend. See [Data and network](/docs/privacy/). |
 | `CLIO_NO_UPDATE_CHECK` | none | Set to `1` to turn off the `clio` command's daily update check (macOS and Linux). |
+| `CLIO_ACCEPT_UNSANDBOXED` | none | Set to `1` to acknowledge the `clio` command's start-up warning when protected execution (the OS sandbox) is off, instead of answering its prompt (macOS and Linux). |
 
 By default the file tools can use the workspace folder, the folder CLIO was started in, and your system's temp folder. A path outside the allowed folders fails with `outside_allowed_roots`.
 

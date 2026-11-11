@@ -105,11 +105,13 @@ def test_first_turn_bringup_phases_reach_stream_audit(
     assert summary["unclosed_phase_names"] == []
 
 
-def test_second_turn_does_not_reopen_bringup(
+def test_every_turn_is_timed_up_to_its_model_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bring-up is a first-turn-only concept: a SECOND turn on the same
-    session must not emit any new bringup.phase/bringup.summary rows."""
+    """Every turn brings its agent up again, so every turn gets its own summary,
+    numbered per session, with the resolution and the module build as phases.
+    SABOTAGE: open turns with ``timer_for_session`` instead of ``begin_turn`` and
+    turn 2 gets the null timer, so it has no summary."""
 
     audits = _capture_audits(monkeypatch)
     agent = FakeClioAgent(answer="first")
@@ -129,17 +131,35 @@ def test_second_turn_does_not_reopen_bringup(
             assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
 
         _send_and_wait("first turn")
-        first_turn_count = len(
-            [f for stage, f in audits if stage == "bringup.summary" and f.get("session_id") == sid]
-        )
-        assert first_turn_count == 1
-
         _send_and_wait("second turn")
 
-    summaries_after_second = [
+    summaries = [
         f for stage, f in audits if stage == "bringup.summary" and f.get("session_id") == sid
     ]
-    # Sabotage: drop the _settled gate in BringupTimerRegistry (or key it by
-    # something other than "already finished once") -> turn 2 starts a fresh
-    # timer and finishes it too -> len becomes 2 -> this assertion goes red.
-    assert len(summaries_after_second) == 1
+    assert [s["turn"] for s in summaries] == [1, 2]
+    first, second = ({p["name"] for p in s["phases"]} for s in summaries)
+    assert "session.create" in first and "session.create" not in second
+    assert {"turn.accept_gap", "agent.resolve", "agent.resolution", "agent.build"} <= second
+    assert all(s["unclosed_phase_names"] == [] for s in summaries)
+    phase_turns = {
+        f["turn"] for stage, f in audits if stage == "bringup.phase" and f.get("session_id") == sid
+    }
+    assert phase_turns == {1, 2}
+
+
+def test_a_turn_that_never_settled_is_closed_by_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed turn leaves its timer open; the next turn settles it, naming the
+    open phase, and times itself separately. SABOTAGE: drop the stale-timer
+    branch in ``begin_turn`` and turn 2 nests inside turn 1's window."""
+    from clio_agent.gact.runtime.bringup_timing import BringupTimerRegistry
+
+    audits = _capture_audits(monkeypatch)
+    registry = BringupTimerRegistry()
+    registry.begin_turn("s").start_phase("agent.resolve")
+    second = registry.begin_turn("s")
+    assert second.turn == 2
+    summaries = [f for stage, f in audits if stage == "bringup.summary"]
+    assert [(s["turn"], s["unclosed_phase_names"]) for s in summaries] == [(1, ["agent.resolve"])]
+    second.start_phase("agent.build")
+    second.end_phase("agent.build")
+    assert registry.finish("s").turn == 2

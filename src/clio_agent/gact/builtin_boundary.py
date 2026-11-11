@@ -9,6 +9,7 @@ import functools
 import hashlib
 import inspect
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
@@ -31,7 +32,11 @@ from clio_agent.gact.agents.tool_instrumentation import (
     pop_declared_structured_content,
 )
 from clio_agent.gact.node_folders import node_confinement
-from clio_agent.gact.tool_observation import CollectedTaskResult, PresentedToolResult
+from clio_agent.gact.tool_observation import (
+    CollectedTaskResult,
+    PresentedToolResult,
+    note_inline_collection,
+)
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot
 
 _PRESENTATION_META = "io.iowarp.clio/presentation"
@@ -112,6 +117,20 @@ class BuiltinTool(Tool):
             raise
         finally:
             invocation.retired.set()
+
+
+def _audit_phases(name: str, marks: list[tuple[str, float]]) -> None:
+    """One ``builtin.native_call`` stream-audit row: each phase's milliseconds.
+
+    A shell call cost 0.3-0.7 s more than its command (X1, 2026-11); the row says where.
+    """
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    phases = {
+        f"{label}_ms": round((at - before) * 1000, 2)
+        for (_, before), (label, at) in zip(marks, marks[1:], strict=False)
+    }
+    stream_audit("builtin.native_call", tool=name, **phases)
 
 
 class BuiltinBoundary:
@@ -290,8 +309,10 @@ class BuiltinBoundary:
         from clio_agent.gact.native_work import SUBMISSION_ARGUMENT
         from clio_agent.gact.permission_gate import _invoke_permission_gate
         from clio_agent.gact.tool_dispatch import run_owned_callable
+        from clio_agent.tools.result_room import result_room, room_limits
         from clio_agent.tools.task_call_context import safe_description
 
+        marks = [("start", time.perf_counter())]
         public = dict(arguments)
         description = public.pop("_clio_task_description", None) or safe_description(name, public)
         if not isinstance(description, str) or len(description) > 2000:
@@ -299,10 +320,19 @@ class BuiltinBoundary:
         root, kind, tool = (
             ("shell", "Shell", "bash")
             if name in {"bash", "shell_bash"}
+            else ("code", "Code", "run_code_task")
+            if name == "run_code"
             else ("storage", "Download", name)
             if name == "connected_data_download"
             else ("storage", "Indexing", name)
         )
+        if kind == "Code":
+            from clio_agent.gact.native_code import staged  # noqa: PLC0415
+
+            # run_code asked the person with the script shown before staging it; only an
+            # approved, staged script reaches this root (taskable run_code CT2).
+            if not staged(str(public.get("launch") or "")):
+                raise PermissionError("A background script needs an approved launch")
         component = await self.app.state.native_tools.roots[root].server.get_tool(tool)
         if component is None:
             raise ValueError("Native workload is unavailable")
@@ -325,6 +355,7 @@ class BuiltinBoundary:
         )
         if assignment is None:
             raise ValueError("Task submission requires a confirmed assignment")
+        marks.append(("assignment", time.perf_counter()))
         call = captured.run(TASK_CALL.get)
         inherited_approval = (
             kind == "Shell"
@@ -373,7 +404,7 @@ class BuiltinBoundary:
             ) = await self.app.state.task_history.io.run(
                 connection_approval, self.app.state.connected_storage, session.workspace_id, public
             )
-        if approved is None and not inherited_approval:
+        if approved is None and not inherited_approval and kind != "Code":
             metadata = {"kind": "native"}
             if name == "connected_data_connect":
                 metadata["summary"] = f"Connect {public['label']}"
@@ -395,6 +426,7 @@ class BuiltinBoundary:
             )
             if decision != "allow":
                 raise PermissionError("Task submission was not approved")
+        marks.append(("gate", time.perf_counter()))
         attribution: dict[str, Any] = {"agent": captured.run(context.active_react_scope)}
         if selection_digest is not None:
             attribution["ndp_selection_digest"] = selection_digest
@@ -426,21 +458,38 @@ class BuiltinBoundary:
             # An isolated workflow node's shell writes only its folder (node_folders.py).
             confinement=node_confinement(self.app, sid),
             attribution=attribution,
-            execution_limits={},
+            # The room the caller's model has for this result; the work runs apart from it.
+            execution_limits=room_limits(captured.run(result_room)),
             description=description,
             background=bool(public.get("background", False)) if kind == "Shell" else True,
         )
+        marks.append(("submit", time.perf_counter()))
         if (
             kind == "Shell"
             and not public.get("background", False)
             and value.get("pending") is False
         ):
-            from clio_agent.gact.task_declarations import _collected
-
-            return await self.app.state.task_history.io.run(
-                _collected, self.app, self.app.state.conversations.caller(sid), value
-            )
+            value = await self.collect_inline(sid, value, captured)
+            marks.append(("collect", time.perf_counter()))
+        _audit_phases(name, marks)
         return value
+
+    async def collect_inline(
+        self, sid: str, value: dict[str, Any], captured: contextvars.Context
+    ) -> CollectedTaskResult:
+        """A finished foreground task's reply: collect its outcome notice for the caller.
+
+        The reply reaches the model as MCP text, so the collected value is also noted for
+        the calling model step (:func:`note_inline_collection`): the step records the
+        notice as delivered and the result is not given to the model a second time.
+        """
+        from clio_agent.gact.task_declarations import _collected
+
+        collected = await self.app.state.task_history.io.run(
+            _collected, self.app, self.app.state.conversations.caller(sid), value
+        )
+        captured.run(note_inline_collection, collected)
+        return collected
 
     @staticmethod
     def bind(tool: Any) -> Any:

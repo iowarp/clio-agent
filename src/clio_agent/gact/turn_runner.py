@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.turn_revision_gate import TurnRevisionGate
+from clio_agent.providers import turn_activity
 
 if TYPE_CHECKING:
     pass
@@ -58,6 +59,11 @@ class _TurnResources:
     thread: threading.Thread | None = None
     worker_exit: asyncio.Task[None] | None = None
     before_release: Callable[[bool], Awaitable[None]] | None = None
+    failed: bool = False  # the segment raised: release the provider connection
+    active: bool = False  # marked in providers.turn_activity
+    # The pump holds the slot while it checks for pending input; nothing runs yet.
+    probing: bool = False
+    probed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 AdmitSegment = Callable[[str], Awaitable[tuple[str, Coroutine[Any, Any, Any]] | None]]
@@ -115,10 +121,14 @@ class TurnRunner:
                 with self._lock:
                     if sid in self._turns:
                         return
-                    resources = _TurnResources(TurnHandle(sid, "", time.time()))
+                    resources = _TurnResources(TurnHandle(sid, "", time.time()), probing=True)
                     self._turns[sid] = resources  # reserve before any await
                 try:
-                    admitted = await self.admit(sid)
+                    try:
+                        admitted = await self.admit(sid)
+                    finally:
+                        resources.probing = False
+                        resources.probed.set()
                     if admitted is None:
                         if self._signals.get(sid, 0) != sequence:
                             continue
@@ -128,6 +138,8 @@ class TurnRunner:
                         coroutine.close()
                         continue  # Retirement holds this trigger; buffered work is rechecked next.
                     resources.handle = TurnHandle(sid, turn_id, resources.handle.started_at)
+                    turn_activity.started(sid)
+                    resources.active = True
                     resources.task = asyncio.create_task(self.revision_gate.run(coroutine))
                     try:
                         await asyncio.shield(resources.task)
@@ -138,6 +150,7 @@ class TurnRunner:
                         if pump is not None and pump.cancelling():
                             raise
                     except Exception:
+                        resources.failed = True
                         logger.exception("Conversation segment failed session=%s", sid)
                     await self._retire(resources)
                 except Exception:
@@ -159,13 +172,20 @@ class TurnRunner:
                             recording.result()
                     finally:
                         try:
-                            if resources.thread is not None:
+                            # A clean turn end keeps the provider connection for the next
+                            # turn (its conversation and prompt cache); Stop and failure
+                            # release it.
+                            abnormal = resources.stop.is_set() or resources.failed
+                            if resources.thread is not None and abnormal:
                                 from clio_agent.providers.session_lifecycle import (
                                     release_session_resources,
                                 )
 
                                 await asyncio.to_thread(release_session_resources, sid)
                         finally:
+                            if resources.active:
+                                resources.active = False
+                                turn_activity.ended(sid)
                             with self._lock:
                                 if self._turns.get(sid) is resources:
                                     self._turns.pop(sid)
@@ -268,6 +288,39 @@ class TurnRunner:
         """Reservation spans the whole segment, including waits and worker retirement."""
         with self._lock:
             return sid in self._turns
+
+    def working(self, sid: str) -> bool:
+        """Reserved for real work: a turn, its retirement or a runtime change.
+
+        An admission check that has not admitted anything is not work, so an idle
+        session whose pump is only looking for pending input reads as idle.
+        """
+        with self._lock:
+            resources = self._turns.get(sid)
+            return resources is not None and not resources.probing
+
+    async def settle_admission(self, sid: str, timeout: float = 10.0) -> None:
+        """Wait (app loop only) until no admission check holds ``sid``'s slot.
+
+        A guard that needs the slot calls this first, so a check started by an
+        earlier change's release cannot refuse it. A check that admits a turn
+        leaves the slot reserved; the caller then sees real work.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            with self._lock:
+                resources = self._turns.get(sid)
+                if resources is None or not resources.probing:
+                    return
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait_for(resources.probed.wait(), remaining)
+            except TimeoutError:
+                return
+            await asyncio.sleep(0)  # let the pump release or admit before re-checking
 
     @contextmanager
     def session_change(self, sid: str) -> Iterator[None]:

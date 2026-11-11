@@ -26,6 +26,8 @@
 #                        of the git ref (CI passes its own workspace so the
 #                        runtime is built from EXACTLY the released tree)
 #   CLIO_RUNTIME_PYTHON  python minor version (default: 3.14, standard GIL build)
+#   CLIO_BUNDLED_GIT     a git tree already built by build-bundled-git.sh to ship
+#                        instead of building one (default: build it)
 #
 # Usage:
 #   ./build-gact-runtime.sh <output-dir>
@@ -38,6 +40,7 @@ OUT="${1:?usage: build-gact-runtime.sh <output-dir>}"
 REF="${CLIO_REF:-develop}"
 PYVER="${CLIO_RUNTIME_PYTHON:-3.14}"
 REPO_URL="git+https://github.com/iowarp/clio-agent.git"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 dir_size_mb() {
   if [ ! -d "$1" ]; then echo "0"; return; fi
@@ -148,8 +151,27 @@ rm -f "$CONSTRAINTS"
 # install developer tooling or configure PATH.
 mkdir -p "$OUT/bin"
 cp "$(command -v uv)" "$OUT/bin/uv"
-cp "$(command -v uv)" "$OUT/bin/uvx"
+# uvx is uv's own small shim that execs the sibling uv as `uv tool run`; a copy
+# of uv renamed uvx still behaves as plain uv (`uvx pkg` -> `uv pkg`).
+UVX="$(dirname "$(command -v uv)")/uvx"
+[ -x "$UVX" ] || { echo "build-gact-runtime: uvx shim missing beside uv" >&2; exit 1; }
+cp "$UVX" "$OUT/bin/uvx"
 chmod +x "$OUT/bin/uv" "$OUT/bin/uvx"
+
+# CLIO installs marketplace plugins with git, and a fresh Mac has only the
+# /usr/bin/git placeholder that opens the developer-tools installer. Ship a
+# relocatable git (clio_agent/runtime/git_executable.py resolves it).
+if [ -n "${CLIO_BUNDLED_GIT:-}" ]; then
+  [ -x "${CLIO_BUNDLED_GIT}/libexec/git-core/git" ] || {
+    echo "build-gact-runtime: CLIO_BUNDLED_GIT=$CLIO_BUNDLED_GIT has no libexec/git-core/git" >&2
+    exit 1
+  }
+  echo "[build-gact-runtime] shipping prebuilt git from $CLIO_BUNDLED_GIT"
+  cp -R "$CLIO_BUNDLED_GIT" "$OUT/git"
+else
+  echo "[build-gact-runtime] building the bundled git"
+  "$SCRIPT_DIR/build-bundled-git.sh" "$OUT/git"
+fi
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size before prune: ${SIZE_BEFORE} MB"
@@ -163,6 +185,16 @@ if [ -d "$SITE_PKGS" ]; then
   # in-package tests/ trees in vendored deps (clio_agent ships none)
   find "$SITE_PKGS" -mindepth 2 -maxdepth 2 -type d \( -name tests -o -name test \) \
     -exec rm -rf {} + 2>/dev/null || true
+  # Files no run of CLIO reads (about 1,100 in 0.9.5.1): every one is another file
+  # to write, scan for malware and sign on install. Nested test suites (numpy's
+  # alone is about 490), the C/C++ headers for compiling against numpy or pyarrow,
+  # and the stdlib's IDLE and turtle demos. Same list in build-gact-runtime.ps1.
+  # Type stubs (.pyi) stay: globus_sdk reads its own at import, and griffe
+  # merges them into FastMCP tool docs.
+  find "$SITE_PKGS" -mindepth 3 -type d \( -name tests -o -name test \) -prune \
+    -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$SITE_PKGS/pyarrow/include" "$SITE_PKGS/numpy/_core/include"
+  rm -rf "$(dirname "$SITE_PKGS")/idlelib" "$(dirname "$SITE_PKGS")/turtledemo"
   # *.dist-info/RECORD is KEPT: the desktop upgrades this runtime in place
   # with `uv pip install`, and without RECORD uv cannot uninstall the old
   # version — stale modules and duplicate metadata survive the upgrade.
@@ -170,6 +202,32 @@ if [ -d "$SITE_PKGS" ]; then
   # Installer-hostile filenames (NSIS aborts on parens/brackets — the
   # litellm benchmark-data lesson from the 0.7.0 gact-tui release).
   rm -rf "$SITE_PKGS/litellm/proxy/guardrails/guardrail_hooks/litellm_content_filter/guardrail_benchmarks" || true
+  # Google's discovery documents for every Google API (107 MB in 0.9.5.1): CLIO builds
+  # only the Drive v3 client (gact/storage/drive_filesystem.py), read from this cache.
+  if [ -d "$SITE_PKGS/googleapiclient/discovery_cache/documents" ]; then
+    find "$SITE_PKGS/googleapiclient/discovery_cache/documents" -type f ! -name 'drive.v3.json' -delete
+    [ -f "$SITE_PKGS/googleapiclient/discovery_cache/documents/drive.v3.json" ] \
+      || { echo "build-gact-runtime: googleapiclient has no drive.v3.json to keep" >&2; exit 1; }
+  fi
+  # Codex's exec-server and code-mode-host helpers (126 MB raw, 31 MB of the macOS
+  # download): CLIO runs only `codex sandbox`, its macOS write fence, which was verified
+  # live to enforce without them. Linux keeps them until a Linux run proves the same.
+  CODEX_BIN="$SITE_PKGS/codex_cli_bin/bin"
+  if [ "$(uname -s)" = Darwin ] && [ -d "$CODEX_BIN" ]; then
+    [ -f "$CODEX_BIN/codex" ] \
+      || { echo "build-gact-runtime: codex_cli_bin has no codex binary to keep" >&2; exit 1; }
+    rm -f "$CODEX_BIN/codex-exec-server" "$CODEX_BIN/codex-code-mode-host"
+    for record in "$SITE_PKGS"/openai_codex_cli_bin-*.dist-info/RECORD; do
+      [ -f "$record" ] || continue
+      grep -v -E '^codex_cli_bin/bin/codex-(exec-server|code-mode-host),' "$record" >"$record.tmp"
+      mv "$record.tmp" "$record"
+    done
+  fi
+  # Playwright's Node.js (122 MB raw, 28 MB of the macOS download) is fetched, hash-checked,
+  # the first time the agent opens a browser (gact/browser/driver.py); same step on Windows.
+  "$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/stage_playwright_node.py" "$SITE_PKGS"
+  # pip, C/Cython build sources and dist-info markers, the same on every OS.
+  "$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/prune_runtime.py" "$SITE_PKGS"
   find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) -delete 2>/dev/null || true
   remaining="$(find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) | head -20)"
   if [ -n "$remaining" ]; then
@@ -203,23 +261,6 @@ test -n "$DOCUMENT_STACK"
 "$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/build_document_wheels.py" \
   --stack "$DOCUMENT_STACK" --out "$OUT/document-wheels" --uv "$(command -v uv)"
 
-# Prepare the real startup import graph in the release image, not on the
-# user's first launch. Compiling the entire distribution is both wasteful and
-# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
-# some optional provider paths exceed Windows' legacy path limit.
-echo "[build-gact-runtime] compiling portable startup bytecode"
-"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
-  --python-root "$OUT/python"
-COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
-if [ "${COMPILED:-0}" -eq 0 ]; then
-  echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
-  exit 1
-fi
-echo "[build-gact-runtime] prepared $COMPILED bytecode files"
-
-SIZE_AFTER="$(dir_size_mb "$OUT")"
-echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
-
 # --- 4. generic runtime manifest ----------------------------------------
 # `source` names the commit this runtime was built from and whether it is a
 # release tag: a CLIO built from any other commit deploys that commit to remote
@@ -237,6 +278,30 @@ cat >"$OUT/runtime.json" <<EOF
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
+
+# Prepare the real launch's bytecode in the release image, not on the user's
+# first launch: the startup graph, the first-party packages, the standard
+# library, and every module a real boot of this image imports (--launch-path
+# boots it, so it runs after runtime.json exists). Compiling all of
+# site-packages is both wasteful and invalid: some optional provider paths
+# exceed Windows' legacy path limit.
+echo "[build-gact-runtime] compiling portable startup bytecode"
+"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
+  --python-root "$OUT/python" --package clio_agent --package clio_kit --package clio_schemas \
+  --stdlib --launch-path
+COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
+if [ "${COMPILED:-0}" -eq 0 ]; then
+  echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
+  exit 1
+fi
+echo "[build-gact-runtime] prepared $COMPILED bytecode files"
+
+# The standard library's pure-Python modules import from pythonXY.zip, one file
+# instead of about 1,100 that every install writes (gact-tui#739).
+"$OUT/$PYBIN_REL" -I -B "$SCRIPT_DIR/zip_stdlib.py"
+
+SIZE_AFTER="$(dir_size_mb "$OUT")"
+echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
 
 # The one-shot upgrade repair writes a fingerprint marker next to Python.
 # Prepare it in the ORIGINAL image before macOS seals the app; booting only
@@ -267,6 +332,25 @@ echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.g
 "$RELOC/$PYBIN_REL" -I -B -m clio_agent.gact --help >/dev/null
 "$RELOC/$PYBIN_REL" -I -B -c 'from clio_kit import cli; cli()' --help >/dev/null
 "$RELOC/bin/uv" --version >/dev/null
+# The bundled git must work with no git on PATH and nothing inherited, through
+# the same resolver CLIO uses (it also supplies Linux's CA bundle).
+echo "[build-gact-runtime] sanity (relocated): bundled git ls-remote with an empty PATH"
+GIT_HOME="$(mktemp -d)"
+env -i HOME="$GIT_HOME" PATH=/var/empty "$RELOC/$PYBIN_REL" -I -B - <<'PY'
+from clio_agent.runtime.git_executable import resolve_git, run_git
+
+git = resolve_git()
+if git.source != "bundled":
+    raise SystemExit(f"build-gact-runtime: resolver chose {git.source} git {git.path}")
+run_git(
+    ["ls-remote", "https://github.com/iowarp/clio-agent-marketplace.git", "HEAD"],
+    check=True,
+    capture_output=True,
+    timeout=120,
+)
+print(f"[build-gact-runtime] bundled git OK: {git.path}")
+PY
+rm -rf "$GIT_HOME"
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.
 PORT=$((RANDOM % 20000 + 24000))

@@ -103,6 +103,16 @@ def _root(
     env: Mapping[str, str] | None = None,
     legacy: bool = True,
 ) -> Path:
+    if home is None and env is None:  # the process's own folders: once per access decision
+        from clio_agent.runtime.check_scope import once  # noqa: PLC0415 - leaf import
+
+        return once(("paths.root", role, legacy), lambda: _resolved_root(role, None, None, legacy))
+    return _resolved_root(role, home, env, legacy)
+
+
+def _resolved_root(
+    role: Role, home: Path | None, env: Mapping[str, str] | None, legacy: bool
+) -> Path:
     source = os.environ if env is None else env
     override_names = (f"CLIO_AGENT_{role.upper()}_DIR", "CLIO_AGENT_HOME", "CLIO_USER_DIR")
     explicit = next((source[name] for name in override_names if source.get(name, "").strip()), "")
@@ -175,6 +185,102 @@ def host_state_dir(env: Mapping[str, str] | None = None) -> Path:
 def user_cache_dir() -> Path:
     """Return the disposable Agent cache root."""
     return _root("cache")
+
+
+#: Longest cache root MCP environment builds may sit under on Windows. The default root
+#: (``%LOCALAPPDATA%\clio-agent\cache``) fits; a deep ``CLIO_AGENT_HOME`` does not, as uv's
+#: ``mcp-environments\<server>-<hash>\Lib\site-packages\...`` and ``archive-v0`` trees
+#: then pass MAX_PATH (WinError 206) on hosts without long-path support.
+WINDOWS_MCP_BUILD_ROOT_MAX = 48
+_WINDOWS_MCP_BUILD_DIR = "clio-m"
+#: Longest ``<config>\plugins`` kept in place on Windows: the deepest file of the shipped
+#: marketplace sits about 140 characters below the store root (snapshot + digest + repo).
+WINDOWS_PLUGIN_STORE_ROOT_MAX = 80
+_WINDOWS_PLUGIN_STORE_DIR = "clio-p"
+
+
+def _windows_short_path(long_root: Path, tag: str, env: Mapping[str, str] | None) -> Path:
+    """``%LOCALAPPDATA%\\<tag>\\<hash of long_root>``: one short folder per long root."""
+    source = os.environ if env is None else env
+    local = source.get("LOCALAPPDATA", "").strip()
+    base = Path(local) if local else Path.home() / "AppData" / "Local"
+    digest = hashlib.sha256(os.path.normcase(str(long_root)).encode("utf-8")).hexdigest()[:10]
+    return base / tag / digest
+
+
+def _windows_short_root(
+    long_root: Path, tag: str, env: Mapping[str, str] | None = None
+) -> Path | None:
+    """The short folder standing in for ``long_root``, or ``None`` when it is not shorter.
+
+    An ``owner.txt`` inside it names ``long_root``, the folder it stands in for.
+    """
+    short = _windows_short_path(long_root, tag, env)
+    if len(str(short)) >= len(str(long_root)):
+        return None
+    owner = short / "owner.txt"
+    if not owner.is_file():
+        try:
+            short.mkdir(parents=True, exist_ok=True)
+            owner.write_text(f"{long_root}\n", encoding="utf-8")
+            logger.info("windows_short_root long=%s short=%s", long_root, short)
+        except OSError as exc:  # its users create the folder themselves
+            logger.debug("short root owner record not written at %s: %r", owner, exc)
+    return short
+
+
+def mcp_build_cache_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return the root MCP server environments are built under (uv caches, venvs).
+
+    This is :func:`user_cache_dir` except on Windows when that root is longer than
+    :data:`WINDOWS_MCP_BUILD_ROOT_MAX`: then a short root keyed by the cache root,
+    ``%LOCALAPPDATA%\\clio-m\\<hash>``, keeps each instance's builds separate and
+    within MAX_PATH. An ``owner.txt`` inside it names the cache root it serves.
+    """
+    cache = _root("cache", env=env) if env is not None else user_cache_dir()
+    if _platform() != "windows" or len(str(cache)) <= WINDOWS_MCP_BUILD_ROOT_MAX:
+        return cache
+    return _windows_short_root(cache, _WINDOWS_MCP_BUILD_DIR, env) or cache
+
+
+def plugin_store_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return the default plugin store, ``<config>/plugins``, kept within MAX_PATH on Windows.
+
+    On Windows a ``<config>\\plugins`` longer than :data:`WINDOWS_PLUGIN_STORE_ROOT_MAX`
+    cannot hold a marketplace checkout (WinError 206), so a new store goes to
+    ``%LOCALAPPDATA%\\clio-p\\<hash>`` (``owner.txt`` names the folder it stands in for).
+    A store that already exists at ``<config>\\plugins`` stays there.
+    """
+    store = (_root("config", env=env) if env is not None else user_config_dir()) / "plugins"
+    if _platform() != "windows" or len(str(store)) <= WINDOWS_PLUGIN_STORE_ROOT_MAX:
+        return store
+    short = _windows_short_path(store, _WINDOWS_PLUGIN_STORE_DIR, env)
+    if not (short / "state.json").is_file() and (store / "state.json").is_file():
+        return store
+    return _windows_short_root(store, _WINDOWS_PLUGIN_STORE_DIR, env) or store
+
+
+#: Longest data root that keeps local managed services (``services\<host>\<name>``) in place
+#: on Windows: a SearXNG install's deepest file sits about 175 characters below it.
+WINDOWS_SERVICE_DATA_ROOT_MAX = 72
+_WINDOWS_SERVICE_DATA_DIR = "clio-s"
+
+
+def service_data_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the root this machine's managed services install under (``services\\...``).
+
+    This is :func:`user_data_dir` except on Windows when that root is longer than
+    :data:`WINDOWS_SERVICE_DATA_ROOT_MAX` (their environments pass MAX_PATH there): a
+    first install then goes to ``%LOCALAPPDATA%\\clio-s\\<hash>``, whose ``owner.txt``
+    names the data root. Services already installed under the data root stay there.
+    """
+    data = _root("data", env=env) if env is not None else user_data_dir()
+    if _platform() != "windows" or len(str(data)) <= WINDOWS_SERVICE_DATA_ROOT_MAX:
+        return data
+    short = _windows_short_path(data, _WINDOWS_SERVICE_DATA_DIR, env)
+    if not (short / "services").is_dir() and (data / "services").is_dir():
+        return data
+    return _windows_short_root(data, _WINDOWS_SERVICE_DATA_DIR, env) or data
 
 
 def server_state_dir() -> Path:

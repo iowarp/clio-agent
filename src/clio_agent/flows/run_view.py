@@ -45,6 +45,8 @@ def flow_run(
         "flow": content["flow"],
         "status": status,
         "depth": int(content.get("depth") or 0),
+        # Calls running at once are bounded by this and by their gather's limit.
+        "max_concurrency": int(content.get("max_concurrency") or 0),
         "root_handle": content.get("root_handle", handle),
         "entries": int(content.get("entries") or 0),
         "view": view,
@@ -59,6 +61,7 @@ def flow_run(
                 **({"returned_after_stop": True} if row.get("returned_after_stop") else {}),
                 # Calls started together (one ``gather``) share the first one's invocation.
                 **({"together": row["together"]} if row.get("together") else {}),
+                **({"gather_limit": row["gather_limit"]} if row.get("gather_limit") else {}),
             }
             for invocation, row in calls.items()
         ],

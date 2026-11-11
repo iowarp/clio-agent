@@ -113,6 +113,45 @@ def test_claude_code_support_installs_the_sdk_into_the_active_runtime(
     ]
 
 
+def test_claude_code_install_forgets_a_selection_cached_before_it(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A ``claude_no_cli`` selection cached before Install must not outlive it.
+
+    Desktop regression: the provider panel's refresh cached ``claude_no_cli``,
+    Install succeeded, and every ``POST .../claude_code/auth`` then failed 502
+    ("Claude Code runtime is unavailable") until the backend restarted.
+    """
+    from clio_agent.providers.components import client_binary
+
+    python = tmp_path / "python"
+    python.touch()
+    monkeypatch.setattr(
+        dependencies, "claude_code_requirement", lambda: "claude-agent-sdk==0.2.179"
+    )
+    availability = iter((False, False, False, True))
+    monkeypatch.setattr(dependencies, "_module_available", lambda _name: next(availability))
+    monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: "uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    stale = client_binary.ClientSelection(None, "claude_no_cli")
+    bundled = client_binary.ClientBinary(
+        path=str(tmp_path / "claude"), version="2.1.0", source="bundled"
+    )
+    selections = iter((stale, client_binary.ClientSelection(bundled, "claude_installed_not_found")))
+    monkeypatch.setattr(client_binary, "_select_claude", lambda: next(selections))
+    client_binary.reset_client_cache()
+    assert client_binary.claude_client().reason == "claude_no_cli"
+
+    assert dependencies.ensure_claude_code_support(python_executable=str(python)) is True
+
+    assert client_binary.claude_client().client == bundled
+    client_binary.reset_client_cache()
+
+
 class TestResolveExtraRequirements:
     """The package spec a provider install can ever run comes from CLIO's own
     declared extras (``pyproject.toml``), read fresh off installed metadata --
@@ -204,3 +243,91 @@ class TestEnsureProviderSupport:
     def test_refuses_a_provider_kind_with_no_registered_installer(self) -> None:
         with pytest.raises(dependencies.ProviderExtraNotInstallableError, match="openai"):
             dependencies.ensure_provider_support("openai")
+
+
+class TestSealedRuntimeOverlay:
+    """A sealed desktop runtime (a signed macOS app) never installs into itself:
+    provider support goes to the user-writable package overlay."""
+
+    def test_installs_into_the_overlay_pinned_to_the_runtime(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        from clio_agent.runtime import package_overlay  # noqa: PLC0415
+
+        overlay = tmp_path / "data" / "runtime-packages" / "key"
+        monkeypatch.setattr(package_overlay, "overlay_for", lambda _python: overlay)
+        monkeypatch.setattr(package_overlay, "prepend", lambda _directory: None)
+        availability = iter((False, False, True))
+        monkeypatch.setattr(dependencies, "_module_available", lambda _name: next(availability))
+        monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: "uv")
+        seen: dict[str, Any] = {}
+
+        def _fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            seen["command"] = command
+            constraints = Path(command[command.index("--constraint") + 1])
+            seen["pins"] = constraints.read_text(encoding="utf-8").split()
+            return subprocess.CompletedProcess(command, 0, "installed", "")
+
+        monkeypatch.setattr(dependencies, "_run_install_command", _fake_runner)
+
+        assert dependencies.ensure_provider_extra(
+            extra_name="argonne",
+            module_name="globus_sdk",
+            display_name="ALCF support",
+            python_executable="python",
+        )
+        command = seen["command"]
+        assert command[:5] == ["uv", "pip", "install", "--python", "python"]
+        assert command[command.index("--target") + 1] == str(overlay)
+        assert "--compile-bytecode" in command
+        assert command[-1] == "globus-sdk>=3.0.0"
+        assert overlay.is_dir()
+        import importlib.metadata as metadata  # noqa: PLC0415
+
+        assert f"pytest=={metadata.version('pytest')}" in seen["pins"]
+        assert not any(pin.startswith("globus-sdk==") for pin in seen["pins"])
+
+    def test_pip_fallback_also_targets_the_overlay(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: None)
+        overlay = tmp_path / "overlay"
+        constraints = tmp_path / "c.txt"
+        command = dependencies._install_command(
+            "python", ["x>=1"], target=overlay, constraints=constraints
+        )
+        assert command == [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            str(overlay),
+            "--constraint",
+            str(constraints),
+            "--upgrade",
+            "x>=1",
+        ]
+
+    def test_the_copilot_runtime_download_child_sees_the_overlay(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        from clio_agent.providers import support_record  # noqa: PLC0415
+        from clio_agent.providers.components import client_binary  # noqa: PLC0415
+        from clio_agent.runtime import package_overlay  # noqa: PLC0415
+
+        overlay = tmp_path / "overlay"
+        monkeypatch.setattr(package_overlay, "overlay_for", lambda _python: overlay)
+        monkeypatch.setattr(dependencies, "ensure_provider_extra", lambda **_kwargs: True)
+        monkeypatch.setattr(support_record, "record_support", lambda _kind: None)
+        monkeypatch.setattr(client_binary, "reset_client_cache", lambda: None)
+        calls: list[list[str]] = []
+
+        def _fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(dependencies, "_run_install_command", _fake_runner)
+        assert dependencies.ensure_copilot_support(python_executable="python") is True
+        (command,) = calls
+        assert command[:2] == ["python", "-c"]
+        assert repr(str(overlay)) in command[2] and "'copilot'" in command[2]
+        assert command[3:] == ["download-runtime"]

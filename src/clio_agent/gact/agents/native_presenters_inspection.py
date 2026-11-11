@@ -247,7 +247,9 @@ def weather_forecast(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[st
         )
     if weather.get("source"):
         blocks.append(_text("source", "Source", weather["source"]))
-    return _view(f"{len(daily)} forecast days", blocks, row, subject="location")
+    days = len(daily)
+    summary = f"{days} forecast {'day' if days == 1 else 'days'}"
+    return _view(summary, blocks, row, subject="location")
 
 
 def surface_inspection(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
@@ -265,7 +267,8 @@ def surface_inspection(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[
             )
         if not blocks:
             blocks.append(_text("empty", "Widgets", "No saved widgets in this conversation."))
-        return _view(f"{len(row['surfaces'])} widgets found", blocks, row)
+        found = len(row["surfaces"])
+        return _view(f"{found} {'widget' if found == 1 else 'widgets'} found", blocks, row)
     artifact = row.get("artifact") or {}
     title = artifact.get("title") or next(
         (
@@ -325,7 +328,8 @@ def surface_inspection(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[
             )
         )
     return _view(
-        f"{sum(bool(viewer.get('ready')) for viewer in viewers)} of {len(viewers)} views ready"
+        f"{sum(bool(viewer.get('ready')) for viewer in viewers)} of {len(viewers)} "
+        f"{'view' if len(viewers) == 1 else 'views'} ready"
         if viewers
         else "Widget inspected",
         blocks,
@@ -424,7 +428,9 @@ def goal_wait(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]
     if row.get("message"):
         blocks.append(_text("next", "Next step", row["message"]))
     return _view(
-        f"Waiting for {len(tasks)} tasks" if row.get("waiting") else "Tasks have settled",
+        f"Waiting for {len(tasks)} {'task' if len(tasks) == 1 else 'tasks'}"
+        if row.get("waiting")
+        else "Tasks have settled",
         blocks,
         row,
     )
@@ -448,6 +454,9 @@ def source_opened(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, 
         return _view("File available for analysis", blocks, row, subject="resource")
     entries = row.get("entries") or []
     for index, entry in enumerate(entries):
+        if entry.get("kind") == "file" and entry.get("size") is None:
+            # Google Docs and other exports have no size until they are read.
+            entry = {**entry, "size": "unknown until read"}
         blocks.append(
             _facts(
                 f"entry-{index}",

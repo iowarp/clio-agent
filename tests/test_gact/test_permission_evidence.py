@@ -14,7 +14,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.flows.context import FlowContext
-from clio_agent.gact import permission_timeout
 from clio_agent.gact.app import build_app
 from clio_agent.gact.permission_evidence import permission_identity, permission_receipts
 from clio_agent.gact.permission_gate import _make_permission_gate, resolve_permission
@@ -83,22 +82,37 @@ def test_permission_history_retains_timeout_then_human_grant_and_linked_refresh(
     assert len({row["receipt_id"] for row in rows.values()}) == 3
 
 
-def test_real_gate_captures_the_admitted_assignment_before_its_request_expires(
-    world: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_real_gate_captures_the_admitted_assignment_before_the_answer(world: Any) -> None:
+    """The receipt names the assignment admitted when the question was asked, however
+    long the person takes to answer (no question expires, CT13)."""
+    import threading
+    import time
+
     app, _client, sid, root = world
-    monkeypatch.setattr(permission_timeout, "PERMISSION_REQUEST_TIMEOUT_S", 0.02)
-    with active_turn_fixture(app, sid):
-        decision = _make_permission_gate(app)(
-            "external_fetch",
-            {"token": "do-not-copy-this-secret"},
-            context={"kind": "external_mcp", "annotations": {}},
-        )
-    assert decision == "deny"
+    decision: dict[str, Any] = {}
+
+    def ask() -> None:
+        with active_turn_fixture(app, sid):
+            decision["d"] = _make_permission_gate(app)(
+                "external_fetch",
+                {"token": "do-not-copy-this-secret"},
+                context={"kind": "external_mcp", "annotations": {}},
+            )
+
+    thread = threading.Thread(target=ask, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not any(
+        r.get("status") == "pending" for r in app.state.permissions.values()
+    ):
+        time.sleep(0.02)
+    (pid,) = [k for k, r in app.state.permissions.items() if r.get("status") == "pending"]
+    resolve_permission(app, pid, "deny")
+    thread.join(timeout=10)
+    assert decision["d"] == "deny"
     (receipt,) = permission_receipts(app, sid, root.handle)["receipts"]
     assert receipt["assignment_id"] == root.handle
-    assert receipt["decision_status"] == "timeout"
+    assert receipt["decision_status"] == "resolved"
     assert "do-not-copy-this-secret" not in json.dumps(receipt)
 
 

@@ -3,8 +3,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Command from './Command';
 
 /** Install one-liners. Source: install/README.md, install/install.sh, install/install.ps1. */
-const UNIX = 'curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash';
-const WINDOWS = 'irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex';
+const UNIX = 'curl -fsSL https://clio.iowarp.ai/install.sh | bash';
+const WINDOWS = 'irm https://clio.iowarp.ai/install.ps1 | iex';
 
 /**
  * Install-script tabs. Server-rendered on macOS / Linux; switches to the

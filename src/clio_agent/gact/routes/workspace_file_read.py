@@ -15,8 +15,14 @@ from clio_agent.runtime import trace
 from clio_agent.tools.file_policy import FileAccessPolicy
 
 
-def readable_workspace_file(app: FastAPI, workspace_id: str, path: str) -> Path:
-    """Resolve an existing file with the same ownership, redaction and size policy as previews."""
+def readable_workspace_file(
+    app: FastAPI, workspace_id: str, path: str, *, whole_file: bool = True
+) -> Path:
+    """Resolve an existing file with the same ownership, redaction and size policy as previews.
+
+    ``whole_file=False`` is for callers that read a bounded piece of the file (the HDF5
+    viewer's slices); they skip the whole-file size cap and bound each response instead.
+    """
 
     def refuse(status: int, code: str, message: str) -> NoReturn:
         raise HTTPException(
@@ -70,6 +76,8 @@ def readable_workspace_file(app: FastAPI, workspace_id: str, path: str) -> Path:
 
         if not policy.allow_symlinks and _has_symlink(target):
             refuse(403, "symlink_denied", "Symlink files are excluded")
+    if not whole_file:
+        return target
     try:
         max_bytes = FileAccessPolicy.from_mapping(os.environ).max_file_size_bytes
     except (ValueError, TypeError, OSError) as exc:

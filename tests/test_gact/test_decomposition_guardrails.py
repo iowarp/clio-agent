@@ -213,7 +213,46 @@ from clio_agent.gact.app import build_app
 # 420 -> 421: GET /v1/sessions/{sid}/science-log. 421 -> 422: POST
 # /v1/studies/{study}/table-query, the live study sources views read (Addendum B).
 # 422 -> 423: POST /v1/sessions/{sid}/mcp/{namespace}/reconnect, conversation MCP preparation.
-EXPECTED_ROUTE_METHOD_PAIRS = 423
+# 423 -> 424: GET /v1/plugins/local, private local folders and saved agent definitions.
+# 424 -> 431: the HDF5 viewer's h5grove data route (#1834), routes/workspace_h5grove.py:
+# GET+HEAD on its root plus GET meta, attr, data, stats and paths.
+# 431 -> 432: PUT /v1/sessions/{sid}/plan, the person's plan edit from the Work rail
+# (routes/schedules.py, with GET /v1/sessions/{sid}/work).
+# 432 -> 435: the plugin tools page (TD54), routes/tool_settings.py: GET and PUT
+# /v1/settings/tools and POST /v1/settings/tools/rules/remove.
+# 435 -> 439: the in-app browser, gact/browser/live.py: GET and POST
+# /v1/sessions/{sid}/browser/pages, POST .../pages/{page_id}/allow-host and
+# POST .../pages/{page_id}/trust-certificate (the live view is a WebSocket route).
+# 439 -> 431: the embedded ONLYOFFICE and Collabora editors are deleted (comments ledger
+# FB4): editor health, editor sessions, ONLYOFFICE content and callback, and Collabora
+# WOPI file info and contents, GET and POST each.
+# 431 -> 437: comment sessions (comments plan Phase 3), routes/comments.py: GET and POST
+# /v1/workspaces/{wid}/comment-targets, GET /v1/artifacts/{id}/threads, PUT
+# .../comment-drafts, POST /v1/sessions/{sid}/comment-sessions and GET
+# /v1/document-threads/{id}/crop.
+# 437 -> 435: the UI moved onto comment sessions, so GET /v1/artifacts/{id}/reviews and
+# POST /v1/sessions/{sid}/artifact-reviews are deleted (comments plan Phase 4).
+# 435 -> 434: GET /v1/html-renderer is deleted; HTML files open in the shared browser.
+# 434 -> 436: the LaTeX workspace (LaTeX plan), routes/latex.py: GET
+# /v1/artifacts/{id}/latex and GET /v1/artifacts/{id}/latex/locate.
+# 436 -> 439: streams and live sources (taskable run_code plan): GET /v1/streams/{id},
+# /v1/artifacts/{id}/table-query by latest, and the stream watch route.
+# 439 -> 440: streams in clio-core (CT44), routes/streams.py: POST
+# /v1/streams/{id}/table-query is deleted; GET /v1/streams/{id}/content and GET
+# /v1/streams/{id}/entries/{seq} read the entries as stored.
+# 440 -> 438: an agent's MCP prompts are commands over its own connection (direct
+# summoning plan), so GET /v1/mcp/servers/{sid}/prompts and POST .../prompts/get go.
+# 438 -> 439: GET /v1/sessions/{sid}/summon-targets (routes/commands.py), for @ summons.
+# 439 -> 438: develop merged in. POST /v1/sessions/{sid}/spotter/quarantine/lift
+# (#1927), a person's way out of a SPOTTER quarantine, adds one; the per-item attention
+# view and its CSV export (POST /v1/sessions/{sid}/messages/{mid}/attention/items[/export])
+# are removed, two: a person selects the part of the answer they want.
+# 438 -> 439: POST /v1/sessions/{sid}/move (routes/session_move.py) moves a conversation
+# to another workspace.
+# 439 -> 441: provider support installs run as background jobs (b9f393d0c): GET
+# /v1/providers/{provider_id}/install (routes/provider_catalog_routes.py) and GET
+# /v1/providers/support/installs (routes/provider_support.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 441
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -266,12 +305,13 @@ def test_build_app_registers_expected_route_count() -> None:
         ("/v1/sessions/{sid}/legacy-transcript", "GET"),
     } <= set(route_pairs)
     assert ("/v1/infrastructure/models/details", "GET") in route_pairs
-    assert ("/v1/html-renderer", "GET") in route_pairs
+    assert ("/v1/html-renderer", "GET") not in route_pairs
     assert ("/v1/infrastructure/targets/{target_id}/models/{job_id}/remove", "POST") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}/request", "POST") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}", "PATCH") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}/browse", "POST") in route_pairs
     assert ("/v1/storage/ssh/profiles", "GET") in route_pairs
+    assert ("/v1/plugins/local", "GET") in route_pairs
     pairs = len(route_pairs)
 
     assert pairs == EXPECTED_ROUTE_METHOD_PAIRS, (

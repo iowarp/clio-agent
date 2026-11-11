@@ -83,6 +83,31 @@ class SegmentPlane:
             run_span_id=run_span_id,
         )
 
+    def append_segments(
+        self,
+        session_id: str,
+        scope: str,
+        rows: List[tuple[str, Dict[str, Any], int]],
+        *,
+        step: int = -1,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> List[Any]:
+        """Append ``rows`` (kind, content, token count) in order as one write where the
+        store can (the folding store: one ``arc.op`` and one lane put); a plain store
+        appends each, as its records are rewritten whole on every append anyway."""
+        spans = {"turn_id": turn_id, "expert_span_id": expert_span_id, "run_span_id": run_span_id}
+        many = getattr(self._segments, "append_many", None)
+        if callable(many):
+            return many(session_id, scope, rows, step=step, **spans)
+        return [
+            self._segments.append(session_id, scope, cast(SegmentKind, kind), content,
+                                  step=step, token_count=tokens, turn_id=turn_id,
+                                  expert_span_id=expert_span_id, run_span_id=run_span_id)
+            for kind, content, tokens in rows
+        ]  # fmt: skip
+
     def insert_segment(
         self,
         session_id: str,

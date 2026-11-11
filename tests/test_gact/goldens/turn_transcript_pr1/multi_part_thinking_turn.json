@@ -213,7 +213,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "b655681f2029e7a47d2cea7fbd8a05bc9be82605375cdd7e2cdba404573af5fb",
+              "digest": "ef3ec0a0665aca10129a19f51b28dc60b1e286c64e461457a460cf209c838937",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -227,11 +227,11 @@
                 "visuals",
                 "delegation",
                 "document-runtime",
-                "fleet"
+                "fleet",
+                "streaming"
               ],
               "ref": "clio/standard"
             },
-            "commands": [],
             "execution_mode": "flow_react",
             "fanout": {},
             "kind": "dynamic_agent",
@@ -259,7 +259,9 @@
             },
             "skills": [
               "planning",
-              "update-models"
+              "task-protocol",
+              "update-models",
+              "live-status"
             ],
             "source": "plugin",
             "structured_outputs": {},
@@ -275,12 +277,16 @@
               "resume_agent",
               "restart_agent",
               "ask_user",
+              "plan_enter",
+              "plan_update",
               "plan_exit",
               "write_todos",
               "create_artifact",
               "raise_alert_card",
               "recall_context",
               "load_skill",
+              "search_tools",
+              "run_code",
               "set_goal",
               "wait_for",
               "goal_status",
@@ -325,7 +331,10 @@
               "prepare_document",
               "list_models",
               "usage",
-              "refresh_provider_models"
+              "refresh_provider_models",
+              "open_stream",
+              "read_stream",
+              "stop_stream"
             ]
           },
           "stream_source": "live"

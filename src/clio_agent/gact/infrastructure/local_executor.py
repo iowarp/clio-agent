@@ -113,13 +113,25 @@ def local_environment(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def local_program(program: str) -> str:
+    """The executable a CLIO-generated local command names, with ``python3`` as CLIO's own.
+
+    A bundled runtime's interpreter directory may hold only ``python3.X``, and a bare
+    ``python3`` then falls through ``PATH`` to ``/usr/bin/python3``. On a Mac without the
+    Command Line Tools that is a stub which opens the "Install Command Line Developer
+    Tools" dialog instead of running anything.
+    """
+
+    return sys.executable if program == "python3" and sys.executable else program
+
+
 async def run_local(spec: CommandSpec, on_output: OutputSink | None = None) -> CommandResult:
     """Run ``spec`` locally; stream chunks to ``on_output`` on the event loop."""
 
     loop = asyncio.get_running_loop()
     try:
         process = subprocess.Popen(
-            [spec.program, *spec.args],
+            [local_program(spec.program), *spec.args],
             env=local_environment(),
             stdin=subprocess.PIPE if spec.stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -187,6 +199,7 @@ __all__ = [
     "OutputSink",
     "bounded",
     "local_environment",
+    "local_program",
     "run_local",
     "tcp_reachable",
 ]

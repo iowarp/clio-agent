@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 import clio_agent.arc.clio_core_liveness as clio_core_liveness
+from clio_agent.arc.clio_core_async_ops import TagIds
 from clio_agent.arc.clio_core_liveness import (
     RPC_STALLED_REASON,
     ClioCoreRuntimeLostError,
@@ -71,6 +72,27 @@ class _RecordingClioCore:
         return object()
 
 
+class _NotFound:
+    """A completed native future with GetBlobSize's "no such blob" return code."""
+
+    def done(self) -> bool:
+        return True
+
+    def wait(self, _max_sec: float = -1.0) -> int:
+        return 1
+
+
+class _RecordingClient:
+    """The async client side: a read's size probe is a GIL-free ``AsyncGetBlobSize``."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def AsyncGetBlobSize(self, _tag_id, _name):  # noqa: N802 - mirrors the native API
+        self._calls.append("AsyncGetBlobSize")
+        return _NotFound()
+
+
 class _SentinelClioCore:
     """A fake native module that EXPLODES if reached — the gate must block first."""
 
@@ -90,7 +112,8 @@ def _bare_clio_core_store(cte, *, probe, ttl_s=0.0, reconnect=None) -> ClioCoreS
     """
     store = ClioCoreStore.__new__(ClioCoreStore)
     store._cte = cte
-    store._client = object()
+    store._client = _RecordingClient(getattr(cte, "calls", []))
+    store._tag_ids = TagIds(cte)
     store._config_path = ""
     store._log_level = "error"
     store._gate = LivenessGate(config_path="", probe=probe, ttl_s=ttl_s)
@@ -108,8 +131,9 @@ def test_healthy_store_op_passes_through_to_native():
     """A live probe lets the op reach the native binding (baseline behaviour)."""
     cte = _RecordingClioCore()
     store = _bare_clio_core_store(cte, probe=lambda _port: True)
-    assert store.get("conversations", "s1") is None  # native GetBlobSize == 0
-    assert cte.calls == ["Tag(conversations)", "GetBlobSize"]  # native WAS reached
+    assert store.get("conversations", "s1") is None  # native GetBlobSize: not found
+    # The kind's tag id is resolved once, then the size probe is the async RPC.
+    assert cte.calls == ["Tag(conversations)", "GetTagId", "AsyncGetBlobSize"]
 
 
 # --------------------------------------------------------------------------- #
@@ -442,3 +466,21 @@ def test_arc_memory_propagates_quarantine_loudly_without_fallback(tmp_path):
     assert format_error_response(exc.value)["error"] == "arc_runtime_lost"
     assert arc._store is store  # no silent LocalFS fallback
     assert store._gate.quarantined is True
+
+
+def test_the_store_trusts_a_probe_for_the_configured_ttl(monkeypatch) -> None:
+    """The store gate honors ``arc.clio_core.liveness_ttl_s``.
+
+    It was built with a literal ``ttl_s=0.0``, so every store op opened a TCP
+    connection to the daemon under the gate lock (P7, 2026-11-02: about a fifth of the
+    server's active time). SABOTAGE: restore ``ttl_s=0.0`` in ``ClioCoreStore`` and the
+    TTL reads 0.
+    """
+    import uuid
+
+    from clio_agent.arc.storage import make_arc_store
+
+    monkeypatch.setenv("CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S", "7.5")
+    store = make_arc_store(backend="cte", namespace=f"ttl-{uuid.uuid4().hex[:10]}")
+    assert isinstance(store, ClioCoreStore)
+    assert store._gate.status()["ttl_s"] == 7.5

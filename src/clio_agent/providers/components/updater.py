@@ -42,7 +42,6 @@ import sys
 import tempfile
 import threading
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -51,8 +50,10 @@ from typing import Any, Literal
 
 import httpx
 
+from clio_agent.file_urls import file_url_path
 from clio_agent.providers.components.pypi import RELEASES, ReleaseLookup, WheelFile
 from clio_agent.providers.components.registry import ProviderComponents, components_for
+from clio_agent.runtime import package_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,9 @@ def download_wheel(wheel: WheelFile, directory: Path) -> Path:
     parsed = urllib.parse.urlparse(wheel.url)
     try:
         if parsed.scheme == "file":
-            source = Path(urllib.request.url2pathname(parsed.path))
+            source = file_url_path(wheel.url)
+            if source is None:
+                raise OSError(f"not a local file URL: {wheel.url}")
             with source.open("rb") as src, target.open("wb") as dst:
                 for chunk in iter(lambda: src.read(1 << 20), b""):
                     digest.update(chunk)
@@ -179,10 +182,14 @@ def _tail(result: subprocess.CompletedProcess[str]) -> str:
 
 # --- scripts run inside the TARGET interpreter (standard library only) ------
 
+# The first distribution on sys.path wins, as at import: with a package overlay a
+# component it updated shadows the runtime's own copy.
 _FREEZE_SCRIPT = (
-    "import importlib.metadata as m, json; "
-    "print(json.dumps(sorted({(d.metadata['Name'] or '').lower().replace('_','-'): d.version "
-    "for d in m.distributions() if d.metadata['Name']}.items())))"
+    "import importlib.metadata as m, json; out = {}\n"
+    "for d in m.distributions():\n"
+    "    if d.metadata['Name']: "
+    "out.setdefault(d.metadata['Name'].lower().replace('_','-'), d.version)\n"
+    "print(json.dumps(sorted(out.items())))"
 )
 
 _IN_USE_SCRIPT = (
@@ -214,10 +221,17 @@ _RECOMPILE_SCRIPT = (
     "sys.exit(0 if ok else 4)"
 )
 
+# With an overlay (argv[3]) it may hold one copy, which shadows the runtime's;
+# without one the environment must hold exactly one.
 _VERSION_SCRIPT = (
     "import importlib, importlib.metadata as m, json, sys\n"
     "expected = json.loads(sys.argv[1]); modules = json.loads(sys.argv[2])\n"
-    "found = {n: sorted({d.version for d in m.distributions(name=n)}) for n in expected}\n"
+    "overlay = json.loads(sys.argv[3]) if len(sys.argv) > 3 else None\n"
+    "def versions(n):\n"
+    "    if overlay is None: return sorted({d.version for d in m.distributions(name=n)})\n"
+    "    local = sorted({d.version for d in m.distributions(name=n, path=overlay)})\n"
+    "    return local or [m.version(n)]\n"
+    "found = {n: versions(n) for n in expected}\n"
     "for mod in modules: importlib.import_module(mod)\n"
     "print(json.dumps(found))\n"
     "sys.exit(0 if all(found[n] == [v] for n, v in expected.items()) else 3)"
@@ -239,6 +253,8 @@ class UpdateEnvironment:
         record_support: Records a finished update's versions as the floor the
             next runtime must keep (:func:`clio_agent.providers.support_record.
             record_support`); ``None`` for an environment that is not CLIO's own.
+        package_overlay: Where updates go for a sealed desktop runtime
+            (:mod:`clio_agent.runtime.package_overlay`); ``None`` updates in place.
     """
 
     python: str = field(default_factory=lambda: sys.executable)
@@ -248,6 +264,14 @@ class UpdateEnvironment:
     verify_provider: Callable[[str, str], VerifyOutcome] | None = None
     spec: ProviderComponents | None = None
     record_support: Callable[[str, dict[str, str]], object] | None = None
+    package_overlay: Path | None = None
+
+
+def _script(env: UpdateEnvironment, script: str, *args: str) -> list[str]:
+    """``python -c script args`` in the target, with its package overlay active."""
+    if env.package_overlay is not None:
+        script = package_overlay.activation_prelude(env.package_overlay) + script
+    return [env.python, "-c", script, *args]
 
 
 def verify_provider_in_child(python: str, provider_kind: str) -> VerifyOutcome:
@@ -276,12 +300,23 @@ def _uv_for(python: str) -> str | None:
 
 
 def install_command(
-    python: str, constraints: Path, distributions: tuple[str, ...], wheels: list[Path]
+    python: str,
+    constraints: Path,
+    distributions: tuple[str, ...],
+    wheels: list[Path],
+    target: Path | None = None,
 ) -> list[str]:
-    """The installer argv: uv when available (the runtime's own), else pip."""
+    """The installer argv: uv when available (the runtime's own), else pip.
+
+    ``target`` installs into a package overlay instead of the runtime itself.
+    """
+    placement = ["--target", str(target)] if target is not None else []
     uv = _uv_for(python)
     if uv:
-        command = [uv, "pip", "install", "--python", python, "--constraint", str(constraints)]
+        command = [uv, "pip", "install", "--python", python, *placement]
+        if target is not None:
+            command.append("--compile-bytecode")
+        command += ["--constraint", str(constraints)]
         for name in distributions:
             command += ["--reinstall-package", name]
         return [*command, *map(str, wheels)]
@@ -290,6 +325,7 @@ def install_command(
         "-m",
         "pip",
         "install",
+        *placement,
         "--constraint",
         str(constraints),
         "--force-reinstall",
@@ -396,7 +432,7 @@ def _check(
         )
     job.to_versions = targets
     if os.name == "nt":
-        result = env.run([env.python, "-c", _IN_USE_SCRIPT, json.dumps(list(spec.distributions))])
+        result = env.run(_script(env, _IN_USE_SCRIPT, json.dumps(list(spec.distributions))))
         in_use = json.loads(result.stdout or "[]") if result.returncode == 0 else []
         if in_use:
             raise UpdateFailed(
@@ -412,7 +448,7 @@ def _installed_in(env: UpdateEnvironment, spec: ProviderComponents) -> dict[str,
 
 
 def _freeze(env: UpdateEnvironment) -> dict[str, str]:
-    result = env.run([env.python, "-c", _FREEZE_SCRIPT])
+    result = env.run(_script(env, _FREEZE_SCRIPT))
     if result.returncode != 0:
         raise UpdateFailed("environment_unreadable", _tail(result))
     return dict(json.loads(result.stdout))
@@ -442,9 +478,24 @@ def _install(
         f"{name}=={version}" for name, version in frozen.items() if name not in spec.distributions
     )
     constraints.write_text("\n".join(keep) + "\n", encoding="utf-8")
-    result = env.run(install_command(env.python, constraints, spec.distributions, wheels))
+    overlay = env.package_overlay
+    if overlay is not None:
+        overlay.mkdir(parents=True, exist_ok=True)
+    result = env.run(
+        install_command(env.python, constraints, spec.distributions, wheels, target=overlay)
+    )
     if result.returncode != 0:
         raise UpdateFailed("install_failed", _tail(result))
+    if overlay is not None:
+        # uv compiled the overlay; a recompile would find (and rewrite) the
+        # sealed runtime's copy whenever the overlay no longer shadows it.
+        runtime = env.run([env.python, "-c", _FREEZE_SCRIPT])  # the runtime alone
+        if runtime.returncode != 0:
+            raise UpdateFailed("environment_unreadable", _tail(runtime))
+        package_overlay.prune_duplicates(overlay, dict(json.loads(runtime.stdout)))
+        if _is_this_interpreter(env.python):
+            package_overlay.prepend(overlay)  # new .pth files, for this process's imports
+        return
     recompiled = env.run([env.python, "-c", _RECOMPILE_SCRIPT, json.dumps(list(spec.modules))])
     if recompiled.returncode != 0:
         raise UpdateFailed("bytecode_compile_failed", _tail(recompiled))
@@ -453,8 +504,15 @@ def _install(
 def _verify_versions(
     env: UpdateEnvironment, spec: ProviderComponents, expected: dict[str, str]
 ) -> None:
+    overlay = [str(env.package_overlay)] if env.package_overlay is not None else []
     result = env.run(
-        [env.python, "-c", _VERSION_SCRIPT, json.dumps(expected), json.dumps(list(spec.modules))]
+        _script(
+            env,
+            _VERSION_SCRIPT,
+            json.dumps(expected),
+            json.dumps(list(spec.modules)),
+            *([json.dumps(overlay)] if overlay else []),
+        )
     )
     if result.returncode != 0:
         raise UpdateFailed(
@@ -520,13 +578,18 @@ def _rollback(
     job.changed = False
 
 
+def _is_this_interpreter(python: str) -> bool:
+    try:
+        return os.path.samefile(python, sys.executable)
+    except OSError:
+        return False
+
+
 def _loaded_here(env: UpdateEnvironment, spec: ProviderComponents) -> bool:
     """Whether THIS process imported the group's old code (it keeps it until restart)."""
-    try:
-        same = os.path.samefile(env.python, sys.executable)
-    except OSError:
-        same = False
-    return same and any(module in sys.modules for module in spec.modules)
+    return _is_this_interpreter(env.python) and any(
+        module in sys.modules for module in spec.modules
+    )
 
 
 #: The process-wide updater the routes use.

@@ -17,6 +17,7 @@ from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
+from clio_agent.gact.permission_timeout import REASON_PERMISSION_CANCELLED
 from clio_agent.gact.question_surface import question_row
 from clio_agent.gact.routes.interaction_surface_projection import (
     _latest_action_record as _latest_action_record,
@@ -35,6 +36,7 @@ from clio_agent.gact.routes.session_question_helpers import (
     answer_question_response,
     question_surface_ids,
 )
+from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS, allows, offered
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.types import (
@@ -168,13 +170,16 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         "computer": platform.node(),
         "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
     }
-    status: Literal["pending", "answered", "cancelled"] = "pending"
-    if row.get("status") != "pending":
-        status = (
-            "answered"
-            if row.get("action") in {"allow", "allow_session", "allow_workspace"}
-            else "cancelled"
-        )
+    status: Literal["pending", "answered", "denied", "cancelled", "expired"] = "pending"
+    if row.get("status") == "timeout":
+        status = "expired"
+    elif row.get("status") != "pending":
+        if allows(row.get("action")):
+            status = "answered"
+        elif row.get("reason") == REASON_PERMISSION_CANCELLED:
+            status = "cancelled"  # the call was cancelled before anyone answered
+        else:
+            status = "denied"
     return PendingInteraction(
         id=f"permission:{row.get('id', '')}",
         kind="permission",
@@ -205,12 +210,9 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
             "tool_call": dict(tool_call),
             "execution": execution,
             **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
+            **({"script": row["script"]} if isinstance(row.get("script"), Mapping) else {}),
         },
-        actions=(
-            list(row.get("actions") or ["allow", "deny", "allow_session", "allow_workspace"])
-            if status == "pending"
-            else []
-        ),
+        actions=(list(row.get("actions") or STANDARD_ANSWERS) if status == "pending" else []),
     )
 
 
@@ -345,6 +347,12 @@ def _question_from_interaction_id(app: FastAPI, identity: str) -> UserQuestion |
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
     """Render a common Question through the shipped interaction contract."""
     bundle = question.metadata.get("question_bundle")
+    invocation = str(question.metadata.get("invocation_id") or "")
+    if not invocation and question.source == "ask_user":
+        # ask_user records its Question under the asking tool call's id, which links
+        # the waiting call to this interaction.
+        task = app.state.task_history.task_snapshot(question.task_handle or question.id)
+        invocation = str(getattr(task, "invocation_id", "") or "")
     return PendingInteraction(
         id="question:" + question.id,
         kind="question",
@@ -361,7 +369,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         source=PendingInteractionSource(
             protocol="mcp" if question.source.startswith("mcp") else "native",
             tool_name=question.source,
-            invocation_id=str(question.metadata.get("invocation_id") or ""),
+            invocation_id=invocation,
             surface_id=str(question.metadata.get("a2ui_surface_id") or ""),
         ),
         created_at=question.created_at,
@@ -603,7 +611,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             if permission.get("status") != "pending":
                 raise _error(409, "interaction_resolved", "interaction is already resolved")
             action = request.action
-            if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
+            if not offered(permission, action):
                 raise _error(422, "validation_error", "permission response action is invalid")
             if permission.get("kind") == "folder_access" and action not in permission["actions"]:
                 raise _error(422, "validation_error", "Choose Deny or Allow for workspace")

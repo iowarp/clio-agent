@@ -1,7 +1,8 @@
 """Usage counters for memory documents and skills (``memory_usage`` records).
 
 Each subject -- ``memory/<document name>`` or ``skill/<plugin>/<skill>`` -- counts how
-often it was ``loaded`` (in a session's memory snapshot or skill index), ``read``
+many sessions ``loaded`` it (in the session's memory snapshot or skill index, once per
+session however many turns show it), ``read``
 (``memory_read``, or ``load_skill``), and ``read_in_success`` (read in a turn that
 completed and has no negative rating), plus ``last_read``. Counters are their own kind
 so updating one never re-tokenizes a document.
@@ -58,6 +59,7 @@ class UsageCounters:
     def __init__(self, store: ARCStore) -> None:
         self._store = store
         self._turns: dict[str, _Turn] = {}
+        self._shown: set[tuple[str, str]] = set()  # (session, subject) counted as loaded
         self._buffer_lock = threading.Lock()
         self._write_lock = threading.Lock()
 
@@ -66,6 +68,18 @@ class UsageCounters:
         with self._buffer_lock:
             buffered = self._turns.setdefault(turn, _Turn())
             getattr(buffered, event)[subject] += 1
+
+    def first_shown(self, session: str, subject: str) -> bool:
+        """Whether ``session`` shows ``subject`` for the first time (in this process).
+
+        The skill index is composed every turn; counting it each time wrote two records
+        per listed skill at every turn's end (100 puts a turn on X2, 2026-11-04).
+        """
+        with self._buffer_lock:
+            if (session, subject) in self._shown:
+                return False
+            self._shown.add((session, subject))
+            return True
 
     def reads(self, turn: str) -> tuple[str, ...]:
         """Subjects ``turn`` has read so far."""

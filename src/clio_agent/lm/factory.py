@@ -97,10 +97,15 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    from clio_agent.lm.pool_liveness import install_pool_liveness  # noqa: PLC0415
+
+    install_pool_liveness()  # pooled connections stay reusable past fd 1024
     if config.provider == "codex":
         return _record_identity(_codex_direct_lm(config), config)
     if config.provider == "claude_code":
         return _record_identity(_claude_code_lm(config), config)
+    if config.provider == "copilot":
+        return _record_identity(_copilot_lm(config), config)
     # A blank LM Studio model is discovered first: when nothing serves it, the call
     # fails here, before the LM stack (litellm, ~100 MB resident once imported) loads
     # for a model that cannot run -- e.g. the idle background memory pass.
@@ -150,6 +155,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     lm._clio_tool_result_media = (
         "native" if _resolved_litellm_prefix(config) == "anthropic" else "user_message"
     )
+    # The Messages API caches only what a block mark covers: mark the growing history.
+    lm._clio_cache_history = _resolved_litellm_prefix(config) == "anthropic"
     # These stateless chat requests propose local function calls; the loop
     # executes them only after receiving a complete response. SDK/native-tool
     # engines retain their own recovery policy.
@@ -167,7 +174,7 @@ def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
     try:
         lm._clio_provider_id = provider_id
         lm._clio_provider_config = replace(config, provider_options=dict(config.provider_options))
-        lm._clio_reasoning_fallback = provider_id not in {"codex", "claude_code"}
+        lm._clio_reasoning_fallback = provider_id not in {"codex", "claude_code", "copilot"}
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
     from clio_agent.lm.resources import record_created_lm  # noqa: PLC0415
@@ -196,12 +203,13 @@ def _claude_code_lm(config: LMProviderConfig) -> Any:
         AsyncClaudeCodeEngine,
         ClaudeCodeEngine,
     )
+    from clio_agent.providers.claude_code_options import with_output_cap  # noqa: PLC0415
 
     if not config.model.strip():
         raise ValueError("No model configured for LM provider 'claude_code'")
     bare = _claude_code_bare_model(config)
     extras = build_request_kwargs(config)
-    thinking = extras.pop("claude_code_thinking", None)
+    thinking = with_output_cap(extras.pop("claude_code_thinking", None), config.max_tokens)
     generation = {k: v for k, v in extras.items() if not k.startswith("claude_code_")}
     if config.max_tokens:
         generation["max_tokens"] = config.max_tokens
@@ -216,6 +224,48 @@ def _claude_code_lm(config: LMProviderConfig) -> Any:
         **generation,
     )
     lm._clio_tool_result_media = "native"  # the engine sends tool-result media natively
+    return lm
+
+
+def _copilot_bare_model(config: LMProviderConfig) -> str:
+    """The Copilot model id without the transport prefix a persisted value may carry."""
+    return config.model.removeprefix("copilot/")
+
+
+def _copilot_lm(config: LMProviderConfig) -> Any:
+    """GitHub Copilot: a ``dspy.LM`` on the Copilot SDK engine pair.
+
+    The reasoning effort is a per-session SDK option, so it lives on the engine
+    (part of the session settings); the other generation kwargs stay on the LM.
+    """
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
+    from clio_agent.lm.policy import lm_retries  # noqa: PLC0415
+    from clio_agent.providers.copilot.engine import (  # noqa: PLC0415
+        AsyncCopilotEngine,
+        CopilotEngine,
+    )
+
+    if not config.model.strip():
+        raise ValueError("No model configured for LM provider 'copilot'")
+    bare = _copilot_bare_model(config)
+    extras = build_request_kwargs(config)
+    effort = extras.pop("copilot_reasoning_effort", None)
+    generation = {k: v for k, v in extras.items() if not k.startswith("copilot_")}
+    if config.max_tokens:
+        generation["max_tokens"] = config.max_tokens
+    lm = dspy.LM(
+        f"copilot/{bare}",
+        engine=CopilotEngine(bare, reasoning_effort=effort),
+        async_engine=AsyncCopilotEngine(bare, reasoning_effort=effort),
+        cache=False,
+        num_retries=lm_retries(),
+        model_type="chat",
+        callbacks=[LM_CALL_TRACE],
+        **generation,
+    )
+    lm._clio_tool_result_media = "native"  # images and PDFs ride as SDK blob attachments
     return lm
 
 
@@ -339,6 +389,8 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
         return f"{_CODEX_LITELLM_PREFIX}/{_codex_bare_model(config)}"  # the engine LM's model
     if config.provider == "claude_code":
         return f"claude_code/{_claude_code_bare_model(config)}"  # the engine LM's model
+    if config.provider == "copilot":
+        return f"copilot/{_copilot_bare_model(config)}"  # the engine LM's model
     return f"{_resolved_litellm_prefix(config)}/{config.model}"
 
 

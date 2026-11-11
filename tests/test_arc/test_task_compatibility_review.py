@@ -16,9 +16,11 @@ from clio_agent.gact import context
 from clio_agent.gact.agents import clio_react_record
 from clio_agent.gact.assignment_evidence import select_assignment_evidence
 from clio_agent.gact.builtin_boundary import BuiltinBoundary
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
+from tests._result_room import pin_result_room
 from tests.test_arc.test_assignment_evidence_contracts import evidence_children
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_arc.test_task_observation_compatibility import (
@@ -55,7 +57,7 @@ async def test_first_assignment_pins_evidence_before_an_interrupted_acceptance(
             raise RuntimeError("Lost reply after the first confirmed assignment observation")
 
     monkeypatch.setattr(history, "record_snapshot", interrupt)
-    before = len(app.state.sessions.list())
+    before = len(app.state.sessions.select(PageQuery(archived=None)))
     arguments: dict[str, Any] = {
         "launch_context": {"input_task_refs": [pin.model_dump(mode="json") for pin in pins]}
     }
@@ -63,7 +65,7 @@ async def test_first_assignment_pins_evidence_before_an_interrupted_acceptance(
         await owner.spawn(caller, "Resilient assignment", "critic", "resilient", **arguments)
     accepted = await owner.spawn(caller, "Resilient assignment", "critic", "resilient", **arguments)
     assert accepted["accepted"] is True and accepted["handle"] == recorded[0]
-    assert len(app.state.sessions.list()) == before + 1
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before + 1
     pending = await asyncio.to_thread(history.pending_mail, accepted["session_id"])
     assert [item.id for item in pending] == ["assignment:" + accepted["handle"]]
     await owner.recovery.drain()
@@ -101,7 +103,7 @@ async def test_pattern_matches_logical_output_across_a_remaining_page_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app, owner, root = await create_environment(arc, tmp_path)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "7")
+    pin_result_room(monkeypatch, 7)
     first = await asyncio.to_thread(running_shell, owner.history, root, "first")
     second = await asyncio.to_thread(running_shell, owner.history, root, "second")
     first = await asyncio.to_thread(append_output, owner.history, first, "12345")
@@ -142,7 +144,7 @@ async def test_truncated_match_continuation_keeps_budget_and_does_not_repeat_the
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app, owner, root = await create_environment(arc, tmp_path)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "7")
+    pin_result_room(monkeypatch, 7)
     task = await asyncio.to_thread(running_shell, owner.history, root, "shell")
     task = await asyncio.to_thread(append_output, owner.history, task, "BBB")
     task = await asyncio.to_thread(append_output, owner.history, task, "A" * 9)
@@ -286,7 +288,9 @@ async def test_transcript_injection_matches_the_committed_rendered_delegation(
             assert isinstance(rendered, dict)
             assert emitted == [rendered["text"]]
             assert emitted[0].startswith("Critique the original research")
-            assert "get_task_result" in emitted[0] and "cursor" in emitted[0]
+            # The delegation names the handle to read; no paging cursor (#1844).
+            assert '"tool": "get_task_result", "arguments": {"handle":' in emitted[0]
+            assert "cursor" not in emitted[0]
         finally:
             context.reset(token)
 

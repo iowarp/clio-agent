@@ -667,17 +667,17 @@ def build_loop_wakeup_tool() -> Any:
         reason: str = "",
         stop: bool = False,
     ) -> dict:
-        """Continue OR end this session's autonomous loop (self-paced iteration).
+        """Continue or end this session's autonomous loop (self-paced iteration).
 
-        Call this at the END of a loop iteration to decide what happens next:
-        - to KEEP looping, pass ``delay_seconds`` (how long to wait before the next
+        Call this at the end of a loop iteration to decide what happens next:
+        - to keep looping, pass ``delay_seconds`` (how long to wait before the next
           iteration; clamped to [60, 3600] — a shorter/longer value is clamped with a
           logged reason) and the ``prompt`` to re-run (defaults to the loop's prompt).
-        - to END the loop, pass ``stop=True``. Ending is EXPLICIT — the loop does not stop
-          just because you go quiet: the next interval is armed automatically.
+        - to end the loop, pass ``stop=True``. Ending takes this call: the loop does not
+          stop because you go quiet, since the next interval is armed automatically.
 
         ``reason`` is a short note logged to the trace (why you continued/stopped). If no
-        loop is active yet, a non-stop call STARTS one with default bounds. The loop also
+        loop is active yet, a non-stop call starts one with default bounds. The loop also
         stops on its own when a typed bound trips: max iterations, or the wall-clock /
         token / cost budget. Returns ``{loop_id, next_fire_at, stopped}``.
         """
@@ -689,6 +689,7 @@ def build_loop_wakeup_tool() -> Any:
     return native_tool(
         loop_wakeup,
         name="loop_wakeup",
+        callers="direct",
         presentation="loop",
         domain="autonomy",
         desc=loop_wakeup.__doc__,
@@ -708,7 +709,7 @@ def build_loop_wakeup_tool() -> Any:
             },
             "stop": {
                 "type": "boolean",
-                "description": "True to END the loop now (explicit self-termination).",
+                "description": "True to end the loop now.",
             },
         },
     )

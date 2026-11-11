@@ -98,6 +98,10 @@ def session_to_v3(session: Any) -> dict[str, Any]:
         public_metadata["composer_queue_paused"] = bool(metadata.get("composer_queue_paused", True))
     if MARKS_KEY in metadata:
         public_metadata[MARKS_KEY] = saved_message_marks(metadata)
+    # The composer greys out and shows the quarantine card from this record.
+    quarantine = metadata.get("spotter_quarantine")
+    if isinstance(quarantine, Mapping) and quarantine.get("status") == "active":
+        public_metadata["spotter_quarantine"] = dict(quarantine)
     origin = saved_fork_origin(metadata)
     if origin and origin["session_id"] == getattr(session, "parent_session_id", ""):
         public_metadata[FORK_ORIGIN_KEY] = origin

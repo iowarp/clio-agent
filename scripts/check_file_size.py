@@ -8,15 +8,20 @@ gact decomposition (iowarp/clio-agent#714, #767) has landed. It walks
 * A file **not** in :data:`RATCHET_BASELINE` may not exceed
   :data:`DEFAULT_MAX_LINES` -- a brand-new god-file fails the check.
 * A file **in** :data:`RATCHET_BASELINE` (the known-oversized modules still
-  awaiting decomposition) may not exceed its *recorded* line count -- it can
-  shrink but never grow past where it is today.
+  awaiting decomposition) must match its *recorded* line count exactly:
+
+  - Grow past it ("regressed") -- fails.
+  - Sit below it ("padded") -- fails. A baseline above the real count is
+    headroom a later commit could spend without review, and it is how a single
+    commit can grow a file and raise its baseline together (#1203).
+  - Point at a file that no longer exists ("stale") -- fails, so nothing can
+    later appear at that path and inherit the old allowance.
 
 The baseline may only ratchet DOWN (house precedent:
-``check_silent_fallbacks.py::BASELINE_TOTAL``). When a file is brought under
-the cap, or merely shrinks, the check reports the ratchet-down and the same PR
-that shrank it updates :data:`RATCHET_BASELINE` (lowering the number, or
-removing the entry once the file is under ``DEFAULT_MAX_LINES``). Ratchet-down
-reports are advisory: they do not fail the build.
+``check_silent_fallbacks.py::BASELINE_TOTAL``), and every entry must be live and
+exact. The PR that shrinks a baselined file lowers its entry to the new count
+(or removes it once the file is under ``DEFAULT_MAX_LINES``); the check fails
+until it does. Same semantics as clio-kit's port of this script (kit#364).
 
 Run as part of CI (blocking) and locally::
 
@@ -38,8 +43,9 @@ DEFAULT_MAX_LINES = 800
 # Per-file ratchet baseline: the known-oversized modules at their current line
 # counts, recorded so they cannot regrow. These are the files awaiting further
 # decomposition (iowarp/clio-agent#714, #767). This mapping may only ratchet
-# DOWN -- when a file shrinks, lower its number here (or drop the entry once it
-# falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
+# DOWN, and each entry must equal the file's real line count -- when a file
+# shrinks, lower its number here (or drop the entry once it falls under
+# DEFAULT_MAX_LINES) in the same change, or the check fails. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
     # #948 S4b: ClioAgent.agent.py dropped from its 2798-line baseline to ~723
@@ -147,8 +153,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 905,  # Cooperative cancellation moved to runtime/cancellation.py.
-    "src/clio_agent/arc/memory.py": 1065,  # 11a: the segment-plane surface moved to arc/memory_segments.py
+    # Scope-lock port (c3fbe965): get_session_invocations (no caller) deleted, 1065 -> 1012.
+    "src/clio_agent/arc/memory.py": 1012,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -166,13 +172,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
-    # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
-    # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
-    # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
-    # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
-    # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 802,  # 11a: view/index/companion/search in owner modules
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -445,7 +444,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1823,
+    # Ratchet down 1789 -> 1772: the web UI mount moved to gact/web_mount.py.
+    "src/clio_agent/gact/app.py": 1780,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -515,7 +515,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge DECISION itself is a one-line call into the owner module
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 903,  # Shared artifact hashing helper reused
+    # #1199: the session-scoping predicate moved to artifacts/registry_index.py (903 -> 897).
+    "src/clio_agent/gact/routes/artifacts.py": 897,  # Shared artifact hashing helper reused
     # merge(main->develop): +2 blueprints, +63 catalog, +54 mcp integrating main's
     # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
@@ -562,7 +563,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 903,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 891,  # -53: the MCP prompt routes became commands
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -626,7 +627,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
     # 1030 -> 918: bind configuration preparation moved to its provider owner;
     # effort-only edits reuse the existing binding without fresh discovery.
-    "src/clio_agent/gact/routes/providers.py": 915,
+    "src/clio_agent/gact/routes/providers.py": 970,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -670,7 +671,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 820,  # fork and question routes have their own owners
+    # (routes/sessions.py entry retired: turn retry and the SPOTTER lift moved out, 589 lines.)
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -725,7 +726,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 907,  # Row identity/merging moved to tool_call_merge.
+    "src/clio_agent/gact/tool_observer.py": 930,  # Row identity/merging moved to tool_call_merge.
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -741,7 +742,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet back with #714/#767.
     # 1089 -> 989 (#1337): FieldStream extracted to field_stream.py; the seal sink added.
     # -7 (946 -> 939): thinking-part metadata built by gact/reasoning_extract.py.
-    "src/clio_agent/gact/transcript.py": 939,
+    "src/clio_agent/gact/transcript.py": 948,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed
@@ -853,7 +854,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1101,
+    "src/clio_agent/runtime/status.py": 1101,  # optional rows moved to runtime/doctor_rows.py
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -918,7 +919,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1052,  # shared task submission replaces transparent waits
+    # -11: the hook and circuit-breaker notes moved to reminder templates
+    # (tools/harness_notes.py).
+    # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
+    # comma dropped from one observer call freed 6.
+    "src/clio_agent/tools/execution.py": 986,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1003,7 +1008,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # _tool_visible_to_model moved to the new owner module
     # tools/tool_ui_metadata.py (re-exported here), landing well under either
     # recorded value.
-    "src/clio_agent/tools/mcp_executor.py": 850,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.
@@ -1080,6 +1084,27 @@ RATCHET_BASELINE: dict[str, int] = {
     # function.py), and agent_elicitation_dispatch.py (the routed background
     # task). agent_elicitation.py itself is now 379 lines, back under the flat
     # 800 cap, re-exporting every public/monkeypatch-reached name unchanged.)
+    # RC1 DEBT (recorded 2026-11, develop CI-to-green pass, iowarp/gact-tui#739): develop
+    # landed these with CI off during the RC1 UI freeze, so the guard went red unnoticed.
+    # The code is frozen for the release; split or hoist and ratchet these back down after
+    # RC1 instead of growing them further.
+    "src/clio_agent/gact/agents/clio_react.py": 804,
+    "src/clio_agent/gact/compaction.py": 913,
+    "src/clio_agent/gact/infrastructure/node_service.py": 849,
+    # macOS worker identity (libproc start time, no /proc). This file ships to the host as one
+    # standalone script (routes/infrastructure_models.py reads node_models.__file__), so the
+    # probe cannot move to a sibling module; ratchet down when the worker body is split.
+    "src/clio_agent/gact/infrastructure/node_models.py": 816,
+    "src/clio_agent/gact/permission_gate.py": 837,
+    "src/clio_agent/gact/protocol/v3/message.py": 805,
+    "src/clio_agent/gact/routes/system.py": 828,
+    "src/clio_agent/gact/sessions.py": 844,
+    "src/clio_agent/gact/turn_finalize.py": 803,
+    "src/clio_agent/gact/types.py": 803,
+    "src/clio_agent/runtime/sandbox_cli.py": 847,
+    "src/clio_agent/runtime/sandbox_codex.py": 863,
+    "src/clio_agent/tools/gateway.py": 807,
+    "src/clio_agent/tools/mcp_prepare.py": 1226,
 }
 
 # Root of the source tree to scan, relative to the repository root.
@@ -1087,28 +1112,12 @@ SRC_ROOT = "src/clio_agent"
 
 
 class Failure(NamedTuple):
-    """A file that breaks the ratchet (fails the check)."""
+    """A file or baseline entry that breaks the ratchet (fails the check)."""
 
     rel: str
-    count: int
-    kind: str  # "new" (non-baselined over cap) or "regressed" (over recorded)
+    count: int | None  # None only for "stale": the file does not exist
+    kind: str  # "new" | "regressed" | "padded" | "stale"
     limit: int  # the cap it broke (DEFAULT_MAX_LINES or the recorded baseline)
-
-
-class RatchetDown(NamedTuple):
-    """A baselined file that shrank -- advisory, not a failure."""
-
-    rel: str
-    count: int
-    baseline: int
-    under_cap: bool  # True once count <= max_lines (drop the entry entirely)
-
-
-class Result(NamedTuple):
-    """Outcome of a scan: failures fail the build, ratchet_downs are advisory."""
-
-    failures: list[Failure]
-    ratchet_downs: list[RatchetDown]
 
 
 def _repo_root() -> Path:
@@ -1128,7 +1137,7 @@ def check_file_size(
     rel_to: Path | None = None,
     max_lines: int = DEFAULT_MAX_LINES,
     baseline: dict[str, int] | None = None,
-) -> Result:
+) -> list[Failure]:
     """Evaluate the per-file line-count ratchet under ``scan_root``.
 
     Args:
@@ -1136,21 +1145,23 @@ def check_file_size(
         rel_to: Base directory used to compute the forward-slash relative path
             that keys into ``baseline``. Defaults to ``scan_root``.
         max_lines: Cap applied to files not present in ``baseline``.
-        baseline: Per-file recorded line counts. Defaults to
+        baseline: Per-file exact recorded line counts. Defaults to
             :data:`RATCHET_BASELINE`.
 
     Returns:
-        A :class:`Result` splitting build-failing offenders from advisory
-        ratchet-down reports.
+        Every offense: a non-baselined file over the cap, a baselined file whose
+        count differs from its entry in either direction, or an entry whose
+        file no longer exists. Empty means the ratchet holds.
     """
     if baseline is None:
         baseline = RATCHET_BASELINE
     base = rel_to if rel_to is not None else scan_root
 
     failures: list[Failure] = []
-    ratchet_downs: list[RatchetDown] = []
+    seen: set[str] = set()
     for path in sorted(scan_root.rglob("*.py")):
         rel = path.relative_to(base).as_posix()
+        seen.add(rel)
         count = _count_lines(path)
         recorded = baseline.get(rel)
         if recorded is None:
@@ -1160,39 +1171,49 @@ def check_file_size(
         if count > recorded:
             failures.append(Failure(rel, count, "regressed", recorded))
         elif count < recorded:
-            ratchet_downs.append(RatchetDown(rel, count, recorded, under_cap=count <= max_lines))
-    return Result(failures=failures, ratchet_downs=ratchet_downs)
+            failures.append(Failure(rel, count, "padded", recorded))
+    for rel, recorded in baseline.items():
+        if rel not in seen:
+            failures.append(Failure(rel, None, "stale", recorded))
+    return failures
 
 
-def _print_report(result: Result, max_lines: int) -> None:
-    """Print the ratchet report (failures then advisory ratchet-downs)."""
-    for entry in result.ratchet_downs:
-        if entry.under_cap:
-            print(
-                f"OK (ratchet down): {entry.rel} is now {entry.count} lines "
-                f"(<= {max_lines}) -- remove it from RATCHET_BASELINE in "
-                "scripts/check_file_size.py."
-            )
-        else:
-            print(
-                f"OK (ratchet down): {entry.rel} shrank {entry.baseline} -> "
-                f"{entry.count} -- lower its RATCHET_BASELINE entry to "
-                f"{entry.count} in scripts/check_file_size.py."
-            )
+def _describe(entry: Failure, max_lines: int) -> str:
+    """One report line naming the offense and the edit that fixes it."""
+    if entry.kind == "new":
+        return f"{entry.rel}:{entry.count} (new file exceeds cap {entry.limit})"
+    if entry.kind == "regressed":
+        return f"{entry.rel}:{entry.count} (regressed past recorded baseline {entry.limit})"
+    if entry.kind == "stale":
+        return (
+            f"{entry.rel} (baselined at {entry.limit} lines but the file no longer "
+            "exists -- remove its RATCHET_BASELINE entry)"
+        )
+    assert entry.count is not None
+    fix = (
+        "remove its RATCHET_BASELINE entry"
+        if entry.count <= max_lines
+        else f"lower its RATCHET_BASELINE entry to {entry.count}"
+    )
+    return (
+        f"{entry.rel}:{entry.count} (baseline claims {entry.limit} but the file has "
+        f"{entry.count} lines -- {fix})"
+    )
 
-    if not result.failures:
+
+def _print_report(failures: list[Failure], max_lines: int) -> None:
+    """Print the ratchet report."""
+    if not failures:
         print(
-            f"OK: no file under {SRC_ROOT} exceeds its ratchet baseline "
-            f"(cap {max_lines} for new files)."
+            f"OK: every file under {SRC_ROOT} is within the cap ({max_lines}) or "
+            "exactly at its ratchet baseline."
         )
         return
 
-    print(f"FAIL: {len(result.failures)} file(s) break the size ratchet (#714, #774):")
-    for entry in result.failures:
-        if entry.kind == "new":
-            print(f"  {entry.rel}:{entry.count} (new file exceeds cap {entry.limit})")
-        else:
-            print(f"  {entry.rel}:{entry.count} (regressed past recorded baseline {entry.limit})")
+    print(f"FAIL: {len(failures)} entry(ies) break the size ratchet (#714, #774, #1203):")
+    for entry in failures:
+        print(f"  {_describe(entry, max_lines)}")
+    print("Baselines live in RATCHET_BASELINE in scripts/check_file_size.py.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1207,13 +1228,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo_root = _repo_root()
-    result = check_file_size(
+    failures = check_file_size(
         repo_root / SRC_ROOT,
         rel_to=repo_root,
         max_lines=args.max,
     )
-    _print_report(result, args.max)
-    return 1 if result.failures else 0
+    _print_report(failures, args.max)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

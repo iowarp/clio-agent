@@ -134,20 +134,21 @@ def run_post_tool(
         cwd=cwd,
         context=context,
     )
-    from clio_agent.tools import injections  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
+    from clio_agent.tools.harness_notes import HOOK_MARKER, hook_note  # noqa: PLC0415
 
     result = observation
     if outcome.updated_output:
-        note = "[clio: hook] A PostToolUse hook replaced this call's result."
+        note = hook_note("result_replaced")
         injections.note("hook", note)
         result = f"{note}\n\n{outcome.updated_output}"
     if outcome.denied and outcome.reason:
-        feedback = f"[clio: hook] A PostToolUse hook objected: {outcome.reason}"
+        feedback = hook_note("objected", reason=outcome.reason)
         injections.note("hook", feedback)
         result = f"{result}\n\n{feedback}" if str(result) else feedback
     if outcome.additional_context:
         # Context a hook adds about this call reaches the model with its result.
-        context_note = f"[clio: hook] {outcome.additional_context}"
+        context_note = f"{HOOK_MARKER}{outcome.additional_context}"
         injections.note("hook", context_note)
         result = f"{result}\n\n{context_note}" if str(result) else context_note
     return result

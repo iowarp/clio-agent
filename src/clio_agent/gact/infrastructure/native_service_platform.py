@@ -30,6 +30,16 @@ from urllib.request import ProxyHandler, Request, build_opener
 _JOB: Any = None
 LOG_GENERATIONS = 3
 WINDOWS_LOCK_WAIT_SECONDS = 60.0
+#: How long a Windows rename waits out a reader (a lockless status read, antivirus) that
+#: holds the target open without delete sharing, which fails the rename with Access denied.
+WINDOWS_REPLACE_WAIT_SECONDS = 10.0
+#: Upper bound for a detached worker to bind its Job Object. A cold start on a loaded
+#: host (antivirus scanning the freshly written controller, concurrent builds) can take
+#: far longer than an idle one; a launcher that exits ends the wait at once.
+WORKER_START_SECONDS = 90.0
+#: macOS and Windows build service environments on uv-managed Python: their system
+#: ``python3`` can be the Command Line Tools stub or Microsoft Store Python.
+MANAGED_PYTHON = os.name == "nt" or sys.platform == "darwin"
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -39,7 +49,16 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
         json.dump(value, writer)
         writer.flush()
         os.fsync(writer.fileno())
-    temporary.replace(path)
+    deadline = time.monotonic() + WINDOWS_REPLACE_WAIT_SECONDS
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 def clio_tool(name: str, interpreter: str | None = None) -> str | None:
@@ -92,6 +111,30 @@ def http_get(url: str, key: str = "") -> tuple[int, bytes]:
         return 0, b""
 
 
+#: Unix socket paths are limited to 107 bytes; vLLM's tensor-parallel workers bind sockets
+#: under TMPDIR, and on a deep service root they fail to start without logging why.
+_SHORT_TMP_LIMIT = 64
+#: The limit is a Unix-socket one, and the privacy check needs a POSIX owner id.
+_POSIX = os.name == "posix"
+
+
+def service_tmp(root: Path) -> Path:
+    """The service's temp directory: ``root/tmp``, or on POSIX a short private one when that is
+    too deep for the Unix sockets its workers bind."""
+    tmp = root / "tmp"
+    if not _POSIX or len(str(tmp)) <= _SHORT_TMP_LIMIT:
+        return tmp
+    import hashlib  # noqa: PLC0415
+
+    short = Path("/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir())
+    short = short / ("clio-svc-" + hashlib.sha256(str(root).encode()).hexdigest()[:16])
+    short.mkdir(mode=0o700, exist_ok=True)
+    info = short.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeError(f"The short service temp directory {short} is not private to this user")
+    return short
+
+
 def worker_environment(
     root: Path, manifest: dict[str, Any], base: dict[str, str]
 ) -> dict[str, str]:
@@ -99,18 +142,101 @@ def worker_environment(
     env = {**base, **manifest.get("environment", {})}
     for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
         env.pop(name, None)
+    if MANAGED_PYTHON:
+        # uv refuses ``--managed-python`` beside these (exit 2), so an inherited
+        # preference would fail every install; the service's Python is CLIO's choice.
+        for name in ("UV_PYTHON_PREFERENCE", "UV_NO_MANAGED_PYTHON"):
+            env.pop(name, None)
+    tmp = service_tmp(root)
     env.update(
         UV_CACHE_DIR=str(root / "cache/uv"),
         UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
-        TMPDIR=str(root / "tmp"),
-        TEMP=str(root / "tmp"),
-        TMP=str(root / "tmp"),
+        TMPDIR=str(tmp),
+        TEMP=str(tmp),
+        TMP=str(tmp),
         HF_HOME=str(root / "cache/huggingface"),
         PATH=os.pathsep.join(
-            item for item in (str(python_path(root).parent), env.get("PATH", "")) if item
+            item
+            for item in (str(python_path(root).parent), clt_free_tools(root), env.get("PATH", ""))
+            if item
         ),
     )
     return env
+
+
+#: Where macOS keeps ``install_name_tool`` when a developer toolchain is installed.
+_MACOS_TOOLCHAINS = (
+    "/Library/Developer/CommandLineTools/usr/bin",
+    "/var/db/xcode_select_link/usr/bin",
+    "/var/db/xcode_select_link/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+)
+
+
+def clt_free_tools(root: Path) -> str:
+    """On a Mac without the Command Line Tools, a directory that shadows their stubs, else "".
+
+    uv patches every Python it downloads with ``install_name_tool``. Without the
+    Command Line Tools, ``/usr/bin/install_name_tool`` is a stub that opens the
+    "Install Command Line Developer Tools" dialog. The stand-in fails instead, so uv
+    warns and keeps the interpreter unpatched, which matters only for compiling
+    extensions, and that needs the Command Line Tools anyway.
+    """
+    if sys.platform != "darwin" or any(
+        os.path.isfile(os.path.join(item, "install_name_tool")) for item in _MACOS_TOOLCHAINS
+    ):
+        return ""
+    tools = root / "cache/clt-free-bin"
+    stand_in = tools / "install_name_tool"
+    if not stand_in.is_file():
+        tools.mkdir(parents=True, exist_ok=True)
+        stand_in.write_text(
+            "#!/bin/sh\necho 'clio: install_name_tool needs the Command Line Tools;"
+            " the library is left as it is' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        stand_in.chmod(0o755)
+    return str(tools)
+
+
+def durable_interpreter(executable: str | None = None) -> bool:
+    """CLIO's interpreter stays where it is, so a service environment can be built on it.
+
+    Not one inside a disk image or behind App Translocation (both vanish), nor
+    Microsoft Store Python (its activation broker escapes the worker's job),
+    including a virtual environment whose base interpreter is Store Python.
+    """
+    if executable is None:
+        base = getattr(sys, "_base_executable", "") or ""
+        if "windowsapps" in f"{base}\n{sys.base_prefix}".casefold():
+            return False
+    executable = executable if executable is not None else sys.executable
+    if not executable:
+        return False
+    folded = executable.replace("\\", "/").casefold()
+    if "/apptranslocation/" in folded or "windowsapps" in folded:
+        return False
+    if folded.startswith("/volumes/"):
+        volume = "/".join(executable.replace("\\", "/").split("/")[:3])
+        return os.access(volume, os.W_OK)
+    return True
+
+
+def uv_python_arguments(manifest: dict[str, Any]) -> list[str]:
+    """The interpreter ``uv sync`` builds a service environment on.
+
+    A manifest with ``"interpreter": "clio"`` (a local service whose dependencies
+    support CLIO's Python) reuses the interpreter running this controller: no second
+    Python is downloaded. Otherwise, and when that interpreter is not durable, the
+    manifest's ``python_version``; macOS and Windows take it uv-managed, because their
+    system ``python3`` can be the Command Line Tools stub or Microsoft Store Python.
+    """
+    if manifest.get("interpreter") == "clio" and durable_interpreter():
+        return ["--python", sys.executable, "--no-python-downloads"]
+    return [
+        "--python",
+        str(manifest.get("python_version", "3.12")),
+        *(["--managed-python"] if MANAGED_PYTHON else []),
+    ]
 
 
 def is_link(path: Path) -> bool:
@@ -358,11 +484,18 @@ def bind_worker(generation: str, root: Path) -> None:
     )
 
 
-def await_worker(root: Path, generation: str) -> dict[str, Any]:
-    """Record the actual worker, including when a Windows venv launcher has another PID."""
-    deadline = time.monotonic() + 10
+def await_worker(
+    root: Path, generation: str, launcher_pid: int = 0, launcher_identity: str = ""
+) -> dict[str, Any]:
+    """Record the actual worker, including when a Windows venv launcher has another PID.
+
+    Waits while the launcher lives (a cold, loaded host can take tens of seconds to
+    start Python), up to :data:`WORKER_START_SECONDS`; a launcher that exits without
+    the worker publishing its identity fails at once.
+    """
+    started = time.monotonic()
     ready = root / "evidence" / f"worker-{generation}.json"
-    while time.monotonic() < deadline:
+    while True:
         if ready.is_file():
             record = json.loads(ready.read_text())
             if record.get("generation") != generation or not record.get("process_identity"):
@@ -370,8 +503,18 @@ def await_worker(root: Path, generation: str) -> dict[str, Any]:
             if identity(record["pid"]) != record["process_identity"]:
                 raise RuntimeError("The native worker exited before its launch committed")
             return record
+        elapsed = time.monotonic() - started
+        launcher_gone = launcher_identity and identity(launcher_pid) != launcher_identity
+        if launcher_gone and not ready.is_file():
+            raise RuntimeError(
+                f"Native worker exited after {elapsed:.0f}s before establishing its owned "
+                f"process tree; inspect {root / 'logs' / 'supervisor.log'}"
+            )
+        if elapsed >= WORKER_START_SECONDS:
+            raise RuntimeError(
+                f"Native worker did not establish its owned process tree within {elapsed:.0f}s"
+            )
         time.sleep(0.05)
-    raise RuntimeError("Native worker did not establish its owned process tree")
 
 
 def stop(receipt: dict[str, Any]) -> None:

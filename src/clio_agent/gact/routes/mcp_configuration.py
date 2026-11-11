@@ -17,6 +17,7 @@ from clio_agent.gact.mcp_user_configuration import mcp_server_arg_value
 from clio_agent.gact.resource_processing import DocumentProcessorClient
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
+from clio_agent.tools import mcp_prepare
 from clio_agent.tools.mcp_config import (
     MCPTransportError,
     spec_from_declaration,
@@ -182,6 +183,9 @@ async def _probe_user_mcp_server(
         normalized = spec_from_declaration("configuration", transport_spec)
         if not normalized.usable:
             raise MCPTransportError("; ".join(normalized.validation_errors))
+        if normalized.transport == "stdio" and mcp_prepare.builds_outside_fence():
+            # The probe starts the server confined; build its environment first (#1991).
+            await asyncio.to_thread(mcp_prepare.provision, normalized.name, normalized)
         transport = transport_for(normalized)
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
@@ -287,11 +291,15 @@ def _forget_ephemeral_duplicates(app: FastAPI, name: str) -> None:
 async def _refresh_agent_tool_gateway(app: FastAPI) -> None:
     """Apply a saved user MCP change to new turns without restarting CLIO."""
 
+    from clio_agent.gact.routes.mcp import invalidate_mcp_inventory  # noqa: PLC0415
+
+    invalidate_mcp_inventory(app)  # the declared half: the saved mcp.yaml
     agent = getattr(app.state, "agent", None)
     refresh = getattr(agent, "refresh_declared_mcp_servers", None)
     if not callable(refresh):
         return
     replaced = await asyncio.to_thread(refresh)
+    invalidate_mcp_inventory(app)  # the runtime half: the refreshed fleet
     in_flight = [
         task
         for task in (getattr(app.state, "in_flight_turns", {}) or {}).values()

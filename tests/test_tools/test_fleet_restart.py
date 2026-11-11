@@ -320,3 +320,33 @@ def test_defer_restart_if_active_probe_error_fails_safe() -> None:
     assert reaper.defer_restart_if_active("/ws/r", executor, {}) is True, (
         "an unprovable-idle fleet must defer, never be closed inline"
     )
+
+
+def test_request_restart_restarts_a_fleet_held_only_for_residency() -> None:
+    executor = FakeExecutor(idle_s=5)
+    registry = {"/ws/r": executor}
+    reaper = _reaper(registry, leases={"/ws/r": 1})
+    reaper.residency["/ws/r"] = 1
+
+    assert reaper.request_restart("/ws/r") == RESTART_RESTARTED_LIVE
+    assert executor.closed and "/ws/r" not in registry
+
+
+def test_request_restart_defers_a_turn_lease_beside_residency() -> None:
+    executor = FakeExecutor(idle_s=5)
+    registry = {"/ws/r": executor}
+    reaper = _reaper(registry, leases={"/ws/r": 2})
+    reaper.residency["/ws/r"] = 1
+
+    assert reaper.request_restart("/ws/r") == RESTART_DEFERRED_BUSY
+    assert not executor.closed
+
+
+def test_residency_hold_still_prevents_reaping() -> None:
+    executor = FakeExecutor(idle_s=50_000)
+    registry = {"/ws/r": executor}
+    reaper = _reaper(registry, leases={"/ws/r": 1}, ttl=1.0)
+    reaper.residency["/ws/r"] = 1
+
+    reaper.reap_once()
+    assert not executor.closed and "/ws/r" in registry

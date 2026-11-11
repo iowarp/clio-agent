@@ -31,6 +31,7 @@ from clio_agent.providers.handshake.cli_catalog import (
     ClaudeCodeCatalogHandshake,
     CliCatalogHandshake,
     CodexCatalogHandshake,
+    CopilotCatalogHandshake,
 )
 from clio_agent.providers.handshake.lmstudio import LMStudioHandshake
 from clio_agent.providers.handshake.mcp import MCPServerReport, handshake_mcp_servers
@@ -59,6 +60,7 @@ __all__ = [
     "CodexCatalogHandshake",
     "CliCatalogHandshake",
     "ClaudeCodeCatalogHandshake",
+    "CopilotCatalogHandshake",
     "NoOpHandshake",
     "handshake_mcp_servers",
     "resolve_context",
@@ -83,6 +85,7 @@ _BY_KIND: dict[str, type[ProviderHandshake]] = {
     # registry entry for any OTHER future no-HTTP-surface CLI provider.
     "codex": CodexCatalogHandshake,
     "claude_code": ClaudeCodeCatalogHandshake,
+    "copilot": CopilotCatalogHandshake,
 }
 
 

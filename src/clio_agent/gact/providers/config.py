@@ -110,6 +110,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
 
     for key in (
         "provider_id",
+        "server_id",
         "provider",
         "api_base",
         "model",
@@ -296,6 +297,19 @@ def _model_ref_is_empty(value: Any) -> bool:
     return not any(ref.values())
 
 
+def clear_session_model_refs(app: "FastAPI") -> None:
+    """Clear stale default/session model refs after a global LM provider swap.
+
+    Only the sessions the index marks with a selected model are read."""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415 - import cycle
+
+    if (defaults := getattr(app.state, "session_defaults", None)) is not None:
+        defaults.clear_model_ref()
+    if (sessions := getattr(app.state, "sessions", None)) is not None:
+        for sid in sessions.ids(PageQuery(archived=None, model_selected=True)):
+            sessions.update(sid, model={})
+
+
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """Return the active global LM as a GACT ModelRef-shaped dict.
 
@@ -303,7 +317,8 @@ def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """
 
     cfg = _effective_lm_config(app)
-    provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
+    # A host running on a saved model server is identified by the server, not its preset.
+    provider = str(cfg.get("server_id") or cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
     return {"provider_id": provider, "model_id": model, "variant": ""}
 

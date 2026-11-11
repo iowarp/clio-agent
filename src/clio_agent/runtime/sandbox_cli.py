@@ -277,7 +277,7 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
         # Desktop launches clio-kit with its bundled interpreter, not the user's
         # unrelated uv environments. Recursing those global trees at every boot
         # can take minutes and grants access to runtimes this Desktop never uses.
-        cache = os.environ.get("CLIO_KIT_CACHE_DIR") or paths.user_cache_dir() / "mcp-runtime"
+        cache = os.environ.get("CLIO_KIT_CACHE_DIR") or paths.mcp_build_cache_dir() / "mcp-runtime"
         return [
             ("bundled_runtime", str(bundled), True),
             ("clio_kit_cache", str(cache), True),
@@ -469,11 +469,21 @@ def provision_codex_windows(
             next_action=f"Install/upgrade codex: `{CODEX_INSTALL_POINTER}`, then `clio sandbox setup`.",
         )
 
-    from clio_agent.runtime.sandbox_codex_mxc import MXC_MIN_VERSION, prepare_mxc  # noqa: PLC0415
+    from clio_agent.runtime.sandbox_codex_mxc import (  # noqa: PLC0415
+        MXC_MIN_VERSION,
+        PACKAGED_PYTHON_ACTION,
+        REASON_MXC_PACKAGED_PYTHON,
+        prepare_mxc,
+    )
+    from clio_agent.runtime.sandbox_codex_probe import (  # noqa: PLC0415
+        RETRY_SETUP_ACTION,
+        mxc_summary,
+    )
 
+    mxc: dict[str, Any] = {}
     if scx.parse_version(det.version) >= MXC_MIN_VERSION:
         mxc = (mxc_preparer or prepare_mxc)(
-            det.binary_path, det.version, progress=progress, force=False
+            det.binary_path, det.version, progress=progress, retry_unavailable=allow_elevation
         )
         if mxc["status"] == "verified":
             return CodexProvisionResult(
@@ -491,6 +501,17 @@ def provision_codex_windows(
                 reason=mxc["reason"],
                 detail="Another CLIO process is still verifying native protected execution.",
                 next_action="Wait for that setup to finish, then retry Set up protected execution.",
+                extra={"implementation": "mxc"},
+            )
+        if mxc["reason"] == REASON_MXC_PACKAGED_PYTHON:
+            # CLIO's confined Python children use this same interpreter. Report the
+            # cause now rather than behind the legacy grants and a minute-long check.
+            return CodexProvisionResult(
+                ok=False,
+                status=OUTCOME_SETUP_FAILED,
+                reason=mxc["reason"],
+                detail=f"{mxc['detail']}.",
+                next_action=PACKAGED_PYTHON_ACTION,
                 extra={"implementation": "mxc"},
             )
         if progress:
@@ -542,17 +563,22 @@ def provision_codex_windows(
         )
 
     # Re-prove an existing sandbox; never infer enforcement from account presence
-    # or copy another installation's receipt. Only absent accounts need elevation.
-    elevated = reason != scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED
-    if elevated:
-        if not allow_elevation:
-            return CodexProvisionResult(
-                ok=False,
-                status=OUTCOME_SETUP_FAILED,
-                reason=scx.REASON_CODEX_WINDOWS_UNPROVISIONED,
-                detail="Windows protected execution requires its one-time account setup.",
-                next_action="Open Infrastructure > CLIO hosts > Protected execution and select Set up protected execution.",
-            )
+    # or copy another installation's receipt. Only absent accounts need elevation,
+    # or accounts this Codex last reported as needing its setup again.
+    elevated = reason != scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED or (
+        gate is None and scx.codex_setup_refresh_required(det.version)
+    )
+
+    def setup_required(detail: str) -> CodexProvisionResult:
+        return CodexProvisionResult(
+            ok=False,
+            status=OUTCOME_SETUP_FAILED,
+            reason=scx.REASON_CODEX_WINDOWS_UNPROVISIONED,
+            detail=detail,
+            next_action="Open Infrastructure > CLIO hosts > Protected execution and select Set up protected execution.",
+        )
+
+    def elevate_setup() -> CodexProvisionResult | None:
         elevate = elevator if elevator is not None else _elevated_codex_setup
         if progress:
             progress("Creating protected execution sandbox - Windows approval required...")
@@ -568,6 +594,15 @@ def provision_codex_windows(
             )
         if progress:
             progress("Sandbox accounts created. Preparing runtime access...")
+        return None
+
+    if elevated:
+        if not allow_elevation:
+            return setup_required(
+                "Windows protected execution requires its one-time account setup."
+            )
+        if failed := elevate_setup():
+            return failed
 
     # The codexsandbox* accounts now exist; grant them read+exec on the fleet runtime they must
     # launch (the launcher + uv-managed python/tools + clio-kit cache + Temp traverse) BEFORE the
@@ -591,12 +626,29 @@ def provision_codex_windows(
         progress("Verifying protected execution...")
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-    enforced, enforce_reason = verify(
+    enforced, enforce_reason = verdict = verify(
         det.binary_path, str(paths.user_cache_dir()), platform=platform
     )
     (marker_writer if marker_writer is not None else scx.write_codex_provision_marker)(
         det.version, enforcement_verified=enforced, enforcement_reason=enforce_reason
     )
+    if enforce_reason == scx.REASON_CODEX_WINDOWS_SETUP_REQUIRED and not elevated:
+        # The accounts exist, but this Codex no longer accepts their setup.
+        detail = getattr(verdict, "detail", "") or "Codex requires its setup again"
+        if not allow_elevation:
+            return setup_required(f"{detail}.")
+        if failed := elevate_setup():
+            return failed
+        elevated = True
+        grant_reasons = grant_fn()
+        if failed := _runtime_access_failure(grant_reasons, elevated=True):
+            return failed
+        enforced, enforce_reason = verdict = verify(
+            det.binary_path, str(paths.user_cache_dir()), platform=platform
+        )
+        (marker_writer if marker_writer is not None else scx.write_codex_provision_marker)(
+            det.version, enforcement_verified=enforced, enforcement_reason=enforce_reason
+        )
     if enforced:
         return CodexProvisionResult(
             ok=True,
@@ -618,11 +670,11 @@ def provision_codex_windows(
         status=OUTCOME_ENFORCEMENT_UNVERIFIED,
         reason=enforce_reason or scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED,
         detail=(
-            "The Codex Windows sandbox accounts are provisioned, but codex could "
-            f"NOT enforce a confined write ({enforce_reason}). clio runs with the advisory file "
-            "policy (honest degrade — no OS write fence in force on this host)."
+            "Protected execution could not be verified on this host, so no OS write fence is "
+            f"in force. {mxc_summary(mxc)}Windows sandbox accounts ({enforce_reason}): "
+            f"{getattr(verdict, 'detail', '') or 'the confined write was not refused'}."
         ),
-        next_action="Re-run `clio sandbox setup` to re-verify enforcement.",
+        next_action=RETRY_SETUP_ACTION,
         elevated=elevated,
         extra={"fleet_runtime_grants": grant_reasons},
     )
@@ -670,7 +722,8 @@ def run_sandbox_cli(
 
 def _sandbox_status_cli(*, json_output: bool) -> int:
     """Render the ``sandbox`` doctor row standalone (reuses :func:`probe_sandbox`)."""
-    from clio_agent.runtime.sandbox import install_sandbox, probe_sandbox  # noqa: PLC0415
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+    from clio_agent.runtime.sandbox_doctor import probe_sandbox  # noqa: PLC0415
 
     install_sandbox()  # resolve THIS process's backend so the row is real (no server needed)
     row = probe_sandbox()

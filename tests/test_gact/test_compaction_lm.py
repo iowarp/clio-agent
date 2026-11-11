@@ -59,27 +59,34 @@ def test_unpinned_or_active_pin_keeps_the_host_lm(resolved: list, model: ModelRe
 def test_summary_passes_the_pinned_lm_and_fails_typed_when_unresolvable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from clio_agent.gact import compaction
+    from clio_agent.gact import compaction, compaction_summarizer
 
-    calls: list[dict[str, Any]] = []
+    calls: list[Any] = []
 
-    class _Agent:
-        def _run_chat_agent(self, prompt: str, ctx: str, **kwargs: Any) -> str:
-            calls.append(kwargs)
-            return "summary"
+    def _scope_summarizer(app: Any, sid: str, scope: str, lm: Any) -> Any:
+        calls.append(lm)
+        return lambda prompt: "summary"
 
     app = _app(ModelRef(provider_id="vllm", model_id="/models/qwen3-4b"))
-    app.state.agent = _Agent()
+    app.state.agent = SimpleNamespace(_main_lm="HOST_LM")
     monkeypatch.setattr(compaction, "_context_file_inventory", lambda app, sid: [])
+    monkeypatch.setattr(compaction_summarizer, "scope_summarizer", _scope_summarizer)
     monkeypatch.setattr(compaction_lm, "pinned_summary_lm", lambda app, sid: "PINNED_LM")
-
-    assert compaction._summary(app, "sess_1", "user: hi", "").startswith("summary")
-    assert calls == [{"lm": "PINNED_LM"}]
+    assert compaction._summary(app, "sess_1", _plan("user: hi"), "", None).startswith("summary")
+    monkeypatch.setattr(compaction_lm, "pinned_summary_lm", lambda app, sid: None)
+    assert compaction._summary(app, "sess_1", _plan("user: hi"), "", None).startswith("summary")
+    assert calls == ["PINNED_LM", "HOST_LM"]
 
     def _boom(app: Any, sid: str) -> Any:
         raise RuntimeError("no endpoint")
 
     monkeypatch.setattr(compaction_lm, "pinned_summary_lm", _boom)
     with pytest.raises(compaction.CompactionError) as info:
-        compaction._summary(app, "sess_1", "user: hi", "")
+        compaction._summary(app, "sess_1", _plan("user: hi"), "", None)
     assert (info.value.status, info.value.error) == (502, "pinned_model_unresolved")
+
+
+def _plan(transcript: str) -> Any:
+    from clio_agent.gact import compaction
+
+    return compaction._ScopePlan("main", (), frozenset(), frozenset(), transcript)

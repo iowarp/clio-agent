@@ -19,6 +19,7 @@ TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 FS_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "list_directory": {"readOnlyHint": True, "openWorldHint": False},
     "search_text": {"readOnlyHint": True, "openWorldHint": False},
+    "glob": {"readOnlyHint": True, "openWorldHint": False},
     "read_file": {"readOnlyHint": True, "openWorldHint": False},
     "write_file": {
         "readOnlyHint": False,
@@ -120,9 +121,9 @@ async def test_structured_tool_results_use_modern_envelopes(tmp_path: Path) -> N
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
     calls: tuple[tuple[FastMCP, str, dict[str, Any]], ...] = (
-        (fs_server, "read_file", {"filepath": str(sample)}),
+        (fs_server, "read_file", {"path": str(sample)}),
         (shell_server, "bash", {"command": ""}),
-        (_gateway(), "fs_read_file", {"filepath": str(sample)}),
+        (_gateway(), "fs_read_file", {"path": str(sample)}),
     )
 
     for server, tool_name, arguments in calls:
@@ -143,8 +144,9 @@ async def test_legacy_client_round_trips_gateway_tool(tmp_path: Path) -> None:
     sample.write_text("legacy", encoding="utf-8")
 
     async with Client(_gateway(), mode="legacy", cache=False) as client:
-        result = await client.call_tool("fs_read_file", {"filepath": str(sample)})
+        result = await client.call_tool("fs_read_file", {"path": str(sample)})
 
         assert client.protocol_version == "2025-11-25"
-        assert result.data["content"] == "legacy"
+        assert result.data["total_lines"] == 1
+        assert result.content[0].text.endswith("1\tlegacy")
         assert result.is_error is False

@@ -5,13 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
+import tempfile
 import tomllib
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +33,28 @@ from clio_agent.runtime.execution_environment import (
 
 STACK_ROOT = Path(__file__).resolve().parent / "document_stack"
 PNPM_VERSION = "12.9.1"
+# pnpm 12 is a JavaScript wrapper that runs a native binary from its per-host
+# `@pnpm/exe.*` package. These are the SHA-256 digests of their registry tarballs,
+# so the installer's concurrent download of them can stand in for `npm install`
+# (install.sh and install.ps1 list them in the release's install plan).
+PNPM_PACKAGES = {
+    "pnpm": "44c80447645c2a1d8da9308d3efedcec6ca2db4579183abcb15d8a90a88277d4",
+    "@pnpm/exe.darwin-arm64": "456316d4cfa8b50b86224613f7f4eca591d970b07ab2f3b6d479724460845d94",
+    "@pnpm/exe.linux-x64": "9581c9b2571491f9e00c841cb29864cc3bf96e66f82d55ef5bad70f8f06d1808",
+    "@pnpm/exe.linux-arm64": "90530afe00c62fefd1f09d1a9b0aea058d28fd0862eeb2231de9151ffa36d291",
+    "@pnpm/exe.win32-x64": "12c4d01cb418cc7e15a155f4d467545bd161b4b2bfe57022f155a5537dfe7c33",
+}
+
+
+def pnpm_tarball(name: str) -> str:
+    """The registry's file name for one pinned pnpm package tarball."""
+    return f"{name.rsplit('/', 1)[-1]}-{PNPM_VERSION}.tgz"
+
+
+def _pnpm_host_package() -> str:
+    machine = platform.machine().lower()
+    architecture = {"aarch64": "arm64", "x86_64": "x64", "amd64": "x64"}.get(machine, machine)
+    return f"@pnpm/exe.{sys.platform}-{architecture}"
 
 
 class DocumentRuntimeError(RuntimeError):
@@ -110,11 +136,16 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
         _run(
             [
                 str(python),
+                "-B",
                 str(STACK_ROOT / "inventory.py"),
                 *(["--execution-only"] if discovery_only else []),
             ],
             cwd=STACK_ROOT,
-            env={**os.environ, "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root())},
+            env={
+                **os.environ,
+                "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root()),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
         )
     )
     if not isinstance(result, dict):
@@ -180,6 +211,85 @@ def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
     return inventory
 
 
+def _built_for_this_interpreter(environment: Path) -> bool:
+    """Whether a cached venv still derives from the interpreter running Clio.
+
+    The cache key covers the Python version and lock files, not the installation path. A
+    macOS app first opened translocated (from the DMG, Downloads or a quarantined copy),
+    then moved to /Applications, leaves a venv whose ``home`` no longer exists, or one
+    that silently keeps using an older copy of the app that still exists.
+    """
+    try:
+        lines = (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return True  # Nothing recorded to compare; the import probe still verifies it.
+    recorded = next(
+        (
+            value.strip()
+            for key, _, value in (line.partition("=") for line in lines)
+            if key.strip() == "home"
+        ),
+        "",
+    )
+    if not recorded:
+        return True
+    try:
+        home = Path(recorded).resolve(strict=True)
+    except OSError:
+        return False
+    base = Path(sys.base_prefix)
+    current = {
+        Path(sys.executable).resolve().parent,
+        Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent,
+        base.resolve(),
+        (base / "bin").resolve(),
+    }
+    return home in current
+
+
+PRELAID_STAMP = "clio-prelaid.json"
+
+
+def _adopt_prelaid(name: str, target: Path) -> bool:
+    """Move a tree the runtime build laid out for this exact stack into ``target``.
+
+    Windows runtime packs carry the document environment and a hoisted ``node_modules``
+    (``install/build_document_env.py``), so an installation writes them while it unpacks
+    instead of installing tens of thousands of files again. Adoption is one directory
+    rename on the same volume; anything else (no tree, another stack, another volume)
+    returns ``False`` with nothing changed, and the caller installs as usual.
+    """
+    runtime = bundled_root()
+    if runtime is None or os.path.lexists(target):
+        return False
+    tree = runtime / "documents" / name
+    try:
+        stamp = json.loads((tree / PRELAID_STAMP).read_text(encoding="utf-8"))
+        if not isinstance(stamp, dict) or stamp.get("fingerprint") != _fingerprint():
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tree.rename(target)
+    except (OSError, ValueError):
+        return False
+    (target / PRELAID_STAMP).unlink(missing_ok=True)
+    return True
+
+
+def _set_environment_home(environment: Path) -> None:
+    """Point a relocated venv at this interpreter; Windows launchers need an absolute home."""
+    config = environment / "pyvenv.cfg"
+    home = str(Path(sys.executable).resolve().parent)
+    lines = config.read_text(encoding="utf-8").splitlines()
+    config.write_text(
+        "\n".join(
+            f"home = {home}" if line.partition("=")[0].strip() == "home" else line
+            for line in lines
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _python_runtime(
     cache: Path, uv: str, *, discovery_only: bool = False
 ) -> tuple[Path, dict[str, Any]]:
@@ -189,7 +299,18 @@ def _python_runtime(
         shutil.copyfile(STACK_ROOT / name, project / name)
     environment = cache / "python"
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    repair = python.is_file()
+    if not os.path.lexists(environment) and _adopt_prelaid("python", environment):
+        _set_environment_home(environment)
+    repair = python.is_file() and _built_for_this_interpreter(environment)
+    if not repair and os.path.lexists(environment):
+        # A dangling or foreign base cannot be repaired in place: ``uv venv`` refuses an
+        # existing directory, and reusing it would keep another installation's Python.
+        try:
+            shutil.rmtree(environment)
+        except OSError as error:
+            raise DocumentRuntimeError(
+                f"Could not replace the stale document environment at {environment}: {error}"
+            ) from error
 
     def probe() -> dict[str, Any]:
         return _probe(python, discovery_only=True) if discovery_only else _probe(python)
@@ -271,6 +392,98 @@ def _pnpm_command(package: Path, node: str, env: dict[str, str]) -> Path:
     return pnpm
 
 
+def _unpack_package(archive: Path, target: Path) -> None:
+    """Unpack one npm tarball's ``package/`` as ``target``, replacing what was there."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".unpack-", dir=target.parent) as temporary:
+        staging = Path(temporary)
+        with tarfile.open(archive, "r:gz") as source:
+            source.extractall(staging, filter="data")
+        unpacked = staging / "package"
+        if not (unpacked / "package.json").is_file():
+            raise DocumentRuntimeError(f"{archive.name} has no npm package")
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+        unpacked.rename(target)
+
+
+def _installer_pnpm(package: Path) -> bool:
+    """Unpack pnpm and its native binary from the installer's downloads, offline."""
+    from clio_agent.runtime.document_stack.office import installer_download
+
+    host = _pnpm_host_package()
+    if host not in PNPM_PACKAGES:
+        return False
+    archives = {
+        name: installer_download(pnpm_tarball(name), PNPM_PACKAGES[name]) for name in ("pnpm", host)
+    }
+    if any(archive is None for archive in archives.values()):
+        return False
+    modules = package.parent
+    for name, archive in archives.items():
+        assert archive is not None
+        _unpack_package(archive, modules / name)
+    return True
+
+
+def _prepared_pnpm(
+    tools: Path,
+    node: str,
+    env: dict[str, str],
+    progress: Callable[[str], None] | None,
+) -> Path:
+    """The pinned pnpm, from the installer's downloads or else the registry."""
+    package = tools / "node_modules" / "pnpm"
+    try:
+        return _pnpm_command(package, node, env)
+    except (DocumentRuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        tools.mkdir(parents=True, exist_ok=True)
+        try:
+            if _installer_pnpm(package):
+                return _pnpm_command(package, node, env)
+        except (
+            DocumentRuntimeError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            tarfile.TarError,
+        ) as exc:
+            # The registry install below is the same pinned version; only slower.
+            if progress is not None:
+                progress(f"The downloaded pnpm could not be used ({exc}); fetching it instead...")
+    node_root = Path(node).parent
+    if node_root.name == "bin":
+        node_root = node_root.parent
+    npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    if not npm.is_file():
+        raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
+    if progress is not None:
+        progress("Installing the pinned pnpm package manager...")
+    _run(
+        [
+            node,
+            str(npm),
+            "install",
+            "--prefix",
+            str(tools),
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            f"pnpm@{PNPM_VERSION}",
+        ],
+        cwd=tools,
+        env=env,
+    )
+    try:
+        return _pnpm_command(package, node, env)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise DocumentRuntimeError(f"Installed pnpm has invalid metadata: {exc}") from exc
+
+
 def _javascript_runtime(
     cache: Path,
     workspace: Path,
@@ -280,104 +493,100 @@ def _javascript_runtime(
 ) -> tuple[Path, Path]:
     node = node_path(str(inventory["node"]))
     tools = Path(node_path(str(cache / "javascript-tools")))
-    package = tools / "node_modules" / "pnpm"
     env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
-    try:
-        pnpm = _pnpm_command(package, node, env)
-    except (DocumentRuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError):
-        tools.mkdir(parents=True, exist_ok=True)
-        node_root = Path(node).parent
-        if node_root.name == "bin":
-            node_root = node_root.parent
-        npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
-        if not npm.is_file():
-            raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
-        if progress is not None:
-            progress("Installing the pinned pnpm package manager...")
-        _run(
-            [
-                node,
-                str(npm),
-                "install",
-                "--prefix",
-                str(tools),
-                "--ignore-scripts",
-                "--no-audit",
-                "--no-fund",
-                f"pnpm@{PNPM_VERSION}",
-            ],
-            cwd=tools,
-            env=env,
-        )
-        try:
-            pnpm = _pnpm_command(package, node, env)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise DocumentRuntimeError(f"Installed pnpm has invalid metadata: {exc}") from exc
     work = Path(node_path(str(scratch_root(workspace) / "javascript")))
-    work.mkdir(parents=True, exist_ok=True)
-    for name in ("package.json", "pnpm-lock.yaml"):
-        target = work / name
-        expected = (STACK_ROOT / name).read_bytes()
-        if target.exists() and target.read_bytes() != expected:
-            raise DocumentRuntimeError(
-                f"Prepared workspace manifest was changed: {target}. Preserve task dependencies in a separate project."
+    store = node_path(str(cache / "pnpm-store"))
+    # pnpm is needed only to install or repair the packages. It is prepared and
+    # checked while prelaid packages are adopted and probed, rather than before.
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-node") as running:
+        pnpm_ready = running.submit(_prepared_pnpm, tools, node, env, progress)
+        work.mkdir(parents=True, exist_ok=True)
+        for name in ("package.json", "pnpm-lock.yaml"):
+            target = work / name
+            expected = (STACK_ROOT / name).read_bytes()
+            if target.exists() and target.read_bytes() != expected:
+                raise DocumentRuntimeError(
+                    f"Prepared workspace manifest was changed: {target}. Preserve task dependencies in a separate project."
+                )
+            target.write_bytes(expected)
+        if not (work / "node_modules").is_dir() and _adopt_prelaid(
+            "node_modules", work / "node_modules"
+        ):
+            # Keep later pnpm commands in this project on the layout it was built with.
+            (work / ".npmrc").write_text("node-linker=hoisted\n", encoding="utf-8")
+        if not (work / "node_modules").is_dir():
+            if progress is not None:
+                progress("Installing Word, PowerPoint and image packages for Node.js...")
+            _run(
+                [
+                    node,
+                    str(pnpm_ready.result()),
+                    "install",
+                    "--frozen-lockfile",
+                    "--ignore-scripts",
+                    "--store-dir",
+                    store,
+                ],
+                cwd=work,
+                env=env,
             )
-        target.write_bytes(expected)
-    if not (work / "node_modules").is_dir():
-        if progress is not None:
-            progress("Installing Word, PowerPoint and image packages for Node.js...")
-        _run(
-            [
-                node,
-                str(pnpm),
-                "install",
-                "--frozen-lockfile",
-                "--ignore-scripts",
-                "--store-dir",
-                node_path(str(cache / "pnpm-store")),
-            ],
-            cwd=work,
-            env=env,
-        )
-    # An interrupted install or damaged package gets one locked repair attempt.
-    probe = [
-        node,
-        "-e",
-        "require('docx'); require('pptxgenjs'); require('sharp'); "
-        "const fs = require('fs'); const expected = JSON.parse(fs.readFileSync('package.json')).dependencies; "
-        "for (const [name, version] of Object.entries(expected)) { "
-        "const actual = JSON.parse(fs.readFileSync('node_modules/' + name + '/package.json')).version; "
-        "if (actual !== version) throw new Error(name + ' differs from its locked version'); }",
-    ]
-    try:
-        _run(probe, cwd=work, env=env)
-    except DocumentRuntimeError:
-        _run(
-            [
-                node,
-                str(pnpm),
-                "install",
-                "--force",
-                "--frozen-lockfile",
-                "--ignore-scripts",
-                "--store-dir",
-                node_path(str(cache / "pnpm-store")),
-            ],
-            cwd=work,
-            env=env,
-        )
-        _run(probe, cwd=work, env=env)
-    _run(
-        [
+        # An interrupted install or damaged package gets one locked repair attempt.
+        probe = [
+            node,
+            "-e",
+            "require('docx'); require('pptxgenjs'); require('sharp'); "
+            "const fs = require('fs'); const expected = JSON.parse(fs.readFileSync('package.json')).dependencies; "
+            "for (const [name, version] of Object.entries(expected)) { "
+            "const actual = JSON.parse(fs.readFileSync('node_modules/' + name + '/package.json')).version; "
+            "if (actual !== version) throw new Error(name + ' differs from its locked version'); }",
+        ]
+        module_probe = [
             node,
             "--input-type=module",
             "-e",
             "await import('docx'); await import('pptxgenjs'); await import('sharp');",
-        ],
-        cwd=work,
-        env=env,
-    )
+        ]
+        # The CommonJS and ES module checks are independent node processes.
+        modules_checked = running.submit(_run, module_probe, cwd=work, env=env)
+        try:
+            _run(probe, cwd=work, env=env)
+        except DocumentRuntimeError:
+            try:
+                modules_checked.result()
+            except DocumentRuntimeError:
+                pass
+            _run(
+                [
+                    node,
+                    str(pnpm_ready.result()),
+                    "install",
+                    "--force",
+                    "--frozen-lockfile",
+                    "--ignore-scripts",
+                    "--store-dir",
+                    store,
+                ],
+                cwd=work,
+                env=env,
+            )
+            _run(probe, cwd=work, env=env)
+            modules_checked = running.submit(_run, module_probe, cwd=work, env=env)
+        modules_checked.result()
+        pnpm = pnpm_ready.result()
     return work, pnpm
+
+
+def _javascript_or_error(
+    cache: Path,
+    workspace: Path,
+    inventory: dict[str, Any],
+    progress: Callable[[str], None] | None,
+) -> tuple[Path, Path] | DocumentRuntimeError:
+    """Prepare Node.js; a failure is returned so the verified Python stack stays usable."""
+    try:
+        return _javascript_runtime(cache, workspace, inventory, progress=progress)
+    except DocumentRuntimeError as exc:
+        return exc
 
 
 def prepare_document_runtime(
@@ -413,13 +622,31 @@ def prepare_document_runtime(
     with FileLock(str(cache / "prepare.lock"), timeout=240):
         if progress is not None:
             progress("Preparing and checking Python document packages...")
-        python, inventory = (
-            _python_runtime(cache, uv, discovery_only=True)
-            if discovery_only
-            else _python_runtime(cache, uv)
-        )
-        if progress is not None:
-            progress("Python document packages are ready. Preparing Node.js packages...")
+        python, inventory = _python_runtime(cache, uv, discovery_only=True)
+        javascript: tuple[Path, Path] | DocumentRuntimeError
+        if discovery_only:
+            if progress is not None:
+                progress("Python document packages are ready. Preparing Node.js packages...")
+            javascript = _javascript_or_error(cache, workspace, inventory, progress)
+        else:
+            # Node needs only the installed environment, so it is prepared while the
+            # full import probe runs. That probe is most of the Python step: the first
+            # load of each newly installed native library is checked by the OS.
+            if progress is not None:
+                progress("Python document packages are installed. Preparing Node.js packages...")
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-probe") as checking:
+                probed = checking.submit(_probe, python)
+                javascript = _javascript_or_error(cache, workspace, inventory, progress)
+                try:
+                    inventory = probed.result()
+                except (DocumentRuntimeError, ValueError):
+                    inventory = {}
+            if not inventory:
+                # A damaged environment gets the same locked repair as before, now that
+                # nothing runs from it.
+                python, inventory = _python_runtime(cache, uv)
+            if progress is not None:
+                progress("Python document packages are ready.")
         output = scratch / "output"
         output.mkdir(parents=True, exist_ok=True)
         inventory.update(
@@ -429,6 +656,7 @@ def prepare_document_runtime(
                 "uv": uv,
                 "uv_argv": [uv],
                 "office_root": str(office_runtime_root()),
+                "office_profiles": str(office_profile_templates()),
                 "distribution": "managed-cache",
                 "helper": str(STACK_ROOT / "cli.py"),
                 "output_directory": str(output),
@@ -449,8 +677,11 @@ def prepare_document_runtime(
                 },
             }
         )
-        try:
-            work, pnpm = _javascript_runtime(cache, workspace, inventory, progress=progress)
+        if isinstance(javascript, DocumentRuntimeError):
+            inventory["javascript"] = {"status": "failed", "error": str(javascript)}
+            inventory["status"] = "partial"
+        else:
+            work, pnpm = javascript
             inventory["node"] = node_path(str(inventory["node"]))
             inventory["javascript"] = {
                 "status": "ready",
@@ -467,9 +698,6 @@ def prepare_document_runtime(
                 ],
                 "packages": json.loads((STACK_ROOT / "package.json").read_text())["dependencies"],
             }
-        except DocumentRuntimeError as exc:
-            inventory["javascript"] = {"status": "failed", "error": str(exc)}
-            inventory["status"] = "partial"
         publish_environment(workspace, inventory, cache)
         if progress is not None and inventory["javascript"]["status"] == "ready":
             progress("Node.js document packages are ready.")
@@ -486,17 +714,38 @@ def office_runtime_root() -> Path:
     return paths.user_cache_dir() / "document-office" / VERSION
 
 
+def office_profile_templates() -> Path:
+    """Hold each Office build's seeded first-start profile for this user."""
+    return paths.user_cache_dir() / "document-office-profiles"
+
+
+def office_profile_starter(office_root: Path) -> Path | None:
+    """Return the first-start profile laid out beside the bundled renderer, if any."""
+    from clio_agent.runtime.document_stack.office import PROFILE_STARTER
+
+    bundled = bundled_root()
+    if bundled is None or office_root != bundled / "documents" / "office":
+        return None
+    starter = office_root.parent / PROFILE_STARTER
+    return starter if starter.is_file() else None
+
+
 def prepare_office_runtime() -> str:
     """Use an installed renderer or provision a private verified renderer automatically."""
-    from clio_agent.runtime.document_stack.office import ensure_office
+    from clio_agent.runtime.document_stack.office import ensure_office, seed_profile
     from clio_agent.runtime.document_stack.process import find_native
 
     managed_root = office_runtime_root()
     native = find_native("soffice")
     if native and not Path(native).resolve().is_relative_to(managed_root.resolve()):
+        seed_profile(Path(native), office_profile_templates())
         return native
     # A discovered managed executable still needs its host-side access repair.
-    return ensure_office(managed_root)
+    return ensure_office(
+        managed_root,
+        profile_templates=office_profile_templates(),
+        profile_starter=office_profile_starter(managed_root),
+    )
 
 
 def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) -> dict[str, Any]:

@@ -1,5 +1,5 @@
-"""Slice 5 (#772): the hand-rolled observer swallows in ``routes/mcp.py`` and
-``agents/external_mcp_calls.py`` are unified onto ``notify_tool_observer``.
+"""Slice 5 (#772): the hand-rolled observer swallow in ``routes/mcp.py`` is unified
+onto ``notify_tool_observer`` (``agents/external_mcp_calls.py`` was deleted as unused).
 
 The observer records the call in clio-core (the transcript and the UI read it
 from there). An observer that cannot record is NOT swallowed -- clio-core would
@@ -8,9 +8,7 @@ no longer hold what the agent did -- so its failure reaches the caller typed.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -124,90 +122,6 @@ class _RecordingObserver:
 
 def _patch_transport(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
     monkeypatch.setattr(f"{module}.transport_from_spec", lambda spec: object(), raising=True)
-
-
-# --------------------------------------------------------------------------- #
-# agents/external_mcp_calls.py :: _call_enabled_external_mcp_tool
-# --------------------------------------------------------------------------- #
-
-
-def test_external_mcp_call_exploding_observer_fails_the_tool_call(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    from clio_agent.gact.agents import external_mcp_calls
-
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_runtime.make_mcp_client",
-        lambda *args, **kwargs: _FakeClient(*args, **kwargs),
-    )
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_config.transport_from_spec", lambda spec: object(), raising=True
-    )
-
-    observer = _ExplodingObserver()
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            pending_permission_gate=lambda name, args: "allow",
-            pending_tool_observer=observer,
-            external_tasks=_InlineExternalOwner(),
-        )
-    )
-    info = {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}
-
-    with pytest.raises(RuntimeError):
-        asyncio.run(
-            external_mcp_calls._call_enabled_external_mcp_tool(
-                app, "srv", info, "do_thing", {"a": 1}
-            )
-        )
-    assert observer.calls, "the observer was reached"
-
-
-def test_external_mcp_call_observer_receives_structured_mcp_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """External MCP telemetry retains structuredContent while the model gets text."""
-
-    from clio_agent.gact.agents import external_mcp_calls
-
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_runtime.make_mcp_client",
-        lambda *args, **kwargs: _StructuredFakeClient(*args, **kwargs),
-    )
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_config.transport_from_spec", lambda spec: object(), raising=True
-    )
-
-    observer = _RecordingObserver()
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            pending_permission_gate=lambda name, args: "allow",
-            pending_tool_observer=observer,
-            external_tasks=_InlineExternalOwner(),
-        )
-    )
-    info = {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}
-
-    async def call() -> str:
-        """Supply the actual hosting loop to this isolated result-projection unit."""
-        app.state.mcp_app_loop = asyncio.get_running_loop()
-        return await external_mcp_calls._call_enabled_external_mcp_tool(
-            app, "srv", info, "do_thing", {"a": 1}
-        )
-
-    result = asyncio.run(call())
-
-    assert result == "human projection"
-    completed = next(call for call in observer.calls if call[2] == "completed")
-    assert completed[4] == {
-        "content": [{"type": "text", "text": "human projection"}],
-        "structuredContent": {
-            "schema_version": "example.result.v1",
-            "job_id": "job-structured",
-            "state": "succeeded",
-        },
-    }
-    assert "_meta" not in completed[4]
 
 
 # --------------------------------------------------------------------------- #

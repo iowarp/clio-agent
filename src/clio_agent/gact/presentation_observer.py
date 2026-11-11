@@ -64,6 +64,25 @@ def _result_error_message(result: Any) -> str:
     return ""
 
 
+def _presenter_explained_task_failure(result: Any, presentation: Mapping[str, Any]) -> bool:
+    """A settled task failed on its own reply's facts, and the presenter shows them.
+
+    A native task envelope says only ``status=failed`` (a shell exited non-zero).
+    When the reply inside carries no error of its own and the tool's presenter
+    already declared the failure from that reply (a terminal with its exit code
+    and output), a generic "Request failed: status=failed" block adds nothing.
+    """
+    from clio_agent.tools.result_errors import structured_tool_result_error
+    from clio_agent.tools.task_envelope import settled_tool_result
+
+    reply = settled_tool_result(result)
+    return (
+        reply is not None
+        and presentation.get("status") == "failed"
+        and structured_tool_result_error(reply) is None
+    )
+
+
 def starting_presentation(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
     """Resolve native or MCP running presentation at the observer-only boundary."""
     from clio_agent.gact.agents.tool_instrumentation import present_native_start
@@ -94,8 +113,13 @@ def completed_presentation(
     terminal_output: str,
     *,
     error: str | None = None,
+    outcome: str | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Prepare the observer view; failures cannot alter the tool's result or status."""
+    """Prepare the observer view; failures cannot alter the tool's result or status.
+
+    ``outcome`` (``denied`` or ``cancelled``) is an unsuccessful call that is not the
+    tool's failure: the view says it was not run, or was stopped, rather than failed.
+    """
     from clio_agent.gact.agents.tool_instrumentation import present_native_result
     from clio_agent.tools.tool_presentation import present_mcp_result
 
@@ -108,10 +132,27 @@ def completed_presentation(
         if presentation is None:
             presentation = present_mcp_result(name, args, result)
         presentation = ToolPresentation.model_validate(presentation).model_dump(exclude_none=True)
-        if error:
+        if error and outcome in {"cancelled", "denied"}:
+            presentation["status"] = outcome
+            presentation["summary"] = ""
+            presentation["blocks"].append(
+                {
+                    "id": "execution-outcome",
+                    "type": "text",
+                    "label": "Not run" if outcome == "denied" else "Stopped",
+                    "severity": "warning",
+                    "text": _human_execution_error(error)
+                    if outcome == "denied"
+                    else "Stopped before it finished; no result was returned.",
+                }
+            )
+        elif error:
+            explained = _presenter_explained_task_failure(result, presentation)
             presentation["status"] = "failed"
             presentation["summary"] = ""
-            if not any(block.get("severity") == "error" for block in presentation["blocks"]):
+            if not explained and not any(
+                block.get("severity") == "error" for block in presentation["blocks"]
+            ):
                 presentation["blocks"].append(
                     {
                         "id": "execution-error",

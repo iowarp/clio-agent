@@ -9,7 +9,7 @@ Linux fallback rung when Codex is not installed. Pinned here:
 * ladder selection when Codex is absent — Landlock activates on Linux, else the honest floor;
 * argv composition order ``pdeathsig( fence( final-argv ) )`` on the Landlock rung;
 * the Landlock shim arg split + non-Linux probe;
-* EROFS + EACCES + WinError-5 → policy_violation mapping and the observer mint;
+* the observer mint from the seam's boundary diagnosis (EROFS, EACCES, WinError 5);
 * the net chokepoint (kept for the Landlock/floor egress tier): CONNECT/absolute-form parse,
   round-trips, typed bind-failure, idempotency, shutdown.
 """
@@ -17,7 +17,6 @@ Linux fallback rung when Codex is not installed. Pinned here:
 from __future__ import annotations
 
 import ctypes
-import errno
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -269,48 +268,27 @@ def test_landlock_probe_enforceable_is_available(monkeypatch: pytest.MonkeyPatch
 
 
 # --------------------------------------------------------------------------- #
-# gap → policy_violation: EROFS/EACCES mapping + the observer mint            #
+# gap → policy_violation: the observer mint reads the seam's boundary diagnosis  #
+# (the denial table itself is pinned in test_sandbox_diagnosis.py, #1905).       #
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    ("text", "expected", "path"),
-    [
-        # sh/coreutils denial (the spike's confirmed shape — strerror text, not the bracket).
-        (
-            "/bin/sh: 1: cannot create /home/u/out.txt: Read-only file system",
-            "EROFS",
-            "/home/u/out.txt",
-        ),
-        # bash redirect denial ("bash: line N: /p: Read-only file system") — the REAL shell the
-        # fence tests use; its path form differs from sh's "cannot create" (CI-caught).
-        (
-            "/usr/bin/bash: line 1: /home/u/out.txt: Read-only file system",
-            "EROFS",
-            "/home/u/out.txt",
-        ),
-        ("/usr/bin/bash: line 1: /home/u/x.txt: Permission denied", "EACCES", "/home/u/x.txt"),
-        # Python OSError bracket form.
-        (f"[Errno {errno.EROFS}] Read-only file system: '/etc/x'", "EROFS", "/etc/x"),
-        (f"[Errno {errno.EACCES}] Permission denied: '/root/y'", "EACCES", "/root/y"),
-    ],
-)
-def test_write_denial_mapping_catches_erofs_and_eacces(text: str, expected: str, path: str) -> None:
-    from clio_agent.gact.artifacts.violations import write_denial_from_result
+def _boundary(stderr: str, roots: tuple[Path, ...], mechanism: str = "landlock") -> dict | None:
+    """The ``boundary`` a confined seam attaches for ``stderr`` under ``roots``."""
+    from clio_agent.runtime.sandbox_diagnosis import diagnose_boundary
 
-    denial = write_denial_from_result({"stderr": text, "exit_code": 1})
-    assert denial is not None
-    assert denial["errno_name"] == expected
-    assert denial["path"] == path  # the out-of-root path is extracted for attribution
+    diagnosis = diagnose_boundary(
+        exit_code=1,
+        stderr=stderr,
+        command="",
+        cwd=roots[0],
+        write_roots=roots,
+        mechanism=mechanism,
+    )
+    return diagnosis.to_payload() if diagnosis is not None else None
 
 
-def test_write_denial_mapping_ignores_clean_result() -> None:
-    from clio_agent.gact.artifacts.violations import write_denial_from_result
-
-    assert write_denial_from_result({"stdout": "ok", "exit_code": 0}) is None
-
-
-def test_observe_policy_violations_noop_on_floor() -> None:
+def test_observe_policy_violations_noop_on_floor(tmp_path: Path) -> None:
     """The floor never mints a violation (its out-of-root write is an honest gap)."""
     from fastapi import FastAPI
 
@@ -320,13 +298,14 @@ def test_observe_policy_violations_noop_on_floor() -> None:
     floor = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_NONE, active=False, reason=sc.REASON_CODEX_NOT_INSTALLED
     )
+    stderr = f"cannot create {tmp_path}/x: Read-only file system"
     out = observe_policy_violations(
         app,
         "sess",
         tool_name="bash",
         args={},
         call_id="c1",
-        result={"stderr": "cannot create /x: Read-only file system"},
+        result={"stderr": stderr, "boundary": _boundary(stderr, (tmp_path / "ws",))},
         workspace_id="",
         state=floor,
     )
@@ -334,8 +313,9 @@ def test_observe_policy_violations_noop_on_floor() -> None:
     assert policy_violations(app) == []
 
 
-def test_observe_policy_violations_mints_prevented_when_fenced() -> None:
-    """A fenced EROFS result mints a ``prevented`` policy_violation with the mechanism label."""
+def test_observe_policy_violations_mints_prevented_when_fenced(tmp_path: Path) -> None:
+    """A fenced result's boundary mints a ``prevented`` policy_violation with its mechanism,
+    signature and message (one diagnosis, read by both lanes)."""
     from fastapi import FastAPI
 
     from clio_agent.gact.artifacts import violations as v
@@ -344,13 +324,16 @@ def test_observe_policy_violations_mints_prevented_when_fenced() -> None:
     active = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
+    denied = tmp_path / "outside" / "out.txt"
+    stderr = f"cannot create {denied}: Read-only file system"
+    boundary = _boundary(stderr, (tmp_path / "ws",))
     out = v.observe_policy_violations(
         app,
         "sess",
         tool_name="bash",
         args={},
         call_id="c1",
-        result={"stderr": "cannot create /home/u/out.txt: Read-only file system", "exit_code": 2},
+        result={"stderr": stderr, "exit_code": 2, "boundary": boundary},
         workspace_id="ws1",
         state=active,
         started_at=1000.0,
@@ -360,8 +343,94 @@ def test_observe_policy_violations_mints_prevented_when_fenced() -> None:
     assert viol.kind == v.VIOLATION_PREVENTED
     assert viol.mechanism == sandbox.MECHANISM_LANDLOCK
     assert viol.errno_name == "EROFS"
-    assert viol.path == "/home/u/out.txt"
+    assert viol.path == str(denied)
+    assert viol.next_action == boundary["message"]
     assert v.policy_violations(app)[0]["kind"] == v.VIOLATION_PREVENTED
+
+
+def test_an_unfenced_tools_denial_text_is_not_a_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-process tool (no seam boundary, no confined child served it) is not fenced:
+    its denial text is never parsed into a violation. SABOTAGE: diagnose every failed
+    result in ``_served_call_boundary`` (drop the serving-child check) -> red."""
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (tmp_path / "ws",))
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.minting._workspace_root", lambda _app, _ws: tmp_path / "ws"
+    )
+
+    out = v.observe_policy_violations(
+        FastAPI(),
+        "sess",
+        tool_name="fs_write_file",
+        args={},
+        call_id="c1",
+        result={
+            "isError": True,
+            "content": [
+                {
+                    "type": "text",
+                    "text": (f"[Errno 13] Permission denied: '{tmp_path}/outside/x.txt'"),
+                }
+            ],
+        },
+        workspace_id="",
+        state=_active_fence(),
+    )
+    assert out == []
+
+
+def test_a_confined_mcp_servers_denial_is_diagnosed_and_reaches_its_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stdio MCP server cannot attach the field: the observer diagnoses its failed call
+    against the recomputed fleet roots, hedged to ``possible``, mints the violation and
+    publishes the diagnosis for that call's model observation.
+    SABOTAGE: drop ``publish_call_boundary`` in ``_served_call_boundary`` -> red."""
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+    from clio_agent.runtime.sandbox_diagnosis import POSSIBLE, take_call_boundary
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    denied = tmp_path / "outside" / "x.txt"
+    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (workspace,))
+    monkeypatch.setattr(
+        "clio_agent.gact.artifacts.minting._workspace_root", lambda _app, _ws: workspace
+    )
+    app = FastAPI()
+    app.state.net_serving_child_by_call = {"c9": "child-1"}
+    out = v.observe_policy_violations(
+        app,
+        "sess",
+        tool_name="files_write",
+        args={},
+        call_id="c9",
+        result={
+            "isError": True,
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Error executing tool write: [Errno 13] Permission denied: '{denied}'"
+                    ),
+                }
+            ],
+        },
+        workspace_id="ws1",
+        state=_active_fence(),
+        started_at=1000.0,
+    )
+    assert [viol.path for viol in out] == [str(denied)]
+    published = take_call_boundary("c9")
+    assert published is not None and published.confidence == POSSIBLE
+    assert published.request_roots == (str(tmp_path),)
+    assert out[0].next_action == published.message
 
 
 def test_policy_violation_event_is_trace_only() -> None:
@@ -396,30 +465,28 @@ def _active_fence() -> sandbox.SandboxResult:
     )
 
 
-# The errno signal fires only under a live fence, i.e. on Linux/macOS, so the denial messages
-# carry POSIX paths — the fixtures use POSIX roots to mirror that reality.
 @pytest.mark.parametrize(
-    ("stderr", "mints"),
+    ("template", "mints"),
     [
-        # (a) read EACCES on a file (cat a 0600 file) — no create/quoted path → no extract → NO mint.
-        ("cat: /ws/secret.txt: Permission denied", False),
-        # (b) bare SSH/publickey 'Permission denied' with no extractable path → NO mint.
+        # (a) read EACCES on an in-root file (cat a 0600 file) → no diagnosis → NO mint.
+        ("cat: {ws}/secret.txt: Permission denied", False),
+        # (b) bare SSH/publickey 'Permission denied': a path-less, possible diagnosis → NO mint.
         ("git@github.com: Permission denied (publickey).", False),
         # (c) IN-ROOT EROFS (mandatory .git/hooks protection) → path in-root → NO mint.
-        ("cannot create /ws/.git/hooks/pre-commit: Read-only file system", False),
+        ("cannot create {ws}/.git/hooks/pre-commit: Read-only file system", False),
         # (d) genuine OUT-OF-ROOT EROFS write denial with a path → MINT (prevented).
-        ("cannot create /totally/outside/escaped.txt: Read-only file system", True),
+        ("cannot create {out}/escaped.txt: Read-only file system", True),
     ],
 )
-def test_errno_signal_precision_battery(
-    stderr: str, mints: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_errno_signal_precision_battery(template: str, mints: bool, tmp_path: Path) -> None:
     """Precision over recall (#966.10): only a proven out-of-root write mints (F2/F4/F6)."""
     from fastapi import FastAPI
 
     from clio_agent.gact.artifacts import violations as v
 
-    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (Path("/ws"),))
+    workspace, outside = tmp_path / "ws", tmp_path / "totally" / "outside"
+    workspace.mkdir()
+    stderr = template.format(ws=workspace, out=outside)
     app = FastAPI()
     out = v.observe_policy_violations(
         app,
@@ -427,7 +494,7 @@ def test_errno_signal_precision_battery(
         tool_name="bash",
         args={},
         call_id="c",
-        result={"stderr": stderr, "exit_code": 1},
+        result={"stderr": stderr, "exit_code": 1, "boundary": _boundary(stderr, (workspace,))},
         workspace_id="ws",
         state=_active_fence(),
         started_at=1000.0,
@@ -436,7 +503,7 @@ def test_errno_signal_precision_battery(
     assert (len(v.policy_violations(app)) == 1) is mints
     if mints:
         assert out[0].kind == v.VIOLATION_PREVENTED
-        assert out[0].path == "/totally/outside/escaped.txt"
+        assert out[0].path == str(outside / "escaped.txt")
 
 
 # --------------------------------------------------------------------------- #
@@ -498,32 +565,11 @@ def test_designated_no_window_is_never_detected(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    ("text", "path"),
-    [
-        # Python child bracket form under the codex Windows fence.
-        ("[WinError 5] Access is denied: 'C:\\Users\\u\\out.txt'", "C:\\Users\\u\\out.txt"),
-        # strerror text form a shell prints, with a quoted path.
-        ("Access is denied: 'C:\\ws\\escaped.txt'", "C:\\ws\\escaped.txt"),
-    ],
-)
-def test_winerror5_denial_mapping(text: str, path: str) -> None:
-    from clio_agent.gact.artifacts.violations import write_denial_from_result
-
-    denial = write_denial_from_result({"stderr": text, "exit_code": 1})
-    assert denial is not None
-    assert denial["errno_name"] == "ERROR_ACCESS_DENIED"
-    assert denial["winerror"] == 5
-    assert denial["path"] == path
-
-
-def test_winerror5_mints_prevented_when_fenced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_winerror5_mints_prevented_when_fenced(tmp_path: Path) -> None:
     """A fenced out-of-root WinError-5 mints a prevented violation (codex mechanism).
 
-    Uses REAL ``tmp_path`` roots so containment (``_within_roots``) is evaluated with the
-    running OS's own Path flavor — portable on Linux CI and Windows alike.
+    Uses REAL ``tmp_path`` roots so containment is evaluated with the running OS's own
+    Path flavor — portable on Linux CI and Windows alike.
     """
     from fastapi import FastAPI
 
@@ -532,10 +578,10 @@ def test_winerror5_mints_prevented_when_fenced(
     ws = tmp_path / "ws"
     ws.mkdir()
     outside = tmp_path / "outside" / "escaped.txt"
-    monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (ws,))
     active = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_CODEX, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
+    stderr = f"[WinError 5] Access is denied: '{outside}'"
     app = FastAPI()
     out = v.observe_policy_violations(
         app,
@@ -543,7 +589,7 @@ def test_winerror5_mints_prevented_when_fenced(
         tool_name="bash",
         args={},
         call_id="c1",
-        result={"stderr": f"[WinError 5] Access is denied: '{outside}'"},
+        result={"stderr": stderr, "boundary": _boundary(stderr, (ws,), "codex")},
         workspace_id="ws1",
         state=active,
         started_at=1000.0,
@@ -732,3 +778,31 @@ def test_install_chokepoint_idempotent_and_shutdown_clears() -> None:
         nc.shutdown_chokepoint()
     assert nc.current_chokepoint() is None
     assert nc.chokepoint_port() is None
+
+
+def test_a_call_with_nothing_to_place_never_resolves_the_write_territory(monkeypatch) -> None:
+    """A fenced call with no denial and no output path skips the roots (the read-only burst).
+
+    Resolving the effective write roots walks every root through the filesystem; on a burst
+    of read-only MCP calls it was most of the tool observer's own time, for no possible
+    violation.
+    """
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+
+    def refuse(_app, _ws):
+        raise AssertionError("the write territory was resolved for a call with nothing to place")
+
+    monkeypatch.setattr(v, "_effective_roots", refuse)
+    out = v.observe_policy_violations(
+        FastAPI(),
+        "sess",
+        tool_name="get_record",
+        args={"record_id": "R1"},
+        call_id="c1",
+        result={"record_id": "R1", "value": "ok"},
+        workspace_id="",
+        state=_active_fence(),
+    )
+    assert out == []

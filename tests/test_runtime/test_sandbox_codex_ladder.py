@@ -77,8 +77,23 @@ def test_codex_viable_activates_codex(platform: str) -> None:
     assert result.reason == sandbox.REASON_FENCE_ACTIVE
     assert result.details["codex_binary"] == "/usr/bin/codex"
     assert result.details["codex_version"] == "0.145.0"
-    # Network egress is RECORDED via clio's upstream chokepoint (Recipe A) → proxy-enforced label.
-    assert result.details["net_enforcement"] == sandbox.NET_ENFORCEMENT_PROXY
+    # Network egress is RECORDED via clio's upstream chokepoint (Recipe A). On macOS codex's
+    # managed proxy is not enabled, so only proxy-aware clients reach it: env-cooperative.
+    expected = (
+        sandbox.NET_ENFORCEMENT_ENV_COOPERATIVE
+        if platform == "darwin"
+        else sandbox.NET_ENFORCEMENT_PROXY
+    )
+    assert result.details["net_enforcement"] == expected
+
+
+def test_macos_codex_egress_is_labelled_env_cooperative() -> None:
+    """A direct dial bypasses the macOS chokepoint, so recorded edges never claim enforcement."""
+    from clio_agent.runtime import sandbox_net  # noqa: PLC0415
+
+    result = sandbox._resolve_backend(platform="darwin", codex_detection=_codex_ok())
+    assert result.mechanism == sandbox.MECHANISM_CODEX and result.active is True
+    assert sandbox_net.net_mechanism_label(result) == "env-cooperative"
 
 
 @pytest.mark.parametrize(

@@ -104,7 +104,7 @@ def test_runtime_marker_probe_does_not_fall_back_to_the_host(tmp_path: Path) -> 
 @pytest.mark.parametrize("python_version", [(3, 12), (3, 13), (3, 14)])
 @pytest.mark.parametrize(
     "platform",
-    ["win_amd64", "macosx_14_0_arm64", "manylinux_2_28_x86_64", "manylinux_2_28_aarch64"],
+    ["win_amd64", "macosx_15_0_arm64", "manylinux_2_28_x86_64", "manylinux_2_28_aarch64"],
 )
 def test_locked_storage_dependencies_have_native_wheels(
     package_name: str, python_version: tuple[int, int], platform: str
@@ -113,8 +113,8 @@ def test_locked_storage_dependencies_have_native_wheels(
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     package = next(package for package in lock["package"] if package["name"] == package_name)
     platforms = (
-        mac_platforms(version=(14, 0), arch="arm64")
-        if platform == "macosx_14_0_arm64"
+        mac_platforms(version=(15, 0), arch="arm64")
+        if platform == "macosx_15_0_arm64"
         else [platform]
     )
     supported = set(cpython_tags(python_version, platforms=platforms))
@@ -128,18 +128,18 @@ def test_locked_storage_dependencies_have_native_wheels(
     )
 
 
-def test_locked_rasterio_has_a_bundled_macos_14_wheel() -> None:
-    """The macOS 14 bundle must not compile against a runner-local GDAL install."""
+def test_locked_rasterio_has_a_bundled_macos_15_wheel() -> None:
+    """The macOS 15 bundle must not compile against a runner-local GDAL install."""
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     rasterio = next(package for package in lock["package"] if package["name"] == "rasterio")
-    supported = set(cpython_tags((3, 14), platforms=mac_platforms(version=(14, 0), arch="arm64")))
+    supported = set(cpython_tags((3, 14), platforms=mac_platforms(version=(15, 0), arch="arm64")))
     compatible = []
     for wheel in rasterio["wheels"]:
         filename = unquote(urlparse(wheel["url"]).path.rsplit("/", 1)[-1])
         _, _, _, tags = parse_wheel_filename(filename)
         if supported.intersection(tags):
             compatible.append(filename)
-    assert compatible, f"Rasterio {rasterio['version']} has no Python 3.14/macOS 14 ARM wheel"
+    assert compatible, f"Rasterio {rasterio['version']} has no Python 3.14/macOS 15 ARM wheel"
 
 
 def _code_lines(path: Path) -> list[str]:
@@ -329,7 +329,11 @@ def test_user_updatable_components_are_exact_floors_in_pyproject() -> None:
     from packaging.requirements import Requirement
 
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    declared = [*project["dependencies"], *project["optional-dependencies"]["claude-code"]]
+    declared = [
+        *project["dependencies"],
+        *project["optional-dependencies"]["claude-code"],
+        *project["optional-dependencies"]["copilot"],
+    ]
     specs = {Requirement(item).name: Requirement(item).specifier for item in declared}
     for name in cbl.USER_UPDATABLE_COMPONENTS:
         operators = {spec.operator for spec in specs[name]}
@@ -428,3 +432,49 @@ def test_product_release_reports_real_import_failures(
     )
     with pytest.raises(RuntimeError, match="missing native dependency"):
         cbl.verify_product_release(tmp_path / "python", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("tag", "version"),
+    [
+        ("v0.9.5", "0.9.5"),
+        ("v0.9.5.1", "0.9.5.1"),
+        ("v0.9.6-beta.0", "0.9.6b0"),
+        ("v0.9.5-beta.7.2", "0.9.5b7.post2"),
+    ],
+)
+def test_release_tags_map_to_their_package_version(tag: str, version: str) -> None:
+    assert cbl.package_version_for_tag(tag) == version
+
+
+@pytest.mark.parametrize("tag", ["v0.9.6-rc.1", "v0.9", "main", "v0.9.5.1-beta.0"])
+def test_release_tag_mapping_refuses_other_tags(tag: str) -> None:
+    with pytest.raises(ValueError, match="not a CLIO release tag"):
+        cbl.package_version_for_tag(tag)
+
+
+def test_a_tag_naming_another_release_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Build 42780090698: app labelled v0.9.6-beta.0, runtime 0.9.5.1, "update ready"."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion="0.9.5.1"\n')
+    with pytest.raises(RuntimeError, match="needs pyproject.toml version '0.9.6b0'"):
+        cbl.verify_release_tag(tmp_path, "v0.9.6-beta.0")
+    cbl.verify_release_tag(tmp_path, "v0.9.5.1")
+
+    monkeypatch.setattr(
+        sys, "argv", ["check", "--project", str(tmp_path), "--release-tag", "v0.9.6-beta.0"]
+    )
+    assert cbl.main() == 1
+    assert "0.9.5.1" in capsys.readouterr().err
+    monkeypatch.setattr(
+        sys, "argv", ["check", "--project", str(tmp_path), "--release-tag", "v0.9.5.1"]
+    )
+    assert cbl.main() == 0
+
+
+def test_every_release_build_checks_its_tag_against_the_package() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/clio-bundles.yml").read_text(encoding="utf-8")
+    assert '--release-tag "$RELEASE_TAG"' in workflow
+    assert '--release-tag "$env:RELEASE_TAG"' in workflow
+    assert workflow.count("--release-tag") == 3

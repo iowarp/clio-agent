@@ -43,7 +43,12 @@ _EXTENSION_FIELDS = (
     "workflow_state",
     "catalogs",
     "connections",
+    "defer",
+    "servers",
+    "kernel_bindings",
 )
+#: What one ``servers.<name>`` entry may set.
+_SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
 _REMOTE_FIELDS = {"type", "url", "headers"}
 _RESERVED_ENV = {"PLUGIN_ROOT", "PLUGIN_DATA"}
@@ -143,6 +148,43 @@ def validate_manifest(
     return cleaned, warnings
 
 
+def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
+    """``defer`` is a boolean; ``servers`` maps MCP server names to ``defer``,
+    ``description`` (what the server is for, shown beside its deferred tool names),
+    ``callers`` and ``permission`` (the server's tool defaults) and ``tools`` (one MCP
+    tool's ``callers`` and ``permission``, by the server's own tool name)."""
+    from clio_agent.tools.tool_settings import check_callers, check_permission  # noqa: PLC0415
+
+    def settings(row: Mapping[str, Any], where: str) -> None:
+        try:
+            check_callers(row.get("callers"), where)
+            check_permission(row.get("permission"), where)
+        except ValueError as exc:
+            raise ManifestError(str(exc)) from exc
+
+    if "defer" in ext and not isinstance(ext["defer"], bool):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.defer must be true or false")
+    servers = ext.get("servers", {})
+    if not isinstance(servers, dict):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.servers must map MCP server names to objects")
+    for name, row in servers.items():
+        where = f"{plugin}: {NAMESPACE}.servers.{name}"
+        if not isinstance(row, dict) or set(row) - set(_SERVER_FIELDS):
+            raise ManifestError(f"{where} may set only {', '.join(_SERVER_FIELDS)}")
+        if "defer" in row and not isinstance(row["defer"], bool):
+            raise ManifestError(f"{where}.defer must be a boolean")
+        if "description" in row and not isinstance(row["description"], str):
+            raise ManifestError(f"{where}.description must be text")
+        settings(row, where)
+        tools = row.get("tools", {})
+        if not isinstance(tools, dict):
+            raise ManifestError(f"{where}.tools must map tool names to objects")
+        for tool, entry in tools.items():
+            if not isinstance(entry, dict) or set(entry) - {"callers", "permission"}:
+                raise ManifestError(f"{where}.tools.{tool} may set only callers and permission")
+            settings(entry, f"{where}.tools.{tool}")
+
+
 def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     """Validate and return the ``ai.iowarp.clio`` extension object."""
 
@@ -150,6 +192,9 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     unknown = sorted(set(ext) - set(_EXTENSION_FIELDS))
     if unknown:
         raise ManifestError(f"{plugin}: unknown {NAMESPACE} field(s): {', '.join(unknown)}")
+    from clio_agent.plugins.kernel_bindings import check_shape  # noqa: PLC0415
+
+    check_shape(ext.get("kernel_bindings"), plugin)
     kind = ext.get("kind", "plugin")
     if kind not in ("plugin", "pack"):
         raise ManifestError(f"{plugin}: {NAMESPACE}.kind must be 'plugin' or 'pack'")
@@ -179,6 +224,7 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     for key in ("model", "prefers", "workflow_state"):
         if key in ext and not isinstance(ext[key], dict):
             raise ManifestError(f"{plugin}: {NAMESPACE}.{key} must be an object")
+    _check_disclosure(ext, plugin)
     if kind == "pack" and not ext.get("members"):
         raise ManifestError(f"{plugin}: a pack must list its members")
     return ext
@@ -224,8 +270,10 @@ def read_mcp_config(root: Path, plugin: str) -> tuple[dict[str, dict[str, Any]],
 def validate_server(root: Path, name: str, entry: Any) -> str:
     """Return why one ``mcpServers`` entry is invalid, or an empty string."""
 
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
-        return f"server {name!r}: names use letters, digits, '-' and '_'"
+    # The gateway's rule (``tools.mcp_config``): a name prefixes its tools, and ``_``
+    # separates that prefix, so a name with ``_`` or capitals never mounts.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        return f"server {name!r}: names use lowercase letters, digits and '-' (no '_')"
     if not isinstance(entry, dict):
         return f"server {name!r}: must be an object"
     kind = entry.get("type")

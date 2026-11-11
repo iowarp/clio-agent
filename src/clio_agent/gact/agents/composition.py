@@ -2,7 +2,8 @@
 
 The composed prompt itself comes from the agent's plugins
 (:mod:`clio_agent.plugins.compose`). What this module adds is runtime state the
-plugins cannot know: the session's bound workspace and its write roots. It is
+plugins cannot know: the session's bound workspace, its write roots, the machine and
+the session's own scratch folder. It is
 labelled as runtime context in the prompt view, not attributed to a plugin.
 """
 
@@ -13,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import injections
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -23,7 +25,9 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     """Surface the session's workspace scope to the agent.
 
     Workspace facts tell the agent where generated artifacts belong. They change
-    no permissions and force no paths: the file policy validates access.
+    no permissions and force no paths: the file policy validates access. The text is
+    the reminder ``clio.reminder.session_facts`` followed by its ``session_facts_*``
+    pieces (``plugins/builtin/core/ai.iowarp.clio/injections/``); the code decides which pieces apply.
     """
 
     if app is None:
@@ -34,27 +38,82 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     if root is None:
         return ""
     try:
-        from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
-
-        allowed_roots = [str(item) for item in FileAccessPolicy.from_env().allowed_roots]
+        allowed_roots = _session_write_roots(root)
     except Exception as exc:  # noqa: BLE001 - policy env read; degrade to no roots line
         trace.event("WORKSPACE-CTX", "allowed-roots read failed (%s); omitting roots line", exc)
         allowed_roots = []
-    lines = [
-        f"Active workspace root: {root}",
-        (
-            "Write generated artifacts (files, charts, exports) inside the "
-            "active workspace root using absolute paths so they stay with the "
-            "session. Read inputs from wherever the user points you."
-        ),
-    ]
-    from clio_agent.gact.node_folders import prompt_lines, session_node_folder  # noqa: PLC0415
+    from clio_agent.gact.node_folders import session_node_folder  # noqa: PLC0415
 
+    def fact(piece: str, variables: dict[str, Any]) -> str | None:
+        return injections.render(f"session_facts{piece}", variables, app=app, session_id=session_id)
+
+    tail = [*_inventory_lines(app, session_id, fact), *_session_scratch_lines(app, session_id)]
+    head = fact("", {"root": root})
+    if head is None:  # switched off by the person: no session facts at all
+        return ""
+    lines: list[str | None] = [head]
     if node_folder := session_node_folder(app, session_id):
-        lines = [lines[0], *prompt_lines(node_folder)]
-    elif allowed_roots:
-        lines.append("Writes are only permitted under: " + ", ".join(allowed_roots) + ".")
-    return "\n".join(lines)
+        lines.append(fact("_node_folder", {"folder": node_folder}))
+    else:
+        lines.append(fact("_workspace", {}))
+        if allowed_roots:
+            lines.append(fact("_write_roots", {"roots": ", ".join(allowed_roots)}))
+    return "\n".join(line for line in [*lines, *tail] if line)
+
+
+def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
+    """Connected sources and uploaded resources, each only when there is one."""
+    from clio_agent.gact.agents import session_inventory  # noqa: PLC0415
+
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    lines: list[str | None] = []
+    if sources := session_inventory.source_facts(app, workspace_id):
+        lines.append(fact("_sources", {"sources": sources}))
+    resources, total = session_inventory.resource_facts(app, workspace_id)
+    if total:
+        lines.append(fact("_resources", {"resources": resources, "total": total}))
+    return lines
+
+
+def _session_scratch_lines(app: Any, session_id: str) -> list[str | None]:
+    """The machine and the session's own scratch folder (TD56), both per session.
+
+    The folder is created here: naming it is the session's first need of it, and the file
+    tools and the kernel fence only accept a folder that exists.
+    """
+
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415
+
+    where = {"app": app, "session_id": session_id}
+    machine = {"machine": session_scratch.machine_name()}
+    lines = [injections.render("session_facts_machine", machine, **where)]
+    if folder := session_scratch.session_scratch_dir(session_id):
+        lines.append(injections.render("session_facts_scratch", {"folder": folder}, **where))
+    return lines
+
+
+def _session_write_roots(root: Any) -> list[str]:
+    """The roots this session's file tools may write, its workspace first.
+
+    Read with the workspace bound, as a tool call reads them: outside that binding the
+    policy holds only ``CLIO_ALLOWED_ROOTS`` (by default the server's working directory),
+    and naming that alone would point the agent at the server's folder instead of its
+    workspace. CLIO's own state and cache folders for the workspace are left out; the
+    agent's file tools do not write there.
+    """
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
+    from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
+
+    with tool_workspace_context(root):
+        roots = FileAccessPolicy.from_env().allowed_roots
+    internal = {
+        paths.workspace_state_dir(root).resolve(),
+        paths.workspace_cache_dir(root).resolve(),
+    }
+    return [str(item) for item in roots if item not in internal]
 
 
 def _provider_summary(provider: Any) -> str:

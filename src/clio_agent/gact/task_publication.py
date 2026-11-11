@@ -27,8 +27,20 @@ def subscription_caller(history: TaskHistory, subscription: TaskSubscription) ->
     return TaskCaller(subscription.recipient_session, human) if human else None
 
 
+#: Invocation prefix of source operations a person starts from the UI (link, refresh,
+#: download). They are tracked in that person's conversation but are not agent work.
+HUMAN_SOURCE_INVOCATION = "source-ui:"
+
+
 def task_owner_recipient(history: TaskHistory, current: TaskSnapshot) -> str | None:
-    """Resolve the owning agent; a human-root completion never wakes itself."""
+    """Resolve the owning agent; a human-root completion never wakes itself.
+
+    Nor does a source operation the person started from the UI: its outcome must not
+    start an agent turn without a user message. The agent learns its state from the
+    session facts on the person's next turn and can wait on it with ``wait_tasks``.
+    """
+    if (current.invocation_id or "").startswith(HUMAN_SOURCE_INVOCATION):
+        return None
     if current.kind not in {"Session", "Subagent"}:
         return current.owner.session_id
     if current.kind == "Subagent" and current.owner.parent_handle is not None:

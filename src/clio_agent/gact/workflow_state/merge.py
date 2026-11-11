@@ -68,7 +68,7 @@ def _normalize_workflow_state_scalar(key: str, value: Any) -> Any:
     if not isinstance(value, str):
         return value
     lowered = key.lower()
-    if any(token in lowered for token in ("path", "url", "filepath", "filename", "resource_name")):
+    if any(token in lowered for token in ("path", "url", "filename", "resource_name")):
         return _normalize_pathlike_text(value)
     return value
 
