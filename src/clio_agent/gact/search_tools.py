@@ -137,6 +137,7 @@ def search_result(
         "tools": [
             {
                 "name": entry.name,
+                "title": _title(entry.name),
                 "owner": entry.owner,
                 "description": entry.description,
                 "signature": _signature(entry),
@@ -173,14 +174,47 @@ def search_result(
     return "\n".join(lines).strip(), structured
 
 
+def _title(name: str) -> str:
+    """A tool's display title (``view_pdf`` -> "View PDF"), or its name when it has none."""
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        declared_tool_title,
+    )
+
+    return declared_tool_title(name) or name
+
+
+def _action(count: int) -> str:
+    return "Load tool" if count == 1 else "Load tools"
+
+
+def _titles(titles: list[str]) -> str:
+    """The row's subject: the first two titles, then how many more ("View PDF, Read docx +2")."""
+    shown = ", ".join(titles[:2])
+    return f"{shown} +{len(titles) - 2}" if len(titles) > 2 else shown
+
+
+def _select_names(query: str) -> list[str]:
+    if not query.strip().lower().startswith("select:"):
+        return []
+    return [name.strip() for name in query.strip()[7:].split(",") if name.strip()]
+
+
+def _subject_view(action: str, subject: str, query: str) -> dict[str, Any]:
+    """The row reads ``action`` then ``subject``; the query is body only when it adds to it."""
+    blocks: list[dict[str, Any]] = [{"id": "loaded", "type": "text", "text": subject}]
+    if query and query != subject:
+        blocks.append({"id": "query", "type": "text", "label": "Search", "text": query})
+    return {"action": action, "subject": "loaded", "blocks": blocks}
+
+
 def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     del result
     row = structured if isinstance(structured, Mapping) else {}
     tools = [t for t in row.get("tools") or [] if isinstance(t, Mapping)]
     query = str(row.get("query") or args.get("query") or "")
-    blocks: list[dict[str, Any]] = [
-        {"id": "query", "type": "text", "label": "Search", "text": query}
-    ]
+    titles = [str(t.get("title") or _title(str(t.get("name") or ""))) for t in tools]
+    head = _subject_view(_action(len(tools)), _titles(titles) if tools else query, query)
+    blocks: list[dict[str, Any]] = head["blocks"]
     for i, server in enumerate(row.get("servers") or []):
         if isinstance(server, Mapping) and server.get("instructions"):
             blocks.append(
@@ -230,17 +264,15 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
                 "text": f"None of the {row.get('deferred_total', 0)} deferred tools matched.",
             }
         )
-    view: dict[str, Any] = {"subject": "query", "summary": summary, "blocks": blocks}
+    view: dict[str, Any] = {**head, "summary": summary, "blocks": blocks}
     return view | ({"status": status} if status else {})
 
 
 def _starting(args: Mapping[str, Any]) -> dict[str, Any]:
     query = str(args.get("query") or "")
-    return {
-        "subject": "query",
-        "summary": "",
-        "blocks": [{"id": "query", "type": "text", "label": "Search", "text": query}],
-    }
+    names = _select_names(query)
+    titles = _titles([_title(n) for n in names]) if names else query
+    return {**_subject_view(_action(len(names)), titles, query), "summary": ""}
 
 
 def build_search_tools_tool() -> Any:
