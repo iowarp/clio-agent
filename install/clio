@@ -215,6 +215,25 @@ update_check() {
   fi
 }
 
+# drop_stale_document_wheels: a release's prebuilt runtime (runtime.json) carries
+# document wheels built for that release's document lock. Once `clio update` has
+# replaced clio-agent with one that locks other packages, they no longer apply and
+# preparing documents would reject them; dropping them prepares from the new lock.
+drop_stale_document_wheels() {
+  local wheels="$CLIO_VENV/document-wheels"
+  [[ -f "$CLIO_VENV/runtime.json" && -f "$wheels/manifest.json" ]] || return 0
+  "$CLIO_VENV/bin/python" -I -B - "$wheels/manifest.json" <<'PY' && return 0
+import hashlib, importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.find_spec("clio_agent")
+lock = Path(spec.origin).parent / "runtime/document_stack/uv.lock"
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+sys.exit(manifest.get("lock_sha256") != hashlib.sha256(lock.read_bytes()).hexdigest())
+PY
+  rm -rf "$wheels"
+  say "the release's bundled document packages no longer match; they will download on first use"
+}
+
 # open_url launches the default browser cross-platform (best-effort, backgrounded).
 open_url() {
   local url="$1"
@@ -632,6 +651,7 @@ main() {
       else
         "$CLIO_VENV/bin/python" -m pip install ${wheel_arg:+"$wheel_arg"} -U clio-agent || { err "update failed (no uv; pip fallback also failed)"; return 1; }
       fi
+      drop_stale_document_wheels
       rm -f "$UPDATE_STAMP" 2>/dev/null || true
       say "updated — run 'clio' to start the new version"
       ;;
