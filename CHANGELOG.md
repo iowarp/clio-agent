@@ -6,6 +6,11 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6.2] - 2026-11-11
+
+A hotfix on 0.9.6.1. It ships the same iowarp/gact-tui v0.12.1, clio-kit
+2.12.3, clio-schemas and marketplace pins.
+
 ### Fixed
 
 - Installs that download LibreOffice work again. The Document Foundation moved
