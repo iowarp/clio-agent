@@ -343,7 +343,7 @@ start_prefetch() {  # PLAN
     names="$names${names:+, }$name"
     start_job prefetch "$sha" "$name" "$url"
   done < <(plan_entries "$1")
-  [ -z "$names" ] || say "Fetching what the first launch needs at the same time: $names"
+  [ -z "$names" ] || say "Fetching at the same time: $names"
 }
 
 finish_downloads() {
@@ -992,8 +992,7 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
     || die "could not fetch '$ref' into '$src' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
   git -C "$src" checkout -q --detach FETCH_HEAD \
     || die "could not check out '$ref' in '$src' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)"
-  update_submodules "$src" --depth 1 \
-    || die "could not update the submodules of '$src' to '$ref' (git's message is above); run this installer again"
+  # The caller updates the submodules (start_submodules), alongside the Python install.
 }
 
 # Release installs carry Web; source installs provide the service without a frontend build.
@@ -1001,8 +1000,147 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
 on_exit() {
   [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
   [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
+  stop_install_jobs
 }
 trap on_exit EXIT
+
+# ---------- work that overlaps the Python install ----------------------
+# The managed runtime step (document_install, below) downloads LibreOffice (~220 MB)
+# and pnpm itself unless they are handed to it, which used to start only after the
+# Python install. The install plan of the CLIO being installed names those files with
+# their pinned SHA-256 (scripts/release_install_plan.py, the plan --desktop uses); they
+# are fetched while uv installs, into a folder named in CLIO_INSTALL_DOWNLOADS. The
+# runtime uses a file only when its bytes match its own pin, waits for one still
+# arriving, and fetches anything missing itself. A source clone's submodules are
+# checked out at the same time too: no Python build reads them (tool.hatch exclude).
+INSTALL_DOWNLOADS=""
+SUBMODULE_JOB=""
+submodule_failure=""
+
+install_scratch() {
+  [ -z "$DESKTOP_SCRATCH" ] || return 0
+  DESKTOP_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/clio-install.XXXXXXXX")"
+  mkdir "$DESKTOP_SCRATCH/downloads"
+}
+
+stop_install_jobs() {
+  local pid
+  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
+  [ -z "$DESKTOP_SCRATCH" ] || rm -rf "$DESKTOP_SCRATCH"
+}
+
+install_triple() {
+  case "$OS-$ARCH" in
+    linux-amd64) echo x86_64-unknown-linux-gnu ;;
+    linux-arm64) echo aarch64-unknown-linux-gnu ;;
+    darwin-arm64) echo aarch64-apple-darwin ;;
+    darwin-amd64) echo x86_64-apple-darwin ;;
+  esac
+}
+
+# The published plan of release TAG (authenticated by its SHA256SUMS), or nothing.
+release_install_plan() {
+  local triple
+  triple="$(install_triple)"
+  [ -n "$triple" ] || return 0
+  if ! curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+      "$REPO_URL/releases/download/$1/SHA256SUMS.$triple.bundled.txt" -o "$DESKTOP_SCRATCH/checksums" 2>/dev/null; then
+    warn "release $1 publishes no checksums for $triple: LibreOffice and pnpm download after the Python install"
+    return 0
+  fi
+  if ! is_sha "$(manifest_sha "$DESKTOP_SCRATCH/checksums" "install-plan.$triple.bundled.txt")"; then
+    warn "release $1 publishes no install plan for $triple: LibreOffice and pnpm download after the Python install"
+    return 0
+  fi
+  fetch_plan "$1" "$DESKTOP_SCRATCH/checksums" "$triple"
+}
+
+# The plan of the checkout at SRC, from its own pins, run on PYTHON; or nothing.
+source_install_plan() {
+  local triple
+  triple="$(install_triple)"
+  [ -n "$triple" ] && [ -f "$1/scripts/release_install_plan.py" ] || return 0
+  if uv run --quiet --no-project --python "$2" python -I "$1/scripts/release_install_plan.py" \
+      --target "$triple" --no-sizes --output "$DESKTOP_SCRATCH/plan" >/dev/null 2>&1; then
+    printf '%s' "$DESKTOP_SCRATCH/plan"
+  else
+    warn "could not read the install plan of '$1': LibreOffice and pnpm download after the Python install"
+  fi
+}
+
+# start_install_downloads PLAN: fetch the plan's LibreOffice and pnpm in the background.
+# Only those kinds: a plan's "runtime" archive is the desktop's own and not used here.
+start_install_downloads() {
+  [ -n "$1" ] && [ -s "$1" ] || return 0
+  awk '$1 == "capability" || $1 == "office" || $1 == "npm"' "$1" > "$DESKTOP_SCRATCH/plan.install"
+  start_prefetch "$DESKTOP_SCRATCH/plan.install"
+  [ -n "$DESKTOP_JOBS" ] || return 0
+  INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
+  # A runtime that cannot wait for a download in progress would fetch it a second time.
+  if plan_capable "$DESKTOP_SCRATCH/plan.install" waits-for-partial-downloads; then
+    DESKTOP_PLAN_WAITS=1
+  fi
+}
+
+# ---------- clio-kit MCP runtime, provisioned alongside the Python install
+# Marketplace packs launch their MCP servers via the installed `clio-kit
+# mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
+# explicit legacy shared-runtime candidates select their science dependency union.
+# Installed-tool launchers (not per-server `uvx` calls)
+# avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
+# deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
+# is idempotent (re-run is a no-op / version pin). Needs uv; without it the
+# packs' tools simply stay unprovisioned until uv is installed. It needs only uv and
+# the release's Python, so it runs while clio-agent installs (start_clio_kit PYTHON),
+# never while the managed runtime step's cache collection looks for live clio-kit.
+CLIO_KIT_JOB=""
+clio_kit_spec=""
+start_clio_kit() {
+  if ! have uv; then
+    warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
+    return 0
+  fi
+  if [ -z "$CLIO_KIT_PACKAGE" ]; then
+    clio_kit_spec="clio-kit==2.11.1"
+    say "Provisioning released clio-kit launcher ($clio_kit_spec) at the same time"
+  elif [[ "$CLIO_KIT_PACKAGE" == *"=="* ]]; then
+    clio_kit_spec="${CLIO_KIT_PACKAGE%%==*}[science]==${CLIO_KIT_PACKAGE#*==}"
+    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
+  else
+    clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
+    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
+  fi
+  uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
+  CLIO_KIT_JOB=$!
+}
+finish_clio_kit() {
+  local status=0
+  [ -n "$CLIO_KIT_JOB" ] || return 0
+  wait "$CLIO_KIT_JOB" || status=$?
+  CLIO_KIT_JOB=""
+  cat "$DESKTOP_SCRATCH/clio-kit.log" 2>/dev/null || true
+  [ "$status" = 0 ] && say "clio-kit launcher ready ($clio_kit_spec)" \
+    || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
+}
+
+# start_submodules SRC [ARGS]: update_submodules in the background; finish_submodules
+# MESSAGE waits for it, shows git's output and dies with MESSAGE if it failed.
+start_submodules() {
+  local log="$DESKTOP_SCRATCH/submodules.log"
+  ( update_submodules "$@" ) > "$log" 2>&1 &
+  SUBMODULE_JOB=$!
+}
+finish_submodules() {
+  local status=0
+  [ -n "$SUBMODULE_JOB" ] || return 0
+  wait "$SUBMODULE_JOB" || status=$?
+  SUBMODULE_JOB=""
+  cat "$DESKTOP_SCRATCH/submodules.log" 2>/dev/null || true
+  [ "$status" = 0 ] || die "$1"
+}
 
 # ---------- install clio-agent ----------------------------------------
 VENV="$PREFIX/clio-agent/.venv"
@@ -1025,15 +1163,19 @@ if [ "$OPT_SOURCE" = 1 ]; then
       rm -rf "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
     fi
     ln -sfn "$SRC" "$PREFIX/clio-agent"
-    update_submodules "$SRC" \
-      || die "could not update the submodules of '$SRC' (git's message is above); run this installer again"
+    install_scratch
+    start_submodules "$SRC"
+    submodule_failure="could not update the submodules of '$SRC' (git's message is above); run this installer again"
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --python "$py" --extra argonne --extra flowcept)
   else
     ref="${OPT_REF:-$([ "$OPT_DEV" = 1 ] && echo develop || echo main)}"
     SRC="$PREFIX/clio-agent"
+    install_scratch
     if source_clone_reusable "$SRC"; then
       update_source_clone "$SRC" "$ref"
+      start_submodules "$SRC" --depth 1
+      submodule_failure="could not update the submodules of '$SRC' to '$ref' (git's message is above); run this installer again"
     else
       say "Cloning clio-agent at $ref"
       if ! git clone --quiet --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
@@ -1043,15 +1185,18 @@ if [ "$OPT_SOURCE" = 1 ]; then
           && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
           || die "could not fetch clio-agent at '$ref' from $CLIO_REPO: check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
       fi
-      update_submodules "$SRC" --depth 1 \
-        || die "could not fetch the submodules of clio-agent at '$ref' (git's message is above); run this installer again"
+      start_submodules "$SRC" --depth 1
+      submodule_failure="could not fetch the submodules of clio-agent at '$ref' (git's message is above); run this installer again"
     fi
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
   fi
+  start_install_downloads "$(source_install_plan "$SRC" "$py")"
+  start_clio_kit "$py"
   say "Installing clio-agent deps (uv ${sync_args[*]})"
   sync_status=0
   ( cd "$SRC" && uv "${sync_args[@]}" ) || sync_status=$?
+  finish_submodules "$submodule_failure"
   [ "$sync_status" = 0 ] \
     || die_with "$sync_status" "uv could not install clio-agent's dependencies (exit $sync_status; uv's message above names the cause). Fix it and run this installer again."
 else
@@ -1093,6 +1238,8 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
 ' "$which")" || die "could not read the clio-agent releases from GitHub"
   fi
   tag="$(release_tag "$package_version")"
+  install_scratch
+  start_install_downloads "$(release_install_plan "$tag")"
   lockdir="$(mktemp -d)"  # removed on exit (on_exit)
   for f in pyproject.toml uv.lock .python-version; do
     curl -fsSL "https://raw.githubusercontent.com/iowarp/clio-agent/$tag/$f" -o "$lockdir/$f" 2>/dev/null \
@@ -1102,6 +1249,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   ( cd "$lockdir" && uv export --quiet --frozen --no-hashes --no-emit-project \
       --extra argonne --extra flowcept -o constraints.txt ) \
     || die "could not read the dependency lock of release $tag"
+  start_clio_kit "$py"
   pkg_spec="clio-agent[argonne,flowcept]==$package_version"
   # On macOS, select an available Rasterio wheel for the user's OS instead
   # of trying to compile a newer release against a missing system GDAL.
@@ -1215,7 +1363,11 @@ fi
 if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
   docs_status=0
-  "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} || docs_status=$?
+  # A runtime that cannot wait for a download still arriving gets it once it has landed.
+  [ -z "$INSTALL_DOWNLOADS" ] || [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
+  env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
+    "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} || docs_status=$?
+  [ -z "$INSTALL_DOWNLOADS" ] || finish_downloads
   [ "$docs_status" = 0 ] \
     || die_with "$docs_status" "installing the managed packages and Office rendering failed (exit $docs_status); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
 else
@@ -1224,29 +1376,8 @@ else
 fi
 
 # ---------- provision clio-kit MCP runtime ----------------------------
-# Marketplace packs launch their MCP servers via the installed `clio-kit
-# mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
-# explicit legacy shared-runtime candidates select their science dependency union.
-# Installed-tool launchers (not per-server `uvx` calls)
-# avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
-# deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
-# is idempotent (re-run is a no-op / version pin). Needs uv; without it the
-# packs' tools simply stay unprovisioned until uv is installed.
-if have uv; then
-  if [ -z "$CLIO_KIT_PACKAGE" ]; then
-    clio_kit_spec="clio-kit==2.11.1"
-    say "Provisioning released clio-kit launcher ($clio_kit_spec)"
-  elif [[ "$CLIO_KIT_PACKAGE" == *"=="* ]]; then
-    clio_kit_spec="${CLIO_KIT_PACKAGE%%==*}[science]==${CLIO_KIT_PACKAGE#*==}"
-    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec)"
-  else
-    clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
-    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec)"
-  fi
-  uv tool install --python "$py" "$clio_kit_spec" || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
-else
-  warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
-fi
+# Started alongside the Python install (start_clio_kit, above); reported here.
+finish_clio_kit
 
 # ---------- install the released Web frontend -------------------------
 if [ "$OPT_SOURCE" = 0 ]; then
