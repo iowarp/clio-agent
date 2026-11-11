@@ -273,6 +273,14 @@ def test_missing_and_version_mismatch(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.timeout(10)
+def test_missing_requirement_fails_instead_of_spinning(tmp_path: Path) -> None:
+    github = plugin(tmp_path, "github", ext={"requires": ["shell"]})
+    with pytest.raises(ResolutionError, match="plugin_not_installed") as raised:
+        resolve_agent(_catalog(tmp_path, github), _spec("github"), marketplace="test")
+    assert str(raised.value).count("'shell' is not installed") == 1
+
+
 def test_user_delta_add_then_remove(tmp_path: Path) -> None:
     pdf = plugin(tmp_path, "pdf")
     resolved = resolve_agent(
