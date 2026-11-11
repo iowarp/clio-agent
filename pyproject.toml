@@ -71,7 +71,7 @@ dependencies = [
     "fastmcp-tasks==4.1.2",
     "mcp==2.2.0",  # reviewed native Tasks wire/client contract
     "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
-    "clio-schemas @ git+https://github.com/iowarp/clio-schemas@41a5ede2a63013c326d8356c90a82f6bc1d70328",
+    "clio-schemas==0.7.0b1",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -295,11 +295,6 @@ clio-agent-gact = "clio_agent.gact.app:main_deprecated"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.metadata]
-# clio-schemas is pinned to a branch commit until it releases (live artifact sources and
-# the stream artifact kind); remove this with the pin.
-allow-direct-references = true
 
 [tool.hatch.build]
 # Hard-exclude the vendored submodules/large dirs from every target's tree

@@ -191,6 +191,14 @@ not affected.
 - The clio-core daemon binds its RPC and data ports to loopback (`127.0.0.1`)
   instead of all interfaces. Only the clio-core child processes get
   `CLIO_BIND_ADDR`; the server's own environment is unchanged.
+- `install.ps1 -Desktop` finishes a cold Windows install in under a minute (measured
+  51.6 to 58.1 s, download included, Defender real-time protection on). The Windows
+  setup carries only `gact-runtime.pack.json`; the runtime is a separate release asset,
+  `gact-runtime-<version>-windows-x64.tar.zst`, that the setup unpacks while
+  `install.ps1` downloads it, or fetches itself when run alone (#2063,
+  iowarp/gact-tui#1087).
+- The Load tools row names the tools it loaded, and count summaries read "1 file
+  matches", not "1 files match" (#2072, #2073).
 
 ### Fixed
 
