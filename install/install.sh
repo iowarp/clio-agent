@@ -1493,11 +1493,12 @@ install_runtime_archive() {
   fi
   site="$VENV/lib/python$version/site-packages"
   say "Downloading and unpacking the CLIO runtime ($name, $(megabytes "$bytes") MB)"
-  # Only the packages, the document wheels and uv: the runtime's own Python is not used.
+  # Only the packages, the document wheels, uv and git: the runtime's own Python is not used.
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --speed-limit 1 --speed-time 60 "$url" \
     | "$VENV/bin/python" -I -c "$RUNTIME_DECODER" "$RUNTIME_UNPACK/sum" \
     | tar -x --no-same-owner -C "$RUNTIME_UNPACK" -f - \
         "gact-runtime/python/lib/python$version/site-packages" gact-runtime/document-wheels gact-runtime/bin \
+        gact-runtime/git \
     && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
   if [ "${status[*]}" != "0 0 0" ]; then
     warn "downloading or unpacking $name failed (curl, decoder, tar: ${status[*]})"
@@ -1517,6 +1518,9 @@ install_runtime_archive() {
   for f in uv uvx; do
     [ -e "$VENV/bin/$f" ] || [ ! -f "$RUNTIME_UNPACK/gact-runtime/bin/$f" ] || mv "$RUNTIME_UNPACK/gact-runtime/bin/$f" "$VENV/bin/$f"
   done
+  # The relocatable git CLIO installs marketplace plugins with, for a machine without
+  # one; clio_agent.runtime.git_executable finds it beside the environment's Python.
+  mv "$RUNTIME_UNPACK/gact-runtime/git" "$VENV/git" || { warn "could not place the runtime's git"; return 1; }
   if [ -f "$RUNTIME_UNPACK/gact-runtime/document-wheels/manifest.json" ]; then
     [ -n "$INSTALL_DOWNLOADS" ] || INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
     mkdir -p "$INSTALL_DOWNLOADS"

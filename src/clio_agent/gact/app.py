@@ -667,8 +667,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await server_boot.prepare_protection(app, windows=sys.platform == "win32")
     # Install or refresh the shipped default marketplace off the loop; a turn that
     # resolves before it finishes waits on the same lock (PluginService.ready).
+    # A failed install is recorded on ``ready_error`` (it does not raise): the step's
+    # outcome names it instead of reporting ok.
+    plugins = app.state.plugin_service
     app.state.plugin_sync_task = asyncio.create_task(
-        boot_timing.timed(app, "marketplace", asyncio.to_thread(app.state.plugin_service.ready))
+        boot_timing.timed(
+            app,
+            "marketplace",
+            asyncio.to_thread(plugins.ready),
+            lambda _: (plugins.ready_error or {}).get("reason", "ok"),
+        )
     )
 
     task: Optional[asyncio.Task] = None

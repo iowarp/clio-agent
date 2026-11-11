@@ -10,7 +10,9 @@ none at all. The desktop runtime therefore ships its own relocatable git
 1. ``CLIO_GIT``: an explicit executable a person or test chose;
 2. a git on ``PATH``, only when it is a real one (never the macOS placeholder): the
    person's own git, with their credential helpers, proxies and configuration;
-3. the bundled git inside the desktop runtime, for a machine with no git.
+3. the bundled git inside the desktop runtime, for a machine with no git (a one-line
+   install from the release's runtime archive places that git beside its environment's
+   Python, ``<sys.prefix>/git``).
 
 When none qualifies, :class:`GitUnavailableError` says what to install, instead of
 CLIO running the placeholder and leaving the person facing an installer dialog.
@@ -96,13 +98,15 @@ class GitExecutable:
 
 
 def bundled_git_root(runtime: Path | None = None) -> Path | None:
-    """The runtime's ``git`` folder when it holds a usable git, else None."""
+    """The runtime's ``git`` folder when it holds a usable git, else None.
+
+    Without an explicit ``runtime``: the desktop runtime's, else the one ``install.sh``
+    placed in this environment from the release's runtime archive.
+    """
     if runtime is None:
         from clio_agent.runtime.execution_environment import bundled_root  # noqa: PLC0415
 
-        runtime = bundled_root()
-    if runtime is None:
-        return None
+        runtime = bundled_root() or Path(sys.prefix)
     root = runtime / "git"
     return root if (root / BUNDLED_GIT_RELATIVE).is_file() else None
 

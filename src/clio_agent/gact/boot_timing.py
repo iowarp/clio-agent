@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
@@ -72,20 +72,35 @@ class BootTimeline:
     @contextmanager
     def step(self, name: str) -> Iterator[None]:
         """Time the enclosed block as the step ``name``."""
+        with self._step(name, None):
+            yield
+
+    @contextmanager
+    def _step(self, name: str, judge: Callable[[Any], str] | None) -> Iterator[list[Any]]:
         key = self._begin(name)
         outcome = "ok"
+        result: list[Any] = []
         try:
-            yield
+            yield result
+            if judge is not None and result:
+                outcome = judge(result[0]) or "ok"
         except BaseException as exc:
             outcome = type(exc).__name__
             raise
         finally:
             self._end(key, outcome)
 
-    async def timed(self, name: str, awaitable: Awaitable[T]) -> T:
-        """Await ``awaitable`` as the step ``name`` and return its result."""
-        with self.step(name):
-            return await awaitable
+    async def timed(
+        self, name: str, awaitable: Awaitable[T], judge: Callable[[T], str] | None = None
+    ) -> T:
+        """Await ``awaitable`` as the step ``name`` and return its result.
+
+        ``judge`` names the outcome of a step that reports failure in its result
+        instead of raising (``"ok"`` or a typed reason).
+        """
+        with self._step(name, judge) as result:
+            result.append(await awaitable)
+            return result[0]
 
     def mark(self, name: str) -> None:
         """Record the first time ``name`` happened."""
@@ -154,9 +169,11 @@ def step(app: Any, name: str) -> Any:
     return timeline(app).step(name)
 
 
-async def timed(app: Any, name: str, awaitable: Awaitable[T]) -> T:
-    """Await ``awaitable`` as the startup step ``name``."""
-    return await timeline(app).timed(name, awaitable)
+async def timed(
+    app: Any, name: str, awaitable: Awaitable[T], judge: Callable[[T], str] | None = None
+) -> T:
+    """Await ``awaitable`` as the startup step ``name`` (``judge``: see BootTimeline.timed)."""
+    return await timeline(app).timed(name, awaitable, judge)
 
 
 def mark(app: Any, name: str) -> None:
