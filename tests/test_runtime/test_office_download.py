@@ -147,28 +147,25 @@ def test_immutable_package_not_found_does_not_retry_or_change_source(
     assert attempts == ["https://example.invalid/immutable"]
 
 
-def test_retired_tdf_asset_uses_official_archive_with_same_pin(
+def test_unreachable_mirror_copy_falls_back_to_tdf_archive_with_same_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     attempts: list[str] = []
     payload = b"verified archive bytes"
-    url = "https://download.documentfoundation.org/libreoffice/stable/26.2.6/win/file.msi"
+    url = "https://github.com/iowarp/clio-agent/releases/download/office-26.2.6.3/file.msi"
+    archive = "https://downloadarchive.documentfoundation.org/libreoffice/old/26.2.6.3/win/file.msi"
 
     def fetch(request: urllib.request.Request, **kwargs: Any) -> io.BytesIO:
         attempts.append(request.full_url)
-        if len(attempts) <= 2:
-            raise urllib.error.HTTPError(request.full_url, 404, "retired", {}, None)
+        if request.full_url == url:
+            raise urllib.error.HTTPError(request.full_url, 404, "gone", {}, None)
         return io.BytesIO(payload)
 
     monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
     target = tmp_path / "package.part"
-    office_fetch.download(url, target, hashlib.sha256(payload).hexdigest())
+    office_fetch.download(url, target, hashlib.sha256(payload).hexdigest(), (archive,))
     assert target.read_bytes() == payload
-    assert attempts == [
-        url + ".meta4",
-        url,
-        "https://downloadarchive.documentfoundation.org/libreoffice/old/26.2.6.2/win/file.msi",
-    ]
+    assert attempts == [url, archive]
 
 
 def test_unreachable_librarian_pin_falls_back_to_its_snapshot_copies(

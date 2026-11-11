@@ -117,7 +117,9 @@ and original-byte downloads support extended Windows paths under deep workspaces
 Office rendering and recalculation use **LibreOffice on the execution host**.
 Clio discovers its standard Windows/macOS/PATH location or the absolute executable
 specified by `CLIO_DOCUMENT_SOFFICE`. When no renderer is installed, setup downloads
-the pinned official LibreOffice distribution, verifies its published SHA-256, and
+the pinned official LibreOffice build (26.2.6.3) from CLIO's `office-26.2.6.3`
+release mirror, falling back to The Document Foundation's permanent archive,
+verifies its published SHA-256, and
 extracts a private copy without installing it system-wide. Windows creates an
 administrative image, macOS copies the app from a read-only disk image, and Linux
 extracts only the Debian packages' application tree. License/notices remain with

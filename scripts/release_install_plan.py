@@ -86,11 +86,12 @@ def entries(
     if target not in TARGETS:
         raise SystemExit(f"no install plan for {target}")
     key, pnpm_host = TARGETS[target]
-    office = _constants(OFFICE, "VERSION", "ASSETS")
+    office = _constants(OFFICE, "BUILD", "MIRROR", "ASSETS")
     pnpm = _constants(DOCUMENT_RUNTIME, "PNPM_VERSION", "PNPM_PACKAGES")
-    version = office["VERSION"]
-    directory, suffix, checksum = office["ASSETS"][key]  # type: ignore[index]
-    name = f"LibreOffice_{version}_{suffix}"
+    build = str(office["BUILD"])
+    _, suffix, checksum = office["ASSETS"][key]  # type: ignore[index]
+    # office.asset(): the pinned file on CLIO's release mirror, under its full build.
+    name = f"LibreOffice_{build}_{suffix}"
     if pack is not None:
         plan = [("runtime", *_named_asset(pack, "runtime pack"))]
     else:
@@ -100,14 +101,7 @@ def entries(
             raise SystemExit("a prepared Office tree is a Linux release asset")
         plan.append(("office", *_named_asset(office_pack, "Office tree")))
     elif pack is None or key[0] != "Windows":
-        plan.append(
-            (
-                "office",
-                checksum,
-                name,
-                f"https://download.documentfoundation.org/libreoffice/stable/{version}/{directory}/{name}",
-            )
-        )
+        plan.append(("office", checksum, name, str(office["MIRROR"]).format(build=build) + name))
     packages: dict[str, str] = pnpm["PNPM_PACKAGES"]  # type: ignore[assignment]
     for package in ("pnpm", f"@pnpm/exe.{pnpm_host}"):
         if package in packages:
