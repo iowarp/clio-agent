@@ -1023,7 +1023,7 @@ install_scratch() {
 
 stop_install_jobs() {
   local pid
-  for pid in $SUBMODULE_JOB $DESKTOP_MONITOR $DESKTOP_JOBS; do
+  for pid in ${SUBMODULE_JOB:-} ${CLIO_KIT_JOB:-} $DESKTOP_MONITOR $DESKTOP_JOBS; do
     pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
@@ -1081,6 +1081,47 @@ start_install_downloads() {
   if plan_capable "$DESKTOP_SCRATCH/plan.install" waits-for-partial-downloads; then
     DESKTOP_PLAN_WAITS=1
   fi
+}
+
+# ---------- clio-kit MCP runtime, provisioned alongside the Python install
+# Marketplace packs launch their MCP servers via the installed `clio-kit
+# mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
+# explicit legacy shared-runtime candidates select their science dependency union.
+# Installed-tool launchers (not per-server `uvx` calls)
+# avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
+# deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
+# is idempotent (re-run is a no-op / version pin). Needs uv; without it the
+# packs' tools simply stay unprovisioned until uv is installed. It needs only uv and
+# the release's Python, so it runs while clio-agent installs (start_clio_kit PYTHON),
+# never while the managed runtime step's cache collection looks for live clio-kit.
+CLIO_KIT_JOB=""
+clio_kit_spec=""
+start_clio_kit() {
+  if ! have uv; then
+    warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
+    return 0
+  fi
+  if [ -z "$CLIO_KIT_PACKAGE" ]; then
+    clio_kit_spec="clio-kit==2.11.1"
+    say "Provisioning released clio-kit launcher ($clio_kit_spec) at the same time"
+  elif [[ "$CLIO_KIT_PACKAGE" == *"=="* ]]; then
+    clio_kit_spec="${CLIO_KIT_PACKAGE%%==*}[science]==${CLIO_KIT_PACKAGE#*==}"
+    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
+  else
+    clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
+    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
+  fi
+  uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
+  CLIO_KIT_JOB=$!
+}
+finish_clio_kit() {
+  local status=0
+  [ -n "$CLIO_KIT_JOB" ] || return 0
+  wait "$CLIO_KIT_JOB" || status=$?
+  CLIO_KIT_JOB=""
+  cat "$DESKTOP_SCRATCH/clio-kit.log" 2>/dev/null || true
+  [ "$status" = 0 ] && say "clio-kit launcher ready ($clio_kit_spec)" \
+    || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
 }
 
 # start_submodules SRC [ARGS]: update_submodules in the background; finish_submodules
@@ -1149,6 +1190,7 @@ if [ "$OPT_SOURCE" = 1 ]; then
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
   fi
   start_install_downloads "$(source_install_plan "$SRC" "$py")"
+  start_clio_kit "$py"
   say "Installing clio-agent deps (uv ${sync_args[*]})"
   sync_status=0
   ( cd "$SRC" && uv "${sync_args[@]}" ) || sync_status=$?
@@ -1205,6 +1247,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   ( cd "$lockdir" && uv export --quiet --frozen --no-hashes --no-emit-project \
       --extra argonne --extra flowcept -o constraints.txt ) \
     || die "could not read the dependency lock of release $tag"
+  start_clio_kit "$py"
   pkg_spec="clio-agent[argonne,flowcept]==$package_version"
   # On macOS, select an available Rasterio wheel for the user's OS instead
   # of trying to compile a newer release against a missing system GDAL.
@@ -1331,29 +1374,8 @@ else
 fi
 
 # ---------- provision clio-kit MCP runtime ----------------------------
-# Marketplace packs launch their MCP servers via the installed `clio-kit
-# mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
-# explicit legacy shared-runtime candidates select their science dependency union.
-# Installed-tool launchers (not per-server `uvx` calls)
-# avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
-# deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
-# is idempotent (re-run is a no-op / version pin). Needs uv; without it the
-# packs' tools simply stay unprovisioned until uv is installed.
-if have uv; then
-  if [ -z "$CLIO_KIT_PACKAGE" ]; then
-    clio_kit_spec="clio-kit==2.11.1"
-    say "Provisioning released clio-kit launcher ($clio_kit_spec)"
-  elif [[ "$CLIO_KIT_PACKAGE" == *"=="* ]]; then
-    clio_kit_spec="${CLIO_KIT_PACKAGE%%==*}[science]==${CLIO_KIT_PACKAGE#*==}"
-    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec)"
-  else
-    clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
-    say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec)"
-  fi
-  uv tool install --python "$py" "$clio_kit_spec" || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
-else
-  warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
-fi
+# Started alongside the Python install (start_clio_kit, above); reported here.
+finish_clio_kit
 
 # ---------- install the released Web frontend -------------------------
 if [ "$OPT_SOURCE" = 0 ]; then
