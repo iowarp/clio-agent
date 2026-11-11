@@ -6,6 +6,18 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6-beta.1.1] - 2026-11-11
+
+### Fixed
+
+- The LibreOffice download used by the document tools no longer stalls an
+  install on a slow mirror. It races the published mirrors, keeps the fastest,
+  and moves to another mirror when the transfer rate drops, resuming where it
+  stopped; every byte is still checked against the pinned SHA-256 (#2077).
+- `install.sh --desktop` now fails with the cause and the command to re-run when
+  runtime preparation fails or the app executable is missing, instead of
+  warning and exiting successfully (#2077).
+
 ## [0.9.6-beta.1] - 2026-11-11
 
 ### Upgrading from 0.9.5.1 or earlier
