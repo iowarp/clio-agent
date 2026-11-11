@@ -71,10 +71,10 @@ def test_the_data_tier_rows_call_it_the_data_tier(
     (tmp_path / "cte").mkdir()
     monkeypatch.setattr(
         "clio_agent.runtime.cte_cold_tier.cold_tier_usage",
-        lambda _store: ColdTierUsage(990_000, 990_000, 0),
+        lambda _store, _unit=0: ColdTierUsage(990_000, 990_000, 0),
     )
     env = {"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)}
     [row] = probe_cte_cold_tier_disk(env=env)
     assert row.state is IntegrationState.DEGRADED
-    assert row.summary.startswith("CTE data tier files have")
+    assert row.summary.startswith("CTE data tier holds at least")
     assert "cold tier" not in row.summary and "cold-tier" not in row.next_action

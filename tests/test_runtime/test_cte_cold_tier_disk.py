@@ -19,7 +19,7 @@ from clio_agent.runtime.clio_core_health import (
     probe_cte_cold_tier_disk,
     probe_cte_metadata_log,
 )
-from clio_agent.runtime.cte_cold_tier import ColdTierUsage
+from clio_agent.runtime.cte_cold_tier import ColdTierUsage, cold_tier_usage
 from clio_agent.runtime.status import IntegrationState
 
 _USAGE = "clio_agent.runtime.cte_cold_tier.cold_tier_usage"
@@ -53,7 +53,7 @@ def _seed_cte(dir_: Path, *, data_bytes: int) -> dict[str, str]:
 
 def test_over_fraction_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _seed_cte(tmp_path, data_bytes=600_000)  # 60% >= default 50%
-    monkeypatch.setattr(_USAGE, lambda _store: ColdTierUsage(600_000, 600_000, 0))
+    monkeypatch.setattr(_USAGE, lambda _store, _unit=0: ColdTierUsage(600_000, 600_000, 0))
     rows = probe_cte_cold_tier_disk(env=env)
     assert len(rows) == 1
     row = rows[0]
@@ -66,7 +66,7 @@ def test_over_fraction_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 def test_under_fraction_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _seed_cte(tmp_path, data_bytes=100_000)  # 10% < 50%
-    monkeypatch.setattr(_USAGE, lambda _store: ColdTierUsage(100_000, 100_000, 0))
+    monkeypatch.setattr(_USAGE, lambda _store, _unit=0: ColdTierUsage(100_000, 100_000, 0))
     rows = probe_cte_cold_tier_disk(env=env)
     assert len(rows) == 1
     assert rows[0].state is IntegrationState.READY
@@ -97,7 +97,7 @@ def test_logical_capacity_is_not_reported_as_usage_when_allocation_is_unavailabl
     """A preallocated capacity file must not become a false 100% usage warning."""
 
     env = _seed_cte(tmp_path, data_bytes=1_000_000)
-    monkeypatch.setattr(_USAGE, lambda _store: ColdTierUsage(None, 1_000_000, 0))
+    monkeypatch.setattr(_USAGE, lambda _store, _unit=0: ColdTierUsage(None, 1_000_000, 0))
 
     rows = probe_cte_cold_tier_disk(env=env)
 
@@ -117,7 +117,7 @@ def test_custom_fraction_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
     conf.reload()
     env["CLIO_ARC_CTE_DISK_WARN_FRACTION"] = "0.05"
-    monkeypatch.setattr(_USAGE, lambda _store: ColdTierUsage(100_000, 100_000, 0))
+    monkeypatch.setattr(_USAGE, lambda _store, _unit=0: ColdTierUsage(100_000, 100_000, 0))
     rows = probe_cte_cold_tier_disk(env=env)
     assert rows[0].state is IntegrationState.DEGRADED
 
@@ -127,7 +127,7 @@ def test_a_preallocated_data_file_is_not_reported_as_full(
 ) -> None:
     """iowarp-core 2.3.2 allocates the whole data file before writing anything to it."""
     env = _seed_cte(tmp_path, data_bytes=0)
-    monkeypatch.setattr(_USAGE, lambda _store: ColdTierUsage(1_000_000, 1_000_000, 0))
+    monkeypatch.setattr(_USAGE, lambda _store, _unit=0: ColdTierUsage(1_000_000, 1_000_000, 0))
 
     (row,) = probe_cte_cold_tier_disk(env=env)
 
@@ -135,6 +135,46 @@ def test_a_preallocated_data_file_is_not_reported_as_full(
     assert row.details["reason"] == "cte_cold_tier_occupancy_unmeasurable"
     assert row.details["allocation_measurement"] == "preallocated"
     assert row.details["used_fraction"] is None
+
+
+def test_a_growth_reserved_unit_is_not_counted_as_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """iowarp-core 2.4.0 reserves the tier's ``growth_unit`` ahead of data (#2074)."""
+    env = _seed_cte(tmp_path, data_bytes=0)
+    config = Path(env["CLIO_ARC_STORE_CONFIG"])
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "score: 1.0", 'score: 1.0\n        growth_unit: "400000"'
+        ),
+        encoding="utf-8",
+    )
+    units: list[int] = []
+
+    def usage(_store: Path, unit: int = 0) -> ColdTierUsage:
+        units.append(unit)
+        return ColdTierUsage(600_000, 600_000, 0, data_reserved=400_000)
+
+    monkeypatch.setattr(_USAGE, usage)
+
+    (row,) = probe_cte_cold_tier_disk(env=env)
+
+    assert units == [400_000]
+    assert row.state is IntegrationState.READY
+    assert row.details["used_bytes"] == 200_000
+    assert row.details["reserved_bytes"] == 400_000
+    assert "growth reserved ahead of data" in row.summary
+
+
+def test_a_fully_allocated_data_file_reserves_its_last_growth_unit(tmp_path: Path) -> None:
+    data = tmp_path / "storage.bin"
+    data.write_bytes(b"\1" * 16_384)
+    if not hasattr(os.lstat(data), "st_blocks"):
+        pytest.skip("no st_blocks on this platform")
+
+    assert cold_tier_usage(tmp_path, 8_192).data_reserved == 8_192
+    assert cold_tier_usage(tmp_path).data_reserved == 0
+    assert cold_tier_usage(tmp_path, 32_768).data_reserved == 0
 
 
 def test_the_metadata_log_is_measured_apart_from_the_data_files(tmp_path: Path) -> None:
