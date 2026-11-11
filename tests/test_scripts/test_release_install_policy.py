@@ -539,7 +539,11 @@ def test_bundle_repair_refuses_published_or_existing_bundled_assets(
 ) -> None:
     """Execute the actual repair guard so publication and asset immutability stay enforced."""
     workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
-    run = workflow["jobs"]["release"]["steps"][1]["run"]
+    run = next(
+        step["run"]
+        for step in workflow["jobs"]["release"]["steps"]
+        if step.get("name") == "Ensure exactly one draft release for the tag"
+    )
     match = re.search(r"jq -e '(.*?)' release.json", run)
     assert match is not None
     jq = shutil.which("jq")
