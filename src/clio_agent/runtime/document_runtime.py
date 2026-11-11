@@ -308,6 +308,51 @@ def _installer_wheel_root() -> Path | None:
     return root if root and (root / "document-wheels" / "manifest.json").is_file() else None
 
 
+def _filesystem(path: Path) -> int | None:
+    """The device holding ``path``'s nearest existing ancestor, if it is writable."""
+    for candidate in (path, *path.parents):
+        if os.path.exists(candidate):
+            return os.stat(candidate).st_dev if os.access(candidate, os.W_OK) else None
+    return None
+
+
+def _uv_cache_dir(uv: str) -> Path | None:
+    """The cache ``uv`` uses by default here (``uv cache dir``), or None if it cannot say."""
+    flags: dict[str, Any] = {}
+    if os.name == "nt":
+        flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        process = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [uv, "cache", "dir"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            **flags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    path = Path(process.stdout.strip()) if process.returncode == 0 else None
+    return path if path is not None and path.is_absolute() else None
+
+
+def _document_uv_cache(uv: str, home: Path) -> Path:
+    """The uv cache for the document environment beside ``home``.
+
+    uv's own cache is reused when it is on the same filesystem, so the packages the
+    agent's install already downloaded (numpy, matplotlib, lxml, ...) are linked rather
+    than downloaded again. A cache on another drive would copy every file instead of
+    hardlinking it, so the environment then keeps a cache on the installation drive.
+    """
+    private = home / "uv-document-cache"
+    shared = _uv_cache_dir(uv)
+    if shared is None:
+        return private
+    device = _filesystem(shared)
+    return shared if device is not None and device == _filesystem(home) else private
+
+
 def _python_runtime(
     cache: Path, uv: str, *, discovery_only: bool = False
 ) -> tuple[Path, dict[str, Any]]:
@@ -342,9 +387,7 @@ def _python_runtime(
     env = {
         **os.environ,
         "UV_PROJECT_ENVIRONMENT": str(environment),
-        # Keep wheel unpacking and the environment on the selected installation
-        # drive. uv can hardlink shared files instead of copying them across drives.
-        "UV_CACHE_DIR": str(cache.parent / "uv-document-cache"),
+        "UV_CACHE_DIR": str(_document_uv_cache(uv, cache.parent)),
     }
     runtime = bundled_root()
     try:
