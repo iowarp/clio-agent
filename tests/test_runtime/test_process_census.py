@@ -51,6 +51,7 @@ from pathlib import Path
 import pytest
 
 from clio_agent.runtime import process_census as pc
+from clio_agent.runtime import process_snapshot
 from clio_agent.runtime.status import IntegrationState
 
 _SERVER = 100
@@ -243,11 +244,12 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
     live_marker = ("uv", "run", "clio-kit", "mcp-server")
     monkeypatch.setattr(psutil, "process_iter", _fake_process_iter)
     monkeypatch.setattr(pc, "_process_cmdline", lambda pid: live_marker if pid == 700 else ())
+    monkeypatch.setattr(process_snapshot, "_windows_parent_table", lambda _psutil: None)
 
     nodes = pc._snapshot_process_nodes(_SERVER, None)
     by_pid = {n.pid: n for n in nodes}
 
-    assert requested_attrs == ["pid", "ppid", "name", "create_time"]
+    assert requested_attrs == ["pid", "name", "create_time", "ppid"]
     assert by_pid[700].cmdline == live_marker, (
         "the reparented-orphan candidate must carry the LIVE-captured cmdline -- if "
         "this is empty, the `replace(node, cmdline=_process_cmdline(...))` wiring in "
@@ -260,6 +262,43 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
     assert by_pid[300].cwd == "", (
         "a rooted descendant must not pay for machine-wide path resolution"
     )
+
+
+def test_windows_snapshot_reads_parents_from_one_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """psutil's Windows ppid() rebuilds the system table per process (9 s at boot)."""
+
+    psutil = pytest.importorskip("psutil")
+
+    class _FakeProc:
+        def __init__(self, info: dict, late_ppid: int | None = None) -> None:
+            self.info = info
+            self._late_ppid = late_ppid
+
+        def ppid(self) -> int:
+            assert self._late_ppid is not None, "a tabled process must not ask psutil"
+            return self._late_ppid
+
+    requested_attrs: list[str] = []
+
+    def _fake_process_iter(attrs: list[str]) -> list[_FakeProc]:
+        requested_attrs.extend(attrs)
+        return [
+            _FakeProc({"pid": _SERVER, "name": "python.exe", "create_time": 0.0}),
+            _FakeProc({"pid": 300, "name": "clio-kit.exe", "create_time": 0.0}),
+            # Started after the table was read: asked individually.
+            _FakeProc({"pid": 301, "name": "node.exe", "create_time": 0.0}, late_ppid=300),
+        ]
+
+    monkeypatch.setattr(psutil, "process_iter", _fake_process_iter)
+    monkeypatch.setattr(
+        process_snapshot, "_windows_parent_table", lambda _psutil: {_SERVER: 1, 300: _SERVER}
+    )
+
+    by_pid = {n.pid: n for n in pc._snapshot_process_nodes(_SERVER, None)}
+
+    assert requested_attrs == ["pid", "name", "create_time"]
+    assert by_pid[300].ppid == _SERVER
+    assert by_pid[301].ppid == 300
 
 
 def _pin_live_create_time_matches_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
