@@ -67,6 +67,7 @@ def _roots(result: dict[str, Any]) -> list[Path]:
         Path(__file__),
         Path(__file__).with_name("document_install.py"),
         Path(__file__).with_name("document_runtime.py"),
+        Path(__file__).with_name("document_venv.py"),
         Path(sys.executable),
         Path(result["python"]).parent.parent,
         Path(result["uv"]),
