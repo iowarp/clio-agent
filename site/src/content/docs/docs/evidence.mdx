@@ -29,8 +29,8 @@ Use the **Evidence layout** button in the session toolbar to show the compact pa
 Choose **Open full details** to inspect the record in the canvas. Its tabs are **Evidence**, **Timeline**, **Gantt** and **Context**.
 
 <Capture client:visible image={await captureImage(evidence)}
-  alt="Evidence view listing the bike example's source table, derived tables, findings report and dashboard"
-  caption="Open a source or output from Evidence to inspect its preview, versions and lineage."
+  alt="Artifacts panel listing the bike example's source table, derived tables, findings report and dashboard"
+  caption="Open a source or output from Artifacts to inspect its preview, versions and lineage."
 />
 
 ### Evidence
@@ -97,8 +97,8 @@ Open an artifact to see a preview and its **Versions** and **Lineage** tabs.
 Open **Lineage** on the findings report. In this synthetic example, `bike-stations.csv` supplies station snapshots to three independent checks: `station-balance.csv`, `availability-check.csv` and `capacity-check.csv`. Their declared input relationships join in `morning-findings.md`.
 
 <Capture client:visible image={await captureImage(lineage)}
-  alt="Artifact lineage graph with bike-stations.csv, producing actions, station-balance.csv and morning-findings.md connected by Used and Generated edges"
-  caption="Follow Used and Generated relationships from the source table through the checks to the findings report. Select an artifact to inspect its saved version."
+  alt="Artifact lineage graph with bike-stations.csv, its create_artifact actions, the three checks and morning-findings.md connected by arrows"
+  caption="Follow the arrows from the source table through the checks to the findings report. Select an artifact to inspect its saved version."
 />
 
 Read the graph from the source toward the result:

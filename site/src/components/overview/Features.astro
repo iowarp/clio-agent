@@ -11,7 +11,7 @@ const image = await captureImage(lineage);
 	<SectionHeading id="provenance" label="Follow the evidence" title="A result has" emphasis="a history." />
 	<p class="intro">Open an artifact’s <strong>Lineage</strong> tab to follow its recorded inputs, producing actions and outputs. The graph stays with the file, alongside its preview and version history.</p>
 	<Capture client:visible image={image}
-		alt="CLIO artifact provenance graph connecting bike-stations.csv through Used and Generated edges to station-balance.csv and morning-findings.md"
+		alt="CLIO artifact lineage graph connecting bike-stations.csv through three create_artifact actions and their checks to morning-findings.md"
 		caption="Synthetic worked example: the source branches into balance, availability and capacity checks, then joins in the report. The tools recorded the declared input relationships and hashed file versions. Missing relationships are not inferred."
 		sizes="(min-width: 80rem) 76rem, 100vw" />
 	<ol class="reading-guide">

@@ -36,7 +36,7 @@ const items = await Promise.all([
 		href: '/docs/evidence/#data-and-work',
 		link: 'Inspect a run',
 		image: activity,
-        alt: 'Current CLIO Evidence view showing all six registered files for the fictional bike walkthrough',
+        alt: 'Current CLIO Artifacts panel listing all six registered files for the fictional bike walkthrough',
 		caption: 'All six registered files are visible. Open an artifact to inspect its preview, versions and recorded lineage.',
 	},
 ].map(async (item) => ({ ...item, image: await captureImage(item.image) })));
