@@ -535,14 +535,15 @@ desktop_prepares() {
 # What a first launch would do before the agent starts (its tool packages, Office),
 # done now, as the person who will open the app, as the Windows installer does. DOWNLOADS
 # holds the release plan's files fetched with the app; the app uses those whose SHA-256
-# matches its own pins instead of downloading them again.
+# matches its own pins instead of downloading them again. A failure fails the install, as
+# the Windows setup does: none of this work is left to the first launch.
 # An empty tag is a current test build, which can.
 # No bytecode is written while preparing: releases up to 0.9.5.1 compile .pyc files into
 # the signed bundle (#1979), which breaks the signature the install just checked.
 prepare_desktop() {
   local tag="$1" desktop="$2" downloads="${3:-}" out=1
   [ -z "$tag" ] || desktop_prepares "$tag" || return 0
-  [ -x "$desktop" ] || { say "warning: $desktop not found; the app prepares itself on first launch"; return 0; }
+  [ -x "$desktop" ] || die "$desktop not found after installing; the install is incomplete. Run this installer again."
   [ "${PROGRESS_JSON:-0}" = 0 ] || out=2
   say "Preparing the desktop's agent and its tools"
   local run=(env PYTHONDONTWRITEBYTECODE=1 "$desktop" --prepare-runtime)
@@ -551,11 +552,9 @@ prepare_desktop() {
   elif [ -n "$downloads" ]; then
     run=(env PYTHONDONTWRITEBYTECODE=1 "CLIO_INSTALL_DOWNLOADS=$downloads" "$desktop" --prepare-runtime)
   fi
-  if "${run[@]}" >&"$out"; then
-    say "The desktop is ready to open."
-  else
-    say "warning: the desktop's preparation did not finish (above); the app finishes it on first launch"
-  fi
+  # The install finishes this work or fails: it never moves to the first launch.
+  "${run[@]}" >&"$out" || die "preparing the desktop's agent and its tools failed (the cause is above), so the install is incomplete. Fix it and run this installer again, or run: \"$desktop\" --prepare-runtime"
+  say "The desktop is ready to open."
 }
 
 # A mirror+file: source names a file of mirrors; the first one serves the download.
