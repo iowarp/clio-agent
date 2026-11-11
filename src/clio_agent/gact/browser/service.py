@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clio_agent import paths
-from clio_agent.gact.browser import certificates, failures, install, picker, settings
+from clio_agent.gact.browser import certificates, failures, favicon, install, picker, settings
 from clio_agent.gact.browser.driver_loop import driver_loop
 from clio_agent.gact.browser.settings import BrowserError, errors, page_errors
 from clio_agent.runtime import trace
@@ -106,6 +106,9 @@ class PageRecord:
     #: Live-view windows watching the page now; a watched page never counts as idle.
     viewers: int = 0
     title: str = ""
+    #: The page's icon as a ``data:`` URL, and the address it was read from (:mod:`favicon`).
+    favicon: str = ""
+    favicon_src: str = ""
     loading: bool = False
     closed: bool = False
     #: The last main-frame address requested, and why it failed if it did.
@@ -452,6 +455,10 @@ class BrowserService:
         except page_errors():  # the page closed while loading
             record.title = ""
         self.publish(PAGE_UPDATED, record)
+        known = record.favicon
+        await favicon.refresh(record)
+        if record.favicon != known:
+            self.publish(PAGE_UPDATED, record)
 
     def owned(self, session_id: str, page_id: str) -> PageRecord:
         record = self.pages.get(page_id)
@@ -718,6 +725,7 @@ class BrowserService:
             "url": shown,
             "host": (urlsplit(shown).hostname or "").lower(),
             "title": record.title,
+            "favicon": record.favicon,
             "loading": record.loading,
             "agent_acting": record.inflight is not None,
             "last_action": record.last_action,
