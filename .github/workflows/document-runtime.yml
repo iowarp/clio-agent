@@ -39,10 +39,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the old Linux qualification host
         run: docker build -f scripts/qualification/document_runtime/Dockerfile.glibc228 -t clio-document-glibc228 .
+      - name: Show how the container resolves the Office userland hosts
+        run: |
+          for network in bridge host; do
+            echo "== --network $network"
+            docker run --rm --network "$network" --entrypoint sh clio-document-glibc228 -c \
+              'cat /etc/resolv.conf; for h in archive.ubuntu.com launchpad.net snapshot.ubuntu.com; do getent ahosts "$h" | head -1 || echo "$h: unresolved"; done' || true
+          done
       - name: Prepare and exercise real PDF, DOCX, PPTX and XLSX operations
+        # The container only supplies the old glibc; the host network gives it the
+        # runner's resolver, which the default bridge stopped reaching on 2026-11-11.
         run: |
           mkdir -p document-evidence-legacy
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/clio-document-home \
+          docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp/clio-document-home \
             -v "$PWD/document-evidence-legacy:/evidence" clio-document-glibc228
       - uses: actions/upload-artifact@v4
         if: always()
