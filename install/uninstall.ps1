@@ -261,21 +261,52 @@ if (-not $Yes) {
 }
 
 # ---- stop the server -------------------------------------------------
+# A recorded PID can be reused and the port can belong to another program (a dev
+# server, another CLIO install), so only a process of this installation is stopped:
+# it, or an ancestor started before it, runs from or names this install's prefix.
+$Snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+$PrefixKey = [IO.Path]::GetFullPath($Prefix).TrimEnd('\', '/').ToLowerInvariant() + '\'
+function Test-InstallProcess([int]$Id) {
+    $byPid = @{}
+    foreach ($p in $Snapshot) { $byPid[[int]$p.ProcessId] = $p }
+    $proc = $byPid[$Id]
+    for ($depth = 0; $proc -and $depth -lt 8; $depth++) {
+        foreach ($text in @($proc.ExecutablePath, $proc.CommandLine)) {
+            if ($text -and $text.ToLowerInvariant().Replace('/', '\').Contains($PrefixKey)) { return $true }
+        }
+        $parent = $byPid[[int]$proc.ParentProcessId]
+        if (-not $parent -or ($proc.CreationDate -and $parent.CreationDate -and $parent.CreationDate -gt $proc.CreationDate)) { break }
+        $proc = $parent
+    }
+    return $false
+}
+function Get-ProcessLabel([int]$Id) {
+    $proc = $Snapshot | Where-Object { [int]$_.ProcessId -eq $Id } | Select-Object -First 1
+    if ($proc -and $proc.ExecutablePath) { return "$($proc.Name), $($proc.ExecutablePath)" }
+    if ($proc) { return $proc.Name }
+    return 'unknown'
+}
 $serverPid = $null
 if (Test-Path $PidFile) {
     $p = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($p) {
         $p = $p.Trim()
-        if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) { $serverPid = [int]$p }
+        if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) {
+            if (Test-InstallProcess ([int]$p)) { $serverPid = [int]$p }
+            else { Warn "The recorded server pid $p is now another program ($(Get-ProcessLabel ([int]$p))); leaving it running" }
+        }
     }
 }
 if (-not $serverPid) {
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($conn) { $serverPid = [int]$conn.OwningProcess }
+    if ($conn) {
+        $owner = [int]$conn.OwningProcess
+        if (Test-InstallProcess $owner) { $serverPid = $owner }
+        else { Warn "Port $Port is held by pid $owner ($(Get-ProcessLabel $owner)), which is not part of this installation; leaving it running" }
+    }
 }
 # Sweep any leftover server processes started from this prefix (zombies
 # that never registered a pidfile - exactly the state install.ps1 hit).
-$Snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
 $escaped = [regex]::Escape($Prefix)
 $leftovers = @($Snapshot | Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent(-gact)?' -and $_.CommandLine -match $escaped } | ForEach-Object { [int]$_.ProcessId })
 $Stopped = @(Get-ClioProcessTree (@($serverPid) + $leftovers) $Snapshot)
