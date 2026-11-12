@@ -1,11 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Download } from 'lucide-react';
-import { PLATFORMS, RELEASES_PAGE, pickAsset, type OS } from '@/lib/downloads';
+import { PLATFORMS, RELEASES_PAGE, pickAsset, type DownloadChoice, type OS, type PlatformDownloads } from '@/lib/downloads';
 import { useRelease, type ReleaseState } from '@/components/overview/use-release';
 
 export type PlatformIcons = Record<OS, string>;
 
 const NAMES: Record<OS, string> = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+
+/** One Linux distribution and its package, for releases that list Linux per distribution. */
+export interface DistributionEntry {
+	name: string;
+	choice?: DownloadChoice;
+	alternative?: { text: string; link: string; href: string };
+}
+
+/** A platform's distributions; releases with one Linux package for every distribution list none. */
+export function distributionsOf(platform: PlatformDownloads | undefined): readonly DistributionEntry[] | undefined {
+	return (platform as (PlatformDownloads & { distributions?: readonly DistributionEntry[] }) | undefined)
+		?.distributions;
+}
 
 /** The installer for a platform's main choice, or the releases page until the lookup finishes. */
 export function primaryHref(state: ReleaseState, os: OS): string {
@@ -17,7 +30,7 @@ export function primaryHref(state: ReleaseState, os: OS): string {
 
 /** The download link for one Linux distribution. */
 export function distributionHref(state: ReleaseState, index: number): string {
-	const distribution = PLATFORMS.find((item) => item.os === 'linux')?.distributions?.[index];
+	const distribution = distributionsOf(PLATFORMS.find((item) => item.os === 'linux'))?.[index];
 	if (!distribution) return RELEASES_PAGE;
 	if (distribution.alternative) return distribution.alternative.href;
 	if (!distribution.choice || state.status !== 'ready') return RELEASES_PAGE;
@@ -27,7 +40,7 @@ export function distributionHref(state: ReleaseState, index: number): string {
 function LinuxMenu({ state, icon }: { state: ReleaseState; icon: string }) {
 	const [open, setOpen] = useState(false);
 	const root = useRef<HTMLDivElement>(null);
-	const distributions = PLATFORMS.find((item) => item.os === 'linux')?.distributions ?? [];
+	const distributions = distributionsOf(PLATFORMS.find((item) => item.os === 'linux')) ?? [];
 
 	useEffect(() => {
 		if (!open) return;
