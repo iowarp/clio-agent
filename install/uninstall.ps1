@@ -109,6 +109,114 @@ if ($PurgeData) {
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
 
+# Remove-ClioTree PATH: take a tree out of use by renaming it, and delete it after the
+# uninstall in one hidden process (Start-ClioTreeRemoval). Deleting an installed
+# runtime's tens of thousands of files under real-time scanning takes 30-40 s even with
+# cmd's rd. A tree that cannot be renamed (a file in use) is deleted now with rd, which
+# is about 2.5x faster than Remove-Item -Recurse, removes read-only files and does not
+# follow junctions. Whatever rd leaves goes to Remove-Item, so a failure still surfaces
+# unless -Soft.
+$script:Doomed = New-Object System.Collections.Generic.List[string]
+function LongPath([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\?\')) { return $full }
+    if ($full.StartsWith('\\')) { return "\\?\UNC\$($full.Substring(2))" }
+    return "\\?\$full"
+}
+function Remove-ClioTree([string]$Path, [switch]$Soft) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        $doomed = "$Path.removing-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        try { [IO.Directory]::Move($Path, $doomed); $script:Doomed.Add($doomed); return } catch { }
+        & (Join-Path $env:SystemRoot 'System32\cmd.exe') /d /c "rd /s /q `"$(LongPath $Path)`" 2>nul"
+    }
+    if (Test-Path -LiteralPath $Path) {
+        if ($Soft) { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue }
+        else { Remove-Item -LiteralPath $Path -Recurse -Force }
+    }
+}
+# Start-ClioTreeRemoval: delete the renamed trees in one hidden process. A tree renamed
+# inside another one moved with it, so only trees still at their names are passed. A
+# clio-agent folder left holding nothing but these trees goes after them.
+function Start-ClioTreeRemoval {
+    $trees = @($script:Doomed | Where-Object { Test-Path -LiteralPath $_ })
+    if (-not $trees.Count) { return }
+    $steps = @($trees | ForEach-Object { "rd /s /q `"$(LongPath $_)`"" })
+    $parents = @($trees | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique)
+    foreach ($parent in $parents) {
+        if ((Split-Path -Leaf $parent) -ne 'clio-agent') { continue }
+        $kept = @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.removing-[0-9a-f]{8}$' })
+        if (-not $kept.Count) { $steps += "rd `"$(LongPath $parent)`"" }
+    }
+    $deleter = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList '/d', '/c', ("(" + ($steps -join ' & ') + ") 2>nul") -WindowStyle Hidden -PassThru
+    Say "Deleting the removed folders' files in the background (pid $($deleter.Id))"
+}
+
+# Every process in the trees rooted at ROOTS, from one process snapshot. A child must
+# start after its parent, so a reused parent PID does not adopt unrelated processes.
+function Get-ClioProcessTree([int[]]$Roots, $Snapshot) {
+    $byPid = @{}
+    foreach ($p in $Snapshot) { $byPid[[int]$p.ProcessId] = $p }
+    $tree = @{}
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    foreach ($r in $Roots) { if ($r -and -not $tree.ContainsKey($r)) { $tree[$r] = $true; $queue.Enqueue($r) } }
+    while ($queue.Count -gt 0) {
+        $parent = $queue.Dequeue()
+        $parentStart = if ($byPid.ContainsKey($parent)) { $byPid[$parent].CreationDate } else { $null }
+        foreach ($p in $Snapshot) {
+            $id = [int]$p.ProcessId
+            if ([int]$p.ParentProcessId -ne $parent -or $tree.ContainsKey($id)) { continue }
+            if ($parentStart -and $p.CreationDate -and $p.CreationDate -lt $parentStart) { continue }
+            $tree[$id] = $true
+            $queue.Enqueue($id)
+        }
+    }
+    return @($tree.Keys)
+}
+
+# clio-core on Windows backs its shared memory with files in %TEMP%\clio_<user>: about
+# 3 GB per runtime (port-keyed chi_* segments) plus per-process clio_<pid>_* and
+# clio-<pid>-shm-* files. A runtime that is killed rather than stopped leaves them all.
+# Remove only those of processes this uninstall stopped, or of this computer's recorded
+# CLIO runtime once it is gone. A file still mapped by a live process cannot be deleted.
+function Remove-CoreSegments([int[]]$Gone) {
+    $goneSet = @{}
+    foreach ($id in $Gone) { if ($id) { $goneSet[[int]$id] = $true } }
+    $stateDirs = @()
+    if ($env:CLIO_RUNTIME_STATE_DIR) { $stateDirs += $env:CLIO_RUNTIME_STATE_DIR }
+    $stateDirs += @(Get-ChildItem -Path (Join-Path $HostState 'core-hosts\*') -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    foreach ($dir in $stateDirs) {
+        $first = "$(Get-Content -LiteralPath (Join-Path $dir 'clio-runtime.pid') -ErrorAction SilentlyContinue | Select-Object -First 1)".Trim().Split()[0]
+        $recorded = 0
+        if ([int]::TryParse("$first", [ref]$recorded) -and $recorded -and -not (Get-Process -Id $recorded -ErrorAction SilentlyContinue)) { $goneSet[$recorded] = $true }
+    }
+    if ($goneSet.Count -eq 0) { return }
+    $removed = 0
+    $bytes = [long]0
+    foreach ($segDir in @(Get-ChildItem -Path (Join-Path ([IO.Path]::GetTempPath()) 'clio_*') -Directory -ErrorAction SilentlyContinue)) {
+        $doomed = @()
+        foreach ($record in @(Get-ChildItem -LiteralPath $segDir.FullName -Filter 'chi_runtime_pid_*' -File -ErrorAction SilentlyContinue)) {
+            if ($record.Name -notmatch '^chi_runtime_pid_(.+)_(\d+)$') { continue }
+            $owner = $Matches[1]; $port = $Matches[2]
+            $runtimePid = 0
+            if (-not [int]::TryParse("$(Get-Content -LiteralPath $record.FullName -ErrorAction SilentlyContinue | Select-Object -First 1)".Trim(), [ref]$runtimePid)) { continue }
+            if (-not $goneSet.ContainsKey($runtimePid)) { continue }
+            $doomed += @(Get-ChildItem -LiteralPath $segDir.FullName -File -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -match ('^chi_[a-z_]+_' + [regex]::Escape($owner) + '_' + $port + '$') -or $_.Name -eq "clio_$port.ipc"
+            })
+        }
+        $doomed += @(Get-ChildItem -LiteralPath $segDir.FullName -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '^clio(?:_rambdev)?[-_](\d+)[-_]' -and $goneSet.ContainsKey([int]$Matches[1])
+        })
+        foreach ($f in $doomed) {
+            $size = $f.Length
+            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $f.FullName)) { $removed++; $bytes += $size }
+        }
+    }
+    if ($removed) { Say ("Removed {0} clio-core memory files ({1:N1} GB) from {2}" -f $removed, ($bytes / 1GB), [IO.Path]::GetTempPath()) }
+}
+
 # ---- self-relaunch from temp so we can delete our own location ------
 if (-not $Relaunched) {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("clio-uninstall-" + ([guid]::NewGuid().ToString('N')) + ".ps1")
@@ -165,23 +273,29 @@ if (-not $serverPid) {
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($conn) { $serverPid = [int]$conn.OwningProcess }
 }
+# Sweep any leftover server processes started from this prefix (zombies
+# that never registered a pidfile - exactly the state install.ps1 hit).
+$Snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+$escaped = [regex]::Escape($Prefix)
+$leftovers = @($Snapshot | Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent(-gact)?' -and $_.CommandLine -match $escaped } | ForEach-Object { [int]$_.ProcessId })
+$Stopped = @(Get-ClioProcessTree (@($serverPid) + $leftovers) $Snapshot)
 if ($serverPid) {
     Say "Stopping CLIO server (pid $serverPid)"
-    & taskkill /PID $serverPid /T /F | Out-Null
+    & cmd /d /c "taskkill /PID $serverPid /T /F >nul 2>nul"
     Start-Sleep -Milliseconds 500
 } else {
     Say "No running CLIO server found"
 }
-
-# Sweep any leftover server processes started from this prefix (zombies
-# that never registered a pidfile - exactly the state install.ps1 hit).
-$escaped = [regex]::Escape($Prefix)
-Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'clio-agent(-gact)?' -and $_.CommandLine -match $escaped } |
-    ForEach-Object {
-        Say "Killing leftover process (pid $($_.ProcessId))"
-        & taskkill /PID $_.ProcessId /T /F | Out-Null
-    }
+foreach ($leftover in $leftovers) {
+    if (-not (Get-Process -Id $leftover -ErrorAction SilentlyContinue)) { continue }
+    Say "Killing leftover process (pid $leftover)"
+    & cmd /d /c "taskkill /PID $leftover /T /F >nul 2>nul"
+}
+for ($i = 0; $i -lt 20; $i++) {
+    if (-not @($Stopped | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })) { break }
+    Start-Sleep -Milliseconds 250
+}
+Remove-CoreSegments $Stopped
 
 # ---- remove files ----------------------------------------------------
 foreach ($f in @($LauncherCmd, $LauncherPs1)) {
@@ -193,7 +307,7 @@ if (Test-Path $Prefix) {
     foreach ($relative in @('clio-agent\.venv', 'clio-agent\web', 'gact.exe', 'uninstall.ps1')) {
         $OwnedPath = [IO.Path]::GetFullPath((Join-Path $ResolvedPrefix $relative))
         if (-not $OwnedPath.StartsWith($ResolvedPrefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid application path' }
-        Remove-Item -LiteralPath $OwnedPath -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-ClioTree $OwnedPath -Soft
     }
     if (Test-Path $Prefix) {
         Warn "Retained user data and unknown files in $Prefix."
@@ -209,7 +323,7 @@ function Get-CoreDaemonPid {
     return $null
 }
 if ($Purge) {
-    if (Test-Path -LiteralPath $ResolvedConfig) { Say "Removing $ResolvedConfig"; Remove-Item -LiteralPath $ResolvedConfig -Recurse -Force }
+    if (Test-Path -LiteralPath $ResolvedConfig) { Say "Removing $ResolvedConfig"; Remove-ClioTree $ResolvedConfig }
     # gact owns its own configuration; retain it.
 }
 if ($PurgeData) {
@@ -220,7 +334,7 @@ if ($PurgeData) {
         foreach ($dir in $PurgeDataDirs) {
             if (Test-Path -LiteralPath $dir) {
                 Say "Removing $dir"
-                Remove-Item -LiteralPath $dir -Recurse -Force
+                Remove-ClioTree $dir
                 $parent = Split-Path -Parent $dir
                 if ((Split-Path -Leaf $parent) -eq 'clio-agent' -and -not (Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue }
             }
@@ -229,8 +343,9 @@ if ($PurgeData) {
 }
 if ($PurgeCaches -and (Test-Path -LiteralPath $ClioCache)) {
     Say "Removing $ClioCache"
-    Remove-Item -LiteralPath $ClioCache -Recurse -Force
+    Remove-ClioTree $ClioCache
 }
+Start-ClioTreeRemoval
 
 Say "CLIO uninstalled."
 if (-not $Purge -and (Test-Path $ClioConfig)) {
