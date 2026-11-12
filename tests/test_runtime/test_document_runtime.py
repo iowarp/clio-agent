@@ -323,6 +323,17 @@ def test_document_sync_reuses_uv_cache_only_on_the_same_filesystem(
     assert env["UV_CACHE_DIR"] == str(want)
 
 
+def test_a_release_keeps_the_document_uv_cache_in_clio_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release lays the packages out from bundled wheels: its cache is CLIO's own, so
+    ``uninstall --purge-caches`` removes it (~/.cache/uv kept ~500 MB of them)."""
+    home = tmp_path / "clio-cache"
+    monkeypatch.setattr(runtime, "_uv_cache_dir", lambda uv: tmp_path / "uv-cache")
+    monkeypatch.setattr(runtime, "_filesystem", lambda path: 1)
+    assert runtime._document_uv_cache("uv", home, bundled=True) == home / "uv-document-cache"
+
+
 def test_document_lock_matches_the_agent_lock_where_its_bounds_allow() -> None:
     """Shared packages resolve to the agent's versions, so one download serves both.
 

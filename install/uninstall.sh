@@ -136,13 +136,29 @@ fi
 # bundle identifier. Application Support holds its settings and logs, so it goes
 # only with --purge.
 DESKTOP_ID="ai.iowarp.clio.desktop"
+desktop_root=""
 DESKTOP_APPS=()
 DESKTOP_DIRS=()
-if [[ "$DESKTOP" -eq 1 ]]; then
-  if [[ "$(uname -s)" != Darwin* ]]; then
-    echo "uninstall: --desktop is for macOS; on Linux remove the clio-desktop package or AppImage" >&2
-    exit 2
+if [[ "$DESKTOP" -eq 1 && "$(uname -s)" != Darwin* ]]; then
+  # Linux: the package manager removes the app (it needs root); this removes what the app
+  # kept in this account, which no package manager touches: ~2.6 GB after first use.
+  # The same mapping as macOS: logs and WebKit caches always, CLIO's cache with
+  # --purge-caches, the whole folder (settings, sessions, store) with --purge or
+  # --purge-data.
+  for proc in /proc/[0-9]*; do
+    if [[ "$(readlink "$proc/exe" 2>/dev/null)" == /usr/bin/clio-desktop ]]; then
+      echo "CLIO Desktop is running. Quit it, then run the uninstaller again." >&2
+      exit 1
+    fi
+  done
+  desktop_root="${XDG_DATA_HOME:-$HOME/.local/share}/$DESKTOP_ID"
+  if [[ "$PURGE" -eq 1 || "$PURGE_DATA" -eq 1 ]]; then
+    DESKTOP_DIRS=("$desktop_root")
+  else
+    DESKTOP_DIRS=("$desktop_root/logs" "$desktop_root/WebKitCache" "$desktop_root/CacheStorage")
+    [[ "$PURGE_CACHES" -eq 0 ]] || DESKTOP_DIRS+=("$desktop_root/clio-agent/cache" "$desktop_root/workspace/.tmp")
   fi
+elif [[ "$DESKTOP" -eq 1 ]]; then
   if [[ -n "${CLIO_DESKTOP_APP:-}" ]]; then
     DESKTOP_APPS=("$CLIO_DESKTOP_APP")
   else
@@ -310,6 +326,8 @@ core_seed_dirs=("$CLIO_PREFIX/clio-agent/.venv/lib" "$CLIO_PREFIX/clio-agent/.ve
 for app in ${DESKTOP_APPS[@]+"${DESKTOP_APPS[@]}"}; do
   core_seed_dirs+=("$app/Contents/Resources/gact-runtime/python/lib")
 done
+# Linux CLIO Desktop's runtime, while its package is still installed.
+[[ -z "$desktop_root" ]] || core_seed_dirs+=("/usr/lib/CLIO Desktop/gact-runtime/python/lib")
 for dir in "${core_seed_dirs[@]}"; do
   for seed in "$dir"/python3*/site-packages/iowarp_core/data/clio_default.yaml; do
     [[ -f "$seed" ]] && CORE_SEEDS+=("$seed")
@@ -322,12 +340,18 @@ core_perf_prefixes=(
   "$(core_perf_name "$HOME/Library/Application Support/$DESKTOP_ID")"
 )
 
+# Byte-identical files. cmp is diffutils, which minimal Fedora, Rocky and Arch lack; there
+# the unedited seed read as edited and stayed. sha256sum is coreutils (macOS has cmp).
+same_file() {
+  if command -v cmp >/dev/null 2>&1; then cmp -s "$1" "$2"
+  else [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]; fi
+}
 purge_core_seed() {
   [[ -d "$CORE_HOME" ]] || return 0
   local seed perf prefix
   if [[ -f "$CORE_HOME/clio.yaml" ]]; then
     for seed in ${CORE_SEEDS[@]+"${CORE_SEEDS[@]}"}; do
-      if cmp -s "$seed" "$CORE_HOME/clio.yaml"; then
+      if same_file "$seed" "$CORE_HOME/clio.yaml"; then
         say "Removing clio-core default config $CORE_HOME/clio.yaml"
         rm -f -- "$CORE_HOME/clio.yaml"
         break
@@ -458,6 +482,25 @@ if [[ "$PURGE" -eq 1 ]]; then purge_core_seed; fi
 # clio-kit first, with the uv the installer used, then uv and uvx if it installed them.
 # Before 0.9.6 nothing was recorded; clio-kit was always installed, so it goes too.
 INSTALLED_TOOLS="$CLIO_PREFIX/installed-tools"
+# uv as install.sh installed it leaves more than its two binaries: its cache (~500 MB in
+# ~/.cache/uv) and its installer's receipt go with it. Its managed Pythons and tool folder
+# stay: a person's own environments made with this uv run on those Pythons, and removing
+# them would break those environments. Where they are is said, to remove by hand.
+remove_uv_data() {  # UV
+  local uv="$1" cache python config="${XDG_CONFIG_HOME:-$HOME/.config}/uv"
+  # Every folder is asked for first: any uv command recreates its cache's skeleton.
+  cache="$("$uv" cache dir 2>/dev/null || true)"
+  python="$("$uv" python dir 2>/dev/null || true)"
+  if [[ "$cache" == /*/uv && -d "$cache" ]]; then
+    say "Removing uv's cache $cache"
+    rm -rf -- "$cache"
+  fi
+  rm -f -- "$config/uv-receipt.json"
+  rmdir -- "$config" 2>/dev/null || true
+  if [[ "$python" == /*/uv/* && -d "$python" ]]; then
+    say "Kept uv's Pythons in $python (environments you made with uv may use them); remove that folder if nothing does."
+  fi
+}
 remove_installed_tools() {
   local uv_bin="" kind value tools=() files=()
   if [[ -f "$INSTALLED_TOOLS" ]]; then
@@ -482,6 +525,9 @@ remove_installed_tools() {
       || warn "Could not remove the $value tool; run 'uv tool uninstall $value'."
   done
   for value in ${files[@]+"${files[@]}"}; do
+    [[ "$value" == "$uv_bin" && -x "$value" ]] && remove_uv_data "$value"
+  done
+  for value in ${files[@]+"${files[@]}"}; do
     if [[ -f "$value" ]]; then
       say "Removing $value"
       rm -f -- "$value"
@@ -490,6 +536,26 @@ remove_installed_tools() {
   rm -f -- "$INSTALLED_TOOLS"
 }
 remove_installed_tools
+
+# codex keeps launcher links (apply_patch, codex-linux-sandbox) to the codex it runs in
+# ~/.codex/tmp/arg0-linux/codex-arg0*. Those leading into CLIO's own payload lead nowhere
+# once it is removed; codex folders holding anything else are the person's own and stay.
+remove_codex_links() {  # ROOT...
+  local codex="${CODEX_HOME:-$HOME/.codex}" dir link root ours
+  for dir in "$codex"/tmp/arg0-linux/codex-arg0*; do
+    [[ -d "$dir" ]] || continue
+    ours=0
+    for link in "$dir"/*; do
+      [[ -L "$link" ]] || continue
+      for root in "$@"; do [[ "$(readlink "$link")" == "$root"/* ]] && ours=1; done
+    done
+    [[ "$ours" -eq 1 ]] && rm -rf -- "$dir"
+  done
+  rmdir -- "$codex/tmp/arg0-linux" "$codex/tmp" "$codex" 2>/dev/null || true
+}
+codex_roots=("$CLIO_PREFIX")
+[[ -z "$desktop_root" ]] || codex_roots+=("/usr/lib/CLIO Desktop")
+remove_codex_links "${codex_roots[@]}"
 
 # ---- remove files ----------------------------------------------------
 if [[ -e "$LAUNCHER" ]]; then
@@ -507,13 +573,27 @@ if [[ -d "$CLIO_PREFIX" ]]; then
 fi
 if [[ "$PURGE" -eq 1 ]]; then
   [[ -d "$CLIO_CONFIG" ]] && { say "Removing $CLIO_CONFIG"; rm -rf "$CLIO_CONFIG"; }
+  # CLIO's sandbox profile layers in codex's home (runtime/sandbox_codex.py), named for CLIO.
+  for layer in "${CODEX_HOME:-$HOME/.codex}"/clio-sb-*.config.toml; do
+    [[ -f "$layer" ]] && { say "Removing $layer"; rm -f -- "$layer"; }
+  done
+  rmdir -- "${CODEX_HOME:-$HOME/.codex}" 2>/dev/null || true
   # gact is a separate product; its configuration is retained.
   purge_host_state
 fi
 if [[ "$PURGE_DATA" -eq 1 ]]; then purge_data; fi
-if [[ "$PURGE_CACHES" -eq 1 && -d "$CLIO_CACHE" ]]; then
-  say "Removing $CLIO_CACHE"
-  rm -rf -- "$CLIO_CACHE"
+# LibreOffice's fontconfig cache from before it moved inside CLIO's cache folder.
+purge_cache_extras() {
+  local legacy
+  legacy="$(dirname "$CLIO_CACHE")/clio-office-fontconfig"
+  if [[ -d "$legacy" ]]; then say "Removing $legacy"; rm -rf -- "$legacy"; fi
+}
+if [[ "$PURGE_CACHES" -eq 1 ]]; then
+  if [[ -d "$CLIO_CACHE" ]]; then
+    say "Removing $CLIO_CACHE"
+    rm -rf -- "$CLIO_CACHE"
+  fi
+  purge_cache_extras
 fi
 for app in ${DESKTOP_APPS[@]+"${DESKTOP_APPS[@]}"}; do
   if [[ -d "$app" ]]; then
@@ -528,6 +608,14 @@ for dir in ${DESKTOP_DIRS[@]+"${DESKTOP_DIRS[@]}"}; do
   fi
 done
 
+if [[ -n "$desktop_root" ]] && command -v clio-desktop >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then remove="sudo apt-get remove clio-desktop"
+  elif command -v dnf >/dev/null 2>&1; then remove="sudo dnf remove clio-desktop"
+  elif command -v zypper >/dev/null 2>&1; then remove="sudo zypper remove clio-desktop"
+  elif command -v pacman >/dev/null 2>&1; then remove="sudo pacman -R clio-desktop"
+  else remove="your package manager"; fi
+  say "CLIO Desktop's files in this account are removed; remove the app itself with: $remove"
+fi
 say "CLIO uninstalled."
 if [[ "$PURGE" -ne 1 && -d "$CLIO_CONFIG" ]]; then
   echo "  Agent config kept ($CLIO_CONFIG) — re-run with --purge to remove"

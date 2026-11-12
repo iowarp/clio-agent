@@ -91,6 +91,29 @@ nothing behind, quit CLIO and run:
 bash /tmp/clio-uninstall.sh --desktop --purge --purge-caches --purge-data
 ```
 
+## Remove the desktop app on Linux
+
+Quit **CLIO Desktop** first. Remove the package with your package manager:
+
+| Distribution | Command |
+|---|---|
+| Ubuntu, Debian, Mint | `sudo apt remove clio-desktop` |
+| Fedora | `sudo dnf remove clio-desktop` |
+| openSUSE | `sudo zypper remove clio-desktop` |
+| Arch, Manjaro | `sudo pacman -R clio-desktop` |
+
+The package manager removes the app and its agent, and stops a CLIO Desktop that is still
+running. It never touches your home folder, where the app keeps its settings, sessions,
+store and caches (`~/.local/share/ai.iowarp.clio.desktop`, about 2.5 GB after first use).
+To remove those too, run the uninstaller with `--desktop` before removing the package:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/uninstall.sh \
+  -o /tmp/clio-uninstall.sh
+bash /tmp/clio-uninstall.sh --desktop --purge-caches            # caches and logs
+bash /tmp/clio-uninstall.sh --desktop --purge --purge-caches --purge-data   # everything
+```
+
 ## What stays behind
 
 <Aside type="caution">
@@ -108,8 +131,8 @@ Delete these yourself if you want a completely clean machine:
   - If you set `CLIO_USER_DIR`, delete that folder.
 - **Cache and data folders** that CLIO keeps beside the configuration folder, such as `~/.cache/clio-agent` and `~/.local/share/clio-agent` on Linux, and `~/Library/Caches/clio-agent` on macOS. The cache is safe to delete; `--purge-caches` removes it, and `--purge-data` removes the data and state folders.
 - **Workspace `.clio` folders.** Each workspace you used has one in its root, with that workspace's sessions and settings. Uninstall never touches them.
-- **clio-kit**, the tool launcher the install script added through uv. Remove it with `uv tool uninstall clio-kit`.
-- **The desktop app.** Uninstall it the usual way for your system, such as Apps and features on Windows, or your package manager on Linux. On macOS, see [Remove the desktop app on macOS](#remove-the-desktop-app-on-macos). It is separate from the command-line install.
+- **clio-kit**, the tool launcher, only when you installed it yourself: the uninstaller removes the one the install script added, and the uv the script installed with its cache.
+- **The desktop app.** Uninstall it the usual way for your system, such as Apps and features on Windows. On macOS, see [Remove the desktop app on macOS](#remove-the-desktop-app-on-macos); on Linux, [Remove the desktop app on Linux](#remove-the-desktop-app-on-linux). It is separate from the command-line install.
 - **uv, Python, and Node.js.** CLIO does not remove tools you installed yourself, including the optional `@openai/codex` package used by the sandbox.
 
 ## Next steps

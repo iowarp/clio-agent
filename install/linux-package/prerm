@@ -9,8 +9,39 @@ set -eu
 root="${CLIO_PACKAGE_ROOT:-/usr/lib/CLIO Desktop}"
 case "$root" in /*) ;; *) echo "clio-desktop: CLIO_PACKAGE_ROOT must be absolute" >&2; exit 1 ;; esac
 
+# A CLIO Desktop still running would keep running from the files removed here: the app,
+# its agent and the clio-core daemon holding the person's store open, all from a runtime
+# that is gone. Every process started from this package's files is asked to stop, then
+# killed after 5 s, as uninstall.sh stops the server and the Windows uninstaller its tree.
+# Matched by command line, which everyone can read: another user's /proc/PID/exe needs
+# ptrace access, which containers and hardened hosts deny even to root.
+stop_running() {
+  pids=""
+  for proc in /proc/[0-9]*; do
+    command="$(tr '\0' '\n' < "$proc/cmdline" 2>/dev/null | head -n 1)" || continue
+    case "$command" in
+      "$root"/* | /usr/bin/clio-desktop | clio-desktop | /usr/bin/clio-agent) pids="$pids ${proc#/proc/}" ;;
+    esac
+  done
+  [ -n "$pids" ] || return 0
+  echo "clio-desktop: stopping the running CLIO Desktop (pid$pids)" >&2
+  # shellcheck disable=SC2086  # a list of pids
+  kill $pids 2>/dev/null || true
+  tries=0
+  while [ "$tries" -lt 50 ]; do
+    alive=""
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null && alive="$alive $pid"; done
+    [ -n "$alive" ] || return 0
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  # shellcheck disable=SC2086
+  kill -9 $alive 2>/dev/null || true
+}
+
 case "${1:-}" in
   remove | 0)
+    stop_running
     rm -rf "$root/gact-runtime.installing" "$root/gact-runtime.previous"
     # Only an unpacked runtime carries the receipt; an exploded one is the package's own.
     if [ -f "$root/gact-runtime/.clio-pack-sha256" ]; then rm -rf "$root/gact-runtime"; fi
