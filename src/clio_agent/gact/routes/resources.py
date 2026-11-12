@@ -298,6 +298,20 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             schedule_processing(app, record, background_tasks)
         return payload
 
+    @app.get("/v1/folder-attachments/locality")
+    async def folder_attachment_locality(request: Request) -> dict[str, Any]:
+        """Whether this client runs on CLIO's computer, so a folder can be used in place.
+
+        The server decides from the connection itself, not from how the client
+        labelled its connection profile.
+        """
+
+        from clio_agent.gact import folder_attachments as folders  # noqa: PLC0415
+        from clio_agent.gact.auth import peer_address_from_scope  # noqa: PLC0415
+
+        getter = getattr(app.state, "peer_address_getter", peer_address_from_scope)
+        return folders.client_locality(getter(request.scope), request.headers)
+
     @app.post("/v1/workspaces/{workspace_id}/folder-attachments", status_code=201)
     async def attach_host_folder(workspace_id: str, request: Request) -> dict[str, Any]:
         """Attach a folder on CLIO's computer in place (sandbox grant) or as a full copy.
