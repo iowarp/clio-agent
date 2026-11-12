@@ -5,14 +5,27 @@ import { BrowserRouter } from 'react-router-dom';
 import { AppProviders } from '@/providers/app-providers';
 import { A2uiDemo, WidgetGallery } from '@/widget-gallery';
 import { GallerySkillDialog } from '@/gallery-skill-dialog';
-import { HurricaneShowcase } from '@/widget-preview';
+import { HurricaneShowcase } from '@/widget-preview-app';
 import { SimulationExample } from '@/simulation-example';
+import { QuestionDockExample } from '@/docs-workspace-examples';
+import { createDocsRepository } from '@/docs-repository';
+import { createRepository } from '@/lib/connection';
+import { createGalleryRepository } from '@/lib/gallery-repository';
+import { useConnectionSettings } from '@/providers/connection-provider';
+import { RepositoryOverrideProvider } from '@/providers/repository-override';
 import { ArrowUpRight } from 'lucide-react';
 import { SelectionActionsContext } from '@/lib/selection-actions-context';
 import { createSelectionActionRegistry, type DataSurfaceZoneSelection } from '@/lib/selection-actions';
 import { useMemo } from 'react';
 import './index.css';
 import './widget-gallery.css';
+
+/** Serve the gallery samples and the docs assets to every production hook below. */
+function DocsRepository({ children }: PropsWithChildren) {
+  const { settings } = useConnectionSettings();
+  const repository = useMemo(() => createDocsRepository(createGalleryRepository(createRepository(settings))), [settings]);
+  return <RepositoryOverrideProvider repository={repository}>{children}</RepositoryOverrideProvider>;
+}
 
 /** Pass Starlight's theme to the workspace provider without observing its output. */
 function DocsThemeBridge({ children }: PropsWithChildren) {
@@ -132,6 +145,10 @@ function DocsReferenceProvider({ children }: { children: ReactNode | ((preview: 
 document.querySelectorAll<HTMLElement>('[data-clio-widget-live]').forEach((element) => {
   const mode = element.dataset.clioWidgetLive;
   const name = element.dataset.component;
+  if (mode === 'question') {
+    createRoot(element).render(<BrowserRouter><AppProviders><DocsThemeBridge><QuestionDockExample /></DocsThemeBridge></AppProviders></BrowserRouter>);
+    return;
+  }
   const view = mode === 'gallery' ? <GalleryWithSkills /> : mode === 'linked' ? <LinkedExamples /> : mode === 'intro' ? <IntroExamples /> : mode === 'interaction' ? <InteractionExamples name={name} /> : name ? <ComponentExample name={name} /> : null;
-  if (view) createRoot(element).render(<BrowserRouter><AppProviders><DocsThemeBridge>{mode === 'gallery' || mode === 'linked' ? view : <DocsReferenceProvider>{view}</DocsReferenceProvider>}</DocsThemeBridge></AppProviders></BrowserRouter>);
+  if (view) createRoot(element).render(<BrowserRouter><AppProviders><DocsRepository><DocsThemeBridge>{mode === 'gallery' || mode === 'linked' ? view : <DocsReferenceProvider>{view}</DocsReferenceProvider>}</DocsThemeBridge></DocsRepository></AppProviders></BrowserRouter>);
 });

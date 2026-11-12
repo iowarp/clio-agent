@@ -8,9 +8,8 @@ import { copyFile } from 'node:fs/promises';
 import starlightLinksValidator from 'starlight-links-validator';
 
 // Public site for CLIO, served by GitHub Pages at clio.iowarp.ai.
-// The overview (/) is a Starlight splash page so the header, search, and
-// theme switch are the same on every page. Guides and examples live under
-// /docs/. Older tutorial URLs redirect there; drafts appear only in `pnpm dev`.
+// The home page (/) is a standalone Astro page (src/pages/index.astro) with
+// its own light layout; guides and examples are Starlight pages under /docs/. Older tutorial URLs redirect there; drafts appear only in `pnpm dev`.
 
 // Client-side redirect pages under src/pages that must not be listed as content.
 const SITEMAP_EXCLUDED_PATHS = ['/docs/memory-and-evidence/'];
@@ -18,6 +17,9 @@ const SITEMAP_EXCLUDED_PATHS = ['/docs/memory-and-evidence/'];
 export default defineConfig({
 	site: 'https://clio.iowarp.ai',
 	trailingSlash: 'ignore',
+	// Fetch a page as soon as a link to it is hovered or tapped, so moving
+	// between the home page and the docs feels immediate.
+	prefetch: { prefetchAll: true, defaultStrategy: 'hover' },
 	// The pre-Astro site published these three pages; keep their URLs working.
 	redirects: {
 		'/docs.html': '/docs/',
@@ -35,8 +37,8 @@ export default defineConfig({
 			title: 'CLIO',
 			description:
 				'An open-source AI workspace for scientific data: data discovery, analysis, expert agents, and provenance in one place.',
-			logo: { src: './src/assets/brand/clio-mark.svg', alt: 'CLIO' },
-			favicon: '/favicon.svg',
+			logo: { src: './src/assets/brand/clio-mark-small.svg', alt: 'CLIO' },
+			favicon: '/clio-mark-small.svg',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/iowarp/clio-agent' }],
 			editLink: { baseUrl: 'https://github.com/iowarp/clio-agent/edit/develop/site/' },
 			lastUpdated: true,
@@ -45,13 +47,13 @@ export default defineConfig({
 			expressiveCode: { defaultProps: { wrap: true } },
 			components: {
 				Header: './src/components/starlight/Header.astro',
-				Hero: './src/components/overview/Hero.astro',
 				Footer: './src/components/starlight/Footer.astro',
 			},
 			plugins: [starlightLinksValidator({
 				errorOnLocalLinks: false,
-				// Static native HTML endpoints are checked by the archive browser tests.
-				exclude: ['/conversations/**'],
+				// Static native HTML endpoints are checked by the archive browser tests;
+				// the home page is a custom page the validator cannot read.
+				exclude: ['/conversations/**', '/', '/#download'],
 			})],
 			sidebar: [
 				{
