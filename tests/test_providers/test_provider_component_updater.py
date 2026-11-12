@@ -349,3 +349,17 @@ def test_a_sealed_runtime_rollback_empties_its_overlay(
     assert _tree(site) == before
     assert not list(overlay.glob("clio_fake_sdk*"))  # the rollback copy equals the runtime's
     assert _overlay_version(venv, overlay) == "1.0.0 1.0.0"
+
+
+def test_an_overlay_update_uses_clios_own_installer_cache(tmp_path: Path) -> None:
+    """A sealed runtime's update never fills the person's own ~/.cache/uv (it outlives CLIO)."""
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.providers.components import updater  # noqa: PLC0415
+
+    command = updater.install_command(
+        "python", tmp_path / "c.txt", ("claude-agent-sdk",), [], target=tmp_path / "overlay"
+    )
+    cache = Path(command[command.index("--cache-dir") + 1])
+    assert cache.is_relative_to(paths.user_cache_dir())
+    in_place = updater.install_command("python", tmp_path / "c.txt", ("claude-agent-sdk",), [])
+    assert "--cache-dir" not in in_place  # a source install keeps uv's own cache

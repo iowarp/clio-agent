@@ -91,6 +91,7 @@ def _install_command(
     placement: list[str] = []
     if target is not None:
         placement = ["--target", str(target)]
+        placement += ["--cache-dir", str(package_overlay.overlay_install_cache())]
         if constraints is not None:
             placement += ["--constraint", str(constraints)]
     if uv:
