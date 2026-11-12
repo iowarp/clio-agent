@@ -12,6 +12,7 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
+import time
 import tomllib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -590,6 +591,7 @@ def prepare_document_runtime(
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
     discovery_only: bool = False,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Prepare and probe an isolated document runtime without changing Clio's interpreter.
 
@@ -599,7 +601,14 @@ def prepare_document_runtime(
     ``discovery_only`` freshly inspects executables and package metadata, without
     importing every package or probing document converters/fonts. Requested imports
     are independently checked by the execution tool; no prior answer is reused.
+    ``timings``, when given, receives the seconds of the Python environment, the
+    Node.js packages and the Python import probe.
     """
+
+    def lap(key: str, started: float) -> None:
+        if timings is not None:
+            timings[key] = round(time.monotonic() - started, 1)
+
     workspace = workspace.resolve(strict=True)
     from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -617,12 +626,16 @@ def prepare_document_runtime(
     with FileLock(str(cache / "prepare.lock"), timeout=240):
         if progress is not None:
             progress("Preparing and checking Python document packages...")
+        started = time.monotonic()
         python, inventory = _python_runtime(cache, uv, discovery_only=True)
+        lap("python_environment", started)
         javascript: tuple[Path, Path] | DocumentRuntimeError
         if discovery_only:
             if progress is not None:
                 progress("Python document packages are ready. Preparing Node.js packages...")
+            started = time.monotonic()
             javascript = _javascript_or_error(cache, workspace, inventory, progress)
+            lap("node_packages", started)
         else:
             # Node needs only the installed environment, so it is prepared while the
             # full import probe runs. That probe is most of the Python step: the first
@@ -630,8 +643,17 @@ def prepare_document_runtime(
             if progress is not None:
                 progress("Python document packages are installed. Preparing Node.js packages...")
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-probe") as checking:
-                probed = checking.submit(_probe, python)
+                started = time.monotonic()
+
+                def probe() -> dict[str, Any]:
+                    try:
+                        return _probe(python)
+                    finally:
+                        lap("python_probe", started)
+
+                probed = checking.submit(probe)
                 javascript = _javascript_or_error(cache, workspace, inventory, progress)
+                lap("node_packages", started)
                 try:
                     inventory = probed.result()
                 except (DocumentRuntimeError, ValueError):
@@ -693,7 +715,9 @@ def prepare_document_runtime(
                 ],
                 "packages": json.loads((STACK_ROOT / "package.json").read_text())["dependencies"],
             }
+        started = time.monotonic()
         publish_environment(workspace, inventory, cache)
+        lap("publish", started)
         if progress is not None and inventory["javascript"]["status"] == "ready":
             progress("Node.js document packages are ready.")
     return inventory

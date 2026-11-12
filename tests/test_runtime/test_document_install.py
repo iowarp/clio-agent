@@ -121,6 +121,48 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
     assert receipt.exists()
 
 
+def test_installer_reports_each_sub_jobs_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "locked").mkdir()
+
+    def packages(*args: Any, timings: dict[str, float] | None = None, **kwargs: Any) -> Any:
+        assert timings is not None
+        timings["python_environment"] = 1.0
+        return {
+            "status": "ready",
+            "runtime_id": "locked",
+            "javascript": {"status": "ready"},
+            "native_tools": {},
+            "capabilities": {},
+        }
+
+    monkeypatch.setattr(installer, "prepare_document_runtime", packages)
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
+    monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
+    monkeypatch.setattr(
+        installer,
+        "prepare_existing_windows_fence",
+        lambda **kwargs: {"status": "available", "implementation": "mxc"},
+    )
+    timings: dict[str, float] = {}
+    installer.install_document_runtime(tmp_path / "workspace", cache_root=tmp_path, timings=timings)
+    assert set(timings) == {
+        "protect_runtime",
+        "office",
+        "gh",
+        "rg",
+        "tectonic",
+        "packages",
+        "python_environment",
+        "protection",
+        "receipt",
+    }
+    assert all(isinstance(seconds, float) and seconds >= 0 for seconds in timings.values())
+
+
 @pytest.mark.parametrize("failed_step", ["office", "github", "python"])
 def test_installer_failure_waits_for_other_work_without_publishing_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_step: str
