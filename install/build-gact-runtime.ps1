@@ -169,6 +169,21 @@ Write-Host "[build-gact-runtime] installing bundled CLIO Web Search adapter"
 Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $webMcpProject)
 Remove-Item -LiteralPath $constraints -Force -ErrorAction SilentlyContinue
 
+# claude_code's SDK (and the claude.exe it runs) ships in the Windows runtime, so an
+# install lays it down with the unpack instead of resolving and downloading a 100 MB
+# wheel during prepare (43.8 s of the managed-package step on a 17 MB/s link). It is
+# the claude-code extra's lock pin; check_bundle_matches_lock.py accepts it as a
+# user-updatable component, and a newer release still installs into the package overlay.
+# claude-agent-sdk publishes no Windows arm64 wheel; there the first turn installs it.
+$ShipClaudeSdk = $env:PROCESSOR_ARCHITECTURE -ne 'ARM64'
+if ($ShipClaudeSdk) {
+  $sdkConstraints = Join-Path $Out '.claude-sdk-constraints.txt'
+  Invoke-Native -Exe $uv.Source -Args @('export', '--project', $checkout, '--frozen', '--no-hashes', '--no-emit-project', '--extra', 'claude-code', '-o', $sdkConstraints) | Select-Object -Last 5
+  Write-Host "[build-gact-runtime] installing the Claude Code SDK (locked)"
+  Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $sdkConstraints, '--only-binary', 'claude-agent-sdk', 'claude-agent-sdk')
+  Remove-Item -LiteralPath $sdkConstraints -Force -ErrorAction SilentlyContinue
+}
+
 # check_bundle_matches_lock.py is the automated proof this constraint actually
 # took effect (release-time backstop, not a substitute for it) -- run from the
 # CI workflow right after this script, against $checkout's uv.lock (the exact
@@ -333,15 +348,19 @@ if (Test-Path $sitePkgs) {
 }
 if (Test-Path $sitePkgs) {
   $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'
+  $claudeCli = Join-Path $sitePkgs 'claude_agent_sdk\_bundled\claude.exe'
   $iowarpCoreBin = Join-Path $sitePkgs 'iowarp_core\bin'
   Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
     Where-Object {
-      $_.FullName -ne $codexCli -and
+      $_.FullName -ne $codexCli -and $_.FullName -ne $claudeCli -and
       -not $_.FullName.StartsWith($iowarpCoreBin, [System.StringComparison]::OrdinalIgnoreCase)
     } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
   if (-not (Test-Path -LiteralPath $codexCli)) {
     throw 'build-gact-runtime: packaged Codex provider executable is missing'
+  }
+  if ($ShipClaudeSdk -and -not (Test-Path -LiteralPath $claudeCli)) {
+    throw 'build-gact-runtime: packaged Claude Code executable is missing'
   }
   $clioCoreLauncher = Join-Path $iowarpCoreBin 'clio_run.exe'
   if (-not (Test-Path -LiteralPath $clioCoreLauncher)) {

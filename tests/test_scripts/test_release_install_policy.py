@@ -258,6 +258,8 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     assert "CLIO_RUNTIME_BOOT_GATE_SECONDS" in windows_builder
     assert "codex_cli_bin\\bin\\codex.exe" in windows_builder
     assert "packaged Codex provider executable is missing" in windows_builder
+    assert "claude_agent_sdk\\_bundled\\claude.exe" in windows_builder
+    assert "packaged Claude Code executable is missing" in windows_builder
     assert "iowarp_core\\bin" in windows_builder
     assert "packaged clio-core launcher is missing" in windows_builder
     assert "initialize clio-core store" in windows_builder
