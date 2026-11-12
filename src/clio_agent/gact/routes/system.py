@@ -464,8 +464,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             uptime_s=uptime,
             overall_status=overall,
             integrations=rows,
-            # #772: surface the tool-runtime hooks flag so a failed permission-gate
-            # install (ungated/unobserved tools) is visible, not silent.
+            # #772: a failed permission-gate install (ungated tools) is visible, not silent.
             tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
             context_mode=history_mode.resolve().mode,
             boot=boot_timing.snapshot(app),

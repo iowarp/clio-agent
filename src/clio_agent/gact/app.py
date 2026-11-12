@@ -665,19 +665,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     await server_boot.prepare_protection(app, windows=sys.platform == "win32")
-    # Install or refresh the shipped default marketplace off the loop; a turn that
-    # resolves before it finishes waits on the same lock (PluginService.ready).
-    # A failed install is recorded on ``ready_error`` (it does not raise): the step's
-    # outcome names it instead of reporting ok.
-    plugins = app.state.plugin_service
-    app.state.plugin_sync_task = asyncio.create_task(
-        boot_timing.timed(
-            app,
-            "marketplace",
-            asyncio.to_thread(plugins.ready),
-            lambda _: (plugins.ready_error or {}).get("reason", "ok"),
-        )
-    )
+    # The shipped default marketplace installs off the loop (server_boot.start_plugin_sync).
+    server_boot.start_plugin_sync(app)
 
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:

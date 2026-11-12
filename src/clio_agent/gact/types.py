@@ -94,21 +94,18 @@ class HealthResponse(BaseModel):
     overall_status: Optional[Literal["ready", "degraded", "unavailable"]] = None
     integrations: Optional[list[Integration]] = None
     # #772: whether the tool-runtime hooks (permission gate + tool observer) are installed.
-    # ``False`` means the install *failed* — tools would run ungated/unobserved, the
-    # highest-severity silent fallback, now surfaced so operators can see the degraded gate
-    # (the error is in ``app.state.tool_hooks_install_error``, logged as
-    # ``reason=tool_runtime_hooks_install_failed``). ``None`` means not-yet-determined:
-    # deferred agent init hasn't installed the hooks yet (or the agent failed to construct
-    # — see ``agent_init_error``).
+    # ``False``: the install *failed* and tools would run ungated/unobserved, the worst silent
+    # fallback, surfaced (``app.state.tool_hooks_install_error``, logged as
+    # ``reason=tool_runtime_hooks_install_failed``). ``None``: not determined yet, deferred
+    # agent init has not installed the hooks (or the agent failed: ``agent_init_error``).
     tool_hooks_installed: Optional[bool] = None
     context_mode: Optional[Literal["clio_core", "history"]] = None  # history: no clio-core
     # When each startup step ran, in seconds since the process started (gact/boot_timing.py):
     # ``steps`` (finished), ``running`` and ``marks`` such as ``serving`` and ``agent_ready``.
     boot: Optional[dict[str, Any]] = None
-    # ``starting`` until the startup row is up (task runtime, marketplace, agent), then
-    # ``ready``; ``starting`` lists what is still coming up (gact/boot_timing.readiness).
-    # ``failed`` once the task runtime's start failed: it will not come up until CLIO
-    # restarts, and ``failure`` says why (``reason`` token, plain ``message``).
+    # ``starting`` until the startup row (task runtime, marketplace, agent) is up, then ``ready``
+    # (gact/boot_timing.readiness); ``failed`` once the task runtime's start failed, until CLIO
+    # restarts. ``starting`` lists what is still coming up; ``failure`` says why it failed.
     readiness: Optional[Literal["starting", "ready", "failed"]] = None
     starting: Optional[list[str]] = None
     failure: Optional[dict[str, str]] = None
