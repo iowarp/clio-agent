@@ -266,7 +266,7 @@ after it.
 
 The `clio-bundles.yml` **`release-check`** job must be green. In order it: generates
 and uploads the `latest.json` / `latest-lite.json` updater manifests to the draft,
-asserts every expected asset is present (bundled msi/nsis/dmg/deb/rpm, lite set,
+asserts every expected asset is present (bundled msi/nsis/dmg/deb/rpm/Arch pkg, lite set,
 updater payloads + sigs + manifests, web zip, installer scripts + launchers;
 #841 F-15), backstops the notes, then **publishes** the draft
 (`scripts/github_release.py publish`: draft → public, marked latest) and verifies
