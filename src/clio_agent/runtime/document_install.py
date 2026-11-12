@@ -92,7 +92,7 @@ def prepare_managed_packages(
 
     def prepare_office() -> str:
         report("Preparing and checking the Office renderer...")
-        office = prepare_office_runtime()
+        office = prepare_office_runtime(timings=timings)
         report("Office rendering is ready.")
         return office
 
