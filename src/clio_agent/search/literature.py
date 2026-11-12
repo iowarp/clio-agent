@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -79,32 +80,46 @@ async def _approved(settings: SearchSettings) -> None:
         raise SearchFailure("search_not_approved", "literature sources", [])
 
 
+#: A burst limit that lifts within this many seconds is waited out, not reported.
+SHORT_WAIT_S = 20.0
+
+
+def _failure_code(kind: str) -> str:
+    return (
+        "literature_source_budget_used"
+        if kind == http.ALLOWANCE_USED
+        else "literature_source_failed"
+    )
+
+
 async def _call(source: str, run: Callable[[], Awaitable[Any]], notes: list[SearchNote]) -> Any:
-    resting = SEARCH_LIMITS.cooldown(source)
-    if resting is not None:
-        code = (
-            "literature_source_budget_used"
-            if resting.kind == http.ALLOWANCE_USED
-            else "literature_source_failed"
-        )
-        notes.append(note(code, source, resting.detail))
-        return None
-    await SEARCH_LIMITS.slot(source)
-    try:
-        value = await run()
-    except SourceError as exc:
-        SEARCH_LIMITS.cool(source, exc.cooldown_s(), exc.kind, exc.detail)
-        code = (
-            "literature_source_budget_used"
-            if exc.kind == http.ALLOWANCE_USED
-            else "literature_source_failed"
-        )
-        notes.append(note(code, source, exc.detail))
-        return None
-    finally:
-        SEARCH_LIMITS.release(source)
-    SEARCH_LIMITS.answered(source)
-    return value
+    """Ask one source, waiting out a short burst limit once; a failure becomes a note."""
+
+    for attempt in (1, 2):
+        resting = SEARCH_LIMITS.cooldown(source)
+        if resting is not None:
+            remaining = resting.until - time.time()
+            if attempt == 1 and resting.kind == http.RATE_LIMITED and remaining <= SHORT_WAIT_S:
+                await asyncio.sleep(max(remaining, 0.0))
+                continue
+            notes.append(note(_failure_code(resting.kind), source, resting.detail))
+            return None
+        await SEARCH_LIMITS.slot(source)
+        try:
+            value = await run()
+        except SourceError as exc:
+            SEARCH_LIMITS.cool(source, exc.cooldown_s(), exc.kind, exc.detail)
+            if attempt == 1 and exc.kind == http.RATE_LIMITED and exc.cooldown_s() <= SHORT_WAIT_S:
+                await asyncio.sleep(exc.cooldown_s())
+                continue
+            notes.append(note(_failure_code(exc.kind), source, exc.detail))
+            return None
+        finally:
+            SEARCH_LIMITS.release(source)
+        SEARCH_LIMITS.answered(source)
+        return value
+    notes.append(note("literature_source_failed", source, "still rate-limited"))
+    return None
 
 
 def _title_key(record: PaperRecord) -> str:

@@ -288,3 +288,30 @@ def test_question_round_trip_through_the_mcp_client(monkeypatch) -> None:
 def test_settings_build_rejects_bad_service_url() -> None:
     with pytest.raises(ValueError, match="http"):
         build_settings(service_url="ftp://x")
+
+
+def test_literature_waits_out_a_short_burst_limit_then_answers(monkeypatch) -> None:
+    from clio_agent.search import literature
+
+    calls: list[int] = []
+
+    async def flaky() -> list[str]:
+        calls.append(1)
+        if len(calls) == 1:
+            raise SourceError("crossref", http.RATE_LIMITED, "HTTP 429", 0.05)
+        return ["work"]
+
+    notes: list[Any] = []
+    assert asyncio.run(literature._call("crossref", flaky, notes)) == ["work"]
+    assert len(calls) == 2 and notes == []
+
+
+def test_literature_reports_a_long_limit_without_waiting(monkeypatch) -> None:
+    from clio_agent.search import literature
+
+    async def used() -> list[str]:
+        raise SourceError("openalex", http.ALLOWANCE_USED, "HTTP 429", 14000)
+
+    notes: list[Any] = []
+    assert asyncio.run(literature._call("openalex", used, notes)) is None
+    assert [n.code for n in notes] == ["literature_source_budget_used"]

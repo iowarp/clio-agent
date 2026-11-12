@@ -36,8 +36,9 @@ _POLL_S = 0.5
 #: Per-source pacing: (minimum seconds between calls, most calls at once).
 PACING: dict[str, tuple[float, int]] = {
     "arxiv": (3.0, 1),
-    "crossref": (0.1, 3),
-    "openalex": (0.1, 4),
+    # Crossref's public pool allows one request at a time (three in the polite pool).
+    "crossref": (0.25, 1),
+    "openalex": (0.15, 2),
     "europepmc": (0.1, 4),
     "osti": (0.2, 2),
     "opencitations": (0.2, 2),

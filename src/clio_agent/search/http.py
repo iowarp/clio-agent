@@ -28,7 +28,7 @@ KEY_REJECTED = "key_rejected"  # the person's key was refused
 FAILED = "failed"  # network, server error or an answer CLIO cannot read
 
 #: Cooldown when a source gives no Retry-After.
-DEFAULT_COOLDOWN_S = {RATE_LIMITED: 60.0, ALLOWANCE_USED: 3600.0, KEY_REJECTED: 0.0, FAILED: 30.0}
+DEFAULT_COOLDOWN_S = {RATE_LIMITED: 15.0, ALLOWANCE_USED: 3600.0, KEY_REJECTED: 0.0, FAILED: 30.0}
 #: A Retry-After longer than this means the allowance is used up, not a burst limit.
 ALLOWANCE_THRESHOLD_S = 900.0
 
