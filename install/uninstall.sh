@@ -222,8 +222,10 @@ fi
 if [[ -z "$server_pid" ]] && command -v lsof >/dev/null 2>&1; then
   server_pid="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
 fi
+STOPPED_PIDS=()
 if [[ -n "$server_pid" ]]; then
   say "Stopping CLIO server (pid $server_pid)"
+  STOPPED_PIDS+=("$server_pid")
   kill "$server_pid" 2>/dev/null || true
   sleep 1
   kill -0 "$server_pid" 2>/dev/null && kill -9 "$server_pid" 2>/dev/null || true
@@ -234,8 +236,14 @@ fi
 # Sweep leftover server processes started from this prefix. Match both the
 # current entrypoint (clio-agent serve) and the retired pre-upgrade one
 # (clio-agent-gact) so an old server left running is still cleaned up.
+leftover_pattern="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?"
+if command -v pgrep >/dev/null 2>&1; then
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] && STOPPED_PIDS+=("$pid")
+  done < <(pgrep -f "$leftover_pattern" 2>/dev/null || true)
+fi
 if command -v pkill >/dev/null 2>&1; then
-  pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?" 2>/dev/null || true
+  pkill -f "$leftover_pattern" 2>/dev/null || true
 fi
 
 # ---- clio-core's files in ~/.clio ------------------------------------
@@ -291,7 +299,8 @@ core_daemon_pid() {
   local pidfile pid
   for pidfile in "$CLIO_HOST_STATE"/core-hosts/*/clio-runtime.pid; do
     [[ -f "$pidfile" ]] || continue
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    # The record is "<pid> <start time>"; older ones hold the pid alone.
+    pid="$(awk 'NR == 1 { print $1 }' "$pidfile" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       echo "$pid"
       return 0
@@ -331,6 +340,65 @@ purge_data() {
   done
 }
 
+# clio-core's file-backed shared memory lives in /tmp/clio_<user> (macOS: regular
+# files, up to ~1.5 GB per daemon; Linux: memfd symlinks). A process that is killed
+# before it unmaps leaves its files behind, and nothing cleans them once CLIO is
+# gone. Remove only what belongs to this install: the per-process files of the
+# processes stopped above, and the port-keyed segments of the daemon this install
+# recorded, once that daemon is dead. Any other runtime's files are kept.
+remove_core_memory_files() {
+  local user dir pid file name port record kb count=0 total_kb=0 waited=0 alive
+  local daemons=() owned=() dirs=()
+  user="${USER:-$(id -un 2>/dev/null || true)}"
+  [[ -n "$user" ]] || return 0
+  dirs=("/tmp/clio_$user")
+  if [[ -n "${TMPDIR:-}" && "${TMPDIR%/}/clio_$user" != "/tmp/clio_$user" ]]; then
+    dirs+=("${TMPDIR%/}/clio_$user")
+  fi
+  # The leftovers got SIGTERM; give them a moment to exit before their files go.
+  while ((waited < 20)); do
+    alive=0
+    for pid in ${STOPPED_PIDS[@]+"${STOPPED_PIDS[@]}"}; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    ((alive)) || break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  for pid in ${STOPPED_PIDS[@]+"${STOPPED_PIDS[@]}"}; do
+    kill -0 "$pid" 2>/dev/null || owned+=("$pid")
+  done
+  for record in "$CLIO_HOST_STATE"/core-hosts/*/clio-runtime.pid; do
+    [[ -f "$record" ]] || continue
+    pid="$(awk 'NR == 1 { print $1 }' "$record" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null && daemons+=("$pid")
+  done
+  for dir in "${dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    local files=()
+    for pid in ${daemons[@]+"${daemons[@]}"}; do
+      for record in "$dir/chi_runtime_pid_${user}_"*; do
+        [[ -f "$record" && "$(cat "$record" 2>/dev/null || true)" == "$pid" ]] || continue
+        port="${record##*_}"
+        [[ "$port" =~ ^[0-9]+$ ]] || continue
+        files+=("$record" "$dir/clio_$port.ipc")
+        for name in main metadata queue; do files+=("$dir/chi_${name}_segment_${user}_$port"); done
+        owned+=("$pid")
+      done
+    done
+    for pid in ${owned[@]+"${owned[@]}"}; do
+      files+=("$dir/clio-$pid-shm-"* "$dir/clio_${pid}_"* "$dir/clio_rambdev_${pid}_"*)
+    done
+    for file in ${files[@]+"${files[@]}"}; do
+      [[ -e "$file" || -L "$file" ]] || continue
+      kb="$(du -k "$file" 2>/dev/null | cut -f1)"
+      rm -f -- "$file" && count=$((count + 1)) && total_kb=$((total_kb + ${kb:-0}))
+    done
+    rmdir -- "$dir" 2>/dev/null || true
+  done
+  ((count == 0)) || say "Removed $count clio-core memory files ($((total_kb / 1024)) MB) from ${dirs[*]}"
+}
+remove_core_memory_files
 
 # Compare against the seeds before the payloads holding them go.
 if [[ "$PURGE" -eq 1 ]]; then purge_core_seed; fi
