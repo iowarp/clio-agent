@@ -1,11 +1,14 @@
 """Lay this host's Office as ``ensure_office`` does and pack it as one release asset.
 
-Linux only. TDF's packages are unpacked and pruned, the private userland is laid in
+Linux: TDF's packages are unpacked and pruned, the private userland is laid in
 (``office_compat``), and the result is packed as ``office.prepared_tree_name()``, a
 ``.tar.zst``. ``install.sh`` downloads it from the release (its install plan's
 ``office`` line), so an install needs neither TDF's mirrors nor Ubuntu's archives, and
-``ensure_office`` only unpacks it (``installer_prepared_tree``). The tree is then run
-once, as every install does before publishing it.
+``ensure_office`` only unpacks it (``installer_prepared_tree``). Windows x64: TDF's MSI
+is expanded and pruned (``windows_msi``) once here instead of on every install, where
+its CAB expands one file at a time; ``install.ps1`` fetches the tree for a source
+install and ``ensure_office`` unpacks it while it downloads. The tree is then run once,
+as every install does before publishing it.
 
     uv run --no-project --python 3.14 --with zstandard --with filelock --with truststore \
         python scripts/build_office_tree.py --output DIR [--release-url URL]
@@ -69,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     name = office.prepared_tree_name()
     if name is None:
-        raise SystemExit("no prepared Office tree for this host (Linux x86_64 or aarch64 only)")
+        raise SystemExit("no prepared Office tree for this host (Linux x86_64 or aarch64, Windows x64)")
     args.output.mkdir(parents=True, exist_ok=True)
     target = args.output / name
     with tempfile.TemporaryDirectory(prefix="office-tree-", dir=args.output) as temporary:

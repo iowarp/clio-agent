@@ -87,6 +87,21 @@ function Stop-OfficePrepare {
         }
     }
     $script:OfficeProc = $null
+    Remove-ClioOfficeTreeFetch
+}
+# The source install's LibreOffice download (Start-ClioOfficeTreeFetch), once the Office
+# worker no longer reads it.
+function Remove-ClioOfficeTreeFetch {
+    if (-not $script:OfficeTreeScratch) { return }
+    $fetch = $script:OfficeTreeFetch
+    if ($fetch -and -not $fetch.HasExited) { & taskkill.exe /T /F /PID $fetch.Id 2>&1 | Out-Null }
+    $script:ClioSideFetches = @($script:ClioSideFetches | Where-Object { $_ -ne $fetch })
+    $script:OfficeTreeFetch = $null
+    if ($env:CLIO_INSTALL_DOWNLOADS -and $env:CLIO_INSTALL_DOWNLOADS.StartsWith($script:OfficeTreeScratch)) {
+        Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $script:OfficeTreeScratch -Recurse -Force -ErrorAction SilentlyContinue
+    $script:OfficeTreeScratch = $null
 }
 # Run as a file (-File, CI), the installer exits with its status. Run from a URL
 # (`irm ... | iex`, or a script block) it has no file, and `exit` would close the
@@ -918,6 +933,7 @@ function Start-OfficePrepare {
     if ($script:OfficeProc) { return }
     $worker = Join-Path $Src 'install/prepare-office.ps1'
     if (-not (Test-Path -LiteralPath $worker)) { return }  # older source ref
+    Start-ClioOfficeTreeFetch
     $stem = Join-Path ([IO.Path]::GetTempPath()) ("clio-office-" + [Guid]::NewGuid().ToString('N'))
     $script:OfficeLog = "$stem.log"
     $script:OfficeErr = "$stem.err.log"
@@ -937,6 +953,7 @@ function Complete-OfficePrepare {
     $code = $proc.ExitCode
     $seconds = [Math]::Round(($proc.ExitTime - $proc.StartTime).TotalSeconds, 1)
     $script:OfficeProc = $null
+    Remove-ClioOfficeTreeFetch
     if ($code -ne 0) {
         Get-Content -LiteralPath $script:OfficeLog, $script:OfficeErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
         DieWith $code "Managed-tool preparation failed (logs: $($script:OfficeLog), $($script:OfficeErr)); installation was not marked ready."
@@ -991,20 +1008,61 @@ function Get-ClioRuntimePlan([string]$Tag, [string]$Scratch) {
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return $null }
     $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
     if (-not (Test-Path -LiteralPath $tar)) { return $null }
+    $plan = @(Get-ClioReleasePlan $Tag $Scratch 'installing from PyPI')
+    if (@($plan | Where-Object { $_.Kind -eq 'runtime' -and $_.Name -like 'gact-runtime-*.tar.zst' }).Count -ne 1) { return $null }
+    return $plan
+}
+
+# Get-ClioReleasePlan TAG SCRATCH FALLBACK [NAME]: release TAG's plan file NAME (its bundled
+# install plan for this target), read only when it matches the release's SHA256SUMS.
+function Get-ClioReleasePlan([string]$Tag, [string]$Scratch, [string]$Fallback, [string]$Name = "install-plan.$($script:ClioRuntimeTriple).bundled.txt") {
     $base = "https://github.com/iowarp/clio-agent/releases/download/$Tag"
     $sums = Join-Path $Scratch 'checksums'
     $planFile = Join-Path $Scratch 'plan'
-    try { Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $sums } catch { return $null }
-    $planSha = Get-ClioManifestSha ([IO.File]::ReadAllText($sums)) "install-plan.$($script:ClioRuntimeTriple).bundled.txt"
-    if (-not $planSha) { return $null }
-    try { Invoke-WebRequest -UseBasicParsing "$base/install-plan.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $planFile } catch { return $null }
+    try { Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $sums } catch { return }
+    $planSha = Get-ClioManifestSha ([IO.File]::ReadAllText($sums)) $Name
+    if (-not $planSha) { return }
+    try { Invoke-WebRequest -UseBasicParsing "$base/$Name" -OutFile $planFile } catch { return }
     if ((Get-ClioSha256 $planFile) -ne $planSha) {
-        Warn "release $Tag's install plan does not match its checksum; installing from PyPI"
-        return $null
+        Warn "release $Tag's install plan does not match its checksum; $Fallback"
+        return
     }
-    $plan = @(Read-ClioPlan $planFile)
-    if (@($plan | Where-Object { $_.Kind -eq 'runtime' -and $_.Name -like 'gact-runtime-*.tar.zst' }).Count -ne 1) { return $null }
-    return $plan
+    Read-ClioPlan $planFile
+}
+
+# Start-ClioOfficeTreeFetch: a source install's LibreOffice as the newest release lays it
+# (scripts/build_office_tree.py): about 200 MB that the Office worker unpacks while it
+# downloads, instead of TDF's 373 MB MSI, whose CAB expands one file at a time. Its line
+# is a plan file of its own (office-plan.TRIPLE.txt), not in the bundled install plan,
+# whose every line the desktop and runtime installs fetch. The SHA-256 is written beside
+# the download; office.py takes the tree only when its name is this checkout's layout
+# and its bytes match. Otherwise the worker lays Office from the MSI.
+$OfficeTreeScratch = $null
+$OfficeTreeFetch = $null
+function Start-ClioOfficeTreeFetch {
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return }
+    try {
+        $release = Resolve-ClioRelease $true
+        if (-not $release) { return }
+        $scratch = Join-Path ([IO.Path]::GetTempPath()) ("clio-office-tree-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+        $script:OfficeTreeScratch = $scratch
+        $plan = @(Get-ClioReleasePlan $release.Tag $scratch "laying LibreOffice from TDF's MSI" "office-plan.$($script:ClioRuntimeTriple).txt")
+        $entry = @($plan | Where-Object { $_.Kind -eq 'office' -and $_.Name -like 'office-*-windows-x64.tar.zst' }) | Select-Object -First 1
+        if (-not $entry) { return }
+        $downloads = Join-Path $scratch 'downloads'
+        New-Item -ItemType Directory -Force -Path $downloads | Out-Null
+        $final = Join-Path $downloads $entry.Name
+        [IO.File]::WriteAllText("$final.sha256", $entry.Sha)
+        $running = @($script:ClioSideFetches).Count
+        Start-ClioSideFetch ([pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final })
+        if (@($script:ClioSideFetches).Count -eq $running) { return }  # no curl.exe
+        $script:OfficeTreeFetch = $script:ClioSideFetches[-1]
+        $env:CLIO_INSTALL_DOWNLOADS = $downloads
+        Say "Fetching LibreOffice as release $($release.Tag) lays it ($($entry.Name), $([math]::Round($entry.Bytes / 1e6)) MB)"
+    } catch {
+        Warn "could not fetch the release's LibreOffice ($_); laying it from TDF's MSI"
+    }
 }
 
 # Start-ClioUnpackers DIR ITEM: tar.exe processes that unpack ITEM's archive into DIR while
