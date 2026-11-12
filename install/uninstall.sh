@@ -214,13 +214,64 @@ if [[ "$ASSUME_YES" -ne 1 ]]; then
 fi
 
 # ---- stop the server -------------------------------------------------
+# A pid counts as this installation's only if its command line, executable or
+# working directory is under the install prefix. The pidfile can name a recycled
+# pid, and the port can be held by any program, so neither is trusted alone.
+prefix_real="$(cd -P -- "$CLIO_PREFIX" 2>/dev/null && pwd || true)"
+under_prefix() {
+  local path="$1" root
+  for root in "$CLIO_PREFIX" "$prefix_real"; do
+    [[ -n "$root" ]] || continue
+    case "$path" in "$root"/*) return 0 ;; esac
+  done
+  return 1
+}
+process_paths() {
+  local pid="$1"
+  if [[ -d "/proc/$pid" ]]; then
+    readlink "/proc/$pid/exe" 2>/dev/null || true
+    readlink "/proc/$pid/cwd" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    # The first txt entry is the executable.
+    lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1 || true
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' || true
+  fi
+}
+install_process() {
+  local pid="$1" args root path
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  for root in "$CLIO_PREFIX" "$prefix_real"; do
+    [[ -n "$root" ]] || continue
+    case "$args" in *"$root"/*) return 0 ;; esac
+  done
+  while IFS= read -r path; do
+    [[ -n "$path" ]] && under_prefix "$path" && return 0
+  done < <(process_paths "$pid")
+  return 1
+}
+describe_process() {
+  ps -p "$1" -o args= 2>/dev/null | cut -c1-160 || true
+}
+
 server_pid=""
 if [[ -f "$PIDFILE" ]]; then
-  p="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then server_pid="$p"; fi
+  p="$(awk 'NR == 1 { print $1 }' "$PIDFILE" 2>/dev/null || true)"
+  if install_process "$p"; then
+    server_pid="$p"
+  elif [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then
+    warn "The server pidfile names pid $p ($(describe_process "$p")), which is not part of this installation; leaving it running"
+  fi
 fi
 if [[ -z "$server_pid" ]] && command -v lsof >/dev/null 2>&1; then
-  server_pid="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+  while read -r p; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    if install_process "$p"; then
+      server_pid="$p"
+      break
+    fi
+    warn "Port $CLIO_PORT is held by pid $p ($(describe_process "$p")), which is not part of this installation; leaving it running"
+  done < <(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null || true)
 fi
 STOPPED_PIDS=()
 if [[ -n "$server_pid" ]]; then
