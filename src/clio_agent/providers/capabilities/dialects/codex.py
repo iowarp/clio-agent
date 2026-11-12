@@ -20,8 +20,16 @@ from typing import Any
 
 from clio_agent.providers.capabilities.records import Fact, ThinkingSpec, unknown
 
-#: Codex ``ReasoningEffort`` values -> clio thinking levels. ``max``/``ultra``
-#: are reported by newer models and map onto themselves like ``xhigh``.
+#: Codex ``ReasoningEffort`` values -> clio thinking levels. ``max`` is
+#: reported by newer models and maps onto itself like ``xhigh``.
+#:
+#: ``ultra`` is deliberately absent, so it is never offered. The catalog lists
+#: it ("Maximum reasoning with automatic task delegation"), but it is a Codex
+#: client mode, not a wire effort: the Responses backend refuses it ("Supported
+#: values are: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', and
+#: 'max'", live 2026-11-12), and the Codex CLI sends the model's
+#: ``multi_agent_reasoning_effort`` (``xhigh`` for gpt-6.1-sol) and delegates
+#: to subagents itself. CLIO has no such mode to run behind the name.
 CODEX_TO_LEVEL: dict[str, str] = {
     "none": "off",
     "minimal": "minimal",
@@ -30,7 +38,6 @@ CODEX_TO_LEVEL: dict[str, str] = {
     "high": "high",
     "xhigh": "xhigh",
     "max": "max",
-    "ultra": "ultra",
 }
 
 #: The inverse mapping (a CLIO level -> Codex's own wire spelling), used to
