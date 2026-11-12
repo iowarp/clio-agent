@@ -567,6 +567,11 @@ def wrap_confined(
         # PermissionError writing its cache under the read-only fence. Active fence + write
         # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
         env_overlay.update(_child_cache_env(write_roots, state=resolved_state, profile=profile))
+        if resolved_state.mechanism == MECHANISM_CODEX and not office_seatbelt:
+            from clio_agent.runtime.sandbox_codex_probe import codex_home_env  # noqa: PLC0415
+
+            # Codex must read its -p layer from the home CLIO wrote it to.
+            env_overlay.update(codex_home_env())
         if office_seatbelt:
             from clio_agent.runtime import sandbox_office_seatbelt  # noqa: PLC0415
 
