@@ -26,8 +26,12 @@ from tests._catalog_seed import seed_litellm_cost_map
 # --------------------------------------------------------------------------- #
 
 
-def test_codex_offers_every_sdk_reported_effort_including_max_and_ultra() -> None:
-    """A model reporting 'max'/'ultra' (#1436) offers them -- not dropped as unmapped."""
+def test_codex_offers_max_but_never_ultra() -> None:
+    """A reported 'max' (#1436) is offered; 'ultra' is not (#2172).
+
+    Ultra is a Codex client mode the Responses wire refuses, so offering it would
+    let a user pick a level every request then fails on.
+    """
     fact = codex.build_thinking_spec(
         {
             "supported_reasoning_efforts": ["medium", "high", "xhigh", "max", "ultra"],
@@ -37,13 +41,12 @@ def test_codex_offers_every_sdk_reported_effort_including_max_and_ultra() -> Non
     spec = fact.value
     assert spec is not None
     assert spec.mechanism == "effort_levels"
-    assert spec.levels == ("medium", "high", "xhigh", "max", "ultra")
+    assert spec.levels == ("medium", "high", "xhigh", "max")
     assert spec.effort_by_level == {
         "medium": "medium",
         "high": "high",
         "xhigh": "xhigh",
         "max": "max",
-        "ultra": "ultra",
     }
 
 
