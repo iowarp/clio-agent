@@ -62,7 +62,13 @@ from clio_agent.plugins.marketplace import (
 )
 from clio_agent.plugins.package_files import ignored_package_names, source_stamp
 from clio_agent.plugins.records import Diagnostic, PluginRecord
-from clio_agent.plugins.sources import SourceError, fetch
+from clio_agent.plugins.sources import (
+    FetchedSource,
+    SourceError,
+    cache_key,
+    fetch,
+    remove_cached,
+)
 from clio_agent.plugins.store_relocation import relocate_plugin_store
 from clio_agent.sdk.agent import AgentSpec
 from clio_agent.sdk.versions import PluginRef, valid_plugin_id
@@ -122,6 +128,21 @@ class UserAgent:
 
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat()
+
+
+def _fetch_cache(entry: dict[str, Any]) -> set[str]:
+    """The fetch cache folders ``entry``'s install filled (``fetch_cache``).
+
+    An entry installed before that was recorded names only its own checkout, derived
+    from its URL and revision the way :func:`~clio_agent.plugins.sources.fetch` keys it.
+    """
+    if "fetch_cache" in entry:
+        return {str(name) for name in entry.get("fetch_cache") or []}
+    url = str(entry.get("url") or "")
+    if not url:
+        return set()
+    revision = entry.get("commit", "") if entry.get("pinned") else entry.get("ref", "")
+    return {cache_key(url, str(revision or ""))}
 
 
 def _copy_tree(source: Path, target: Path) -> None:
@@ -449,6 +470,7 @@ class PluginStore:
                 "updated_at": _now(),
                 "diagnostics": [],
                 "federated": [],
+                "fetch_cache": [name] if (name := self._cache_name(fetched)) else [],
             }
             state["marketplaces"][market] = entry
             summary = self._apply(state, market, snapshot, entry)
@@ -465,11 +487,17 @@ class PluginStore:
             summary.setdefault("federated", []).append(federated)
         return summary
 
+    def _cache_name(self, fetched: FetchedSource) -> str:
+        """The fetch cache folder holding ``fetched``, or "" when it is not in the cache."""
+        cache = self.root / "sources"
+        return "" if fetched.local or fetched.path.parent != cache else fetched.path.name
+
     def _git_plugins(
         self, pins: list[GitPin], market: str
-    ) -> tuple[list[PluginRecord], list[Diagnostic]]:
+    ) -> tuple[list[PluginRecord], list[Diagnostic], list[str]]:
         records: list[PluginRecord] = []
         diagnostics: list[Diagnostic] = []
+        cached: list[str] = []
         for pin in pins:
             try:
                 fetched = fetch(
@@ -480,6 +508,8 @@ class PluginStore:
                     Diagnostic("error", "plugin_source_unavailable", str(exc), pin.name)
                 )
                 continue
+            if name := self._cache_name(fetched):
+                cached.append(name)
             path = (fetched.path / pin.path).resolve() if pin.path else fetched.path
             if not within(fetched.path, path) or not path.is_dir():
                 diagnostics.append(
@@ -501,7 +531,7 @@ class PluginStore:
                     )
             else:
                 records.append(import_claude_plugin(snapshot, entry=pin.entry, marketplace=market))
-        return records, diagnostics
+        return records, diagnostics, cached
 
     def _apply(
         self,
@@ -530,7 +560,8 @@ class PluginStore:
         # The detected layout decides how to read it: a Claude Code marketplace, a
         # single Claude Code plugin, a folder of skills, or an Agent Plugins tree.
         contents = self._read(snapshot, trusted=False, name=market)
-        git_records, git_diags = self._git_plugins(contents.git_plugins, market)
+        git_records, git_diags, git_cached = self._git_plugins(contents.git_plugins, market)
+        entry["fetch_cache"] = sorted({*(entry.get("fetch_cache") or []), *git_cached})
         diagnostics = [*contents.diagnostics, *git_diags]
         records: list[PluginRecord] = []
         held: list[str] = []
@@ -715,18 +746,52 @@ class PluginStore:
             parent=entry.get("parent", ""),
         )
 
-    def uninstall(self, market: str) -> None:
+    def uninstall(self, market: str) -> list[str]:
+        """Remove ``market``, the federated marketplaces it brought, and their fetched checkouts.
+
+        Afterwards nothing of the marketplace is left in the state or in the fetch cache
+        (``sources/``) that another installed marketplace does not also use, so adding it
+        again is a first install. Snapshots stay for the conversations that pinned them;
+        :mod:`clio_agent.plugins.snapshot_gc` collects them. Returns the marketplaces removed.
+
+        Raises:
+            StoreError: ``marketplace_not_installed``; or ``marketplace_files_not_removed``
+                when a fetched checkout could not be deleted (the marketplace is removed
+                from the state either way, and the message names the folder).
+        """
         with self.lock:
             state = self.read_state()
-            if market not in state["marketplaces"]:
+            markets: dict[str, dict[str, Any]] = state["marketplaces"]
+            if market not in markets:
                 raise StoreError(
                     "marketplace_not_installed", f"marketplace {market!r} is not installed"
                 )
-            del state["marketplaces"][market]
+            removed = [market]
+            for name in removed:
+                removed += [
+                    child
+                    for child, entry in markets.items()
+                    if entry.get("parent") == name and child not in removed
+                ]
+            dropped = [markets.pop(name) for name in removed]
             for table in ("plugins", "pending", "agents"):
-                for key in [k for k in state[table] if k.split("/", 1)[0] == market]:
+                for key in [k for k in state[table] if k.split("/", 1)[0] in removed]:
                     del state[table][key]
             self._write_state(state)
+            in_use = {name for entry in markets.values() for name in _fetch_cache(entry)}
+            failures: list[str] = []
+            for name in sorted({n for entry in dropped for n in _fetch_cache(entry)} - in_use):
+                try:
+                    remove_cached(self.root / "sources", name)
+                except OSError as exc:
+                    failures.append(str(exc))
+        if failures:
+            raise StoreError(
+                "marketplace_files_not_removed",
+                f"marketplace {market!r} was removed, but its downloaded files could not be "
+                "deleted: " + "; ".join(failures),
+            )
+        return removed
 
     # ------------------------------------------------------------ user agents
     def save_user_agent(self, agent: UserAgent, *, create_only: bool = False) -> Path:

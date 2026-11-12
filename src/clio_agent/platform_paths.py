@@ -37,10 +37,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import sys
 import time
 import uuid
 from pathlib import Path, PurePath, PureWindowsPath
+from typing import Any
 
 _EXTENDED_PREFIX = "\\\\?\\"
 _UNC_PREFIX = "\\\\?\\UNC\\"
@@ -286,6 +288,45 @@ def rmtree_extended(path: str | Path, *, ignore_errors: bool = False) -> None:
     shutil.rmtree(_extended_absolute(path), ignore_errors=ignore_errors)
 
 
+class TreeRemovalError(OSError):
+    """A folder that had to go could not be deleted; the message names it and the cause."""
+
+
+def _writable_retry(function: Any, name: str, exc: BaseException) -> None:
+    if isinstance(exc, FileNotFoundError):
+        return
+    # git writes its object files read-only, and Windows refuses to delete a
+    # read-only file: clear the attribute and try once more (this raises if not).
+    os.chmod(name, stat.S_IWRITE)
+    function(name)
+
+
+def remove_tree(path: str | Path, *, attempts: int = 5) -> None:
+    """Delete the folder ``path`` completely, or raise :class:`TreeRemovalError`.
+
+    Read-only files (a git checkout's objects) are made writable and deleted, and a
+    file another process briefly holds (an indexer, a virus scanner, a git that just
+    exited) is retried a few times. A missing ``path`` is already removed. Unlike
+    ``rmtree(..., ignore_errors=True)`` a tree that survives is never reported as gone.
+    """
+    target = _extended_absolute(path)
+    last: OSError | None = None
+    for attempt in range(max(1, attempts)):
+        if not os.path.lexists(target):
+            return
+        try:
+            shutil.rmtree(target, onexc=_writable_retry)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last = exc
+            time.sleep(min(_MAX_RETRY_DELAY_S, 0.05 * 2**attempt))
+    if not os.path.lexists(target):
+        return
+    raise TreeRemovalError(f"cannot delete {path}: {last}") from last
+
+
 def rename_extended(source: str | Path, destination: str | Path) -> None:
     """``os.rename`` with both paths in extended-length form."""
     os.rename(_extended_absolute(source), _extended_absolute(destination))
@@ -315,6 +356,8 @@ __all__ = [
     "atomic_replace",
     "copytree_extended",
     "rename_extended",
+    "TreeRemovalError",
+    "remove_tree",
     "rmtree_extended",
     "short_stage_name",
     "tree_files",
