@@ -261,6 +261,12 @@ test -n "$DOCUMENT_STACK"
 "$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/build_document_wheels.py" \
   --stack "$DOCUMENT_STACK" --out "$OUT/document-wheels" --uv "$(command -v uv)"
 
+# The pinned default marketplace, installed here once: an install adopts this store
+# instead of fetching, reading and importing ~3,500 files on the person's machine
+# (clio_agent/plugins/prebuilt.py; the same step on every OS).
+echo "[build-gact-runtime] installing the default marketplace"
+"$OUT/$PYBIN_REL" -I -B -m clio_agent.plugins.prebuilt build --out "$OUT/marketplace"
+
 # --- 4. generic runtime manifest ----------------------------------------
 # `source` names the commit this runtime was built from and whether it is a
 # release tag: a CLIO built from any other commit deploys that commit to remote

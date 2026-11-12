@@ -372,6 +372,12 @@ Invoke-Native -Exe $pyBin -Args @('-I', '-B', (Join-Path $PSScriptRoot 'prune_do
 Write-Host "[build-gact-runtime] preparing matching Windows execution helpers"
 Invoke-Native -Exe $pyBin -Args @('-I', '-B', '-c', 'from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers; print(ensure_bundled_codex_windows_helpers())')
 
+# The pinned default marketplace, installed here once: an install adopts this store
+# instead of fetching, reading and importing ~3,500 files on the person's machine
+# (clio_agent/plugins/prebuilt.py; the same step on every OS).
+Write-Host "[build-gact-runtime] installing the default marketplace"
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', '-m', 'clio_agent.plugins.prebuilt', 'build', '--out', (Join-Path $Out 'marketplace'))
+
 # --- 4. generic runtime manifest ----------------------------------------
 # env reaches every child the server starts from this runtime: a helper that runs
 # the bundled python without -B would otherwise write .pyc into the install.
