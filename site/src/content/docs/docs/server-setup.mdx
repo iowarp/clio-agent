@@ -68,7 +68,7 @@ The first start is slower than later ones. See [Connect a model](/docs/connect-a
 |---|---|
 | none | the latest stable release, from PyPI, with the versions locked by that release |
 | `--dev` | the newest release, betas included |
-| `--version <version>` | one release, by its PyPI version, for example `0.9.6.4` |
+| `--version <version>` | one release, by its PyPI version, for example `0.9.6.5` |
 | `--source` | the source on `main`, with the versions it pins; needs git |
 | `--dev --source` | the source on `develop` |
 | `--ref <branch, tag or commit>` | the source at that point |
@@ -164,7 +164,7 @@ If you open the web UI by a name other than `localhost`, such as a LAN address o
 If you only want the backend, for example to serve the API or to attach a desktop app, install it as a persistent uv tool:
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.6.4
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.6.5
 clio-agent serve
 ```
 

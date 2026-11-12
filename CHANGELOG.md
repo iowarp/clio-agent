@@ -6,6 +6,18 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6.5] - 2026-11-12
+
+Installer hotfix. Ships the same iowarp/gact-tui v0.12.2, clio-kit 2.12.3,
+clio-schemas 0.7.0b1 and marketplace v0.8.0-beta.1 as 0.9.6.4.
+
+### Fixed
+
+- `/v1/health` reports missing default agents instead of showing a ready
+  server that cannot start a conversation. (#2215)
+- A Claude Code turn whose stream stays open only through API keepalives now
+  ends with a recoverable error instead of hanging. (#2211)
+
 ## [0.9.6.4] - 2026-11-12
 
 Ships iowarp/gact-tui v0.12.2. clio-kit 2.12.3, clio-schemas 0.7.0b1 and the
