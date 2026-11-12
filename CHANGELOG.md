@@ -6,8 +6,19 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6.3] - 2026-11-12
+
+A hotfix on 0.9.6.2. It ships the same iowarp/gact-tui v0.12.1, clio-kit
+2.12.3, clio-schemas and marketplace pins.
+
 ### Fixed
 
+- When the task runtime fails to start (for example, a Desktop update from
+  0.9.5.1 finds the older store format), CLIO now reports it instead of
+  starting forever. `GET /v1/health` returns `readiness: "failed"` with
+  `failure: {reason, message}`, and refused `/v1/*` calls carry the same plain
+  message, so the interface shows "Can't connect" and the fix within seconds.
+  (#2164)
 - On macOS, an idle CLIO no longer keeps one CPU core at 100%: clio-core's
   client receive thread busy-polled its local socket from launch. clio-core
   (iowarp-core) is now 2.4.1 (iowarp/clio-core#1358).
