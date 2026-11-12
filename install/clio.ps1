@@ -47,6 +47,13 @@ if ($env:CLIO_BIN_DIR){ $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path
 $LegacySessions = Join-Path $Prefix 'clio-agent\.clio\agent\sessions.json'
 if (-not $env:CLIO_SESSIONS_PATH -and (Test-Path -LiteralPath $LegacySessions)) { $env:CLIO_SESSIONS_PATH = $LegacySessions }
 $env:PATH = "$BinDir;$env:PATH"
+# A scoped installation keeps its clio-kit in its own uv tool folders (install.ps1).
+$KitTools = Join-Path $Prefix 'uv-tools'
+if (Test-Path -LiteralPath (Join-Path $KitTools 'bin\clio-kit.exe')) {
+    $env:UV_TOOL_DIR = $KitTools
+    $env:UV_TOOL_BIN_DIR = Join-Path $KitTools 'bin'
+    $env:PATH = "$env:UV_TOOL_BIN_DIR;$env:PATH"
+}
 
 $AgentPython = Join-Path $Prefix 'clio-agent\.venv\Scripts\python.exe'
 $ClioState = $Prefix
