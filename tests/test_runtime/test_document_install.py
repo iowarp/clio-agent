@@ -290,6 +290,9 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     monkeypatch.setattr(installer, "install_document_runtime", install)
     monkeypatch.setattr(installer, "_run_store_migrations", migrate)
     monkeypatch.setattr(installer, "_prepare_browser", browser)
+    monkeypatch.setattr(
+        installer, "_prepare_default_marketplace", lambda args, emit: {"status": "ready"}
+    )
     monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
     monkeypatch.setattr(
         installer, "collect_snapshots_after_install", lambda: {"status": "collected"}
@@ -302,6 +305,25 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     assert summary["status"] == "ready"
     assert summary["store_migrations"] == {"status": "done", "seconds": 0.0}
     assert summary["browser"] == {"status": "ready", "seconds": 0.0}
+    assert summary["marketplace"] == {"status": "ready"}
+
+
+def test_default_marketplace_is_installed_by_an_install_but_never_by_a_launch_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server's start finds the default marketplace current instead of fetching it."""
+    from argparse import Namespace
+
+    from clio_agent.plugins.service import DEFAULT_MARKETPLACE, PluginService
+
+    lines: list[str] = []
+    launch = installer._prepare_default_marketplace(Namespace(reuse_installed=True), lines.append)
+    assert launch == {"status": "skipped", "reason": "reuse_installed"}
+    assert DEFAULT_MARKETPLACE not in PluginService().store.marketplaces()
+    install = installer._prepare_default_marketplace(Namespace(reuse_installed=False), lines.append)
+    assert install["status"] == "ready", install
+    assert lines[-1] == "The default agents are installed."
+    assert PluginService().ensure_default_marketplace() is None
 
 
 def test_browser_is_fetched_by_an_install_but_never_by_a_launch_check(
@@ -362,6 +384,9 @@ def test_failed_package_step_waits_for_store_upgrade(
     monkeypatch.setattr(installer, "install_document_runtime", install)
     monkeypatch.setattr(installer, "_run_store_migrations", migrate)
     monkeypatch.setattr(installer, "_prepare_browser", lambda args, emit: {"status": "ready"})
+    monkeypatch.setattr(
+        installer, "_prepare_default_marketplace", lambda args, emit: {"status": "ready"}
+    )
     monkeypatch.setattr(
         sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
     )
