@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+# A cold node start under a fully loaded xdist worker has taken over 10 s on CI runners.
+NODE_TIMEOUT_S = 60
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_VERSION = "0.9.6.6"
 #: The release the install docs name: the latest stable one. A beta changes the
@@ -805,7 +807,7 @@ def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Pat
             text=True,
             capture_output=True,
             check=False,
-            timeout=10,
+            timeout=NODE_TIMEOUT_S,
         )
         assert result.returncode == 0, result.stderr
         config = json.loads(output.read_text())
@@ -857,7 +859,7 @@ def test_actual_desktop_config_inherits_only_its_platform_pack_optimizations(
         text=True,
         capture_output=True,
         check=False,
-        timeout=10,
+        timeout=NODE_TIMEOUT_S,
         cwd=tmp_path,
         env={**os.environ, "RUNNER_OS": platform, "GITHUB_WORKSPACE": str(ROOT)},
     )

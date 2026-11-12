@@ -13,6 +13,7 @@ import os
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -135,7 +136,8 @@ def await_exit(pid: int, expected: str, identity: Identity) -> None:
     neither primitive polls the identity once a second.
     """
     try:
-        if hasattr(select, "kqueue"):
+        # The platform test narrows ``select`` for the type-checker: no kqueue on Linux/Windows.
+        if sys.platform != "linux" and sys.platform != "win32" and hasattr(select, "kqueue"):
             queue = select.kqueue()
             try:
                 exit_event = select.kevent(
