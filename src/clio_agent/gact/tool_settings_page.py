@@ -1,6 +1,7 @@
 """The plugin tools page: each tool's permission and I/O, and saving the person's choices.
 
-Reads (``GET /v1/settings/tools``), for one installed plugin:
+Reads (``GET /v1/settings/tools``), for one installed plugin (``?ref=``) or one MCP
+server by name (``?server=``, for a server no plugin brings):
 
 - its tools, grouped into read-only and write tools by their flags: MCP
   ``readOnlyHint`` / ``destructiveHint`` annotations (from the agent runtime's loaded
@@ -23,6 +24,7 @@ exists for it. No new store.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from types import SimpleNamespace
 from typing import Any, get_args
 
 from clio_agent import conf
@@ -44,7 +46,13 @@ from clio_agent.user_config_document import (
     write_document,
 )
 
-__all__ = ["approval_modes", "remove_rule", "save_tool_settings", "tools_view"]
+__all__ = [
+    "approval_modes",
+    "remove_rule",
+    "save_tool_settings",
+    "server_tools_view",
+    "tools_view",
+]
 
 #: Outcome words the page shows (with the mode's name beside them).
 RUNS = "runs"
@@ -203,7 +211,24 @@ def _outcome(row: Mapping[str, Any], rule: str, default: str, mode: str, script:
 
 def tools_view(app: Any, ref: str) -> dict[str, Any]:
     """The tools page for the installed plugin ``ref`` (``marketplace/plugin``)."""
-    record = _plugin(app, ref)
+    return _view(app, ref, _plugin(app, ref))
+
+
+def server_tools_view(app: Any, server: str) -> dict[str, Any]:
+    """The same page for one MCP server by name, whoever configured it.
+
+    A server the person or a workspace configured belongs to no plugin, so it has no
+    plugin defaults: its tools' permission and I/O come from their MCP annotations, the
+    deployment and the person's own choices. Until a conversation has loaded the server
+    its name is in ``servers_not_loaded``.
+    """
+    if not server.strip():
+        raise ValueError("server must name an MCP server")
+    record = SimpleNamespace(tools=(), mcp_servers=(server,), disclosure={})
+    return _view(app, server, record)
+
+
+def _view(app: Any, label: str, record: Any) -> dict[str, Any]:
     disclosure = record.disclosure.get("servers") or {}
     deployment_permissions = configured_permissions()
     deployment_callers = configured_callers()
@@ -260,7 +285,7 @@ def tools_view(app: Any, ref: str) -> dict[str, Any]:
         }
         tools.append(row)
     return {
-        "plugin": ref,
+        "plugin": label,
         "approval_modes": list(approval_modes()),
         "covering_modes": sorted(covering_postures() & set(approval_modes())),
         "tools": tools,
