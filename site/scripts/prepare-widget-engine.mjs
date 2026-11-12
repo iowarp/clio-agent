@@ -24,17 +24,10 @@ await writeFile(resolve(web, 'vite.config.ts'), config.includes(galleryOnly)
   ? config.replace(galleryOnly, `? { ${anchor} ${addition} }`)
   : config.replace(anchor, `${anchor}\n        ${addition}`));
 
-const repository = await original('src/hooks/use-repository.ts');
-const galleryRoute = "window.location.pathname.endsWith('/widget-preview.html')";
-if (!repository.includes(galleryRoute)) throw new Error('Gallery repository route not found.');
-await writeFile(resolve(web, 'src/hooks/use-repository.ts'), repository
-  .replace("import { createGalleryRepository }", "import { createDocsRepository } from '@/docs-repository'\nimport { createGalleryRepository }")
-  .replace('return window.location.pathname', "if (document.querySelector('[data-clio-widget-live]')) return createDocsRepository(createGalleryRepository(repository))\n    return window.location.pathname"));
-
-const preview = await original('src/widget-preview.tsx');
+const preview = await original('src/widget-preview-app.tsx');
 const rootMount = "createRoot(document.getElementById('root')!).render(";
 if (!preview.includes(rootMount)) throw new Error('Standalone gallery mount not found.');
-await writeFile(resolve(web, 'src/widget-preview.tsx'), preview
+await writeFile(resolve(web, 'src/widget-preview-app.tsx'), preview
   .replace('function HurricaneShowcase()', 'export function HurricaneShowcase()')
   .replace('function IntroShowcase()', 'export function IntroShowcase()')
   .replace(rootMount, "const docsRoot = document.getElementById('root');\nif (docsRoot) createRoot(docsRoot).render("));
@@ -51,7 +44,7 @@ await writeFile(resolve(web, meshPath), mesh.replace(/          \{boxButton\(\)\
 const galleryPath = 'src/widget-gallery.tsx';
 const gallery = await original(galleryPath);
 await writeFile(resolve(web, galleryPath), gallery.replace('>Contract</button>', '>Skill</button>'));
-for (const file of ['widget-docs.tsx', 'docs-repository.ts', 'simulation-example.tsx', 'gallery-skill-dialog.tsx']) {
+for (const file of ['widget-docs.tsx', 'docs-repository.ts', 'simulation-example.tsx', 'gallery-skill-dialog.tsx', 'docs-workspace-examples.tsx']) {
   await copyFile(resolve(source, file), resolve(web, 'src', file));
 }
 await copyFile(resolve(source, 'widget-docs.html'), resolve(web, 'widget-docs.html'));
