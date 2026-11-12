@@ -1467,7 +1467,13 @@ if ($OptSource) {
             Update-SourceClone $Src $ref
         } else {
             Say "Cloning clio-agent at $ref (what the agent runs; 'git sparse-checkout disable' in the clone adds the docs, site and tests)"
-            & git clone --quiet --branch $ref --depth 1 --filter=blob:none --sparse $ClioRepo $Src 2>$null
+            # Windows PowerShell 5.1 turns a native command's redirected stderr into an
+            # error record, which ErrorActionPreference=Stop makes fatal: an annotated tag
+            # clones with "warning: refs/tags/X is not a commit!". The exit code decides.
+            $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            try {
+                & git clone --quiet --branch $ref --depth 1 --filter=blob:none --sparse $ClioRepo $Src 2>$null
+            } finally { $ErrorActionPreference = $eap }
             if ($LASTEXITCODE -ne 0) {
                 # A commit is not a branch or tag: fetch it by id.
                 RemoveTree $Src
