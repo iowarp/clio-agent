@@ -70,3 +70,11 @@ and re-serialized, so it stays valid JSON. Tool lists and author lists are not t
 **datacite**: Results are at `data[].attributes`, with `titles[0].title`, `url`, `doi`, `publicationYear`, `dates[]{date,dateType}`, `descriptions[].description` and `types.resourceTypeGeneral`. The top level has `meta.total` and `links.next`.
 
 **jina**: text/plain with a `Title:` line, a `URL Source:` line, then `Markdown Content:`. Rate headers: `x-ratelimit-limit: 20, 20;w=60` and `x-ratelimit-remaining`.
+
+## Recapturing
+
+Exa, Firecrawl, Parallel and OpenAlex were rate-limited on the network these were
+first captured from (2026-11-12), so their success cases are missing or partial.
+Recapture them from a normal network with
+`uv run python scripts/search/recapture_fixtures.py` (a few calls per service), then run
+`tests/test_search`.
