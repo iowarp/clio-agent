@@ -286,7 +286,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESOURCE_DELIVERY_LEDGER_MAX_RECORDS` | `resources.delivery_ledger_max_records` | int | `2000` | `src/clio_agent/gact/resource_delivery.py` |
 | `CLIO_RESOURCE_DERIVATIVE_NAME_MAX_CHARS` | `resources.derivative_name_max_chars` | int | `48` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_LIST_MAX_RECORDS` | `resources.list_max_records` | int | `100` | `src/clio_agent/gact/resource_tools.py` |
-| `CLIO_RESOURCE_MAX_BYTES` | `resources.max_bytes` | int | `262144000` | `src/clio_agent/gact/composer_runtime.py` |
+| `CLIO_RESOURCE_MAX_BYTES` | `resources.max_bytes` | int | `0` | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_RESOURCE_NATIVE_ATTACHMENT_TOTAL_MAX_BYTES` | `resources.native_attachment_total_max_bytes` | int | `33554432` | `src/clio_agent/providers/native_attachment_bounds.py` |
 | `CLIO_RESOURCE_NATIVE_DOCUMENT_MAX_BYTES` | `resources.native_document_max_bytes` | int | `33554432` | `src/clio_agent/providers/native_attachment_bounds.py` |
 | `CLIO_RESOURCE_NATIVE_IMAGE_MAX_BYTES` | `resources.native_image_max_bytes` | int | `5242880` | `src/clio_agent/providers/native_attachment_bounds.py` |

@@ -38,7 +38,7 @@ class UploadedSource(StorageModel):
     """A complete folder manifest; uploads remain resumable in ordinary resource custody."""
 
     label: str = Field(min_length=1, max_length=120)
-    files: list[UploadedSourceFile] = Field(min_length=1, max_length=10000)
+    files: list[UploadedSourceFile] = Field(min_length=1)
     draft: bool = False
 
 
