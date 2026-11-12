@@ -245,9 +245,10 @@ def test_the_prompt_names_the_machine_and_the_scratch_folder(root: Path, workspa
         folder = (root / "node-a" / sid).resolve()
         assert "Machine: node-a" in text
         assert (
-            f"Scratch folder for this session: {folder}. Use it for temporary files "
-            "(extracted copies, intermediate results); it is yours alone and is removed "
-            "after the session."
+            f"Scratch folder for this session: {folder}. It is yours alone and the person "
+            'never sees it: their files, and "this folder", are the workspace. Use it for '
+            "your own temporary files (extracted copies, intermediate results); it is "
+            "removed after the session."
         ) in text
         assert folder.is_dir()  # naming it is the first need: the file tools can write there
 
