@@ -152,6 +152,9 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
                 **os.environ,
                 "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root()),
                 "PYTHONDONTWRITEBYTECODE": "1",
+                # The inventory imports matplotlib, which otherwise creates the user's
+                # ~/.config/matplotlib; it belongs to this environment, inside CLIO's cache.
+                "MPLCONFIGDIR": str(python.parents[1] / ".matplotlib"),
             },
         )
     )
@@ -259,15 +262,19 @@ def _filesystem(path: Path) -> int | None:
     return None
 
 
-def _document_uv_cache(uv: str, home: Path) -> Path:
+def _document_uv_cache(uv: str, home: Path, *, bundled: bool) -> Path:
     """The uv cache for the document environment beside ``home``.
 
-    uv's own cache is reused when it is on the same filesystem, so the packages the
-    agent's install already downloaded (numpy, matplotlib, lxml, ...) are linked rather
-    than downloaded again. A cache on another drive would copy every file instead of
-    hardlinking it, so the environment then keeps a cache on the installation drive.
+    A release lays the environment out from the runtime's bundled wheels, so its cache is
+    CLIO's own: the ~500 MB it fills go with ``uninstall --purge-caches`` instead of
+    staying in ``~/.cache/uv`` after CLIO is gone. A source install reuses uv's own cache
+    when it is on the same filesystem: the agent's ``uv sync`` already downloaded numpy,
+    matplotlib, lxml and the rest there, so they are linked rather than downloaded again.
+    A cache on another drive would copy every file instead, so that keeps the private one.
     """
     private = home / "uv-document-cache"
+    if bundled:
+        return private
     shared = _uv_cache_dir(uv)
     if shared is None:
         return private
@@ -309,7 +316,13 @@ def _python_runtime(
     env = {
         **os.environ,
         "UV_PROJECT_ENVIRONMENT": str(environment),
-        "UV_CACHE_DIR": str(_document_uv_cache(uv, cache.parent)),
+        "UV_CACHE_DIR": str(
+            _document_uv_cache(
+                uv,
+                cache.parent,
+                bundled=bundled_root() is not None or _installer_wheel_root() is not None,
+            )
+        ),
     }
     runtime = bundled_root()
     try:
@@ -482,7 +495,17 @@ def _javascript_runtime(
 ) -> tuple[Path, Path]:
     node = node_path(str(inventory["node"]))
     tools = Path(node_path(str(cache / "javascript-tools")))
-    env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
+    # Besides its store, pnpm keeps a metadata cache, its state and a global folder in the
+    # user's XDG folders (~/.cache/pnpm, ~/.local/state/pnpm, ~/.local/share/pnpm). They are
+    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes.
+    pnpm_home = Path(node_path(str(cache / "pnpm-home")))
+    env = {
+        **os.environ,
+        "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", ""),
+        "XDG_CACHE_HOME": str(pnpm_home / "cache"),
+        "XDG_STATE_HOME": str(pnpm_home / "state"),
+        "XDG_DATA_HOME": str(pnpm_home / "data"),
+    }
     work = Path(node_path(str(scratch_root(workspace) / "javascript")))
     store = node_path(str(cache / "pnpm-store"))
     # pnpm is needed only to install or repair the packages. It is prepared and

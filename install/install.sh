@@ -956,32 +956,6 @@ record_installed() {  # KIND VALUE
   grep -qxF "$1 $2" "$INSTALLED_TOOLS" 2>/dev/null || printf '%s %s\n' "$1" "$2" >> "$INSTALLED_TOOLS"
 }
 
-# uv installs Python, the environment and the locked dependencies in every mode. It
-# installs in the background: a release install starts downloading its prebuilt agent,
-# which needs only curl, while uv arrives. need_uv waits for it before uv is first used.
-mkdir -p "$PREFIX" "$BIN_DIR"
-UV_JOB=""
-UV_LOG=""
-if ! have uv; then
-  say "Installing uv into $BIN_DIR"
-  UV_LOG="$(mktemp "${TMPDIR:-/tmp}/clio-uv.XXXXXXXX")"
-  { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null; } \
-    2> "$UV_LOG" &
-  UV_JOB=$!
-  export PATH="$BIN_DIR:$PATH"
-fi
-need_uv() {
-  local status=0
-  [ -n "$UV_JOB" ] || return 0
-  wait "$UV_JOB" || status=$?
-  UV_JOB=""
-  cat "$UV_LOG" >&2 2>/dev/null || true
-  rm -f "$UV_LOG"
-  { [ "$status" = 0 ] && have uv; } \
-    || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
-  for f in uv uvx; do [ ! -f "$BIN_DIR/$f" ] || record_installed file "$BIN_DIR/$f"; done
-}
-
 # A fresh Mac's /usr/bin/git is a placeholder (above). Decided from the filesystem,
 # never by running it.
 macos_git_placeholder() {
@@ -1061,6 +1035,35 @@ if [ "$OPT_SOURCE" = 1 ]; then
     say "Using git: $SOURCE_GIT"
   fi
 fi
+
+# After the checks that can refuse this install (--source without git): a refused install
+# would otherwise leave the uv it had started installing, unrecorded for uninstall.
+# uv installs Python, the environment and the locked dependencies in every mode. It
+# installs in the background: a release install starts downloading its prebuilt agent,
+# which needs only curl, while uv arrives. need_uv waits for it before uv is first used.
+mkdir -p "$PREFIX" "$BIN_DIR"
+UV_JOB=""
+UV_LOG=""
+if ! have uv; then
+  say "Installing uv into $BIN_DIR"
+  UV_LOG="$(mktemp "${TMPDIR:-/tmp}/clio-uv.XXXXXXXX")"
+  { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null; } \
+    2> "$UV_LOG" &
+  UV_JOB=$!
+  export PATH="$BIN_DIR:$PATH"
+fi
+need_uv() {
+  local status=0
+  [ -n "$UV_JOB" ] || return 0
+  wait "$UV_JOB" || status=$?
+  UV_JOB=""
+  cat "$UV_LOG" >&2 2>/dev/null || true
+  rm -f "$UV_LOG"
+  { [ "$status" = 0 ] && have uv; } \
+    || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
+  for f in uv uvx; do [ ! -f "$BIN_DIR/$f" ] || record_installed file "$BIN_DIR/$f"; done
+}
+
 
 # The checkout this script runs from, when it runs from one (not when streamed).
 CHECKOUT=""
