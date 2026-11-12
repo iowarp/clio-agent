@@ -147,6 +147,7 @@ def test_switch_always_saves_auto_switch(monkeypatch) -> None:
 def test_every_source_resting_is_one_typed_failure(monkeypatch) -> None:
     down = SourceError("x", http.FAILED, "HTTP 503")
     monkeypatch.setattr(web_sources, "search", FakeSources({"keenable": [down], "exa": [down]}))
+    monkeypatch.setattr(web, "RETRY_PAUSE_S", 0.0)
     _settings(
         approved=["keenable", "exa"],
         web={"order": ["keenable", "exa"], "disabled": ["firecrawl", "you", "parallel"]},
@@ -154,7 +155,25 @@ def test_every_source_resting_is_one_typed_failure(monkeypatch) -> None:
     with pytest.raises(web.SearchFailure) as failed:
         asyncio.run(web.web_search(WebQuery(query="q")))
     assert failed.value.code == "search_all_sources_unavailable"
-    assert [n.code for n in failed.value.notes] == ["search_source_failed", "search_source_failed"]
+    assert [n.code for n in failed.value.notes] == [
+        "search_source_retried",
+        "search_source_failed",
+        "search_source_retried",
+        "search_source_failed",
+    ]
+
+
+def test_one_failure_retries_the_same_source_before_rotating(monkeypatch) -> None:
+    glitch = SourceError("keenable", http.FAILED, "HTTP 404")
+    fake = FakeSources({"keenable": [glitch, _ok()], "exa": [_ok()]})
+    monkeypatch.setattr(web_sources, "search", fake)
+    monkeypatch.setattr(web, "RETRY_PAUSE_S", 0.0)
+    _settings(approved=["keenable"], web={"order": ["keenable", "exa"]})
+    result = asyncio.run(web.web_search(WebQuery(query="q")))
+    assert result["source"] == "keenable"
+    assert fake.calls == ["keenable", "keenable"]
+    assert [n["code"] for n in result["notes"]] == ["search_source_retried"]
+    assert SEARCH_LIMITS.cooldown("keenable") is None
 
 
 def test_invalid_arguments_are_refused_before_any_call() -> None:

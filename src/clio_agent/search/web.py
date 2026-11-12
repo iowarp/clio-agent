@@ -13,6 +13,7 @@ does it ask an approved source's hosted reader, and it says so.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 from dataclasses import dataclass
@@ -35,6 +36,9 @@ from clio_agent.tools.servers.web_limits import SEARCH_LIMITS
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RESTING_FOR_ALLOWANCE = (http.ALLOWANCE_USED,)
+#: A source that fails outright (network, 404, 5xx) is asked once more after this pause
+#: before it rests, so one glitch does not move the search to the next source.
+RETRY_PAUSE_S = 1.0
 
 
 @dataclass
@@ -106,6 +110,7 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
     if not sources:
         raise SearchFailure("search_no_source", "", [])
     notes: list[SearchNote] = []
+    retried: set[str] = set()
     index = 0
     while index < len(sources):
         source = sources[index]
@@ -142,6 +147,11 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
                 service_url=settings.service_url,
             )  # fmt: skip
         except SourceError as exc:
+            if exc.kind == http.FAILED and source not in retried:
+                retried.add(source)
+                notes.append(note("search_source_retried", source, exc.detail))
+                await asyncio.sleep(RETRY_PAUSE_S)
+                continue  # the same source, once more
             if exc.kind == http.KEY_REJECTED:
                 SEARCH_LIMITS.failed(source, exc.kind, exc.detail)
                 SEARCH_LIMITS.cool(source, 600, http.FAILED, "key rejected")
