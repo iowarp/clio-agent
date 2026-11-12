@@ -626,6 +626,16 @@
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 20px;
 }
+.dp-server {
+	grid-column: 1 / -1;
+}
+/* A Linux card that lists its distributions takes its own row, with the distributions side by side */
+.dp:has(.dp-distros) {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.dp:has(.dp-distros) .dp-card[data-os='linux'] {
+	grid-column: 1 / -1;
+}
 .dp-card {
 	display: flex;
 	flex-direction: column;
@@ -649,6 +659,9 @@
 	margin-top: 2px;
 	flex: none;
 }
+:root[data-theme='dark'] .home .dp-card header img[data-mono] {
+	filter: brightness(0) invert(0.92);
+}
 .dp-card h3 {
 	font-size: 28px;
 }
@@ -671,6 +684,7 @@
 }
 .dp-main {
 	width: 100%;
+	margin-top: auto;
 }
 .dp-other,
 .dp-alt {
@@ -684,26 +698,109 @@
 	color: var(--brand-navy);
 }
 .dp-distros {
-	display: flex;
-	flex-direction: column;
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
 	margin: 0;
 	padding: 0;
 	list-style: none;
 }
 .dp-distros li {
 	display: flex;
-	align-items: center;
+	flex-direction: column;
+	align-items: flex-start;
 	justify-content: space-between;
-	gap: 12px;
-	padding: 12px 0;
+	gap: 14px;
+	padding: 4px 24px;
 	font-size: 15px;
 	line-height: 1.35;
 }
+.dp-distros li:first-child {
+	padding-left: 0;
+}
+.dp-distros li:last-child {
+	padding-right: 0;
+}
 .dp-distros li + li {
-	border-top: 1px solid var(--line);
+	border-left: 1px solid var(--line);
 }
 .dp-distros .h-button {
 	flex: none;
+}
+.dp-server header svg {
+	flex: none;
+	margin-top: 2px;
+	color: var(--ink);
+}
+.dp-ways {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.dp-ways li {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 4px 24px;
+}
+.dp-ways li:first-child {
+	padding-left: 0;
+}
+.dp-ways li:last-child {
+	padding-right: 0;
+}
+.dp-ways li + li {
+	border-left: 1px solid var(--line);
+}
+.dp-ways li .dp-line {
+	margin-top: auto;
+}
+.dp-ways strong {
+	display: block;
+	font-size: 15px;
+	font-weight: 600;
+}
+.dp-ways span {
+	display: block;
+	margin-top: 2px;
+	font-size: 13px;
+	line-height: 1.4;
+	color: var(--ink-soft);
+}
+.dp-line {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	background: var(--paper-2);
+}
+.dp-line code {
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+	padding: 10px 12px;
+	font-size: 13px;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+	background: none;
+	color: var(--ink);
+}
+.dp-line button {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 38px;
+	height: 38px;
+	border: 0;
+	border-left: 1px solid var(--line);
+	background: none;
+	color: var(--ink-2);
+	cursor: pointer;
+}
+.dp-line button:hover {
+	color: var(--brand-navy);
 }
 .h-download-foot {
 	display: flex;
@@ -858,7 +955,38 @@
 		padding-right: 0;
 	}
 	.dp {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.dp {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.dp-card[data-os='linux'] {
+		grid-column: 1 / -1;
+	}
+	.dp-distros {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		row-gap: 18px;
+	}
+	.dp-distros li:nth-child(odd) {
+		padding-left: 0;
+		border-left: 0;
+	}
+	.dp-distros li:nth-child(even) {
+		padding-right: 0;
+	}
+	.dp-ways {
 		grid-template-columns: 1fr;
+	}
+	.dp-ways li {
+		display: grid;
+		grid-template-columns: minmax(150px, 0.7fr) minmax(0, 1.6fr);
+		align-items: center;
+		gap: 18px;
+		padding: 12px 0;
+	}
+	.dp-ways li + li {
+		border-left: 0;
+		border-top: 1px solid var(--line);
 	}
 	.h-facts {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -957,6 +1085,27 @@
 	}
 	.h-facts li + li {
 		border-top: 1px solid var(--line);
+	}
+	.dp,
+	.dp:has(.dp-distros) {
+		grid-template-columns: 1fr;
+	}
+	.dp-distros {
+		grid-template-columns: 1fr;
+		row-gap: 0;
+	}
+	.dp-distros li {
+		flex-direction: row;
+		align-items: center;
+		padding: 12px 0;
+	}
+	.dp-distros li + li {
+		border-left: 0;
+		border-top: 1px solid var(--line);
+	}
+	.dp-ways li {
+		grid-template-columns: 1fr;
+		gap: 8px;
 	}
 	.dp-card {
 		padding: 20px;
