@@ -488,11 +488,14 @@ class _StreamClientEntry:
         thinking: dict[str, Any] | None = None,
         system_prompt: str | None = None,
         fresh: bool = False,
+        on_silence: Any = None,
     ) -> AsyncGenerator[Any, None]:
         """Yield SDK messages for one ``query`` on the pooled client (cross-loop).
 
         ``fresh``: the payload is a whole conversation, so a client already holding one
         is cleared first (:mod:`~clio_agent.providers.claude_code_clear`).
+        ``on_silence``: the stall decision (:func:`.claude_code_expiry.relay_with_idle_bound`);
+        it runs on the owner loop's thread.
         """
         if self._dead:
             from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
@@ -539,6 +542,7 @@ class _StreamClientEntry:
                         session_id=session_id,
                         idle_s=idle_timeout,
                         put=lambda msg: chunks.put(("msg", msg)),
+                        on_silence=on_silence,
                     )
                 clean = True
             except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop

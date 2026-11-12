@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -30,6 +31,7 @@ from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
 from clio_agent import conf
+from clio_agent.runtime.cancellation import cancellation_requested
 from clio_agent.runtime.ripgrep import RipgrepMissing, ripgrep_executable
 from clio_agent.tools.file_policy import FileAccessPolicy, validate_non_empty_string
 from clio_agent.tools.result_room import ResultRoom, result_room
@@ -38,19 +40,25 @@ __all__ = ["SearchMode", "glob_files", "search_files"]
 
 SearchMode = Literal["files", "content", "count"]
 
+#: Seconds between checks for Stop while ripgrep runs.
+_POLL_S = 0.25
 
-def search_timeout_s() -> float:
-    """Seconds one ripgrep run may take; a slower search returns what it found so far.
+
+def search_timeout_s() -> float | None:
+    """An operator's limit on one ripgrep run, or ``None`` (the default): no limit.
+
+    A search runs until it finishes or the turn is stopped. With a limit, a slower search
+    returns what it found so far, marked partial.
 
     Raises:
-        ValueError: The configured timeout is not positive.
+        ValueError: The configured limit is negative.
     """
     value = conf.resolve(
-        "fs.search_timeout_s", env="CLIO_FS_SEARCH_TIMEOUT_S", default=30.0, cast=conf.as_float
+        "fs.search_timeout_s", env="CLIO_FS_SEARCH_TIMEOUT_S", default=0.0, cast=conf.as_float
     )
-    if not value > 0:
-        raise ValueError(f"fs.search_timeout_s must be positive, not {value}")
-    return value
+    if value < 0:
+        raise ValueError(f"fs.search_timeout_s must be 0 (no limit) or more, not {value}")
+    return value or None
 
 
 def search_line_chars() -> int:
@@ -81,35 +89,42 @@ def _target(path: str) -> Path:
 
 
 def _run(arguments: list[str], cwd: Path) -> tuple[list[str], bool]:
-    """Run ripgrep; return its output lines and whether it timed out."""
+    """Run ripgrep until it ends or the turn is stopped; return its lines and if cut short."""
     try:
         executable = str(ripgrep_executable())
     except RipgrepMissing as exc:
         raise ToolError(str(exc)) from exc
-    try:
-        done = subprocess.run(
-            [executable, *arguments],
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=search_timeout_s(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        out = (
-            exc.stdout
-            if isinstance(exc.stdout, str)
-            else (exc.stdout or b"").decode(errors="replace")
-        )
-        return out.splitlines(), True
-    if done.returncode not in (0, 1):  # 1 is "no match"
+    limit = search_timeout_s()
+    process = subprocess.Popen(
+        [executable, *arguments],
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    started = time.monotonic()
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=_POLL_S)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        if cancellation_requested():
+            process.kill()
+            process.communicate()
+            raise ToolError("fs_search_cancelled: the search was stopped")
+        if limit is not None and time.monotonic() - started > limit:
+            process.kill()
+            stdout, _ = process.communicate()
+            return stdout.splitlines(), True
+    if process.returncode not in (0, 1):  # 1 is "no match"
         raise ToolError(
-            f"fs_search_failed: ripgrep exited {done.returncode}: {done.stderr.strip()[:500]}"
+            f"fs_search_failed: ripgrep exited {process.returncode}: {stderr.strip()[:500]}"
         )
-    return done.stdout.splitlines(), False
+    return stdout.splitlines(), False
 
 
 def _result(text: str, structured: dict[str, Any]) -> ToolResult:

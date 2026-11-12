@@ -8,9 +8,13 @@ the whole streamed reply):
   process tree keeps working (CPU / I/O), each :data:`CONNECT_STRETCH_S`, up to the
   :data:`~clio_agent.runtime.progress.DEFAULT_CEILING_S` ceiling; else
   :class:`ClaudeCodeConnectTimeout`.
-* **Stream** (:func:`relay_with_idle_bound`): the gap between two SDK messages may not
-  exceed the idle bound (``limits.lm_inter_token_idle_s``); a reply that keeps streaming
-  runs as long as it needs. A silent gap raises :class:`ClaudeCodeIdleTimeout`.
+* **Stream** (:func:`relay_with_idle_bound`): stall detection, never a clock on the
+  reply. A reply that keeps streaming runs as long as it needs. When no message arrives
+  for the current wait (``limits.lm_stall_wait_s``, 30 s, then doubling per stall up to
+  :data:`STALL_MAX_WAIT_S`), the caller's ``on_silence`` decides: keep waiting on this
+  stream for the next, longer wait, or end it with :class:`ClaudeCodeIdleTimeout` so
+  the engine resends. Either way the person sees the stall and can stop the turn; the
+  engine never fails the turn on silence alone.
 
 Both errors subclass ``TimeoutError``; the engine maps them to ``dspy.lm15``'s
 ``TimeoutError`` with their own words, so the trace says WHICH wait expired.
@@ -19,8 +23,10 @@ Both errors subclass ``TimeoutError``; the engine maps them to ``dspy.lm15``'s
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.runtime.progress import NoProgressError, await_while_working, tree_work
@@ -31,6 +37,47 @@ logger = logging.getLogger(__name__)
 CONNECT_FIRST_WAIT_S = 60.0
 #: After the first wait, each stretch of this length must show CLI work.
 CONNECT_STRETCH_S = 30.0
+#: The first silence that counts as a stall (``limits.lm_stall_wait_s``).
+STALL_FIRST_WAIT_S = 30.0
+#: Each later wait is this much longer than the one before it.
+STALL_GROWTH = 2.0
+#: The longest single wait. Retries never stop; this keeps a visible notice coming
+#: well inside the turn's no-progress window (``limits.turn_timeout_s``, 900 s).
+STALL_MAX_WAIT_S = 300.0
+
+
+def stall_first_wait_s() -> float:
+    """``limits.lm_stall_wait_s`` / ``CLIO_LM_STALL_WAIT_S``: silence before the first retry."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    try:
+        value = conf.resolve(
+            "limits.lm_stall_wait_s",
+            env="CLIO_LM_STALL_WAIT_S",
+            default=STALL_FIRST_WAIT_S,
+            cast=conf.as_float,
+        )
+    except (ValueError, TypeError):
+        return STALL_FIRST_WAIT_S
+    return value if value > 0 else STALL_FIRST_WAIT_S
+
+
+def stall_waits(first_s: float) -> Iterator[float]:
+    """The growing waits of one call's stall ladder: ``first``, x2, x2 ... capped, endless."""
+    wait = first_s
+    cap = max(first_s, STALL_MAX_WAIT_S)
+    while True:
+        yield wait
+        wait = min(wait * STALL_GROWTH, cap)
+
+
+@dataclass(frozen=True)
+class StreamSilence:
+    """Relayed in place of a message: the stream has been silent for ``silent_s`` and the
+    relay keeps waiting ``next_wait_s`` longer. Never part of the reply."""
+
+    silent_s: float
+    next_wait_s: float
 
 
 class ClaudeCodeConnectTimeout(TimeoutError):
@@ -46,7 +93,7 @@ class ClaudeCodeConnectTimeout(TimeoutError):
 
 
 class ClaudeCodeIdleTimeout(TimeoutError):
-    """The Claude Code stream went silent for longer than the idle bound."""
+    """The Claude Code stream sent nothing for one stall wait; the engine resends."""
 
     def __init__(self, idle_s: float, received: int) -> None:
         self.idle_s = idle_s
@@ -54,7 +101,7 @@ class ClaudeCodeIdleTimeout(TimeoutError):
         noun = "message" if received == 1 else "messages"
         super().__init__(
             f"Claude Code stream went idle: no message for {idle_s:g}s "
-            f"after {received} {noun} (limits.lm_inter_token_idle_s)"
+            f"after {received} {noun} (limits.lm_stall_wait_s)"
         )
 
 
@@ -107,44 +154,85 @@ async def relay_with_idle_bound(
     session_id: str,
     idle_s: float | None,
     put: Callable[[Any], None],
+    on_silence: Callable[[float], float | None] | None = None,
 ) -> None:
-    """Send one query and ``put`` each reply message; the gap between messages is bounded.
+    """Send one query and ``put`` each reply message; silence is a stall, never a deadline.
 
-    The bound restarts on every message, so only silence expires it. ``idle_s=None``
-    leaves the stream unbounded (callers that own their own bound).
+    Each message restarts the wait at ``idle_s``. When ``idle_s`` passes with no message,
+    ``on_silence(silent_s)`` returns how much longer to keep waiting on this stream (a
+    :class:`StreamSilence` is ``put`` so the caller can show it), or ``None`` to end the
+    stream with :class:`ClaudeCodeIdleTimeout` so the caller can resend. Without
+    ``on_silence`` the first silent wait ends it. ``idle_s=None`` waits without bound.
 
     A ``ping`` stream event is not a message of the reply: the API sends one every 30 s
     on an open stream whether or not the model produces anything, so a stalled
-    generation would otherwise hold the bound open forever (seen live: 12 minutes of
+    generation would otherwise hold the wait open forever (seen live: 12 minutes of
     pings and nothing else, the turn running with nothing on screen). Pings are passed
-    on but neither restart the bound nor count as received.
+    on but neither restart the wait nor count as received.
     """
     loop = asyncio.get_running_loop()
     received = 0
     keepalives = 0
-    idle = asyncio.timeout(idle_s)
     try:
-        async with idle:
+        async with asyncio.timeout(idle_s):
             await client.query(query_input, session_id=session_id)
-            async for message in client.receive_response():
-                put(message)
-                if _is_keepalive(message):
-                    keepalives += 1
-                    continue
-                received += 1
-                if idle_s is not None:
-                    idle.reschedule(loop.time() + idle_s)
     except TimeoutError as exc:
-        if idle_s is not None and idle.expired():
-            logger.warning(
-                "claude code stream idle reason=stream_idle_timeout idle_s=%g received=%d "
-                "keepalives=%d",
-                idle_s,
-                received,
-                keepalives,
-            )
-            raise ClaudeCodeIdleTimeout(idle_s, received) from exc
-        raise
+        _log_stall(idle_s or 0.0, received, keepalives)
+        raise ClaudeCodeIdleTimeout(idle_s or 0.0, received) from exc
+    replies = aiter(client.receive_response())
+    pending: asyncio.Future[Any] | None = None
+    silent_since = loop.time()
+    deadline = None if idle_s is None else silent_since + idle_s
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(anext(replies))
+            timeout = None if deadline is None else max(0.0, deadline - loop.time())
+            done, _ = await asyncio.wait({pending}, timeout=timeout)
+            if not done:
+                silent_s = loop.time() - silent_since
+                more = on_silence(silent_s) if on_silence is not None else None
+                if more is None:
+                    _log_stall(silent_s, received, keepalives)
+                    raise ClaudeCodeIdleTimeout(silent_s, received)
+                logger.warning(
+                    "claude code stream silent reason=stream_stall_waiting silent_s=%.0f "
+                    "next_wait_s=%g received=%d keepalives=%d",
+                    silent_s,
+                    more,
+                    received,
+                    keepalives,
+                )
+                put(StreamSilence(silent_s=silent_s, next_wait_s=more))
+                deadline = loop.time() + more
+                continue
+            arrived, pending = pending, None
+            try:
+                message = arrived.result()
+            except StopAsyncIteration:
+                return
+            put(message)
+            if _is_keepalive(message):
+                keepalives += 1
+                continue
+            received += 1
+            silent_since = loop.time()
+            if idle_s is not None:
+                deadline = silent_since + idle_s
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
+
+
+def _log_stall(silent_s: float, received: int, keepalives: int) -> None:
+    logger.warning(
+        "claude code stream idle reason=stream_idle_timeout idle_s=%g received=%d keepalives=%d",
+        silent_s,
+        received,
+        keepalives,
+    )
 
 
 def _is_keepalive(message: Any) -> bool:
@@ -158,9 +246,15 @@ def _is_keepalive(message: Any) -> bool:
 __all__ = [
     "CONNECT_FIRST_WAIT_S",
     "CONNECT_STRETCH_S",
+    "STALL_FIRST_WAIT_S",
+    "STALL_GROWTH",
+    "STALL_MAX_WAIT_S",
     "ClaudeCodeConnectTimeout",
     "ClaudeCodeIdleTimeout",
+    "StreamSilence",
     "cli_work",
     "connect_while_working",
     "relay_with_idle_bound",
+    "stall_first_wait_s",
+    "stall_waits",
 ]

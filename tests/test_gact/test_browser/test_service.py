@@ -95,6 +95,21 @@ def test_time_waiting_for_the_person_is_not_counted(
     assert browser.run(record, "click", asks) == "answered"
 
 
+def test_an_action_has_no_clock_by_default(browser: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default 0: a slow action finishes; only the person (or an operator limit) stops it."""
+    from clio_agent.gact.browser import settings
+
+    monkeypatch.delenv("CLIO_BROWSER_ACTION_TIMEOUT_S", raising=False)
+    assert settings.action_timeout_s() is None
+    record = browser.wait(browser.open("sess_a", ""))
+
+    async def slow(_record: Any) -> str:
+        await asyncio.sleep(1.0)
+        return "finished"
+
+    assert browser.run(record, "wait", slow) == "finished"
+
+
 def test_strictness_is_a_typed_reason(browser: Any, site: dict[str, Any]) -> None:
     record = browser.wait(browser.open("sess_a", ""))
     _goto(browser, record, site["a"] + "/table")

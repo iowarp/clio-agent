@@ -457,8 +457,8 @@ def _download_in_background(task: concurrent.futures.Future[Path]) -> None:
 def chromium_for_action(wait_s: float) -> Path:
     """The Chromium executable for a browser action, waiting at most ``wait_s`` for it.
 
-    The first use downloads Chromium, which can take minutes, longer than one action's
-    ``browser.action_timeout_s``. The download runs on its own thread and outlives the
+    The first use downloads Chromium, which can take minutes. The download runs on its
+    own thread and outlives the
     action; while it runs, the action gets ``browser_runtime_preparing`` instead of a
     timeout, and a later action finds the browser installed (iowarp/clio-agent#1975).
 

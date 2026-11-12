@@ -1,7 +1,8 @@
-"""Portable, bounded subprocess and native document-tool discovery."""
+"""Portable, cancellable subprocess and native document-tool discovery."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -9,13 +10,116 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 
 class DocumentError(RuntimeError):
     """A document operation failed without producing verified output."""
+
+
+class DocumentCancelled(DocumentError):
+    """The person or the turn stopped a document operation; its process tree was killed."""
+
+
+#: A document job runs until it exits or someone stops it. While it runs, the
+#: watcher is told how long it has been going: first after this many seconds,
+#: then every ``HEARTBEAT_EVERY_S``.
+HEARTBEAT_FIRST_S = 10.0
+HEARTBEAT_EVERY_S = 15.0
+_POLL_S = 0.25
+
+_WATCH: ContextVar[tuple[Callable[[], bool] | None, Callable[[float], None] | None]] = ContextVar(
+    "clio_document_watch", default=(None, None)
+)
+
+
+@contextlib.contextmanager
+def watched(
+    cancelled: Callable[[], bool] | None = None,
+    heartbeat: Callable[[float], None] | None = None,
+) -> Iterator[None]:
+    """Scope how document processes started below learn of a stop and report that they run.
+
+    ``cancelled`` is polled while a process runs; when it returns true the whole
+    process tree is killed and :class:`DocumentCancelled` is raised. ``heartbeat``
+    receives the elapsed seconds while a process is still running.
+    """
+    token = _WATCH.set((cancelled, heartbeat))
+    try:
+        yield
+    finally:
+        _WATCH.reset(token)
+
+
+def kill_tree(process: subprocess.Popen[Any]) -> None:
+    """Kill ``process`` and every descendant, then reap it."""
+    try:
+        import psutil
+
+        try:
+            children = psutil.Process(process.pid).children(recursive=True)
+        except psutil.Error:
+            children = []
+        for child in reversed(children):
+            try:
+                child.kill()
+            except psutil.Error:
+                pass
+    except ImportError:
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.communicate(timeout=30)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
+def wait_process(
+    process: subprocess.Popen[Any],
+    *,
+    name: str,
+    timeout: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    heartbeat: Callable[[float], None] | None = None,
+) -> tuple[Any, Any]:
+    """Wait for ``process`` with no time limit unless ``timeout`` is given.
+
+    A stop from ``cancelled`` (or the :func:`watched` scope) kills the process
+    tree and raises :class:`DocumentCancelled`. ``timeout`` is for
+    infrastructure steps only; an agent's document job never sets it.
+    """
+    scoped_cancelled, scoped_heartbeat = _WATCH.get()
+    cancelled = cancelled or scoped_cancelled
+    heartbeat = heartbeat or scoped_heartbeat
+    started = time.monotonic()
+    next_beat = started + HEARTBEAT_FIRST_S
+    while True:
+        if cancelled is not None and cancelled():
+            kill_tree(process)
+            raise DocumentCancelled(f"{name} was stopped; its processes were ended")
+        now = time.monotonic()
+        if timeout is not None and now - started >= timeout:
+            kill_tree(process)
+            raise DocumentError(f"{name} exceeded {timeout:g} seconds")
+        wait = _POLL_S if timeout is None else max(0.0, min(_POLL_S, started + timeout - now))
+        try:
+            # Retrying communicate after TimeoutExpired loses no output.
+            return process.communicate(timeout=wait)
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.monotonic()
+        if heartbeat is not None and now >= next_beat:
+            next_beat = now + HEARTBEAT_EVERY_S
+            try:
+                heartbeat(now - started)
+            except Exception:  # noqa: BLE001 - a watcher never stops the job
+                pass
 
 
 # LibreOffice reads user settings from <UserInstallation>/user, not the profile root.
@@ -152,12 +256,16 @@ def run(
     command: list[str],
     *,
     cwd: Path,
-    timeout: float = 120.0,
+    timeout: float | None = None,
     env: dict[str, str] | None = None,
     windows_command_line: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    heartbeat: Callable[[float], None] | None = None,
 ) -> str:
     """Run without a shell, allowing explicit Windows quoting for non-CRT parsers.
 
+    The command runs until it exits or is stopped (see :func:`wait_process`);
+    only infrastructure steps pass a ``timeout``.
     Children never write bytecode: LibreOffice's embedded Python would otherwise
     write ``.pyc`` into its application tree and break macOS's code-signature seal.
     """
@@ -183,23 +291,13 @@ def run(
         )
     except OSError as exc:
         raise DocumentError(f"Could not run {Path(command[0]).name}: {exc}") from exc
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        import psutil
-
-        try:
-            children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.NoSuchProcess:
-            children = []
-        for child in reversed(children):
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        process.kill()
-        process.communicate()
-        raise DocumentError(f"{Path(command[0]).name} exceeded {timeout:g} seconds") from exc
+    stdout, stderr = wait_process(
+        process,
+        name=Path(command[0]).name,
+        timeout=timeout,
+        cancelled=cancelled,
+        heartbeat=heartbeat,
+    )
     if process.returncode:
         detail = (stderr or stdout).strip()[-4000:]
         raise DocumentError(f"{Path(command[0]).name} exited {process.returncode}: {detail}")

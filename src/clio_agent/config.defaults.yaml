@@ -317,6 +317,9 @@ limits.lm_max_concurrent_requests: 8
 # request.
 limits.lm_request_queue_s: 120.0
 
+# CLIO_LM_STALL_WAIT_S  (float)  <- src/clio_agent/providers/claude_code_expiry.py
+limits.lm_stall_wait_s: 30.0
+
 # CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/policy.py
 # Bounded retry count for a transient (non-parse) provider failure before
 # giving up; raise on a flaky provider connection.
@@ -1453,7 +1456,7 @@ fs.search_max_bytes: 33554432
 # CLIO_FS_SEARCH_TIMEOUT_S  (float)  <- src/clio_agent/tools/fs_search_rg.py
 # Seconds one file search or glob may run; a slower one returns what it
 # found, marked partial.
-fs.search_timeout_s: 30.0
+fs.search_timeout_s: 0.0
 
 # CLIO_HDF5_SUMMARY_ATTRIBUTES  (int)  <- src/clio_agent/gact/hdf5_view.py
 # Attributes an @file.h5::/path reference summary carries, such as NX_class
@@ -1763,7 +1766,7 @@ tools.write_ahead: "non_read_only"
 # CLIO_BROWSER_ACTION_TIMEOUT_S  (float)  <- src/clio_agent/gact/browser/settings.py
 # Seconds one browser action may take; time waiting for your answer to a
 # site question is not counted.
-browser.action_timeout_s: 30.0
+browser.action_timeout_s: 0.0
 
 # CLIO_BROWSER_ALLOW_UNSANDBOXED  (bool)  <- src/clio_agent/gact/browser/settings.py
 # Run Chromium without its own sandbox when the sandbox cannot start (as

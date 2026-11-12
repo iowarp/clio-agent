@@ -4,9 +4,9 @@ Playwright's async API runs on one event loop thread owned by this module, start
 first browser call. A tool call arrives on a dispatch worker thread and submits its work to
 that loop with :func:`asyncio.run_coroutine_threadsafe`, so a browser call never runs on the
 application's event loop. The calling thread waits by polling: Stop (the turn's cooperative
-cancellation) cancels the work, and ``browser.action_timeout_s`` bounds it, net of the time
-spent waiting for the person's answer to a host question (BR17; Playwright's own timeouts
-are off, since its clock cannot pause).
+cancellation) cancels the work. Nothing else ends it unless the operator sets
+``browser.action_timeout_s``, which never counts time spent waiting for the person's answer
+to a host question (BR17; Playwright's own timeouts are off, since its clock cannot pause).
 
 A profile is one persistent Chromium context (``<state>/browser/profiles/<name>``), so
 sign-ins survive restarts and every session shares them (BR5). A page belongs to the session
@@ -214,15 +214,17 @@ class BrowserService:
         inflight: Inflight | None = None,
         limit_s: float | None = None,
     ) -> Any:
-        """Run ``coro`` on the loop and wait, honouring Stop and the action clock.
+        """Run ``coro`` on the loop and wait until it finishes or the turn is stopped.
 
-        ``limit_s`` lengthens the clock for a call that asked to wait longer (a
+        There is no clock unless the operator set ``browser.action_timeout_s``.
+        ``limit_s`` lengthens that clock for a call that asked to wait longer (a
         ``browser_wait`` with its own ``timeout_s``); it never shortens it.
         """
         future = self.submit(coro)
         from clio_agent.runtime.cancellation import cancellation_requested  # noqa: PLC0415
 
-        limit = max(settings.action_timeout_s(), float(limit_s or 0) + 1.0)
+        configured = settings.action_timeout_s()
+        limit = None if configured is None else max(configured, float(limit_s or 0) + 1.0)
         started = time.monotonic()
         while True:
             try:
@@ -234,7 +236,7 @@ class BrowserService:
                 raise BrowserError("browser_action_cancelled", "the turn was stopped")
             paused = inflight.paused_s if inflight is not None else 0.0
             waiting = inflight is not None and inflight.waiting
-            if not waiting and time.monotonic() - started - paused > limit:
+            if limit is not None and not waiting and time.monotonic() - started - paused > limit:
                 future.cancel()
                 raise BrowserError(
                     "browser_action_timeout",
@@ -251,7 +253,7 @@ class BrowserService:
             # A desktop bundle fetches Playwright's Node.js on first use; like Chromium's
             # download it outlives the action and answers browser_runtime_preparing.
             await asyncio.get_running_loop().run_in_executor(
-                None, driver.driver_for_action, settings.action_timeout_s() / 2
+                None, driver.driver_for_action, settings.runtime_wait_s()
             )
             self._playwright = await async_playwright().start()
         return self._playwright
@@ -294,11 +296,9 @@ class BrowserService:
         loop = asyncio.get_running_loop()
         product = settings.channel()
         executable = (
-            # Half the action's clock: Playwright's start shares it, and a longer
-            # first-use download answers browser_runtime_preparing rather than timing out.
-            await loop.run_in_executor(
-                None, install.chromium_for_action, settings.action_timeout_s() / 2
-            )
+            # A longer first-use download answers browser_runtime_preparing rather than
+            # holding the action; the download carries on.
+            await loop.run_in_executor(None, install.chromium_for_action, settings.runtime_wait_s())
             if product == "chromium"
             else None
         )
