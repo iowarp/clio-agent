@@ -6,6 +6,13 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- `PUT /v1/providers/lm` sent right after `/v1/health` answers now waits (up to
+  30 s) for the task runtime to finish starting instead of returning 503
+  `task_runtime_starting`. Other routes still refuse immediately while CLIO
+  starts.
+
 ## [0.9.6.4] - 2026-11-12
 
 Ships iowarp/gact-tui v0.12.2. clio-kit 2.12.3, clio-schemas 0.7.0b1 and the
