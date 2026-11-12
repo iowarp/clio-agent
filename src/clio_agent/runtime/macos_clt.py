@@ -18,12 +18,14 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import MutableMapping
 from pathlib import Path
 
 __all__ = [
     "command_line_tools_missing",
     "is_command_line_tools_stub",
     "real_which",
+    "with_install_name_tool_stand_in",
 ]
 
 #: A stub that is always present on macOS: every other stub except ``xcrun`` is this file.
@@ -79,3 +81,44 @@ def real_which(command: str, path: str | None = None) -> str | None:
         if later and not is_command_line_tools_stub(later):
             return later
     return None
+
+
+def with_install_name_tool_stand_in(
+    environment: MutableMapping[str, str],
+) -> MutableMapping[str, str]:
+    """Shadow the ``install_name_tool`` stub on ``environment``'s PATH with a failing stand-in.
+
+    uv patches every Python it downloads with ``install_name_tool``; on a Mac without
+    the Command Line Tools the stub opens their install dialog. The stand-in fails
+    instead, so uv warns and keeps the interpreter unpatched. ``environment`` is merged
+    over ``os.environ`` to read PATH and is updated in place; it is unchanged when the
+    PATH's ``install_name_tool`` is real, absent or already the stand-in.
+    """
+    if not command_line_tools_missing():
+        return environment
+    path = {**os.environ, **environment}.get("PATH", "")
+    found = next(
+        (
+            candidate
+            for directory in path.split(os.pathsep)
+            if directory
+            and os.access(candidate := os.path.join(directory, "install_name_tool"), os.X_OK)
+        ),
+        None,
+    )
+    if found is None or not is_command_line_tools_stub(found):
+        return environment
+    from clio_agent import paths  # noqa: PLC0415 - paths reads the environment late
+
+    tools = paths.user_cache_dir() / "clt-free-bin" / "install-name-tool"
+    stand_in = tools / "install_name_tool"
+    if not stand_in.is_file():
+        tools.mkdir(parents=True, exist_ok=True)
+        stand_in.write_text(
+            "#!/bin/sh\necho 'clio: install_name_tool needs the Command Line Tools;"
+            " the library is left as it is' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+        stand_in.chmod(0o755)
+    environment["PATH"] = os.pathsep.join(part for part in (str(tools), path) if part)
+    return environment

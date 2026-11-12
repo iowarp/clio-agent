@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -141,3 +142,42 @@ def test_a_shell_with_a_real_python3_is_left_alone(
 
     assert execution._without_command_line_tools_stubs({"PATH": str(real)}) == {}
     assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executables and hard links")
+def test_mcp_servers_get_a_failing_install_name_tool_instead_of_the_stub(
+    tmp_path: Path, no_command_line_tools: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uv runs install_name_tool on each Python it downloads for a server that pins one;
+    # the stub would open the Command Line Tools dialog (gact-tui#739).
+    from clio_agent import paths
+    from clio_agent.tools import desktop_mcp_runtime
+    from clio_agent.tools.mcp_environment import stdio_environment
+
+    _stub(tmp_path / "usr-bin", "install_name_tool", no_command_line_tools)
+    monkeypatch.setenv("PATH", str(tmp_path / "usr-bin"))
+    monkeypatch.setattr(paths, "user_cache_dir", lambda: tmp_path / "cache")
+
+    env = stdio_environment({}, command="some-server")
+    found = Path(str(shutil.which("install_name_tool", path=env["PATH"])))
+    assert found.parent == tmp_path / "cache/clt-free-bin/install-name-tool"
+    assert subprocess.run([str(found)], capture_output=True, check=False).returncode == 1
+    assert macos_clt.with_install_name_tool_stand_in(dict(env))["PATH"] == env["PATH"]
+
+    runtime = tmp_path / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+    monkeypatch.setattr(desktop_mcp_runtime, "resolve_bundled_runtime_root", lambda: runtime)
+    launcher = desktop_mcp_runtime.bundled_module_launcher("clio-kit", ["mcp-server", "hdf5"])
+    if launcher is not None:  # clio_kit is importable here
+        path = launcher[2]["PATH"].split(os.pathsep)
+        assert path[:3] == [str(runtime / "bin"), str(found.parent), str(tmp_path / "usr-bin")]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executables and hard links")
+def test_with_the_command_line_tools_mcp_servers_keep_their_path(
+    tmp_path: Path, no_command_line_tools: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tool(tmp_path / "usr-bin", "install_name_tool")
+    environment = {"PATH": str(tmp_path / "usr-bin")}
+
+    assert macos_clt.with_install_name_tool_stand_in(dict(environment)) == environment
