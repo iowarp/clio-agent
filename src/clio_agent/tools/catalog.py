@@ -232,6 +232,7 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "fs_glob": _builtin_entry(
         "fs_glob", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
+    # web_*/literature_* are open-world actions: no read/write tag (see _WEB_ANNOTATIONS).
     "web_search": _builtin_entry("web_search", "web", {"web", "research"}, domain="web"),
     "web_fetch": _builtin_entry("web_fetch", "web", {"web", "research"}, domain="web"),
     "literature_search": _builtin_entry(

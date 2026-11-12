@@ -36,9 +36,14 @@ _BASH_ANNOTATIONS: dict[str, Any] = {
 #: mapping the decorator declares.
 SHELL_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {"shell_bash": _BASH_ANNOTATIONS}
 
-#: web_* / literature_* only read: they send queries to hosted services (open world)
-#: and change nothing on this computer.
-_WEB_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": True}
+#: web_* / literature_* change nothing on this computer but send queries and URLs to
+#: hosted services (open world), so they are actions the permission gate and a playbook
+#: may narrow, not fast-allowed reads; plan mode allows them as plan-safe (plan_acl).
+_WEB_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "openWorldHint": True,
+}
 
 #: Namespaced tool name → declared annotations for the web and literature built-ins.
 WEB_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
