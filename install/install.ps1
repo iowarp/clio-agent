@@ -88,6 +88,12 @@ function Stop-OfficePrepare {
     }
     $script:OfficeProc = $null
     Remove-ClioOfficeTreeFetch
+    $fetch = if ($script:PrefetchJob) { $script:PrefetchJob.Process }
+    if ($fetch -and -not $fetch.HasExited) {
+        & taskkill /T /F /PID $fetch.Id *> $null
+        $fetch.WaitForExit()
+    }
+    $script:PrefetchJob = $null
 }
 # The source install's LibreOffice download (Start-ClioOfficeTreeFetch), once the Office
 # worker no longer reads it.
@@ -1003,7 +1009,8 @@ function Complete-OfficePrepare {
         Get-Content -LiteralPath $script:OfficeLog, $script:OfficeErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
         DieWith $code "Managed-tool preparation failed (logs: $($script:OfficeLog), $($script:OfficeErr)); installation was not marked ready."
     }
-    Say "Managed-tool preparation completed in $seconds s; the managed-package step will verify it again"
+    Say "Managed-tool preparation completed in $seconds s; the managed-package step checks its files"
+    $script:OfficePrepared = $true
     Remove-Item -LiteralPath $script:OfficeLog, $script:OfficeErr -Force -ErrorAction SilentlyContinue
 }
 
@@ -1387,6 +1394,7 @@ $ClioVersion = $null
 $RuntimePlan = $null
 $RuntimeScratch = $null
 $DocJob = $null
+$OfficePrepared = $false
 $DocsMigrate = $false
 # The CLIO this install replaces, named if the data check below cannot tell.
 $PreviousVersion = $null
@@ -1537,7 +1545,15 @@ if (-not $OptSource -and $RuntimePlan) {
 
 $InstalledClioVersion = $null
 $VenvPython = Join-Path $Venv 'Scripts\python.exe'
-if ($OptSource) { Start-BytecodePrepare }
+$PrefetchJob = $null
+if ($OptSource) {
+    Start-BytecodePrepare
+    # Chromium and the default agents are fetches, not package work: the managed-tool
+    # worker is still preparing, so they finish beside it instead of after it.
+    if ($OfficeProc -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'prefetch-only' -Quiet -ErrorAction SilentlyContinue)) {
+        $PrefetchJob = Start-ClioBackground $VenvPython '-m clio_agent.runtime.document_install --prefetch-only' 'prefetch'
+    }
+}
 if (Test-Path $VenvPython) {
     try {
         $InstalledClioVersion = (& $VenvPython -c "from importlib.metadata import version; print(version('clio-agent'))").Trim()
@@ -1629,7 +1645,7 @@ function Invoke-OldDataCheck {
     }
     Move-OldDataAside
 }
-if ($DocsMigrate) {
+if ($DocsMigrate -or $FreshHome) {
     Say 'First CLIO on this machine: no earlier data to check'
 } else {
     Invoke-OldDataCheck
@@ -1684,6 +1700,13 @@ function Complete-ClioMigrate {
 }
 
 Complete-OfficePrepare
+if ($PrefetchJob) {
+    $null = Complete-ClioBackground $PrefetchJob
+    $PrefetchJob = $null
+}
+if ($OfficePrepared -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'reuse-prepared' -Quiet -ErrorAction SilentlyContinue)) {
+    $DocFlags += '--reuse-prepared'
+}
 if ($DocJob) {
     if ($DocsMigrate) { Say 'Finishing the managed packages, Office rendering and the CLIO store' }
     $docsStatus = Complete-ClioBackground $DocJob
