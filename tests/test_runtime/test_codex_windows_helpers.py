@@ -176,7 +176,7 @@ def test_installer_never_records_incomplete_helpers(
         "capabilities": {},
     }
     monkeypatch.setattr(document_install, "prepare_document_runtime", lambda *_a, **_kw: result)
-    monkeypatch.setattr(document_install, "prepare_office_runtime", lambda: "test office")
+    monkeypatch.setattr(document_install, "prepare_office_runtime", lambda **_: "test office")
     monkeypatch.setattr(document_install, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(document_install, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(document_install, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))

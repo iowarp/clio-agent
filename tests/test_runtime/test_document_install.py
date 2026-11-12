@@ -26,7 +26,7 @@ def test_installer_records_only_complete_provisioning(
         "capabilities": {},
     }
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -91,7 +91,7 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
             "capabilities": {},
         }
 
-    def office() -> str:
+    def office(**_: object) -> str:
         started.wait()
         assert packages_done.wait(5)
         assert not receipt.exists()
@@ -138,7 +138,7 @@ def test_installer_reports_each_sub_jobs_seconds(
         }
 
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -188,7 +188,7 @@ def test_installer_failure_waits_for_other_work_without_publishing_success(
             "capabilities": {},
         }
 
-    def office() -> str:
+    def office(**_: object) -> str:
         step("office")
         return "private soffice"
 
@@ -228,7 +228,7 @@ def test_installer_explicit_setup_is_forwarded_and_failed_setup_has_no_receipt(
             "capabilities": {},
         },
     )
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -287,7 +287,7 @@ def test_bootstrap_prepares_real_package_stage_without_fence_or_receipt(
         "capabilities": {},
     }
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))

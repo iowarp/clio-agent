@@ -713,8 +713,11 @@ def office_profile_starter(office_root: Path) -> Path | None:
     return starter if starter.is_file() else None
 
 
-def prepare_office_runtime() -> str:
-    """Use an installed renderer or provision a private verified renderer automatically."""
+def prepare_office_runtime(*, timings: dict[str, float] | None = None) -> str:
+    """Use an installed renderer or provision a private verified renderer automatically.
+
+    ``timings``, when given, receives the renderer's unpack and seed seconds.
+    """
     from clio_agent.runtime.document_stack.office import ensure_office, seed_profile
     from clio_agent.runtime.document_stack.process import find_native
 
@@ -728,6 +731,7 @@ def prepare_office_runtime() -> str:
         managed_root,
         profile_templates=office_profile_templates(),
         profile_starter=office_profile_starter(managed_root),
+        timings=timings,
     )
 
 

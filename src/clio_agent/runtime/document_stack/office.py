@@ -693,7 +693,18 @@ def _finish_image(image: Path, root: Path, profile_templates: Path | None) -> No
         raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
 
 
-def _lay_prepared(prepared: Path, root: Path, profile_templates: Path | None) -> bool:
+def _lap(timings: dict[str, float] | None, key: str, started: float) -> None:
+    """Record ``key``'s seconds since ``started`` when timings are collected."""
+    if timings is not None:
+        timings[key] = round(time.monotonic() - started, 1)
+
+
+def _lay_prepared(
+    prepared: Path,
+    root: Path,
+    profile_templates: Path | None,
+    timings: dict[str, float] | None = None,
+) -> bool:
     """Publish the installer's prepared tree as ``root``; False if it cannot be used."""
     with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
         staging = Path(temporary)
@@ -701,17 +712,24 @@ def _lay_prepared(prepared: Path, root: Path, profile_templates: Path | None) ->
         image = staging / "image"
         image.mkdir()
         try:
+            started = time.monotonic()
             if platform.system() == "Windows":
-                office_tree.unpack_windows_tree(
+                waited = office_tree.unpack_windows_tree(
                     prepared, image, max_unpacked=MAX_PREPARED, stall_s=_INSTALLER_STALL_S
                 )
+                if timings is not None:
+                    # The tree is unpacked as it downloads: this share waited on the network.
+                    timings["office_download_wait"] = round(waited, 1)
                 if executable(image) is None:
                     raise DocumentError("Prepared Office tree holds no soffice executable")
             else:
                 office_tree.unpack_prepared_tree(prepared, image, MAX_PREPARED)
                 # Rewrites the launcher only: the tree's userland is this release's.
                 office_compat.prepare(image, download=_download, deb_data=_deb_data)
+            _lap(timings, "office_unpack", started)
+            started = time.monotonic()
             _finish_image(image, root, profile_templates)
+            _lap(timings, "office_seed", started)
         except (DocumentError, OSError, ValueError, tarfile.TarError, zstandard.ZstdError) as exc:
             if root.exists():
                 raise
@@ -729,6 +747,7 @@ def ensure_office(
     *,
     profile_templates: Path | None = None,
     profile_starter: Path | None = None,
+    timings: dict[str, float] | None = None,
 ) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
@@ -736,6 +755,7 @@ def ensure_office(
     own pinned userland (``office_compat``), so it needs nothing from the host. An
     installer that downloaded the release's prepared tree (``prepared_tree_name``)
     hands it over, and nothing is downloaded or unpacked from TDF's packages here.
+    ``timings``, when given, receives the ``office_unpack`` and ``office_seed`` seconds.
     """
     root = root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -750,15 +770,17 @@ def ensure_office(
                         "Private LibreOffice launcher disappeared during preparation"
                     )
             inherit_parent_access(root)
+            started = time.monotonic()
             _verify_office(
                 existing,
                 cwd=root,
                 profile_templates=profile_templates,
                 profile_starter=profile_starter,
             )
+            _lap(timings, "office_seed", started)
             return str(existing)
         prepared = installer_prepared_tree()
-        if prepared is not None and _lay_prepared(prepared, root, profile_templates):
+        if prepared is not None and _lay_prepared(prepared, root, profile_templates, timings):
             candidate = executable(root)
             if candidate is None:
                 raise DocumentError("LibreOffice renderer disappeared after provisioning")
@@ -772,8 +794,12 @@ def ensure_office(
             inherit_parent_access(staging)
             image = staging / "image"
             image.mkdir()
+            started = time.monotonic()
             _lay_image(image, staging, lambda: _office_archive(archive, name, checksum, url))
+            _lap(timings, "office_unpack", started)
+            started = time.monotonic()
             _finish_image(image, root, profile_templates)
+            _lap(timings, "office_seed", started)
         candidate = executable(root)
         if candidate is None:
             raise DocumentError("LibreOffice renderer disappeared after provisioning")
