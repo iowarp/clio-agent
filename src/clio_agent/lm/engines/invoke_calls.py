@@ -29,6 +29,7 @@ __all__ = [
     "INVOKE_RULES",
     "InvokeCalls",
     "parse_invoke_calls",
+    "plain_call_tags",
     "render_invoke",
     "text_tool_protocol",
 ]
@@ -50,6 +51,12 @@ _RESIDUE = re.compile(
     r"""(?m)^[ \t]*(?:<?/?function_calls(?!>)\b|</?invoke_tool_placeholder>"""
     r"""|</?invoke:[\w.-]+>).*$"""
 )
+#: A call tag written with an XML namespace prefix (``<ns:invoke name=...>``,
+#: ``<ns:parameter ...>``, their closers): the model's trained call markup in its
+#: namespaced spelling. Live (sonnet, 2026-11-12) a step began with a namespaced
+#: ``<parameter>`` that neither the stream splitter nor this parser knew, so the cut
+#: call streamed and was stored as the step's visible text.
+_NAMESPACED_TAG = re.compile(r"<(/?)[A-Za-z_][\w.-]*:(function_calls|invoke|parameter)(?=[\s>/])")
 #: The reason a cut call block is refused, in this protocol's own terms.
 CUT_BLOCK = (
     "the call block was cut: it must open with <function_calls> and then "
@@ -121,6 +128,12 @@ class InvokeCalls:
     overrun: str = ""
 
 
+def plain_call_tags(text: str) -> str:
+    """``text`` with namespaced call tags in their plain spelling (``<invoke``,
+    ``</parameter>``), so they are read, and hidden, as the call markup they are."""
+    return _NAMESPACED_TAG.sub(r"<\1\2", text)
+
+
 def _accepts_string(schema: Mapping[str, Any]) -> bool:
     kind = schema.get("type")
     if kind is None:
@@ -162,6 +175,7 @@ def parse_invoke_calls(
     """
     if not known:
         return None
+    reply = plain_call_tags(reply)
     overrun = ""
     if (cut := call_block_end(reply, known)) is not None:
         reply, overrun = reply[:cut], reply[cut:]

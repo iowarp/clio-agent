@@ -172,6 +172,37 @@ def test_the_stream_never_shows_call_markup_or_its_pieces(invoke: None) -> None:
         assert shown.startswith("Reading the shards.")
 
 
+def test_namespaced_call_markup_is_read_and_never_shown(invoke: None) -> None:
+    """Live (sonnet, claude_code, 2026-11-12) a step began with the parameter tag in its
+    namespaced spelling, opener lost; nothing knew that spelling, so the cut call
+    streamed and was stored as the step's text. A namespaced block is the call; a cut
+    one is refused; neither streams. SABOTAGE: drop ``plain_call_tags`` and the cut
+    script streams and comes back as the answer."""
+    for ns in ("antml", "ns"):
+        cut = f'\n<{ns}:parameter name="command">{SCRIPT}</parameter>'
+        whole = (f'<{ns}:function_calls>\n<{ns}:invoke name="shell_bash">\n'
+                 f'<{ns}:parameter name="command">ls</{ns}:parameter>\n'
+                 f'</{ns}:invoke>\n</{ns}:function_calls>')  # fmt: skip
+        [call] = split_reply(cut, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS).calls
+        assert call.name == INVALID_TOOL_CALL
+        assert call.input.get("error") == invoke_calls.CUT_BLOCK
+        split = split_reply(
+            "Listing.\n" + whole, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS
+        )
+        assert [(c.name, c.input) for c in split.calls] == [("shell_bash", {"command": "ls"})]
+        assert split.text == "Listing."
+        for reply in (cut, "Listing.\n" + whole):
+            for size in (1, 3, 7, len(reply)):
+                splitter = text_tools.StreamSplitter(TOOLS)
+                shown = "".join(
+                    splitter.push(reply[i : i + size]) for i in range(0, len(reply), size)
+                )
+                assert "<" not in shown and "parameter" not in shown, (ns, size, shown)
+    splitter = text_tools.StreamSplitter(TOOLS)
+    shown = "".join(splitter.push(c) for c in ("Use <b", "r> or <x:y", "> here."))
+    assert shown == "Use <br> or <x:y> here."  # other tags only wait for their name
+
+
 def test_a_loaded_deferred_tool_is_read_against_its_own_schema(invoke: None) -> None:
     """On L1R the agent loaded recall_context with search_tools and called it with
     ``ids=["cmp_..."]``: unlisted, it had no schema, so the list arrived as the string

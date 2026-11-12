@@ -572,6 +572,20 @@ _INVOKE_OPENERS = (
 _CALL_WORDS = ("function_calls", "<function_calls", "</function_calls")
 #: An invented ``<invoke:NAME`` opener still being written, held back until its ``>``.
 _UNFINISHED_INVOKE_NAME = re.compile(r"</?invoke:[\w.-]*$")
+#: A tag name still being written that could become a namespaced call tag
+#: (``<ns:parameter``): held back until it is one (then read as call markup) or is not.
+_UNFINISHED_TAG = re.compile(r"</?[A-Za-z_][\w.-]*(?::(?P<local>[\w]*))?$")
+_CALL_TAG_NAMES = ("function_calls", "invoke", "parameter")
+
+
+def _unfinished_tag_at(text: str) -> int | None:
+    """Where a trailing tag that could still become a namespaced call tag begins."""
+    if (tag := _UNFINISHED_TAG.search(text)) is None:
+        return None
+    local = tag["local"]
+    if local is None or any(name.startswith(local) for name in _CALL_TAG_NAMES):
+        return tag.start()
+    return None
 
 
 def _without_invoke_markup(text: str) -> tuple[str, int]:
@@ -583,6 +597,8 @@ def _without_invoke_markup(text: str) -> tuple[str, int]:
         return cleaned[: opener.start()], removed
     if unfinished := _UNFINISHED_INVOKE_NAME.search(cleaned):
         return cleaned[: unfinished.start()], removed
+    if (tag_at := _unfinished_tag_at(cleaned)) is not None:
+        return cleaned[:tag_at], removed
     for n in range(min(max(map(len, _INVOKE_OPENERS)) - 1, len(cleaned)), 0, -1):
         if any(o.startswith(cleaned[-n:]) for o in _INVOKE_OPENERS):
             return cleaned[:-n], removed
@@ -636,7 +652,9 @@ class StreamSplitter:
         """Add ``chunk``; return the newly showable text (possibly empty)."""
         if self._stopped:
             return ""
-        self._buffer += chunk
+        from clio_agent.lm.engines.invoke_calls import plain_call_tags  # noqa: PLC0415
+
+        self._buffer = plain_call_tags(self._buffer + chunk)
         fence_at = self._buffer.find(FENCE)
         if (block_at := self._call_block_at()) is not None and (
             fence_at < 0 or block_at < fence_at
