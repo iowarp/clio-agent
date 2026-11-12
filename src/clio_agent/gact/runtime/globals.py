@@ -634,29 +634,6 @@ def _wire_arc_op_logger(app: "FastAPI") -> None:
         )
 
 
-def _home_owns_legacy(app: "FastAPI") -> Callable[[Any], bool]:
-    """Recognise this home's sessions among bare, pre-namespace session records.
-
-    A session is this home's when its workspace is in this home's registry (workspace
-    ids are random per home, except the shared ``ws_default``) or this home holds its
-    transcript on file. Read once, at the first row asked about.
-    """
-    from clio_agent.gact.workspaces import DEFAULT_WORKSPACE_ID  # noqa: PLC0415
-
-    known: list[set[str]] = []
-
-    def owns(row: Any) -> bool:
-        if not known:
-            workspaces = getattr(app.state, "workspaces", None)
-            ids = {ws.id for ws in workspaces.list()} if workspaces is not None else set()
-            ids.discard(DEFAULT_WORKSPACE_ID)
-            store = getattr(app.state, "message_store", None)
-            known.extend((ids, set(store.session_ids()) if store is not None else set()))
-        return row.workspace_id in known[0] or row.id in known[1]
-
-    return owns
-
-
 def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     """The single choke point for (re)assigning ``app.state.arc``.
 
@@ -676,7 +653,9 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
         _PROCESS_ARC = arc
         sessions = getattr(app.state, "sessions", None)
         if sessions is not None:  # session records live in this ARC's clio-core store
-            sessions.bind_store(arc._store, owns_legacy=_home_owns_legacy(app))
+            from clio_agent.gact.session_record_homes import home_owns_legacy  # noqa: PLC0415
+
+            sessions.bind_store(arc._store, owns_legacy=home_owns_legacy(app))
     _wire_arc_op_logger(app)
     # ARC-as-source: wire the highway-derive sink onto the arc so a recorded semantic
     # event fans out to the durable trace / SSE / hooks AFTER ARC persists+folds it.

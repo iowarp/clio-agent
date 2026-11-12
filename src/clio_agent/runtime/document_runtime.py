@@ -12,7 +12,6 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
-import tempfile
 import tomllib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +23,7 @@ from filelock import FileLock
 from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
 from clio_agent.runtime.document_stack.node_paths import node_path
+from clio_agent.runtime.document_stack.npm_package import unpack_package as _unpack_package
 from clio_agent.runtime.document_stack.process import scratch_root
 from clio_agent.runtime.document_venv import (
     _built_for_this_interpreter,
@@ -152,6 +152,9 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
                 **os.environ,
                 "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root()),
                 "PYTHONDONTWRITEBYTECODE": "1",
+                # The inventory imports matplotlib, which otherwise creates the user's
+                # ~/.config/matplotlib; it belongs to this environment, inside CLIO's cache.
+                "MPLCONFIGDIR": str(python.parents[1] / ".matplotlib"),
             },
         )
     )
@@ -173,26 +176,8 @@ def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[s
         for name in names
     ):
         raise ValueError("required_imports must contain at most 32 Python module names")
-    # Imported modules may print to stdout (``import fitz`` prints a deprecation
-    # warning), so imports write to stderr and only the JSON reaches stdout.
-    source = """import importlib, json, os, sys
-result = os.fdopen(os.dup(1), "w", encoding="utf-8")
-sys.stdout.flush()
-os.dup2(2, 1)
-sys.stdout = sys.stderr
-checks = {}
-for name in json.loads(sys.argv[1]):
-    try:
-        importlib.import_module(name)
-    except (ImportError, OSError) as error:
-        checks[name] = {"status": "missing", "detail": str(error)}
-    else:
-        checks[name] = {"status": "ready"}
-sys.stderr.flush()
-result.write(json.dumps(checks))
-result.flush()
-"""
-    output = _run([str(python), "-B", "-c", source, json.dumps(names)], cwd=python.parent)
+    script = str(STACK_ROOT / "import_check.py")
+    output = _run([str(python), "-B", script, json.dumps(names)], cwd=python.parent)
     checks = json.loads(output)
     if not isinstance(checks, dict) or set(checks) != set(names):
         raise DocumentRuntimeError("Import checks did not return the requested modules")
@@ -277,15 +262,19 @@ def _filesystem(path: Path) -> int | None:
     return None
 
 
-def _document_uv_cache(uv: str, home: Path) -> Path:
+def _document_uv_cache(uv: str, home: Path, *, bundled: bool) -> Path:
     """The uv cache for the document environment beside ``home``.
 
-    uv's own cache is reused when it is on the same filesystem, so the packages the
-    agent's install already downloaded (numpy, matplotlib, lxml, ...) are linked rather
-    than downloaded again. A cache on another drive would copy every file instead of
-    hardlinking it, so the environment then keeps a cache on the installation drive.
+    A release lays the environment out from the runtime's bundled wheels, so its cache is
+    CLIO's own: the ~500 MB it fills go with ``uninstall --purge-caches`` instead of
+    staying in ``~/.cache/uv`` after CLIO is gone. A source install reuses uv's own cache
+    when it is on the same filesystem: the agent's ``uv sync`` already downloaded numpy,
+    matplotlib, lxml and the rest there, so they are linked rather than downloaded again.
+    A cache on another drive would copy every file instead, so that keeps the private one.
     """
     private = home / "uv-document-cache"
+    if bundled:
+        return private
     shared = _uv_cache_dir(uv)
     if shared is None:
         return private
@@ -327,7 +316,13 @@ def _python_runtime(
     env = {
         **os.environ,
         "UV_PROJECT_ENVIRONMENT": str(environment),
-        "UV_CACHE_DIR": str(_document_uv_cache(uv, cache.parent)),
+        "UV_CACHE_DIR": str(
+            _document_uv_cache(
+                uv,
+                cache.parent,
+                bundled=bundled_root() is not None or _installer_wheel_root() is not None,
+            )
+        ),
     }
     runtime = bundled_root()
     try:
@@ -397,23 +392,6 @@ def _pnpm_command(package: Path, node: str, env: dict[str, str]) -> Path:
     if _run([node, str(pnpm), "--version"], cwd=package, env=env).strip() != PNPM_VERSION:
         raise DocumentRuntimeError("Prepared pnpm did not execute its pinned version")
     return pnpm
-
-
-def _unpack_package(archive: Path, target: Path) -> None:
-    """Unpack one npm tarball's ``package/`` as ``target``, replacing what was there."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".unpack-", dir=target.parent) as temporary:
-        staging = Path(temporary)
-        with tarfile.open(archive, "r:gz") as source:
-            source.extractall(staging, filter="data")
-        unpacked = staging / "package"
-        if not (unpacked / "package.json").is_file():
-            raise DocumentRuntimeError(f"{archive.name} has no npm package")
-        if target.is_symlink() or target.is_file():
-            target.unlink()
-        elif target.exists():
-            shutil.rmtree(target)
-        unpacked.rename(target)
 
 
 def _installer_pnpm(package: Path) -> bool:
@@ -500,7 +478,17 @@ def _javascript_runtime(
 ) -> tuple[Path, Path]:
     node = node_path(str(inventory["node"]))
     tools = Path(node_path(str(cache / "javascript-tools")))
-    env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
+    # Besides its store, pnpm keeps a metadata cache, its state and a global folder in the
+    # user's XDG folders (~/.cache/pnpm, ~/.local/state/pnpm, ~/.local/share/pnpm). They are
+    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes.
+    pnpm_home = Path(node_path(str(cache / "pnpm-home")))
+    env = {
+        **os.environ,
+        "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", ""),
+        "XDG_CACHE_HOME": str(pnpm_home / "cache"),
+        "XDG_STATE_HOME": str(pnpm_home / "state"),
+        "XDG_DATA_HOME": str(pnpm_home / "data"),
+    }
     work = Path(node_path(str(scratch_root(workspace) / "javascript")))
     store = node_path(str(cache / "pnpm-store"))
     # pnpm is needed only to install or repair the packages. It is prepared and

@@ -58,7 +58,11 @@ def _receipt_path(cache_root: Path | None, runtime_id: str | None = None) -> Pat
     )
 
 
-def _roots(result: dict[str, Any]) -> list[Path]:
+def _prepared_path(cache_root: Path | None, runtime_id: str | None = None) -> Path:
+    return _receipt_path(cache_root, runtime_id).with_name("prepared.json")
+
+
+def _roots(result: dict[str, Any], *, interpreter: bool = True) -> list[Path]:
     javascript = Path(result["javascript"]["workspace"])
     office = Path(result["native_tools"]["soffice"]["path"])
     private_office = office_runtime_root().resolve()
@@ -68,7 +72,7 @@ def _roots(result: dict[str, Any]) -> list[Path]:
         Path(__file__).with_name("document_install.py"),
         Path(__file__).with_name("document_runtime.py"),
         Path(__file__).with_name("document_venv.py"),
-        Path(sys.executable),
+        *([Path(sys.executable)] if interpreter else []),
         Path(result["python"]).parent.parent,
         Path(result["uv"]),
         javascript / "node_modules",
@@ -132,7 +136,7 @@ def _tree_metadata(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _identity(workspace: Path, result: dict[str, Any]) -> str:
+def _identity(workspace: Path, result: dict[str, Any], *, interpreter: bool = True) -> str:
     expected_output = scratch_root(workspace, create=False) / "output"
     if _path_identity(Path(result["output_directory"])) != _path_identity(expected_output):
         raise ValueError("Installation belongs to a different workspace")
@@ -142,7 +146,7 @@ def _identity(workspace: Path, result: dict[str, Any]) -> str:
         raise ValueError("Installation package locks changed")
     context = {
         "workspace": _path_identity(workspace),
-        "interpreter": sys.version,
+        "interpreter": sys.version if interpreter else None,
         "runtime_id": _fingerprint(),
         "office_root": _path_identity(office_runtime_root()),
         "environment": {
@@ -156,7 +160,9 @@ def _identity(workspace: Path, result: dict[str, Any]) -> str:
         },
         "path_tools": _resolved_tools(),
         "inventory": result,
-        "files": [(str(root), _tree_metadata(root)) for root in _roots(result)],
+        "files": [
+            (str(root), _tree_metadata(root)) for root in _roots(result, interpreter=interpreter)
+        ],
     }
     return hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
 
@@ -196,4 +202,45 @@ def reuse_install_receipt(
         return result
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
         logger.debug("Installation requires full preparation: %s", error)
+        return None
+
+
+def save_prepared_receipt(
+    workspace: Path, result: dict[str, Any], *, cache_root: Path | None = None
+) -> None:
+    """Hand packages prepared by the source installer's side worker to its main step.
+
+    The worker runs from its own small environment, so the interpreter is left out of
+    this identity; the main step still checks every package file it names.
+    """
+    receipt = _prepared_path(cache_root, result["runtime_id"])
+    identity = _identity(workspace, result, interpreter=False)
+    temporary = receipt.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({**result, "installation_check": {"format": 1, "identity": identity}}),
+        encoding="utf-8",
+    )
+    temporary.replace(receipt)
+
+
+def take_prepared_receipt(
+    workspace: Path, *, cache_root: Path | None = None
+) -> dict[str, Any] | None:
+    """Consume the side worker's hand-off: its inventory if every package file is unchanged."""
+    receipt = _prepared_path(cache_root)
+    try:
+        payload = receipt.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    receipt.unlink(missing_ok=True)
+    try:
+        result = json.loads(payload)
+        proof = result.pop("installation_check")
+        if proof["format"] != 1 or proof["identity"] != _identity(
+            workspace, result, interpreter=False
+        ):
+            return None
+        return result
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
+        logger.debug("Prepared packages require full preparation: %s", error)
         return None

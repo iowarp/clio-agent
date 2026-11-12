@@ -120,12 +120,41 @@ def test_desktop_removes_the_app_and_keeps_support_without_purge(
     assert support.exists() is not purge
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="Linux refuses the macOS-only flag")
-def test_desktop_flag_is_refused_off_macos(tmp_path: Path) -> None:
+def _linux_desktop_root(tmp_path: Path) -> Path:
+    """CLIO Desktop's per-user folder on Linux, holding logs, WebKit caches and its agent."""
+    root = tmp_path / "home" / ".local" / "share" / "ai.iowarp.clio.desktop"
+    for part in ("logs", "WebKitCache", "CacheStorage", "clio-agent/cache", "clio-agent/data"):
+        (root / part).mkdir(parents=True)
+        (root / part / "file").write_text("x")
+    return root
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="the Linux desktop's per-user folder")
+def test_desktop_flag_on_linux_removes_logs_and_webkit_caches_and_keeps_data(
+    tmp_path: Path,
+) -> None:
+    """The package manager removes the app; --desktop removes what it kept in the account."""
+    _installed(tmp_path)
+    root = _linux_desktop_root(tmp_path)
+
     result = _uninstall(_env(tmp_path), "--desktop")
 
-    assert result.returncode == 2
-    assert "macOS" in result.stderr
+    assert result.returncode == 0, result.stderr
+    for gone in ("logs", "WebKitCache", "CacheStorage"):
+        assert not (root / gone).exists()
+    assert (root / "clio-agent" / "cache" / "file").exists()
+    assert (root / "clio-agent" / "data" / "file").exists()
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="the Linux desktop's per-user folder")
+def test_desktop_flag_with_purge_on_linux_removes_the_whole_folder(tmp_path: Path) -> None:
+    _installed(tmp_path)
+    root = _linux_desktop_root(tmp_path)
+
+    result = _uninstall(_env(tmp_path), "--desktop", "--purge")
+
+    assert result.returncode == 0, result.stderr
+    assert not root.exists()
 
 
 def _agent_data(home: Path) -> Path:
@@ -353,7 +382,9 @@ def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
         idle = prefix / "runtime" / "server.py"
         idle.parent.mkdir()
         idle.write_text("import time\ntime.sleep(60)\n")
-        server = subprocess.Popen([sys.executable, str(idle)])
+        # Run it from the installation: uninstall stops only processes it can tie to the
+        # prefix, and a truncated ps args line must not make it look foreign.
+        server = subprocess.Popen([sys.executable, str(idle)], cwd=idle.parent)
         threading.Thread(target=server.wait, daemon=True).start()
         (prefix / "clio-server.pid").write_text(str(server.pid))
         mine = [f"clio-{server.pid}-shm-out", f"clio-{server.pid}-shm-in-0", f"clio_{server.pid}_0"]
@@ -365,7 +396,8 @@ def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
         result = _uninstall(env)
 
         assert result.returncode == 0, result.stdout + result.stderr
-        assert server.poll() is not None
+        # Not poll(): until the reaper thread records the exit, it returns None.
+        assert server.wait(timeout=10) is not None
         assert sorted(p.name for p in shm.iterdir()) == sorted(theirs)
         assert "Removed 3 clio-core memory files" in result.stdout
     finally:

@@ -959,6 +959,17 @@ arc.cte.disk_warn_fraction: 0.5
 # allocates it up front.
 # arc.cte.file_capacity:  # default unset; resolved in code
 
+# CLIO_ARC_CTE_HOME_RAM_CAPACITY  (str)  <- src/clio_agent/arc/home_runtime.py
+# RAM arena (e.g. "128MB") of a clio-core daemon CLIO runs for one of
+# several homes; used when arc.cte.ram_capacity is unset, sized small so
+# several daemons fit at once.
+arc.cte.home_ram_capacity: "128MB"
+
+# CLIO_ARC_CTE_HOME_SEGMENT_SIZE  (str)  <- src/clio_agent/arc/home_runtime.py
+# Shared-memory segment size (e.g. "64MB") of a per-home clio-core daemon's
+# generated config; raise if a home's daemon runs out of segment space.
+arc.cte.home_segment_size: "64MB"
+
 # CLIO_ARC_CTE_RAM_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Hard byte ceiling (e.g. "1GB") for clio-core's RAM working arena; raise
 # for more headroom -- a deliberate desktop cap on DRAM growth.
@@ -1035,7 +1046,7 @@ arc.lsm_memtable_size: 1000
 # cost.
 arc.message_part_chunk_segments: 512
 
-# CLIO_ARC_NAMESPACE  (str)  <- src/clio_agent/arc/storage.py
+# CLIO_ARC_NAMESPACE  (str)  <- src/clio_agent/arc/home_import.py
 # clio-core namespace ARC records live under (tags <namespace>/<kind>);
 # empty keeps the bare tags. Set to keep two deployments on one clio-core
 # apart.

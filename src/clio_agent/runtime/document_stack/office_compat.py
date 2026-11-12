@@ -56,12 +56,14 @@ LOCK_UNREADABLE = "office_userland_lock_unreadable"
 _REPORTED: set[str] = set()
 WRAPPER = "soffice-clio"
 MAX_UNPACKED = 128 * 1024 * 1024
-#: fontconfig reads LibreOffice's own fonts; its cache goes to the user's cache directory.
+#: fontconfig reads LibreOffice's own fonts. Its cache goes inside CLIO's folder in the
+#: user's cache directory (where a sandbox's redirected XDG_CACHE_HOME also points), so
+#: uninstall --purge-caches removes it with the rest of CLIO's cache.
 FONTS_CONF = """<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
   <dir prefix="relative">../opt/libreoffice26.2/share/fonts</dir>
-  <cachedir prefix="xdg">clio-office-fontconfig</cachedir>
+  <cachedir prefix="xdg">clio-agent/office-fontconfig</cachedir>
 </fontconfig>
 """
 

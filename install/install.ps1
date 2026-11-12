@@ -88,6 +88,12 @@ function Stop-OfficePrepare {
     }
     $script:OfficeProc = $null
     Remove-ClioOfficeTreeFetch
+    $fetch = if ($script:PrefetchJob) { $script:PrefetchJob.Process }
+    if ($fetch -and -not $fetch.HasExited) {
+        & taskkill /T /F /PID $fetch.Id *> $null
+        $fetch.WaitForExit()
+    }
+    $script:PrefetchJob = $null
 }
 # The source install's LibreOffice download (Start-ClioOfficeTreeFetch), once the Office
 # worker no longer reads it.
@@ -827,7 +833,34 @@ function Initialize-ClioUv([string]$From = '') {
     $env:PATH = "$BinDir;$env:PATH"
     if (-not (Have uv)) { Die 'could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again' }
 }
-if ($OptSource) { Initialize-ClioUv }
+# A source install needs uv only once its clone is in: uv's installer runs in its own
+# process while git clones, and Complete-ClioUvInstall joins it before the first uv use.
+function Start-ClioUvInstall {
+    if (Have uv) { return }
+    Say "Installing uv into $BinDir beside the clone"
+    $env:UV_INSTALL_DIR = $BinDir
+    $env:UV_NO_MODIFY_PATH = '1'
+    $stem = Join-Path ([IO.Path]::GetTempPath()) ("clio-uv-" + [Guid]::NewGuid().ToString('N'))
+    $script:UvInstallLogs = @("$stem.log", "$stem.err.log")
+    $shell = (Get-Process -Id $PID).Path
+    $script:UvInstall = Start-Process -FilePath $shell -WindowStyle Hidden -PassThru `
+        -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression"' `
+        -RedirectStandardOutput $script:UvInstallLogs[0] -RedirectStandardError $script:UvInstallLogs[1]
+    $null = $script:UvInstall.Handle
+}
+function Complete-ClioUvInstall {
+    $proc = $script:UvInstall
+    if (-not $proc) { return }
+    $script:UvInstall = $null
+    $proc.WaitForExit()
+    $env:PATH = "$BinDir;$env:PATH"
+    if (-not (Have uv)) {
+        Get-Content -LiteralPath $script:UvInstallLogs -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+        Die 'could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again'
+    }
+    Remove-Item -LiteralPath $script:UvInstallLogs -Force -ErrorAction SilentlyContinue
+}
+if ($OptSource) { Start-ClioUvInstall }
 # uv otherwise prefers an installed Microsoft Store Python over downloading one. A
 # packaged (MSIX) interpreter cannot run inside protected execution: MXC refuses to
 # launch packaged apps. Use uv's own Pythons unless the operator chose otherwise.
@@ -923,14 +956,32 @@ function Update-SourceClone([string]$Path, [string]$Ref) {
     if ($LASTEXITCODE -ne 0) { Die "could not fetch '$Ref' into '$Path' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again" }
     & git -C $Path checkout -q --detach FETCH_HEAD
     if ($LASTEXITCODE -ne 0) { Die "could not check out '$Ref' in '$Path' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)" }
-    & git -C $Path submodule update --init --recursive --depth 1
+    Update-SourceSubmodules $Path
     if ($LASTEXITCODE -ne 0) { Die "could not update the submodules of '$Path' to '$Ref' (git's message is above); run this installer again" }
+}
+
+# The clone holds what the agent runs: the root files (pyproject, uv.lock), src,
+# install and the submodule mount points, sparse and blobless. The site, docs and tests
+# were 11,600 files and ~400 MB of the clone; 'git sparse-checkout disable' brings them.
+$SourceSparseDirs = @('src', 'install', 'external')
+# Of the submodules, the agent reads only the marketplace (plugins/service.py); gact-tui
+# is the desktop's source, used by bundle builds.
+$SourceSubmodules = @('external/clio-agent-marketplace')
+
+# Update-SourceSubmodules PATH: init/update the submodules the agent reads. A ref whose
+# .gitmodules has none of them gets all of its submodules, as before.
+function Update-SourceSubmodules([string]$Path) {
+    $declared = @(& git -C $Path config -f .gitmodules --get-regexp '\.path$' 2>$null | ForEach-Object { ("$_" -split ' ', 2)[1] })
+    $wanted = @($declared | Where-Object { $_ -in $SourceSubmodules })
+    $gitArgs = @('-C', $Path, 'submodule', 'update', '--init', '--recursive', '--depth', '1', '--') + $wanted
+    & git @gitArgs
 }
 
 # Managed tools need only the locked bootstrap packages, so their preparation
 # overlaps the agent's much larger sync without racing the main virtualenv.
 function Start-OfficePrepare {
     if ($script:OfficeProc) { return }
+    Complete-ClioUvInstall
     $worker = Join-Path $Src 'install/prepare-office.ps1'
     if (-not (Test-Path -LiteralPath $worker)) { return }  # older source ref
     Start-ClioOfficeTreeFetch
@@ -958,7 +1009,8 @@ function Complete-OfficePrepare {
         Get-Content -LiteralPath $script:OfficeLog, $script:OfficeErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
         DieWith $code "Managed-tool preparation failed (logs: $($script:OfficeLog), $($script:OfficeErr)); installation was not marked ready."
     }
-    Say "Managed-tool preparation completed in $seconds s; the managed-package step will verify it again"
+    Say "Managed-tool preparation completed in $seconds s; the managed-package step checks its files"
+    $script:OfficePrepared = $true
     Remove-Item -LiteralPath $script:OfficeLog, $script:OfficeErr -Force -ErrorAction SilentlyContinue
 }
 
@@ -1342,6 +1394,7 @@ $ClioVersion = $null
 $RuntimePlan = $null
 $RuntimeScratch = $null
 $DocJob = $null
+$OfficePrepared = $false
 $DocsMigrate = $false
 # The CLIO this install replaces, named if the data check below cannot tell.
 $PreviousVersion = $null
@@ -1385,24 +1438,29 @@ if ($OptSource) {
         if (Test-SourceCloneReusable $Src) {
             Update-SourceClone $Src $ref
         } else {
-            Say "Cloning clio-agent at $ref"
-            & git clone --quiet --branch $ref --depth 1 $ClioRepo $Src 2>$null
+            Say "Cloning clio-agent at $ref (what the agent runs; 'git sparse-checkout disable' in the clone adds the docs, site and tests)"
+            & git clone --quiet --branch $ref --depth 1 --filter=blob:none --sparse $ClioRepo $Src 2>$null
             if ($LASTEXITCODE -ne 0) {
                 # A commit is not a branch or tag: fetch it by id.
                 RemoveTree $Src
                 RunNative git @('init', '-q', $Src)
                 RunNative git @('-C', $Src, 'remote', 'add', 'origin', $ClioRepo)
-                RunNative git @('-C', $Src, 'fetch', '-q', '--depth', '1', 'origin', $ref)
+                RunNative git (@('-C', $Src, 'sparse-checkout', 'set', '--cone') + $SourceSparseDirs)
+                RunNative git @('-C', $Src, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', $ref)
                 RunNative git @('-C', $Src, 'checkout', '-q', 'FETCH_HEAD')
+            } else {
+                RunNative git (@('-C', $Src, 'sparse-checkout', 'set', '--cone') + $SourceSparseDirs)
             }
             $py = PythonOf (Join-Path $Src '.python-version')
             Start-OfficePrepare
-            RunNative git @('-C', $Src, 'submodule', 'update', '--init', '--recursive', '--depth', '1')
+            Update-SourceSubmodules $Src
+            if ($LASTEXITCODE -ne 0) { Die "could not fetch the submodules of '$Src' (git's message is above); run this installer again" }
         }
         $py = PythonOf (Join-Path $Src '.python-version')
         $syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
     }
     Start-OfficePrepare
+    Complete-ClioUvInstall
     Say "Installing clio-agent deps (uv $($syncArgs -join ' '))"
     Push-Location $Src
     & uv @syncArgs
@@ -1487,7 +1545,15 @@ if (-not $OptSource -and $RuntimePlan) {
 
 $InstalledClioVersion = $null
 $VenvPython = Join-Path $Venv 'Scripts\python.exe'
-if ($OptSource) { Start-BytecodePrepare }
+$PrefetchJob = $null
+if ($OptSource) {
+    Start-BytecodePrepare
+    # Chromium and the default agents are fetches, not package work: the managed-tool
+    # worker is still preparing, so they finish beside it instead of after it.
+    if ($OfficeProc -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'prefetch-only' -Quiet -ErrorAction SilentlyContinue)) {
+        $PrefetchJob = Start-ClioBackground $VenvPython '-m clio_agent.runtime.document_install --prefetch-only' 'prefetch'
+    }
+}
 if (Test-Path $VenvPython) {
     try {
         $InstalledClioVersion = (& $VenvPython -c "from importlib.metadata import version; print(version('clio-agent'))").Trim()
@@ -1579,7 +1645,7 @@ function Invoke-OldDataCheck {
     }
     Move-OldDataAside
 }
-if ($DocsMigrate) {
+if ($DocsMigrate -or $FreshHome) {
     Say 'First CLIO on this machine: no earlier data to check'
 } else {
     Invoke-OldDataCheck
@@ -1634,6 +1700,13 @@ function Complete-ClioMigrate {
 }
 
 Complete-OfficePrepare
+if ($PrefetchJob) {
+    $null = Complete-ClioBackground $PrefetchJob
+    $PrefetchJob = $null
+}
+if ($OfficePrepared -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'reuse-prepared' -Quiet -ErrorAction SilentlyContinue)) {
+    $DocFlags += '--reuse-prepared'
+}
 if ($DocJob) {
     if ($DocsMigrate) { Say 'Finishing the managed packages, Office rendering and the CLIO store' }
     $docsStatus = Complete-ClioBackground $DocJob

@@ -25,13 +25,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
-from clio_agent.gact import (
-    boot_timing,
-    capabilities_snapshot,
-    shared_result,
-    store_format_boot,
-    store_migrations,
-)
+from clio_agent.gact import boot_timing, capabilities_snapshot, health_folds, shared_result
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.conversation_projection import model_context_messages
@@ -448,12 +442,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # synchronous collect above deliberately skipped, so the polled endpoint
         # stays fast even on a cold psutil box (the cheap reaper + child_processes
         # rows were already collected inline).
-        integrations = (
-            integrations
-            + _folded_orphan_scan_rows(app)
-            + store_migrations.health_rows(app)
-            + store_format_boot.health_rows(app)
-        )
+        integrations = integrations + _folded_orphan_scan_rows(app) + health_folds.folded_rows(app)
         report = RuntimeReport(integrations=integrations)
 
         overall = _health_overall(report)

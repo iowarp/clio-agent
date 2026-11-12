@@ -8,6 +8,7 @@ import time
 
 from clio_agent import paths
 from clio_agent.runtime.document_install import prepare_managed_packages
+from clio_agent.runtime.document_install_receipt import save_prepared_receipt
 
 
 def main() -> None:
@@ -18,6 +19,8 @@ def main() -> None:
     os.environ["CLIO_ALLOWED_ROOTS"] = str(workspace.resolve())
     print("Preparing managed tools alongside agent dependencies...", flush=True)
     result = prepare_managed_packages(workspace, progress=lambda line: print(line, flush=True))
+    # The main step (document_install --reuse-prepared) checks these files, not imports.
+    save_prepared_receipt(workspace, result)
     print(
         json.dumps(
             {

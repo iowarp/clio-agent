@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -94,13 +95,15 @@ def test_every_other_spawn_keeps_codex(roots, monkeypatch, platform, office_spaw
 
 
 def _short_parent(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    # macOS's per-user temp root exceeds sun_path; production uses /private/tmp there.
+    # The repository-owned temp root can exceed sun_path; production uses /private/tmp on
+    # macOS, which other hosts lack. TMPDIR points at that long root, so they use /tmp.
     base = tmp_path_factory.getbasetemp()
-    return (
-        base
-        if office.pipe_dir_fits(str(base / "clio-lo-abcdefgh"))
-        else Path(office.PIPE_DIR_PARENT)
-    )
+    if office.pipe_dir_fits(str(base / "clio-lo-abcdefgh")):
+        return base
+    for candidate in (office.PIPE_DIR_PARENT, "/tmp"):
+        if Path(candidate).is_dir():
+            return Path(candidate)
+    return Path(tempfile.gettempdir())
 
 
 @pytest.fixture

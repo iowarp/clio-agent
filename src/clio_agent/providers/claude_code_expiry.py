@@ -112,27 +112,47 @@ async def relay_with_idle_bound(
 
     The bound restarts on every message, so only silence expires it. ``idle_s=None``
     leaves the stream unbounded (callers that own their own bound).
+
+    A ``ping`` stream event is not a message of the reply: the API sends one every 30 s
+    on an open stream whether or not the model produces anything, so a stalled
+    generation would otherwise hold the bound open forever (seen live: 12 minutes of
+    pings and nothing else, the turn running with nothing on screen). Pings are passed
+    on but neither restart the bound nor count as received.
     """
     loop = asyncio.get_running_loop()
     received = 0
+    keepalives = 0
     idle = asyncio.timeout(idle_s)
     try:
         async with idle:
             await client.query(query_input, session_id=session_id)
             async for message in client.receive_response():
                 put(message)
+                if _is_keepalive(message):
+                    keepalives += 1
+                    continue
                 received += 1
                 if idle_s is not None:
                     idle.reschedule(loop.time() + idle_s)
     except TimeoutError as exc:
         if idle_s is not None and idle.expired():
             logger.warning(
-                "claude code stream idle reason=stream_idle_timeout idle_s=%g received=%d",
+                "claude code stream idle reason=stream_idle_timeout idle_s=%g received=%d "
+                "keepalives=%d",
                 idle_s,
                 received,
+                keepalives,
             )
             raise ClaudeCodeIdleTimeout(idle_s, received) from exc
         raise
+
+
+def _is_keepalive(message: Any) -> bool:
+    """A transport keep-alive (the API's ``ping`` stream event), not part of the reply."""
+    if type(message).__name__ != "StreamEvent":
+        return False
+    event = getattr(message, "event", None)
+    return isinstance(event, dict) and event.get("type") == "ping"
 
 
 __all__ = [

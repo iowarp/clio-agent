@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent import paths
 from clio_agent.arc import storage
 from clio_agent.arc.runtime_spawn import _detached_popen_kwargs
 
@@ -55,6 +56,10 @@ class _FakeProc:
 
 def _spawn_with_popen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, popen: Any) -> None:
     """Drive ``_spawn_runtime_daemon`` with a stubbed Popen and no real daemon."""
+    # ``storage.sys`` is the global module: keep this host's paths (the daemon record
+    # names the home) instead of reading POSIX overrides as Windows paths.
+    real_platform = paths._platform()
+    monkeypatch.setattr(paths, "_platform", lambda: real_platform)
     monkeypatch.setattr("clio_agent.arc.storage.sys.platform", "win32")
     monkeypatch.setattr("clio_agent.arc.storage.runtime_state_dir", lambda: tmp_path)
     monkeypatch.setattr("clio_agent.arc.storage.clear_crash_record", lambda _dir: None)
