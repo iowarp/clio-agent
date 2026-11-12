@@ -318,6 +318,9 @@ limits.lm_max_concurrent_requests: 8
 limits.lm_request_queue_s: 120.0
 
 # CLIO_LM_STALL_WAIT_S  (float)  <- src/clio_agent/providers/claude_code_expiry.py
+# Seconds a Claude Code reply may go silent before it counts as a stall
+# (each later wait doubles); the person sees the stall and can stop the
+# turn, nothing fails on silence.
 limits.lm_stall_wait_s: 30.0
 
 # CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/policy.py

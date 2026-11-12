@@ -24,7 +24,12 @@ from typing import Any
 import pytest
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
-from clio_agent.providers import claude_code_conversation, claude_code_engine, claude_code_expiry
+from clio_agent.providers import (
+    claude_code_conversation,
+    claude_code_engine,
+    claude_code_expiry,
+    claude_code_stall,
+)
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
 
@@ -43,7 +48,7 @@ def notices(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]
     """The stall notices the person would see, in order."""
     seen: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
-        claude_code_engine, "_stall_notice", lambda text, **meta: seen.append((text, meta))
+        claude_code_stall, "_stall_notice", lambda text, **meta: seen.append((text, meta))
     )
     return seen
 
