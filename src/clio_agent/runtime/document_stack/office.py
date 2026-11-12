@@ -708,24 +708,10 @@ def _finish_image(image: Path, root: Path, profile_templates: Path | None) -> No
         raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
 
 
-def _lap(
-    timings: dict[str, float] | None, key: str, started: float, download: Path | None = None
-) -> None:
-    """Record ``key``'s seconds; with ``download``, also how long it ran past that file's arrival.
-
-    The prepared tree is unpacked as it downloads, so the unpack is bound by the download
-    when ``KEY_after_download`` is near zero and by the disk and antivirus otherwise.
-    """
-    if timings is None:
-        return
-    ended = time.monotonic()
-    timings[key] = round(ended - started, 1)
-    if download is not None:
-        try:
-            age = time.time() - download.stat().st_mtime
-        except OSError:
-            return
-        timings[f"{key}_after_download"] = round(max(0.0, min(age, ended - started)), 1)
+def _lap(timings: dict[str, float] | None, key: str, started: float) -> None:
+    """Record ``key``'s seconds since ``started`` when timings are collected."""
+    if timings is not None:
+        timings[key] = round(time.monotonic() - started, 1)
 
 
 def _lay_prepared(
@@ -743,16 +729,19 @@ def _lay_prepared(
         try:
             started = time.monotonic()
             if platform.system() == "Windows":
-                office_tree.unpack_windows_tree(
+                waited = office_tree.unpack_windows_tree(
                     prepared, image, max_unpacked=MAX_PREPARED, stall_s=_INSTALLER_STALL_S
                 )
+                if timings is not None:
+                    # The tree is unpacked as it downloads: this share waited on the network.
+                    timings["office_download_wait"] = round(waited, 1)
                 if executable(image) is None:
                     raise DocumentError("Prepared Office tree holds no soffice executable")
             else:
                 office_tree.unpack_prepared_tree(prepared, image, MAX_PREPARED)
                 # Rewrites the launcher only: the tree's userland is this release's.
                 office_compat.prepare(image, download=_download, deb_data=_deb_data)
-            _lap(timings, "office_unpack", started, prepared)
+            _lap(timings, "office_unpack", started)
             started = time.monotonic()
             _finish_image(image, root, profile_templates)
             _lap(timings, "office_seed", started)

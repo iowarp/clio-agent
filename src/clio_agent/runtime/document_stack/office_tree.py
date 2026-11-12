@@ -115,6 +115,8 @@ class _GrowingDownload(io.RawIOBase):
         self._read = 0
         self._changed = time.monotonic()
         self.hash = hashlib.sha256()
+        #: Seconds spent at the end of the bytes so far, waiting for the download.
+        self.waited = 0.0
 
     def readable(self) -> bool:
         return True
@@ -149,6 +151,7 @@ class _GrowingDownload(io.RawIOBase):
             if time.monotonic() - self._changed > self._stall_s:
                 raise OSError(f"the installer's download of {self._final.name} stalled")
             time.sleep(0.05)
+            self.waited += 0.05
 
     def close(self) -> None:
         if self._stream is not None:
@@ -202,8 +205,11 @@ def _unpack_parallel(contents: tarfile.TarFile, image: Path, max_unpacked: int) 
     return files
 
 
-def unpack_windows_tree(prepared: Path, image: Path, *, max_unpacked: int, stall_s: float) -> None:
-    """Unpack the Windows tree as it downloads; raise unless its bytes match the plan."""
+def unpack_windows_tree(prepared: Path, image: Path, *, max_unpacked: int, stall_s: float) -> float:
+    """Unpack the Windows tree as it downloads; raise unless its bytes match the plan.
+
+    Returns the seconds spent waiting for the download's next bytes.
+    """
     started = time.monotonic()
     expected = expected_digest(prepared)
     if not expected:
@@ -219,11 +225,14 @@ def unpack_windows_tree(prepared: Path, image: Path, *, max_unpacked: int, stall
         while raw.read(1 << 20):
             pass
         actual = raw.hash.hexdigest()
+        waited = raw.waited
     if actual != expected:
         raise DocumentError(f"Prepared Office tree {prepared.name} does not match its SHA-256")
     logger.info(
-        "reason=office_prepared_tree_unpacked name=%s files=%d seconds=%.1f",
+        "reason=office_prepared_tree_unpacked name=%s files=%d seconds=%.1f waited=%.1f",
         prepared.name,
         files,
         time.monotonic() - started,
+        waited,
     )
+    return waited
