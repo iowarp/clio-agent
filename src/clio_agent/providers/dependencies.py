@@ -17,6 +17,7 @@ from pathlib import Path
 from packaging.requirements import Requirement
 
 from clio_agent.runtime import package_overlay
+from clio_agent.runtime.import_caches import invalidate_import_caches
 
 #: The distribution CLIO's own extras (``pyproject.toml``
 #: ``[project.optional-dependencies]``) are declared under -- the only source
@@ -192,7 +193,7 @@ def _ensure_dependency(
                 f"{display_name} installation failed: " + _bounded_install_error(result)
             )
 
-        importlib.invalidate_caches()
+        invalidate_import_caches()
         if not _module_available(module_name):
             raise ProviderDependencyInstallError(
                 f"{display_name} installation completed, but {', '.join(requirements)} is "
