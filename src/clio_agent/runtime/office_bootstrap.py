@@ -18,7 +18,10 @@ def main() -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     os.environ["CLIO_ALLOWED_ROOTS"] = str(workspace.resolve())
     print("Preparing managed tools alongside agent dependencies...", flush=True)
-    result = prepare_managed_packages(workspace, progress=lambda line: print(line, flush=True))
+    timings: dict[str, float] = {}
+    result = prepare_managed_packages(
+        workspace, progress=lambda line: print(line, flush=True), timings=timings
+    )
     # The main step (document_install --reuse-prepared) checks these files, not imports.
     save_prepared_receipt(workspace, result)
     print(
@@ -27,6 +30,7 @@ def main() -> None:
                 "status": "packages_prepared",
                 "runtime_id": result["runtime_id"],
                 "seconds": round(time.monotonic() - started, 3),
+                "timings": timings,
             }
         ),
         flush=True,

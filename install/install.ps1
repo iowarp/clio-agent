@@ -1100,7 +1100,19 @@ function Complete-OfficePrepare {
         Get-Content -LiteralPath $script:OfficeLog, $script:OfficeErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
         DieWith $code "Managed-tool preparation failed (logs: $($script:OfficeLog), $($script:OfficeErr)); installation was not marked ready."
     }
-    Say "Managed-tool preparation completed in $seconds s; the managed-package step checks its files"
+    # office_bootstrap's last line names each sub-job's seconds; the rest is the worker's setup.
+    $detail = ''
+    $done = Get-Content -LiteralPath $script:OfficeLog -ErrorAction SilentlyContinue |
+        Where-Object { $_ -like '{"status": "packages_prepared"*' } | Select-Object -Last 1
+    if ($done) {
+        try {
+            $report = $done | ConvertFrom-Json
+            $parts = @("setup $([Math]::Round($seconds - $report.seconds, 1)) s")
+            if ($report.timings) { foreach ($job in $report.timings.PSObject.Properties) { $parts += "$($job.Name) $($job.Value) s" } }
+            $detail = " ($($parts -join ', '))"
+        } catch { $detail = '' }
+    }
+    Say "Managed-tool preparation completed in $seconds s$detail; the managed-package step checks its files"
     $script:OfficePrepared = $true
     Remove-Item -LiteralPath $script:OfficeLog, $script:OfficeErr -Force -ErrorAction SilentlyContinue
 }
