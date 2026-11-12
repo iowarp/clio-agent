@@ -600,6 +600,13 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/config/images_sifr_dark_svg.zip",
         "share/config/images_helpimg.zip",
         "program/classes/hsqldb.jar",
+        "program/Engine12.dll",
+        "program/intl/fbintl.dll",
+        "share/firebird/security3.fdb",
+        "program/java_uno.dll",
+        "program/JREProperties.class",
+        "program/jvmfwklo.dll",
+        "program/ifbclient.dll",
         "readmes/readme_de.txt",
         "readmes/readme_en-US.txt",
         "program/python-core-3.12.14/lib/pip/__init__.py",
@@ -630,11 +637,18 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/config/images_sifr_dark_svg.zip",
         "share/config/images_helpimg.zip",
         "program/classes/hsqldb.jar",
+        "program/Engine12.dll",
+        "program/intl/fbintl.dll",
+        "share/firebird/security3.fdb",
+        "program/java_uno.dll",
+        "program/JREProperties.class",
     } <= skipped
     # What a conversion reads: the startup Python, layout configuration, fonts, the
-    # NUMBERTEXT data, new-document templates, the fallback icon themes and the English
-    # readme.
+    # NUMBERTEXT data, new-document templates, the fallback icon themes, the Java
+    # framework and Firebird client that load at start, and the English readme.
     assert not skipped & {
+        "program/jvmfwklo.dll",
+        "program/ifbclient.dll",
         "program/python-core-3.12.14/lib/encodings/utf_8.py",
         "program/python-core-3.12.14/lib/re/__init__.py",
         "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
@@ -647,7 +661,7 @@ def test_unread_names_exactly_what_prune_unread_removes(
     }
 
 
-def test_icon_themes_autotext_and_java_are_pruned_only_on_windows(
+def test_windows_only_prunes_leave_other_layouts_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The Windows-only prunes leave the Linux layout as it was."""
@@ -656,6 +670,10 @@ def test_icon_themes_autotext_and_java_are_pruned_only_on_windows(
         "share/config/images_helpimg.zip",
         "share/autotext/en-US/standard.bau",
         "program/classes/hsqldb.jar",
+        "program/Engine12.dll",
+        "program/intl/fbintl.dll",
+        "share/firebird/firebird.msg",
+        "program/javavmlo.dll",
     ]
     monkeypatch.setattr(office.platform, "system", lambda: "Linux")
     image = tmp_path / "office"
