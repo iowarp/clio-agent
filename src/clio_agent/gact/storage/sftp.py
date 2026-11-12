@@ -20,6 +20,7 @@ from fsspec.implementations.sftp import SFTPFileSystem
 
 from clio_agent.gact.infrastructure.models import SshRoute
 from clio_agent.gact.storage.models import FileEntry, SftpCredentials
+from clio_agent.gact.storage.names import check_remote_relative, listed_child, resolve_remote
 
 
 class _VerifiedSFTP(SFTPFileSystem):
@@ -204,8 +205,12 @@ class SftpSource:
         self.fs.ftp.close()
         self.fs.client.close()
 
-    def _path(self, relative: str) -> str:
-        FileEntry(path=relative, kind="file")
+    def _path(self, relative: str, *, remote: bool = False) -> str:
+        """Join a portable path, or with ``remote`` the server's own names, under the root."""
+        if remote:
+            check_remote_relative(relative)
+        else:
+            FileEntry(path=relative, kind="file")
         current = self.root
         for part in PurePosixPath(relative).parts:
             current = posixpath.join(current, part)
@@ -227,22 +232,28 @@ class SftpSource:
     def entries(self, *, metadata_only: bool = False) -> list[FileEntry]:
         """Read content hashes, so same-size and coarse-mtime edits still conflict."""
         rows: list[FileEntry] = []
-        pending = [""]
+        self.skipped = 0
+        pending = [("", "")]
         while pending:
-            relative = pending.pop()
-            for item in self.fs.ftp.listdir_attr(posixpath.join(self.root, relative)):
-                name = posixpath.join(relative, item.filename)
-                path = self._path(name)
+            relative, remote_relative = pending.pop()
+            for item in self.fs.ftp.listdir_attr(posixpath.join(self.root, remote_relative)):
+                child = listed_child(relative, remote_relative, item.filename)
+                if child is None:
+                    self.skipped += 1
+                    continue
+                name, remote = child
+                path = self._path(remote, remote=True)
                 if len(rows) >= 100_000:
                     raise ValueError("Select a smaller source folder (limit 100,000 entries)")
                 if stat.S_ISDIR(item.st_mode):
-                    rows.append(FileEntry(path=name, kind="directory"))
-                    pending.append(name)
+                    rows.append(FileEntry(path=name, remote_path=remote, kind="directory"))
+                    pending.append((name, remote))
                 elif stat.S_ISREG(item.st_mode):
                     digest = None if metadata_only else self._hash(path)
                     rows.append(
                         FileEntry(
                             path=name,
+                            remote_path=remote,
                             kind="file",
                             size=item.st_size,
                             revision=digest or f"{item.st_mtime}:{item.st_size}",
@@ -255,13 +266,17 @@ class SftpSource:
 
     def open_read(self, entry: FileEntry) -> BinaryIO:
         """Stream through fsspec on the verified SSH connection."""
-        return cast(BinaryIO, self.fs.open(self._path(entry.path), "rb"))
+        return cast(BinaryIO, self.fs.open(self._path(entry.source_path, remote=True), "rb"))
 
     def apply(self, path: str, content: Path | None, expected: str | None) -> str | None:
         """Apply one selected change with optimistic hash checks and a sibling stage."""
         if not self.writable:
             raise PermissionError("This SFTP source has not been approved for writes")
-        destination = self._path(path)
+        FileEntry(path=path, kind="file")
+        remote = resolve_remote(
+            path, lambda folder: self.fs.ftp.listdir(posixpath.join(self.root, folder))
+        )
+        destination = self._path(remote, remote=True)
         actual = self._hash(destination) if self.fs.isfile(destination) else None
         if actual != expected:
             raise ValueError(f"Upstream changed after review: {path}")

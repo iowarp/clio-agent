@@ -15,6 +15,7 @@ from typing import Literal
 from clio_agent.gact.storage.adapters import SourceAdapter, file_hash, safe_child
 from clio_agent.gact.storage.filesystem import is_link, walk
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord, TransferOperation
+from clio_agent.gact.storage.names import plain_error
 from clio_agent.gact.storage.store import SourceStore
 from clio_agent.platform_paths import (
     atomic_replace,
@@ -220,7 +221,7 @@ def materialize(
         return record
     except (OSError, ValueError, RuntimeError) as exc:
         settled_state = "cancelled" if isinstance(exc, TransferCancelled) else "failed"
-        settled_error = str(exc)
+        settled_error = plain_error(exc)
         record.source = source.model_copy(
             update={
                 "materialization": "ready"

@@ -18,6 +18,7 @@ from clio_agent.gact.storage.globus_consent import GlobusConsentRequired
 from clio_agent.gact.storage.globus_destination import GlobusDestination, receiving_destination
 from clio_agent.gact.storage.identity import source_submission_identity
 from clio_agent.gact.storage.models import FileEntry, SourceRecord, TransferOperation, now
+from clio_agent.gact.storage.names import listed_child, resolve_remote
 from clio_agent.gact.storage.store import SourceStore
 from clio_agent.gact.storage.transfers import materialize, remove_owned_tree
 
@@ -66,6 +67,16 @@ class GlobusSource:
             authorizer=globus_sdk.AccessTokenAuthorizer(token)
         )
 
+    def _names(self, remote: str) -> list[str]:
+        """Names directly inside one provider folder, used to resolve listed aliases."""
+        return [
+            str(row["name"])
+            for row in self.client.operation_ls(
+                self.record.configuration.collection_id,
+                path=posixpath.join(self.record.source.root, remote),
+            )
+        ]
+
     def entries(
         self,
         *,
@@ -79,10 +90,12 @@ class GlobusSource:
         if ".." in PurePosixPath(folder).parts or "\\" in folder:
             raise ValueError("Select a folder within this Globus source")
         rows: list[FileEntry] = []
-        pending = [folder]
+        self.skipped = 0
         try:
+            remote_folder = resolve_remote(folder, self._names) if folder else ""
+            pending = [(folder, remote_folder)]
             while pending:
-                parent = pending.pop()
+                parent, remote_parent = pending.pop()
                 offset = 0
                 while True:
                     if cancelled is not None and cancelled():
@@ -90,7 +103,7 @@ class GlobusSource:
                     listing = list(
                         self.client.operation_ls(
                             self.record.configuration.collection_id,
-                            path=posixpath.join(self.record.source.root, parent),
+                            path=posixpath.join(self.record.source.root, remote_parent),
                             limit=1000,
                             offset=offset,
                         )
@@ -99,9 +112,11 @@ class GlobusSource:
                         if cancelled is not None and cancelled():
                             raise InterruptedError("Globus folder indexing cancelled")
                         name = str(metadata["name"])
-                        if "/" in name or "\\" in name:
-                            raise ValueError("Collection returned an unsafe filename")
-                        path = posixpath.join(parent, name)
+                        child = None if "/" in name else listed_child(parent, remote_parent, name)
+                        if child is None:
+                            self.skipped += 1
+                            continue
+                        path, remote = child
                         if metadata["type"] not in {"file", "dir"}:
                             raise ValueError(
                                 "Select regular files and folders; collection links are not imported"
@@ -112,6 +127,7 @@ class GlobusSource:
                         rows.append(
                             FileEntry(
                                 path=path,
+                                remote_path=remote,
                                 kind=kind,
                                 size=int(metadata.get("size", 0)),
                                 revision=str(metadata.get("last_modified", "")),
@@ -124,7 +140,7 @@ class GlobusSource:
                         if progress is not None:
                             progress(len(rows))
                         if kind == "directory" and recursive:
-                            pending.append(path)
+                            pending.append((path, remote))
                     if len(listing) < 1000:
                         break
                     offset += len(listing)
@@ -212,7 +228,7 @@ class GlobusSource:
                         if row is None:
                             raise ValueError("The selected Globus file or folder no longer exists")
                         transfer.add_item(
-                            str(PurePosixPath(self.record.source.root) / path),
+                            str(PurePosixPath(self.record.source.root) / row.source_path),
                             str(PurePosixPath(destination) / path),
                             recursive=row.kind == "directory",
                         )

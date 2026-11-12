@@ -8,6 +8,13 @@ from typing import Any, Literal
 from clio_schemas.connected_resources import AccessMode, ConnectedSource
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from clio_agent.gact.storage.names import (
+    UNSAFE_CHARACTERS,
+    UNSAFE_PATH,
+    check_remote_relative,
+    reserved_part,
+)
+
 
 def now() -> str:
     """Return a UTC operation timestamp."""
@@ -125,7 +132,12 @@ class LinkedEdits(StorageModel):
 
 
 class FileEntry(StorageModel):
-    """A relative source name and a provider revision, never a credential URL."""
+    """A relative source name and a provider revision, never a credential URL.
+
+    ``path`` is the portable name CLIO lists, searches and writes on disk. When a
+    provider name is not portable (see ``storage.names``), ``remote_path`` keeps
+    the provider's own relative path for display and provider reads.
+    """
 
     path: str
     kind: Literal["file", "directory"]
@@ -134,6 +146,12 @@ class FileEntry(StorageModel):
     revision: str = ""
     sha256: str | None = None
     locator: str = ""
+    remote_path: str = Field(default="", exclude_if=lambda value: not value)
+
+    @property
+    def source_path(self) -> str:
+        """The provider's own relative path for this entry."""
+        return self.remote_path or self.path
 
     @field_validator("path")
     @classmethod
@@ -152,16 +170,26 @@ class FileEntry(StorageModel):
             or ".." in posix.parts
             or any(ord(char) < 32 for char in value)
             or any(part.endswith((" ", ".")) for part in posix.parts)
-            or any(char in value for char in '<>:"|?*')
+            or any(char in value for char in UNSAFE_CHARACTERS)
         ):
-            raise ValueError("Source entry has an unsafe relative path")
+            raise ValueError(UNSAFE_PATH)
         # Reject Windows device names on every host, so a later desktop copy is safe.
-        reserved = {"CON", "PRN", "AUX", "NUL"} | {
-            f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
-        }
-        if any(part.split(".", 1)[0].upper() in reserved for part in posix.parts):
+        if any(reserved_part(part) for part in posix.parts):
             raise ValueError("Source entry has a reserved filename")
         return value
+
+    @field_validator("remote_path")
+    @classmethod
+    def contained_remote(cls, value: str) -> str:
+        """A provider name may be unusual, but never escapes the selected root."""
+        return check_remote_relative(value) if value else value
+
+    @model_validator(mode="after")
+    def omit_identical_remote(self) -> FileEntry:
+        """Record a provider path only when it differs from the portable one."""
+        if self.remote_path == self.path:
+            self.remote_path = ""
+        return self
 
 
 class Manifest(StorageModel):

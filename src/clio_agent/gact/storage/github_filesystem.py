@@ -10,7 +10,7 @@ from urllib.parse import quote
 import httpx
 from fsspec.implementations.github import GithubFileSystem
 
-from .models import FileEntry
+from .names import check_remote_relative
 
 
 class WritableGithubFileSystem(GithubFileSystem):
@@ -29,7 +29,8 @@ class WritableGithubFileSystem(GithubFileSystem):
             "X-GitHub-Api-Version": "2026-03-10",
         }
         for path, _, _ in changes:
-            FileEntry(path=path, kind="file")
+            # Repository names may be unportable locally; only traversal is unsafe here.
+            check_remote_relative(path)
             if path.startswith(".github/workflows/"):
                 raise PermissionError(
                     "This connection does not have permission to change GitHub workflows"

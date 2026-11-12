@@ -12,6 +12,7 @@ from clio_schemas.connected_resources import SourceCapabilities
 
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.storage.names import listed_child
 
 
 class _TargetReader(io.RawIOBase):
@@ -26,7 +27,7 @@ class _TargetReader(io.RawIOBase):
 
     def readinto(self, buffer: Any) -> int:
         if not self.pending:
-            payload = self.source.request("read", path=self.entry.path, offset=self.offset)
+            payload = self.source.request("read", path=self.entry.source_path, offset=self.offset)
             self.pending = base64.b64decode(payload["data"], validate=True)
             self.offset += len(self.pending)
         count = min(len(buffer), len(self.pending))
@@ -78,24 +79,30 @@ class SshTargetSource:
     def entries(self) -> list[FileEntry]:
         """Read a complete bounded inventory with file hashes for transfer verification."""
         rows: list[FileEntry] = []
-        pending = [""]
+        self.skipped = 0
+        pending = [("", "")]
         while pending:
-            folder = pending.pop()
+            folder, remote_folder = pending.pop()
             offset = 0
             while True:
-                page = self.request("list", path=folder, offset=offset)
+                page = self.request("list", path=remote_folder, offset=offset)
                 for item in page["entries"]:
-                    path = "/".join(filter(None, [folder, item["name"]]))
+                    child = listed_child(folder, remote_folder, str(item["name"]))
+                    if child is None:
+                        self.skipped += 1
+                        continue
+                    path, remote = child
                     if len(rows) >= 100_000:
                         raise ValueError("Select a smaller source folder (limit 100,000 entries)")
                     if item["directory"]:
-                        rows.append(FileEntry(path=path, kind="directory"))
-                        pending.append(path)
+                        rows.append(FileEntry(path=path, remote_path=remote, kind="directory"))
+                        pending.append((path, remote))
                     else:
-                        metadata = self.request("stat", path=path)
+                        metadata = self.request("stat", path=remote)
                         rows.append(
                             FileEntry(
                                 path=path,
+                                remote_path=remote,
                                 kind="file",
                                 size=metadata["size"],
                                 revision=metadata["revision"],
