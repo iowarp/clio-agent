@@ -1,5 +1,6 @@
 """Only a verified surviving Core process may recover without rebuilding bindings."""
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -199,3 +200,33 @@ def test_same_daemon_retry_retains_client_without_spawn_or_rebinding(
     store._reconnect()
     assert store._client is client and store._tag_ids is tag_ids
     assert not store._gate.quarantined
+
+
+def test_post_attach_probe_runs_under_this_homes_core_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe's first RPC opens the daemon's shared memory, named by the home's USER."""
+    from clio_agent.arc import clio_core_attach, home_runtime, storage
+
+    monkeypatch.setattr(
+        storage.ClioCoreStore,
+        "_ensure_runtime",
+        classmethod(lambda _cls, config, _level, _settle: config),
+    )
+    monkeypatch.setattr(storage.ClioCoreStore, "_attach_verified", False)
+    monkeypatch.setitem(sys.modules, "clio_cte_core_ext", SimpleNamespace(get_cte_client=object))
+    monkeypatch.setattr(storage, "TagIds", lambda *_args: SimpleNamespace(prewarm=lambda _: None))
+    monkeypatch.setattr(storage, "indexer_pool", lambda _config: "")
+    monkeypatch.setattr(home_runtime, "core_user", lambda: "someone-clio-0123456789abcdef")
+    monkeypatch.setenv("USER", "someone")
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        clio_core_attach,
+        "verify_post_attach",
+        lambda _store, *, on_failure: seen.append(os.environ.get("USER")),
+    )
+
+    storage.ClioCoreStore(config_path="home.yaml", namespace="probe")
+
+    assert seen == ["someone-clio-0123456789abcdef"]
+    assert os.environ["USER"] == "someone"

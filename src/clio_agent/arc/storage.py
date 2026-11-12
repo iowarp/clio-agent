@@ -478,10 +478,14 @@ class ClioCoreStore(ClioCoreWrites):
         # could release the shared client; subsequent loss belongs to the gate.
         with type(self)._init_lock:
             if not type(self)._attach_verified:
-                clio_core_attach.verify_post_attach(
-                    self,
-                    on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
-                )
+                # The first RPC opens the daemon's shared memory, named by this home's USER.
+                with home_runtime.core_user_pinned():
+                    clio_core_attach.verify_post_attach(
+                        self,
+                        on_failure=lambda: runtime_stop.release_failed_attach(
+                            config_path, log_level
+                        ),
+                    )
                 type(self)._attach_verified = True
         self._tag_ids.prewarm(self._kinds)
         logger.info(
