@@ -322,6 +322,35 @@ values, never share a daemon (`arc/runtime_ownership.py`):
 
 The rules are the same on Linux, macOS and Windows.
 
+### Explicit homes get their own daemon (`arc/home_runtime.py`)
+
+Default installs (Desktop, and the CLI without `CLIO_AGENT_HOME`) keep sharing
+the host daemon, whoever started it. A default home moves to a daemon of its own
+only when attaching would be refused: a live daemon with no host record
+(`host_daemon_unrecorded`), or one whose recorded config file is gone
+(`host_daemon_config_unknown`, an orphan whose spawning home was deleted). The
+orphan is never stopped; other agents may still use it.
+
+A home with an explicit `CLIO_AGENT_HOME` keeps its daemon state under
+`<data>/core-runtime/<host>` and its store under its own data dir, so deleting
+another home never takes its records. It attaches to the host daemon only when
+that daemon already serves this home's store. Its daemon is sized smaller
+(`arc.cte.home_ram_capacity` / `CLIO_ARC_CTE_HOME_RAM_CAPACITY`, default 128 MB;
+`arc.cte.home_segment_size` / `CLIO_ARC_CTE_HOME_SEGMENT_SIZE`, default 64 MB)
+because the arena and segments are committed shared sections, and it moves to a
+free port. `CLIO_RUNTIME_STATE_DIR` pins host mode, except Desktop's own pin to the
+host registry (`CLIO_DESKTOP_MANAGED=1`), which still selects by the rules above.
+
+When a home first runs on its own daemon, `arc/home_import.py` copies its
+records out of the store the host record names. The copy covers session records,
+segments, artifacts, task lookups and search companions, and is attributed by
+this home's workspace and transcript IDs. It reads the running daemon through an
+attach-only client, or a private copy when no daemon serves that store, and it
+never writes the source. Records already present are skipped. Progress is
+checkpointed under `<data>/core-import`, so an interrupted import resumes, and a
+settled import never runs again. Progress shows in the boot log and in the
+health summary (`record import done: N copied, M already present`).
+
 A serving process's release waits for its daemon's clean stop only inside the
 shutdown budget (`gact/shutdown_budget.py` `daemon_stop_ceiling`: the budget left,
 minus 8 s for the kill fallback). A daemon still flushing when that runs out is

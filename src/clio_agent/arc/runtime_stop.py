@@ -313,11 +313,11 @@ def release_failed_attach(config_path: str, log_level: str) -> None:
     spawned running with no client at all; this applies the same last-one-out rule
     as a graceful release, under the same host-global lock.
     """
-    from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+    from clio_agent.arc import home_runtime, storage  # noqa: PLC0415 - avoid import cycle
 
     with storage._runtime_spawn_lock():
         storage._deregister_client()
-        if storage._live_client_pids():
+        if storage._live_client_pids() or home_runtime.attach_only():
             return
         logger.warning(
             "clio-core attach failed with no other live client; stopping the daemon (reason=%s)",

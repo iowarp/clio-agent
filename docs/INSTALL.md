@@ -222,7 +222,10 @@ Remote bootstrap also protects data when it must invoke an older release's
 installer. Desktop gives fresh managed Agents their own `CLIO_AGENT_HOME`;
 existing `clio-user` installations remain readable until migration. Core host
 coordination is shared at native `state/core-hosts/<host>` (with legacy lookup)
-because the Core daemon has one fixed endpoint per host.
+because the Core daemon has one fixed endpoint per host. A CLI home set with
+`CLIO_AGENT_HOME` runs its own smaller Core daemon on its own store and imports
+its records from the shared store once on upgrade. See
+[ARC_MEMORY_LAYER.md](ARC_MEMORY_LAYER.md#explicit-homes-get-their-own-daemon-archome_runtimepy).
 
 Source installs require a new or explicitly emptied program directory; an
 existing checkout is never erased automatically. Uninstall retains Agent data,

@@ -196,6 +196,9 @@ def _write_port(config: Path, port: int) -> None:
     staged = config.with_name(config.name + ".port-move")
     staged.write_text(updated, encoding="utf-8")
     os.replace(staged, config)
+    from clio_agent.arc.clio_core_growth import rekey_managed_capacity  # noqa: PLC0415 - cycle
+
+    rekey_managed_capacity(config, text, updated)
 
 
 def move_off_foreign_daemon(config_path: str, foreign_port: int, state_dir: Path) -> int:

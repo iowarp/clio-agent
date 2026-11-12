@@ -60,6 +60,12 @@ def runtime_state_path(env: Mapping[str, str] | None = None) -> Path:
     """Return :func:`clio_core_config.runtime_state_dir`'s path without creating it."""
     source = os.environ if env is None else env
     override = (source.get("CLIO_RUNTIME_STATE_DIR") or "").strip()
+    same_home = (source.get("CLIO_AGENT_HOME") or "") == (os.environ.get("CLIO_AGENT_HOME") or "")
+    same_pin = override == (os.environ.get("CLIO_RUNTIME_STATE_DIR") or "").strip()
+    if env is None or (same_home and same_pin):  # this process: its selected daemon's dir
+        from clio_agent.arc import home_runtime  # noqa: PLC0415 - avoid import cycle
+
+        return home_runtime.pinned_state_dir() or home_runtime.runtime_dir(create=False)
     if override:
         return Path(override).expanduser()
     from clio_agent import paths  # noqa: PLC0415
