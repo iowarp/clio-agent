@@ -967,6 +967,37 @@ if ($PSScriptRoot) {
     }
 }
 
+# The clone's interpreter is the longest part of the managed-tool worker's setup: fetched
+# in the clone's place it lands before the dependency and Office archives unpack, while the
+# CPU is still free, instead of competing with them. This process reads the ref's
+# .python-version, waits for uv, and installs it; uv's lock on its Python directory makes
+# the worker's and the dependency step's installs wait for it and reuse it.
+$PythonPrefetch = $null
+function Start-ClioPythonPrefetch {
+    if (-not $OptSource -or ($Checkout -and -not $OptRef)) { return }
+    $ref = if ($OptRef) { $OptRef } elseif ($OptDev) { 'develop' } else { 'main' }
+    if ($ref -notmatch '^[A-Za-z0-9._/-]+$') { return }
+    $uv = if ($script:UvInstall) { Join-Path $BinDir 'uv.exe' } else { (Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+    if (-not $uv) { return }
+    $wait = if ($script:UvInstall) { $script:UvInstall.Id } else { 0 }
+    $body = @"
+`$ProgressPreference = 'SilentlyContinue'
+try { `$v = ([string](Invoke-RestMethod -UseBasicParsing -TimeoutSec 20 -Uri 'https://raw.githubusercontent.com/iowarp/clio-agent/$ref/.python-version')).Trim() } catch { exit 0 }
+if (`$v -notmatch '^3\.\d+(\.\d+)?$') { exit 0 }
+if ($wait) { Wait-Process -Id $wait -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath '$uv') { & '$uv' python install --quiet `$v }
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
+    $shell = (Get-Process -Id $PID).Path
+    $script:PythonPrefetch = Start-Process -FilePath $shell -WindowStyle Hidden -PassThru `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+    $null = $script:PythonPrefetch.Handle
+}
+function Complete-ClioPythonPrefetch {
+    if ($script:PythonPrefetch) { $script:PythonPrefetch.WaitForExit(); $script:PythonPrefetch = $null }
+}
+Start-ClioPythonPrefetch
+
 # A ref's Python: its .python-version, or 3.13 for releases from before that file.
 function PythonOf([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
@@ -1661,6 +1692,7 @@ if ($OptSource) {
     }
     Start-OfficePrepare
     Complete-ClioUvInstall
+    Complete-ClioPythonPrefetch
     Say "Installing clio-agent deps (uv $($syncArgs -join ' '))"
     Push-Location $Src
     & uv @syncArgs
