@@ -348,8 +348,12 @@ def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
     prefix = _installed(tmp_path)
     env = _env(tmp_path)
     shm = _core_tmp(tmp_path, env)
+    server = None
     try:
-        server = subprocess.Popen(["sleep", "60"])
+        idle = prefix / "runtime" / "server.py"
+        idle.parent.mkdir()
+        idle.write_text("import time\ntime.sleep(60)\n")
+        server = subprocess.Popen([sys.executable, str(idle)])
         threading.Thread(target=server.wait, daemon=True).start()
         (prefix / "clio-server.pid").write_text(str(server.pid))
         mine = [f"clio-{server.pid}-shm-out", f"clio-{server.pid}-shm-in-0", f"clio_{server.pid}_0"]
@@ -365,6 +369,8 @@ def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
         assert sorted(p.name for p in shm.iterdir()) == sorted(theirs)
         assert "Removed 3 clio-core memory files" in result.stdout
     finally:
+        if server is not None:
+            server.kill()
         shutil.rmtree(shm, ignore_errors=True)
 
 
@@ -398,3 +404,78 @@ def test_uninstall_removes_the_segments_of_its_own_dead_core_daemon_only(
         assert sorted(p.name for p in shm.iterdir()) == sorted(theirs)
     finally:
         shutil.rmtree(shm, ignore_errors=True)
+
+
+_LISTENER = """
+import socket, sys, time
+sock = socket.socket()
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", int(sys.argv[1])))
+sock.listen()
+print("ready", flush=True)
+time.sleep(60)
+"""
+
+
+def _listener(script: Path, port: str) -> subprocess.Popen[str]:
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(_LISTENER)
+    proc = subprocess.Popen(
+        [sys.executable, str(script), port], stdout=subprocess.PIPE, text=True, cwd=script.parent
+    )
+    assert proc.stdout is not None and proc.stdout.readline().strip() == "ready"
+    return proc
+
+
+_needs_lsof = pytest.mark.skipif(
+    __import__("shutil").which("lsof") is None, reason="the port fallback uses lsof"
+)
+
+
+@_needs_lsof
+def test_uninstall_leaves_a_foreign_program_on_the_port_running(tmp_path: Path) -> None:
+    _installed(tmp_path)
+    env = _env(tmp_path)
+    foreign = _listener(tmp_path / "elsewhere" / "server.py", env["CLIO_PORT"])
+    try:
+        result = _uninstall(env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert foreign.poll() is None, "a program outside the install was killed"
+        assert f"held by pid {foreign.pid}" in result.stderr
+        assert "not part of this installation" in result.stderr
+    finally:
+        foreign.kill()
+        foreign.wait()
+
+
+def test_uninstall_ignores_a_pidfile_naming_a_foreign_process(tmp_path: Path) -> None:
+    prefix = _installed(tmp_path)
+    foreign = subprocess.Popen(["sleep", "60"], cwd=tmp_path)
+    try:
+        (prefix / "clio-server.pid").write_text(f"{foreign.pid}\n")
+
+        result = _uninstall(_env(tmp_path))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert foreign.poll() is None, "a recycled pid outside the install was killed"
+        assert "not part of this installation" in result.stderr
+    finally:
+        foreign.kill()
+        foreign.wait()
+
+
+@_needs_lsof
+def test_uninstall_stops_its_own_server_found_on_the_port(tmp_path: Path) -> None:
+    prefix = _installed(tmp_path)
+    env = _env(tmp_path)
+    server = _listener(prefix / "runtime" / "server.py", env["CLIO_PORT"])
+    try:
+        result = _uninstall(env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert server.wait(timeout=10) is not None
+        assert f"Stopping CLIO server (pid {server.pid})" in result.stdout
+    finally:
+        server.kill()
+        server.wait()
