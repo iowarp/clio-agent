@@ -442,7 +442,9 @@ def _javascript_runtime(
     tools = Path(node_path(str(cache / "javascript-tools")))
     # Besides its store, pnpm keeps a metadata cache, its state and a global folder in the
     # user's XDG folders (~/.cache/pnpm, ~/.local/state/pnpm, ~/.local/share/pnpm). They are
-    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes.
+    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes. npm,
+    # which installs pnpm itself, ignores XDG: its cache is ~/.npm unless named (live, Linux
+    # Desktop: 31 MB of pnpm tarballs left in ~/.npm after a full uninstall).
     pnpm_home = Path(node_path(str(cache / "pnpm-home")))
     env = {
         **os.environ,
@@ -450,6 +452,7 @@ def _javascript_runtime(
         "XDG_CACHE_HOME": str(pnpm_home / "cache"),
         "XDG_STATE_HOME": str(pnpm_home / "state"),
         "XDG_DATA_HOME": str(pnpm_home / "data"),
+        "npm_config_cache": str(pnpm_home / "npm-cache"),
     }
     work = Path(node_path(str(scratch_root(workspace) / "javascript")))
     store = node_path(str(cache / "pnpm-store"))
