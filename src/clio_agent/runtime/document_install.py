@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,6 +38,16 @@ from clio_agent.runtime.ripgrep import ensure_ripgrep
 from clio_agent.runtime.tectonic import ensure_tectonic
 
 
+def _timed[T](timings: dict[str, float] | None, key: str, work: Callable[[], T]) -> T:
+    """Run ``work`` and record its seconds under ``key`` when timings are collected."""
+    started = time.monotonic()
+    try:
+        return work()
+    finally:
+        if timings is not None:
+            timings[key] = round(time.monotonic() - started, 1)
+
+
 def prepare_protected_execution(
     *, setup_protected_execution: bool = False, progress: Callable[[str], None] | None = None
 ) -> dict[str, Any]:
@@ -61,9 +72,13 @@ def prepare_managed_packages(
     *,
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Prepare package caches without qualifying protection or saving an install receipt."""
-    protect_bundled_runtime()
+    """Prepare package caches without qualifying protection or saving an install receipt.
+
+    ``timings``, when given, receives each sub-job's seconds (the install reports them).
+    """
+    _timed(timings, "protect_runtime", protect_bundled_runtime)
     workspace.mkdir(parents=True, exist_ok=True)
     # These installers own separate cache trees and locks. Overlap the native
     # downloads/extraction with Python/Node preparation, without changing the
@@ -101,11 +116,17 @@ def prepare_managed_packages(
 
     with package_preparation.preparing(cache_root):
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-install") as workers:
-            office_job = workers.submit(prepare_office)
-            github_job = workers.submit(prepare_github)
-            ripgrep_job = workers.submit(prepare_ripgrep)
-            tectonic_job = workers.submit(prepare_tectonic)
-            result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
+            office_job = workers.submit(_timed, timings, "office", prepare_office)
+            github_job = workers.submit(_timed, timings, "gh", prepare_github)
+            ripgrep_job = workers.submit(_timed, timings, "rg", prepare_ripgrep)
+            tectonic_job = workers.submit(_timed, timings, "tectonic", prepare_tectonic)
+            result = _timed(
+                timings,
+                "packages",
+                lambda: prepare_document_runtime(
+                    workspace, cache_root=cache_root, progress=report, timings=timings
+                ),
+            )
             if result["javascript"]["status"] != "ready":
                 raise DocumentRuntimeError(
                     f"Node/pnpm package installation failed: {result['javascript']}"
@@ -134,6 +155,7 @@ def install_document_runtime(
     setup_protected_execution: bool = False,
     reuse_installed: bool = False,
     reuse_prepared: bool = False,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Verify packages and protection before publishing a complete installation receipt."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -158,11 +180,17 @@ def install_document_runtime(
 
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-protection") as checking:
             protection_job = checking.submit(
-                prepare_protected_execution,
-                progress=report,
-                setup_protected_execution=setup_protected_execution,
+                _timed,
+                timings,
+                "protection",
+                lambda: prepare_protected_execution(
+                    progress=report,
+                    setup_protected_execution=setup_protected_execution,
+                ),
             )
-            result = prepare_managed_packages(workspace, cache_root=cache_root, progress=report)
+            result = prepare_managed_packages(
+                workspace, cache_root=cache_root, progress=report, timings=timings
+            )
             protection = protection_job.result()
     else:
         from clio_agent.runtime.document_stack.process import scratch_root
@@ -184,7 +212,11 @@ def install_document_runtime(
         )
     result["native_tools"].update(protection)
     if not reused:
-        save_install_receipt(workspace, result, cache_root=cache_root)
+        _timed(
+            timings,
+            "receipt",
+            lambda: save_install_receipt(workspace, result, cache_root=cache_root),
+        )
     if progress is not None:
         progress("All managed runtime packages are installed and verified.")
     return result
@@ -378,13 +410,19 @@ def _main() -> None:
         marketplace = installing.submit(_prepare_default_marketplace, args, emit)
         providers = installing.submit(_prepare_provider_support, args, emit)
         prewarm = installing.submit(_prewarm_runtime_files, args)
+        installation_timings: dict[str, float] = {}
         installation = installing.submit(
-            install_document_runtime,
-            args.workspace,
-            progress=emit,
-            setup_protected_execution=args.setup_protected_execution,
-            reuse_installed=args.reuse_installed,
-            reuse_prepared=args.reuse_prepared,
+            _timed,
+            installation_timings,
+            "seconds",
+            lambda: install_document_runtime(
+                args.workspace,
+                progress=emit,
+                setup_protected_execution=args.setup_protected_execution,
+                reuse_installed=args.reuse_installed,
+                reuse_prepared=args.reuse_prepared,
+                timings=installation_timings,
+            ),
         )
         migrations = _run_store_migrations(args, emit)
         marketplace_result = marketplace.result()
@@ -404,6 +442,7 @@ def _main() -> None:
         "status": result["status"],
         "runtime_id": result["runtime_id"],
         "office": result["native_tools"]["soffice"],
+        "installation": installation_timings,
         "store_migrations": migrations,
         "browser": browser_result,
         "marketplace": marketplace_result,
