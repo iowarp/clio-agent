@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import paths
@@ -39,7 +39,15 @@ def managed_input_relative_path(record: "ResourceRecord") -> Path:
 
     if not record.id.startswith("res_") or not record.id.removeprefix("res_").isalnum():
         raise ValueError("resource id is not safe for workspace materialization")
-    return MANAGED_INPUT_DIRECTORY / record.id / windows_safe_filename(record.name)
+    return MANAGED_INPUT_DIRECTORY / record.id / managed_input_filename(record)
+
+
+def managed_input_filename(record: "ResourceRecord") -> str:
+    """Name the working copy; an aliased source file keeps its portable alias on disk."""
+    origin = record.connected_source or {}
+    if origin.get("remote_path") and origin.get("path"):
+        return windows_safe_filename(PurePosixPath(origin["path"]).name)
+    return windows_safe_filename(record.name)
 
 
 def materialize_resource(
@@ -114,7 +122,7 @@ def remove_materialized_resource(record: "ResourceRecord") -> None:
     inputs_dir = resource_dir.parent
     clio_dir = inputs_dir.parent
     if (
-        target.name != windows_safe_filename(record.name)
+        target.name != managed_input_filename(record)
         or resource_dir.name != record.id
         or inputs_dir.name != "inputs"
         or not (
@@ -200,6 +208,7 @@ def materialize_once(app: Any, record: "ResourceRecord") -> "ResourceRecord":
 
 __all__ = [
     "MANAGED_INPUT_DIRECTORY",
+    "managed_input_filename",
     "managed_input_relative_path",
     "materialize_once",
     "materialize_resource",
