@@ -6,6 +6,11 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6.6] - 2026-11-12
+
+No GACT-contract change. A CLIO installed by `install.ps1` with its own home
+keeps its clio-kit in that home and leaves the user's own clio-kit alone. (#2226)
+
 ## [0.9.6.5] - 2026-11-12
 
 Installer hotfix. Ships the same iowarp/gact-tui v0.12.2, clio-kit 2.12.3,
