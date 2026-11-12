@@ -307,6 +307,9 @@ def _stop(server: subprocess.Popen[bytes]) -> None:
     server.wait(30)
 
 
+_REPLACE_ATTEMPTS = 5
+
+
 def _compile(source: Path, root: Path | None) -> None:
     """Compile ``source`` beside itself, naming it relative to the bundled runtime."""
 
@@ -314,20 +317,35 @@ def _compile(source: Path, root: Path | None) -> None:
     display_path = (
         Path("gact-runtime/python") / source.relative_to(root) if root is not None else source
     )
-    py_compile.compile(
-        str(source),
-        cfile=str(cache_path),
-        dfile=display_path.as_posix(),
-        doraise=True,
-        # CHECKED_HASH, never UNCHECKED_HASH: the desktop upgrades this
-        # runtime in place with ``uv pip install``, which rewrites sources
-        # but cannot remove bytecode it did not write. Unchecked bytecode
-        # then keeps executing the previous release's dependencies
-        # (0.9.4.14 -> 0.9.4.15 stale clio_schemas ImportError). A source
-        # hash is portable across relocation like the unchecked form, and
-        # Python recompiles any module whose source changed.
-        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
-    )
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            py_compile.compile(
+                str(source),
+                cfile=str(cache_path),
+                dfile=display_path.as_posix(),
+                doraise=True,
+                # CHECKED_HASH, never UNCHECKED_HASH: the desktop upgrades this
+                # runtime in place with ``uv pip install``, which rewrites sources
+                # but cannot remove bytecode it did not write. Unchecked bytecode
+                # then keeps executing the previous release's dependencies
+                # (0.9.4.14 -> 0.9.4.15 stale clio_schemas ImportError). A source
+                # hash is portable across relocation like the unchecked form, and
+                # Python recompiles any module whose source changed.
+                invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+            )
+            return
+        except PermissionError:
+            # Windows refuses to replace a .pyc that another interpreter is
+            # writing or holding open: the source installer compiles while
+            # migrate and the managed-package step import the same checkout.
+            # That interpreter's bytecode is valid for this source, so a file
+            # that is still busy after a short wait is left as it is.
+            if os.name != "nt":
+                raise
+            if attempt + 1 < _REPLACE_ATTEMPTS:
+                time.sleep(0.05 * (attempt + 1))
+    if not cache_path.exists():
+        raise PermissionError(f"could not write bytecode for {source}: {cache_path}")
 
 
 def main() -> int:
