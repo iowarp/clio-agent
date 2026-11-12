@@ -339,7 +339,7 @@ foreach ($f in @($LauncherCmd, $LauncherPs1)) {
 if (Test-Path $Prefix) {
     Say "Removing installed application payloads in $Prefix"
     $ResolvedPrefix = [IO.Path]::GetFullPath($Prefix)
-    foreach ($relative in @('clio-agent\.venv', 'clio-agent\web', 'gact.exe', 'uninstall.ps1')) {
+    foreach ($relative in @('clio-agent\.venv', 'clio-agent\web', 'uv-tools', 'gact.exe', 'uninstall.ps1')) {
         $OwnedPath = [IO.Path]::GetFullPath((Join-Path $ResolvedPrefix $relative))
         if (-not $OwnedPath.StartsWith($ResolvedPrefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid application path' }
         Remove-ClioTree $OwnedPath -Soft

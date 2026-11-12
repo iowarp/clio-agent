@@ -797,6 +797,34 @@ if ($OptDesktop) {
 }
 if ($OptDownloadOnly) { Die '-DownloadOnly goes with -Desktop' }
 if ($OptUnattended) { Die '-Unattended goes with -Desktop' }
+
+# Without Windows long paths a file path stops at 259 characters (WinError 206). CLIO's
+# deepest files sit 198 characters below its home (the document runtime's bundled npm),
+# 192 below its cache, 172 below its data folder and 165 below its install folder, so a
+# longer root fails part-way through the install or a later turn. These limits keep 4
+# characters in reserve.
+function Test-ClioLongPaths {
+    try { return (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -ErrorAction Stop).LongPathsEnabled -eq 1 } catch { return $false }
+}
+if (-not (Test-ClioLongPaths)) {
+    $homeRoot = if ($env:CLIO_AGENT_HOME) { $env:CLIO_AGENT_HOME } elseif ($env:CLIO_USER_DIR) { $env:CLIO_USER_DIR } else { Join-Path $env:LOCALAPPDATA 'clio-agent' }
+    $roots = @(
+        @{ Name = 'CLIO home'; Path = $homeRoot; Max = 56; Variable = 'CLIO_AGENT_HOME' },
+        @{ Name = 'CLIO cache folder'; Path = $env:CLIO_AGENT_CACHE_DIR; Max = 62; Variable = 'CLIO_AGENT_CACHE_DIR' },
+        @{ Name = 'CLIO data folder'; Path = $env:CLIO_AGENT_DATA_DIR; Max = 82; Variable = 'CLIO_AGENT_DATA_DIR' },
+        @{ Name = 'CLIO install folder'; Path = $env:CLIO_PREFIX; Max = 90; Variable = 'CLIO_PREFIX' }
+    )
+    foreach ($root in $roots) {
+        if (-not $root.Path) { continue }
+        $full = [IO.Path]::GetFullPath($root.Path).TrimEnd('\')
+        if ($full.Length -le $root.Max) { continue }
+        Die ("The $($root.Name) $full is $($full.Length) characters, and long paths are off on this computer: " +
+            "CLIO's files in it would pass Windows' 260-character path limit and the install would fail part-way. " +
+            "Choose a folder of at most $($root.Max) characters with $($root.Variable) (for example C:\clio), " +
+            "or turn long paths on as an administrator " +
+            "(Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1) and run the installer again.")
+    }
+}
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
 $ClioKitPackage = $env:CLIO_KIT_PACKAGE
 $Protocol    = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
@@ -1574,9 +1602,53 @@ if (-not $ClioKitPackage) {
 } else {
     $ClioKitSpec = "$ClioKitPackage[science]"
 }
+# A CLIO with its own prefix, home, data or user folder keeps clio-kit in uv tool
+# folders inside its prefix, so it never replaces the user's own clio-kit; the launcher
+# puts them on the agent's PATH. uv rebuilds a tool's environment for another Python by
+# deleting it first: with one of its servers running, python.exe is locked and the
+# environment is left gutted. So an environment with a running process is kept.
+$KitToolDirs = @{}
+if ($env:CLIO_PREFIX -or $env:CLIO_AGENT_HOME -or $env:CLIO_AGENT_DATA_DIR -or $env:CLIO_USER_DIR) {
+    $KitToolDirs = @{ UV_TOOL_DIR = (Join-Path $Prefix 'uv-tools'); UV_TOOL_BIN_DIR = (Join-Path $Prefix 'uv-tools\bin') }
+}
+function Use-ClioKitToolDirs([switch]$Restore) {
+    foreach ($name in $KitToolDirs.Keys) {
+        if ($Restore) {
+            [Environment]::SetEnvironmentVariable($name, $script:KitSavedEnv[$name])
+        } else {
+            if (-not $script:KitSavedEnv) { $script:KitSavedEnv = @{} }
+            $script:KitSavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+            [Environment]::SetEnvironmentVariable($name, $KitToolDirs[$name])
+        }
+    }
+}
+function Get-ClioKitBusy([string]$Uv) {
+    Use-ClioKitToolDirs
+    try {
+        $toolDir = (& $Uv tool dir 2>$null | Select-Object -First 1)
+        $binDir = (& $Uv tool dir --bin 2>$null | Select-Object -First 1)
+    } finally { Use-ClioKitToolDirs -Restore }
+    if (-not $toolDir) { return $null }
+    $envDir = [IO.Path]::GetFullPath((Join-Path $toolDir.Trim() 'clio-kit')) + '\'
+    $shim = if ($binDir) { [IO.Path]::GetFullPath((Join-Path $binDir.Trim() 'clio-kit.exe')) } else { '' }
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and ($_.Path.StartsWith($envDir, [StringComparison]::OrdinalIgnoreCase) -or $_.Path -ieq $shim)
+    } | Select-Object -First 1
+}
+function Start-ClioKitInstall([string]$Uv) {
+    $busy = Get-ClioKitBusy $Uv
+    if ($busy) {
+        $script:KitKept = "clio-kit is running ($($busy.ProcessName), pid $($busy.Id)); its environment was kept as it is. Stop it and run this installer again to update it to $ClioKitSpec."
+        return $null
+    }
+    Use-ClioKitToolDirs
+    try { return Start-ClioBackground $Uv "tool install --python $py `"$ClioKitSpec`"" 'kit' }
+    finally { Use-ClioKitToolDirs -Restore }
+}
+$KitKept = $null
 if (-not $OptSource) {
     $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($uvCommand) { $KitJob = Start-ClioBackground $uvCommand.Source "tool install --python $py `"$ClioKitSpec`"" 'kit' }
+    if ($uvCommand) { $KitJob = Start-ClioKitInstall $uvCommand.Source }
     $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
     $webver = $tag -replace '^v', ''
     $webUrl = "https://github.com/iowarp/clio-agent/releases/download/$tag/clio-web-$webver.zip"
@@ -1748,17 +1820,24 @@ if ($RuntimeScratch) {
 # deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
 # is idempotent (re-run is a no-op / version pin). Needs uv; without it the
 # packs' tools simply stay unprovisioned until uv is installed.
-if ($KitJob -or (Have uv)) {
+if ($KitJob -or $KitKept -or (Have uv)) {
     if (-not $ClioKitPackage) {
         Say "Provisioning released clio-kit launcher ($ClioKitSpec)"
     } else {
         Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
     }
-    if ($KitJob) {
+    if ($KitToolDirs.Count) { Say "clio-kit goes in this installation's own tool folder: $($KitToolDirs.UV_TOOL_DIR)" }
+    if (-not $KitJob -and -not $KitKept) {
+        $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        $KitJob = Start-ClioKitInstall $uvCommand.Source
+    }
+    if ($KitKept) {
+        Warn $KitKept
+        $kitStatus = 0
+    } elseif ($KitJob) {
         $kitStatus = Complete-ClioBackground $KitJob
     } else {
-        & uv tool install --python $py $ClioKitSpec
-        $kitStatus = $LASTEXITCODE
+        $kitStatus = 1
     }
     if ($kitStatus -ne 0) {
         Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install `"$ClioKitSpec`"' succeeds and the dir from 'uv tool dir --bin' is on PATH"
