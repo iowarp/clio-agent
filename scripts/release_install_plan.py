@@ -11,9 +11,10 @@ A first ``capability WORD`` line says the app waits for a download still in prog
 finish; readers that predate it skip lines without five fields.
 
 The pins are read from the source (``office.py``, ``document_runtime.py``) without
-importing it, so this runs on any CI Python. Sizes come from the servers and only feed
-the installer's progress; 0 means unknown. The release lists the plan in its
-SHA256SUMS, which is what authenticates it to the installer.
+importing it, so this runs on any CI Python. With ``--browser-manifest``, ``browser`` lines
+name the Node.js and Chromium archives the built runtime pins (``clio-node.json``). Sizes
+come from the servers and only feed the installer's progress; 0 means unknown. The release
+lists the plan in its SHA256SUMS, which is what authenticates it to the installer.
 
     python scripts/release_install_plan.py --target aarch64-apple-darwin --output PLAN
 """
@@ -111,6 +112,26 @@ def entries(
     return plan
 
 
+def browser_entries(manifest: dict[str, object]) -> list[tuple[str, str, str, str, int]]:
+    """``(kind, sha256, name, url, bytes)`` for the browser archives a runtime fetches.
+
+    ``manifest`` is the built runtime's ``playwright/driver/clio-node.json``
+    (``install/stage_playwright_node.py``): the Node.js archive Playwright's driver runs on
+    and, where it is pinned, the Chromium archive. The installers fetch them while the
+    runtime archive downloads, so the install's browser step finds them on disk
+    (``clio_agent.gact.browser.driver.installer_archive``).
+    """
+    found = []
+    for record in (manifest, manifest.get("chromium")):
+        if not isinstance(record, dict):
+            continue
+        url, sha, size = record.get("url"), record.get("sha256"), record.get("size")
+        if not (isinstance(url, str) and url.startswith("https://") and isinstance(sha, str)):
+            raise SystemExit("the browser manifest names an archive without its URL or SHA-256")
+        found.append(("browser", sha, url.rsplit("/", 1)[-1], url, int(size or 0)))
+    return found
+
+
 def remote_size(url: str) -> int:
     request = urllib.request.Request(url, method="HEAD")
     try:
@@ -137,12 +158,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--office-pack", type=Path, help="build_office_tree.py's office-tree.pack.json (Linux)"
     )
+    parser.add_argument(
+        "--browser-manifest",
+        type=Path,
+        help="the built runtime's playwright/driver/clio-node.json (browser archives)",
+    )
     args = parser.parse_args(argv)
     pack = office_pack = None
     if args.runtime_pack is not None:
         pack = json.loads(args.runtime_pack.read_text(encoding="utf-8"))
     if args.office_pack is not None:
         office_pack = json.loads(args.office_pack.read_text(encoding="utf-8"))
+    browser = []
+    if args.browser_manifest is not None:
+        browser = browser_entries(json.loads(args.browser_manifest.read_text(encoding="utf-8")))
 
     def size(kind: str, url: str) -> int:
         if kind == "runtime" and pack is not None:
@@ -151,10 +180,14 @@ def main(argv: list[str] | None = None) -> int:
             return int(office_pack["archive_bytes"])
         return 0 if args.no_sizes else remote_size(url)
 
-    lines = [f"capability {capability()}"] + [
-        f"{kind} {sha} {size(kind, url)} {name} {url}"
-        for kind, sha, name, url in entries(args.target, pack, office_pack)
-    ]
+    lines = (
+        [f"capability {capability()}"]
+        + [
+            f"{kind} {sha} {size(kind, url)} {name} {url}"
+            for kind, sha, name, url in entries(args.target, pack, office_pack)
+        ]
+        + [f"{kind} {sha} {nbytes} {name} {url}" for kind, sha, name, url, nbytes in browser]
+    )
     args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     return 0

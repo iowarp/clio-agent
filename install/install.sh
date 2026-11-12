@@ -1299,16 +1299,20 @@ source_install_plan() {
   fi
 }
 
-# start_install_downloads PLAN: fetch the plan's LibreOffice and pnpm in the background.
-# Only those kinds: a plan's "runtime" archive is the desktop's own and not used here.
+# start_install_downloads PLAN [KINDS]: fetch the plan's files of KINDS (default: office
+# and npm, LibreOffice and pnpm) in the background. A plan's "runtime" archive is the
+# desktop's own and not used here; its "browser" archives (Playwright's Node.js and
+# Chromium) only a runtime install uses, as PyPI's Playwright brings its own Node.js.
 start_install_downloads() {
   [ -n "$1" ] && [ -s "$1" ] || return 0
-  awk '$1 == "capability" || $1 == "office" || $1 == "npm"' "$1" > "$DESKTOP_SCRATCH/plan.install"
-  start_prefetch "$DESKTOP_SCRATCH/plan.install"
+  local kinds="${2:-office npm}" part
+  part="$DESKTOP_SCRATCH/plan.install.${kinds// /-}"
+  awk -v kinds=" $kinds " '$1 == "capability" || index(kinds, " " $1 " ")' "$1" > "$part"
+  start_prefetch "$part"
   [ -n "$DESKTOP_JOBS" ] || return 0
   INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
   # A runtime that cannot wait for a download in progress would fetch it a second time.
-  if plan_capable "$DESKTOP_SCRATCH/plan.install" waits-for-partial-downloads; then
+  if plan_capable "$part" waits-for-partial-downloads; then
     DESKTOP_PLAN_WAITS=1
   fi
 }
@@ -1671,6 +1675,9 @@ install_runtime_archive() {
     warn "$name does not match the release's checksum"
     return 1
   fi
+  # The line is free now: the browser archives the runtime pins download while it is put
+  # in place, and the browser step of the package install finds them on disk.
+  start_install_downloads "${install_plan:-}" browser
   "$VENV/bin/python" -I -c "$RUNTIME_FINISHER" "$RUNTIME_UNPACK/gact-runtime/python/lib/python$version/site-packages" \
     "$site" "$RUNTIME_UNPACK/clio_runtime_launchers-1-py3-none-any.whl" || return 1
   uv pip install --quiet --offline --no-deps --python "$VENV/bin/python" \
@@ -1830,7 +1837,12 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   start_clio_kit "$py"
   runtime_installed=0
   ! finish_release_runtime "$package_version" || runtime_installed=1
-  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"
+  # The browser archives (Node.js, from the runtime's pin) only the prebuilt agent uses.
+  if [ "$runtime_first" = 1 ] && [ "$runtime_installed" = 1 ]; then
+    start_install_downloads "$install_plan" "office npm browser"
+  elif [ "$runtime_first" = 1 ]; then
+    start_install_downloads "$install_plan"
+  fi
   start_web_download "$tag"
   if [ "$runtime_installed" = 1 ]; then
     CLIO_VERSION="$package_version"

@@ -248,21 +248,28 @@ def _install_pinned(pin: dict[str, Any], node: str, cli: str, root: Path) -> Non
 
     Playwright's own install downloads Chromium, extracts it on one thread and then fetches
     FFmpeg (and ``winldd`` on Windows) one after the other. Here the helpers download while
-    the archive downloads and then unpacks on several threads. A failure only traces: the
-    ordinary install that follows fetches whatever is still missing.
+    the archive downloads and then unpacks on several threads. The archive is the
+    installer's own download when it fetched it (``driver.installer_archive``). A failure
+    only traces: the ordinary install that follows fetches whatever is still missing.
     """
     helpers = ("ffmpeg", "winldd") if os.name == "nt" else ("ffmpeg",)
     with concurrent.futures.ThreadPoolExecutor(1, "clio-chromium-helpers") as pool:
         fetching = pool.submit(_run_install, node, cli, root, helpers)
         archive: Path | None = None
+        ours = False
         try:
-            archive = _fetch_pinned(pin, root)
+            archive = driver.installer_archive(pin)
+            if archive is None:
+                archive = _fetch_pinned(pin, root)
+                ours = True
+            else:
+                trace.event("BROWSER", "chromium taken from the installer's download")
             unpacked = _unpack_chromium(archive, root, str(pin["revision"]))
             trace.event("BROWSER", "chromium unpacked from the pinned archive=%s", unpacked)
         except (OSError, ValueError, zipfile.BadZipFile, http.client.HTTPException) as exc:
             trace.event("BROWSER", "installing the pinned chromium failed: %s", exc)
         finally:
-            if archive is not None:
+            if archive is not None and ours:
                 with contextlib.suppress(OSError):
                     archive.unlink()
         helped = fetching.result()
