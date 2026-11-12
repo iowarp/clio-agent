@@ -14,6 +14,7 @@ explanation instead of a bare exit code:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -60,6 +61,24 @@ class EnforcementVerdict(tuple[bool, str]):
         return verdict
 
 
+def codex_home_dir() -> Path:
+    """The codex home CLIO writes its ``-p`` layers into (``$CODEX_HOME``, else ``~/.codex``)."""
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def codex_home_env() -> dict[str, str]:
+    """``CODEX_HOME`` for a codex child when the caller left it unset (``{}`` otherwise).
+
+    CLIO resolves ``~`` from the environment, but codex without ``CODEX_HOME`` resolves its
+    home from the OS profile. When they differ (a redirected ``USERPROFILE``/``HOME``) codex
+    cannot find the layer CLIO wrote and fails with "default_permissions requires a
+    [permissions] table". Naming the home CLIO used keeps both on one directory.
+    """
+    if os.environ.get("CODEX_HOME"):
+        return {}
+    return {"CODEX_HOME": str(codex_home_dir())}
+
+
 def run_probe(argv: Sequence[str], *, timeout: float, creationflags: int = 0) -> ProbeRun:
     """Run ``argv`` with no stdout, stderr captured to a file, and a hard deadline."""
     with tempfile.TemporaryFile("w+b") as stderr:
@@ -69,6 +88,7 @@ def run_probe(argv: Sequence[str], *, timeout: float, creationflags: int = 0) ->
             stdout=subprocess.DEVNULL,
             stderr=stderr,
             creationflags=creationflags,
+            env={**os.environ, **codex_home_env()},
         )
         try:
             returncode: int | None = process.wait(timeout=timeout)

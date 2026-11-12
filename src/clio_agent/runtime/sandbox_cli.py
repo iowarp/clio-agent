@@ -143,8 +143,13 @@ if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs 
 
     def _launch_elevated_codex_setup(argv: list[str]) -> tuple[bool, str]:
         """Wait for the explicitly approved Windows setup helper to finish."""
+        from clio_agent.runtime.sandbox_codex_probe import codex_home_env  # noqa: PLC0415
+
         # cmd.exe running the codex shim so a .cmd launcher resolves under elevation.
         params = " ".join(f'"{a}"' if " " in a else a for a in argv)
+        # An elevated process does not inherit this environment; name the layer's home.
+        if home := codex_home_env().get("CODEX_HOME"):
+            params = f'set "CODEX_HOME={home}" && {params}'
         info = _ShellExecuteInfoW()
         info.cbSize = _ctypes.sizeof(info)
         info.fMask = _SEE_MASK_NOCLOSEPROCESS

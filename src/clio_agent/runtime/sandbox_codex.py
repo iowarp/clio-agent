@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-import os
 import re
 import shutil
 import sys
@@ -51,7 +50,7 @@ from typing import Any, Callable, Optional, Sequence
 # naming) lives in the sibling :mod:`sandbox_codex_profile` module (extracted to keep this file under
 # its size ratchet). Re-exported below so this module's public surface is unchanged — callers keep
 # importing these names from ``sandbox_codex``.
-from .sandbox_codex_probe import EnforcementVerdict
+from .sandbox_codex_probe import EnforcementVerdict, codex_home_dir
 from .sandbox_codex_profile import (
     CODEX_LAYER_GLOB,
     CODEX_LAYER_KEEP,
@@ -369,7 +368,7 @@ def write_codex_layer(
     user's own ``config.toml`` is NEVER touched; only clio's ``clio-sb-*`` layers are pruned.
     """
     validate_codex_profile(profile)
-    home = Path(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    home = Path(codex_home) if codex_home else codex_home_dir()
     home.mkdir(parents=True, exist_ok=True)
     mode = windows_sandbox if platform.startswith("win") else ""
     layer = codex_layer_name(profile_name, profile, windows_sandbox=mode)
@@ -679,7 +678,7 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
 
 
 def _sandbox_log_dir() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / ".sandbox"
+    return codex_home_dir() / ".sandbox"
 
 
 def _sandbox_log_marks() -> dict[Path, int]:
