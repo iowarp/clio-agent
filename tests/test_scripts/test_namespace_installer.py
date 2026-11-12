@@ -39,7 +39,10 @@ def test_uninstall_uses_namespace_pid_and_preserves_data(tmp_path: Path, purge: 
         CLIO_BIN_DIR=str(tmp_path / "bin"),
         CLIO_PORT="61991",
     )
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    # Uninstall stops only a process of this installation (#2205): one running inside it.
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], cwd=prefix / "clio-agent"
+    )
     try:
         (state / f"clio-server.{socket.gethostname().split('.')[0]}.pid").write_text(
             str(process.pid)

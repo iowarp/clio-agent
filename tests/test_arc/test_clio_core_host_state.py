@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from clio_agent import conf, paths
-from clio_agent.arc import clio_core_config, runtime_stop, storage
+from clio_agent.arc import clio_core_config, home_runtime, runtime_stop, storage
 
 
 @pytest.fixture
@@ -26,7 +26,9 @@ def shared_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     home.mkdir()
     monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    monkeypatch.setattr(paths, "user_data_dir", lambda: home / ".local" / "share" / "clio-agent")
+    monkeypatch.setattr(
+        paths, "user_data_dir", lambda env=None: home / ".local" / "share" / "clio-agent"
+    )
     monkeypatch.setattr(paths, "host_state_dir", lambda: home / ".local/state/clio-agent")
     monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=home, cwd=tmp_path / "cwd", env={}))
     monkeypatch.setattr(storage, "_client_registered", False)
@@ -36,6 +38,7 @@ def shared_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def _on(monkeypatch: pytest.MonkeyPatch, hostname: str) -> None:
     monkeypatch.setattr(clio_core_config.socket, "gethostname", lambda: hostname)
+    home_runtime.reset()  # another machine is another process: it decides afresh
 
 
 @pytest.mark.parametrize(
@@ -79,6 +82,7 @@ def test_a_login_nodes_daemon_files_are_invisible_to_a_compute_node(
     storage._register_client()
     storage._daemon_pidfile().write_text(f"{os.getpid()} ", encoding="utf-8")
     login_lock = storage.runtime_state_dir() / "clio-runtime.lock"
+    login_node = home_runtime.selection()
     with storage._runtime_spawn_lock():
         pass
     assert storage._live_client_pids() == [os.getpid()]
@@ -93,6 +97,7 @@ def test_a_login_nodes_daemon_files_are_invisible_to_a_compute_node(
     assert storage.runtime_state_dir() / "clio-runtime.lock" != login_lock
     # ...and the login node's records are untouched by the compute node.
     _on(monkeypatch, "ares")
+    home_runtime._selection = login_node  # back in the login node's own process
     assert storage._live_client_pids() == [os.getpid()]
     assert storage._daemon_pidfile().exists()
     storage._deregister_client()

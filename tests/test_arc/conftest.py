@@ -21,6 +21,20 @@ from clio_agent.gact import context as ctx
 from clio_agent.gact.agents.clio_react_record import fold_steps, read_steps
 
 
+@pytest.fixture(autouse=True)
+def _fresh_home_runtime_selection() -> Iterator[None]:
+    """Decide the clio-core daemon per test: production caches it once per process.
+
+    A test that drops the suite's ``CLIO_RUNTIME_STATE_DIR`` pin, or fakes another
+    host or home, would otherwise read the selection made under the pin.
+    """
+    from clio_agent.arc import home_runtime
+
+    home_runtime.reset()
+    yield
+    home_runtime.reset()
+
+
 @pytest.fixture(name="arc")
 def core_arc() -> Iterator[ARCMemory]:
     """A fresh ARCMemory on clio-core (the only store), in this test's namespace."""

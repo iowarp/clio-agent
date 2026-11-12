@@ -95,7 +95,8 @@ _INSTALLER_LABELS: set[str] = {
 }
 
 # The fast desktop install's assets (#1985): the macOS Apple archive and the
-# first-launch download plans. Every release before it lacks them.
+# first-launch download plans, plus the prepared Office trees (Windows: #2210).
+# Every release before it lacks them.
 _INSTALL_SPEED_ASSETS: list[str] = [
     "CLIO.Desktop-aarch64-apple-darwin-bundled.app.aar",
     "install-plan.aarch64-apple-darwin.bundled.txt",
@@ -105,6 +106,8 @@ _INSTALL_SPEED_ASSETS: list[str] = [
     "gact-runtime-0.9.6-linux-arm64.tar.zst",
     "office-26.2.6-0123456789ab-linux-x64.tar.zst",
     "office-26.2.6-0123456789ab-linux-arm64.tar.zst",
+    "office-26.2.6-0123456789ab-windows-x64.tar.zst",
+    "office-plan.x86_64-pc-windows-msvc.txt",
 ]
 
 _INSTALL_SPEED_LABELS: set[str] = {
@@ -116,6 +119,8 @@ _INSTALL_SPEED_LABELS: set[str] = {
     "runtime archive (aarch64 Linux)",
     "prepared Office (x86_64 Linux)",
     "prepared Office (aarch64 Linux)",
+    "prepared Office (x86_64 Windows)",
+    "Office plan (x86_64 Windows)",
 }
 
 # The Arch Linux pacman packages (#2168), made only from the bundled deb.

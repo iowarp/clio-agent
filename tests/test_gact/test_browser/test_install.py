@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
 import stat
 import subprocess
 import threading
@@ -155,11 +156,22 @@ def test_the_installer_archive_unpacks_whole_and_marked(tmp_path: Path) -> None:
     assert sorted(p.name for p in root.iterdir()) == ["chromium-7"]
 
 
-def test_an_archive_with_links_is_left_to_playwright(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name != "nt", reason="only Windows leaves links to Playwright")
+def test_an_archive_with_links_is_left_to_playwright_on_windows(tmp_path: Path) -> None:
     root = tmp_path / "browsers"
     root.mkdir()
     assert not install._unpack_chromium(_chromium_zip(tmp_path / "c.zip", link=True), root, "7")
     assert list(root.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows leaves links to Playwright")
+def test_an_archive_with_links_unpacks_them_inside_the_folder(tmp_path: Path) -> None:
+    root = tmp_path / "browsers"
+    root.mkdir()
+    assert install._unpack_chromium(_chromium_zip(tmp_path / "c.zip", link=True), root, "7")
+    link = root / "chromium-7" / "Chromium.app" / "Contents" / "Frameworks" / "Current"
+    assert link.is_symlink() and os.readlink(link) == "A"
+    assert (root / "chromium-7" / "INSTALLATION_COMPLETE").exists()
 
 
 def _fake_install(monkeypatch: pytest.MonkeyPatch, root: Path, calls: list[tuple]) -> None:
