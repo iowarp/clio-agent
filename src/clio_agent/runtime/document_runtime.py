@@ -173,7 +173,13 @@ def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[s
         for name in names
     ):
         raise ValueError("required_imports must contain at most 32 Python module names")
-    source = """import importlib, json, sys
+    # Imported modules may print to stdout (``import fitz`` prints a deprecation
+    # warning), so imports write to stderr and only the JSON reaches stdout.
+    source = """import importlib, json, os, sys
+result = os.fdopen(os.dup(1), "w", encoding="utf-8")
+sys.stdout.flush()
+os.dup2(2, 1)
+sys.stdout = sys.stderr
 checks = {}
 for name in json.loads(sys.argv[1]):
     try:
@@ -182,7 +188,9 @@ for name in json.loads(sys.argv[1]):
         checks[name] = {"status": "missing", "detail": str(error)}
     else:
         checks[name] = {"status": "ready"}
-print(json.dumps(checks))
+sys.stderr.flush()
+result.write(json.dumps(checks))
+result.flush()
 """
     output = _run([str(python), "-B", "-c", source, json.dumps(names)], cwd=python.parent)
     checks = json.loads(output)
