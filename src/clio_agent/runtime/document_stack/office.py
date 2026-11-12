@@ -34,6 +34,7 @@ if TYPE_CHECKING or __package__:
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_PROGRAM_FILES,
         WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
@@ -60,6 +61,7 @@ else:
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_PROGRAM_FILES,
         WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
@@ -284,6 +286,7 @@ def _windows_tree_name() -> str | None:
             sorted(UNREAD_TREES),
             sorted(UNREAD_PYTHON_PACKAGES),
             sorted(WINDOWS_UNREAD_TREES),
+            sorted(WINDOWS_UNREAD_PROGRAM_FILES),
             sorted(KEPT_ICON_THEMES),
         )
     )
