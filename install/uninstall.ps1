@@ -61,6 +61,12 @@ $DataState   = Get-AgentRoot 'state'
 $HostState   = Join-Path $env:LOCALAPPDATA 'clio-agent\state'
 $AgentPython = Join-Path $Prefix 'clio-agent\.venv\Scripts\python.exe'
 if (Test-Path -LiteralPath $AgentPython) {
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under 'Stop',
+    # even with 2>$null. A damaged agent (an interrupted install, a removed package) must
+    # fall back to the default roots rather than make the uninstaller unusable.
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
     $ResolvedState = & $AgentPython -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())' 2>$null
     if ($LASTEXITCODE -eq 0 -and $ResolvedState) { $ClioState = $ResolvedState.Trim() }
     $ResolvedConfig = & $AgentPython -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>$null
@@ -71,10 +77,8 @@ if (Test-Path -LiteralPath $AgentPython) {
             $ClioCache, $ClioData, $DataState, $HostState = @($Resolved | ForEach-Object { $_.Trim() })
         }
     }
-    # Windows PowerShell 5.1 turns native stderr into a terminating error under 'Stop'.
-    $SavedPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try { $ResolvedPort = & $AgentPython -m clio_agent.server_port 2>$null } finally { $ErrorActionPreference = $SavedPreference }
+    $ResolvedPort = & $AgentPython -m clio_agent.server_port 2>$null
+    } finally { $ErrorActionPreference = $SavedPreference }
     $ParsedPort = 0
     if ($LASTEXITCODE -eq 0 -and [int]::TryParse("$ResolvedPort".Trim(), [ref]$ParsedPort)) { $Port = $ParsedPort }
 }
