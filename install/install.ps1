@@ -33,6 +33,17 @@
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
 #   CLIO_INSTALL_PROGRESS human | json        (default: human; -Desktop only)
 
+# `& ([scriptblock]::Create((irm <url>))) <options>` (above; CLIO Desktop runs it so)
+# runs this text in a child scope, where $script: names the caller's scope: every
+# $script: variable read empty, the runtime archive's plan among them, so the install
+# fell back to PyPI. The same text is then run dot-sourced in a module of its own, whose
+# script scope is its top level; output, options and exit codes pass through unchanged.
+$ClioScopeProbe = $true
+if (-not (Test-Path -LiteralPath variable:script:ClioScopeProbe)) {
+    . (New-Module -Name clio-install -ScriptBlock { }) ([scriptblock]::Create($MyInvocation.MyCommand.ScriptBlock.ToString())) @args
+    return
+}
+
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk, which
 # makes a large download many times slower than the network (the desktop setup took
