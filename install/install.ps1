@@ -797,6 +797,34 @@ if ($OptDesktop) {
 }
 if ($OptDownloadOnly) { Die '-DownloadOnly goes with -Desktop' }
 if ($OptUnattended) { Die '-Unattended goes with -Desktop' }
+
+# Without Windows long paths a file path stops at 259 characters (WinError 206). CLIO's
+# deepest files sit 198 characters below its home (the document runtime's bundled npm),
+# 192 below its cache, 172 below its data folder and 165 below its install folder, so a
+# longer root fails part-way through the install or a later turn. These limits keep 4
+# characters in reserve.
+function Test-ClioLongPaths {
+    try { return (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -ErrorAction Stop).LongPathsEnabled -eq 1 } catch { return $false }
+}
+if (-not (Test-ClioLongPaths)) {
+    $homeRoot = if ($env:CLIO_AGENT_HOME) { $env:CLIO_AGENT_HOME } elseif ($env:CLIO_USER_DIR) { $env:CLIO_USER_DIR } else { Join-Path $env:LOCALAPPDATA 'clio-agent' }
+    $roots = @(
+        @{ Name = 'CLIO home'; Path = $homeRoot; Max = 56; Variable = 'CLIO_AGENT_HOME' },
+        @{ Name = 'CLIO cache folder'; Path = $env:CLIO_AGENT_CACHE_DIR; Max = 62; Variable = 'CLIO_AGENT_CACHE_DIR' },
+        @{ Name = 'CLIO data folder'; Path = $env:CLIO_AGENT_DATA_DIR; Max = 82; Variable = 'CLIO_AGENT_DATA_DIR' },
+        @{ Name = 'CLIO install folder'; Path = $env:CLIO_PREFIX; Max = 90; Variable = 'CLIO_PREFIX' }
+    )
+    foreach ($root in $roots) {
+        if (-not $root.Path) { continue }
+        $full = [IO.Path]::GetFullPath($root.Path).TrimEnd('\')
+        if ($full.Length -le $root.Max) { continue }
+        Die ("The $($root.Name) $full is $($full.Length) characters, and long paths are off on this computer: " +
+            "CLIO's files in it would pass Windows' 260-character path limit and the install would fail part-way. " +
+            "Choose a folder of at most $($root.Max) characters with $($root.Variable) (for example C:\clio), " +
+            "or turn long paths on as an administrator " +
+            "(Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1) and run the installer again.")
+    }
+}
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
 $ClioKitPackage = $env:CLIO_KIT_PACKAGE
 $Protocol    = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
