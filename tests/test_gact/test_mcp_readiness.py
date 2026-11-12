@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -79,7 +80,16 @@ def test_mount_retries_a_failed_start_with_a_typed_reason(
     executor = _Executor(fail_start_once=True)
     sleeps: list[float] = []
     events: list[dict[str, Any]] = []
-    monkeypatch.setattr(mcp_readiness.time, "sleep", sleeps.append)
+    real_sleep, test_thread = mcp_readiness.time.sleep, threading.get_ident()
+
+    def _sleep(seconds: float) -> None:
+        # ``time.sleep`` is process-wide: other threads in this worker keep really sleeping.
+        if threading.get_ident() == test_thread:
+            sleeps.append(seconds)
+        else:
+            real_sleep(seconds)
+
+    monkeypatch.setattr(mcp_readiness.time, "sleep", _sleep)
     monkeypatch.setattr(
         mcp_readiness,
         "_publish_dependency_state",
