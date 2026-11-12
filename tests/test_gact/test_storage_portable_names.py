@@ -304,6 +304,18 @@ def test_http_browse_search_copy_and_attach_with_unportable_name(
         assert not any(char in path.name for path in copy.rglob("*") for char in "<>")
         attached = client.post(prefix + "/reference", json={"path": alias})
         assert attached.status_code == 200, attached.text
+        resource = attached.json()
+        # Shown under the provider's name; identified and stored under the alias.
+        assert resource["name"] == REVIEW
+        assert resource["connected_source"]["path"] == alias
+        assert resource["connected_source"]["remote_path"] == f"Reviews/{REVIEW}"
+        assert Path(resource["workspace_path"]).name == portable_name(REVIEW)
+        assert Path(resource["workspace_path"]).read_bytes() == b"%PDF questions"
+        again = client.post(prefix + "/reference", json={"path": alias})
+        assert again.status_code == 200 and again.json()["id"] == resource["id"]
+        plain = client.post(prefix + "/reference", json={"path": "notes.txt"}).json()
+        assert plain["name"] == "notes.txt" and "remote_path" not in plain["connected_source"]
+        assert Path(plain["workspace_path"]).name == "notes.txt"
         unsafe = client.post(prefix + "/reference", json={"path": "../outside"})
         assert unsafe.status_code == 409
         assert unsafe.json()["error"]["message"] == "Select a file in the approved source snapshot"
