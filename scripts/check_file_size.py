@@ -1098,7 +1098,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/permission_gate.py": 837,
     # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
     # modules, 765 lines, back under the flat 800 cap.)
-    "src/clio_agent/gact/routes/system.py": 828,
+    "src/clio_agent/gact/routes/system.py": 817,
     "src/clio_agent/gact/sessions.py": 844,
     "src/clio_agent/gact/turn_finalize.py": 803,
     "src/clio_agent/gact/types.py": 803,
