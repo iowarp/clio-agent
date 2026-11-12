@@ -261,7 +261,8 @@ fetch_hashed() {
   local url="$1" file="$2" attempt status
   shift 2
   for attempt in 1 2; do
-    rm -f "$file" "$file.sha"
+    # tee empties FILE itself: it is never missing, so the app keeps waiting on a NAME.part.
+    rm -f "$file.sha"
     curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$@" "$url" \
       | tee "$file" | sha_stream > "$file.sha" && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
     [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ] || [ "${status[2]}" != 0 ] || return 0
@@ -316,10 +317,11 @@ start_monitor() { download_monitor & DESKTOP_MONITOR=$!; }
 
 # The release's install plan lists what the first launch would fetch (LibreOffice, pnpm)
 # as "kind sha256 bytes name url"; only well-formed lines count. A "capability WORD" line
-# says what the plan's app can do with them.
+# says what the plan's app can do with them. plan_entries PLAN kind keeps the kind.
 plan_entries() {
-  awk 'NF == 5 && length($2) == 64 && $2 ~ /^[0-9a-f]+$/ && $3 ~ /^[0-9]+$/ \
-       && $4 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ && $5 ~ /^https:\/\// { print $2, $3, $4, $5 }' "$1"
+  awk -v kind="${2:-}" 'NF == 5 && length($2) == 64 && $2 ~ /^[0-9a-f]+$/ && $3 ~ /^[0-9]+$/ \
+       && $4 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ && $5 ~ /^https:\/\// {
+         if (kind != "") print $1, $2, $3, $4, $5; else print $2, $3, $4, $5 }' "$1"
 }
 plan_capable() { [ -n "$1" ] && awk -v want="$2" '$1 == "capability" && $2 == want { found=1 } END { exit !found }' "$1"; }
 
@@ -350,14 +352,40 @@ prefetch() {  # SHA NAME URL: a failure only means the app fetches it itself lat
   fi
 }
 
-start_prefetch() {  # PLAN
-  local sha bytes name url names=""
+prefetch_after() {  # PID SHA NAME URL: prefetch once job PID ends, or PREFETCH_WAIT_S at most
+  local ticks=0
+  while kill -0 "$1" 2>/dev/null && [ "$ticks" -lt $(( PREFETCH_WAIT_S * 5 )) ]; do
+    sleep 0.2
+    ticks=$(( ticks + 1 ))
+  done
+  shift
+  prefetch "$@"
+}
+
+# start_prefetch PLAN [office-first]: with office-first, LibreOffice takes the line before
+# the other large files. Every download shares one saturated line, so they all land at
+# about the same time, and Office has the longest work after it lands (mount, copy, a
+# first conversion), which then decides when the install ends. A file of another kind
+# over PREFETCH_WAIT_BYTES (Chromium, whose unpack takes ~1 s) starts once LibreOffice
+# has landed, or after PREFETCH_WAIT_S. It is an empty NAME.part until then, so the app
+# waits for it rather than fetching it a second time; the app gives up on a NAME.part
+# that has not grown in 60 s (office.py _INSTALLER_STALL_S), well beyond that wait.
+PREFETCH_WAIT_BYTES=$(( 64 * 1024 * 1024 ))
+PREFETCH_WAIT_S=40
+start_prefetch() {
+  local kind sha bytes name url names="" lead=""
   [ -n "$1" ] || return 0
-  while read -r sha bytes name url; do
+  while read -r kind sha bytes name url; do
     DESKTOP_PLAN_BYTES=$(( DESKTOP_PLAN_BYTES + bytes ))
     names="$names${names:+, }$name"
-    start_job prefetch "$sha" "$name" "$url"
-  done < <(plan_entries "$1")
+    if [ -n "$lead" ] && [ "$kind" != office ] && [ "$bytes" -ge "$PREFETCH_WAIT_BYTES" ]; then
+      : > "$DESKTOP_SCRATCH/downloads/$name.part"
+      start_job prefetch_after "$lead" "$sha" "$name" "$url"
+    else
+      start_job prefetch "$sha" "$name" "$url"
+      [ "${2:-}" != office-first ] || [ "$kind" != office ] || lead=$!
+    fi
+  done < <(plan_entries "$1" kind | awk '{ print ($1 == "office" ? 0 : 1), $0 }' | sort -s -n -k1,1 | cut -d' ' -f2-)
   [ -z "$names" ] || say "Fetching at the same time: $names"
 }
 
@@ -1321,7 +1349,7 @@ start_install_downloads() {
   local kinds="${2:-office npm}" part
   part="$DESKTOP_SCRATCH/plan.install.${kinds// /-}"
   awk -v kinds=" $kinds " '$1 == "capability" || index(kinds, " " $1 " ")' "$1" > "$part"
-  start_prefetch "$part"
+  start_prefetch "$part" office-first
   [ -n "$DESKTOP_JOBS" ] || return 0
   INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
   # A runtime that cannot wait for a download in progress would fetch it a second time.
