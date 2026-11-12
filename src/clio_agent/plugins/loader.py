@@ -13,14 +13,17 @@ show what it would run.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import importlib
 import importlib.util
+import os
 import re
 import sys
 import traceback
 import types
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -142,8 +145,72 @@ def tree_digests(
         text = path.suffix.lower() in _TEXT_SUFFIXES or relative in _TEXT_FILES
         target = exec_hash if path.resolve() in named or not text else text_hash
         target.update(relative.encode("utf-8") + b"\0")
-        target.update(hashlib.sha256(path.read_bytes()).digest())
+        target.update(file_digest(path))
     return exec_hash.hexdigest(), text_hash.hexdigest()
+
+
+#: Within :func:`hashing_once`, each file's ``(size, mtime_ns, sha256)`` by absolute path.
+_FILE_HASHES: contextvars.ContextVar[dict[str, tuple[int, int, bytes]] | None] = (
+    contextvars.ContextVar("clio_plugin_file_hashes", default=None)
+)
+
+
+@contextlib.contextmanager
+def hashing_once() -> Iterator[None]:
+    """Read and hash each unchanged package file once, for the length of an install.
+
+    An install digests the same files several times (the marketplace, its snapshot's
+    name, each plugin untrusted and then trusted). Every read is a file open, which
+    real-time antivirus scans; on Windows these were most of the default marketplace's
+    install. A file is re-read when its size or modification time changed.
+    """
+
+    token = _FILE_HASHES.set({}) if _FILE_HASHES.get() is None else None
+    try:
+        yield
+    finally:
+        if token is not None:
+            _FILE_HASHES.reset(token)
+
+
+def file_digest(path: Path) -> bytes:
+    """The SHA-256 of ``path``'s bytes, read once per unchanged file in :func:`hashing_once`."""
+
+    memo = _FILE_HASHES.get()
+    if memo is None:
+        return hashlib.sha256(path.read_bytes()).digest()
+    key = os.path.abspath(path)
+    stat = os.stat(key)
+    known = memo.get(key)
+    if known is not None and known[:2] == (stat.st_size, stat.st_mtime_ns):
+        return known[2]
+    digest = hashlib.sha256(path.read_bytes()).digest()
+    memo[key] = (stat.st_size, stat.st_mtime_ns, digest)
+    return digest
+
+
+def carry_digests(source: Path, copy: Path) -> None:
+    """Give ``copy`` (a copy of ``source`` that keeps modification times) its digests.
+
+    Only a file whose source is unchanged since it was hashed, and whose copy has its
+    size and modification time, takes its source's digest without being read.
+    """
+
+    memo = _FILE_HASHES.get()
+    if not memo:
+        return
+    prefix = os.path.join(os.path.abspath(source), "")
+    target = os.path.abspath(copy)
+    for key, (size, mtime, digest) in list(memo.items()):
+        if not key.startswith(prefix):
+            continue
+        copied = os.path.join(target, key[len(prefix) :])
+        try:
+            now, there = os.stat(key), os.stat(copied)
+        except OSError:
+            continue
+        if (now.st_size, now.st_mtime_ns) == (size, mtime) == (there.st_size, there.st_mtime_ns):
+            memo[copied] = (size, mtime, digest)
 
 
 def _package_name(root: Path) -> str:
