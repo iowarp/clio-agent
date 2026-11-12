@@ -12,7 +12,6 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
-import tempfile
 import tomllib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +23,7 @@ from filelock import FileLock
 from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
 from clio_agent.runtime.document_stack.node_paths import node_path
+from clio_agent.runtime.document_stack.npm_package import unpack_package as _unpack_package
 from clio_agent.runtime.document_stack.process import scratch_root
 from clio_agent.runtime.document_venv import (
     _built_for_this_interpreter,
@@ -392,23 +392,6 @@ def _pnpm_command(package: Path, node: str, env: dict[str, str]) -> Path:
     if _run([node, str(pnpm), "--version"], cwd=package, env=env).strip() != PNPM_VERSION:
         raise DocumentRuntimeError("Prepared pnpm did not execute its pinned version")
     return pnpm
-
-
-def _unpack_package(archive: Path, target: Path) -> None:
-    """Unpack one npm tarball's ``package/`` as ``target``, replacing what was there."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".unpack-", dir=target.parent) as temporary:
-        staging = Path(temporary)
-        with tarfile.open(archive, "r:gz") as source:
-            source.extractall(staging, filter="data")
-        unpacked = staging / "package"
-        if not (unpacked / "package.json").is_file():
-            raise DocumentRuntimeError(f"{archive.name} has no npm package")
-        if target.is_symlink() or target.is_file():
-            target.unlink()
-        elif target.exists():
-            shutil.rmtree(target)
-        unpacked.rename(target)
 
 
 def _installer_pnpm(package: Path) -> bool:

@@ -21,6 +21,24 @@ TUI/HTTP surface aren't tracked here.
   Receipt writes now retry, verification checks for cancellation while hashing
   large files, and a worker that still ignores a cancel is ended.
 
+## [0.9.6.6] - 2026-11-12
+
+No GACT-contract change. A CLIO installed by `install.ps1` with its own home
+keeps its clio-kit in that home and leaves the user's own clio-kit alone (#2226),
+and `install.ps1` refuses a home too long for Windows paths up front (#2227).
+
+## [0.9.6.5] - 2026-11-12
+
+Installer hotfix. Ships the same iowarp/gact-tui v0.12.2, clio-kit 2.12.3,
+clio-schemas 0.7.0b1 and marketplace v0.8.0-beta.1 as 0.9.6.4.
+
+### Fixed
+
+- `/v1/health` reports missing default agents instead of showing a ready
+  server that cannot start a conversation. (#2215)
+- A Claude Code turn whose stream stays open only through API keepalives now
+  ends with a recoverable error instead of hanging. (#2211)
+
 ## [0.9.6.4] - 2026-11-12
 
 Ships iowarp/gact-tui v0.12.2. clio-kit 2.12.3, clio-schemas 0.7.0b1 and the

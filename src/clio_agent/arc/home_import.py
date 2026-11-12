@@ -123,18 +123,16 @@ def health_details() -> dict[str, object]:
     """Which daemon this home selected and how its one-time record import went."""
     from clio_agent.arc import home_runtime  # noqa: PLC0415 - cycle
 
+    daemon = home_runtime.snapshot()
     try:
-        return {"home_daemon": home_runtime.snapshot(), "home_import": status()}
-    except Exception:  # noqa: BLE001 - health never fails on its own details
-        return {}
+        return {"home_daemon": daemon, "home_import": status()}
+    except Exception as exc:  # noqa: BLE001 - forwards: into health; it never fails on it
+        return {"home_daemon": daemon, "home_import_error": f"{type(exc).__name__}: {exc}"}
 
 
 def health_note() -> str:
     """One sentence on the daemon choice and import, for the health row's summary."""
-    try:
-        details = health_details()
-    except Exception:  # noqa: BLE001 - health never fails on its own note
-        return ""
+    details = health_details()
     daemon = details.get("home_daemon") or {}
     info: dict[str, Any] = details.get("home_import") or {}  # type: ignore[assignment]
     parts = [f"daemon: {daemon['mode']}"] if isinstance(daemon, dict) and daemon else []
@@ -216,7 +214,7 @@ def export_if_pending() -> None:
         return
     try:
         _export_pending(root)
-    except Exception as exc:  # noqa: BLE001 - reported typed; the home still starts
+    except Exception as exc:  # noqa: BLE001 - forwards: typed status; the home starts
         _set_status(state="failed", reason=HOME_IMPORT_FAILED, error=str(exc))
         logger.error(
             "home import export failed (reason=%s): %s; retried at the next start",
@@ -652,7 +650,7 @@ def import_pending(store: Any) -> None:
             return
         try:
             _import(store, root)
-        except Exception as exc:  # noqa: BLE001 - reported typed; resumed next start
+        except Exception as exc:  # noqa: BLE001 - forwards: typed status; resumed next start
             _set_status(state="failed", reason=HOME_IMPORT_FAILED, error=str(exc))
             logger.error(
                 "home import failed (reason=%s): %s; it resumes at the next start",
@@ -734,9 +732,9 @@ def _merge_index(store: Any, tag: str, prefix: str, rows: list[tuple[Any, bool]]
     from clio_agent.gact.session_records import bucket_of  # noqa: PLC0415
 
     grouped: dict[str, list[tuple[Any, bool]]] = {}
-    for columns, unfilled in rows:
+    for columns, row_unfilled in rows:
         row = RecordColumns(**columns)
-        grouped.setdefault(bucket_of(row.id), []).append((row, unfilled))
+        grouped.setdefault(bucket_of(row.id), []).append((row, row_unfilled))
     added = 0
     for bucket, imported in grouped.items():
         ext = extension_name(bucket)

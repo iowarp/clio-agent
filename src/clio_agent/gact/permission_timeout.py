@@ -20,7 +20,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.permission_evidence import emit_permission_resolution
@@ -86,7 +86,7 @@ def _wait(
             )
             # Nobody refused it: the turn stopped (or the server shut down) while it
             # waited. The tool layer records the call as cancelled, not denied.
-            decision.outcome = "cancelled"
+            cast(Any, decision).outcome = "cancelled"  # read by tool_observation
             return decision
         if event.is_set():
             return None

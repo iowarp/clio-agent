@@ -93,7 +93,7 @@ On Windows, use `& ([scriptblock]::Create((irm <url>))) <options>`, e.g.
 |---|---|
 | none | the latest stable release |
 | `--dev` | the newest release, betas included |
-| `--version <version>` | a specific release, for example `--version 0.9.6.4` |
+| `--version <version>` | a specific release, for example `--version 0.9.6.6` |
 
 Building from source (`--source`) is for CLIO developers; do not use it unless asked.
 

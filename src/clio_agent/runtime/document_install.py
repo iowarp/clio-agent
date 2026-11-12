@@ -453,12 +453,27 @@ def _runtime_code_files() -> list[str]:
     The shipped ``.pyc`` files are checked hash-based, so an import opens both the
     bytecode and its source. The roots are this interpreter's import path, outermost
     first, so a folder inside another (site-packages inside Lib) is walked once.
+    Only entries inside the interpreter's own prefixes count: ``python -m`` puts the
+    caller's working directory first on the path, and an installer run from a home
+    directory must not walk the whole home.
     """
     tag = sys.implementation.cache_tag
     suffix = f".{tag}.pyc"
+    prefixes = {
+        os.path.normcase(os.path.realpath(p))
+        for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+        if p
+    }
+
+    def _inside_runtime(entry: str) -> bool:
+        real = os.path.normcase(os.path.realpath(entry))
+        return any(real == p or real.startswith(p.rstrip(os.sep) + os.sep) for p in prefixes)
+
     roots: list[str] = []
     files: list[str] = []
     for entry in sorted({os.path.abspath(p) for p in sys.path if p}, key=len):
+        if not _inside_runtime(entry):
+            continue
         if os.path.isfile(entry):
             files.append(entry)
         elif os.path.isdir(entry) and not any(entry.startswith(root + os.sep) for root in roots):

@@ -37,7 +37,7 @@ def test_converter_probes_all_overlap(
     def run(command: list[str], *, cwd: Path, timeout: float) -> str:
         nonlocal active, peak
         assert cwd == tmp_path
-        assert timeout == 10
+        assert timeout == (60 if command[0] == "soffice" else 10)
         with lock:
             active += 1
             peak = max(peak, active)
