@@ -303,9 +303,12 @@ def _main() -> None:
     # and overlap the whole package step instead of waiting for the first browser use.
     # The default marketplace is a fetch too: the server is not ready until it is
     # installed, so a first start that had to fetch it held the workspace for its length.
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="clio-packages") as installing:
+    # Opening the server's code once here moves the on-access scan of the files the
+    # install just wrote out of the first start (see _prewarm_runtime_files).
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-packages") as installing:
         browser = installing.submit(_prepare_browser, args, emit)
         marketplace = installing.submit(_prepare_default_marketplace, args, emit)
+        prewarm = installing.submit(_prewarm_runtime_files, args)
         installation = installing.submit(
             install_document_runtime,
             args.workspace,
@@ -317,6 +320,7 @@ def _main() -> None:
         result = installation.result()
         browser_result = browser.result()
         marketplace_result = marketplace.result()
+        prewarm_result = prewarm.result()
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
@@ -324,6 +328,7 @@ def _main() -> None:
         "store_migrations": migrations,
         "browser": browser_result,
         "marketplace": marketplace_result,
+        "prewarm": prewarm_result,
     }
     if not args.reuse_installed:
         # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
@@ -383,6 +388,72 @@ def _prepare_default_marketplace(
         return {"status": "failed", **service.ready_error, "seconds": seconds}
     emit("The default agents are installed.")
     return {"status": "ready", "seconds": seconds}
+
+
+_PREWARM_SUFFIXES = (".pyd", ".dll", ".so", ".dylib", ".zip")
+
+
+def _runtime_code_files() -> list[str]:
+    """The runtime's shipped bytecode, each module's source, and its native libraries.
+
+    The shipped ``.pyc`` files are checked hash-based, so an import opens both the
+    bytecode and its source. The roots are this interpreter's import path, outermost
+    first, so a folder inside another (site-packages inside Lib) is walked once.
+    """
+    tag = sys.implementation.cache_tag
+    suffix = f".{tag}.pyc"
+    roots: list[str] = []
+    files: list[str] = []
+    for entry in sorted({os.path.abspath(p) for p in sys.path if p}, key=len):
+        if os.path.isfile(entry):
+            files.append(entry)
+        elif os.path.isdir(entry) and not any(entry.startswith(root + os.sep) for root in roots):
+            roots.append(entry)
+    for root in roots:
+        for folder, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if d != "node_modules"]
+            if os.path.basename(folder) == "__pycache__":
+                parent = os.path.dirname(folder)
+                for name in names:
+                    if name.endswith(suffix):
+                        files.append(os.path.join(folder, name))
+                        files.append(os.path.join(parent, name[: -len(suffix)] + ".py"))
+                continue
+            files.extend(os.path.join(folder, n) for n in names if n.endswith(_PREWARM_SUFFIXES))
+    return files
+
+
+def _open_once(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            handle.read(1)
+    except OSError:
+        return False
+    return True
+
+
+def _prewarm_runtime_files(args: argparse.Namespace) -> dict[str, Any]:
+    """Open the runtime's code files once, in parallel, during an install.
+
+    An on-access scanner (Windows Defender) scans a file the installer just wrote the
+    first time anything opens it. The server's first start opened about 5,000 of them
+    one import at a time: on Windows its import took 33 s cold and 7 s once they were
+    opened. A per-launch check skips this; a file that cannot be opened is only counted.
+    """
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    import time  # noqa: PLC0415
+
+    started = time.monotonic()
+    files = _runtime_code_files()
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="clio-prewarm") as opening:
+        opened = sum(opening.map(_open_once, files))
+    return {
+        "status": "done",
+        "files": opened,
+        "unreadable": len(files) - opened,
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 def _run_store_migrations(
