@@ -6,7 +6,8 @@ Resolution, first match wins:
    (``account/model``, e.g. ``server-vllm-spotter/Qwen3-8B``, or a bare model id);
 2. the server default, ``fleet.spotter`` (``GET``/``PATCH /v1/settings/fleet``,
    field ``spotter``: ``{provider_id, model_id}`` or null);
-3. nothing: the watcher inherits the watched session's model, as before.
+3. the fast model (``fleet.fast``, else the watched session's account's fast family);
+4. nothing: the watcher inherits the watched session's model, as before.
 
 A chosen model is passed as the watcher spawn's ``model`` and recorded with
 source ``"person"``: the person picked it, so the spending guard never asks
@@ -39,8 +40,13 @@ logger = logging.getLogger(__name__)
 SPOTTER_MODEL_KEY = "spotter_model"
 
 
-def default_spotter_ref() -> str:
-    """The server-default SPOTTER model as ``account/model``, or ``""`` to inherit."""
+def default_spotter_ref(app: "FastAPI | None" = None, session: "Session | None" = None) -> str:
+    """The server-default SPOTTER model as ``account/model``, or ``""`` to inherit.
+
+    ``fleet.spotter``, else the fast model (:mod:`clio_agent.gact.fleet.fast_model`):
+    the person's, or the watched session's account's fast family when ``app`` and
+    ``session`` are given.
+    """
 
     from clio_agent.gact.fleet_settings import fleet_settings  # noqa: PLC0415
 
@@ -51,7 +57,24 @@ def default_spotter_ref() -> str:
         # stop a watcher from arming on the watched session's model.
         logger.warning("spotter_default_model_unreadable reason=%s -- inheriting", exc)
         return ""
-    return f"{choice['provider_id']}/{choice['model_id']}" if choice else ""
+    if choice:
+        return f"{choice['provider_id']}/{choice['model_id']}"
+    from clio_agent.gact.fleet.fast_model import fast_identity  # noqa: PLC0415
+
+    try:
+        if app is not None and session is not None:
+            from clio_agent.gact.fleet.child_model import caller_model  # noqa: PLC0415
+
+            account = caller_model(app, cast("StoredSession", session))["provider_id"]
+            fast = fast_identity(app=app, account=account)
+        else:
+            from clio_agent.gact.fleet.fast_model import configured_fast  # noqa: PLC0415
+
+            fast = configured_fast()
+    except (ValueError, OSError, AttributeError, KeyError) as exc:
+        logger.warning("spotter_fast_model_unresolved reason=%s -- inheriting", exc)
+        return ""
+    return f"{fast['provider_id']}/{fast['model_id']}" if fast else ""
 
 
 def session_spotter_ref(session: "Session") -> Any:
@@ -63,11 +86,10 @@ def session_spotter_ref(session: "Session") -> Any:
 def watcher_model_ref(app: "FastAPI", session: "Session") -> str:
     """The model reference the session's watcher runs on; ``""`` inherits."""
 
-    del app  # The default lives in user configuration, not on the app.
     own = session_spotter_ref(session)
     if isinstance(own, str) and own.strip():
         return own.strip()
-    return default_spotter_ref()
+    return default_spotter_ref(app, session)
 
 
 def is_person_choice(app: "FastAPI", parent: "Session", agent_id: str, model: str) -> bool:
@@ -202,7 +224,7 @@ def rearm_on_model_change(
     prior_ref = (
         prior_spotter_model.strip()
         if isinstance(prior_spotter_model, str) and prior_spotter_model.strip()
-        else default_spotter_ref()
+        else default_spotter_ref(app, session)
     )
     if prior_ref == watcher_model_ref(app, session):
         return  # The watcher already runs on what the new value resolves to.
