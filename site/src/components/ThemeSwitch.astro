@@ -1,0 +1,74 @@
+---
+/**
+ * Light, automatic and dark in one segmented control, used by the home page and
+ * the docs header. The choice is stored under Starlight's own key, so both
+ * kinds of page read and write the same preference; automatic stores ''.
+ */
+---
+
+<div class="theme-switch" role="group" aria-label="Color theme">
+	<button type="button" data-theme-pick="light" aria-pressed="false" title="Light" aria-label="Light">
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+	</button>
+	<button type="button" data-theme-pick="" aria-pressed="true" title="Match the system" aria-label="Match the system">
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>
+	</button>
+	<button type="button" data-theme-pick="dark" aria-pressed="false" title="Dark" aria-label="Dark">
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+	</button>
+</div>
+
+<script>
+	const KEY = 'starlight-theme';
+	const system = matchMedia('(prefers-color-scheme: dark)');
+	const stored = () => {
+		const value = localStorage.getItem(KEY);
+		return value === 'light' || value === 'dark' ? value : '';
+	};
+	const apply = () => {
+		document.documentElement.dataset.theme = stored() || (system.matches ? 'dark' : 'light');
+		const pick = stored();
+		document.querySelectorAll<HTMLButtonElement>('[data-theme-pick]').forEach((button) => {
+			button.setAttribute('aria-pressed', String(button.dataset.themePick === pick));
+		});
+	};
+	document.querySelectorAll<HTMLButtonElement>('[data-theme-pick]').forEach((button) =>
+		button.addEventListener('click', () => {
+			localStorage.setItem(KEY, button.dataset.themePick ?? '');
+			apply();
+		}),
+	);
+	system.addEventListener('change', apply);
+	apply();
+</script>
+
+<style>
+	.theme-switch {
+		display: inline-flex;
+		flex: none;
+		padding: 3px;
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		background: var(--paper-sunk, var(--paper-2));
+	}
+	.theme-switch button {
+		display: inline-grid;
+		place-items: center;
+		width: 30px;
+		height: 28px;
+		padding: 0;
+		border: 0;
+		border-radius: 7px;
+		background: none;
+		color: var(--ink-soft);
+		cursor: pointer;
+	}
+	.theme-switch button:hover {
+		color: var(--ink);
+	}
+	.theme-switch button[aria-pressed='true'] {
+		background: var(--paper-raised, var(--surface));
+		color: var(--ink);
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.14);
+	}
+</style>

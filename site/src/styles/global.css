@@ -190,35 +190,50 @@
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
 /* ---------- Brand tokens ---------- */
+/* The CLIO owl palette (branding/clio/README.md): navy #143B5D, blue #2F7599,
+   orange #E87C2F, ivory #F2EAD9. The docs share the home page's paper and ink
+   (styles/home.css): cool white with navy ink in light, a navy night with pale
+   ink in dark. Ivory stays the owl's own color; orange stays a small accent. */
+:root {
+	--brand-navy: #143b5d;
+	--brand-blue: #2f7599;
+	--brand-orange: #e87c2f;
+	--brand-ivory: #f2ead9;
+}
+
 :root,
 :root[data-theme='dark'] {
-	--paper: #000000;
-	--paper-raised: #0d0d0c;
-	--paper-sunk: #151412;
-	--ink: #f0ece1;
-	--ink-soft: #d6cebf;
-	--muted: #a3998a;
-	--line: #23211d;
-	--line-control: #736a5f;
-	--accent: #00d4db;
-	--accent-soft: #052629;
-	--on-accent: #000000;
-	--copper: #ee852f;
+	--paper: #0c1823;
+	--paper-raised: #111f2b;
+	--paper-sunk: #13222f;
+	--ink: #eaf0f3;
+	--ink-soft: #b6c4ce;
+	--muted: #8fa1ae;
+	--line: #223646;
+	--line-control: #5a7387;
+	--accent: #6aaed0;
+	--accent-soft: #13314a;
+	--on-accent: #0c1823;
+	--copper: #f0924c;
+	--cta: #eaf0f3;
+	--on-cta: #0c1823;
 }
 
 :root[data-theme='light'] {
-	--paper: #f3eee4;
-	--paper-raised: #faf7f2;
-	--paper-sunk: #e9e2d5;
-	--ink: #1a1612;
-	--ink-soft: #3c342c;
-	--muted: #524a42;
-	--line: #d4cbbd;
-	--line-control: #756c5e;
-	--accent: #0a666c;
-	--accent-soft: #e3f2f3;
-	--on-accent: #faf7f2;
-	--copper: #9a4812;
+	--paper: #fbfdfd;
+	--paper-raised: #ffffff;
+	--paper-sunk: #f2f6f7;
+	--ink: #10263b;
+	--ink-soft: #3c5568;
+	--muted: #566a79;
+	--line: #d9e2e6;
+	--line-control: #7f919c;
+	--accent: #25668a;
+	--accent-soft: #e4eff5;
+	--on-accent: #ffffff;
+	--copper: #b4551a;
+	--cta: #143b5d;
+	--on-cta: #ffffff;
 }
 
 :root {
@@ -426,7 +441,12 @@ html {
 }
 
 /* Docs keep a readable article column and a quiet, compact guide index. */
-:root[data-has-sidebar] { --sl-sidebar-width: 17rem; }
+:root[data-has-sidebar] { --sl-sidebar-width: 17rem; --sl-content-width: 54rem; }
+/* "On this page" keeps its own width; leftover space centres the article instead. */
+@media (min-width: 72rem) {
+	:root[data-has-sidebar][data-has-toc] .right-sidebar-container { width: var(--sl-sidebar-width); }
+	:root[data-has-sidebar][data-has-toc] .main-pane { width: calc(100% - var(--sl-sidebar-width)); --sl-content-margin-inline: auto; }
+}
 :root[data-has-sidebar] h1#_top { font-size: clamp(2rem, 4vw, 2.75rem); line-height: 1.15; }
 .sidebar-content .large { font-size: 0.9rem; }
 .sidebar-content a { padding-block: 0.3rem; }
@@ -436,11 +456,15 @@ html {
 	text-decoration: none;
 }
 
-/* Wordmark in ink, as on coder.iowarp.ai; the mark carries the color. */
-.site-title {
-	color: var(--ink) !important;
-	font-family: var(--font-body);
-	letter-spacing: 0.02em;
+/* Starlight's fixed header frame holds the shared SiteHeader, which draws its own
+   background, border and padding. */
+:root {
+	--sl-nav-height: 4rem;
+}
+header.header {
+	padding: 0;
+	border-bottom: 0;
+	background: transparent;
 }
 
 /*
