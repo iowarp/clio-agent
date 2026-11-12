@@ -53,6 +53,9 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     ("bundled deb (aarch64 Linux)", r"_arm64-bundled\.deb$"),
     ("bundled rpm (x86_64 Linux)", r"\.x86_64-bundled\.rpm$"),
     ("bundled rpm (aarch64 Linux)", r"\.aarch64-bundled\.rpm$"),
+    # Arch Linux pacman packages, made from the bundled deb (no lite variant).
+    ("bundled Arch package (x86_64 Linux)", r"-x86_64-bundled\.pkg\.tar\.zst$"),
+    ("bundled Arch package (aarch64 Linux)", r"-aarch64-bundled\.pkg\.tar\.zst$"),
     # Lite desktop installers (attach-only; no embedded runtime).
     ("lite msi (x86_64 Windows)", r"_x64_en-US\.msi$"),
     ("lite nsis exe (x86_64 Windows)", r"_x64-setup\.exe$"),

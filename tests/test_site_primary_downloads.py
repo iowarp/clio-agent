@@ -24,22 +24,20 @@ from scripts.check_release_completeness import EXPECTED_ASSETS
 
 ROOT = Path(__file__).parents[1]
 DOWNLOADS_TS = ROOT / "site" / "src" / "lib" / "downloads.ts"
-BUNDLES_WORKFLOW = ROOT / ".github" / "workflows" / "clio-bundles.yml"
 
-# The Arch package is made only from the bundled deb (install/linux-package/arch-package.sh);
-# there is no lite Arch package, and the release gate does not list it yet.
-BUNDLED_ONLY = {".pkg.tar.zst"}
+# Release-gate entries for updater payloads, not installers a user downloads.
+NOT_INSTALLERS = ("updater", "sig", "Apple archive")
 
 
 def _bundled_extensions() -> set[str]:
     """Lower-case file extensions the release gate requires a bundled installer for."""
     extensions: set[str] = set()
     for label, pattern in EXPECTED_ASSETS:
-        if not label.startswith("bundled"):
+        if not label.startswith("bundled") or any(word in label for word in NOT_INSTALLERS):
             continue
-        match = re.search(r"-bundled\\\.([A-Za-z]+)\$$", pattern)
+        match = re.search(r"-bundled((?:\\\.[A-Za-z]+)+)\$$", pattern)
         if match:
-            extensions.add("." + match.group(1).lower())
+            extensions.add(match.group(1).replace("\\.", ".").lower())
     return extensions
 
 
@@ -65,7 +63,7 @@ def _offered_formats() -> dict[str, list[str]]:
 
 def test_release_gate_lists_bundled_formats() -> None:
     """Guard the parser: the release gate must still name bundled formats."""
-    assert {".msi", ".exe", ".dmg", ".deb", ".rpm"} <= _bundled_extensions()
+    assert _bundled_extensions() == {".msi", ".exe", ".dmg", ".deb", ".rpm", ".pkg.tar.zst"}
 
 
 def test_site_table_parses() -> None:
@@ -77,19 +75,10 @@ def test_site_table_parses() -> None:
     assert {"deb", "rpm", "pacman"} <= set(offered["linux"])
 
 
-def test_the_arch_package_is_published_only_bundled() -> None:
-    """The bundled-only exception holds: the workflow names no lite Arch package."""
-    workflow = BUNDLES_WORKFLOW.read_text(encoding="utf-8")
-    for extension in BUNDLED_ONLY:
-        names = re.findall(r"[\w.${}#-]*" + re.escape(extension), workflow)
-        assert names, f"clio-bundles.yml publishes no {extension}"
-        assert all(name.endswith("-bundled" + extension) for name in names), names
-
-
 @pytest.mark.parametrize("platform", ["windows", "macos", "linux"])
 def test_every_download_is_a_bundled_format(platform: str) -> None:
     """Each download a platform offers resolves to a format the release ships bundled."""
-    bundled = _bundled_extensions() | BUNDLED_ONLY
+    bundled = _bundled_extensions()
     for fmt in _offered_formats()[platform]:
         extension = _format_extensions()[fmt]
         assert extension in bundled, (
