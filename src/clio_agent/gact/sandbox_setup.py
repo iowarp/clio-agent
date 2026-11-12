@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 #: Typed reason surfaced when a setup run is already in flight (module lock held).
 REASON_SETUP_IN_PROGRESS = "sandbox_setup_in_progress"
+# Shown in place of an unexpected exception's text; the exception itself is logged.
+SETUP_STOPPED_DETAIL = (
+    "Protected execution setup stopped unexpectedly. Retry Set up protected execution and "
+    "inspect Technical details if it fails again."
+)
 
 #: Guards concurrent :func:`run_sandbox_setup` calls — the self-elevating flow must never race
 #: itself (one UAC prompt / one account-provisioning pass at a time).
@@ -100,8 +105,8 @@ def prepare_sandbox_at_startup(app: Any, *, platform: str = sys.platform) -> Non
         except DocumentRuntimeError as exc:
             logger.warning("protected execution startup preparation failed: %s", exc)
             finish_setup("failed", str(exc))
-        except Exception as exc:
-            finish_setup("failed", str(exc))
+        except Exception:
+            finish_setup("failed", SETUP_STOPPED_DETAIL)
             raise
         finally:
             app.state.sandbox = sandbox.reresolve_after_setup()
@@ -255,8 +260,8 @@ def run_sandbox_setup(
             elevated=provision.elevated,
             row=row,
         )
-    except Exception as exc:
-        finish_setup("failed", str(exc))
+    except Exception:
+        finish_setup("failed", SETUP_STOPPED_DETAIL)
         raise
     finally:
         _SETUP_LOCK.release()

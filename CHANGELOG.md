@@ -8,6 +8,9 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- The "Protected execution needs attention" notice says what failed in a plain
+  sentence instead of showing the raw per-folder grant records, which now go
+  to the log. An unexpected setup error no longer shows its exception text.
 - `PUT /v1/providers/lm` sent right after `/v1/health` answers now waits (up to
   30 s) for the task runtime to finish starting instead of returning 503
   `task_runtime_starting`. Other routes still refuse immediately while CLIO
