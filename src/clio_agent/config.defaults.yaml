@@ -1035,11 +1035,10 @@ arc.lsm_memtable_size: 1000
 # cost.
 arc.message_part_chunk_segments: 512
 
-# CLIO_ARC_NAMESPACE  (str)  <- src/clio_agent/arc/home_namespace.py
+# CLIO_ARC_NAMESPACE  (str)  <- src/clio_agent/arc/storage.py
 # clio-core namespace ARC records live under (tags <namespace>/<kind>);
 # empty keeps the bare tags. Set to keep two deployments on one clio-core
-# apart. Unset, a CLIO home attached to a daemon another home spawned nests
-# its tags under its own home-<digest> namespace (arc/home_namespace.py).
+# apart.
 # arc.namespace:  # default unset; resolved in code
 
 # CLIO_ARC_SEARCH_CHUNK_ATOMS  (int)  <- src/clio_agent/arc/search_companion.py

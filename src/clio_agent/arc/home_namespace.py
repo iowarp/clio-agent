@@ -1,18 +1,22 @@
-"""Keep each CLIO home's records apart on the one clio-core daemon per machine.
+"""Keep each CLIO home's sessions apart on the one clio-core daemon per machine.
 
 Every CLIO home on a machine attaches to the same daemon, and the first home to start
-it decides its config (``clio_core_daemon_version.resolve_effective_config``). Records
-were then shared too: they live under bare ``<kind>`` tags, so a second home listed the
-first home's sessions and workspaces as its own.
+it decides its config and its storage (``clio_core_daemon_version.resolve_effective_config``).
+Session records were then shared too: one bare ``session_records`` index, so a second
+home listed the first home's sessions as its own, and each home's index writes (a whole
+bucket from its own memory) dropped the other's entries.
 
 The process that spawns the daemon records its home next to the pidfile. A process
 from another home that attaches still adopts the daemon's config (ports and tiers must
-match to attach at all), but every store it opens nests its tags under a namespace
-derived from its own home: ``home-<digest>/<kind>``. The daemon's own home keeps the
-bare tags it always had, so a single-home install sees no change.
+match to attach at all), but keeps its session index and rows under its own prefix,
+``home-<digest>/``, inside the ``session_records`` kind. The daemon's own home keeps the
+bare names it always had, so a single-home install sees no change. Other record kinds
+are keyed by session id and stay where they are, so a session's history is found
+wherever it was written.
 
-An explicit ``arc.namespace`` / ``CLIO_ARC_NAMESPACE`` is the operator's choice and is
-used as is, never nested.
+Sessions a home wrote before this existed sit in the bare index. On attaching with a
+prefix, a home adopts the ones that are its own (:mod:`clio_agent.gact.session_records`)
+and leaves a ``claimed/<id>`` marker, so the daemon's home stops listing them.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from clio_agent import paths
 
 logger = logging.getLogger(__name__)
 
-#: Typed reason logged when this home's records are namespaced on another home's daemon.
+#: Typed reason logged when this home's sessions are namespaced on another home's daemon.
 CLIO_CORE_HOME_NAMESPACED = "clio_core_home_namespaced"
 
 _lock = threading.Lock()
@@ -60,7 +64,7 @@ def adopt_daemon_home(daemon_home: str, daemon_config_path: str, requested_confi
         requested_config_path: The config this home would have started it with.
 
     Returns:
-        The namespace this process's stores nest under, "" for this home's own daemon.
+        This home's namespace, "" for this home's own daemon.
     """
     global _active
     own = home_identity()
@@ -73,7 +77,7 @@ def adopt_daemon_home(daemon_home: str, daemon_config_path: str, requested_confi
         _active = namespace
     if namespace:
         logger.warning(
-            "clio-core daemon belongs to another CLIO home (reason=%s): this home's records "
+            "clio-core daemon belongs to another CLIO home (reason=%s):             this home's sessions "
             "live under namespace %s; home=%s daemon_home=%s",
             CLIO_CORE_HOME_NAMESPACED,
             namespace,
@@ -84,22 +88,15 @@ def adopt_daemon_home(daemon_home: str, daemon_config_path: str, requested_confi
 
 
 def active_namespace() -> str:
-    """Return the namespace this process's stores nest under ("" when none)."""
+    """Return this home's namespace on another home's daemon ("" when none)."""
     with _lock:
         return _active
 
 
-def scoped(namespace: str) -> str:
-    """Nest a store's ``namespace`` under this home's, unless one is configured explicitly."""
+def session_record_prefix() -> str:
+    """Return the prefix of this home's session record names ("" for bare names)."""
     home = active_namespace()
-    if not home:
-        return namespace
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    explicit = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
-    if explicit.strip().strip("/"):
-        return namespace
-    return f"{home}/{namespace}" if namespace else home
+    return f"{home}/" if home else ""
 
 
 def reset() -> None:
@@ -116,5 +113,5 @@ __all__ = [
     "home_identity",
     "namespace_for",
     "reset",
-    "scoped",
+    "session_record_prefix",
 ]

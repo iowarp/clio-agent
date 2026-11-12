@@ -48,7 +48,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LSM_COMPACTION_THRESHOLD` | `arc.lsm_compaction_threshold` | int | `5` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS` | `arc.message_part_chunk_segments` | int | `512` | `src/clio_agent/gact/part_atoms.py` |
-| `CLIO_ARC_NAMESPACE` | `arc.namespace` | str | _(unset)_ | `src/clio_agent/arc/home_namespace.py` |
+| `CLIO_ARC_NAMESPACE` | `arc.namespace` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_SEARCH_CHUNK_ATOMS` | `arc.search_chunk_atoms` | int | `16` | `src/clio_agent/arc/search_companion.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |

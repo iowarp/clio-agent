@@ -31,7 +31,6 @@ from clio_agent.arc import (
     clio_core_attach,
     core_control_port,
     crashed_clients,
-    home_namespace,
     runtime_log,
     runtime_log_flood,
     runtime_ownership,
@@ -448,8 +447,7 @@ class ClioCoreStore(ClioCoreWrites):
         type(self)._instances.add(self)
         # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
         # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.
-        # On a daemon another CLIO home spawned, this home's namespace nests them.
-        self._namespace = home_namespace.scoped(namespace)
+        self._namespace = namespace
         self._kinds = tuple(kinds)  # what clear() and the tag prewarm cover
         self._tag_ids = TagIds(cte, self.tag)  # Tag(name) blocks with the GIL: once per kind
         self._config_path = config_path

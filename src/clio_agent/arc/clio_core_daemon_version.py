@@ -32,10 +32,10 @@ differs from the one this process asked for, the difference is recorded
 ``clio_core_config_adopted_from_daemon``, and surfaced as the
 ``clio_core_config_adoption`` health row -- never substituted silently.
 
-ONE DAEMON, SEPARATE HOMES. Adopting the config never means sharing records. The
-spawner also records its CLIO home; an attacher from another home nests every tag
-under its own namespace (:mod:`clio_agent.arc.home_namespace`), so a home never lists
-another home's sessions or workspaces.
+ONE DAEMON, SEPARATE HOMES. Adopting the config never means sharing sessions. The
+spawner also records its CLIO home; an attacher from another home keeps its session
+index under its own prefix (:mod:`clio_agent.arc.home_namespace`), so a home never
+lists another home's sessions.
 """
 
 from __future__ import annotations
@@ -283,7 +283,7 @@ class ConfigAdoption:
     requested_config_path: str
     effective_config_path: str
     diffs: dict[str, dict[str, Any]]
-    record_namespace: str = ""  # this home's tag namespace on another home's daemon
+    record_namespace: str = ""  # this home's session-record prefix on another home's daemon
 
 
 _adoption_lock = threading.Lock()

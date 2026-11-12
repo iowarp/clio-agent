@@ -393,9 +393,7 @@ KEY_NOTES: dict[str, str] = {
     ),
     "arc.namespace": (
         "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
-        "bare tags. Set to keep two deployments on one clio-core apart. Unset, a CLIO home "
-        "attached to a daemon another home spawned nests its tags under its own "
-        "home-<digest> namespace (arc/home_namespace.py)."
+        "bare tags. Set to keep two deployments on one clio-core apart."
     ),
     "arc.store": (
         'The ARC store: "cte" (clio-core), the only store; any other value is a typed '

@@ -387,7 +387,7 @@ def probe_clio_core_config_adoption(*, record: object | None = None) -> list[Int
         return []
     keys = ", ".join(sorted(snap.diffs)) or "unspecified keys"
     apart = (
-        f" This CLIO's records are kept apart under namespace {snap.record_namespace}."
+        f" This CLIO's sessions are kept apart under namespace {snap.record_namespace}."
         if snap.record_namespace
         else ""
     )
