@@ -118,6 +118,8 @@ class ManagedObsidianClient:
             environment = {
                 **os.environ,
                 "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", ""),
+                # npm's cache is ~/.npm unless named; CLIO's goes with --purge-caches.
+                "npm_config_cache": str(self.root / "npm-cache"),
             }
             flags = _hidden_process_options()
             try:
