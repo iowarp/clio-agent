@@ -275,3 +275,54 @@ async def test_the_relay_keeps_waiting_while_on_silence_extends() -> None:
     )
     silences = [m for m in got if isinstance(m, claude_code_expiry.StreamSilence)]
     assert silences and "late reply" in got
+
+
+async def test_the_relay_ends_at_once_when_stopped_during_a_stall_wait() -> None:
+    """Stop wakes a stall wait: it never waits for the stream or the wait to run out."""
+
+    class _Silent:
+        async def query(self, _input: Any, *, session_id: str) -> None:
+            del session_id
+
+        async def receive_response(self) -> Any:
+            await asyncio.sleep(30)
+            yield None
+
+    stopped_at = time.monotonic() + 0.3
+    started = time.monotonic()
+    with pytest.raises(claude_code_expiry.ClaudeCodeStreamStopped):
+        await claude_code_expiry.relay_with_idle_bound(
+            _Silent(),
+            "q",
+            session_id="s",
+            idle_s=20,
+            put=lambda _m: None,
+            on_silence=lambda _s: 20,
+            stop=lambda: time.monotonic() >= stopped_at,
+        )
+    assert time.monotonic() - started < 3
+
+
+async def test_stopping_a_stalled_turn_does_not_wait_out_the_stall_wait(
+    monkeypatch: pytest.MonkeyPatch, notices: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """A stream that never answers, even to the interrupt: Stop still ends the call promptly.
+
+    SABOTAGE: drop ``stop=`` from the pooled relay -> the call holds until the 20 s
+    stall wait runs out -> red.
+    """
+    del notices
+    fake.install(monkeypatch)
+    module = sys.modules["claude_agent_sdk"]
+    base = module.ClaudeSDKClient  # type: ignore[attr-defined]
+
+    class _NeverAnswers(base):  # type: ignore[misc, valid-type]
+        async def receive_response(self) -> Any:
+            await asyncio.sleep(60)
+            yield fake.text("too late")
+
+    monkeypatch.setattr(module, "ClaudeSDKClient", _NeverAnswers)
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):  # the person's Stop, standing in
+        await asyncio.wait_for(fake.drive(fake.request(), idle_timeout_s=20), timeout=0.5)
+    assert time.monotonic() - started < 5

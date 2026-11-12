@@ -543,6 +543,7 @@ class _StreamClientEntry:
                         idle_s=idle_timeout,
                         put=lambda msg: chunks.put(("msg", msg)),
                         on_silence=on_silence,
+                        stop=abandon.is_set,
                     )
                 clean = True
             except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop

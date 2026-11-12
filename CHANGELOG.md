@@ -29,7 +29,8 @@ TUI/HTTP surface aren't tracked here.
   minutes (#2211). After 30 s with no response (`limits.lm_stall_wait_s`), CLIO
   resends the request, or keeps waiting once output has started, at growing
   intervals: 30 s, 60 s, 120 s, 240 s, then every 300 s. Each wait shows as a
-  notice in the conversation, and you can stop the turn at any time.
+  notice in the conversation, and you can stop the turn at any time. Stopping
+  ends the wait at once, even when the stalled stream never answers.
 
 ### Fixed
 
