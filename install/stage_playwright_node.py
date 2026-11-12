@@ -28,6 +28,7 @@ import hashlib
 import io
 import json
 import platform
+import posixpath
 import re
 import stat
 import subprocess
@@ -86,8 +87,8 @@ def _chromium(node: Path, driver: Path) -> dict[str, object] | None:
 
     Playwright's own ``install --dry-run`` names it; the archive is hashed as it streams
     and is not kept. ``clio_agent.gact.browser.install`` downloads it at install time, keeps
-    only these bytes, and unpacks it on several threads. An archive with symbolic links (the
-    macOS app bundle) is not pinned: Playwright installs that one itself, downloading once.
+    only these bytes, and unpacks it on several threads. The macOS app bundle's symbolic
+    links are pinned too, when each stays inside the archive; the install makes them last.
     """
     listing = subprocess.run(  # noqa: S603 - the wheel's own pinned binary and installer
         [str(node), str(driver / "package" / "cli.js"), "install", "--dry-run", "--no-shell"]
@@ -120,9 +121,15 @@ def _chromium(node: Path, driver: Path) -> dict[str, object] | None:
             size += len(chunk)
         kept.seek(0)
         with zipfile.ZipFile(kept) as listing:
-            if any(stat.S_ISLNK(entry.external_attr >> 16) for entry in listing.infolist()):
-                print("stage_playwright_node: the Chromium archive has links; not pinned")
-                return None
+            for entry in listing.infolist():
+                if not stat.S_ISLNK(entry.external_attr >> 16):
+                    continue
+                name = entry.filename.rstrip("/")
+                pointed = listing.read(entry).decode("utf-8")
+                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), pointed))
+                if posixpath.isabs(pointed) or resolved == ".." or resolved.startswith("../"):
+                    print(f"stage_playwright_node: the Chromium link {name} leaves it; not pinned")
+                    return None
     print(f"stage_playwright_node: chromium v{revision} pinned: {url} ({size / 1e6:.0f} MB)")
     return {"revision": revision, "url": url, "sha256": digest.hexdigest(), "size": size}
 
