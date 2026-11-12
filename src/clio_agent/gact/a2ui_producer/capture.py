@@ -130,17 +130,22 @@ def build_capture_a2ui_surface_tool() -> Any:
                 )
             with tool_workspace_context(root):
                 snapshot, snapshot_hash = viewed_media.snapshot(data, ".png")
-            return {
-                "type": VIEW_IMAGE_DESCRIPTOR_TYPE,
-                "path": str(target),
-                "media_type": "image/png",
-                "size_bytes": len(data),
-                "sha256": digest,
-                "snapshot": snapshot,
-                "snapshot_sha256": snapshot_hash,
-                "artifact_id": version.artifact_id,
-                "capture": evidence,
-            }
+            from clio_agent.gact.model_media import deliver  # noqa: PLC0415
+
+            return deliver(
+                {
+                    "type": VIEW_IMAGE_DESCRIPTOR_TYPE,
+                    "path": str(target),
+                    "media_type": "image/png",
+                    "size_bytes": len(data),
+                    "sha256": digest,
+                    "snapshot": snapshot,
+                    "snapshot_sha256": snapshot_hash,
+                    "artifact_id": version.artifact_id,
+                    "capture": evidence,
+                },
+                tool="capture_a2ui_surface",
+            )
         except (VisualFeedbackError, OSError, ValueError) as exc:
             return refusal(getattr(exc, "reason", "a2ui_capture_failed"), detail=str(exc))
 

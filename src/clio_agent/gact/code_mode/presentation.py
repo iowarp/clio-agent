@@ -69,6 +69,22 @@ def _summary(row: Mapping[str, Any]) -> str:
     return text if calls else "Finished without tool calls"
 
 
+def _attached(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The images/PDFs the script viewed, which rode its result to the model."""
+    from clio_agent.gact.agents.native_presenters_workspace_file import (  # noqa: PLC0415
+        viewed_file_block,
+    )
+
+    blocks: list[dict[str, Any]] = []
+    for index, item in enumerate(row.get("attached_media") or ()):
+        if not isinstance(item, Mapping):
+            continue
+        seen = {**item, "attached_to_model": True, "delivery": "script_result"}
+        if block := viewed_file_block(seen, f"attached-{index + 1}"):
+            blocks.append(block)
+    return blocks
+
+
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """The finished script."""
     row = structured if isinstance(structured, Mapping) else {}
@@ -117,6 +133,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         )
     if not (row.get("output") or row.get("error") or row.get("value") is not None):
         blocks.append({"id": "silent", "type": "text", "text": "The script printed nothing."})
+    blocks.extend(_attached(row))
     # The calls themselves are nested rows under this one; naming them again here
     # would repeat them as producer identifiers.
     view = _view(args, code, _summary(row), blocks)

@@ -175,10 +175,18 @@ def build_view_image_tool() -> Any:
         this conversation's scratch folder (where browser screenshots are written).
         PDF files must first be rendered into bounded PNG, JPEG, GIF, or WebP pages.
         The file is size-bounded, media-sniffed, hashed, and revalidated before its
-        pixels reach the model.
+        pixels reach the model. Called from a run_code script, the script gets only
+        the image's facts; the pixels are attached to the script's result and you see
+        them on your next step. A background script cannot show images to you.
         """
 
-        return _descriptor(path)
+        from clio_agent.gact.model_media import MediaNotShownError, deliver  # noqa: PLC0415
+
+        descriptor = _descriptor(path)
+        try:
+            return deliver(descriptor, tool="view_image")
+        except MediaNotShownError as exc:
+            raise ViewImageError(exc.reason, str(exc)) from None
 
     return native_tool(
         view_image,

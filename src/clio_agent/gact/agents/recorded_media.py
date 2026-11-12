@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from dspy.lm15 import (
@@ -21,23 +21,54 @@ logger = logging.getLogger(__name__)
 
 
 def result_part(
-    call_id: str, name: str, value: Any, is_error: bool, *, call_ref: str = ""
+    call_id: str,
+    name: str,
+    value: Any,
+    is_error: bool,
+    *,
+    call_ref: str = "",
+    media: Sequence[Mapping[str, Any]] = (),
 ) -> ToolResultPart:
     """A tool's result as the provider-native part (images/PDFs as media, else text).
 
     Media the history can no longer show (its snapshot is gone) becomes a note the
     agent reads -- one old image never fails the whole conversation. ``call_ref``
     (``call:<session>/<call_id>``) follows the result, once, so the call can be cited.
+    ``media`` is what the call's script viewed (:mod:`clio_agent.gact.model_media`):
+    each follows the text, labelled with its path, so the model sees the pixels.
     """
     part = _result_part(call_id, name, value, is_error)
-    if not call_ref:
+    extra = tuple(_attached(call_id, item) for item in media)
+    tail = tuple(p for pair in extra for p in pair)
+    if not call_ref and not tail:
         return part
     return ToolResultPart(
         id=part.id,
-        content=(*part.content, TextPart(text=f"[{call_ref}]")),
+        content=(*part.content, *tail, *((TextPart(text=f"[{call_ref}]"),) if call_ref else ())),
         name=part.name,
         is_error=part.is_error,
     )
+
+
+def _attached(call_id: str, descriptor: Mapping[str, Any]) -> tuple[Any, ...]:
+    """One script-viewed image/PDF: its label, then the media (or why it is gone)."""
+    path = str(descriptor.get("path") or "")
+    pages = str(descriptor.get("pages") or "")
+    kind = "PDF" if str(descriptor.get("media_type") or "") == "application/pdf" else "image"
+    label = f"[{kind} viewed by the script: {path}{f' pages {pages}' if pages else ''}]"
+    try:
+        part = _media(descriptor)
+    except ValueError as exc:
+        logger.warning(
+            "tool media unavailable reason=%s call=%s detail=%s", type(exc).__name__, call_id, exc
+        )
+        from clio_agent import injections  # noqa: PLC0415
+
+        note = injections.render("media_unavailable_result", {"error": exc}) or ""
+        return (TextPart(text=label), TextPart(text=note))
+    if part is None:
+        return ()
+    return (TextPart(text=label), part)
 
 
 def _result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResultPart:

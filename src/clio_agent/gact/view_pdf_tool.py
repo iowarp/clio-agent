@@ -378,10 +378,17 @@ def build_view_pdf_tool() -> Any:
         1-based page numbers/ranges (e.g. ``"3"``, ``"1-5"``, ``"1-3,7,10-12"``);
         empty means the whole document, bounded by the configured page ceiling.
         The file is size-bounded, media-sniffed, hashed, and revalidated before
-        its pages reach the model.
+        its pages reach the model. Called from a run_code script, the PDF is attached
+        to the script's result and you see it on your next step.
         """
 
-        return _descriptor(path, pages)
+        from clio_agent.gact.model_media import MediaNotShownError, deliver  # noqa: PLC0415
+
+        descriptor = _descriptor(path, pages)
+        try:
+            return deliver(descriptor, tool="view_pdf")
+        except MediaNotShownError as exc:
+            raise ViewPdfError(exc.reason, str(exc)) from None
 
     return native_tool(
         view_pdf,

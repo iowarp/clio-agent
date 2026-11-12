@@ -64,7 +64,7 @@ Do not implement, stub or reserve fields for these:
 - RLM semantics (`llm()` leaves, the `rlm` subagent, recursive context handling). That is the next plan; it adds its own kernel binding.
 - The in-app browser and its `page` object (item g). It also adds its own kernel binding later.
 - Replacing `run_workflow` or declared flows with scripts. Flows stay as `orchestration-semantics.md` defines them.
-- Images or other media in `run_code` observations. A script writes a file and the agent calls `view_image` or `view_pdf`.
+- Images or other media in `run_code` observations, beyond the one path below. A script writes a file and views it with `view_image` or `view_pdf`; the viewed media rides the `run_code` call's result to the model's next step (`gact/model_media.py`, at most `tools.script_media_max` per script, default 8), and a background script's view is refused as not shown.
 - Changes to the science log. It stays the user-facing record of a study and is not the session plan.
 - Desktop or remote-relay kernels. The kernel runs where the agent's tools run.
 - Collapsing a whole server behind one enabling tool. Name lists make deferral cheap enough that a second level is not needed.

@@ -313,6 +313,9 @@ class _CallOutcome:
     #: ``call:<session>/<call_id>``: the observer's record of this call, which the
     #: model sees with the result and can cite (the science log's sources).
     call_ref: str = ""
+    #: Images/PDFs the call's script viewed (:mod:`clio_agent.gact.model_media`): they
+    #: ride this call's result to the model.
+    media: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 class _Loop:
@@ -520,8 +523,9 @@ class _Loop:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
         refs = {c.id: o.call_ref for c, o in zip(calls, outcomes, strict=True) if o.call_ref}
+        media = {c.id: o.media for c, o in zip(calls, outcomes, strict=True) if o.media}
         clock.mark("")
-        self._record(text, thinking, calls, results, origin, refs)
+        self._record(text, thinking, calls, results, origin, refs, media)
         clock.mark("record")
         clock.report(self.recorder.session, self.step, len(calls))
         for outcome in outcomes:
@@ -585,6 +589,7 @@ class _Loop:
         if tool is None:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
+        from clio_agent.gact.model_media import CALL_MEDIA, SCRIPT_MEDIA  # noqa: PLC0415
         from clio_agent.gact.science_log.lineage import call_reference  # noqa: PLC0415
         from clio_agent.gact.tool_observation import (  # noqa: PLC0415
             INLINE_COLLECTION,
@@ -595,8 +600,11 @@ class _Loop:
 
         slot: dict[str, str] = {}
         carried: list[Any] = []
+        media: list[dict[str, Any]] = []
         slot_token = MODEL_CALL_SLOT.set(slot)
         carried_token = INLINE_COLLECTION.set(carried)  # task outcomes the reply carries
+        media_token = CALL_MEDIA.set(media)  # what this call's script viewed
+        script_token = SCRIPT_MEDIA.set(None)  # this call is direct, whatever ran it
         try:
             with (
                 call_identity_scope(),
@@ -605,8 +613,11 @@ class _Loop:
             ):
                 outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
         finally:
+            SCRIPT_MEDIA.reset(script_token)
+            CALL_MEDIA.reset(media_token)
             INLINE_COLLECTION.reset(carried_token)
             MODEL_CALL_SLOT.reset(slot_token)
+        outcome.media = list(media)
         if not outcome.is_error:
             outcome.value = collected_observation(outcome.value, carried)
         outcome.value, guidance = after_tool_result(
@@ -682,6 +693,7 @@ class _Loop:
         results: dict[str, tuple[Any, bool]],
         origin: tuple[str, bool] = ("", True),
         refs: dict[str, str] | None = None,
+        media: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.recorder.step_done(
             self.step,
@@ -693,6 +705,7 @@ class _Loop:
             thinking_source=origin[0],
             thinking_complete=origin[1],
             refs=refs,
+            media=media,
         )
         from clio_agent.gact.explore_nudge import note_reading_run  # noqa: PLC0415
         from clio_agent.gact.working_state import note_stale_plan  # noqa: PLC0415

@@ -69,28 +69,51 @@ def workspace_file_presentation(
         if isinstance(result, Mapping)
         else {}
     )
+    block = viewed_file_block(row, "workspace-file")
+    if block is None:
+        return {"summary": "", "blocks": []}
+    return {"summary": _SEEN_SUMMARY.get(str(block.get("status") or ""), ""), "blocks": [block]}
+
+
+#: ``status`` of a viewed file's block: whether its pixels reached the model.
+SEEN_BY_MODEL = "attached_to_model"
+
+_SEEN_SUMMARY = {SEEN_BY_MODEL: "Shown to the model"}
+
+
+def viewed_file_block(row: Mapping[str, Any], block_id: str) -> dict[str, Any] | None:
+    """One viewed image/PDF as a ``workspace_file`` block (a text block for a scratch
+    file), with ``status``/``detail`` saying whether and when the model saw it."""
+
     path = str(row.get("path") or "")
     media_type = str(row.get("media_type") or "")
     sha256 = str(row.get("sha256") or "")
     if not path or not media_type or not sha256:
-        return {"summary": "", "blocks": []}
+        return None
+    seen: dict[str, Any] = {}
+    if row.get("attached_to_model"):
+        via = (
+            "with the run_code script's result"
+            if row.get("delivery") == "script_result"
+            else "as this call's result"
+        )
+        seen = {"status": SEEN_BY_MODEL, "detail": f"Shown to the model on its next step, {via}."}
     if path.startswith("/") or ":" in path[:3]:  # the conversation's scratch, not the workspace
-        return {
-            "summary": "",
-            "blocks": [{"id": "scratch-file", "type": "text", "label": "Viewed", "text": path}],
-        }
+        scratch_id = "scratch-file" if block_id == "workspace-file" else block_id
+        return {"id": scratch_id, "type": "text", "label": "Viewed", "text": path, **seen}
     block: dict[str, Any] = {
-        "id": "workspace-file",
+        "id": block_id,
         "type": "workspace_file",
         "workspace_id": _active_workspace_id(),
         "path": path,
         "media_type": media_type,
         "sha256": sha256,
+        **seen,
     }
     pages = _resolved_pages(row)
     if pages:
         block["pages"] = pages
-    return {"summary": "", "blocks": [block]}
+    return block
 
 
-__all__ = ["workspace_file_presentation"]
+__all__ = ["SEEN_BY_MODEL", "viewed_file_block", "workspace_file_presentation"]
