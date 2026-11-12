@@ -72,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     name = office.prepared_tree_name()
     if name is None:
-        raise SystemExit("no prepared Office tree for this host (Linux x86_64 or aarch64, Windows x64)")
+        raise SystemExit(
+            "no prepared Office tree for this host (Linux x86_64 or aarch64, Windows x64)"
+        )
     args.output.mkdir(parents=True, exist_ok=True)
     target = args.output / name
     with tempfile.TemporaryDirectory(prefix="office-tree-", dir=args.output) as temporary:

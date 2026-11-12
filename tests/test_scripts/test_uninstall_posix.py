@@ -382,7 +382,9 @@ def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
         idle = prefix / "runtime" / "server.py"
         idle.parent.mkdir()
         idle.write_text("import time\ntime.sleep(60)\n")
-        server = subprocess.Popen([sys.executable, str(idle)])
+        # Run it from the installation: uninstall stops only processes it can tie to the
+        # prefix, and a truncated ps args line must not make it look foreign.
+        server = subprocess.Popen([sys.executable, str(idle)], cwd=idle.parent)
         threading.Thread(target=server.wait, daemon=True).start()
         (prefix / "clio-server.pid").write_text(str(server.pid))
         mine = [f"clio-{server.pid}-shm-out", f"clio-{server.pid}-shm-in-0", f"clio_{server.pid}_0"]
