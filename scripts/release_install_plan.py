@@ -17,6 +17,11 @@ come from the servers and only feed the installer's progress; 0 means unknown. T
 lists the plan in its SHA256SUMS, which is what authenticates it to the installer.
 
     python scripts/release_install_plan.py --target aarch64-apple-darwin --output PLAN
+
+``--only office`` writes just the ``office`` line: a Windows release's
+``office-plan.TRIPLE.txt``, from which ``install.ps1``'s source install fetches the
+prepared Office tree. It is not in the bundled plan, whose every line the Windows
+desktop and runtime installs fetch, and whose runtime archive already holds Office.
 """
 
 from __future__ import annotations
@@ -80,9 +85,10 @@ def entries(
     ``--desktop`` skips it, since the deb and rpm carry their own copy.
 
     ``office_pack`` (``scripts/build_office_tree.py``'s ``office-tree.pack.json``) names
-    a Linux release's prepared Office tree, its own release asset: the ``office`` line
-    then fetches it from the release instead of TDF's package archive, and the app
-    unpacks it instead of laying Office from TDF's and Ubuntu's packages.
+    a release's prepared Office tree, its own release asset: the ``office`` line then
+    fetches it from the release instead of TDF's packages, and the app unpacks it
+    instead of laying Office from TDF's and Ubuntu's packages (Linux) or TDF's MSI
+    (Windows). A Windows plan names it only without ``pack``, whose archive holds Office.
     """
     if target not in TARGETS:
         raise SystemExit(f"no install plan for {target}")
@@ -98,8 +104,8 @@ def entries(
     else:
         plan = []
     if office_pack is not None:
-        if key[0] != "Linux":
-            raise SystemExit("a prepared Office tree is a Linux release asset")
+        if key[0] == "Darwin" or (key[0] == "Windows" and pack is not None):
+            raise SystemExit(f"no prepared Office tree in {target}'s install plan")
         plan.append(("office", *_named_asset(office_pack, "Office tree")))
     elif pack is None or key[0] != "Windows":
         plan.append(("office", checksum, name, str(office["MIRROR"]).format(build=build) + name))
@@ -156,8 +162,9 @@ def main(argv: list[str] | None = None) -> int:
         "--runtime-pack", type=Path, help="the setup's gact-runtime.pack.json, if it names an asset"
     )
     parser.add_argument(
-        "--office-pack", type=Path, help="build_office_tree.py's office-tree.pack.json (Linux)"
+        "--office-pack", type=Path, help="build_office_tree.py's office-tree.pack.json"
     )
+    parser.add_argument("--only", choices=["office"], help="write only this kind's lines")
     parser.add_argument(
         "--browser-manifest",
         type=Path,
@@ -185,8 +192,13 @@ def main(argv: list[str] | None = None) -> int:
         + [
             f"{kind} {sha} {size(kind, url)} {name} {url}"
             for kind, sha, name, url in entries(args.target, pack, office_pack)
+            if args.only in (None, kind)
         ]
-        + [f"{kind} {sha} {nbytes} {name} {url}" for kind, sha, name, url, nbytes in browser]
+        + [
+            f"{kind} {sha} {nbytes} {name} {url}"
+            for kind, sha, name, url, nbytes in browser
+            if args.only in (None, kind)
+        ]
     )
     args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

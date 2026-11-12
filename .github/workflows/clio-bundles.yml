@@ -328,6 +328,23 @@ jobs:
             echo "::warning::could not build the prepared Office tree; the install plan keeps TDF's Office"
             rm -rf "$RUNNER_TEMP/office-tree"
           fi
+      # The same tree laid from TDF's MSI and pruned, published with its own plan
+      # (office-plan.TRIPLE.txt): install.ps1's source install unpacks it while it
+      # downloads instead of expanding the 373 MB MSI's CAB one file at a time. The
+      # bundled plan and the runtime archive (which already holds Office) are unchanged.
+      - name: Build prepared Office tree (Windows)
+        if: matrix.variant == 'bundled' && runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        # Not fatal: without it the source install lays Office from TDF's MSI as before,
+        # and check_release_completeness reports the missing asset.
+        run: |
+          if ! uv run --no-project --python 3.14 --with zstandard==0.25.0 --with 'filelock>=3.19,<4' \
+              --with truststore==0.10.4 python scripts/build_office_tree.py \
+              --output "$RUNNER_TEMP/office-tree" \
+              --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"; then
+            echo "::warning::could not build the prepared Office tree; the source install keeps TDF's MSI"
+            rm -rf "$RUNNER_TEMP/office-tree"
+          fi
       # Tauri signs only the app, its frameworks and the sidecar; the runtime
       # ships as resources. Sign every runtime Mach-O (and the native members
       # of the document wheels) inside-out before the bundler seals the app.
@@ -788,6 +805,8 @@ jobs:
               asset="$(jq -r .asset "$pack")"
               cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
               pattern="$asset"
+              office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
+              [ ! -f "$office_pack" ] || cp "$RUNNER_TEMP/office-tree/$(jq -r .asset "$office_pack")" "$stage/"
             elif [ "${{ runner.os }}" = "Linux" ]; then
               # The deb and rpm carry the archive; the plain install.sh one-liner installs
               # the agent from the same archive, published on its own (install plan).
@@ -835,6 +854,11 @@ jobs:
             pack_args=()
             if [ "${{ runner.os }}" = "Windows" ]; then
               pack_args=(--runtime-pack external/gact-tui/desktop/src-tauri/gact-runtime.pack.json)
+              # The source install's Office tree, in a plan of its own: the desktop and
+              # runtime installs fetch every bundled-plan line, and their archive has Office.
+              office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
+              [ ! -f "$office_pack" ] || "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" \
+                --office-pack "$office_pack" --only office --output "$stage/office-plan.${{ matrix.target }}.txt"
             elif [ "${{ runner.os }}" = "Linux" ]; then
               pack_args=(--runtime-pack "$RUNNER_TEMP/gact-runtime.asset.pack.json")
               office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"

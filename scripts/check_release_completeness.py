@@ -92,6 +92,9 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     ("runtime archive (aarch64 Linux)", r"^gact-runtime-.*-linux-arm64\.tar\.zst$"),
     ("prepared Office (x86_64 Linux)", r"^office-.*-linux-x64\.tar\.zst$"),
     ("prepared Office (aarch64 Linux)", r"^office-.*-linux-arm64\.tar\.zst$"),
+    # install.ps1's source install fetches this tree through its own plan.
+    ("prepared Office (x86_64 Windows)", r"^office-.*-windows-x64\.tar\.zst$"),
+    ("Office plan (x86_64 Windows)", r"^office-plan\.x86_64-pc-windows-msvc\.txt$"),
     ("install plan (x86_64 Linux)", r"^install-plan\.x86_64-unknown-linux-gnu\.bundled\.txt$"),
     ("install plan (aarch64 Linux)", r"^install-plan\.aarch64-unknown-linux-gnu\.bundled\.txt$"),
     ("Tauri update manifest (bundled)", r"^latest\.json$"),
