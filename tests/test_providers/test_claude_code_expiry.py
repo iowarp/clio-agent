@@ -153,3 +153,32 @@ async def test_a_connect_whose_cli_does_nothing_fails_typed(
     cause = caught.value.__cause__
     assert isinstance(cause, claude_code_expiry.ClaudeCodeConnectTimeout)
     assert cause.reason == "no_progress"
+
+
+async def test_a_stream_kept_open_only_by_pings_fails_typed_as_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One message, then only the API's keep-alive pings: still silence, so idle.
+
+    The API sends a ``ping`` stream event every 30 s on an open stream; a stalled
+    generation is nothing but pings. SABOTAGE: let a ping restart the bound -> the
+    pings below hold it open past the wait_for -> red.
+    """
+    fake.install(monkeypatch)
+    module = sys.modules["claude_agent_sdk"]
+    base = module.ClaudeSDKClient  # type: ignore[attr-defined]
+
+    class _PingsOnly(base):  # type: ignore[misc, valid-type]
+        async def receive_response(self) -> Any:
+            yield fake.text("partial")
+            for _ in range(200):
+                await asyncio.sleep(0.1)
+                yield fake.StreamEvent({"type": "ping"})
+
+    monkeypatch.setattr(module, "ClaudeSDKClient", _PingsOnly)
+    started = time.monotonic()
+    with pytest.raises(LMTimeoutError) as caught:
+        await asyncio.wait_for(fake.drive(fake.request(), idle_timeout_s=0.5), timeout=10)
+    assert time.monotonic() - started < 10
+    assert "1 message" in str(caught.value)
+    assert isinstance(caught.value.__cause__, claude_code_expiry.ClaudeCodeIdleTimeout)
