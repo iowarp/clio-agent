@@ -1490,6 +1490,25 @@ EOF
 # never while the managed runtime step's cache collection looks for live clio-kit.
 CLIO_KIT_JOB=""
 clio_kit_spec=""
+# A CLIO with its own prefix, home, data or user folder keeps clio-kit in uv tool
+# folders inside its prefix, so it never replaces the user's own clio-kit; the launcher
+# puts them on the agent's PATH and uninstall.sh removes them with the payloads. A
+# caller that chose uv's tool folders itself (an SSH deployment) keeps its choice.
+KIT_SCOPED=""
+KIT_TOOL_DIR=""
+if [ -n "${CLIO_PREFIX:-}${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" ]; then
+  KIT_SCOPED=1
+  [ -n "${UV_TOOL_DIR:-}" ] || KIT_TOOL_DIR="$PREFIX/uv-tools"
+fi
+kit_uv() {  # uv with this installation's tool folders, for that command only
+  if [ -n "$KIT_TOOL_DIR" ]; then
+    # On PATH for uv only, which otherwise warns that it is not; the launcher adds it.
+    PATH="$KIT_TOOL_DIR/bin:$PATH" UV_TOOL_DIR="$KIT_TOOL_DIR" \
+      UV_TOOL_BIN_DIR="$KIT_TOOL_DIR/bin" uv "$@"
+  else
+    uv "$@"
+  fi
+}
 start_clio_kit() {
   need_uv
   if ! have uv; then
@@ -1507,13 +1526,20 @@ start_clio_kit() {
     say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
   fi
   # Recorded for uninstall unless the user already had it: the tool's name is the spec
-  # without its version and extras (a path or URL spec has none to record).
+  # without its version and extras (a path or URL spec has none to record). A scoped
+  # installation's tool folders go with its payloads instead; one made before scoping
+  # keeps the record of the shared clio-kit its installer added.
   local tool="${clio_kit_spec%%[=\[<>~! ]*}"
-  if [[ "$tool" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-      && { [ "$UNRECORDED_INSTALL" = 1 ] || ! uv tool list 2>/dev/null | grep -q "^$tool "; }; then
+  mkdir -p "$PREFIX"
+  if [[ "$tool" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && { [ "$UNRECORDED_INSTALL" = 1 ] \
+      || { [ -z "$KIT_SCOPED" ] && ! uv tool list 2>/dev/null | grep -q "^$tool "; }; }; then
     record_installed uv-tool "$tool"
   fi
-  uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
+  # Even empty, the record tells uninstall.sh this installer said what it added, so it
+  # never takes the user's own clio-kit for one an older installer put there.
+  : >> "$INSTALLED_TOOLS"
+  [ -z "$KIT_TOOL_DIR" ] || say "clio-kit goes in this installation's own tool folder: $KIT_TOOL_DIR"
+  kit_uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
   CLIO_KIT_JOB=$!
 }
 finish_clio_kit() {
@@ -1522,8 +1548,10 @@ finish_clio_kit() {
   wait "$CLIO_KIT_JOB" || status=$?
   CLIO_KIT_JOB=""
   cat "$DESKTOP_SCRATCH/clio-kit.log" 2>/dev/null || true
+  local retry="uv tool install \"$clio_kit_spec\""
+  [ -z "$KIT_TOOL_DIR" ] || retry="UV_TOOL_DIR=\"$KIT_TOOL_DIR\" UV_TOOL_BIN_DIR=\"$KIT_TOOL_DIR/bin\" $retry"
   [ "$status" = 0 ] && say "clio-kit launcher ready ($clio_kit_spec)" \
-    || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
+    || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until '$retry' succeeds and '\$(uv tool dir --bin)' is on PATH"
 }
 
 # start_submodules SRC [ARGS]: update_submodules in the background; finish_submodules
