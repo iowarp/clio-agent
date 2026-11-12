@@ -12,7 +12,7 @@
 
 export type OS = 'windows' | 'macos' | 'linux';
 export type Arch = 'x64' | 'arm64';
-export type Format = 'exe' | 'msi' | 'dmg' | 'deb' | 'rpm';
+export type Format = 'exe' | 'msi' | 'dmg' | 'deb' | 'rpm' | 'pacman';
 
 /** The subset of a GitHub release asset the resolver reads. */
 export interface ReleaseAsset {
@@ -43,6 +43,7 @@ const EXTENSIONS: Record<Format, string> = {
 	dmg: '.dmg',
 	deb: '.deb',
 	rpm: '.rpm',
+	pacman: '.pkg.tar.zst',
 };
 
 const ARCH_TOKENS: Record<Arch, readonly string[]> = {
@@ -132,16 +133,44 @@ export interface DownloadChoice {
 	arch?: Arch;
 }
 
-/** A platform card: the main download and the alternative formats. */
+/** A link shown where a platform or distribution has no installer to offer. */
+export interface Alternative {
+	text: string;
+	link: string;
+	href: string;
+}
+
+/**
+ * A Linux distribution family and the package its own package manager installs.
+ *
+ * A browser cannot tell distributions apart, so the Linux card lists them and the
+ * visitor picks theirs. A family no package fits names what to use instead.
+ */
+export interface Distribution {
+	name: string;
+	choice?: DownloadChoice;
+	alternative?: Alternative;
+}
+
+/** A platform card: the main download and the alternative formats, or its distributions. */
 export interface PlatformDownloads {
 	os: OS;
 	name: string;
 	summary: string;
-	primary: DownloadChoice;
+	/** The one recommended installer; absent when the visitor must pick a distribution. */
+	primary?: DownloadChoice;
 	others: readonly DownloadChoice[];
+	distributions?: readonly Distribution[];
 	/** Shown in place of the other formats when a platform has none. */
-	alternative?: { text: string; link: string; href: string };
+	alternative?: Alternative;
 }
+
+/** Where a distribution without a desktop package installs CLIO: in the browser. */
+export const BROWSER_INSTALL: Alternative = {
+	text: 'No desktop package yet.',
+	link: 'Use CLIO in your browser',
+	href: '/docs/install/#install-script',
+};
 
 /** The three platform cards, in default order. */
 export const PLATFORMS: readonly PlatformDownloads[] = [
@@ -163,8 +192,15 @@ export const PLATFORMS: readonly PlatformDownloads[] = [
 	{
 		os: 'linux',
 		name: 'Linux',
-		summary: 'Debian, Ubuntu, Fedora, and more',
-		primary: { format: 'deb', label: 'Download .deb' },
-		others: [{ format: 'rpm', label: '.rpm' }],
+		summary: 'x86_64 and aarch64. Choose your distribution.',
+		others: [],
+		// Each package needs WebKitGTK 4.1 from the distribution, which RHEL 9 and its
+		// rebuilds do not ship; Debian 11 and Ubuntu 20.04 predate it.
+		distributions: [
+			{ name: 'Ubuntu 22.04+, Debian 12+, Mint 21+', choice: { format: 'deb', label: '.deb' } },
+			{ name: 'Fedora, openSUSE', choice: { format: 'rpm', label: '.rpm' } },
+			{ name: 'Arch, Manjaro, EndeavourOS', choice: { format: 'pacman', label: 'Arch package' } },
+			{ name: 'RHEL, Rocky, AlmaLinux 9', alternative: BROWSER_INSTALL },
+		],
 	},
 ];

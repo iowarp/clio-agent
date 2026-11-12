@@ -272,7 +272,7 @@ jobs:
           done
           apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
           sudo apt-get "${apt_opts[@]}" update
-          sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
+          sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev libarchive-tools zstd
       - name: Install
         working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false
@@ -798,6 +798,13 @@ jobs:
               esac
               asset="gact-runtime-${RELEASE_TAG#v}-linux-${arch}.tar.zst"
               cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
+              # Arch Linux: the bundled deb's files as a pacman package, its maintainer
+              # scripts as the install hooks (install/linux-package/arch-package.sh).
+              deb="$(find "$stage" -maxdepth 1 -type f -name '*-bundled.deb' -print -quit)"
+              [ -n "$deb" ] || { echo "::error::no bundled deb to make the Arch package from"; exit 1; }
+              case "${{ matrix.target }}" in x86_64-*) pacarch=x86_64 ;; *) pacarch=aarch64 ;; esac
+              bash install/linux-package/arch-package.sh "$deb" "${RELEASE_TAG#v}" "$pacarch" \
+                "$stage/CLIO.Desktop-${RELEASE_TAG#v}-1-${pacarch}-bundled.pkg.tar.zst"
               jq --arg asset "$asset" \
                 --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$asset" \
                 '. + {asset: $asset, url: $url}' external/gact-tui/desktop/src-tauri/gact-runtime.pack.json \
