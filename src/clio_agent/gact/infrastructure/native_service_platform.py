@@ -18,9 +18,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Iterator
@@ -28,6 +29,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 _JOB: Any = None
+#: ``<pid>:<identity>`` of the CLIO server a Windows worker must not outlive.
+OWNER_ENV = "CLIO_OWNER_PROCESS"
 LOG_GENERATIONS = 3
 WINDOWS_LOCK_WAIT_SECONDS = 60.0
 #: How long a Windows rename waits out a reader (a lockless status read, antivirus) that
@@ -384,6 +387,7 @@ def _kernel() -> Any:
         "GetCurrentProcess": ([], wintypes.HANDLE),
         "GetLastError": ([], wintypes.DWORD),
         "TerminateProcess": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+        "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
     }
     for name, (arguments, result) in signatures.items():
         function = getattr(kernel, name)
@@ -474,6 +478,10 @@ def bind_worker(generation: str, root: Path) -> None:
         kernel.CloseHandle(job)
         raise OSError("Could not bind the native service worker to its Job Object")
     _JOB = job  # The OS closes it on worker exit, including a hard kill.
+    if owner := os.environ.pop(OWNER_ENV, ""):
+        threading.Thread(
+            target=_end_with_owner, args=(root, generation, owner), daemon=True
+        ).start()
     write_json(
         root / "evidence" / f"worker-{generation}.json",
         {
@@ -482,6 +490,44 @@ def bind_worker(generation: str, root: Path) -> None:
             "process_identity": identity(os.getpid()),
         },
     )
+
+
+def operation_environment(env: dict[str, str], request: dict[str, Any]) -> None:
+    """The worker's per-operation environment: the reuse bypass and its owning server.
+
+    A start CLIO itself made for its own use names the server process it serves
+    (``owner_process``). On Windows the worker then lives only as long as that
+    server: a forced server stop or a Desktop quit skips the graceful shutdown that
+    stops the service, and a detached worker would keep its whole tree running.
+    """
+    if request["action"] == "install" and request.get("from_scratch"):
+        env["CLIO_FROM_SCRATCH"] = "1"
+    else:
+        env.pop("CLIO_FROM_SCRATCH", None)
+    env.pop(OWNER_ENV, None)
+    pid = request.get("owner_process") if request["action"] == "start" else None
+    if sys.platform == "win32" and isinstance(pid, int) and (found := identity(pid)):
+        env[OWNER_ENV] = f"{pid}:{found}"
+
+
+def _end_with_owner(root: Path, generation: str, owner: str) -> None:
+    """Wait on the owning server's exact process; once it is gone, end this worker's job."""
+    pid, _, expected = owner.partition(":")
+    kernel = _kernel()
+    handle = kernel.OpenProcess(0x00100000 | 0x1000, False, int(pid))  # SYNCHRONIZE | query
+    try:
+        if handle and _identity(kernel, handle) == expected:
+            kernel.WaitForSingleObject(handle, 0xFFFFFFFF)
+    finally:
+        if handle:
+            kernel.CloseHandle(handle)
+    # Publish the stop before the tree goes, so status never reports a dead "running".
+    with suppress(OSError, ValueError, RuntimeError), locked(root):
+        receipt = json.loads((root / "receipt.json").read_text())
+        if receipt.get("generation") == generation:
+            receipt.update(phase="stopped", pid=0, process_identity="", error=None)
+            write_json(root / "receipt.json", receipt)
+    kernel.TerminateJobObject(_JOB, 1)
 
 
 def await_worker(

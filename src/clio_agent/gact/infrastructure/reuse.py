@@ -46,8 +46,10 @@ FROM_SCRATCH_KEY = "install.from_scratch"
 FROM_SCRATCH_ENV = "CLIO_FROM_SCRATCH"
 #: The name this file is shipped under beside a supervised service.
 SHIPPED_NAME = "clio_reuse.py"
+#: The CLIO server PID a service CLIO started for itself lives with (never persisted).
+OWNER_PROCESS_KEY = "lifecycle.owner_pid"
 #: Operation-scoped configuration keys that must never reach a service record.
-TRANSIENT_KEYS = frozenset({FROM_SCRATCH_KEY})
+TRANSIENT_KEYS = frozenset({FROM_SCRATCH_KEY, OWNER_PROCESS_KEY})
 
 
 @dataclass(frozen=True)
@@ -354,6 +356,7 @@ __all__ = [
     "FROM_SCRATCH_ENV",
     "FROM_SCRATCH_KEY",
     "MARKER",
+    "OWNER_PROCESS_KEY",
     "PROGRESS_MARKER",
     "SHELL_FUNCTIONS",
     "SHIPPED_NAME",

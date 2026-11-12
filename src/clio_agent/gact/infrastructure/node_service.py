@@ -470,10 +470,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         else:
             env.pop(name, None)
     env["CLIO_SECRET_VARIABLES"] = ",".join(sorted(secrets))
-    if action == "install" and request.get("from_scratch"):
-        env["CLIO_FROM_SCRATCH"] = "1"
-    else:
-        env.pop("CLIO_FROM_SCRATCH", None)
+    platform_helper().operation_environment(env, request)
     receipt = {
         **current,
         "phase": "installing" if action == "install" else "running",
