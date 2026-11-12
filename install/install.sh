@@ -1837,7 +1837,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   start_clio_kit "$py"
   runtime_installed=0
   ! finish_release_runtime "$package_version" || runtime_installed=1
-  # The browser archives (Node.js, from the runtime's pin) only the prebuilt agent uses.
+  # The browser archives (Node.js and Chromium, from the runtime's pin) only the prebuilt agent uses.
   if [ "$runtime_first" = 1 ] && [ "$runtime_installed" = 1 ]; then
     start_install_downloads "$install_plan" "office npm browser"
   elif [ "$runtime_first" = 1 ]; then

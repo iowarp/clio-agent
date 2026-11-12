@@ -28,6 +28,7 @@ import http.client
 import importlib.util
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -36,7 +37,7 @@ import threading
 import urllib.request
 import zipfile
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from clio_agent import paths
@@ -172,6 +173,23 @@ def _fetch_pinned(pin: dict[str, Any], root: Path) -> Path:
     return archive
 
 
+def _make_link(staging: Path, name: str, pointed: str) -> None:
+    """The archive's symbolic link ``name`` -> ``pointed``, refused unless it stays inside."""
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), pointed))
+    if (
+        not name
+        or posixpath.isabs(name)
+        or posixpath.isabs(pointed)
+        or resolved == ".."
+        or resolved.startswith("../")
+        or ".." in PurePosixPath(name).parts
+    ):
+        raise ValueError(f"the Chromium archive's link {name!r} -> {pointed!r} leaves it")
+    link = staging / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(pointed)
+
+
 def _unpack_chromium(archive: Path, root: Path, revision: str) -> bool:
     """Install Chromium from ``archive`` the way Playwright's installer does, in parallel.
 
@@ -179,21 +197,32 @@ def _unpack_chromium(archive: Path, root: Path, revision: str) -> bool:
     Defender); this does the same extraction on several. The folder is filled under a name
     Playwright's cleanup ignores, gets Playwright's ``INSTALLATION_COMPLETE`` marker, and
     only then takes its final name, so Playwright never sees it unfinished and its own
-    ``install`` afterwards finds Chromium installed. An archive with symbolic links (the
-    macOS app bundle) is left to Playwright: ``False``.
+    ``install`` afterwards finds Chromium installed. The macOS app bundle's symbolic links
+    (its framework's ``Versions/Current`` and the links through it) are made last, each
+    checked to stay inside the folder. On Windows, an archive with links is left to
+    Playwright: ``False``.
     """
     with zipfile.ZipFile(archive) as listing:
         entries = listing.infolist()
-    if any(stat.S_ISLNK(entry.external_attr >> 16) for entry in entries):
+        links = [e for e in entries if stat.S_ISLNK(e.external_attr >> 16)]
+        targets = {e.filename.rstrip("/"): listing.read(e).decode("utf-8") for e in links}
+    if links and os.name == "nt":
         return False
     target = root / f"chromium-{revision}"
     staging = root / f".unpack-chromium-{revision}"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
-    files = sorted((e for e in entries if not e.is_dir()), key=lambda e: -e.file_size)
+    linked = {e.filename for e in links}
+    files = sorted(
+        (e for e in entries if not e.is_dir() and e.filename not in linked),
+        key=lambda e: -e.file_size,
+    )
     inside = staging.resolve()
-    for entry in files:  # folders first: 3.12's zipfile makes them without exist_ok (a race)
-        folder = (staging / entry.filename).parent.resolve()
+    for entry in entries:  # folders first: 3.12's zipfile makes them without exist_ok (a race)
+        if entry.filename in linked:
+            continue
+        path = staging / entry.filename
+        folder = (path if entry.is_dir() else path.parent).resolve()
         if folder.is_relative_to(inside):
             folder.mkdir(parents=True, exist_ok=True)
     workers = max(1, min(8, os.cpu_count() or 1))
@@ -216,6 +245,8 @@ def _unpack_chromium(archive: Path, root: Path, revision: str) -> bool:
         with concurrent.futures.ThreadPoolExecutor(workers, "clio-chromium-unpack") as pool:
             for done in [pool.submit(_extract, share) for share in shares if share]:
                 done.result()
+        for name, pointed in sorted(targets.items()):
+            _make_link(staging, name, pointed)
         (staging / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
         shutil.rmtree(target, ignore_errors=True)
         staging.rename(target)
