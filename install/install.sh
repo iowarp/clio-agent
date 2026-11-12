@@ -458,7 +458,7 @@ install_desktop() {
         aarch64|arm64) triple=aarch64-unknown-linux-gnu ;;
         *) die "unsupported processor: $cpu" ;;
       esac
-      have dpkg || have rpm || die "CLIO Desktop is published as .deb and .rpm packages, and this Linux has neither dpkg nor rpm. Install CLIO without --desktop and open it in your browser with: clio web" ;;
+      [ -n "$(linux_package_format)" ] || die "CLIO Desktop is published as .deb, .rpm and Arch Linux packages, and this Linux has none of dpkg, rpm or pacman. Install CLIO without --desktop and open it in your browser with: clio web" ;;
     *) die "unsupported OS for --desktop: $os (use install.ps1 -Desktop on Windows)" ;;
   esac
   tag="$(desktop_tag)"
@@ -470,10 +470,12 @@ install_desktop() {
     || die "could not download the release checksums (SHA256SUMS.$triple.bundled.txt)"
   case "$triple" in
     *-apple-darwin) asset="$(mac_release_asset "$DESKTOP_SCRATCH/checksums" "$version")" ;;
-    x86_64-*) if have dpkg; then asset="CLIO.Desktop_${version}_amd64-bundled.deb"; else asset="CLIO.Desktop-${version}-1.x86_64-bundled.rpm"; fi ;;
-    aarch64-*) if have dpkg; then asset="CLIO.Desktop_${version}_arm64-bundled.deb"; else asset="CLIO.Desktop-${version}-1.aarch64-bundled.rpm"; fi ;;
+    *-linux-gnu) asset="$(linux_package_asset "$version" "${triple%%-*}")" ;;
   esac
   expected="$(manifest_sha "$DESKTOP_SCRATCH/checksums" "$asset" | tr 'A-F' 'a-f')"
+  if ! is_sha "$expected" && [ "$(linux_package_format)" = pacman ]; then
+    die "CLIO Desktop $tag has no Arch Linux package (the first is in the release after 0.9.6.1). Install a newer release, or install CLIO without --desktop and open it in your browser with: clio web"
+  fi
   is_sha "$expected" || die "release checksum missing or ambiguous for $asset; nothing installed"
   if [ -z "$OPT_DOWNLOAD_ONLY" ]; then
     [ "$os" != Darwin ] || mac_destination
@@ -618,6 +620,28 @@ apt_prefetch() {  # SUDO PACKAGE DIR
       -o "$0.part" "$1" && mv "$0.part" "$0" || rm -f "$0.part"; exit 0' < "$dir/fetch"
 }
 
+# The desktop package format for this Linux: the one its own package manager installs
+# with dependencies (apt: deb; dnf or zypper: rpm; pacman: Arch), else one dpkg or rpm
+# installs alone. An Arch system can carry rpm from its repositories; it gets its own
+# package, not an rpm whose dependencies nothing would resolve.
+linux_package_format() {
+  if have apt-get; then echo deb
+  elif have dnf || have zypper; then echo rpm
+  elif have pacman; then echo pacman
+  elif have dpkg; then echo deb
+  elif have rpm; then echo rpm
+  fi
+}
+
+linux_package_asset() {  # VERSION ARCH (x86_64, aarch64)
+  case "$(linux_package_format)-$2" in
+    deb-x86_64) printf 'CLIO.Desktop_%s_amd64-bundled.deb' "$1" ;;
+    deb-aarch64) printf 'CLIO.Desktop_%s_arm64-bundled.deb' "$1" ;;
+    rpm-*) printf 'CLIO.Desktop-%s-1.%s-bundled.rpm' "$1" "$2" ;;
+    pacman-*) printf 'CLIO.Desktop-%s-1-%s-bundled.pkg.tar.zst' "$1" "$2" ;;
+  esac
+}
+
 # LINUX_SUDO: what runs a package manager as root: nothing for root, else sudo.
 LINUX_SUDO=""
 linux_sudo() {
@@ -643,6 +667,11 @@ desktop_webkit_missing() {  # SUDO
   elif have zypper; then
     $1 zypper --non-interactive --quiet search --provides --match-exact "$lib" >/dev/null 2>&1 || rc=$?
     [ "$rc" = 104 ]  # zypper: no package matched
+  elif have pacman; then
+    ! pacman -Qq webkit2gtk-4.1 >/dev/null 2>&1 || return 1
+    pacman -Sp --print-format '%n' webkit2gtk-4.1 >/dev/null 2>&1 && return 1
+    # Not in the sync databases, which may simply never have been fetched: unknown.
+    compgen -G '/var/lib/pacman/sync/*.db' >/dev/null
   elif have apt-cache; then
     ! dpkg -s libwebkit2gtk-4.1-0 >/dev/null 2>&1 || return 1
     compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null || return 1
@@ -691,6 +720,10 @@ install_desktop_linux() {
         $sudo zypper --non-interactive install --allow-unsigned-rpm "$package" >&"$out" \
           || die "zypper could not install $package"
       else $sudo rpm -U --replacepkgs "$package" >&"$out" || die "rpm could not install $package (missing dependencies: install them, then retry)"; fi ;;
+    *.pkg.tar.zst)
+      # Unsigned, as the deb and rpm are: its SHA-256 was checked above, and pacman checks
+      # each file against the package's own list. A re-run reinstalls it (a repair).
+      $sudo pacman -U --noconfirm "$package" >&"$out" || die "pacman could not install $package" ;;
   esac
   linux_runtime_ready "$sudo" "$out"
   say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."

@@ -14,8 +14,11 @@ export default function HeroDownload() {
 	const { status, assets, os, arch } = useRelease();
 	const platform = PLATFORMS.find((p) => p.os === os);
 	// An Intel Mac has no installer: never hand it the Apple Silicon disk image.
-	const target = platform?.os === 'macos' ? arch : (platform?.primary.arch ?? arch);
-	const picked = status === 'ready' && platform ? pickAsset(assets, platform.primary.format, target) : null;
+	const target = platform?.os === 'macos' ? arch : (platform?.primary?.arch ?? arch);
+	// Linux has no single installer (a browser cannot tell distributions apart): the
+	// button keeps leading to the cards, where the visitor picks theirs.
+	const picked =
+		status === 'ready' && platform?.primary ? pickAsset(assets, platform.primary.format, target) : null;
 
 	return (
 		<div className="flex flex-col items-start gap-2">
