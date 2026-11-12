@@ -287,7 +287,7 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     bin_dir = _resolve_uv_tool_bin_dir()
     if bin_dir is not None:
         specs.append(("uv_tool_bin", str(bin_dir), True))
-    specs.append(("uv_tools", str(roaming / "uv" / "tools"), True))
+    specs.append(("uv_tools", os.environ.get("UV_TOOL_DIR") or str(roaming / "uv" / "tools"), True))
     specs.append(("uv_python", str(roaming / "uv" / "python"), True))
     specs.append(("clio_kit_cache", str(home / ".cache" / "clio-kit"), True))
     specs.append(("user_temp", str(local / "Temp"), False))
