@@ -23,6 +23,7 @@ from clio_agent.gact.documents.anchors import ResolvedMark
 from clio_agent.gact.documents.comment_replies import on_turn_finalized
 from clio_agent.gact.documents.review_render import entry_block
 from clio_agent.gact.documents.store import get_document_store
+from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block
 from tests.test_gact.test_document_artifacts import _pin, _workspace_session
 from tests.test_gact.test_post_messages import FakeClioAgent
 
@@ -93,6 +94,21 @@ def test_one_send_is_one_turn_with_labelled_entries_and_no_json(tmp_path: Path) 
     assert user["parts"][0]["text"].startswith("Comments on report.md (version 1):")
     labels = [p["metadata"]["label"] for p in user["parts"] if p["type"] == "artifact_review"]
     assert labels == ["S1", "S2"]
+    # The transcript names the file once, as a reference that opens the commented version.
+    references = [b for b in message_to_v3(user)["blocks"] if b["type"] != "text"]
+    assert len(references) == 1, references
+    [reference] = references
+    assert reference["type"] == "context_reference"
+    assert reference["ref_kind"] == "artifact"
+    assert reference["ref_id"] == pinned["artifact_id"]
+    assert reference["label"] == "report.md"
+    assert reference["navigation"]["artifact_version"] == 1
+    assert reference["navigation"]["comment_labels"] == ["S1", "S2"]
+    assert reference["navigation"]["comment_threads"] == [t["id"] for t in body["threads"]]
+    # Streamed one part at a time, each thread is its own reference to the same version.
+    streamed = [part_to_v3_block(p) for p in user["parts"] if p["type"] == "artifact_review"]
+    assert [b["navigation"]["comment_labels"] for b in streamed] == [["S1"], ["S2"]]
+    assert {b["ref_id"] for b in streamed} == {pinned["artifact_id"]}
 
 
 def test_labels_continue_per_version_and_drafts_come_back(tmp_path: Path) -> None:
