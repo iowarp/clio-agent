@@ -308,6 +308,9 @@ def office_convert(
             str(output_dir),
             str(source),
         ]
+        # CLIO's macOS Office fence grants the single-instance pipe only this directory.
+        if pipe_dir := os.environ.get("OSL_SOCKET_PATH"):
+            command.insert(1, f"-env:OSL_SOCKET_PATH={pipe_dir}")
         if execute is None:
             run(command, cwd=output_dir)
         else:
