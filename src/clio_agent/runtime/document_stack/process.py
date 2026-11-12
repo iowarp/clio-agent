@@ -120,16 +120,20 @@ def inherit_parent_access(path: Path) -> None:
 #: fs_search/fs_glob, and ``rg`` in a shell) honours ``.ignore`` files, so their
 #: contents stay out of searches for the user's files.
 SEARCH_IGNORE_MARKER = "# Written by CLIO: generated document machinery, not user files.\n# Keeps it out of searches.\n*\n"
+#: The same for git: the document toolchain leaves tens of MB of node_modules in
+#: the workspace, which ``git add -A`` in the person's project would otherwise stage.
+GIT_IGNORE_MARKER = "# Written by CLIO: generated document machinery, not user files.\n# Keeps it out of version control.\n*\n"
 
 
-def mark_search_ignored(directory: Path) -> None:
-    """Write a ``.ignore`` that hides ``directory``'s contents from ripgrep, if absent."""
-    marker = directory / ".ignore"
-    try:
-        if not marker.exists():
-            marker.write_text(SEARCH_IGNORE_MARKER, encoding="utf-8")
-    except OSError:
-        pass
+def mark_machinery_ignored(directory: Path) -> None:
+    """Hide ``directory``'s contents from ripgrep and git, writing each marker if absent."""
+    for name, text in ((".ignore", SEARCH_IGNORE_MARKER), (".gitignore", GIT_IGNORE_MARKER)):
+        marker = directory / name
+        try:
+            if not marker.exists():
+                marker.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def scratch_root(workspace: Path, *, create: bool = True) -> Path:
@@ -140,7 +144,7 @@ def scratch_root(workspace: Path, *, create: bool = True) -> Path:
         raise DocumentError("Document scratch storage escapes the active workspace")
     if create:
         root.mkdir(parents=True, exist_ok=True)
-        mark_search_ignored(root)
+        mark_machinery_ignored(root)
     return root
 
 
