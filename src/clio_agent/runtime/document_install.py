@@ -312,7 +312,22 @@ def _main() -> None:
         action="store_true",
         help="Reuse the packages the Windows source installer prepared beside its sync.",
     )
+    parser.add_argument(
+        "--prefetch-only",
+        action="store_true",
+        help="Only fetch the browser and the default agents (the Windows source installer).",
+    )
     args = parser.parse_args()
+    if args.prefetch_only:
+        # The full step that follows finds both ready and only checks them.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-prefetch") as fetching:
+            browser = fetching.submit(_prepare_browser, args, print)
+            marketplace = fetching.submit(_prepare_default_marketplace, args, print)
+            print(
+                json.dumps({"browser": browser.result(), "marketplace": marketplace.result()}),
+                flush=True,
+            )
+        return
     if args.protected_execution_only:
         tools = prepare_protected_execution(
             progress=lambda message: print(message, flush=True),
