@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -14,6 +15,8 @@ from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentError(RuntimeError):
@@ -29,23 +32,101 @@ class DocumentCancelled(DocumentError):
 #: then every ``HEARTBEAT_EVERY_S``.
 HEARTBEAT_FIRST_S = 10.0
 HEARTBEAT_EVERY_S = 15.0
+#: A job whose process tree has used no CPU for this long is reported as stalled
+#: (still running, never killed for it): the person sees it and can stop it.
+STALL_IDLE_S = 30.0
+#: CPU seconds of the whole tree below which a sample counts as no work.
+_STALL_CPU_EPSILON_S = 0.05
+_STALL_SAMPLE_S = 2.0
 _POLL_S = 0.25
 
-_WATCH: ContextVar[tuple[Callable[[], bool] | None, Callable[[float], None] | None]] = ContextVar(
+#: ``heartbeat(elapsed_s, stalled_s)``: ``stalled_s`` is how long the job has done no
+#: work, or ``None`` while it is working (or its work cannot be measured).
+Heartbeat = Callable[[float, float | None], None]
+
+_WATCH: ContextVar[tuple[Callable[[], bool] | None, Heartbeat | None]] = ContextVar(
     "clio_document_watch", default=(None, None)
 )
+
+
+def stall_message(name: str, stalled_s: float) -> str:
+    """Say plainly that a job is stuck, with the likely cause on this platform."""
+    hint = ""
+    if sys.platform == "darwin":
+        hint = (
+            " On macOS a sandbox denial can leave LibreOffice waiting on its pipe"
+            " without ever exiting."
+        )
+    return (
+        f"{name} has done no work for {stalled_s:.0f} s and may be stuck.{hint}"
+        " Stop the turn to cancel it."
+    )
+
+
+class _WorkMeter:
+    """Seconds since ``process``'s tree last used CPU; ``None`` when it cannot be measured.
+
+    A tree containing a process this user may not inspect (a sandbox account's worker)
+    is never called stalled on partial evidence.
+    """
+
+    def __init__(self, process: subprocess.Popen[Any]) -> None:
+        self._pid = process.pid
+        self._cpu: float | None = None
+        self._busy_at = time.monotonic()
+        self._sampled_at = 0.0
+        self._unknown = False
+
+    def stalled_s(self, now: float) -> float | None:
+        if self._unknown:
+            return None
+        if now - self._sampled_at >= _STALL_SAMPLE_S:
+            self._sampled_at = now
+            cpu = self._tree_cpu()
+            if cpu is None:
+                self._unknown = True
+                return None
+            if self._cpu is None or cpu - self._cpu > _STALL_CPU_EPSILON_S:
+                self._busy_at = now
+                self._cpu = cpu
+        idle = now - self._busy_at
+        return idle if idle >= STALL_IDLE_S else None
+
+    def _tree_cpu(self) -> float | None:
+        try:
+            import psutil
+        except ImportError:
+            return None
+        try:
+            root = psutil.Process(self._pid)
+            tree = [root, *root.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            return self._cpu
+        except psutil.Error:
+            return None
+        total = 0.0
+        for member in tree:
+            try:
+                times = member.cpu_times()
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.Error:
+                return None
+            total += times.user + times.system
+        return total
 
 
 @contextlib.contextmanager
 def watched(
     cancelled: Callable[[], bool] | None = None,
-    heartbeat: Callable[[float], None] | None = None,
+    heartbeat: Heartbeat | None = None,
 ) -> Iterator[None]:
     """Scope how document processes started below learn of a stop and report that they run.
 
     ``cancelled`` is polled while a process runs; when it returns true the whole
     process tree is killed and :class:`DocumentCancelled` is raised. ``heartbeat``
-    receives the elapsed seconds while a process is still running.
+    receives the elapsed seconds while a process is still running, and how long it
+    has done no work once it looks stalled (see :data:`Heartbeat`).
     """
     token = _WATCH.set((cancelled, heartbeat))
     try:
@@ -86,22 +167,33 @@ def wait_process(
     name: str,
     timeout: float | None = None,
     cancelled: Callable[[], bool] | None = None,
-    heartbeat: Callable[[float], None] | None = None,
+    heartbeat: Heartbeat | None = None,
 ) -> tuple[Any, Any]:
     """Wait for ``process`` with no time limit unless ``timeout`` is given.
 
     A stop from ``cancelled`` (or the :func:`watched` scope) kills the process
     tree and raises :class:`DocumentCancelled`. ``timeout`` is for
     infrastructure steps only; an agent's document job never sets it.
+
+    A job whose tree does no work for :data:`STALL_IDLE_S` (a sandboxed soffice
+    blocked on a denied pipe, say) is not killed: it is logged and reported to
+    ``heartbeat`` at once as stalled, and a stop then says it was stuck.
     """
     scoped_cancelled, scoped_heartbeat = _WATCH.get()
     cancelled = cancelled or scoped_cancelled
     heartbeat = heartbeat or scoped_heartbeat
     started = time.monotonic()
     next_beat = started + HEARTBEAT_FIRST_S
+    meter = _WorkMeter(process) if timeout is None else None
+    stalled: float | None = None
     while True:
         if cancelled is not None and cancelled():
             kill_tree(process)
+            if stalled is not None:
+                raise DocumentCancelled(
+                    f"{name} was stopped after doing no work for {stalled:.0f} s (stuck); "
+                    "its processes were ended"
+                )
             raise DocumentCancelled(f"{name} was stopped; its processes were ended")
         now = time.monotonic()
         if timeout is not None and now - started >= timeout:
@@ -114,10 +206,24 @@ def wait_process(
         except subprocess.TimeoutExpired:
             pass
         now = time.monotonic()
+        was_stalled = stalled is not None
+        stalled = meter.stalled_s(now) if meter is not None else None
+        if stalled is not None and not was_stalled:
+            logger.warning(
+                "reason=document_process_stalled name=%s pid=%s idle_s=%.0f elapsed_s=%.0f",
+                name,
+                process.pid,
+                stalled,
+                now - started,
+            )
+            next_beat = now
+        elif stalled is None and was_stalled:
+            logger.info("reason=document_process_resumed name=%s pid=%s", name, process.pid)
+            next_beat = now
         if heartbeat is not None and now >= next_beat:
             next_beat = now + HEARTBEAT_EVERY_S
             try:
-                heartbeat(now - started)
+                heartbeat(now - started, stalled)
             except Exception:  # noqa: BLE001 - a watcher never stops the job
                 pass
 
@@ -260,7 +366,7 @@ def run(
     env: dict[str, str] | None = None,
     windows_command_line: str | None = None,
     cancelled: Callable[[], bool] | None = None,
-    heartbeat: Callable[[float], None] | None = None,
+    heartbeat: Heartbeat | None = None,
 ) -> str:
     """Run without a shell, allowing explicit Windows quoting for non-CRT parsers.
 

@@ -592,9 +592,18 @@ def _running_tool(name: str, args: Mapping[str, Any], handle: Any) -> Iterator[N
     """
 
     from clio_agent.runtime.cancellation import cancellation_requested  # noqa: PLC0415
-    from clio_agent.runtime.document_stack.process import watched  # noqa: PLC0415
+    from clio_agent.runtime.document_stack.process import (  # noqa: PLC0415
+        stall_message,
+        watched,
+    )
 
-    def heartbeat(elapsed: float) -> None:
+    def heartbeat(elapsed: float, stalled: float | None) -> None:
+        if stalled is not None:
+            report_tool_progress(
+                f"Stalled after {_elapsed(elapsed)}: {stall_message('the document job', stalled)}",
+                progress=round(elapsed, 1),
+            )
+            return
         report_tool_progress(
             f"Still running after {_elapsed(elapsed)}. Stop the turn to cancel.",
             progress=round(elapsed, 1),

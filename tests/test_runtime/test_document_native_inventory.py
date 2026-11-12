@@ -34,10 +34,10 @@ def test_converter_probes_all_overlap(
     peak = 0
     flags: dict[str, str] = {}
 
-    def run(command: list[str], *, cwd: Path, timeout: float) -> str:
+    def run(command: list[str], *, cwd: Path, timeout: float | None = None) -> str:
         nonlocal active, peak
         assert cwd == tmp_path
-        assert timeout == (60 if command[0] == "soffice" else 10)
+        assert timeout is None  # a version check is waited for, never cut off
         with lock:
             active += 1
             peak = max(peak, active)

@@ -89,7 +89,7 @@ def test_explicit_windows_command_line_reaches_createprocess_without_a_shell(
         returncode = 0
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
-            assert timeout == 300
+            assert 0 < timeout <= 300  # polled in short waits under the step's limit
             return "extracted", ""
 
     def start(args: str | list[str], **kwargs: Any) -> Child:
