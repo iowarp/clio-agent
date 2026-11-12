@@ -301,8 +301,11 @@ def _main() -> None:
     # Leaving this block waits for the packages too, so neither outlives the other.
     # The browser's Node.js and Chromium are downloads, not disk work, so they start first
     # and overlap the whole package step instead of waiting for the first browser use.
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-packages") as installing:
+    # The default marketplace is a fetch too: the server is not ready until it is
+    # installed, so a first start that had to fetch it held the workspace for its length.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="clio-packages") as installing:
         browser = installing.submit(_prepare_browser, args, emit)
+        marketplace = installing.submit(_prepare_default_marketplace, args, emit)
         installation = installing.submit(
             install_document_runtime,
             args.workspace,
@@ -313,12 +316,14 @@ def _main() -> None:
         migrations = _run_store_migrations(args, emit)
         result = installation.result()
         browser_result = browser.result()
+        marketplace_result = marketplace.result()
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
         "office": result["native_tools"]["soffice"],
         "store_migrations": migrations,
         "browser": browser_result,
+        "marketplace": marketplace_result,
     }
     if not args.reuse_installed:
         # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
@@ -348,6 +353,36 @@ def _prepare_browser(args: argparse.Namespace, emit: Callable[[str], None]) -> d
     elif outcome["status"] == "failed":
         emit(f"The browser download failed; its first use will retry: {outcome['error']}")
     return outcome
+
+
+def _prepare_default_marketplace(
+    args: argparse.Namespace, emit: Callable[[str], None]
+) -> dict[str, Any]:
+    """Install the shipped default marketplace during an install, reported typed.
+
+    The server's start does the same (``PluginService.ready``) and finds it current, so
+    the first start no longer waits on a git fetch. A per-launch check never fetches; a
+    failure does not fail the install, and the server's start retries it.
+    """
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    import time  # noqa: PLC0415
+
+    from clio_agent.plugins.service import PluginService  # noqa: PLC0415
+
+    emit("Installing the default agents (marketplace)...")
+    started = time.monotonic()
+    service = PluginService()
+    service.ready()
+    seconds = round(time.monotonic() - started, 1)
+    if service.ready_error:
+        emit(
+            "The default agents were not installed; the first start will retry: "
+            f"{service.ready_error.get('message', '')}"
+        )
+        return {"status": "failed", **service.ready_error, "seconds": seconds}
+    emit("The default agents are installed.")
+    return {"status": "ready", "seconds": seconds}
 
 
 def _run_store_migrations(
