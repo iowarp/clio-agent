@@ -530,6 +530,35 @@ def test_envelope_atom_is_the_sole_authority_for_message_level_fields(tmp_path: 
     minter.close()
 
 
+def test_a_reader_during_the_turn_is_not_reported_as_a_dead_turn(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The recall index rebuilds while a turn writes: sealed parts, no envelope yet.
+
+    Seen live: 102 ``transcript reassembled WITHOUT its envelope`` warnings and audit
+    rows in one campaign, every one from the recall index reading a turn in flight.
+    The message is typed incomplete either way; only a served transcript reports it.
+    """
+    arc = _arc(tmp_path)
+    app = _fake_app(arc)
+    minter = open_turn_minter(app, "sess_live", "turn_live")
+    transcript = _transcript("sess_live", "turn_live", app)
+    transcript.append_text_delta("main", "answer", "still writing")
+    transcript.close_open_text()
+    assert minter.drain()  # parts sealed; finalize (the envelope) has not run
+
+    with caplog.at_level("WARNING", logger="clio_agent.gact.part_atoms"):
+        quiet = assemble_session_messages(arc, "sess_live", report_incomplete=False)
+    assert [m.stop_reason for m in quiet] == ["incomplete"]
+    assert "WITHOUT its envelope" not in caplog.text
+
+    with caplog.at_level("WARNING", logger="clio_agent.gact.part_atoms"):
+        served = assemble_session_messages(arc, "sess_live")
+    assert [m.stop_reason for m in served] == ["incomplete"]
+    assert "WITHOUT its envelope" in caplog.text
+    minter.close()
+
+
 # --------------------------------------------------------------------------- #
 # 10. A hand-built v1 lane reproduces byte-identically
 # --------------------------------------------------------------------------- #
