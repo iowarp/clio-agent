@@ -34,6 +34,8 @@
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
 #   CLIO_DESKTOP_DIR   macOS app folder     (default: $HOME/Applications)
 #   CLIO_INSTALL_PROGRESS  human | json     (default: human; as --progress)
+#   CLIO_INSTALL_PROVIDER_SUPPORT  provider SDKs to install now (default: claude_code;
+#                      empty: each installs on its first turn)
 #
 # NOTE: invoke via `bash` (not `sh`). On Debian/Ubuntu `sh` is dash,
 # which doesn't support `set -o pipefail`. The one-liner in the README
@@ -71,6 +73,9 @@ OPT_DESKTOP_PACKAGE="${CLIO_DESKTOP_PACKAGE:-}"
 OPT_DESKTOP_SHA256="${CLIO_DESKTOP_SHA256:-}"
 OPT_RESET_OLD_DATA=0
 OPT_PROGRESS="${CLIO_INSTALL_PROGRESS:-human}"
+# Provider SDKs installed with the managed packages (empty: none); claude_code's is
+# otherwise installed by the first Claude Code turn.
+PROVIDER_SUPPORT="${CLIO_INSTALL_PROVIDER_SUPPORT-claude_code}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --source|-Source) OPT_SOURCE=1 ;;
@@ -1732,6 +1737,17 @@ install_runtime_archive() {
   fi
 }
 
+has_module() {  # MODULE [TEXT]: the installed clio-agent has MODULE (whose source has TEXT)
+  "$VENV/bin/python" -I -c 'import importlib.util, sys
+spec = importlib.util.find_spec(sys.argv[1])
+sys.exit(0 if spec and (len(sys.argv) < 3 or sys.argv[2] in open(spec.origin, encoding="utf-8").read()) else 3)' "$@" 2>/dev/null
+}
+# PROVIDER_SUPPORT names provider SDKs to lay down with the managed packages, so a first
+# turn never installs one; a clio-agent without the step installs them on first use.
+wants_provider_support() {
+  [ -n "$PROVIDER_SUPPORT" ] && has_module clio_agent.runtime.document_install --provider-support
+}
+
 # The managed packages and Office are the longest step and read nothing the data check
 # and the store migration write, so a runtime install starts them at once.
 start_document_install() {
@@ -1740,6 +1756,7 @@ start_document_install() {
     || return 0
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering (alongside the steps below)'
   flags=(--skip-store-migrations)
+  ! wants_provider_support || flags+=(--provider-support "$PROVIDER_SUPPORT")
   # A runtime that cannot wait for a download still arriving gets it once it has landed.
   [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
   env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
@@ -2002,11 +2019,6 @@ migrate_warning() {  # STATUS: the installer's note for a migrate exit status
     *) warn "clio-agent migrate failed (exit $1, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
   esac
 }
-has_module() {  # MODULE [TEXT]: the installed clio-agent has MODULE (whose source has TEXT)
-  "$VENV/bin/python" -I -c 'import importlib.util, sys
-spec = importlib.util.find_spec(sys.argv[1])
-sys.exit(0 if spec and (len(sys.argv) < 3 or sys.argv[2] in open(spec.origin, encoding="utf-8").read()) else 3)' "$@" 2>/dev/null
-}
 doc_flags=()
 # A document step that upgrades the store itself does so while the packages install
 # (gact-tui#739: a serial migrate cost 13 s of a cold install); older ones get migrate
@@ -2045,6 +2057,7 @@ elif has_module clio_agent.runtime.document_install; then
   # A runtime that cannot wait for a download still arriving gets it once it has landed.
   [ -z "$INSTALL_DOWNLOADS" ] || [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
   install_scratch
+  ! wants_provider_support || doc_flags+=(--provider-support "$PROVIDER_SUPPORT")
   env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
     "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} \
     | tee "$DESKTOP_SCRATCH/document_install.out" || docs_status=$?  # pipefail: its status
