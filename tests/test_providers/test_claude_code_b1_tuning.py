@@ -211,8 +211,11 @@ async def test_cancel_before_the_query_starts_abandons_without_ever_connecting(
         assert killed == 1
         from clio_agent.providers.claude_code_lifecycle import StreamAbandonedError
 
+        # The abandon crosses to the entry's own loop thread, whose first poll also
+        # imports; 1 s was the scheduler's margin under parallel CPU load, not the
+        # behaviour under test (it abandons and never connects).
         with pytest.raises(StreamAbandonedError):
-            await asyncio.wait_for(task, timeout=1.0)
+            await asyncio.wait_for(task, timeout=5.0)
     finally:
         gact_context.reset(token)
 
