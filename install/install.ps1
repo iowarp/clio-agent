@@ -278,8 +278,9 @@ $ClioHold = $null
 # connection to GitHub's release storage carries about 10 MB/s, well under most links.
 # Each curl.exe fetches every CONNECTIONS-th SEGMENT-sized range over one connection
 # (--next), and the ranges are joined in order into NAME.part as they complete, so the
-# setup reading that file sees it grow at the link's rate. The first LEAD bytes come over
-# one connection while the setup downloads; the others start once it has landed.
+# setup reading that file sees it grow at the link's rate. With a held item (UNTIL), the
+# first LEAD bytes come over one connection while it downloads; the others start once it
+# has landed. Without one, every connection starts at once and the first range is a SEGMENT.
 $ClioRangedMin = 128MB
 $ClioConnections = 6
 $ClioSegment = 8MB
@@ -395,8 +396,12 @@ function New-ClioRangedTransfer($item, [string]$curl) {
     New-Item -ItemType Directory -Force -Path $item.Ranges | Out-Null
     $ranges = New-Object System.Collections.Generic.List[object]
     $start = [int64]0
+    # The lead range only fills the wait for a held item; without a hold every connection
+    # starts at once, and a reader of NAME.part (the runtime's unpackers) would wait on
+    # one connection for the whole lead.
+    $lead = if ($script:ClioHold) { $script:ClioLead } else { $script:ClioSegment }
     while ($start -lt $item.Bytes) {
-        $size = if ($ranges.Count) { $script:ClioSegment } else { $script:ClioLead }
+        $size = if ($ranges.Count) { $script:ClioSegment } else { $lead }
         $length = [math]::Min([int64]$size, $item.Bytes - $start)
         $ranges.Add([pscustomobject]@{ Start = $start; Length = $length; File = (Join-Path $item.Ranges "$($item.Name).$($ranges.Count)") })
         $start += $length
