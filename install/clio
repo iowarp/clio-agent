@@ -113,6 +113,15 @@ if [[ -z "${CLIO_SESSIONS_PATH:-}" && -f "$CLIO_PREFIX/clio-agent/.clio/agent/se
   export CLIO_SESSIONS_PATH="$CLIO_PREFIX/clio-agent/.clio/agent/sessions.json"
 fi
 export PATH="$CLIO_BIN_DIR:$PATH"
+# A scoped installation keeps its clio-kit in its own uv tool folders (install.sh). It
+# comes before CLIO_BIN_DIR, which may hold the user's own clio-kit, and the agent
+# finds the launcher's interpreter through UV_TOOL_DIR (tools/mcp_prepare.py).
+CLIO_KIT_PATH=""
+if [[ -x "$CLIO_PREFIX/uv-tools/bin/clio-kit" ]]; then
+  export UV_TOOL_DIR="$CLIO_PREFIX/uv-tools" UV_TOOL_BIN_DIR="$CLIO_PREFIX/uv-tools/bin"
+  CLIO_KIT_PATH="$UV_TOOL_BIN_DIR:"
+  export PATH="$CLIO_KIT_PATH$PATH"
+fi
 # The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
 # detached server inherits that directory even when it was started through a
 # non-interactive SSH session whose login profile did not extend PATH.
@@ -316,7 +325,7 @@ os.execv(sys.argv[1], sys.argv[1:])')
     # Installed user tools such as clio-kit normally live beside this
     # launcher. Login shells add that directory, but detached GUI/SSH starts
     # often do not; make the managed server see the same tools explicitly.
-    export PATH="$CLIO_BIN_DIR:$PATH" &&
+    export PATH="$CLIO_KIT_PATH$CLIO_BIN_DIR:$PATH" &&
     # CLIO_PORT belongs to this launcher/API. clio-core also recognizes that
     # generic name for its native RPC listener, so leaking it would make the
     # runtime steal the HTTP API port. The agent already receives --port.
