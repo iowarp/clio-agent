@@ -43,6 +43,7 @@ from clio_agent.gact.routes.session_list import register_session_list_route
 from clio_agent.gact.routes.session_move import register_session_move_route
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.routes.turn_retry import register_turn_retry_routes
+from clio_agent.gact.session_delete_settle import settle_held_assignments
 from clio_agent.gact.session_processes import close_session_processes
 from clio_agent.gact.session_tool_output import delete_session_tool_output
 from clio_agent.gact.turn_reasoning import forget_session_reasoning
@@ -184,15 +185,19 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             reason="user_requested_session_delete",
         )
         await app.state.turn_runner.settle_admission(sid)  # an input check is not work
+        await settle_held_assignments(app, sid)  # Stop's held assignment is not running work
         active = app.state.task_history.tree_handles(sid, active_only=True)
         if active or app.state.turn_runner.busy(sid):
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "error": "session_has_active_work",
-                    "message": "Cancel and settle active work before deleting this session.",
-                    "handles": sorted(active),
-                },
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="session_has_active_work",
+                        message="Cancel and settle active work before deleting this session.",
+                        details={"session_id": sid, "handles": sorted(active)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
             )
         # P4.1 #1079 cancel-both: a deleted session must not orphan its loop wakeup.
         stop_session_loop(app, sid)
