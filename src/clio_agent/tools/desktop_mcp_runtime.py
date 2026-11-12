@@ -88,8 +88,13 @@ def bundled_module_launcher(
     env: dict[str, str] = {}
     bundled_bin = runtime_root / "bin"
     if bundled_bin.is_dir():
-        ambient_path = os.environ.get("PATH", "")
-        env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
+        from clio_agent.runtime.macos_clt import with_install_name_tool_stand_in  # noqa: PLC0415
+
+        # This PATH replaces the one stdio_environment prepared: keep its stand-in.
+        ambient_path = with_install_name_tool_stand_in({"PATH": os.environ.get("PATH", "")})
+        env["PATH"] = os.pathsep.join(
+            part for part in (str(bundled_bin), ambient_path["PATH"]) if part
+        )
     env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
         "CLIO_KIT_CACHE_DIR", str(paths.mcp_build_cache_dir() / "mcp-runtime")
     )

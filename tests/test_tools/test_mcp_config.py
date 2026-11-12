@@ -457,7 +457,8 @@ def test_transport_for_no_cwd_env_keeps_path():
     stdio = transport_for(spec)
     assert stdio.cwd is None
     assert stdio.env["MY_KEY"] == "v"
-    assert stdio.env.get("PATH") == os.environ.get("PATH")
+    # On a Mac without the Command Line Tools an install_name_tool stand-in leads PATH.
+    assert stdio.env.get("PATH", "").endswith(os.environ.get("PATH", ""))
 
 
 def test_transport_for_scrubs_ambient_python_import_overrides(monkeypatch):
