@@ -39,11 +39,11 @@ PACKAGES = {
 
 NATIVE_TOOLS = ("soffice", "pandoc", "pdftoppm", "tesseract")
 
-#: Seconds a version probe may take. LibreOffice's cold start loads thousands of
-#: freshly installed files: 15.8 s was measured on Windows with Defender on, after
-#: which ``--version`` answers in 0.4 s. A shorter limit reports a working Office as
-#: failed, and the agent then gives up on conversion.
-VERSION_PROBE_TIMEOUT = {"soffice": 60}
+# A version probe has no time limit. LibreOffice's cold start loads thousands of
+# freshly installed files (15.8 s was measured on Windows with Defender on, and a
+# busy machine can take minutes), after which ``--version`` answers in 0.4 s. Any
+# cutoff would report a working Office as failed and make the agent give up on
+# conversion; stopping the turn ends the probe instead.
 
 
 def execution_host_inventory() -> dict[str, Any]:
@@ -87,9 +87,7 @@ def _native_tool(name: str, cwd: Path) -> dict[str, Any]:
         }
         if executable:
             version_flag = "-v" if name == "pdftoppm" else "--version"
-            result["version"] = run(
-                [executable, version_flag], cwd=cwd, timeout=VERSION_PROBE_TIMEOUT.get(name, 10)
-            ).strip()[:300]
+            result["version"] = run([executable, version_flag], cwd=cwd).strip()[:300]
         return result
     except DocumentError as exc:
         return {"status": "failed", "error": str(exc)}

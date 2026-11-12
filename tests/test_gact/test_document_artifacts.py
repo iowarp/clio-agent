@@ -472,8 +472,8 @@ def test_markdown_rendition_prefers_local_typst_engine(
             return "typst"
         return None
 
-    def run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> None:
-        del cwd, timeout_seconds
+    def run(command: list[str], *, cwd: Path, office: bool = False) -> None:
+        del cwd, office
         commands.append(command)
         Path(command[command.index("--output") + 1]).write_bytes(b"%PDF-1.7")
 

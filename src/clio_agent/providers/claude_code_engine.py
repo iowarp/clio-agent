@@ -74,6 +74,12 @@ from clio_agent.providers.claude_code_clear import side_key
 from clio_agent.providers.claude_code_conversation import Send, plan, record_sent
 from clio_agent.providers.claude_code_conversation import reset as reset_conversation
 from clio_agent.providers.claude_code_cwd import session_cwd
+from clio_agent.providers.claude_code_expiry import (
+    ClaudeCodeIdleTimeout,
+    StreamSilence,
+    stall_first_wait_s,
+    stall_waits,
+)
 from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
 from clio_agent.providers.claude_code_multimodal import native_blocks
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk, thinking_key
@@ -130,17 +136,15 @@ class AsyncClaudeCodeEngine:
         self.idle_timeout_s = idle_timeout_s
 
     def idle_timeout(self) -> float:
-        """The longest gap between two streamed messages (#1577).
+        """The first stall wait: silence this long starts a visible retry (#1577).
 
-        The explicit bound when one was given, else ``limits.lm_inter_token_idle_s`` --
-        the same window the turn watchdog trusts a streaming call for. The connect has
-        its own progress-based bound (:mod:`.claude_code_expiry`).
+        The explicit bound when one was given, else ``limits.lm_stall_wait_s`` (30 s).
+        Each later stall waits longer (:func:`.claude_code_expiry.stall_waits`); none
+        fails the turn. The connect has its own progress-based bound.
         """
         if self.idle_timeout_s is not None:
             return self.idle_timeout_s
-        from clio_agent.runtime.lm_activity import inter_token_idle_seconds  # noqa: PLC0415
-
-        return inter_token_idle_seconds()
+        return stall_first_wait_s()
 
     async def complete(self, request: Request) -> Response:
         """Run one query and return the assembled response."""
@@ -180,55 +184,77 @@ class AsyncClaudeCodeEngine:
             transport="sdk",
             prompt=body,
         )
-        turn = _Turn(
-            self.model,
-            call_index,
-            session_id,
-            available_tools=callable_tools(
-                [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
-            ),
-            schemas=ToolSchemas(
-                {
-                    tool.name: tool.parameters
-                    for tool in request.tools
-                    if isinstance(tool, FunctionTool)
-                }
-            ),
+        available_tools = callable_tools(
+            [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
         )
+        schemas = ToolSchemas(
+            {tool.name: tool.parameters for tool in request.tools if isinstance(tool, FunctionTool)}
+        )
+
+        def new_turn(sid: str) -> _Turn:
+            return _Turn(
+                self.model, call_index, sid, available_tools=available_tools, schemas=schemas
+            )
+
+        turn = new_turn(session_id)
         yield StreamStartEvent(model=request.model)
         received = False
+        dead_entry_retried = False
+        stall = _StallLadder(self.idle_timeout())
         try:
-            for attempt in range(2):
+            while True:
                 try:
                     async with aclosing(
                         entry.stream(
                             payload=body,
                             native_blocks=blocks,
                             session_id=session_id,
-                            idle_timeout=self.idle_timeout(),
+                            idle_timeout=stall.wait_s,
                             on_construct=_STREAM_CLIENT_POOL.bump_construct,
                             model=self.model,
                             cwd=cwd,
                             thinking=self.thinking,
                             system_prompt=system,
                             fresh=send.handle is None,
+                            on_silence=stall.on_silence,
                         )
                     ) as messages:
                         async for message in messages:
+                            if isinstance(message, StreamSilence):
+                                stall.still_waiting(message)
+                                continue
                             received = True
                             for out in turn.handle(message):
+                                stall.observe(out)
                                 yield out
                             if turn.protocol_error or turn.past_calls:
                                 break
                     break
+                except ClaudeCodeIdleTimeout as exc:
+                    # Nothing of the reply is on screen yet: resend on a fresh client
+                    # and wait longer. Never a fixed clock that fails the turn; the
+                    # person sees each retry and can stop it.
+                    if stall.shown or _cancel_requested():
+                        raise
+                    _reset(entry, send)
+                    stall.resend(exc)
+                    entry = _STREAM_CLIENT_POOL.entry_for(
+                        session_id=pool_key, gact_session_id=pool_key
+                    )
+                    send = plan(entry, request, system, identity, kept=kept)
+                    body, blocks = _payload(request, send)
+                    session_id = send.handle or uuid.uuid4().hex
+                    turn = new_turn(session_id)
+                    received = False
                 except RuntimeError as exc:
                     # The session's pooled entry was released (an abandoned stream, a
                     # turn-end release, the idle sweep) after this call took it and
                     # before anything was sent. Its typed error is retryable: take the
                     # session's fresh entry once and plan again against it (it holds
                     # no conversation, so the send is full). On the record, never silent.
-                    if received or attempt or DEAD_ENTRY_MARKER not in str(exc):
+                    if received or dead_entry_retried or DEAD_ENTRY_MARKER not in str(exc):
                         raise
+                    dead_entry_retried = True
                     logger.info(
                         "claude_code query reconnected reason=dead_entry_reconnect "
                         "model=%s session=%s",
@@ -688,6 +714,88 @@ def _audit_message(stage: str, model: str, message: Any) -> None:
         message_type=type(message).__name__,
         subtype=str(getattr(message, "subtype", "") or ""),
     )
+
+
+def _cancel_requested() -> bool:
+    from clio_agent.runtime.cancellation import cancellation_requested  # noqa: PLC0415
+
+    return cancellation_requested()
+
+
+class _StallLadder:
+    """One call's stall handling: growing waits, a visible notice at each, no deadline.
+
+    Before any of the reply is on screen a stall resends the query; once text is shown
+    a resend would repeat it, so the same stream is waited on, longer each time. The
+    person sees every stall and can stop the turn; nothing here fails it.
+    """
+
+    def __init__(self, first_wait_s: float) -> None:
+        self._waits = stall_waits(first_wait_s)
+        self._lock = threading.Lock()
+        self.wait_s = next(self._waits)
+        self.attempt = 1
+        self.shown = False  # read on the client's owner-loop thread
+
+    def observe(self, event: Any) -> None:
+        delta = getattr(event, "delta", None)
+        if isinstance(delta, ToolCallDelta) or (isinstance(delta, TextDelta) and delta.text):
+            self.shown = True
+
+    def _advance(self) -> float:
+        with self._lock:
+            self.wait_s = next(self._waits)
+            return self.wait_s
+
+    def on_silence(self, silent_s: float) -> float | None:
+        """The relay's stall decision (owner-loop thread): wait longer, or resend."""
+        del silent_s
+        return self._advance() if self.shown else None
+
+    def still_waiting(self, silence: StreamSilence) -> None:
+        _stall_notice(
+            "Claude Code has sent nothing for "
+            f"{_duration(silence.silent_s)}. Still waiting for the rest of the reply; next "
+            f"check in {_duration(silence.next_wait_s)}. Stop the turn to cancel.",
+            silent_s=silence.silent_s,
+            next_wait_s=silence.next_wait_s,
+            action="wait",
+        )
+
+    def resend(self, exc: ClaudeCodeIdleTimeout) -> None:
+        self.attempt += 1
+        wait = self._advance()
+        _stall_notice(
+            f"Claude Code sent nothing for {_duration(exc.idle_s)}. Retrying the request "
+            f"(attempt {self.attempt}) and waiting up to {_duration(wait)}. "
+            "Stop the turn to cancel.",
+            silent_s=exc.idle_s,
+            next_wait_s=wait,
+            retry_attempt=self.attempt,
+            action="resend",
+        )
+
+
+def _duration(seconds: float) -> str:
+    whole = round(seconds)
+    if whole < 60:
+        return f"{whole} s"
+    minutes, rest = divmod(whole, 60)
+    return f"{minutes} min" if not rest else f"{minutes} min {rest} s"
+
+
+def _stall_notice(text: str, **metadata: Any) -> None:
+    """Show the stall to the person (and on the record), never to the model."""
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    logger.warning("claude_code stream stall %s", " ".join(f"{k}={v}" for k, v in metadata.items()))
+    stream_audit("lm.stream.stall", reason="model_stream_stalled", **metadata)
+    try:
+        from clio_agent.gact.model_notices import post_model_notice  # noqa: PLC0415
+
+        post_model_notice("model_stream_stall", text, **metadata)
+    except Exception:  # noqa: BLE001 - showing the notice must never break the call
+        logger.warning("claude_code stall notice failed", exc_info=True)
 
 
 def _reset(entry: Any, send: Send) -> None:

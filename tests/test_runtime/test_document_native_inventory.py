@@ -34,10 +34,10 @@ def test_converter_probes_all_overlap(
     peak = 0
     flags: dict[str, str] = {}
 
-    def run(command: list[str], *, cwd: Path, timeout: float) -> str:
+    def run(command: list[str], *, cwd: Path, timeout: float | None = None) -> str:
         nonlocal active, peak
         assert cwd == tmp_path
-        assert timeout == (60 if command[0] == "soffice" else 10)
+        assert timeout is None  # a version check is waited for, never cut off
         with lock:
             active += 1
             peak = max(peak, active)
@@ -65,7 +65,7 @@ def test_converter_probes_all_overlap(
 def test_probe_failure_and_missing_tool_do_not_discard_other_results(
     inventory_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Timeouts remain per converter; missing tools never launch a process."""
+    """Failures remain per converter; missing tools never launch a process."""
 
     def find(name: str) -> str | None:
         if name == "pandoc":
@@ -76,7 +76,7 @@ def test_probe_failure_and_missing_tool_do_not_discard_other_results(
 
     def run(command: list[str], **kwargs: Any) -> str:
         if command[0] == "soffice":
-            raise inventory_module.DocumentError("soffice exceeded 10 seconds")
+            raise inventory_module.DocumentError("soffice exited 1: broken install")
         assert command[0] == "pdftoppm"
         return "poppler version"
 
@@ -84,7 +84,7 @@ def test_probe_failure_and_missing_tool_do_not_discard_other_results(
     monkeypatch.setattr(inventory_module, "run", run)
     result = inventory_module.native_inventory(tmp_path)
     assert result["soffice"]["status"] == "failed"
-    assert "10 seconds" in result["soffice"]["error"]
+    assert "broken install" in result["soffice"]["error"]
     assert result["pandoc"] == {"status": "missing", "path": None}
     assert result["tesseract"]["status"] == "failed"
     assert result["pdftoppm"]["version"] == "poppler version"
