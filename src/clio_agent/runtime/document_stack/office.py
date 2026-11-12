@@ -30,10 +30,12 @@ if TYPE_CHECKING or __package__:
     from .office_fetch import download as _download
     from .office_fetch import mirror_rate as _mirror_rate
     from .office_prune import (
+        KEPT_ICON_THEMES,
         UNREAD_DICTIONARY_SUFFIXES,
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
     )
@@ -54,10 +56,12 @@ else:
     from office_fetch import download as _download
     from office_fetch import mirror_rate as _mirror_rate
     from office_prune import (
+        KEPT_ICON_THEMES,
         UNREAD_DICTIONARY_SUFFIXES,
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
     )
@@ -280,6 +284,8 @@ def _windows_tree_name() -> str | None:
             sorted(UNREAD_DICTIONARY_SUFFIXES),
             sorted(UNREAD_TREES),
             sorted(UNREAD_PYTHON_PACKAGES),
+            sorted(WINDOWS_UNREAD_TREES),
+            sorted(KEPT_ICON_THEMES),
         )
     )
     digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
