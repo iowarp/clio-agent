@@ -96,12 +96,14 @@ def test_every_other_spawn_keeps_codex(roots, monkeypatch, platform, office_spaw
 
 def _short_parent(tmp_path_factory: pytest.TempPathFactory) -> Path:
     # The repository-owned temp root can exceed sun_path; production uses /private/tmp on
-    # macOS, which other hosts lack, so they fall back to their short system temp dir.
+    # macOS, which other hosts lack. TMPDIR points at that long root, so they use /tmp.
     base = tmp_path_factory.getbasetemp()
     if office.pipe_dir_fits(str(base / "clio-lo-abcdefgh")):
         return base
-    production = Path(office.PIPE_DIR_PARENT)
-    return production if production.is_dir() else Path(tempfile.gettempdir())
+    for candidate in (office.PIPE_DIR_PARENT, "/tmp"):
+        if Path(candidate).is_dir():
+            return Path(candidate)
+    return Path(tempfile.gettempdir())
 
 
 @pytest.fixture

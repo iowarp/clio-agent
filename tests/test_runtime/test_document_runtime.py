@@ -396,7 +396,7 @@ def test_execution_probe_requests_light_inventory_and_still_checks_lock(
 
     monkeypatch.setattr(runtime, "_run", run)
     with pytest.raises(runtime.DocumentRuntimeError, match="differs from its locked version"):
-        runtime._probe(Path("managed-python"), discovery_only=True)
+        runtime._probe(Path("env/bin/python"), discovery_only=True)
 
 
 def test_javascript_preserves_changed_task_manifest(
