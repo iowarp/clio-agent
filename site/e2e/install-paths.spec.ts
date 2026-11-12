@@ -1,21 +1,16 @@
 import { expect, test } from '@playwright/test';
 
 for (const width of [390, 1440]) {
-  test(`current install guidance keeps the frozen TUI out of deployment at ${width}px`, async ({ page, request }) => {
+  test(`install guidance offers the desktop installer and keeps the frozen TUI out of deployment at ${width}px`, async ({ page, request }) => {
     await page.setViewportSize({ width, height: 1000 });
     await page.emulateMedia({ colorScheme: 'light' });
-    await page.goto('/');
-    await expect(page.getByText('The legacy terminal UI is frozen and unsupported.', { exact: false })).toBeVisible();
-    const tab = page.getByRole('tab', { name: 'Web and servers', exact: true });
-    await tab.scrollIntoViewIfNeeded();
-    // This island hydrates when visible; wait for its event handlers before clicking.
-    await expect(tab.locator('xpath=ancestor::astro-island')).not.toHaveAttribute('ssr', '');
-    await tab.click();
-    await expect(tab).toHaveAttribute('aria-selected', 'true');
-    const servers = page.getByRole('tabpanel').filter({ hasText: 'Install the service and Web' });
-    await expect(servers).toBeVisible();
-    await expect(servers).toContainText('clio web');
-    await page.screenshot({ path: test.info().outputPath('supported-install-paths.png') });
+    await page.goto('/#download');
+    const downloads = page.getByRole('region', { name: 'Download CLIO', exact: true });
+    const command = downloads.getByLabel(/^Install command for /);
+    await command.scrollIntoViewIfNeeded();
+    await expect(command).toContainText(/https:\/\/clio\.iowarp\.ai\/desktop\.(sh|ps1)/);
+    await expect(page.locator('main')).not.toContainText(/terminal UI|\bTUI\b/);
+    await page.screenshot({ path: test.info().outputPath('home-install-command.png') });
 
     await page.goto('/docs/install/');
     await expect(page.getByText('The legacy TUI is frozen and unsupported as of 0.9.5.1.', { exact: true })).toBeVisible();

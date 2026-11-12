@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 const guides = [
-	{ link: 'Best of N guide', route: '/docs/best-of-n/', title: 'Compare alternative answers' },
-	{ link: 'Dashboard guide', route: '/docs/dashboards/', title: 'Explore charts and dashboards' },
-	{ link: 'Exports and downloads guide', route: '/docs/exports/', title: 'Save and share your work' },
+	{ route: '/docs/best-of-n/', title: 'Compare alternative answers' },
+	{ route: '/docs/dashboards/', title: 'Explore charts and dashboards' },
+	{ route: '/docs/exports/', title: 'Save and share your work' },
 ];
 
 for (const theme of ['light', 'dark']) {
@@ -11,14 +11,13 @@ for (const theme of ['light', 'dark']) {
 		test(`workflow guides are reachable and readable at ${width}px in ${theme}`, async ({ page }) => {
 			await page.addInitScript((value) => localStorage.setItem('starlight-theme', value), theme);
 			await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
-			await page.goto('/');
-			const workflows = page.getByRole('region', { name: 'Study, delegate, compare, and share.' });
-			await workflows.scrollIntoViewIfNeeded();
-			await expect(workflows.getByText('Development preview', { exact: true })).toHaveCount(5);
-			expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
-			await workflows.screenshot({ path: test.info().outputPath(`workflows-${width}-${theme}.png`) });
 			for (const guide of guides) {
-				await workflows.getByRole('link', { name: guide.link, exact: true }).click();
+				await page.goto('/docs/');
+				if (width === 390) await page.getByRole('button', { name: 'Docs index', exact: true }).click();
+				const sidebar = page.locator('#starlight__sidebar');
+				const group = sidebar.locator('details').filter({ has: page.locator('summary', { hasText: 'Review and share results' }) });
+				if ((await group.getAttribute('open')) === null) await group.locator('summary').click();
+				await group.getByRole('link', { name: guide.title, exact: true }).click();
 				await expect(page).toHaveURL(new RegExp(`${guide.route}$`));
 				await expect(page.getByRole('heading', { level: 1, name: guide.title })).toBeVisible();
 				await expect(page.locator('.sl-markdown-content .starlight-aside')).toContainText('need CLIO v0.9.5 or later');
@@ -26,7 +25,6 @@ for (const theme of ['light', 'dark']) {
 				await page.screenshot({ path: test.info().outputPath(`${guide.route.split('/')[2]}-${width}-${theme}.png`) });
 				if (width === 390) await page.getByRole('button', { name: 'Docs index', exact: true }).click();
 				await expect(page.locator('#starlight__sidebar').getByRole('link', { name: guide.title, exact: true })).toBeVisible();
-				await page.goto('/');
 			}
 		});
 	}
