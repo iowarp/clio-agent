@@ -91,7 +91,14 @@ jobs:
         run: |
           ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./install/pack-gact-runtime.ps1
+          # Pack as clio-bundles.yml does: the setup carries only the manifest, and the
+          # archive is an asset that the setup reads from CLIO_INSTALL_DOWNLOADS.
+          $asset = 'gact-runtime-smoke-windows-x64.tar.zst'
+          ./install/pack-gact-runtime.ps1 -AssetName $asset
+          $downloads = Join-Path $env:RUNNER_TEMP 'clio-downloads'
+          New-Item -ItemType Directory -Path $downloads -Force | Out-Null
+          Move-Item -LiteralPath external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst -Destination (Join-Path $downloads $asset) -Force
+          "CLIO_SMOKE_DOWNLOADS=$downloads" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Prepare CLIO branding and unsigned qualification artifacts
         shell: bash
         run: |
@@ -173,6 +180,8 @@ jobs:
           $packages = @(Get-ChildItem external/gact-tui/desktop/src-tauri/target/release/bundle/nsis/*.exe)
           if ($packages.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
+          # The runtime archive, as install.ps1 hands a release setup its downloaded asset.
+          $env:CLIO_INSTALL_DOWNLOADS = $env:CLIO_SMOKE_DOWNLOADS
           # Wait for NSIS itself, not every background descendant it started.
           # Keep the wait bounded so a silent failure still reaches log upload.
           $timer = [System.Diagnostics.Stopwatch]::StartNew()
