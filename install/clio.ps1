@@ -7,7 +7,7 @@
 #   clio                 ensure server is up, then open Web
 #   clio web | --web     ensure server is up, then open the web UI in a browser
 #   clio start           start the headless server
-#   clio stop            stop the server and the local services it started (e.g. web search)
+#   clio stop            stop the server and the local services it started (e.g. model servers)
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail server logs
@@ -191,11 +191,11 @@ function Start-Server {
     return $false
 }
 
-# Stop-LocalServices stops the supervised services (e.g. web search) this CLIO
+# Stop-LocalServices stops the supervised services (e.g. model servers) this CLIO
 # started on this computer. Their workers deliberately leave the server's process
 # tree, so killing the server leaves them running and holding the Agent's Python
 # open. Runs after the server is gone so it cannot restart them; installations
-# are kept and the next boot starts web search again. Failures only warn.
+# are kept and start again when you start them. Failures only warn.
 function Stop-LocalServices {
     if (-not (Test-Path -LiteralPath $AgentPython)) { return }
     $SavedPreference = $ErrorActionPreference

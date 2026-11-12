@@ -14,7 +14,7 @@
 #                             installed binary (CLIO_DESKTOP_BIN); --dev runs the
 #                             Tauri dev shell from your working checkout.
 #   clio start           start the headless server
-#   clio stop            stop the server and the local services it started (e.g. web search)
+#   clio stop            stop the server and the local services it started (e.g. model servers)
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail server logs
@@ -346,11 +346,11 @@ os.execv(sys.argv[1], sys.argv[1:])')
   return 1
 }
 
-# stop_local_services stops the supervised services (e.g. web search) this CLIO
+# stop_local_services stops the supervised services (e.g. model servers) this CLIO
 # started on this computer. Their workers deliberately leave the server's session
 # so they survive an SSH disconnect, which also means stopping the server leaves
 # them running. Called after the server is gone so it cannot restart them;
-# installations are kept and the next boot starts web search again. Failures warn.
+# installations are kept. Failures warn.
 stop_local_services() {
   [[ -x "$CLIO_VENV/bin/python" ]] || return 0
   local out rc=0 line
