@@ -6,7 +6,7 @@
 import EditLink from '@astrojs/starlight/components/EditLink.astro';
 import LastUpdated from '@astrojs/starlight/components/LastUpdated.astro';
 import Pagination from '@astrojs/starlight/components/Pagination.astro';
-import mark from '../../assets/brand/clio-mark.svg';
+import mark from '../../assets/brand/clio-mark-small.svg';
 import { release } from '../../lib/release';
 
 const isSplash = Astro.locals.starlightRoute.entry.data.template === 'splash';
@@ -146,8 +146,13 @@ const columns = [
 	}
 	.columns {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 1.5rem;
+	}
+	@media (max-width: 30rem) {
+		.columns {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 	.col-title {
 		margin: 0 0 0.6rem;

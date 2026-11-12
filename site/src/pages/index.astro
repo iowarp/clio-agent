@@ -1,0 +1,325 @@
+---
+import '@fontsource-variable/newsreader';
+import '@fontsource/ibm-plex-sans/400.css';
+import '@fontsource/ibm-plex-sans/500.css';
+import '@fontsource/ibm-plex-sans/600.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '../styles/home.css';
+import { ArrowRight } from 'lucide-react';
+import apple from '@/assets/platform-icons/apple.svg';
+import linux from '@/assets/platform-icons/linux.svg';
+import windows from '@/assets/platform-icons/windows.svg';
+import CapabilityTabs from '@/components/home/CapabilityTabs';
+import DownloadPanel from '@/components/home/DownloadPanel';
+import HeroDownload from '@/components/home/HeroDownload';
+import InstallCommand from '@/components/home/InstallCommand';
+import LoopVideo from '@/components/home/LoopVideo';
+import ReleaseVersion from '@/components/home/ReleaseVersion';
+import WorkspaceDemo from '@/components/home/WorkspaceDemo';
+import { release } from '@/lib/release';
+import SiteHeader from '@/components/SiteHeader.astro';
+
+const icons = { windows: windows.src, macos: apple.src, linux: linux.src };
+const title = 'CLIO, make an AI agent for your science';
+const description =
+	'CLIO handles the groundwork of scientific data: reading your files, running analyses and simulations, and tracking where every result came from. Plugins add what your lab knows, so the agent works the way your field does.';
+const canonical = new URL('/', Astro.site).href;
+const GITHUB = 'https://github.com/iowarp/clio-agent';
+
+const news = [
+	{
+		date: 'Nov 11, 2026',
+		version: 'v0.9.6.1',
+		items: [
+			{
+				href: '/docs/browser/',
+				title: 'A browser you share with CLIO',
+				body: 'Open a page beside the conversation, pin a comment on any part of it and CLIO reads the page with you.',
+			},
+			{
+				href: '/docs/live-sources/',
+				title: 'Live data and dashboards',
+				body: 'Follow a stream of observations and keep a dashboard updating while you ask about it.',
+			},
+			{
+				href: '/docs/tasks/',
+				title: 'Long work in the background',
+				body: 'Start a long run, keep talking and come back to its results when it finishes.',
+			},
+		],
+	},
+	{
+		date: 'Oct 29, 2026',
+		version: 'v0.9.5.1',
+		items: [
+			{
+				href: '/docs/agents-and-plugins/',
+				title: 'Plugins and flows',
+				body: 'Shape an agent for your kind of work with plugins, and write procedures it can run step by step.',
+			},
+			{
+				href: '/docs/science-log/',
+				title: 'A science log tied to evidence',
+				body: 'Claims, results and the evidence behind them are kept together as the work goes on.',
+			},
+		],
+	},
+];
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<link rel="canonical" href={canonical} />
+		<link rel="icon" href="/clio-mark-small.svg" type="image/svg+xml" />
+		<link rel="icon" href="/favicon.ico" sizes="32x32" />
+		<link rel="sitemap" href="/sitemap-index.xml" />
+		<meta name="theme-color" content="#fbfdfd" />
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="CLIO" />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:url" content={canonical} />
+		<meta property="og:image" content={new URL('/media/home/cap-interface.webp', Astro.site).href} />
+		<meta name="twitter:card" content="summary_large_image" />
+		<script is:inline>
+			(() => {
+				const stored = localStorage.getItem('starlight-theme');
+				const pick = stored === 'light' || stored === 'dark' ? stored : '';
+				const dark = matchMedia('(prefers-color-scheme: dark)');
+				const apply = () =>
+					(document.documentElement.dataset.theme = pick || (dark.matches ? 'dark' : 'light'));
+				apply();
+				dark.addEventListener('change', () => {
+					if (!localStorage.getItem('starlight-theme')) apply();
+				});
+			})();
+		</script>
+	</head>
+	<body class="home">
+		<a class="h-skip" href="#main">Skip to content</a>
+
+		<SiteHeader sticky />
+
+		<main id="main">
+			<section class="h-hero" aria-labelledby="hero-title">
+				<div class="h-wrap">
+					<div class="h-hero-copy">
+						<h1 id="hero-title" class="h-lockup">
+							<img src="/favicon.svg" alt="" width="104" height="104" />
+							<span>CLIO</span>
+						</h1>
+						<p class="h-tagline">Make an AI agent for your science</p>
+						<p class="h-lede">
+							CLIO handles the groundwork of scientific data: reading your files, running analyses and
+							simulations, and tracking where every result came from. Plugins add what your lab knows, so the
+							agent works the way your field does.
+						</p>
+						<div class="h-hero-actions">
+							<HeroDownload client:load icons={icons} />
+							<a class="h-button" href="/docs/">Read the documentation</a>
+						</div>
+						<p class="h-avail">
+							Free and open source for Windows, macOS and Linux.{' '}
+							<ReleaseVersion client:load fallback={release.version} before="Version " />
+						</p>
+					</div>
+					<div class="h-hero-demo">
+						<WorkspaceDemo client:load mark="/clio-mark-small.svg" />
+					</div>
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="one-agent">
+				<div class="h-wrap h-compose">
+					<div class="h-compose-row">
+						<div class="h-compose-copy">
+							<p class="h-eyebrow">One agent</p>
+							<h2 id="one-agent">So many agents. Why not one?</h2>
+							<p>
+								An agent for chemistry, another for genomics, another for materials, each built from
+								scratch and none aware of what the others found. In CLIO they share one foundation, the
+								same way of reading data, running work and keeping evidence, and each field adds its
+								knowledge as plugins. A microscopy lab and a simulation group can work in the same place
+								and share what they find.
+							</p>
+						</div>
+						<div class="h-strip-clip">
+							<LoopVideo
+								client:visible
+								src="/media/home/one-composable-agent.mp4"
+								poster="/media/home/one-composable-agent.webp"
+								width={1440}
+								height={280}
+								label="A list of single-purpose agents settling on one composable agent"
+								className="h-clip"
+							/>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="take-on">
+				<div class="h-wrap h-center">
+					<h2 id="take-on">What CLIO can take on</h2>
+					<p class="h-section-lede">
+						From one question about a few records to a run where several specialists work at once. Each
+						clip shows one of them in the app.
+					</p>
+					<InstallCommand client:idle />
+					<p class="h-quiet-link">Or <a href="/docs/install/">read the install guide</a></p>
+					<CapabilityTabs client:visible />
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="plugins">
+				<div class="h-wrap h-compose">
+					<div class="h-compose-row h-compose-plugins">
+						<div class="h-compose-copy">
+							<p class="h-eyebrow">Plugins</p>
+							<h2 id="plugins">Bring what your lab knows</h2>
+							<p>
+								Your instruments, your file formats, the way your group runs an analysis. Put them in a
+								plugin and CLIO works the way your lab does. Add the plugins your work needs, share them
+								with colleagues, and remove one to take it away again.
+							</p>
+							<div class="h-links-row">
+								<a class="h-arrow-link" href="/docs/agents-and-plugins/"
+									>Agents and plugins <ArrowRight size={16} aria-hidden="true" /></a
+								>
+								<a class="h-arrow-link" href="/docs/sdk/build-a-plugin/"
+									>Build your first plugin <ArrowRight size={16} aria-hidden="true" /></a
+								>
+							</div>
+						</div>
+						<div class="h-wide-clip">
+							<LoopVideo
+								client:visible
+								src="/media/home/plugin-composition.mp4"
+								poster="/media/home/plugin-composition.webp"
+								width={1680}
+								height={880}
+								label="Plugins for manufacturing, simulation, reports and genomics being added to and removed from an agent"
+								className="h-clip"
+							/>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="where">
+				<div class="h-wrap">
+					<h2 id="where" class="h-hidden">Where CLIO runs</h2>
+					<ul class="h-facts">
+						<li>
+							<h3>On your computer</h3>
+							<p>A desktop app for Windows, macOS and Linux that works next to your files.</p>
+							<a class="h-arrow-link" href="#download">Download <ArrowRight size={16} aria-hidden="true" /></a>
+						</li>
+						<li>
+							<h3>On a lab server</h3>
+							<p>Run it on a server or a cluster you already use and open it from your browser.</p>
+							<a class="h-arrow-link" href="/docs/install/"
+								>Install options <ArrowRight size={16} aria-hidden="true" /></a
+							>
+						</li>
+						<li>
+							<h3>With your model</h3>
+							<p>Use a hosted model or one your institution runs. You decide which.</p>
+							<a class="h-arrow-link" href="/docs/connect-a-model/"
+								>Choose a model <ArrowRight size={16} aria-hidden="true" /></a
+							>
+						</li>
+						<li>
+							<h3>In the open</h3>
+							<p>The code is on GitHub. Read it, change it and share the plugins you build.</p>
+							<a class="h-arrow-link" href={GITHUB}>GitHub <ArrowRight size={16} aria-hidden="true" /></a>
+						</li>
+					</ul>
+				</div>
+			</section>
+
+			<section class="h-section h-download" id="download" aria-labelledby="download-title">
+				<div class="h-wrap">
+					<div class="h-download-head">
+						<h2 id="download-title">Download CLIO</h2>
+						<p>
+							<ReleaseVersion client:load fallback={release.version} before="Version " after="." link={false} />{' '}
+							Pick your system. On Linux, pick the distribution you use, since
+							each one installs a different package.
+						</p>
+					</div>
+					<DownloadPanel client:load icons={icons} />
+					<div class="h-download-foot">
+						<span>Prefer the terminal?</span>
+						<InstallCommand client:visible />
+						<ReleaseVersion client:load fallback={release.version} before="Release notes for " />
+					</div>
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="news-title">
+				<div class="h-wrap h-news">
+					<div class="h-news-head">
+						<h2 id="news-title">What's new</h2>
+						<a class="h-button" href="/docs/versions/">All versions</a>
+					</div>
+					<ol class="h-news-list">
+						{
+							news.flatMap((release) =>
+								release.items.map((item) => (
+									<li>
+										<time>
+											<strong>{release.date}</strong>
+											{release.version}
+										</time>
+										<a href={item.href}>
+											<h3>{item.title}</h3>
+											<p>{item.body}</p>
+										</a>
+									</li>
+								)),
+							)
+						}
+					</ol>
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="close-title">
+				<div class="h-wrap h-close">
+					<img src="/favicon.svg" alt="" width="64" height="64" />
+					<h2 id="close-title">Try it on your own data</h2>
+					<p class="h-section-lede">
+						Install CLIO, open a folder from your project and ask the question you would ask a colleague.
+					</p>
+					<div class="h-close-actions">
+						<a class="h-button h-button-primary" href="#download">Download CLIO</a>
+						<a class="h-button" href="/docs/examples/check-a-dataset/">Your first analysis</a>
+					</div>
+				</div>
+			</section>
+		</main>
+
+		<footer class="h-footer">
+			<div class="h-wrap">
+				<a class="h-brand" href="/" aria-label="CLIO home">
+					<img src="/clio-mark-small.svg" alt="" width="24" height="24" />
+					<span>CLIO</span>
+				</a>
+				<ul>
+					<li><a href="/docs/">Documentation</a></li>
+					<li><a href="/docs/examples/">Examples</a></li>
+					<li><a href="/docs/versions/">Versions</a></li>
+					<li><a href={GITHUB}>GitHub</a></li>
+					<li><a href="/privacy/">Privacy</a></li>
+					<li><a href="/terms/">Terms</a></li>
+				</ul>
+			</div>
+		</footer>
+
+	</body>
+</html>
