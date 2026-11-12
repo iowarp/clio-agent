@@ -293,6 +293,7 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     monkeypatch.setattr(
         installer, "_prepare_default_marketplace", lambda args, emit: {"status": "ready"}
     )
+    monkeypatch.setattr(installer, "_prewarm_runtime_files", lambda args: {"status": "done"})
     monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
     monkeypatch.setattr(
         installer, "collect_snapshots_after_install", lambda: {"status": "collected"}
@@ -306,6 +307,45 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     assert summary["store_migrations"] == {"status": "done", "seconds": 0.0}
     assert summary["browser"] == {"status": "ready", "seconds": 0.0}
     assert summary["marketplace"] == {"status": "ready"}
+    assert summary["prewarm"] == {"status": "done"}
+
+
+def test_prewarm_opens_bytecode_sources_and_native_libraries_only_on_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first start no longer meets every freshly written code file cold."""
+    import sys
+    from argparse import Namespace
+
+    lib = tmp_path / "Lib"
+    site = lib / "site-packages"
+    cache = site / "pkg" / "__pycache__"
+    cache.mkdir(parents=True)
+    tag = sys.implementation.cache_tag
+    (site / "pkg" / "mod.py").write_text("x = 1\n")
+    (cache / f"mod.{tag}.pyc").write_bytes(b"\0")
+    (cache / "mod.other-tag.pyc").write_bytes(b"\0")
+    (site / "pkg" / "_native.pyd").write_bytes(b"\0")
+    (site / "pkg" / "notes.txt").write_text("not code")
+    (site / "pkg" / "unused.py").write_text("y = 2\n")
+    stdlib = tmp_path / "python314.zip"
+    stdlib.write_bytes(b"PK")
+    monkeypatch.setattr(sys, "path", [str(stdlib), str(lib), str(site)])
+
+    files = sorted(
+        Path(p).relative_to(tmp_path).as_posix() for p in installer._runtime_code_files()
+    )
+    assert files == [
+        "Lib/site-packages/pkg/__pycache__/" + f"mod.{tag}.pyc",
+        "Lib/site-packages/pkg/_native.pyd",
+        "Lib/site-packages/pkg/mod.py",
+        "python314.zip",
+    ]
+    launch = installer._prewarm_runtime_files(Namespace(reuse_installed=True))
+    assert launch == {"status": "skipped", "reason": "reuse_installed"}
+    install = installer._prewarm_runtime_files(Namespace(reuse_installed=False))
+    assert install["status"] == "done"
+    assert (install["files"], install["unreadable"]) == (4, 0)
 
 
 def test_default_marketplace_is_installed_by_an_install_but_never_by_a_launch_check(
@@ -387,6 +427,7 @@ def test_failed_package_step_waits_for_store_upgrade(
     monkeypatch.setattr(
         installer, "_prepare_default_marketplace", lambda args, emit: {"status": "ready"}
     )
+    monkeypatch.setattr(installer, "_prewarm_runtime_files", lambda args: {"status": "done"})
     monkeypatch.setattr(
         sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
     )
