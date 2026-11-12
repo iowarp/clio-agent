@@ -22,6 +22,7 @@ buffers responses and breaks the SSE streams this server is built around.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -97,6 +98,18 @@ _AVAILABLE_WHILE_STARTING = frozenset(
     }
 )
 STARTUP_RETRY_AFTER_S = 1
+# ``/v1/health`` answers (``overall_status: ready``) before the task runtime is up, so a
+# script that waits for health and then picks the model would hit a 503 for the next
+# several seconds. That one write waits for the start instead, up to this bound.
+_WAITS_FOR_START = frozenset({("PUT", "/v1/providers/lm")})
+STARTUP_WRITE_WAIT_S = 30.0
+
+
+async def _settled_start(starting: asyncio.Future[None], method: str, path: str) -> bool:
+    """Wait, bounded, for the task runtime start before one write; ``True`` once done."""
+    if not starting.done() and (method, path) in _WAITS_FOR_START:
+        await asyncio.wait({starting}, timeout=STARTUP_WRITE_WAIT_S)
+    return starting.done()
 
 
 def _startup_refusal(app: object, failed: bool) -> JSONResponse:
@@ -164,8 +177,9 @@ class EnvelopeErrorMiddleware:
             and path.startswith("/v1/")
             and path not in _AVAILABLE_WHILE_STARTING
         ):
-            failed = starting.done() and (starting.cancelled() or starting.exception() is not None)
-            if failed or not starting.done():
+            done = await _settled_start(starting, str(scope.get("method") or ""), path)
+            failed = done and (starting.cancelled() or starting.exception() is not None)
+            if failed or not done:
                 await _startup_refusal(app, failed)(scope, receive, send)
                 return
 
