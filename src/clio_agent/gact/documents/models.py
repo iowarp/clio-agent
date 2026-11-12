@@ -126,6 +126,9 @@ class ArtifactReview(BaseModel):
     session and the version it made as ``reply_version_artifact_id``. A newer version
     re-anchors the thread: ``anchor_state`` is ``moved`` (``current_anchor`` on
     ``current_artifact_id``) or ``outdated``; a region stays ``current`` on its version.
+    ``anchor_error`` is the typed reason a thread's own version could not be read when it
+    was re-anchored (``integrity_violation``, ``artifact_bytes_unavailable``); it is
+    outdated then, and the artifact's other threads are listed as usual.
     Rows are append-only projections in the workspace's reviews ledger.
     """
 
@@ -155,6 +158,7 @@ class ArtifactReview(BaseModel):
     reply_version_artifact_id: str = ""
     reply_error: str = ""
     anchor_state: ThreadAnchorState = "current"
+    anchor_error: str = ""
     current_artifact_id: str = ""
     current_anchor: Optional[DocumentAnchor] = None
     updated_at: str = ""

@@ -11,6 +11,7 @@ being marked moved or outdated.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 __all__ = ["ThreadList", "list_threads", "thread_crop"]
+
+logger = logging.getLogger(__name__)
 
 _OPEN = {"queued", "dispatched", "human-note", "failed"}
 _REANCHOR_LOCK = threading.Lock()
@@ -68,7 +71,15 @@ def _reanchor(
         ]
         if not stale:
             return
-        new_target = mark_target(app, record, head, session_id)
+        try:
+            new_target = mark_target(app, record, head, session_id)
+        except CommentSessionError as exc:
+            # Nothing can be carried to a head that cannot be read; the threads are still
+            # listed where they are, and re-anchoring is tried again on the next listing.
+            logger.warning(
+                "threads not re-anchored artifact=%s reason=%s", head.artifact_id, exc.code
+            )
+            return
         for row in stale:
             found = registry.get_by_artifact_id(row.artifact_id)
             resolver = resolver_for(new_target.profile, row.anchor.profile)
@@ -81,11 +92,25 @@ def _reanchor(
                     updated_at=_now(),
                 )
                 continue
-            old_target = mark_target(app, found[0], found[1], session_id)
+            try:
+                old_target = mark_target(app, found[0], found[1], session_id)
+            except CommentSessionError as exc:
+                # Only this thread's version cannot be read (its bytes changed or are gone):
+                # it cannot be carried, so it is outdated and says why; the rest still move.
+                store.update_review(
+                    row.id,
+                    anchor_state="outdated",
+                    anchor_error=exc.code,
+                    current_anchor=None,
+                    current_artifact_id=head.artifact_id,
+                    updated_at=_now(),
+                )
+                continue
             state, anchor = resolver.reanchor(old_target, new_target, row.anchor)
             store.update_review(
                 row.id,
                 anchor_state=state,
+                anchor_error="",
                 current_anchor=anchor if state == "moved" else None,
                 current_artifact_id=head.artifact_id,
                 updated_at=_now(),
