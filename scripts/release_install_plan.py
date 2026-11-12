@@ -22,6 +22,9 @@ lists the plan in its SHA256SUMS, which is what authenticates it to the installe
 ``office-plan.TRIPLE.txt``, from which ``install.ps1``'s source install fetches the
 prepared Office tree. It is not in the bundled plan, whose every line the Windows
 desktop and runtime installs fetch, and whose runtime archive already holds Office.
+``--only deps --deps-pack PACK`` likewise writes ``deps-plan.TRIPLE.txt``: the ``deps``
+line naming ``scripts/build_source_deps.py``'s archive of a Windows source install's
+locked dependencies. No other plan names it.
 """
 
 from __future__ import annotations
@@ -164,13 +167,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--office-pack", type=Path, help="build_office_tree.py's office-tree.pack.json"
     )
-    parser.add_argument("--only", choices=["office"], help="write only this kind's lines")
+    parser.add_argument("--only", choices=["office", "deps"], help="write only this kind's lines")
+    parser.add_argument(
+        "--deps-pack", type=Path, help="build_source_deps.py's source-deps.pack.json (--only deps)"
+    )
     parser.add_argument(
         "--browser-manifest",
         type=Path,
         help="the built runtime's playwright/driver/clio-node.json (browser archives)",
     )
     args = parser.parse_args(argv)
+    if args.only == "deps":
+        if args.deps_pack is None:
+            raise SystemExit("--only deps needs --deps-pack")
+        deps = json.loads(args.deps_pack.read_text(encoding="utf-8"))
+        sha, name, url = _named_asset(deps, "source dependencies")
+        line = f"deps {sha} {int(deps['archive_bytes'])} {name} {url}"
+        args.output.write_text(f"capability {capability()}\n{line}\n", encoding="utf-8")
+        print(line)
+        return 0
     pack = office_pack = None
     if args.runtime_pack is not None:
         pack = json.loads(args.runtime_pack.read_text(encoding="utf-8"))
