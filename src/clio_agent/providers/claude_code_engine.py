@@ -77,6 +77,7 @@ from clio_agent.providers.claude_code_cwd import session_cwd
 from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
 from clio_agent.providers.claude_code_multimodal import native_blocks
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk, thinking_key
+from clio_agent.providers.claude_code_output_progress import PROTOCOL_WORD as _PROTOCOL_WORD
 from clio_agent.providers.claude_code_output_progress import FormattingProgress
 from clio_agent.providers.claude_code_plan_limit import plan_limit_from_rate_limit_event
 from clio_agent.providers.claude_code_result_errors import (
@@ -101,9 +102,6 @@ __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
 
 logger = logging.getLogger(__name__)
-#: A bare protocol-like word (``_tool_calls``, ``_check_placeholder``, ``_memory``): a
-#: snake_case identifier starting with an underscore. Never prose, never a preamble.
-_PROTOCOL_WORD = re.compile(r"_[a-z][a-z0-9_]*")
 #: A reply's opening lines that are each blank or one protocol word.
 _PROTOCOL_LINES = re.compile(r"(?:[ \t]*(?:_[a-z][a-z0-9_]*)?[ \t]*\r?\n)+")
 

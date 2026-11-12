@@ -351,3 +351,43 @@ def test_a_one_word_preamble_in_prose_is_still_shown() -> None:
     turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
     reply = "Looking.\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
     assert _shown(push(turn, reply) + turn.finish("prose word")) == "Looking."
+
+
+def test_a_protocol_word_loop_after_an_opening_sentence_gets_the_same_recovery() -> None:
+    """Seen live: one sentence, then ``_placeholder`` for 175,000 characters and twelve
+    minutes, nothing shown, until the output limit. The run is cut where the opening
+    loop is, and the model gets the same feedback."""
+    turn = _Turn("haiku", available_tools=frozenset({"fs_list_directory"}))
+    reply = "I'll start by listing the workspace to see what data files are there.\n\n"
+    reply += "_placeholder\n\n" * 2000
+    for index in range(0, len(reply), 7):
+        push(turn, reply[index : index + 7])
+        if turn.protocol_error:
+            break
+    assert turn.protocol_error == "formatting_only_repetition"
+    assert turn.reply.count("_placeholder") == 32
+    calls = [
+        event.delta
+        for event in turn.finish("looped-after-prose")
+        if event.type == "delta" and event.delta.type == "tool_call"
+    ]
+    assert len(calls) == 1 and calls[0].name == INVALID_TOOL_CALL
+
+
+@pytest.mark.parametrize("line", ["0", "N/A", "}", "---"])
+def test_repeated_data_lines_after_a_sentence_are_an_answer(line: str) -> None:
+    """Only a protocol word is a loop: a column of equal values is data."""
+    progress = FormattingProgress(enabled=True)
+    text = "The flag column for every row:\n" + f"{line}\n" * 100
+    assert progress.cutoff(text) is None
+
+
+def test_a_protocol_word_run_broken_by_prose_is_not_cut() -> None:
+    progress = FormattingProgress(enabled=True)
+    text = "Working.\n" + ("_step\n" * 20 + "Next part of the answer.\n") * 5
+    assert progress.cutoff(text) is None
+
+
+def test_a_reply_without_tools_never_counts_runs() -> None:
+    progress = FormattingProgress(enabled=False)
+    assert progress.cutoff("Sentence.\n" + "_placeholder\n" * 100) is None
