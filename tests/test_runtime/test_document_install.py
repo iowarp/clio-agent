@@ -330,7 +330,14 @@ def test_prewarm_opens_bytecode_sources_and_native_libraries_only_on_install(
     (site / "pkg" / "unused.py").write_text("y = 2\n")
     stdlib = tmp_path / "python314.zip"
     stdlib.write_bytes(b"PK")
-    monkeypatch.setattr(sys, "path", [str(stdlib), str(lib), str(site)])
+    home = tmp_path.parent / f"{tmp_path.name}-home"
+    (home / "project").mkdir(parents=True)
+    (home / "project" / "big.zip").write_bytes(b"PK")
+    (home / "project" / "tool.py").write_text("z = 3\n")
+    for name in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, name, str(tmp_path))
+    # ``python -m`` run from a home directory puts that directory first on the path.
+    monkeypatch.setattr(sys, "path", [str(home), str(stdlib), str(lib), str(site)])
 
     files = sorted(
         Path(p).relative_to(tmp_path).as_posix() for p in installer._runtime_code_files()
