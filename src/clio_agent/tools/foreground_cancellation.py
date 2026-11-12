@@ -20,6 +20,7 @@ def _tool_cancellation_error(
     stage: str,
     *,
     wire_settled: bool | None = None,
+    message: str = "tool call cancelled by client",
 ) -> CancellationError:
     execution_cancellation = "cooperative"
     wire_cancellation = "not_needed"
@@ -36,7 +37,7 @@ def _tool_cancellation_error(
             "mcp_wire_cancellation": wire_cancellation,
         }
     )
-    return CancellationError("tool call cancelled by client", details=details)
+    return CancellationError(message, details=details)
 
 
 def _run_foreground_coroutine(
