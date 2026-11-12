@@ -126,7 +126,9 @@ def test_install_failure_without_a_known_code_keeps_playwrights_error() -> None:
 
 def _chromium_zip(path: Path, *, link: bool = False) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("chrome-win64/chrome.exe", b"MZ" * 1000)
+        executable = zipfile.ZipInfo("chrome-win64/chrome.exe")
+        executable.external_attr = (stat.S_IFREG | 0o755) << 16  # as the real archive marks it
+        archive.writestr(executable, b"MZ" * 1000)
         archive.writestr("chrome-win64/locales/en-US.pak", b"pak")
         for index in range(20):
             archive.writestr(f"chrome-win64/res/{index}.bin", bytes(index * 100))
@@ -174,6 +176,7 @@ def _fake_install(monkeypatch: pytest.MonkeyPatch, root: Path, calls: list[tuple
             folder = where / "chromium-7" / "chrome-win64"
             folder.mkdir(parents=True)
             (folder / "chrome.exe").write_bytes(b"downloaded")
+            (folder / "chrome.exe").chmod(0o755)  # chromium_executable needs X_OK on POSIX
             (where / "chromium-7" / "INSTALLATION_COMPLETE").write_text("")
         return subprocess.CompletedProcess([node], 0, "", "")
 

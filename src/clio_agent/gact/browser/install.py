@@ -191,6 +191,11 @@ def _unpack_chromium(archive: Path, root: Path, revision: str) -> bool:
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     files = sorted((e for e in entries if not e.is_dir()), key=lambda e: -e.file_size)
+    inside = staging.resolve()
+    for entry in files:  # folders first: 3.12's zipfile makes them without exist_ok (a race)
+        folder = (staging / entry.filename).parent.resolve()
+        if folder.is_relative_to(inside):
+            folder.mkdir(parents=True, exist_ok=True)
     workers = max(1, min(8, os.cpu_count() or 1))
     shares: list[list[zipfile.ZipInfo]] = [[] for _ in range(workers)]
     loads = [0] * workers

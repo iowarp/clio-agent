@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
 from clio_agent.gact import local_server_store as store
@@ -222,13 +223,14 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         endpoint = next(
             route.endpoint
             for route in app.routes
-            if getattr(route, "path", "") == "/v1/providers/lm"
-            and "PUT" in getattr(route, "methods", ())
+            if isinstance(route, APIRoute)
+            and route.path == "/v1/providers/lm"
+            and "PUT" in (route.methods or ())
         )
         try:
             info = await endpoint(LMProviderRequest(**{**carried, "api_base": current}))
         except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
             message = str((detail.get("error") or {}).get("message") or exc.detail)
             return {"followed": False, "provider_id": provider_id, "error": message}
         return {

@@ -181,15 +181,15 @@ def snapshot_process_nodes(
 
     kept: list[ProcessNode] = []
     for pid in keep:
-        node = raw.get(pid)
-        if node is None:
+        kept_node = raw.get(pid)
+        if kept_node is None:
             continue
         proc = process_handles.get(pid)
         try:
             created = float(proc.create_time() or 0.0) if proc is not None else 0.0
         except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, OSError):
             created = 0.0
-        kept.append(replace(node, create_time=created))
+        kept.append(replace(kept_node, create_time=created))
     return kept
 
 

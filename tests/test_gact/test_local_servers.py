@@ -410,7 +410,9 @@ def test_the_bound_runtime_follows_its_saved_address(
         "parallel": 2,
     }
 
-    saved = client.post("/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"})
+    saved = client.post(
+        "/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"}
+    )
     assert saved.json()["binding"] == {
         "followed": True,
         "provider_id": "vllm",
@@ -423,5 +425,7 @@ def test_the_bound_runtime_follows_its_saved_address(
     assert removed["binding"]["api_base"] == "http://127.0.0.1:8000/v1"
 
     app.state.lm_config["api_base"] = "http://127.0.0.1:8001/v1"
-    pinned = client.post("/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"})
+    pinned = client.post(
+        "/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"}
+    )
     assert "binding" not in pinned.json() and len(binds) == 2
