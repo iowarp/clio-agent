@@ -512,8 +512,15 @@ class SessionRecords:
         )
 
     def _drop_claimed(self, store: Any) -> None:
-        """Stop listing bare rows another home adopted (their copies are that home's)."""
-        claimed = [sid for sid in _claimed(store) if sid in self._columns]
+        """Stop listing bare rows another home adopted (their copies are that home's).
+
+        Rows this home claimed itself, while it ran on another home's daemon, stay
+        listed: the bare copies are still its own.
+        """
+        from clio_agent.arc import home_namespace  # noqa: PLC0415
+
+        own = home_namespace.namespace_for(home_namespace.home_identity())
+        claimed = [sid for sid, by in _claimed(store).items() if by != own and sid in self._columns]
         for sid in claimed:
             self._unindex(sid)
         if claimed:
