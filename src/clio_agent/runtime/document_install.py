@@ -17,9 +17,14 @@ from clio_agent import paths
 from clio_agent.runtime import package_preparation
 from clio_agent.runtime.codex_desktop_setup import prepare_existing_windows_fence
 from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers
-from clio_agent.runtime.document_install_receipt import reuse_install_receipt, save_install_receipt
+from clio_agent.runtime.document_install_receipt import (
+    reuse_install_receipt,
+    save_install_receipt,
+    take_prepared_receipt,
+)
 from clio_agent.runtime.document_runtime import (
     DocumentRuntimeError,
+    _document_uv,
     prepare_document_runtime,
     prepare_office_runtime,
 )
@@ -128,6 +133,7 @@ def install_document_runtime(
     progress: Callable[[str], None] | None = None,
     setup_protected_execution: bool = False,
     reuse_installed: bool = False,
+    reuse_prepared: bool = False,
 ) -> dict[str, Any]:
     """Verify packages and protection before publishing a complete installation receipt."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -138,6 +144,8 @@ def install_document_runtime(
     )
     reused = result is not None
     protection: dict[str, Any] | None = None
+    if result is None and reuse_prepared:
+        result = _take_prepared(workspace, cache_root=cache_root, progress=progress)
     if result is None:
         # The fence check touches only the bundled runtime, tool and temp roots, never
         # the package caches, so it runs while the packages are prepared.
@@ -166,7 +174,7 @@ def install_document_runtime(
             policy.validate_write(str(scratch / name / "manifest.json"), create_parent=True)
         cache = (cache_root or paths.user_cache_dir() / "document-runtime") / result["runtime_id"]
         publish_environment(workspace, result, cache)
-        if progress is not None:
+        if progress is not None and reused:
             progress(
                 "Verified installation unchanged; reusing Office, Python, Node.js and GitHub packages."
             )
@@ -179,6 +187,31 @@ def install_document_runtime(
         save_install_receipt(workspace, result, cache_root=cache_root)
     if progress is not None:
         progress("All managed runtime packages are installed and verified.")
+    return result
+
+
+def _take_prepared(
+    workspace: Path,
+    *,
+    cache_root: Path | None,
+    progress: Callable[[str], None] | None,
+) -> dict[str, Any] | None:
+    """The packages the source installer's side worker prepared, if they are unchanged.
+
+    That worker (:mod:`clio_agent.runtime.office_bootstrap`) ran the same
+    :func:`prepare_managed_packages` moments ago; preparing them again here only repeated
+    its import probe. Any changed file, or a different uv, prepares them in full.
+    """
+    protect_bundled_runtime()
+    result = take_prepared_receipt(workspace, cache_root=cache_root)
+    if result is not None and result.get("uv") != _document_uv():
+        result = None
+    if progress is not None:
+        progress(
+            "Verified the packages prepared beside the agent dependencies; reusing them."
+            if result is not None
+            else "Packages prepared beside the agent dependencies changed; preparing them again."
+        )
     return result
 
 
@@ -274,6 +307,11 @@ def _main() -> None:
         action="store_true",
         help="Do not run `clio-agent migrate` here (the caller runs it as its own step).",
     )
+    parser.add_argument(
+        "--reuse-prepared",
+        action="store_true",
+        help="Reuse the packages the Windows source installer prepared beside its sync.",
+    )
     args = parser.parse_args()
     if args.protected_execution_only:
         tools = prepare_protected_execution(
@@ -315,6 +353,7 @@ def _main() -> None:
             progress=emit,
             setup_protected_execution=args.setup_protected_execution,
             reuse_installed=args.reuse_installed,
+            reuse_prepared=args.reuse_prepared,
         )
         migrations = _run_store_migrations(args, emit)
         result = installation.result()

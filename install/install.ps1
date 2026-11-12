@@ -1003,7 +1003,8 @@ function Complete-OfficePrepare {
         Get-Content -LiteralPath $script:OfficeLog, $script:OfficeErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
         DieWith $code "Managed-tool preparation failed (logs: $($script:OfficeLog), $($script:OfficeErr)); installation was not marked ready."
     }
-    Say "Managed-tool preparation completed in $seconds s; the managed-package step will verify it again"
+    Say "Managed-tool preparation completed in $seconds s; the managed-package step checks its files"
+    $script:OfficePrepared = $true
     Remove-Item -LiteralPath $script:OfficeLog, $script:OfficeErr -Force -ErrorAction SilentlyContinue
 }
 
@@ -1387,6 +1388,7 @@ $ClioVersion = $null
 $RuntimePlan = $null
 $RuntimeScratch = $null
 $DocJob = $null
+$OfficePrepared = $false
 $DocsMigrate = $false
 # The CLIO this install replaces, named if the data check below cannot tell.
 $PreviousVersion = $null
@@ -1629,7 +1631,7 @@ function Invoke-OldDataCheck {
     }
     Move-OldDataAside
 }
-if ($DocsMigrate) {
+if ($DocsMigrate -or $FreshHome) {
     Say 'First CLIO on this machine: no earlier data to check'
 } else {
     Invoke-OldDataCheck
@@ -1684,6 +1686,9 @@ function Complete-ClioMigrate {
 }
 
 Complete-OfficePrepare
+if ($OfficePrepared -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'reuse-prepared' -Quiet -ErrorAction SilentlyContinue)) {
+    $DocFlags += '--reuse-prepared'
+}
 if ($DocJob) {
     if ($DocsMigrate) { Say 'Finishing the managed packages, Office rendering and the CLIO store' }
     $docsStatus = Complete-ClioBackground $DocJob
