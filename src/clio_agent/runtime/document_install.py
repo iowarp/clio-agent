@@ -317,14 +317,27 @@ def _main() -> None:
         action="store_true",
         help="Only fetch the browser and the default agents (the Windows source installer).",
     )
+    parser.add_argument(
+        "--provider-support",
+        default="",
+        metavar="KINDS",
+        help="Comma-separated provider kinds (e.g. claude_code) whose SDK to install now.",
+    )
     args = parser.parse_args()
     if args.prefetch_only:
-        # The full step that follows finds both ready and only checks them.
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-prefetch") as fetching:
+        # The full step that follows finds all three ready and only checks them.
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="clio-prefetch") as fetching:
             browser = fetching.submit(_prepare_browser, args, print)
             marketplace = fetching.submit(_prepare_default_marketplace, args, print)
+            providers = fetching.submit(_prepare_provider_support, args, print)
             print(
-                json.dumps({"browser": browser.result(), "marketplace": marketplace.result()}),
+                json.dumps(
+                    {
+                        "browser": browser.result(),
+                        "marketplace": marketplace.result(),
+                        "provider_support": providers.result(),
+                    }
+                ),
                 flush=True,
             )
         return
@@ -358,9 +371,12 @@ def _main() -> None:
     # installed, so a first start that had to fetch it held the workspace for its length.
     # Opening the server's code once here moves the on-access scan of the files the
     # install just wrote out of the first start (see _prewarm_runtime_files).
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-packages") as installing:
+    # A provider SDK the caller names is a download too; without it the first turn
+    # with that provider would install it.
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="clio-packages") as installing:
         browser = installing.submit(_prepare_browser, args, emit)
         marketplace = installing.submit(_prepare_default_marketplace, args, emit)
+        providers = installing.submit(_prepare_provider_support, args, emit)
         prewarm = installing.submit(_prewarm_runtime_files, args)
         installation = installing.submit(
             install_document_runtime,
@@ -374,6 +390,7 @@ def _main() -> None:
         result = installation.result()
         browser_result = browser.result()
         marketplace_result = marketplace.result()
+        providers_result = providers.result()
         prewarm_result = prewarm.result()
     summary = {
         "status": result["status"],
@@ -382,6 +399,7 @@ def _main() -> None:
         "store_migrations": migrations,
         "browser": browser_result,
         "marketplace": marketplace_result,
+        "provider_support": providers_result,
         "prewarm": prewarm_result,
     }
     if not args.reuse_installed:
@@ -445,6 +463,47 @@ def _prepare_default_marketplace(
 
 
 _PREWARM_SUFFIXES = (".pyd", ".dll", ".so", ".dylib", ".zip")
+
+
+def _prepare_provider_support(
+    args: argparse.Namespace, emit: Callable[[str], None]
+) -> dict[str, Any]:
+    """Install the SDK of each provider named by ``--provider-support``, reported typed.
+
+    The same installer the first turn with that provider would run, so the turn finds
+    the SDK ready. A per-launch check never downloads; a failure does not fail the
+    install, and the first turn with that provider retries it.
+    """
+    kinds = [kind.strip() for kind in args.provider_support.split(",") if kind.strip()]
+    if not kinds:
+        return {"status": "skipped", "reason": "none_requested"}
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    import time  # noqa: PLC0415
+
+    from clio_agent.providers.dependencies import (  # noqa: PLC0415
+        PROVIDER_SUPPORT,
+        ProviderDependencyInstallError,
+        ensure_provider_support,
+    )
+
+    outcomes: dict[str, Any] = {}
+    for kind in kinds:
+        support = PROVIDER_SUPPORT.get(kind)
+        name = support.display_name if support else kind
+        started = time.monotonic()
+        try:
+            installed = ensure_provider_support(kind)
+        except ProviderDependencyInstallError as exc:
+            seconds = round(time.monotonic() - started, 1)
+            emit(f"{name} support was not installed; its first use will retry: {exc}")
+            outcomes[kind] = {"status": "failed", "error": str(exc), "seconds": seconds}
+            continue
+        seconds = round(time.monotonic() - started, 1)
+        emit(f"{name} support is ready.")
+        outcomes[kind] = {"status": "ready", "installed": installed, "seconds": seconds}
+    failed = any(outcome["status"] == "failed" for outcome in outcomes.values())
+    return {"status": "failed" if failed else "ready", "providers": outcomes}
 
 
 def _runtime_code_files() -> list[str]:

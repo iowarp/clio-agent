@@ -623,6 +623,9 @@ function Resolve-ClioRelease([bool]$Dev) {
 }
 
 $OptSource = $false
+# Provider SDKs laid down with the managed packages, so a first turn never installs one.
+# claude_code's SDK is otherwise installed by the first Claude Code turn.
+$ProviderSupport = if ($null -ne $env:CLIO_INSTALL_PROVIDER_SUPPORT) { $env:CLIO_INSTALL_PROVIDER_SUPPORT } else { 'claude_code' }
 $OptDev = $false
 $OptVersion = ''
 $OptRef = ''
@@ -1334,12 +1337,14 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
         # On a fresh home there is no data to check first, so a document step that
         # upgrades the store itself does so while the packages install (as install.sh).
         $script:DocsMigrate = $FreshHome -and (Select-String -LiteralPath $docInstall -SimpleMatch '_run_store_migrations' -Quiet)
+        $providerFlag = ''
+        if ($ProviderSupport -and (Select-String -LiteralPath $docInstall -SimpleMatch 'provider-support' -Quiet)) { $providerFlag = " --provider-support $ProviderSupport" }
         if ($script:DocsMigrate) {
             Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering, and creating the CLIO store'
-            $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') '-m clio_agent.runtime.document_install --setup-protected-execution' 'documents'
+            $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') "-m clio_agent.runtime.document_install --setup-protected-execution$providerFlag" 'documents'
         } else {
             Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-            $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') '-m clio_agent.runtime.document_install --setup-protected-execution --skip-store-migrations' 'documents' -Live
+            $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') "-m clio_agent.runtime.document_install --setup-protected-execution --skip-store-migrations$providerFlag" 'documents' -Live
         }
     }
     Initialize-ClioUv (Join-Path $Venv 'bin')
@@ -1585,7 +1590,11 @@ if ($OptSource) {
     # Chromium and the default agents are fetches, not package work: the managed-tool
     # worker is still preparing, so they finish beside it instead of after it.
     if ($OfficeProc -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'prefetch-only' -Quiet -ErrorAction SilentlyContinue)) {
-        $PrefetchJob = Start-ClioBackground $VenvPython '-m clio_agent.runtime.document_install --prefetch-only' 'prefetch'
+        $prefetchArgs = '-m clio_agent.runtime.document_install --prefetch-only'
+        if ($ProviderSupport -and (Select-String -LiteralPath (Join-Path $Src 'src\clio_agent\runtime\document_install.py') -SimpleMatch 'provider-support' -Quiet -ErrorAction SilentlyContinue)) {
+            $prefetchArgs += " --provider-support $ProviderSupport"
+        }
+        $PrefetchJob = Start-ClioBackground $VenvPython $prefetchArgs 'prefetch'
     }
 }
 if (Test-Path $VenvPython) {
@@ -1733,6 +1742,10 @@ if ($DocsMigrate -or $FreshHome) {
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
 $DocFlags = @('--setup-protected-execution')
+if ($ProviderSupport -and (Test-Path $VenvPython)) {
+    & $VenvPython -c "import importlib.util, sys; s = importlib.util.find_spec('clio_agent.runtime.document_install'); sys.exit(0 if s and '--provider-support' in open(s.origin, encoding='utf-8')    .read() else 3)"
+    if ($LASTEXITCODE -eq 0) { $DocFlags += @('--provider-support', $ProviderSupport) }
+}
 $MigrateJob = $null
 $MigrateStatus = $null
 if ($DocsMigrate) {
