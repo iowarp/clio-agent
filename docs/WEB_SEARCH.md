@@ -33,6 +33,11 @@ first enabled, approved source that is not resting answers. A filter a source ca
 apply is applied by CLIO to its results, and the result says so
 (`filters_applied_by_clio`, note `search_filters_approximate`).
 
+**Permissions.** The four tools change nothing on the computer but send queries and URLs
+out, so the permission gate treats them as open-world actions: the session's approval
+mode decides (ask asks), a playbook step may forbid them, and plan mode allows them like
+`web_fetch`.
+
 **Approval.** The first query to a source asks the person (a choice question, also in
 bypass mode, never answered by an agent). An approval is saved in `search.approved`;
 "Don't use" lasts until the server restarts.
