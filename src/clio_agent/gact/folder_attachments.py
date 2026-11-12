@@ -20,7 +20,9 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -38,6 +40,52 @@ from clio_agent.platform_paths import (
 Placement = Literal["in_place", "copy"]
 PLACEMENTS: tuple[Placement, ...] = ("in_place", "copy")
 NOTICE_KIND = "host_folder"
+
+# Proxy headers that name the client a request was relayed for.
+_FORWARDED_FOR_HEADERS = ("x-forwarded-for", "x-real-ip")
+
+
+def _forwarded_addresses(headers: Mapping[str, str]) -> list[str]:
+    """Every client address a proxy recorded, with ports and IPv6 brackets removed."""
+
+    found: list[str] = []
+    for name in _FORWARDED_FOR_HEADERS:
+        found.extend(part.strip() for part in (headers.get(name) or "").split(",") if part.strip())
+    for element in (headers.get("forwarded") or "").split(","):
+        for pair in element.split(";"):
+            key, _, value = pair.strip().partition("=")
+            if key.strip().lower() == "for" and value:
+                found.append(value.strip().strip('"'))
+    cleaned: list[str] = []
+    for address in found:
+        if address.startswith("["):
+            address = address[1:].split("]", 1)[0]
+        elif address.count(":") == 1:
+            address = address.split(":", 1)[0]
+        cleaned.append(address)
+    return cleaned
+
+
+def client_locality(peer: str | None, headers: Mapping[str, str]) -> dict[str, Any]:
+    """Whether a request comes from the computer this server runs on.
+
+    The socket peer and every address a proxy forwarded for must be loopback.
+    Anything else, including an obfuscated or ``unknown`` forwarded client, is
+    another computer. A client that reaches the server through its own tunnel
+    (for example ``ssh -L``) also arrives over loopback; the desktop app marks
+    its tunnelled routes as remote itself.
+    """
+
+    from clio_agent.gact.auth import is_loopback_address  # noqa: PLC0415
+
+    host = socket.gethostname()
+    if not is_loopback_address(peer):
+        return {"same_computer": False, "reason": "remote_peer", "host": host}
+    if any(not is_loopback_address(address) for address in _forwarded_addresses(headers)):
+        return {"same_computer": False, "reason": "forwarded_remote", "host": host}
+    return {"same_computer": True, "reason": "loopback", "host": host}
+
+
 NOTICE_NAME = "folder-attachment.json"
 _INDEX_ENTRIES = 200
 FOLDER_COPY_DIRECTORY = Path("inputs") / "folders"
