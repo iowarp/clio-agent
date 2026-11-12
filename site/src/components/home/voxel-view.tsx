@@ -89,13 +89,46 @@ interface Props {
 	label: string;
 }
 
+type Basis = [number[], number[], number[]];
+
+/** The starting view: a three-quarter look from above the loaded corner. */
+function initialBasis(): Basis {
+	const yaw = -0.62;
+	const pitch = 0.42;
+	const [cy, sy, cp, sp] = [Math.cos(yaw), Math.sin(yaw), Math.cos(pitch), Math.sin(pitch)];
+	return [
+		[cy, 0, -sy],
+		[-sy * sp, cp, -cy * sp],
+		[sy * cp, sp, cy * cp],
+	];
+}
+
+/** Rotate the view about the screen's vertical (`across`) and horizontal (`down`) axes. */
+function turn([right, up, depth]: Basis, across: number, down: number): Basis {
+	const mix = (a: number[], b: number[], ca: number, cb: number) => a.map((v, i) => v * ca + b[i] * cb);
+	const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+	const norm = (v: number[]) => {
+		const length = Math.hypot(v[0], v[1], v[2]);
+		return v.map((x) => x / length);
+	};
+	const [ca, sa, cd, sd] = [Math.cos(across), Math.sin(across), Math.cos(down), Math.sin(down)];
+	const r = norm(mix(right, depth, ca, -sa));
+	const turnedDepth = mix(right, depth, sa, ca);
+	const u = mix(up, turnedDepth, cd, sd);
+	// Re-orthonormalize so small rotations never accumulate drift; depth is right x up.
+	const u2 = norm(u.map((v, i) => v - dot(u, r) * r[i]));
+	const d = [r[1] * u2[2] - r[2] * u2[1], r[2] * u2[0] - r[0] * u2[2], r[0] * u2[1] - r[1] * u2[0]];
+	return [r, u2, d];
+}
+
 /**
  * A small orthographic voxel renderer standing in for CLIO's 3D mesh view.
- * Drag (mouse or touch) or use the arrow keys to orbit.
+ * Drag (mouse or touch) to turn it freely in any direction, use the arrow keys,
+ * or double-click to return to the starting view. The block always fits the frame.
  */
 export default function VoxelView({ cycle, colorBy, label }: Props) {
 	const canvas = useRef<HTMLCanvasElement>(null);
-	const view = useRef({ yaw: -0.62, pitch: 0.42 });
+	const view = useRef<Basis>(initialBasis());
 	const cells = useRef<Uint8Array>(solidAt(cycle));
 	const settings = useRef({ colorBy });
 	const drawRef = useRef<() => void>(() => {});
@@ -129,23 +162,19 @@ export default function VoxelView({ cycle, colorBy, label }: Props) {
 			const ivory = readColor(el, '--brand-ivory', '#f2ead9');
 			const ink = readColor(el, '--ink-soft', '#d8cfbd');
 
-			const { yaw, pitch } = view.current;
-			const cy = Math.cos(yaw);
-			const sy = Math.sin(yaw);
-			const cp = Math.cos(pitch);
-			const sp = Math.sin(pitch);
-			const scale = Math.min(rect.width / 29, rect.height / 17);
+			const [right, up, depth] = view.current;
+			// Fit the block's outline at this orientation, so turning it never clips it.
+			const half = [NX / 2, NY / 2, NZ / 2];
+			const extent = (axis: number[]) => axis.reduce((sum, v, i) => sum + Math.abs(v) * half[i], 0);
+			const scale = Math.min((rect.width - 36) / (2 * extent(right)), (rect.height - 56) / (2 * extent(up)));
 			const ox = rect.width / 2;
-			const oy = rect.height / 2 + scale * 0.4;
+			const oy = rect.height / 2 - 6;
 			const project = (x: number, y: number, z: number): [number, number, number] => {
-				const px = x - NX / 2;
-				const py = y - NY / 2;
-				const pz = z - NZ / 2;
-				const rx = px * cy - pz * sy;
-				const rz = px * sy + pz * cy;
-				return [ox + rx * scale, oy - (py * cp - rz * sp) * scale, py * sp + rz * cp];
+				const p = [x - half[0], y - half[1], z - half[2]];
+				const along = (axis: number[]) => axis[0] * p[0] + axis[1] * p[1] + axis[2] * p[2];
+				return [ox + along(right) * scale, oy - along(up) * scale, along(depth)];
 			};
-			const facing = (n: readonly number[]) => n[1] * sp + (n[0] * sy + n[2] * cy) * cp;
+			const facing = (n: readonly number[]) => depth[0] * n[0] + depth[1] * n[1] + depth[2] * n[2];
 
 			const solid = cells.current;
 			const at = (x: number, y: number, z: number) =>
@@ -219,8 +248,11 @@ export default function VoxelView({ cycle, colorBy, label }: Props) {
 
 		let drag: { x: number; y: number } | null = null;
 		const orbit = (dx: number, dy: number) => {
-			view.current.yaw += dx;
-			view.current.pitch = Math.max(-0.2, Math.min(1.3, view.current.pitch + dy));
+			view.current = turn(view.current, dx, dy);
+			draw();
+		};
+		const reset = () => {
+			view.current = initialBasis();
 			draw();
 		};
 		const down = (event: PointerEvent) => {
@@ -229,7 +261,7 @@ export default function VoxelView({ cycle, colorBy, label }: Props) {
 		};
 		const move = (event: PointerEvent) => {
 			if (!drag) return;
-			orbit((event.clientX - drag.x) * 0.01, (event.clientY - drag.y) * 0.008);
+			orbit((event.clientX - drag.x) * 0.012, (event.clientY - drag.y) * 0.012);
 			drag = { x: event.clientX, y: event.clientY };
 		};
 		const up = () => {
@@ -239,8 +271,8 @@ export default function VoxelView({ cycle, colorBy, label }: Props) {
 			const steps: Record<string, [number, number]> = {
 				ArrowLeft: [-0.15, 0],
 				ArrowRight: [0.15, 0],
-				ArrowUp: [0, -0.1],
-				ArrowDown: [0, 0.1],
+				ArrowUp: [0, -0.15],
+				ArrowDown: [0, 0.15],
 			};
 			const step = steps[event.key];
 			if (!step) return;
@@ -256,6 +288,7 @@ export default function VoxelView({ cycle, colorBy, label }: Props) {
 		el.addEventListener('pointerup', up);
 		el.addEventListener('pointercancel', up);
 		el.addEventListener('keydown', key);
+		el.addEventListener('dblclick', reset);
 		return () => {
 			resize.disconnect();
 			theme.disconnect();
@@ -264,6 +297,7 @@ export default function VoxelView({ cycle, colorBy, label }: Props) {
 			el.removeEventListener('pointerup', up);
 			el.removeEventListener('pointercancel', up);
 			el.removeEventListener('keydown', key);
+			el.removeEventListener('dblclick', reset);
 		};
 	}, []);
 

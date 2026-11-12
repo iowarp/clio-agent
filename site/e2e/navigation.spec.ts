@@ -74,7 +74,7 @@ test('worked examples share one docs entry point and old tutorial bookmarks stil
 test('header and footer use real vector artwork on home and documentation pages', async ({ page }) => {
   for (const route of ['/', '/docs/']) {
     await page.goto(route);
-    const logos = page.locator('a.site-title img, footer img');
+    const logos = page.locator('a.sh-brand img, footer img');
     await expect(logos).toHaveCount(2);
     for (const logo of await logos.all()) {
       const src = await logo.getAttribute('src');
@@ -89,16 +89,30 @@ test('header and footer use real vector artwork on home and documentation pages'
   }
 });
 
-test('download labels match stable installers and beta downloads require an explicit choice', async ({ page }) => {
-  const stableInstaller = 'https://github.com/iowarp/clio-agent/releases/download/v0.9.4.24/CLIO.Desktop_0.9.4.24_x64-bundled.exe';
+test('download cards link the latest release installers and its notes', async ({ page }) => {
+  const base = 'https://github.com/iowarp/clio-agent/releases/download/v0.9.4.24/';
+  const exe = `${base}CLIO.Desktop_0.9.4.24_x64-bundled.exe`;
+  const msi = `${base}CLIO.Desktop_0.9.4.24_x64_en-US-bundled.msi`;
   await page.route('https://api.github.com/repos/iowarp/clio-agent/releases/latest', (route) => route.fulfill({
-    json: { assets: [{ name: 'CLIO.Desktop_0.9.4.24_x64-bundled.exe', browser_download_url: stableInstaller }] },
+    json: {
+      tag_name: 'v0.9.4.24',
+      assets: [
+        { name: 'CLIO.Desktop_0.9.4.24_x64-bundled.exe', browser_download_url: exe },
+        { name: 'CLIO.Desktop_0.9.4.24_x64_en-US-bundled.msi', browser_download_url: msi },
+      ],
+    },
   }));
   await page.goto('/#download');
-  const downloads = page.getByRole('region', { name: 'Get CLIO stable.' });
-  await expect(downloads.getByRole('button', { name: 'Download installer', exact: true })).toHaveAttribute('href', stableInstaller);
-  await expect(downloads.getByRole('link', { name: 'Stable release notes' })).toHaveAttribute('href', 'https://github.com/iowarp/clio-agent/releases/latest');
-  await expect(downloads.getByRole('link', { name: 'Browse beta releases' })).toHaveAttribute('href', 'https://github.com/iowarp/clio-agent/releases');
-  await expect(downloads.getByText(/Betas may be unstable/)).toBeVisible();
-  await downloads.screenshot({ path: test.info().outputPath('stable-and-beta-downloads.png') });
+  const downloads = page.getByRole('region', { name: 'Download CLIO', exact: true });
+  const windows = downloads.locator('.dp-card').filter({ has: page.getByRole('heading', { name: 'Windows', exact: true }) });
+  await expect(windows.getByRole('link', { name: 'Download installer', exact: true })).toHaveAttribute('href', exe);
+  await expect(windows.getByRole('link', { name: 'Or download the .msi package', exact: true })).toHaveAttribute('href', msi);
+  for (const name of ['macOS', 'Linux']) {
+    await expect(downloads.getByRole('heading', { name, exact: true })).toBeVisible();
+  }
+  await expect(downloads.getByRole('link', { name: 'Release notes for 0.9.4.24', exact: true })).toHaveAttribute(
+    'href',
+    'https://github.com/iowarp/clio-agent/releases/tag/v0.9.4.24',
+  );
+  await downloads.screenshot({ path: test.info().outputPath('download-cards.png') });
 });
