@@ -6,6 +6,28 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+
+- Web search no longer installs or runs a private SearXNG. `web_search` and
+  `web_fetch` are CLIO built-ins that send searches to hosted sources (Keenable,
+  Exa, Firecrawl, You.com, Parallel) in the person's order, asking once before
+  the first query to each source and once when a source's free allowance runs
+  out. New built-ins `literature_search` and `literature_lookup` search OpenAlex,
+  Crossref, arXiv, Europe PMC, OSTI.gov, OpenCitations and DataCite. Results are
+  compact; each source's full answer is saved to `payload_file`. New routes
+  `GET`/`PATCH /v1/search/providers`, `PUT`/`DELETE /v1/search/providers/{id}/key`,
+  `POST /v1/search/openalex-key`, and the search-service API `POST /v1/search`,
+  `POST /v1/fetch`, `GET /v1/limits`. See `docs/WEB_SEARCH.md`.
+
+### Removed
+
+- The managed `searxng` and `web_search` infrastructure services, the search
+  bootstrap at server start, `GET /v1/search/backend`, `POST /v1/search/query`,
+  `/v1/search/engine-keys/{engine}`, and the `search.backend`,
+  `search.searxng.*`, `search.local_searxng.*` and `search.clio_web_search.url`
+  keys (a leftover key is a typed `config_key_removed` error). The Desktop
+  bundle no longer installs clio-kit's Web Search adapter.
+
 ### Fixed
 
 - The "Protected execution needs attention" notice says what failed in a plain

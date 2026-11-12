@@ -155,18 +155,6 @@ $bundleSpec = "$spec[$($BundleExtras -join ',')]"
 Write-Host "[build-gact-runtime] installing: $bundleSpec (locked)"
 Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $bundleSpec)
 
-# Web Search is the recommended installer-selected service. Install its
-# source-locked adapter into the main relocatable runtime now, rather than
-# making the first desktop connection build a 100-package environment. Its
-# dependencies are already installed from the `desktop` extra; the constraint
-# keeps any it adds on the lock (and check_bundle_matches_lock.py fails on a
-# package the lock does not cover).
-$webMcpProject = Invoke-Native -Exe $pyBin -Args @('-c', 'from clio_kit import get_servers_path; from clio_kit.component_store import server_project; print(server_project(''web'', get_servers_path()))') | Select-Object -Last 1
-if (-not (Test-Path (Join-Path $webMcpProject 'pyproject.toml'))) {
-  throw "build-gact-runtime: bundled CLIO Web Search MCP project missing at $webMcpProject"
-}
-Write-Host "[build-gact-runtime] installing bundled CLIO Web Search adapter"
-Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $webMcpProject)
 Remove-Item -LiteralPath $constraints -Force -ErrorAction SilentlyContinue
 
 # check_bundle_matches_lock.py is the automated proof this constraint actually

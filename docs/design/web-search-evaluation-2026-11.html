@@ -139,7 +139,7 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
     <li><a href="#budget">Will free tiers cover deep research?</a></li>
     <li><a href="#design">Recommended design</a></li>
     <li><a href="#risks">Risks and mitigations</a></li>
-    <li><a href="#migration">Migration plan</a></li>
+    <li><a href="#migration">What was built</a></li>
     <li><a href="#method">Method and limits of this study</a></li>
   </ol>
 </nav>
@@ -261,7 +261,7 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
     <tr><td>Tavily keyless header</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td><code>daily_cap_reached</code> on first call: the shared cloud IP's daily quota was already spent</td></tr>
     <tr><td><code>ddgs</code> (the library inside the Web MCP adapter), 7 engines</td><td class="num">0–8%</td><td class="num">0–12%</td><td class="num">0.2–1.7 s</td><td>“No results found” (blocked or challenged)</td></tr>
     <tr><td>DuckDuckGo HTML endpoint</td><td class="num">0%</td><td class="num">0%</td><td class="num">0.08 s</td><td>HTTP 202 bot challenge on every call</td></tr>
-    <tr><td>Public SearXNG (top 25 by uptime on searx.space)</td><td class="num">0/25</td><td class="num">—</td><td class="num">—</td><td>14 × 429, 6 × 403, 1 × 418, 1 × 503; the 4 that answered 200 served HTML only (JSON API disabled)</td></tr>
+    <tr><td>Public SearXNG (top 25 by uptime on searx.space)</td><td class="num">0/25</td><td class="num">—</td><td class="num">—</td><td>14 × 429, 5 × 403, 1 × 418, 1 × 503; the 4 that answered 200 served HTML only (JSON API disabled)</td></tr>
     <tr><td>Marginalia, shared <code>public</code> key</td><td class="num">23%</td><td class="num">15%</td><td class="num">30 s</td><td>Read timeouts</td></tr>
     <tr><td>Wikipedia API (with a policy-compliant User-Agent)</td><td class="num">17%</td><td class="num">17%</td><td class="num">0.2 s</td><td>429 on the shared IP</td></tr>
   </tbody>
@@ -285,7 +285,7 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
   <li><strong>Exa keyless:</strong> 40 back-to-back sequential searches with no errors (median 0.47 s). With 10 parallel workers, 4 of 30 calls got <code>429</code> with <code>Retry-After: 1</code>. The error text invites the user to “create a free Exa account … No payment method required”. That is a ready-made upgrade path.</li>
   <li><strong>Firecrawl keyless</strong> cuts off after about 10 calls in a short window and points to a free-key signup.</li>
   <li><strong>Tavily keyless</strong> has a per-IP daily cap (third parties say about 30 per day; unverified). It was already spent on this shared IP. Users behind campus NAT or an HPC login node will see the same thing.</li>
-  <li>Combined, the ring kept over 100 searches in this session error-free once it paced requests and rotated providers. A single deep-research run (20–60 searches) fits well inside that, provided the client limits its own concurrency.</li>
+  <li><strong>Not yet measured:</strong> a real deep-research run against the rotation. Each vendor was tested on its own; the rotation was not built when these tests ran, and the 20–60 searches per run figure is an estimate. The deep-research flow runs up to 8 researchers at once, which is the concurrency at which Exa returned 429s.</li>
 </ul>
 
 <h3>Page reading (12 URLs: docs, arXiv PDF, GitHub, NOAA, ALCF, ScienceDirect, PubMed)</h3>
@@ -294,7 +294,7 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
   <tbody>
     <tr><td>Exa <code>web_fetch_exa</code>, keyless</td><td class="num">12/12</td><td class="num">0.26 s</td><td>none. It served the ALCF, ScienceDirect and GitHub pages that blocked a local fetch.</td></tr>
     <tr><td>Jina Reader <code>r.jina.ai</code>, keyless (20 RPM)</td><td class="num">10/12</td><td class="num">1.9 s</td><td>GitHub refused for anonymous use; PubMed search page nearly empty</td></tr>
-    <tr><td>Local httpx + trafilatura (today's method)</td><td class="num">9/12</td><td class="num">0.48 s</td><td>403 from GitHub, ALCF and ScienceDirect on a datacenter IP</td></tr>
+    <tr><td>Local httpx + trafilatura (today's method)</td><td class="num">8/12</td><td class="num">0.48 s</td><td>403 from GitHub, ALCF and ScienceDirect on a datacenter IP; the arXiv PDF downloaded but had no text (the test script first counted it as read)</td></tr>
   </tbody>
 </table></div>
 <p class="prose">Keep local fetch as the first attempt: it is private, fast and free. Fall back to a hosted reader (Exa fetch, Parallel <code>web_fetch</code>, Keenable fetch, Jina) only on 403 or 429, or when the page is empty or JavaScript-only.</p>
@@ -377,13 +377,19 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
 <p>Only partly. CLIO's pinned SearXNG (<code>e8e710e</code>) already ships a <code>keenable</code> engine with keyless mode. It is disabled by default, and enabling it is a settings change. Its <code>exaapi</code> engine needs a paid key, because it calls <code>api.exa.ai</code>, not the free MCP. There are no engines for Parallel, You.com or Firecrawl. The free tiers are MCP endpoints that stream JSON-RPC (Exa answers HTTP 406 if the client does not accept a stream), so SearXNG's generic <code>json_engine</code> cannot read them. They would need custom engine modules patched into the SearXNG install.</p>
 <p>Its design also works against free allowances. SearXNG sends every query to every enabled engine at once, so one search spends all five vendors' allowances instead of one. It only searches, so it cannot provide the hosted-fetch fallback. It also reduces results to title, URL and snippet, which drops the 22–38k characters of excerpts these vendors return per query. And it keeps the install and supervision burden. SearXNG is worth keeping in two places only: server-side, if IOWarp builds the gateway (CLIO's existing <code>clio_web_search</code> backend already speaks its API), and as an optional self-hosted URL for air-gapped sites.</p>
 <h3>Where the code lives</h3>
-<p>Put the ring in the Web MCP adapter (clio-kit's web-mcp), not in clio-agent. It already owns <code>web_search</code> and <code>web_fetch</code>, and its <code>WEB_SEARCH_PROVIDER</code> setting already lets users choose a provider. clio-agent keeps a much smaller <code>search.*</code> config: <code>backend: auto | none</code>, the provider order, and the gateway install token if the gateway is built. That makes it one small module instead of a service layer.</p>
+<p>The first proposal put the rotation in clio-kit's Web MCP adapter. The implementation instead hosts it inside the CLIO server as built-in MCP servers: one process-wide limiter for every session, questions through CLIO's own question tasks, keys straight from the credential store, and no cross-repo pin. The configuration is small:</p>
 <pre>search:
-  backend: auto            # gateway (if built) + model-login search + keyless ring
-  providers: [exa, parallel, you, keenable, firecrawl]
-  scholarly: [arxiv, crossref, openalex, pubmed, europepmc]
-  max_concurrency_per_provider: 2
-  # nothing here requires a person to create a key</pre>
+  enabled: true
+  web:
+    order: [keenable, exa, firecrawl, you, parallel]
+    disabled: []
+    auto_switch: false
+  approved: []             # filled as the person approves sources
+  literature:
+    disabled: []
+  service:
+    url: ""                # a site's CLIO search service, optional
+  # keys live in the credential store: search-provider:&lt;source&gt;</pre>
 </div>
 </section>
 
@@ -398,7 +404,7 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
     <tr><td>Result quality differs between vendors, so a run can change with rotation</td><td>Record the provider for every search in the provenance log. A deep-research flow can pin one provider for the whole run (a session id), as Hermes does with <code>_SESSION_ID</code>.</td></tr>
     <tr><td>Terms change</td><td>Re-check the vendor list each release; this report records the 12 Nov 2026 state.</td></tr>
     <tr><td>The free tiers are a sales funnel, not a service promise. Each 429 message is a signup pitch, and no vendor has agreed to carry a distributed product's default traffic</td><td>Hermes and OpenCode set the precedent, but it is unwritten. Send an honest client name, and contact Exa, Parallel and Keenable before launch; Vane is already Exa-sponsored. Treat the ring as best-effort, and the gateway as the only guarantee.</td></tr>
-    <tr><td>Response formats drift. Exa's free MCP already requires an <code>objective</code> argument, returns a text blob that must be parsed, and rejects plain JSON clients</td><td>Run a nightly canary that makes one real call per vendor, plus recorded-response tests. A vendor that fails the canary is removed by config.</td></tr>
+    <tr><td>Response formats drift. Exa's free MCP schema lists <code>objective</code> as required (calls without it still worked on 12 Nov), returns a text blob that must be parsed, and rejects plain JSON clients</td><td>Run a nightly canary that makes one real call per vendor, plus recorded-response tests. A vendor that fails the canary is removed by config.</td></tr>
     <tr><td>Excerpts are chosen by the vendor (Exa highlights follow the <code>objective</code>)</td><td>Treat search results as leads, not evidence. The deep-research plugin already requires a fetched page for every finding.</td></tr>
     <tr><td>New outbound hosts</td><td>Five search hosts and the scholarly APIs must be on the sandbox network allowlist. Compute nodes without internet access are unchanged.</td></tr>
     <tr><td>Thin evidence</td><td>12 queries, two rounds, one day, one IP, and a coarse domain check. Before switching the default, run a week-long canary from a residential and a campus network.</td></tr>
@@ -407,18 +413,26 @@ pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surfac
 </section>
 
 <section class="prose" aria-labelledby="migration">
-<h2 id="migration">Migration plan</h2>
-<ol>
-  <li><strong>web-mcp:</strong> add the keyless ring, cooldowns, typed errors and the hosted-fetch fallback. Unit-test with recorded responses, including 429, <code>daily_cap_reached</code> and malformed MCP replies (TinyFish produced real examples of those).</li>
-  <li><strong>web-mcp:</strong> add the scholarly backends with per-API pacing. Request a polite <code>mailto</code> and an OpenAlex key per install, or let users add their own.</li>
-  <li><strong>clio-agent:</strong> remove SearXNG completely in one step. Delete <code>searxng_*</code>, <code>web_search_apptainer.py</code>, <code>native_web_search*</code>, the search bootstrap, the native installer paths and their tests. Keep <code>search.backend: auto | none</code> and the guard that returns typed errors. Self-hosters who want SearXNG add a SearXNG MCP server through the normal MCP configuration.</li>
-  <li><strong>web-mcp:</strong> drop <code>ddgs</code>, which is broken upstream (ddgs#498). The hosted readers return text for PDFs, which covers text-only models now that automatic PDF conversion is gone.</li>
-  <li><strong>clio-agent provider:</strong> for <code>claude_code</code> sessions, allow only the provider's WebSearch and route its results through the same provenance log. Do the same for Codex and Gemini when CLIO supports them.</li>
-  <li><strong>Desktop/Web:</strong> show which source answered each search, the first-run consent text, and “search allowance reached” as a readable state, not a raw error. No key-entry screen.</li>
-  <li><strong>Without the gateway, protect the free allowance:</strong> a per-run search budget for deep research, so one run cannot exhaust every vendor. Cache search results within a session, so repeated queries are free. Show “free search allowance reached, try again later” as a readable state.</li>
-  <li><strong>Gateway (deferred until funded):</strong> anonymous install registration, a daily quota per token, one or two paid upstream vendors, and an upgrade path on an IOWarp account. It plugs into the ring as its first provider.</li>
-  <li><strong>Acceptance:</strong> run the deep-research plugin from a plain request on a fresh install on Windows, macOS and Linux with no keys, and check the provenance log. Per this repo's rules, a tool-directed prompt verifies only the mechanism.</li>
-</ol>
+<h2 id="migration">What was built</h2>
+<p>After this evaluation, the owner's decisions and an independent review (below) shaped the implementation on branch <code>claude/nifty-mccarthy-ybiwgz</code>:</p>
+<ul>
+  <li><strong>No local search server.</strong> SearXNG, the managed Web Search service, its installers and the clio-kit Web Search adapter were removed; the old <code>search.*</code> keys are typed <code>config_key_removed</code> errors.</li>
+  <li><strong>Built-in tools, not an external MCP.</strong> <code>web</code> and <code>literature</code> are in-process MCP servers beside <code>fs</code>/<code>shell</code>, claimed by the <code>web</code> and new <code>literature</code> plugins. Tool calls stay MCP task records, so deep research's evidence binding is unchanged, and one process-wide limiter serves every session and child session.</li>
+  <li><strong>Order and questions.</strong> Web sources are tried in the person's order (default Keenable → Exa → Firecrawl → You.com → Parallel). The first query to a source asks for approval; a used-up free allowance asks once for every waiting caller: switch, switch always, add a key, or stop. These questions always go to the person, also in bypass mode, never to an agent.</li>
+  <li><strong>No key needed; keys optional.</strong> Settings → Web search reorders sources, turns them on or off, adds keys (stored in the credential store) and shows status in words and today's counts. Settings can request a free OpenAlex key for the person's email. A search service URL lets a site serve search for everyone.</li>
+  <li><strong>Compact results.</strong> The model sees title, URL, date and a short snippet; the full source answer is saved to <code>payload_file</code>. <code>web_fetch</code> reads locally first and uses a hosted reader only for public URLs.</li>
+  <li><strong>Literature.</strong> <code>literature_search</code> queries OpenAlex and Crossref plus field sources from a declared table chosen by the model's <code>field</code>/<code>kind</code>; <code>literature_lookup</code> follows references, citations and versions. Skills <code>web-research</code> and <code>literature-search</code> carry the craft; deep research's researcher and critic got the literature tools and lost their SearXNG instructions.</li>
+  <li><strong>Deferred:</strong> the IOWarp gateway (until funded), model-login search, and deep-research flow changes (scoping step, typed packets, binding researcher fetches, conditional prompt pieces), each to be A/B-tested after merge.</li>
+</ul>
+<h3>Research results recorded during implementation</h3>
+<ul>
+  <li>Recorded responses for every API are test fixtures (<code>tests/test_search/fixtures</code>). From this shared cloud IP, Exa, Firecrawl, Parallel and OpenAlex were already rate-limited during capture, so their success fixtures are partial; recapture them from a normal network after merge.</li>
+  <li>Filters were honoured where checked: Keenable (<code>site</code>, <code>published_after</code>) and You.com (date range, excluded sites). Parallel reports a used-up free tier as JSON-RPC <code>-32000</code> inside HTTP 200, so the client reads the body, not the status.</li>
+  <li>OpenAlex now prices by request: a single-work lookup is free, a filtered list costs $0.0001, a search $0.001, against $0.10/day per IP without a key. It also offers an agent key flow (<code>POST /api-keys</code> with an email, activated by one click).</li>
+  <li>Deep research's skills reach its researcher and critic: CLIO keeps core tools such as <code>load_skill</code> on subagents with a tool allowlist.</li>
+</ul>
+<h3>Independent review</h3>
+<p>A second model reviewed this report and the proposals. It approved the direction but not the confidence, and its findings changed the design: per-run sticky vs global order (the owner kept a global order with questions), keeping a site service URL, compact results for small models, public-URL-only hosted reading, and the elicitation routing fix so search questions never go to an agent. Its corrections to the evidence are applied above (local fetch 8/12, the unmeasured rotation, the Exa schema note).</p>
 </section>
 
 <section class="prose" aria-labelledby="method">

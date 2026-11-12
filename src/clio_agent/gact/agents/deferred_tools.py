@@ -73,7 +73,7 @@ _NEVER_DEFER: Sequence[str] = (
     "memory_read",
 )
 #: Built-in tool groups named like servers (``fs_read_file``), for ``run_code``'s stubs.
-_BUILTIN_SERVERS = frozenset({"fs", "shell", "web"})
+_BUILTIN_SERVERS = frozenset({"fs", "shell", "web", "literature"})
 
 
 @dataclass(frozen=True)

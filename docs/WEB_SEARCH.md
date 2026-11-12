@@ -1,127 +1,98 @@
 # Web search
 
-The agent's `web_search` tool works on first run without containers: CLIO installs
-its own private [SearXNG](https://github.com/searxng/searxng) on this computer and
-routes the tool to it. A CLIO Web Search gateway, on this or another machine, is
-the alternative.
+The agent's web and literature tools work on first run with nothing to install:
+CLIO sends searches to hosted search services and reads pages itself. There is no
+local search server.
 
-## Choosing the backend
+| Tool | Plugin | What it does |
+| --- | --- | --- |
+| `web_search` | `web` | Finds pages through the person's web sources, in their order. |
+| `web_fetch` | `web` | Reads one page as Markdown (locally first, a hosted reader if needed). |
+| `literature_search` | `literature` | Finds papers, preprints, reports and datasets across scholarly sources. |
+| `literature_lookup` | `literature` | One work's metadata, readable URL, references, citers and versions. |
 
-| `search.backend` | What answers `web_search` |
-| --- | --- |
-| `local_searxng` (default) | CLIO's private SearXNG: the managed `searxng` service (variant `native`) on this computer's loopback. |
-| `clio_web_search` | The CLIO Web Search gateway at `search.clio_web_search.url` -- a CLIO-managed deployment, or one on another machine so search traffic leaves from that machine's address instead of yours. |
-| `none` | Search is off. `web_search` answers with the typed error `search_not_configured` and the fix. |
+The tools are CLIO built-ins (in-process MCP servers `web` and `literature`, beside
+`fs` and `shell`); an agent gets them when its plugins claim them. Code:
+`src/clio_agent/search/` and `src/clio_agent/tools/servers/{web,literature}_server.py`.
+The design and the evaluation behind it are in
+[web-search-evaluation-2026-11.html](design/web-search-evaluation-2026-11.html).
 
-```yaml
-# config.yaml
-search:
-  backend: clio_web_search
-  clio_web_search:
-    url: http://search-host:8089
-```
+## Web sources
 
-All `search.*` keys, their environment overrides and defaults are in
-[ENVIRONMENT.md](ENVIRONMENT.md). One abstraction, `clio_agent.search.backend`,
-resolves the backend: it points the Web MCP server (`clio-kit mcp-server web`)
-at it when that server starts, and answers a `web_search` call with
-a typed error and the fix when the backend cannot serve:
-`search_not_configured` (search is off or misconfigured),
-`search_backend_starting` (CLIO is installing or starting its SearXNG, or the
-gateway answers `/readyz` with "not ready yet": retry shortly),
-`search_backend_stopped` (CLIO's SearXNG is installed but stopped: start it in
-Infrastructure > SearXNG) or `search_backend_unavailable` (failed or
-unreachable). A Web MCP declaration that names its own endpoint
-(`--remote-url`, `--address`, `--provider` or a `WEB_*` variable) is left as
-declared. `GET /v1/search/backend` reports the resolved backend and whether it is
-ready; `POST /v1/search/query {"query": ...}` runs one search through it.
+| Source | Free use without a key | Filters it applies itself |
+| --- | --- | --- |
+| Keenable | 1,000 requests per hour per network | dates, one site, excluded sites |
+| Exa | not published | dates, sites, kind (papers, news, PDF) |
+| Firecrawl | not published | dates, kind (research, PDF) |
+| You.com | 100 per day per network | excluded sites |
+| Parallel | not published (a lighter free mode) | none |
+| CLIO search service | set by the service | all |
 
-You do not declare the Web MCP server yourself. Unless `search.backend` is `none`,
-CLIO declares it for the main agent as namespace `web` (`clio-kit mcp-server web`,
-source `clio-default`), loaded by default. Your own Web MCP declaration (any name)
-replaces it and is also loaded by default. Every Web MCP spawn gets
-`WEB_STATE_DIR` under CLIO's data directory (`<data>/web-mcp`), because the
-server's own default (`~/.config/clio-kit`) is not writable under the tool
-sandbox. If `clio-kit` is not installed, nothing is declared, and the server log
-records `web mcp not declared reason=launcher_missing`.
+`web_search` tries them in `search.web.order` (the default is the order above). The
+first enabled, approved source that is not resting answers. A filter a source cannot
+apply is applied by CLIO to its results, and the result says so
+(`filters_applied_by_clio`, note `search_filters_approximate`).
 
-## The private SearXNG
+**Approval.** The first query to a source asks the person (a choice question, also in
+bypass mode, never answered by an agent). An approval is saved in `search.approved`;
+"Don't use" lasts until the server restarts.
 
-* **First run.** With `search.backend: local_searxng` and
-  `search.local_searxng.auto_install: true` (both defaults), the server's boot
-  installs SearXNG when it was never installed and starts it when it is not
-  running -- unless your last action on it was stop, uninstall or delete. Each
-  step is an ordinary operation in Infrastructure > SearXNG, where you can also
-  install, start, stop, check status and logs, verify, uninstall and delete its
-  data yourself.
-* **A failed first-run install is retried.** A later boot installs it again, after
-  a wait that starts at 5 minutes and doubles with each consecutive failed install
-  (at most a day). Until then Infrastructure shows the failure and the next retry
-  time; installing it yourself does not wait.
-* **The port.** CLIO's own install uses `search.searxng.port` (`18890`). When
-  that shipped default is already taken by another program (another CLIO's
-  SearXNG, say), it installs on the next free port instead and records it on the
-  deployment, which is where CLIO's search reads it. A port you set yourself is
-  never moved.
-* **What gets installed.** SearXNG at the commit CLIO Web Search pins
-  (`e8e710e42a3ab2bce27d1f97e51d8d4ccaa80871`), downloaded as that commit's
-  source archive (an archive that is not that commit is refused), in its own uv
-  environment under the service directory -- never CLIO's environment -- with the
-  exact `requirements.txt` / `requirements-server.txt` pins of that commit. It is
-  served by Granian, SearXNG's own pinned WSGI server, which has wheels for Linux,
-  macOS and Windows (uWSGI does not run on Windows).
-* **Settings CLIO generates.** Bound to `127.0.0.1` only; the bot limiter is off
-  (this is a private instance, not a public one); the JSON format is on; no
-  Valkey. A secret key is generated per installation into a `0600` file on the
-  host and reaches SearXNG through its environment, so the settings file holds no
-  secret. An HTTPS/HTTP proxy in the environment is applied to SearXNG's outgoing
-  requests in memory.
-* **Proof it is ours.** Readiness requires `/config` to report an instance name
-  derived from the installation's secret, and `/search?format=json` to answer.
-  `verify` runs one real query and records `result_count`.
+**Rotation.** A source that answers too-many-requests rests and the next one answers,
+with a note. When a source's *free allowance* is used up, CLIO asks once for every
+waiting caller: switch to the next source, switch and always switch from now on
+(`search.web.auto_switch`), add a key in Settings, or stop searching until it resets.
 
-### Engines
+**Keys.** A key is an optional upgrade: Settings → Web search → Add key. Keys live in
+CLIO's credential store (`search-provider:<source>`), never in config. A source with a
+key moves to the front of the order unless the person keeps the order.
 
-Enabled by default: `duckduckgo`, `brave`, `mojeek`, `qwant`, `startpage`,
-`wikipedia` (general) and `arxiv`, `crossref`, `semantic scholar`, `pubmed`
-(scholarly). Safe search is moderate, the language is `en`, and each engine gets
-10 seconds (`search.searxng.*`, or the service's form in Infrastructure).
+**Results.** The model sees a compact list (title, URL, date, a snippet of
+`search.snippet_chars`). The source's full answer is saved under the session's
+tool-output folder and named in `payload_file`.
 
-Engines operated under Chinese jurisdiction (`baidu`, `sogou`, `360search`,
-`chinaso`, `quark`, ...) are never enabled by listing them in
-`search.searxng.engines`; each must also be named in
-`search.searxng.opt_in_engines`.
+## Reading pages
 
-Engines that need an API key (`braveapi`, `core.ac.uk`, `springer nature`,
-`marginalia`) read it from CLIO's credential store, saved with
-`PUT /v1/search/engine-keys/{engine}` (`{"api_key": "..."}`). The key reaches
-SearXNG only through the process environment at start -- never a settings file or
-a command-line argument.
+`web_fetch` downloads the page and turns HTML into Markdown. When the local read is
+blocked (401/403/429/5xx), empty or script-only, or the page is a PDF, an approved
+web source's hosted reader (Keenable, Exa, Parallel) reads it instead, only for a
+public URL: never a private address, an intranet name, a URL with credentials or a
+signed/token query. A PDF is also saved locally (`pdf_path`) for `view_pdf`.
 
-### Platforms
+## Literature sources
 
-Linux is supported and live-tested. macOS uses the POSIX supervisor and is
-offered, but is not live-tested. Windows x64 uses a private uv-managed Python
-environment, a cross-process file lock and a per-launch Job Object. The
-controller records the actual worker's creation identity before allowing it to
-spawn children. Stop and unexpected worker termination reap its owned process
-tree; uninstall keeps logs and verification evidence. Microsoft Store Python's
-activation broker cannot provide that process-tree guarantee and is not used.
+`literature_search` always asks OpenAlex and Crossref and adds sources by the
+`field` and `kind` the model chose: arXiv (physical, computing, preprints), Europe PMC
+(life sciences, preprints), OSTI.gov (energy, engineering, earth, physical) and
+DataCite (datasets). Semantic Scholar answers only with the person's key. Works are
+merged across sources by DOI, arXiv id or PMID, and works found by more sources come
+first. Sources are paced by their published terms (arXiv: one request every three
+seconds). OpenAlex without a key has a small daily budget per network; Settings can
+request a free OpenAlex key for the person's email (it works after they click the
+emailed link).
 
-On Windows CLIO's launcher installs a CLIO-owned `pwd` stand-in
-(`clio_pwd_shim.py`) before SearXNG's bare `import pwd`, without modifying
-SearXNG. Isolated Windows verification exercised real installation, JSON
-readiness, a query with actual results, stop and restart. Native searches name
-every configured engine explicitly, including scholarly categories; they do
-not rely on SearXNG's default general category. External engines may still
-report rate limits or CAPTCHAs, which remain visible in the search result.
+## Search service
 
-## Licensing
+`search.service.url` points at another CLIO that serves search for a site (one rate
+limit and cache for everyone, its own approvals and keys). It answers web searches
+first. That CLIO exposes `POST /v1/search`, `POST /v1/fetch` and `GET /v1/limits`
+under its normal API authentication; the token goes in the credential store as
+`search-provider:service`.
 
-SearXNG is licensed AGPL-3.0-or-later. CLIO does not ship it: it is downloaded
-unmodified from its upstream repository at install time and runs as a separate
-process that CLIO talks to over HTTP on the loopback. CLIO's own code (BSD-3-Clause)
-is not combined with SearXNG; the CLIO launcher and `pwd` stand-in that run in
-SearXNG's interpreter are separate CLIO files. Running a modified SearXNG as a
-network service for others carries AGPL obligations; CLIO's private,
-loopback-only instance is unmodified.
+## Settings and API
+
+Settings → Web search shows both lists: order, on/off, approval, key, status in
+words, and today's searches and failures from this computer (since CLIO started).
+Routes: `GET`/`PATCH /v1/search/providers`, `PUT`/`DELETE
+/v1/search/providers/{id}/key`, `POST /v1/search/openalex-key`. Every `search.*` key
+is listed in [ENVIRONMENT.md](ENVIRONMENT.md); the SearXNG keys
+(`search.backend`, `search.searxng.*`, `search.clio_web_search.url`) are removed and a
+leftover one is a typed `config_key_removed` error.
+
+## Typed reasons
+
+Every degradation is a note or error code in the result and the trace
+(`clio_agent.search.reasons.SEARCH_REASONS`): `search_not_approved`,
+`search_source_rate_limited`, `search_source_allowance_used`, `search_rotated`,
+`search_stopped_by_person`, `search_waiting_for_person`,
+`search_all_sources_unavailable`, `search_filters_approximate`, `fetch_hosted_reader`,
+`fetch_private_url`, `literature_source_budget_used`, and the others in that table.

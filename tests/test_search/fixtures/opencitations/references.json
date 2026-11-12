@@ -1,0 +1,60 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.opencitations.net/index/v2/references/doi:10.1038/s41586-025-09482-1",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "oci": "06011308268-06010193735",
+      "citing": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "cited": "omid:br/06010193735 doi:10.5281/zenodo.7271974 openalex:W6912935379",
+      "creation": "2025-09-10",
+      "timespan": "",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06011308268-0604812434",
+      "citing": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "cited": "omid:br/0604812434 doi:10.5194/essd-15-5301-2023",
+      "creation": "2025-09-10",
+      "timespan": "P2Y",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06011308268-0604821290",
+      "citing": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "cited": "omid:br/0604821290 doi:10.1039/d3va00307h openalex:W4391379138",
+      "creation": "2025-09-10",
+      "timespan": "P1Y",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06011308268-061103443382",
+      "citing": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "cited": "omid:br/061103443382 pmid:36134580 openalex:W4296635592 doi:10.1021/acs.est.2c02934",
+      "creation": "2025-09-10",
+      "timespan": "P2Y11M19D",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06011308268-06110362936",
+      "citing": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "cited": "omid:br/06110362936 pmid:12422198 openalex:W1988746066 doi:10.1038/420029a",
+      "creation": "2025-09-10",
+      "timespan": "P22Y10M",
+      "journal_sc": "no",
+      "author_sc": "no"
+    }
+  ]
+}
