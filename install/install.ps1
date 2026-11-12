@@ -13,6 +13,10 @@
 #                                the same, running the setup silently with its defaults
 #   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
 #                                (this release cannot open it; it is kept, never deleted)
+#   install.ps1 -EnableLongPaths turn on Windows long path support without asking first
+#                                (one Windows admin prompt for that setting only);
+#                                -SkipLongPaths never asks. Unset, an interactive run
+#                                asks once when they are off; other runs do not ask
 #
 # -Source/-Dev/-Version/-Ref are the same options. From a URL:
 #   & ([scriptblock]::Create((irm <url>/install.ps1))) --dev
@@ -32,6 +36,7 @@
 #   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.12.3)
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
 #   CLIO_INSTALL_PROGRESS human | json        (default: human; -Desktop only)
+#   CLIO_LONG_PATHS    ask | enable | skip    (default: ask; see -EnableLongPaths)
 
 # `& ([scriptblock]::Create((irm <url>))) <options>` (above; CLIO Desktop runs it so)
 # runs this text in a child scope, where $script: names the caller's scope: every
@@ -633,7 +638,8 @@ $OptDesktop = $false
 $OptDownloadOnly = ''
 $OptResetOldData = $false
 $OptUnattended = $false
-$OptProgress = if ($env:CLIO_INSTALL_PROGRESS) { $env:CLIO_INSTALL_PROGRESS } else { 'human' }
+$OptLongPaths = if ($env:CLIO_LONG_PATHS) { $env:CLIO_LONG_PATHS.Trim().ToLower() } else { 'ask' }
+$OptProgress =  if ($env:CLIO_INSTALL_PROGRESS) { $env:CLIO_INSTALL_PROGRESS } else { 'human' }
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch -Regex ([string]$args[$i]) {
         '^(--source|-Source)$' { $OptSource = $true; continue }
@@ -646,6 +652,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
         '^(--reset-old-data|-ResetOldData)$' { $OptResetOldData = $true; continue }
         '^(--unattended|-Unattended)$' { $OptUnattended = $true; continue }
+        '^(--enable-long-paths|-EnableLongPaths)$' { $OptLongPaths = 'enable'; continue }
+        '^(--skip-long-paths|-SkipLongPaths)$' { $OptLongPaths = 'skip'; continue }
         '^(--progress|-Progress)$' { $i++; $OptProgress = [string]$args[$i]; continue }
         '^--progress=' { $OptProgress = ([string]$args[$i]).Substring(11); continue }
         default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; Exit-Installer 2 }
@@ -657,6 +665,61 @@ if ($OptSource -and $OptVersion) { Die '--version pins a release; use --ref <tag
 if (-not $OptSource -and $OptRef) { Die '--ref pins source; add --source' }
 if ($OptProgress -notin @('human', 'json')) { Die "--progress takes human or json, not '$OptProgress'" }
 $ProgressJson = $OptProgress -eq 'json'
+if ($OptLongPaths -notin @('ask', 'enable', 'skip')) { Die "CLIO_LONG_PATHS takes ask, enable or skip, not '$OptLongPaths'" }
+
+function Test-CanAsk {
+    try {
+        return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+    } catch {
+        return $false
+    }
+}
+function Read-YesNo([string]$Question, [string]$Default) {
+    $answer = Read-Host $Question
+    if (-not $answer) { $answer = $Default }
+    return @('y', 'yes') -contains $answer.Trim().ToLower()
+}
+
+# ---------- Windows long paths (asked before any download) ------------
+# Without them a path stops at 260 characters, which CLIO's deepest files can pass.
+# The setting is machine-wide, so turning it on takes an admin prompt: only that one
+# registry write runs elevated, and the rest of the install does not. Every outcome
+# lets the install go on. -EnableLongPaths (CLIO_LONG_PATHS=enable) asks Windows
+# without asking here first, for scripted installs; -SkipLongPaths (=skip) never asks.
+$ClioFileSystemKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+function Test-ClioLongPaths {
+    try { return (Get-ItemProperty -LiteralPath $ClioFileSystemKey -Name LongPathsEnabled -ErrorAction Stop).LongPathsEnabled -eq 1 } catch { return $false }
+}
+function Enable-ClioLongPaths {
+    $write = "Set-ItemProperty -LiteralPath '$ClioFileSystemKey' -Name LongPathsEnabled -Value 1 -Type DWord"
+    try {
+        $admin = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -WindowStyle Hidden -Wait -PassThru `
+            -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $write
+        $why = "the admin prompt ended with exit $($admin.ExitCode)"
+    } catch {
+        $why = 'the admin prompt was declined or could not open'
+    }
+    if (Test-ClioLongPaths) {
+        Say 'Long path support is now on.'
+    } else {
+        Warn "Long path support is still off ($why). CLIO will still work; keep its folders short."
+    }
+}
+if (-not (Test-ClioLongPaths)) {
+    if ($OptLongPaths -eq 'enable') {
+        Say 'Long paths are off on this PC: turning them on (-EnableLongPaths opens a Windows admin prompt).'
+        Enable-ClioLongPaths
+    } elseif ($OptLongPaths -eq 'skip') {
+        Say 'Long paths are off on this PC; not asking, as requested. CLIO will still work.'
+    } elseif ($OptUnattended -or $ProgressJson -or -not (Test-CanAsk)) {
+        Say 'Long paths are off on this PC; no console to ask on, so they stay off (-EnableLongPaths turns them on). CLIO will still work.'
+    } elseif (Read-YesNo ('Long paths are off on this PC. CLIO can run into problems with deep folders. ' +
+            'Turn on long path support? This opens a Windows admin prompt for this one setting. [Y/n]') 'y') {
+        Enable-ClioLongPaths
+    } else {
+        Say 'Long path support stays off. CLIO will still work; -EnableLongPaths turns it on later.'
+    }
+}
 
 # ---------- desktop app (-Desktop) ------------------------------------
 # The released desktop setup carries its own agent, so -Desktop needs no Python, uv or
@@ -806,9 +869,6 @@ if ($OptUnattended) { Die '-Unattended goes with -Desktop' }
 # 192 below its cache, 172 below its data folder and 165 below its install folder, so a
 # longer root fails part-way through the install or a later turn. These limits keep 4
 # characters in reserve.
-function Test-ClioLongPaths {
-    try { return (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -ErrorAction Stop).LongPathsEnabled -eq 1 } catch { return $false }
-}
 if (-not (Test-ClioLongPaths)) {
     $homeRoot = if ($env:CLIO_AGENT_HOME) { $env:CLIO_AGENT_HOME } elseif ($env:CLIO_USER_DIR) { $env:CLIO_USER_DIR } else { Join-Path $env:LOCALAPPDATA 'clio-agent' }
     $roots = @(
@@ -1681,18 +1741,6 @@ if (-not $OptSource) {
 # 4: cannot tell; 3: CLIO is running). Old data is moved aside after a yes (without
 # asking with -ResetOldData or when no console can ask); data whose writer cannot be
 # told is moved only after a yes. `reset-store --yes` renames it, keeping every byte.
-function Test-CanAsk {
-    try {
-        return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
-    } catch {
-        return $false
-    }
-}
-function Read-YesNo([string]$Question, [string]$Default) {
-    $answer = Read-Host $Question
-    if (-not $answer) { $answer = $Default }
-    return @('y', 'yes') -contains $answer.Trim().ToLower()
-}
 function Move-OldDataAside {
     & $VenvPython -m clio_agent.gact.store_reset_command reset --yes
     $moved = $LASTEXITCODE

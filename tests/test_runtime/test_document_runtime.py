@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from clio_agent.runtime import document_runtime as runtime
+from clio_agent.runtime import document_venv
 from clio_agent.tools.file_policy import FileAccessPolicy
 
 
@@ -302,10 +303,10 @@ def test_document_sync_reuses_uv_cache_only_on_the_same_filesystem(
     home = tmp_path / "clio-cache"
     shared = tmp_path / "uv-cache"
     monkeypatch.setattr(
-        runtime, "_uv_cache_dir", lambda uv: None if same_filesystem is None else shared
+        document_venv, "_uv_cache_dir", lambda uv: None if same_filesystem is None else shared
     )
     devices = {home: 1, shared: 1 if same_filesystem else 2}
-    monkeypatch.setattr(runtime, "_filesystem", lambda path: devices[path])
+    monkeypatch.setattr(document_venv, "_filesystem", lambda path: devices[path])
     commands: list[tuple[list[str], dict[str, str]]] = []
 
     def run(command: list[str], **kwargs: Any) -> str:
@@ -329,9 +330,9 @@ def test_a_release_keeps_the_document_uv_cache_in_clio_cache(
     """A release lays the packages out from bundled wheels: its cache is CLIO's own, so
     ``uninstall --purge-caches`` removes it (~/.cache/uv kept ~500 MB of them)."""
     home = tmp_path / "clio-cache"
-    monkeypatch.setattr(runtime, "_uv_cache_dir", lambda uv: tmp_path / "uv-cache")
-    monkeypatch.setattr(runtime, "_filesystem", lambda path: 1)
-    assert runtime._document_uv_cache("uv", home, bundled=True) == home / "uv-document-cache"
+    monkeypatch.setattr(document_venv, "_uv_cache_dir", lambda uv: tmp_path / "uv-cache")
+    monkeypatch.setattr(document_venv, "_filesystem", lambda path: 1)
+    assert document_venv._document_uv_cache("uv", home, bundled=True) == home / "uv-document-cache"
 
 
 def test_document_lock_matches_the_agent_lock_where_its_bounds_allow() -> None:
