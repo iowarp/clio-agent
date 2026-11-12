@@ -9,7 +9,8 @@ TUI/HTTP surface aren't tracked here.
 ## [0.9.6.6] - 2026-11-12
 
 No GACT-contract change. A CLIO installed by `install.ps1` with its own home
-keeps its clio-kit in that home and leaves the user's own clio-kit alone. (#2226)
+keeps its clio-kit in that home and leaves the user's own clio-kit alone (#2226),
+and `install.ps1` refuses a home too long for Windows paths up front (#2227).
 
 ## [0.9.6.5] - 2026-11-12
 
