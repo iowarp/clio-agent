@@ -540,12 +540,41 @@ function ConvertFrom-ClioReleaseTag([string]$Tag) {
     return [pscustomobject]@{ Tag = $Tag; Version = $text; Stable = ($pre[0] -eq 4); Key = $key }
 }
 
+# Get-ClioReleaseList: each published GitHub Release's tag_name, draft and published_at.
+# Invoke-RestMethod asks for the list uncompressed (~7 MB of JSON) and turns every field
+# of every asset into an object, about 5 s; compressed it is ~0.7 MB, and only these
+# fields are read. Each field is matched as a key (quotes inside JSON strings are
+# escaped); a list they do not account for is read with Invoke-RestMethod instead.
+function Get-ClioReleaseList {
+    $uri = 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100'
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($curl) {
+        $file = Join-Path ([IO.Path]::GetTempPath()) ("clio-releases-" + [guid]::NewGuid() + '.json')
+        try {
+            & $curl.Source --proto '=https' --tlsv1.2 --fail --silent --show-error --location --compressed --retry 3 --output $file $uri
+            if ($LASTEXITCODE -eq 0) {
+                $text = [IO.File]::ReadAllText($file)
+                $fields = [regex]::Matches($text, '"tag_name":\s*"([^"\\]*)"[\s\S]*?"draft":\s*(true|false)[\s\S]*?"published_at":\s*(?:"([^"\\]*)"|null)')
+                if ($fields.Count -gt 0 -and $fields.Count -eq [regex]::Matches($text, '"tag_name":').Count) {
+                    return @(foreach ($m in $fields) {
+                        [pscustomobject]@{ tag_name = $m.Groups[1].Value; draft = ($m.Groups[2].Value -eq 'true'); published_at = $m.Groups[3].Value }
+                    })
+                }
+            }
+        } catch {
+        } finally {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return Invoke-RestMethod -UseBasicParsing -Uri $uri
+}
+
 # Resolve-ClioRelease DEV: the release to install from the published GitHub Releases
 # (PyPI can hold strays that never became a release). Stable: the highest stable
 # version. -Dev: the most recently published release, whatever its version says (an
 # old alpha can sort above the newest beta). Drafts are never listed.
 function Resolve-ClioRelease([bool]$Dev) {
-    $releases = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100'
+    $releases = Get-ClioReleaseList
     $found = @(foreach ($r in $releases) {
         if ($r.draft) { continue }
         $v = ConvertFrom-ClioReleaseTag ([string]$r.tag_name)
