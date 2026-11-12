@@ -81,37 +81,18 @@ class CodexProvisionResult:
 # The self-elevating Codex setup step (guarded — win32 only, never unit-run).   #
 # --------------------------------------------------------------------------- #
 
-# The ``ShellExecuteExW`` SEE_MASK + info struct + the elevation function live at MODULE scope
-# inside a win32 guard (the struct is never inside a *function* — the no-class-in-function
-# ratchet stays at 0). ``ctypes.wintypes`` is Windows-only, so the whole real implementation is
-# defined ONLY on win32; the non-win32 branch defines a raising stub of the SAME name so the
-# module-scope caller resolves it on every platform (mypy analyses the Linux branch) while the
-# win32 names are never referenced off Windows.
-_SEE_MASK_NOCLOSEPROCESS = 0x00000040
+# The real elevation is defined ONLY on win32 (``ctypes.wintypes`` is Windows-only; the
+# ``SHELLEXECUTEINFOW`` struct lives in runtime/win_shell_execute.py); the non-win32 branch
+# defines a raising stub of the SAME name so the module-scope caller resolves it on every
+# platform (mypy analyses the Linux branch) while the win32 names are never referenced off it.
 if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs on Linux)
     import ctypes as _ctypes
     from ctypes import wintypes as _wintypes
 
-    class _ShellExecuteInfoW(_ctypes.Structure):
-        """The Win32 ``SHELLEXECUTEINFOW`` struct for the ``runas`` self-elevation."""
-
-        _fields_ = [
-            ("cbSize", _wintypes.DWORD),
-            ("fMask", _wintypes.ULONG),
-            ("hwnd", _wintypes.HWND),
-            ("lpVerb", _wintypes.LPCWSTR),
-            ("lpFile", _wintypes.LPCWSTR),
-            ("lpParameters", _wintypes.LPCWSTR),
-            ("lpDirectory", _wintypes.LPCWSTR),
-            ("nShow", _ctypes.c_int),
-            ("hInstApp", _wintypes.HINSTANCE),
-            ("lpIDList", _ctypes.c_void_p),
-            ("lpClass", _wintypes.LPCWSTR),
-            ("hkeyClass", _wintypes.HKEY),
-            ("dwHotKey", _wintypes.DWORD),
-            ("hIcon", _wintypes.HANDLE),
-            ("hProcess", _wintypes.HANDLE),
-        ]
+    from clio_agent.runtime.win_shell_execute import (
+        SEE_MASK_NOCLOSEPROCESS as _SEE_MASK_NOCLOSEPROCESS,
+    )
+    from clio_agent.runtime.win_shell_execute import ShellExecuteInfoW as _ShellExecuteInfoW
 
     def _elevated_codex_setup(binary: str) -> tuple[bool, str]:
         """Fire codex's one-time elevated Windows sandbox setup under a SINGLE UAC. win32 only.
