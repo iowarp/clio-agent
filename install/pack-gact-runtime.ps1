@@ -61,11 +61,19 @@ Write-Host "[pack-gact-runtime] archiving $Runtime"
 # about 140 MB larger.
 $plainTar = "$Archive.tar"
 Remove-Item -LiteralPath $plainTar -Force -ErrorAction SilentlyContinue
-& $tar.Source -cf $plainTar -C $runtimeParent $runtimeLeaf
+$python = Join-Path $Runtime 'python\python.exe'
+# Members are dealt through the archive (install/interleave_runtime.py) so install.ps1's
+# unpackers each write their part while it downloads instead of after the last byte.
+$memberList = "$Archive.members"
+& $python -I -B (Join-Path $PSScriptRoot 'interleave_runtime.py') --runtime $Runtime --out $memberList
+if ($LASTEXITCODE -ne 0) {
+  throw "pack-gact-runtime: interleave_runtime.py exited $LASTEXITCODE"
+}
+& $tar.Source -cf $plainTar -C $runtimeParent -n -T $memberList
 if ($LASTEXITCODE -ne 0) {
   throw "pack-gact-runtime: tar.exe exited $LASTEXITCODE"
 }
-$python = Join-Path $Runtime 'python\python.exe'
+Remove-Item -LiteralPath $memberList -Force
 & $python -I -B (Join-Path $PSScriptRoot 'compress_runtime.py') --tar $plainTar --out $Archive
 if ($LASTEXITCODE -ne 0) {
   throw "pack-gact-runtime: compress_runtime.py exited $LASTEXITCODE"
