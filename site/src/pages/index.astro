@@ -11,11 +11,12 @@ import linux from '@/assets/platform-icons/linux.svg';
 import windows from '@/assets/platform-icons/windows.svg';
 import CapabilityTabs from '@/components/home/CapabilityTabs';
 import DownloadPanel from '@/components/home/DownloadPanel';
-import HeroDownload from '@/components/home/HeroDownload';
+import HeroDownload, { distributionsOf } from '@/components/home/HeroDownload';
 import InstallCommand from '@/components/home/InstallCommand';
 import LoopVideo from '@/components/home/LoopVideo';
 import ReleaseVersion from '@/components/home/ReleaseVersion';
 import WorkspaceDemo from '@/components/home/WorkspaceDemo';
+import { PLATFORMS } from '@/lib/downloads';
 import { release } from '@/lib/release';
 import SiteHeader from '@/components/SiteHeader.astro';
 
@@ -25,6 +26,7 @@ const description =
 	'CLIO handles the groundwork of scientific data: reading your files, running analyses and simulations, and tracking where every result came from. Plugins add what your lab knows, so the agent works the way your field does.';
 const canonical = new URL('/', Astro.site).href;
 const GITHUB = 'https://github.com/iowarp/clio-agent';
+const linuxByDistribution = Boolean(distributionsOf(PLATFORMS.find((item) => item.os === 'linux'))?.length);
 
 const news = [
 	{
@@ -249,8 +251,11 @@ const news = [
 						<h2 id="download-title">Download CLIO</h2>
 						<p>
 							<ReleaseVersion client:load fallback={release.version} before="Version " after="." link={false} />{' '}
-							Pick your system. On Linux, pick the distribution you use, since
-							each one installs a different package.
+							Pick your system.{
+								linuxByDistribution
+									? ' On Linux, pick the distribution you use, since each one installs a different package.'
+									: ''
+							}
 						</p>
 					</div>
 					<DownloadPanel client:load icons={icons} />
