@@ -310,10 +310,29 @@ def _stop(server: subprocess.Popen[bytes]) -> None:
 _REPLACE_ATTEMPTS = 5
 
 
+def _current(source: Path, cache_path: Path) -> bool:
+    """Whether ``cache_path`` is checked-hash bytecode of ``source`` as it is now."""
+
+    try:
+        with cache_path.open("rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return False
+    if len(header) < 16 or header[:4] != importlib.util.MAGIC_NUMBER:
+        return False
+    if int.from_bytes(header[4:8], "little") != 0b11:  # hash-based, checked
+        return False
+    return header[8:16] == importlib.util.source_hash(source.read_bytes())
+
+
 def _compile(source: Path, root: Path | None) -> None:
     """Compile ``source`` beside itself, naming it relative to the bundled runtime."""
 
     cache_path = Path(importlib.util.cache_from_source(str(source)))
+    # A source install's environment can arrive with its bytecode (install.ps1's
+    # prebuilt dependencies): bytecode Python would accept as it is is kept.
+    if root is None and _current(source, cache_path):
+        return
     display_path = (
         Path("gact-runtime/python") / source.relative_to(root) if root is not None else source
     )
