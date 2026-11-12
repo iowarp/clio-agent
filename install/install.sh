@@ -51,6 +51,11 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 1
 fi
 set -euo pipefail
+# CLIO_PORT names the server's API port, but clio-core reads the same name as its RPC
+# port. The installer starts no server, and its migrate and document steps would
+# otherwise put the clio-core daemon and client on the API port and stall until the
+# daemon-start limit (180 s) before failing the migration.
+unset CLIO_PORT
 # The PATH this person's shell gave us, before the installer prepends its own bin dir.
 CALLER_PATH="${PATH:-}"
 

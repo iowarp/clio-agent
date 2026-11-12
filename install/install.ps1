@@ -45,6 +45,10 @@ if (-not (Test-Path -LiteralPath variable:script:ClioScopeProbe)) {
 }
 
 $ErrorActionPreference = 'Stop'
+# CLIO_PORT names the server's API port, but clio-core reads the same name as its RPC
+# port. The installer starts no server, and its migrate step would otherwise put the
+# clio-core daemon and client on the API port and stall until the daemon-start limit.
+Remove-Item Env:CLIO_PORT -ErrorAction SilentlyContinue
 # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk, which
 # makes a large download many times slower than the network (the desktop setup took
 # 10-15 minutes). Large files go through Save-ClioDownload, which shows curl's own meter.
