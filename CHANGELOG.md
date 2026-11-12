@@ -6,6 +6,32 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+
+- Agent actions no longer have hard time limits. A long job runs until it
+  finishes or you stop the turn:
+  - Document conversions and renders (LibreOffice, the document helpers,
+    LaTeX builds) used to be stopped after 60–120 s. Now a running conversion
+    shows "Still running after …" on its tool row, and Stop ends it together
+    with all its processes. A PDF preview you requested stops when you leave.
+  - A conversion whose processes do no work for 30 s is reported on its tool
+    row as stalled, and the server logs `document_process_stalled`. It is not
+    killed. On macOS the notice names the likely cause, a sandbox denial that
+    leaves LibreOffice waiting on its pipe. If you stop it, the error says it
+    was stuck.
+  - The LibreOffice version check that gates a conversion is waited for, so a
+    slow cold start is never reported as a missing Office. This replaces the
+    60 s probe limit from #2221.
+  - File search and glob (`fs.search_timeout_s`) and browser actions
+    (`browser.action_timeout_s`) default to `0`, meaning no limit. A positive
+    value restores an operator's limit.
+- A Claude Code stream that goes silent no longer fails the turn after 2
+  minutes (#2211). After 30 s with no response (`limits.lm_stall_wait_s`), CLIO
+  resends the request, or keeps waiting once output has started, at growing
+  intervals: 30 s, 60 s, 120 s, 240 s, then every 300 s. Each wait shows as a
+  notice in the conversation, and you can stop the turn at any time. Stopping
+  ends the wait at once, even when the stalled stream never answers.
+
 ### Fixed
 
 - The "Protected execution needs attention" notice says what failed in a plain

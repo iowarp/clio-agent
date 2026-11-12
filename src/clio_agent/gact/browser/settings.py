@@ -22,6 +22,7 @@ __all__ = [
     "max_pages",
     "person_window_s",
     "profile",
+    "runtime_wait_s",
 ]
 
 BACKENDS = ("managed", "cdp")
@@ -81,17 +82,32 @@ def channel() -> str:
     return value
 
 
-def action_timeout_s() -> float:
-    """Seconds one browser action may take, time waiting for the person excluded."""
+#: Seconds an action waits for the first-use browser download before it answers
+#: ``browser_runtime_preparing``; the download itself carries on.
+RUNTIME_WAIT_S = 15.0
+
+
+def action_timeout_s() -> float | None:
+    """An operator's limit on one browser action, or ``None`` (the default): no limit.
+
+    An action runs until it finishes or the turn is stopped. Time spent waiting for the
+    person's answer to a site question never counts against a configured limit.
+    """
     value = conf.resolve(
         "browser.action_timeout_s",
         env="CLIO_BROWSER_ACTION_TIMEOUT_S",
-        default=30.0,
+        default=0.0,
         cast=conf.as_float,
     )
-    if not value > 0:
-        raise ValueError(f"browser.action_timeout_s must be positive, not {value}")
-    return value
+    if value < 0:
+        raise ValueError(f"browser.action_timeout_s must be 0 (no limit) or more, not {value}")
+    return value or None
+
+
+def runtime_wait_s() -> float:
+    """Seconds an action waits for the browser's first-use download."""
+    limit = action_timeout_s()
+    return RUNTIME_WAIT_S if limit is None else limit / 2
 
 
 def max_pages() -> int:

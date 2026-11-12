@@ -37,10 +37,30 @@ UNREAD_TREES = frozenset(
     }
 )
 # Windows only: the AutoText library (a first start seeds the profile's own from
-# presets) and the Java classes (no conversion CLIO runs needs a JRE). A trace of
-# conversions and of the first start that builds the profile starter read none of
-# their files (207).
-WINDOWS_UNREAD_TREES = frozenset({("share", "autotext"), ("program", "classes")})
+# presets), the Java classes (no conversion CLIO runs needs a JRE) and the embedded
+# Firebird database's character sets and messages (only Base opens databases). A
+# trace of conversions and of the first start that builds the profile starter read
+# none of their files (211).
+WINDOWS_UNREAD_TREES = frozenset(
+    {("share", "autotext"), ("program", "classes"), ("program", "intl"), ("share", "firebird")}
+)
+# Windows only: files in ``program`` that same trace never read: the embedded Firebird
+# engine and the bridges to Java and its databases (about 11 MB). The Java framework
+# itself (``jvmfwk*``, ``jvmaccess*``) and Firebird's client library load at start, so
+# they stay.
+WINDOWS_UNREAD_PROGRAM_FILES = frozenset(
+    {
+        "engine12.dll",
+        "hsqldb.dll",
+        "java_uno.dll",
+        "javaloaderlo.dll",
+        "javavmlo.dll",
+        "jdbclo.dll",
+        "jreproperties.class",
+        "juh.dll",
+        "juhx.dll",
+    }
+)
 # Windows only: the icon themes (``share/config/images_<theme>.zip``) a conversion may
 # load. LibreOffice picks its theme by dark mode and falls back to colibre when the one
 # it wants is missing, so the other 17 themes and the help images (about 66 MB) are
@@ -96,6 +116,17 @@ def _unread_icon_theme(parts: tuple[str, ...]) -> bool:
     return name.removeprefix("images_").removesuffix(".zip") not in KEPT_ICON_THEMES
 
 
+def _unread_program_file(parts: tuple[str, ...]) -> bool:
+    """Whether ``parts`` (ending ``program/<name>``) is one of the
+    ``WINDOWS_UNREAD_PROGRAM_FILES``."""
+    return (
+        platform.system() == "Windows"
+        and len(parts) >= 2
+        and parts[-2] == "program"
+        and parts[-1].lower() in WINDOWS_UNREAD_PROGRAM_FILES
+    )
+
+
 def unread(relative: PurePath) -> bool:
     """Whether ``prune_unread`` would remove this file of an image (a path below it).
 
@@ -110,7 +141,7 @@ def unread(relative: PurePath) -> bool:
         return True
     if len(parts) > 1 and _unread_file(parts[-2], parts[-1]):
         return True
-    if _unread_icon_theme(parts):
+    if _unread_icon_theme(parts) or _unread_program_file(parts):
         return True
     for index, part in enumerate(parts[:-1]):
         parent = parts[index - 1] if index else ""
@@ -144,7 +175,8 @@ def prune_unread(image: Path) -> int:
     configuration packs (``registry/res/*_<lang>.xcd``, which every start reads: about
     2 s per cold conversion), the desktop-only ``UNREAD_TREES``, the translated readmes
     and the ``UNREAD_PYTHON_PACKAGES`` of LibreOffice's Python, and on Windows also the
-    ``WINDOWS_UNREAD_TREES`` and the icon themes outside ``KEPT_ICON_THEMES``. The
+    ``WINDOWS_UNREAD_TREES``, the ``WINDOWS_UNREAD_PROGRAM_FILES`` and the icon themes
+    outside ``KEPT_ICON_THEMES``. The
     application, filters,
     fonts, hyphenation patterns and English (``en*``) stay, so conversions are
     pixel-identical. Returns the number of files removed.
@@ -185,7 +217,12 @@ def prune_unread(image: Path) -> int:
             if (path / name).is_dir() and _unread_folder((*relative, name)):
                 removed += _remove_tree(path / name)
         for name in files:
-            if _unread_file(path.name, name) or _unread_icon_theme((*relative, name)):
+            entry = (*relative, name)
+            if (
+                _unread_file(path.name, name)
+                or _unread_icon_theme(entry)
+                or _unread_program_file(entry)
+            ):
                 (path / name).unlink()
                 removed += 1
         # Translations and extensions are near the top of every layout; skip the rest.

@@ -19,7 +19,9 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.anchors import ResolvedMark
+from clio_agent.gact.documents.artifact_bytes import artifact_bytes_path
 from clio_agent.gact.documents.comment_replies import on_turn_finalized
 from clio_agent.gact.documents.review_render import entry_block
 from clio_agent.gact.documents.store import get_document_store
@@ -567,3 +569,51 @@ def test_a_reply_is_what_the_agent_said_after_its_last_tool_call() -> None:
     assert _reply_text(message) == "I moved the legend below the axes and regenerated the PNG."
     plain = SimpleNamespace(parts=[part("text", "Done."), part("text", " ")])
     assert _reply_text(plain) == "Done."
+
+
+def test_one_old_version_with_changed_bytes_does_not_hide_the_other_threads(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    report = root / "report.md"
+    report.write_text(REPORT)
+    agent = FakeClioAgent()
+    app = _app(tmp_path, agent)
+    with TestClient(app) as client:
+        _ws, session_id = _workspace_session(client, root)
+        first = _pin(client, session_id, "report.md")
+        old = _send(
+            client, session_id, first, [{"anchor": _quote("4 KB case"), "comment": "x"}], "bytes-01"
+        ).json()["threads"][0]
+        time.sleep(0.01)
+        report.write_text(REPORT.replace("4 KB case", "4 KB block size case"))
+        # Pinned, version 2 is held in the store, so its bytes outlive the file.
+        second = _pin(client, session_id, "report.md")
+        assert second["version"] == 2
+        new = _send(
+            client,
+            session_id,
+            second,
+            [{"anchor": _quote("rose by 40%"), "comment": "y"}],
+            "bytes-02",
+        ).json()["threads"][0]
+        # Version 1's own copy is gone, so all that is left is the file, which no longer
+        # matches version 1's hash.
+        record, version = get_registry(app).get_by_artifact_id(first["artifact_id"])
+        held = artifact_bytes_path(app, record, version)
+        if held != Path(version.path):
+            held.unlink()
+        time.sleep(0.01)
+        report.write_text(REPORT.replace("rose by 40%", "rose by 41%"))
+        listed = client.get(
+            f"/v1/artifacts/{second['artifact_id']}/threads", params={"session_id": session_id}
+        )
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["head"]["version"] == 3
+    rows = {row["id"]: row for row in body["threads"]}
+    assert rows[old["id"]]["anchor_state"] == "outdated"
+    assert rows[old["id"]]["anchor_error"] == "integrity_violation"
+    assert rows[new["id"]]["anchor_state"] == "outdated"
+    assert rows[new["id"]]["anchor_error"] == ""

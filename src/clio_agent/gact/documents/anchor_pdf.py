@@ -103,7 +103,6 @@ def _page_words(target: MarkTarget, page_index: int) -> list[PdfWord] | None:
                 [tool, "-f", page, "-l", page, "-bbox", str(target.view_path), str(out)],
                 cwd=scratch.path,
                 workspace_root=scratch.workspace_root,
-                timeout_seconds=60,
             )
             text = out.read_text(encoding="utf-8", errors="replace")
         except (DocumentError, OSError):
@@ -143,7 +142,6 @@ def _page_raster(target: MarkTarget, page_index: int) -> "Image.Image | None":
                     + [str(target.view_path), str(prefix)],
                     cwd=scratch.path,
                     workspace_root=scratch.workspace_root,
-                    timeout_seconds=120,
                 )
                 with Image.open(prefix.with_suffix(".png")) as opened:
                     image = opened.convert("RGB")

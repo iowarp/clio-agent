@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -25,7 +26,12 @@ from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
 from clio_agent.runtime.document_stack.node_paths import node_path
 from clio_agent.runtime.document_stack.npm_package import unpack_package as _unpack_package
-from clio_agent.runtime.document_stack.process import scratch_root
+from clio_agent.runtime.document_stack.process import (
+    DocumentCancelled,
+    DocumentError,
+    scratch_root,
+    wait_process,
+)
 from clio_agent.runtime.document_venv import (
     _built_for_this_interpreter,
     _document_uv_cache,
@@ -82,12 +88,17 @@ def _document_uv() -> str | None:
     return str(packaged) if packaged.is_file() else None
 
 
+#: Package installs and their verification commands are infrastructure steps with a
+#: bound. The probes and helpers that answer an agent's document action have none.
+INSTALL_STEP_TIMEOUT_S = 180.0
+
+
 def _run(
     command: list[str],
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
-    timeout: float = 180,
+    timeout: float | None = INSTALL_STEP_TIMEOUT_S,
     accepted_exit_codes: tuple[int, ...] = (0,),
 ) -> str:
     flags: dict[str, Any] = {}
@@ -109,22 +120,11 @@ def _run(
     except OSError as exc:
         raise DocumentRuntimeError(f"Could not launch {Path(command[0]).name}: {exc}") from exc
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        import psutil
-
-        try:
-            children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.NoSuchProcess:
-            children = []
-        for child in reversed(children):
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        process.kill()
-        process.communicate()
-        raise DocumentRuntimeError(f"{Path(command[0]).name} exceeded {timeout:g} seconds") from exc
+        stdout, stderr = wait_process(process, name=Path(command[0]).name, timeout=timeout)
+    except DocumentCancelled:
+        raise
+    except DocumentError as exc:
+        raise DocumentRuntimeError(str(exc)) from exc
     # A nonzero exit with no output is a launch failure (e.g. a sandbox wrapper that could not
     # start the child), not a reported result: surface its stderr instead of an empty parse.
     if process.returncode not in accepted_exit_codes or (process.returncode and not stdout.strip()):
@@ -158,6 +158,8 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
                 # ~/.config/matplotlib; it belongs to this environment, inside CLIO's cache.
                 "MPLCONFIGDIR": str(python.parents[1] / ".matplotlib"),
             },
+            # Inventory probes the converters, and a cold Office can take minutes to answer.
+            timeout=None,
         )
     )
     if not isinstance(result, dict):
@@ -179,7 +181,7 @@ def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[s
     ):
         raise ValueError("required_imports must contain at most 32 Python module names")
     script = str(STACK_ROOT / "import_check.py")
-    output = _run([str(python), "-B", script, json.dumps(names)], cwd=python.parent)
+    output = _run([str(python), "-B", script, json.dumps(names)], cwd=python.parent, timeout=None)
     checks = json.loads(output)
     if not isinstance(checks, dict) or set(checks) != set(names):
         raise DocumentRuntimeError("Import checks did not return the requested modules")
@@ -194,6 +196,7 @@ def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
             [sys.executable, "-B", str(STACK_ROOT / "inventory.py"), "--execution-host"],
             cwd=workspace,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=None,
         )
     )
     if not isinstance(inventory, dict) or inventory.get("inventory_scope") != "execution_host":
@@ -439,7 +442,9 @@ def _javascript_runtime(
     tools = Path(node_path(str(cache / "javascript-tools")))
     # Besides its store, pnpm keeps a metadata cache, its state and a global folder in the
     # user's XDG folders (~/.cache/pnpm, ~/.local/state/pnpm, ~/.local/share/pnpm). They are
-    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes.
+    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes. npm,
+    # which installs pnpm itself, ignores XDG: its cache is ~/.npm unless named (live, Linux
+    # Desktop: 31 MB of pnpm tarballs left in ~/.npm after a full uninstall).
     pnpm_home = Path(node_path(str(cache / "pnpm-home")))
     env = {
         **os.environ,
@@ -447,6 +452,7 @@ def _javascript_runtime(
         "XDG_CACHE_HOME": str(pnpm_home / "cache"),
         "XDG_STATE_HOME": str(pnpm_home / "state"),
         "XDG_DATA_HOME": str(pnpm_home / "data"),
+        "npm_config_cache": str(pnpm_home / "npm-cache"),
     }
     work = Path(node_path(str(scratch_root(workspace) / "javascript")))
     store = node_path(str(cache / "pnpm-store"))
@@ -609,7 +615,7 @@ def prepare_document_runtime(
                     finally:
                         lap("python_probe", started)
 
-                probed = checking.submit(probe)
+                probed = checking.submit(contextvars.copy_context().run, probe)
                 javascript = _javascript_or_error(cache, workspace, inventory, progress)
                 lap("node_packages", started)
                 try:
@@ -768,6 +774,8 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
                     },
                 },
                 accepted_exit_codes=(0, 1),
+                # A conversion runs until it finishes or the person stops the turn.
+                timeout=None,
             )
         )
     except json.JSONDecodeError as exc:

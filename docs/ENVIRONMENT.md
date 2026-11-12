@@ -82,7 +82,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACT_PROVENANCE_PROVIDER` | `provenance.artifacts.provider` | str | `native` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_ARTIFACT_PROVENANCE_QUEUE_SIZE` | `provenance.artifacts.queue_size` | int | `4096` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
-| `CLIO_BROWSER_ACTION_TIMEOUT_S` | `browser.action_timeout_s` | float | `30.0` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_ACTION_TIMEOUT_S` | `browser.action_timeout_s` | float | `0.0` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_ALLOW_UNSANDBOXED` | `browser.allow_unsandboxed` | bool | `false` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_BACKEND` | `browser.backend` | str | `managed` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_CDP_URL` | `browser.cdp_url` | str | _(unset)_ | `src/clio_agent/gact/browser/settings.py` |
@@ -168,7 +168,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_FS_READ_LINE_CHARS` | `fs.read_line_chars` | int | `2000` | `src/clio_agent/tools/fs_read.py` |
 | `CLIO_FS_SEARCH_LINE_CHARS` | `fs.search_line_chars` | int | `500` | `src/clio_agent/tools/fs_search_rg.py` |
 | `CLIO_FS_SEARCH_MAX_BYTES` | `fs.search_max_bytes` | int | `33554432` | `src/clio_agent/runtime/ripgrep.py` |
-| `CLIO_FS_SEARCH_TIMEOUT_S` | `fs.search_timeout_s` | float | `30.0` | `src/clio_agent/tools/fs_search_rg.py` |
+| `CLIO_FS_SEARCH_TIMEOUT_S` | `fs.search_timeout_s` | float | `0.0` | `src/clio_agent/tools/fs_search_rg.py` |
 | `CLIO_GACT_ALLOWED_HOSTS` | `gact.allowed_hosts` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |
 | `CLIO_GACT_BEARER_TOKEN` | `gact.auth.bearer_token` | str | _(unset)_ | `src/clio_agent/gact/auth.py` |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |
@@ -215,6 +215,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_PROVIDER_OPTIONS` | `lm.provider_options` | mapping | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_REQUEST_QUEUE_S` | `limits.lm_request_queue_s` | float | `120.0` | `src/clio_agent/lm/admission.py` |
 | `CLIO_LM_SENT_PROMPT_SESSIONS` | `lm.sent_prompt_sessions` | int | `64` | `src/clio_agent/lm/sent_prompt.py` |
+| `CLIO_LM_STALL_WAIT_S` | `limits.lm_stall_wait_s` | float | `30.0` | `src/clio_agent/providers/claude_code_expiry.py` |
 | `CLIO_LM_STOP_SEQUENCES` | `lm.stop_sequences` | str | _(unset)_ | `src/clio_agent/lm/request_builder.py` |
 | `CLIO_LM_TEMPERATURE` | `lm.temperature` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_THINKING_BUDGET` | `lm.thinking_budget` | int | _(unset)_ | `src/clio_agent/config.py` |

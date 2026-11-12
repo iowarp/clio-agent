@@ -9,7 +9,6 @@ import lzma
 import os
 import platform
 import shutil
-import subprocess
 import sysconfig
 import tarfile
 import tempfile
@@ -35,6 +34,7 @@ if TYPE_CHECKING or __package__:
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_PROGRAM_FILES,
         WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
@@ -61,6 +61,7 @@ else:
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_PROGRAM_FILES,
         WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
@@ -285,6 +286,7 @@ def _windows_tree_name() -> str | None:
             sorted(UNREAD_TREES),
             sorted(UNREAD_PYTHON_PACKAGES),
             sorted(WINDOWS_UNREAD_TREES),
+            sorted(WINDOWS_UNREAD_PROGRAM_FILES),
             sorted(KEPT_ICON_THEMES),
         )
     )
@@ -551,12 +553,9 @@ def _verify_office(
     has its seeded profile has converted successfully and is not probed again.
     ``profile_starter`` is the profile archive laid out with this Office image.
     """
-    # A real Windows first launch can exhaust the native probe deadline while
-    # the same binary verifies promptly after its timed-out process tree retires.
-    # A macOS first launch is likewise delayed by the one-time Gatekeeper/XProtect
-    # assessment of the freshly copied app. Recover once with a new profile; keep
-    # the deadline and fail closed when neither attempt verifies. Other failures
-    # and Linux are not retried.
+    # A first launch can be slow: Windows checks thousands of freshly installed files and
+    # macOS assesses the freshly copied app once. The probe waits for Office to answer, so
+    # a slow start is never reported as a missing or broken Office; stopping the turn ends it.
     if profile_templates is not None:
         profile_templates.mkdir(parents=True, exist_ok=True)
         key = office_profile_key(executable_path)
@@ -570,50 +569,36 @@ def _verify_office(
             # This exact build already converted a document when it was seeded.
             return
         seed = profile_templates is not None
-        attempts = 2 if platform.system() in {"Windows", "Darwin"} else 1
-        for attempt in range(attempts):
-            temporary = tempfile.TemporaryDirectory(
-                prefix="lo-seed-" if seed else "lo-version-",
-                dir=profile_templates if seed else None,
+        temporary = tempfile.TemporaryDirectory(
+            prefix="lo-seed-" if seed else "lo-version-",
+            dir=profile_templates if seed else None,
+        )
+        try:
+            work = Path(temporary.name).resolve()
+            profile = work / "profile"
+            if seed:
+                # The kept profile must stay readable to confined document workers.
+                inherit_parent_access(work)
+                _start_profile(profile, profile_starter)
+                _seed_document(work / "seed.docx")
+                arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
+                arguments += ["--outdir", str(work), str(work / "seed.docx")]
+            else:
+                arguments = ["--norestore", "--version"]
+            run(
+                [
+                    str(executable_path),
+                    f"-env:UserInstallation={profile.as_uri()}",
+                    "--headless",
+                    "--nologo",
+                    *arguments,
+                ],
+                cwd=cwd,
             )
-            try:
-                work = Path(temporary.name).resolve()
-                profile = work / "profile"
-                if seed:
-                    # The kept profile must stay readable to confined document workers.
-                    inherit_parent_access(work)
-                    _start_profile(profile, profile_starter)
-                    _seed_document(work / "seed.docx")
-                    arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
-                    arguments += ["--outdir", str(work), str(work / "seed.docx")]
-                else:
-                    arguments = ["--norestore", "--version"]
-                run(
-                    [
-                        str(executable_path),
-                        f"-env:UserInstallation={profile.as_uri()}",
-                        "--headless",
-                        "--nologo",
-                        *arguments,
-                    ],
-                    cwd=cwd,
-                    timeout=120 if seed else 30,
-                )
-                if profile_templates is not None:
-                    _publish_profile(work, profile_templates / key)
-                return
-            except DocumentError as error:
-                if attempt + 1 == attempts or not isinstance(
-                    error.__cause__, subprocess.TimeoutExpired
-                ):
-                    raise
-                logger.warning(
-                    "reason=office_probe_timeout_retry: %s; "
-                    "retrying once with a fresh private profile",
-                    error,
-                )
-            finally:
-                _cleanup_profile(temporary)
+            if profile_templates is not None:
+                _publish_profile(work, profile_templates / key)
+        finally:
+            _cleanup_profile(temporary)
     finally:
         if profile_templates is not None:
             lock.release()

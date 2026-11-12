@@ -97,6 +97,19 @@ def overlay_dir() -> Path:
     return paths.user_data_dir(env=os.environ) / _OVERLAY_PARENT / _runtime_key()
 
 
+def overlay_install_cache() -> Path:
+    """The installer cache for packages added to the overlay (CLIO's own cache root).
+
+    A provider's support package (``claude-agent-sdk`` bundles the Claude CLI: ~340 MB)
+    otherwise lands in the person's ``~/.cache/uv``, which outlives CLIO: the uninstaller
+    cannot remove a cache other tools share. Under CLIO's cache root it goes with
+    ``uninstall --purge-caches``.
+    """
+    from clio_agent import paths  # noqa: PLC0415 - only for a bundled runtime
+
+    return paths.user_cache_dir() / "overlay-installs"
+
+
 def overlay_for(python_executable: str) -> Path | None:
     """The overlay that installs for ``python_executable`` must use, or ``None`` (in place).
 

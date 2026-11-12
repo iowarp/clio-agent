@@ -9,7 +9,6 @@ in the transcript, separated from the new attempt by a service notice.
 from __future__ import annotations
 
 import time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -85,32 +84,15 @@ def interrupted_stream(
 
 
 def _notice(attempt: int, maximum: int, delay: float) -> None:
-    from clio_agent.gact import context as ctx  # noqa: PLC0415
-    from clio_agent.gact.parts import Part  # noqa: PLC0415
-    from clio_agent.gact.tool_observer import (  # noqa: PLC0415
-        _append_live_assistant_part,
-    )
-    from clio_agent.runtime.lm_activity import after_live_chunks  # noqa: PLC0415
+    from clio_agent.gact.model_notices import post_model_notice  # noqa: PLC0415
 
-    app, sid = ctx.active_app(), ctx.active_session_id()
-    if app is None or not sid:
-        return
-    part = Part(
-        id=f"notice_{uuid.uuid4().hex[:12]}",
-        type="notice",
-        source="model_connection_retry",
-        agent_id=ctx.active_react_scope() or "",
-        text=(
-            f"The model connection was interrupted before an answer arrived. "
-            f"Retrying in {delay:g}s ({attempt}/{maximum}). Completed tools will not be replayed."
-        ),
-        metadata=ctx.stamp_active_try(
-            {"actor": "algorithm", "retry_attempt": attempt, "retry_limit": maximum}
-        ),
+    post_model_notice(
+        "model_connection_retry",
+        f"The model connection was interrupted before an answer arrived. "
+        f"Retrying in {delay:g}s ({attempt}/{maximum}). Completed tools will not be replayed.",
+        retry_attempt=attempt,
+        retry_limit=maximum,
     )
-    # Emissions were scheduled cross-thread. Append after those callbacks, so
-    # the failed reasoning passage cannot land after its retry boundary.
-    after_live_chunks(lambda: _append_live_assistant_part(app, sid, part))
 
 
 def recover_stream(

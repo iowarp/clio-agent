@@ -30,15 +30,19 @@ from clio_agent.gact.documents.latex.diagnostics import (
     parse_diagnostics,
 )
 from clio_agent.gact.documents.latex.project import StagedProject, stage_project
-from clio_agent.runtime.document_stack.process import inherit_parent_access, scratch_root
+from clio_agent.runtime.document_stack.process import (
+    DocumentCancelled,
+    DocumentError,
+    inherit_parent_access,
+    scratch_root,
+    wait_process,
+)
 
 __all__ = ["BuildResult", "LatexBuildError", "build_project", "read_dependencies"]
 
-_TIMEOUT_SECONDS = 600.0
-
 
 class LatexBuildError(RuntimeError):
-    """The build could not run at all (no Tectonic, no fence, a timeout); ``reason`` is typed."""
+    """The build could not run at all (no Tectonic, no fence, stopped); ``reason`` is typed."""
 
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
@@ -120,7 +124,12 @@ def _page_count(pdf: bytes) -> int:
 
 
 def _run(
-    command: list[str], *, cwd: Path, workspace_root: Path, cache_dir: Path, timeout: float
+    command: list[str],
+    *,
+    cwd: Path,
+    workspace_root: Path,
+    cache_dir: Path,
+    timeout: float | None,
 ) -> tuple[int, str, str]:
     """Run Tectonic in the fence with bundle-only egress. Returns ``(code, output, network)``."""
     from clio_agent.runtime import net_chokepoint, sandbox  # noqa: PLC0415 - heavy, on demand
@@ -154,30 +163,32 @@ def _run(
     if os.name == "nt":
         flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [confined.command, *confined.args],
             cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             **confined.popen_kwargs,
             **flags,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise LatexBuildError(
-            "latex_build_timeout", f"the build exceeded {timeout:g} seconds"
-        ) from exc
+        # A build runs until it finishes or the person stops it.
+        stdout, stderr = wait_process(process, name="tectonic", timeout=timeout)
+    except DocumentCancelled as exc:
+        raise LatexBuildError("latex_build_cancelled", str(exc)) from exc
+    except DocumentError as exc:
+        raise LatexBuildError("latex_build_timeout", f"the build {exc}") from exc
     except OSError as exc:
         raise LatexBuildError("latex_build_failed_to_start", str(exc)) from exc
     finally:
         if child:
             net_chokepoint.release_child_hosts(child)
         confined.release()
-    return completed.returncode, (completed.stdout or "") + (completed.stderr or ""), network
+    return process.returncode, (stdout or "") + (stderr or ""), network
 
 
 def _read(path: Path) -> str:
@@ -191,14 +202,17 @@ def build_project(
     entry: Path,
     *,
     workspace_root: Path,
-    timeout: float = _TIMEOUT_SECONDS,
+    timeout: float | None = None,
 ) -> BuildResult:
     """Build the project ``entry`` belongs to.
 
+    The build runs until Tectonic exits or the person stops it; ``timeout`` exists only for
+    callers that need a bound.
+
     Raises:
         ProjectError: the project cannot be staged (no entry, too large).
-        LatexBuildError: Tectonic is unavailable, the fence cannot compose, or the build timed
-            out.
+        LatexBuildError: Tectonic is unavailable, the fence cannot compose, or the build was
+            stopped.
     """
     from clio_agent.runtime.tectonic import (  # noqa: PLC0415 - provisioning on demand
         BUNDLE_URL,

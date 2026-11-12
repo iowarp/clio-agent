@@ -89,7 +89,7 @@ def test_explicit_windows_command_line_reaches_createprocess_without_a_shell(
         returncode = 0
 
         def communicate(self, *, timeout: float) -> tuple[str, str]:
-            assert timeout == 300
+            assert 0 < timeout <= 300  # polled in short waits under the step's limit
             return "extracted", ""
 
     def start(args: str | list[str], **kwargs: Any) -> Child:
@@ -148,7 +148,7 @@ def test_renderer_probe_uses_and_cleans_an_exclusive_profile_on_failure(
         profile = Path(path)
         assert profile.parent.is_dir()
         assert "--headless" in command and "--norestore" in command
-        assert kwargs["timeout"] == 30
+        assert kwargs.get("timeout") is None
         profiles.append(profile)
         raise DocumentError("version probe failed")
 
@@ -160,63 +160,53 @@ def test_renderer_probe_uses_and_cleans_an_exclusive_profile_on_failure(
     assert all(not profile.parent.exists() for profile in profiles)
 
 
-@pytest.mark.parametrize("system,expected_attempts", [("Windows", 2), ("Linux", 1), ("Darwin", 2)])
-def test_renderer_probe_timeout_has_one_native_recovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, expected_attempts: int
+@pytest.mark.parametrize("system", ["Windows", "Linux", "Darwin"])
+def test_renderer_probe_waits_for_a_slow_first_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, system: str
 ) -> None:
-    """Only a native Windows or macOS timeout can retry, after the first profile is retired."""
-    from urllib.parse import unquote, urlparse
+    """A slow first start is waited for, never turned into a missing or broken Office.
 
-    profiles: list[Path] = []
+    The probe runs once with no clock (``timeout`` unset); Office answering late is a
+    working Office. SABOTAGE: restore a fixed probe timeout -> ``timeout`` is passed -> red.
+    """
+    import time
 
-    def probe(command: list[str], **kwargs: Any) -> str:
-        path = unquote(urlparse(command[1].split("=", 1)[1]).path)
-        if path.startswith("/") and len(path) > 2 and path[2] == ":":
-            path = path[1:]
-        profile = Path(path)
-        assert profile.parent.is_dir()
-        assert all(not previous.parent.exists() for previous in profiles)
-        assert kwargs["timeout"] == 30
-        profiles.append(profile)
-        if len(profiles) == 1:
-            raise DocumentError("soffice.com exceeded 30 seconds") from subprocess.TimeoutExpired(
-                command, 30
-            )
+    calls: list[list[str]] = []
+
+    def slow(command: list[str], **kwargs: Any) -> str:
+        assert kwargs.get("timeout") is None
+        calls.append(command)
+        time.sleep(0.3)
         return "LibreOffice 26.2.6"
 
     monkeypatch.setattr(office.platform, "system", lambda: system)
-    monkeypatch.setattr(office, "run", probe)
-    if expected_attempts == 2:
-        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
-    else:
-        with pytest.raises(DocumentError, match="exceeded 30 seconds"):
-            office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
-    assert len(profiles) == expected_attempts
-    assert len(set(profiles)) == expected_attempts
-    assert all(not profile.parent.exists() for profile in profiles)
+    monkeypatch.setattr(office, "run", slow)
+    office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert len(calls) == 1
+    assert "office_probe_timeout_retry" not in caplog.text
 
 
-def test_renderer_probe_persistent_windows_timeout_still_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_renderer_probe_cancelled_is_not_a_missing_office(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A second timeout never becomes a successful installation or an endless retry."""
-    calls: list[list[str]] = []
+    """Stopping the turn mid-probe surfaces as cancelled, and the profile is still retired."""
+    from urllib.parse import unquote, urlparse
 
-    def timeout(command: list[str], **kwargs: Any) -> str:
-        assert kwargs["timeout"] == 30
-        calls.append(command)
-        raise DocumentError("soffice.com exceeded 30 seconds") from subprocess.TimeoutExpired(
-            command, 30
-        )
+    from clio_agent.runtime.document_stack.process import DocumentCancelled
 
-    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(office, "run", timeout)
-    with pytest.raises(DocumentError, match="exceeded 30 seconds") as caught:
+    profiles: list[Path] = []
+
+    def cancelled(command: list[str], **kwargs: Any) -> str:
+        path = unquote(urlparse(command[1].split("=", 1)[1]).path)
+        if path.startswith("/") and len(path) > 2 and path[2] == ":":
+            path = path[1:]
+        profiles.append(Path(path))
+        raise DocumentCancelled("soffice.com was stopped")
+
+    monkeypatch.setattr(office, "run", cancelled)
+    with pytest.raises(DocumentCancelled):
         office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
-    assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
-    assert len(calls) == 2
-    assert calls[0][1] != calls[1][1]
-    assert caplog.text.count("reason=office_probe_timeout_retry") == 1
+    assert len(profiles) == 1 and not profiles[0].parent.exists()
 
 
 def test_renderer_probe_windows_non_timeout_failure_is_not_retried(
@@ -600,6 +590,13 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/config/images_sifr_dark_svg.zip",
         "share/config/images_helpimg.zip",
         "program/classes/hsqldb.jar",
+        "program/Engine12.dll",
+        "program/intl/fbintl.dll",
+        "share/firebird/security3.fdb",
+        "program/java_uno.dll",
+        "program/JREProperties.class",
+        "program/jvmfwklo.dll",
+        "program/ifbclient.dll",
         "readmes/readme_de.txt",
         "readmes/readme_en-US.txt",
         "program/python-core-3.12.14/lib/pip/__init__.py",
@@ -630,11 +627,18 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/config/images_sifr_dark_svg.zip",
         "share/config/images_helpimg.zip",
         "program/classes/hsqldb.jar",
+        "program/Engine12.dll",
+        "program/intl/fbintl.dll",
+        "share/firebird/security3.fdb",
+        "program/java_uno.dll",
+        "program/JREProperties.class",
     } <= skipped
     # What a conversion reads: the startup Python, layout configuration, fonts, the
-    # NUMBERTEXT data, new-document templates, the fallback icon themes and the English
-    # readme.
+    # NUMBERTEXT data, new-document templates, the fallback icon themes, the Java
+    # framework and Firebird client that load at start, and the English readme.
     assert not skipped & {
+        "program/jvmfwklo.dll",
+        "program/ifbclient.dll",
         "program/python-core-3.12.14/lib/encodings/utf_8.py",
         "program/python-core-3.12.14/lib/re/__init__.py",
         "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
@@ -647,7 +651,7 @@ def test_unread_names_exactly_what_prune_unread_removes(
     }
 
 
-def test_icon_themes_autotext_and_java_are_pruned_only_on_windows(
+def test_windows_only_prunes_leave_other_layouts_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The Windows-only prunes leave the Linux layout as it was."""
@@ -656,6 +660,10 @@ def test_icon_themes_autotext_and_java_are_pruned_only_on_windows(
         "share/config/images_helpimg.zip",
         "share/autotext/en-US/standard.bau",
         "program/classes/hsqldb.jar",
+        "program/Engine12.dll",
+        "program/intl/fbintl.dll",
+        "share/firebird/firebird.msg",
+        "program/javavmlo.dll",
     ]
     monkeypatch.setattr(office.platform, "system", lambda: "Linux")
     image = tmp_path / "office"
