@@ -44,11 +44,13 @@ _INVOKE_OPEN = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>""")
 _CUT = re.compile(r"""<parameter\s+name=|</invoke>|</function_calls>""")
 #: A line that begins with the container's word but is not its tag: what is left of a
 #: call block whose markup was lost (``function_calls="" invoke name="run_code">``,
-#: ``function_calls: invoke run_code``), or the ``<invoke_tool_placeholder>`` tags the
-#: service substitutes for call markup written as text, or an invented ``<invoke:NAME>``
-#: opener models write beside a real block. Never prose and never a call.
+#: ``function_calls: invoke run_code``), or the ``<invoke_..._placeholder>`` tags the
+#: service substitutes for call markup written as text (``<invoke_tool_placeholder>``;
+#: live, haiku 2026-11-12, ``<invoke_tool_call_placeholder>``: the family, not one
+#: spelling), or an invented ``<invoke:NAME>`` opener models write beside a real block.
+#: Never prose and never a call.
 _RESIDUE = re.compile(
-    r"""(?m)^[ \t]*(?:<?/?function_calls(?!>)\b|</?invoke_tool_placeholder>"""
+    r"""(?m)^[ \t]*(?:<?/?function_calls(?!>)\b|</?invoke_\w*placeholder>"""
     r"""|</?invoke:[\w.-]+>).*$"""
 )
 #: A call tag written with an XML namespace prefix (``<ns:invoke name=...>``,
