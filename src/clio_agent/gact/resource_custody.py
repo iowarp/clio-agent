@@ -243,6 +243,7 @@ class ResourceStore:
     """Thread-safe original-byte custody with atomic metadata persistence."""
 
     def __init__(self, *, root: Path, max_resource_bytes: int) -> None:
+        """``max_resource_bytes`` of 0 or less means no per-resource size limit."""
         self.root = root
         self.max_resource_bytes = max_resource_bytes
         self._index_path = root / "resources.json"
@@ -310,7 +311,7 @@ class ResourceStore:
 
         if declared_size < 0:
             raise ValueError("declared_size must be non-negative")
-        if declared_size > self.max_resource_bytes:
+        if self.max_resource_bytes > 0 and declared_size > self.max_resource_bytes:
             raise ResourceLimitError(
                 f"resource exceeds deployment limit of {self.max_resource_bytes} bytes"
             )
@@ -375,7 +376,9 @@ class ResourceStore:
             if offset != record.received_size:
                 raise ResourceConflictError("upload offset does not match server state", record)
             new_size = offset + len(data)
-            if new_size > record.declared_size or new_size > self.max_resource_bytes:
+            if new_size > record.declared_size or (
+                self.max_resource_bytes > 0 and new_size > self.max_resource_bytes
+            ):
                 raise ResourceLimitError("upload chunk exceeds the declared resource size")
             with self._upload_path(record).open("ab") as stream:
                 stream.write(data)

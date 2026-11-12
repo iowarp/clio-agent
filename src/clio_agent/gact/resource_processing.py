@@ -661,7 +661,7 @@ class DocumentProcessorClient:
             cast=conf.as_float,
         )
 
-    def _write_timeout(self) -> float:
+    def _write_timeout(self, size: int = 0) -> float:
         """Resolve the submit write timeout, DERIVING it from the upload ceiling.
 
         A pinned write timeout that is shorter than the time it takes to stream
@@ -669,6 +669,8 @@ class DocumentProcessorClient:
         scientific uploads the ceiling exists to allow. Left at ``0`` (the
         default) the timeout is derived from that ceiling at
         :data:`_PROCESSOR_MIN_UPLOAD_BYTES_PER_S`; any positive value pins it.
+        With no ceiling (``resources.max_bytes: 0``) it is derived from ``size``,
+        the resource actually being sent.
         """
 
         configured = conf.resolve(
@@ -679,7 +681,8 @@ class DocumentProcessorClient:
         )
         if configured > 0:
             return configured
-        derived = float(self.max_resource_bytes) / _PROCESSOR_MIN_UPLOAD_BYTES_PER_S
+        ceiling = self.max_resource_bytes if self.max_resource_bytes > 0 else size
+        derived = float(ceiling) / _PROCESSOR_MIN_UPLOAD_BYTES_PER_S
         return max(_PROCESSOR_WRITE_TIMEOUT_FLOOR_S, derived)
 
     @property
@@ -706,8 +709,16 @@ class DocumentProcessorClient:
     ) -> dict[str, Any]:
         if not self.configured:
             raise RuntimeError("document processor is not configured")
+        timeout = self.submit_timeout
+        if self.max_resource_bytes <= 0:
+            timeout = httpx.Timeout(
+                connect=timeout.connect,
+                read=timeout.read,
+                write=self._write_timeout(record.declared_size),
+                pool=timeout.pool,
+            )
         with content_path.open("rb") as stream:
-            async with httpx.AsyncClient(timeout=self.submit_timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/documents",
                     files={"file": (record.name, stream, record.detected_mime)},
