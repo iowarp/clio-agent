@@ -22,6 +22,7 @@ from clio_agent.providers.components.pypi import (
     ReleaseLookup,
 )
 from clio_agent.providers.components.registry import ProviderComponents, components_for
+from clio_agent.runtime.import_caches import invalidate_import_caches
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,7 @@ class ProviderComponentStatus:
 
 def installed_version(distribution: str) -> str:
     """The distribution's version as recorded on disk now, or ``""`` when absent."""
-    importlib.invalidate_caches()
+    invalidate_import_caches()
     try:
         return importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
