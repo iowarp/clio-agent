@@ -34,6 +34,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_DISK_WARN_FRACTION` | `arc.cte.disk_warn_fraction` | float | `0.5` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_HOME_RAM_CAPACITY` | `arc.cte.home_ram_capacity` | str | `128MB` | `src/clio_agent/arc/home_runtime.py` |
+| `CLIO_ARC_CTE_HOME_SEGMENT_SIZE` | `arc.cte.home_segment_size` | str | `64MB` | `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_HIGHWAY_DEFERRED` | `arc.highway_deferred` | bool | `true` | `src/clio_agent/gact/highway_writer.py` |
@@ -48,7 +50,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LSM_COMPACTION_THRESHOLD` | `arc.lsm_compaction_threshold` | int | `5` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS` | `arc.message_part_chunk_segments` | int | `512` | `src/clio_agent/gact/part_atoms.py` |
-| `CLIO_ARC_NAMESPACE` | `arc.namespace` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
+| `CLIO_ARC_NAMESPACE` | `arc.namespace` | str | _(unset)_ | `src/clio_agent/arc/home_import.py` |
 | `CLIO_ARC_SEARCH_CHUNK_ATOMS` | `arc.search_chunk_atoms` | int | `16` | `src/clio_agent/arc/search_companion.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
@@ -394,6 +396,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | Environment variable | Tier | Read in |
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
+| `CLIO_AGENT_HOME` | unmigrated | `src/clio_agent/arc/clio_core_effective_runtime.py` |
 | `CLIO_AGENT_PACKAGE_OVERLAY` | unmigrated | `src/clio_agent/runtime/package_overlay.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
@@ -401,10 +404,13 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
+| `CLIO_CORE_ATTACH_ONLY` | unmigrated | `src/clio_agent/arc/home_runtime.py` |
+| `CLIO_CORE_USER` | unmigrated | `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
 | `CLIO_CTE_POOL` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
 | `CLIO_CTE_POOL_BOUND_BY` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
 | `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/desktop_boot.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
+| `CLIO_DESKTOP_MANAGED` | unmigrated | `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_DOCUMENT_CONFINED` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_OFFICE_PROFILES` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_OFFICE_ROOT` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
@@ -416,10 +422,11 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
 | `CLIO_GACT_CAPABILITIES_REFRESH_S` | unmigrated | `src/clio_agent/gact/capabilities_snapshot.py` |
 | `CLIO_GIT` | unmigrated | `src/clio_agent/runtime/git_executable.py` |
+| `CLIO_HOME_IMPORT_EXPORTER` | unmigrated | `src/clio_agent/arc/home_import.py` |
 | `CLIO_INSTALL_DOWNLOADS` | unmigrated | `src/clio_agent/runtime/document_stack/office.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
-| `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |
+| `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
 | `CLIO_SHUTDOWN_BUDGET_S` | unmigrated | `src/clio_agent/gact/shutdown_budget.py` |
