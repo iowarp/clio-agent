@@ -26,6 +26,7 @@ from clio_agent.arc.clio_core_liveness import (
     SOCKET_PROBE_UNAVAILABLE_REASON,
     runtime_socket_status,
 )
+from clio_agent.arc.home_import import health_details, health_note
 from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash
 from clio_agent.runtime.clio_core_log_health import probe_clio_core_log_flood
 from clio_agent.runtime.clio_core_replacement_health import probe_clio_core_daemon_replacement
@@ -311,6 +312,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
     if removed:  # an inherited CLIO_WITH_RUNTIME was dropped before the attach
         details["removed_env"] = removed
         details["removed_env_reason"] = CLIO_CORE_EMBEDDED_RUNTIME_ENV_REMOVED
+    details.update(health_details())
     endpoint = None if snap.port is None else f"127.0.0.1:{snap.port}"
     where = f"port {snap.port}, config {snap.config_path or '<default>'}"
     if snap.phase is ClioCoreAttachPhase.STARTING:
@@ -337,6 +339,11 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
             details["reason"] = "clio_core_daemon_lost_after_attach"
             summary = f"clio-core was attached, but its daemon is no longer listening ({where})."
             next_action = "Restart the clio-core daemon; retry the affected ARC operation."
+        elif details.get("home_import", {}).get("state") == "failed":  # type: ignore[union-attr]
+            state_, required = IntegrationState.DEGRADED, False
+            details["reason"] = details["home_import"]["reason"]  # type: ignore[index]
+            summary = f"clio-core attached ({where}); this home's record import failed."
+            next_action = "Restart CLIO to retry; see core-import/export.log in the data dir."
         else:
             state_, required = IntegrationState.READY, False
             summary = f"clio-core attached ({where})."
@@ -345,6 +352,9 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
         state_, required = IntegrationState.DEGRADED, True
         summary = f"clio-core unavailable (reason={snap.reason}, {where}): {snap.error}"
         next_action = "Run clio doctor; see the clio_core_init row and the daemon log."
+    note = health_note()
+    if note:
+        summary = f"{summary} ({note})"
     return [
         IntegrationStatus(
             name="clio_core_attach",

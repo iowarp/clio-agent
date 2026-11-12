@@ -104,29 +104,14 @@ def runtime_state_dir(*, create: bool = True) -> Path:
 
     Returns the state directory, creating it if absent unless ``create`` is false.
     """
-    override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
-    if override:
-        state = Path(override).expanduser()
+    from clio_agent.arc import home_runtime  # noqa: PLC0415 - avoid import cycle
+
+    pinned = home_runtime.pinned_state_dir()
+    if pinned is not None:
         if create:
-            state.mkdir(parents=True, exist_ok=True)
-        return state
-    from clio_agent import paths  # noqa: PLC0415
-
-    state = paths.host_state_dir() / "core-hosts" / host_key()
-    legacy = Path.home() / ".clio" / "hosts" / host_key()
-    # Preserve the pre-host compatibility migration for known Agent bookkeeping.
-    # The helper refuses live/shared state and never moves Core-owned files.
-    from clio_agent.arc.clio_core_host_migration import (
-        migrate_legacy_runtime_state,  # noqa: PLC0415
-    )
-
-    migrate_legacy_runtime_state(Path.home() / ".clio", legacy)
-    if legacy.exists() and not state.exists():
-        logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
-        state = legacy
-    if create:
-        state.mkdir(parents=True, exist_ok=True)
-    return state
+            pinned.mkdir(parents=True, exist_ok=True)
+        return pinned
+    return home_runtime.runtime_dir(create=create)
 
 
 # Default clio-core CTE config: a RAM working arena (the ``ram`` bdev, clio-core's
@@ -240,6 +225,11 @@ def pin_core_child_env(env: MutableMapping[str, str]) -> None:
         env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
     if not env.get(CORE_VIZ_ENABLE_ENV):
         env[CORE_VIZ_ENABLE_ENV] = "0"
+    from clio_agent.arc.home_runtime import core_user  # noqa: PLC0415 - avoid import cycle
+
+    user = core_user()
+    if user is not None:
+        env["USER"] = user
 
 
 # The path suffix identifying a ram data tier (hand-authored or older configs; the

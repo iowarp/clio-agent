@@ -31,6 +31,7 @@ from clio_agent.arc import (
     clio_core_attach,
     core_control_port,
     crashed_clients,
+    home_runtime,
     runtime_log,
     runtime_log_flood,
     runtime_ownership,
@@ -304,7 +305,7 @@ def release_runtime_client(
         if not _client_registered:
             return
         _deregister_client()
-        if not _live_client_pids():
+        if not _live_client_pids() and not home_runtime.attach_only():
             config = config_path or _active_config_path
             if ceiling_s is None:
                 _stop_runtime_daemon(config, log_level)
@@ -345,6 +346,8 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     with _runtime_spawn_lock():
         if runtime_stop._runtime_shutdown_requested:
             raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
+        if home_runtime.attach_only():  # the import exporter never spawns or replaces
+            return home_runtime.attach_only_daemon(config_path)
         # A daemon every client crashed on may be wedged: replaced, never adopted.
         crashed_clients.replace_daemon_left_by_crashed_clients(config_path, log_level)
         # A daemon spinning in a log flood is surfaced, and replaced when nobody uses it.
@@ -529,6 +532,7 @@ class ClioCoreStore(ClioCoreWrites):
             # Ensure the machine's daemon is up BEFORE connecting (a pure client cannot init
             # otherwise), then attach with ITS config (first config wins), exported so daemon,
             # native client and liveness probe read ONE file (clio_core_attach).
+            home_runtime.prepare_attach(config_path)
             config_path = _ensure_runtime_daemon(iowarp_core, config_path, log_level)
             clio_core_attach.export_client_config(config_path)
 
@@ -541,13 +545,14 @@ class ClioCoreStore(ClioCoreWrites):
             from clio_agent.arc.clio_core_liveness import _daemon_identity  # noqa: PLC0415
 
             original_identity = _daemon_identity(config_path)
-            clio_core_attach.attach_and_initialize(
-                cte,
-                config_path=config_path,
-                port=_resolve_runtime_port(config_path),
-                settle_s=settle_s,
-                on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
-            )
+            with home_runtime.core_user_pinned():  # this home's shared-memory names
+                clio_core_attach.attach_and_initialize(
+                    cte,
+                    config_path=config_path,
+                    port=_resolve_runtime_port(config_path),
+                    settle_s=settle_s,
+                    on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
+                )
             cls._attached_runtime_identity = (
                 original_identity if original_identity == _daemon_identity(config_path) else None
             )
