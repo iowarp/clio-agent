@@ -31,6 +31,11 @@ differs from the one this process asked for, the difference is recorded
 (:func:`config_adoption_snapshot`), logged with the typed reason
 ``clio_core_config_adopted_from_daemon``, and surfaced as the
 ``clio_core_config_adoption`` health row -- never substituted silently.
+
+ONE DAEMON, SEPARATE HOMES. Adopting the config never means sharing records. The
+spawner also records its CLIO home; an attacher from another home nests every tag
+under its own namespace (:mod:`clio_agent.arc.home_namespace`), so a home never lists
+another home's sessions or workspaces.
 """
 
 from __future__ import annotations
@@ -84,6 +89,7 @@ class DaemonVersionRecord:
     iowarp_core_version: str
     daemon_binary: str
     config_path: str
+    home: str = ""  # the spawner's CLIO home; "" in a record from an older CLIO
 
 
 def _record_file(state_dir: Path) -> Path:
@@ -110,10 +116,13 @@ def record_daemon_version(state_dir: Path, *, daemon_binary: str, config_path: s
         daemon_binary: The launched ``clio_run`` path.
         config_path: The ``cte.yaml`` the daemon was launched with.
     """
+    from clio_agent.arc.home_namespace import home_identity  # noqa: PLC0415
+
     payload = {
         "iowarp_core_version": installed_iowarp_core_version(),
         "daemon_binary": daemon_binary,
         "config_path": config_path,
+        "home": home_identity(),
     }
     _record_file(state_dir).write_text(json.dumps(payload), encoding="utf-8")
 
@@ -126,6 +135,7 @@ def read_daemon_version(state_dir: Path) -> DaemonVersionRecord | None:
             iowarp_core_version=str(data["iowarp_core_version"]),
             daemon_binary=str(data["daemon_binary"]),
             config_path=str(data.get("config_path", "")),
+            home=str(data.get("home", "")),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -273,6 +283,7 @@ class ConfigAdoption:
     requested_config_path: str
     effective_config_path: str
     diffs: dict[str, dict[str, Any]]
+    record_namespace: str = ""  # this home's tag namespace on another home's daemon
 
 
 _adoption_lock = threading.Lock()
@@ -303,7 +314,8 @@ def resolve_effective_config(
 
     Runs the version gate, then returns the daemon's recorded config (first config
     wins). A difference from ``requested_config_path`` is recorded, logged, and shown
-    in health as the ``clio_core_config_adoption`` row.
+    in health as the ``clio_core_config_adoption`` row. A daemon spawned by another
+    CLIO home puts this process's records under this home's own namespace.
 
     Args:
         state_dir: ``runtime_state_dir()``.
@@ -335,16 +347,23 @@ def resolve_effective_config(
             },
             on_failure=on_failure,
         )
+    from clio_agent.arc.home_namespace import adopt_daemon_home  # noqa: PLC0415
+
+    namespace = adopt_daemon_home(record.home, daemon_config, requested_config_path)
     diffs = diff_configs(requested_config_path, daemon_config)
     if diffs:
         with _adoption_lock:
-            _last_adoption = ConfigAdoption(requested_config_path, daemon_config, diffs)
+            _last_adoption = ConfigAdoption(
+                requested_config_path, daemon_config, diffs, record_namespace=namespace
+            )
         logger.warning(
             "clio-core config adopted from the running daemon (reason=%s): first config "
-            "wins on the one daemon per machine; requested=%s effective=%s diffs=%s",
+            "wins on the one daemon per machine; requested=%s effective=%s diffs=%s "
+            "record_namespace=%s",
             CLIO_CORE_CONFIG_ADOPTED_FROM_DAEMON,
             requested_config_path,
             daemon_config,
             diffs,
+            namespace or "<bare>",
         )
     return daemon_config
