@@ -335,6 +335,14 @@ KEY_NOTES: dict[str, str] = {
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
         "headroom -- a deliberate desktop cap on DRAM growth."
     ),
+    "arc.cte.home_ram_capacity": (
+        'RAM arena (e.g. "128MB") of a clio-core daemon CLIO runs for one of several homes; '
+        "used when arc.cte.ram_capacity is unset, sized small so several daemons fit at once."
+    ),
+    "arc.cte.home_segment_size": (
+        'Shared-memory segment size (e.g. "64MB") of a per-home clio-core daemon\'s generated '
+        "config; raise if a home's daemon runs out of segment space."
+    ),
     "arc.events_chunk_segments": (
         "Semantic-event segments held per on-disk chunk of a session's event log before rolling; "
         "raise to cut chunk count, lower to bound re-encode cost."

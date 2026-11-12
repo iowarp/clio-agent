@@ -366,11 +366,7 @@ class SessionStore:
         self._written[sid] = self._write_stamp
 
     def bind_store(self, store: Any, owns_legacy: Any = None) -> None:
-        """Keep the records in ``store`` (clio-core) from now on (off the server loop).
-
-        ``owns_legacy(columns)`` recognises this home's pre-namespace rows when it runs
-        on another home's daemon (:meth:`SessionRecords.bind`).
-        """
+        """Keep the records in clio-core ``store`` (off the server loop): SessionRecords.bind."""
         self._records.bind(store, owns_legacy)
 
     def expect_store(self) -> None:
