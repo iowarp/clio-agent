@@ -23,6 +23,24 @@ def _workspace() -> Path:
     return Path(raw).resolve(strict=True)
 
 
+def _is_workspace_document(source: Path, root: Path) -> bool:
+    """Whether ``source`` is a workspace file or one of the workspace's uploaded inputs.
+
+    Attachments are materialized under the workspace's state ``inputs/`` folder,
+    outside the project root, but they belong to this workspace all the same.
+    """
+    if source.is_relative_to(root):
+        return True
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.gact.resource_materialization import MANAGED_INPUT_DIRECTORY  # noqa: PLC0415
+
+    try:
+        inputs = (paths.workspace_state_dir(root) / MANAGED_INPUT_DIRECTORY).resolve()
+    except (OSError, paths.HomeDirectoryUnavailable):
+        return False
+    return source.is_relative_to(inputs)
+
+
 def _session_skill_folders() -> dict[str, str]:
     """The folders of the skills the session's plugins provide (scripts live there)."""
 
@@ -162,7 +180,7 @@ def build_prepare_document_tool() -> Any:
         source = FileAccessPolicy.from_env().validate_read(
             str(candidate), field="path", loads_whole_file=True
         )
-        if not source.is_relative_to(root):
+        if not _is_workspace_document(source, root):
             raise ValueError("Document must be inside the active workspace")
         if (busy := preparing_result()) is not None:
             return busy  # typed: a first launch is still installing the packages
@@ -189,7 +207,11 @@ def build_prepare_document_tool() -> Any:
         title="Prepare document",
         desc=prepare_document.__doc__,
         args={
-            "path": {"type": "string", "description": "Path to an existing workspace document."},
+            "path": {
+                "type": "string",
+                "description": "Path to an existing workspace document or an attachment's "
+                "working copy.",
+            },
             "action": {
                 "type": "string",
                 "enum": ["inspect", "render", "recalculate"],

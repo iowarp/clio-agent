@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -122,14 +123,19 @@ class ConfinedSpawn:
     env_overlay: dict[str, str]
     popen_kwargs: dict[str, Any]
     result: SandboxResult
+    #: Private directories created for this spawn alone, removed by :meth:`release`.
+    cleanup_dirs: tuple[str, ...] = ()
 
     def release(self) -> None:
         """Close this spawn's per-child egress channel once its child has exited (idempotent).
 
         Each active spawn opens a loopback listener and an accept thread. A one-shot child (a
         shell command, a document helper) releases them when it exits, or they pile up to the
-        channel cap and every later child's egress loses its attribution.
+        channel cap and every later child's egress loses its attribution. Any
+        :attr:`cleanup_dirs` are removed too.
         """
+        for directory in self.cleanup_dirs:
+            shutil.rmtree(directory, ignore_errors=True)
         child = str(self.result.details.get("net_child_id") or "")
         if child:
             from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
@@ -173,6 +179,7 @@ def _resolve_backend(
     codex_detection: Any = None,
     codex_provisioned_probe: Any = None,
     landlock: Any = None,
+    codex_linux_probe: Any = None,
 ) -> SandboxResult:
     """Resolve + ACTIVATE the confinement backend down the typed ladder (codex-primary, B-codex-5).
 
@@ -184,6 +191,12 @@ def _resolve_backend(
     (``codex_not_installed`` / ``codex_version_unsupported`` / ``codex_windows_unprovisioned`` /
     ``codex_enforcement_unverified``). Every rung carries a typed reason; all probes are injectable
     so the whole selection matrix is unit-pinnable without a real fence.
+
+    On Linux a detected codex must also launch a confined child (``codex_linux_probe``, default
+    :func:`~clio_agent.runtime.sandbox_codex_probe.probe_codex_linux_fence` when detection is
+    real): bubblewrap needs unprivileged user namespaces, which containers and hardened hosts
+    often refuse. A refusal is ``codex_linux_fence_unavailable`` with codex's own explanation in
+    ``details["codex_probe"]``, and the ladder continues to Landlock.
     """
     from clio_agent.runtime import sandbox_codex as scx  # noqa: PLC0415
 
@@ -209,6 +222,7 @@ def _resolve_backend(
         "bundled_codex_absent": cdet.bundled_codex_absent,
     }
     codex_viable = cdet.installed and cdet.reason == scx.REASON_CODEX_DETECTED
+    codex_probe_failure: dict[str, str] = {}
     if codex_viable:
         if platform.startswith("win"):  # gate on cached provision + verify (#1026 no-false-green)
             ready, creason = (
@@ -226,10 +240,25 @@ def _resolve_backend(
                 )
                 return _activate_codex(cdet, base_details)
             return floor(creason)  # codex_windows_unprovisioned / codex_enforcement_unverified
-        return _activate_codex(cdet, base_details)
+        fence_probe = codex_linux_probe
+        if fence_probe is None and codex_detection is None and platform.startswith("linux"):
+            from clio_agent.runtime.sandbox_codex_probe import (  # noqa: PLC0415
+                probe_codex_linux_fence as fence_probe,
+            )
+        verdict = fence_probe(cdet.binary_path) if fence_probe is not None else (True, "")
+        if verdict[0]:
+            return _activate_codex(cdet, base_details)
+        codex_probe_failure = {"reason": verdict[1], "detail": getattr(verdict, "detail", "")}
+        base_details["codex_probe"] = codex_probe_failure
+        logger.warning(
+            "codex fence unusable on this host reason=%s detail=%s",
+            verdict[1],
+            codex_probe_failure["detail"],
+        )
 
-    # Codex not viable → the typed skip reason (codex_not_installed / codex_version_unsupported).
-    codex_skip = cdet.reason
+    # Codex not viable → the typed skip reason (codex_not_installed / codex_version_unsupported,
+    # or codex_linux_fence_unavailable when it is installed but cannot confine a child here).
+    codex_skip = codex_probe_failure["reason"] if codex_probe_failure else cdet.reason
     base_details["codex_skip_reason"] = codex_skip
 
     # Linux fallback: the native Landlock rung → floor. (win32/darwin have no fallback rung.)
@@ -253,6 +282,8 @@ def _resolve_backend(
                     "landlock_abi": probe.abi,
                 },
             )
+        if codex_probe_failure:
+            return floor(codex_skip)
         return floor(probe.reason or codex_skip)
 
     return floor(codex_skip)
@@ -412,6 +443,7 @@ def _compose_fence_prefix(
     proxy_port: Optional[int] = None,
     cwd: Path | str | None = None,
     office: bool = False,
+    office_pipe_dir: str | None = None,
 ) -> tuple[str, list[str]]:
     """Compose the active fence's argv prefix around ``(command, args)`` (B-codex / Landlock).
 
@@ -427,7 +459,9 @@ def _compose_fence_prefix(
             # #2139: AppKit LibreOffice needs two mach services Codex cannot grant.
             from clio_agent.runtime import sandbox_office_seatbelt  # noqa: PLC0415
 
-            return sandbox_office_seatbelt.office_seatbelt_prefix(roots, command, args)
+            return sandbox_office_seatbelt.office_seatbelt_prefix(
+                roots, command, args, pipe_dir=office_pipe_dir
+            )
         if mechanism == MECHANISM_CODEX:
             from clio_agent.runtime import sandbox_codex  # noqa: PLC0415
 
@@ -477,7 +511,8 @@ def wrap_confined(
     floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
     ``cwd`` selects the command directory without adding or reordering permission grants.
     ``office`` marks CLIO's own LibreOffice worker; on macOS it runs under
-    :mod:`sandbox_office_seatbelt` instead of Codex (same territory, two mach services).
+    :mod:`sandbox_office_seatbelt` instead of Codex (same territory, two mach services, and a
+    private short directory for LibreOffice's single-instance pipe that :meth:`release` removes).
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -507,6 +542,13 @@ def wrap_confined(
             env_overlay[key] = ""
     popen_kwargs: dict[str, Any] = {}
     net_child_id = ""
+    office_seatbelt = bool(
+        office
+        and resolved_state.active
+        and resolved_state.mechanism == MECHANISM_CODEX
+        and sys.platform == "darwin"
+    )
+    office_pipe_dir: str | None = None
 
     # Active backend: fence prefix INNER (pdeathsig outermost below). Every active backend opens a
     # per-child egress channel. For codex this is Recipe A: the proxy overlay lands on the spawned
@@ -525,16 +567,33 @@ def wrap_confined(
         # PermissionError writing its cache under the read-only fence. Active fence + write
         # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
         env_overlay.update(_child_cache_env(write_roots, state=resolved_state, profile=profile))
-        cmd, arg_list = _compose_fence_prefix(
-            resolved_state,
-            profile,
-            cmd,
-            arg_list,
-            write_roots,
-            proxy_port=proxy_port,
-            cwd=cwd,
-            office=office,
-        )
+        if office_seatbelt:
+            from clio_agent.runtime import sandbox_office_seatbelt  # noqa: PLC0415
+
+            try:
+                office_pipe_dir = sandbox_office_seatbelt.create_office_pipe_dir()
+            except (OSError, ValueError) as exc:
+                raise SandboxCompositionError(
+                    f"LibreOffice pipe directory unavailable: {type(exc).__name__}: {exc}"
+                ) from exc
+            # A helper that launches soffice passes this on; soffice itself also gets argv.
+            env_overlay[sandbox_office_seatbelt.OSL_SOCKET_PATH] = office_pipe_dir
+        try:
+            cmd, arg_list = _compose_fence_prefix(
+                resolved_state,
+                profile,
+                cmd,
+                arg_list,
+                write_roots,
+                proxy_port=proxy_port,
+                cwd=cwd,
+                office=office,
+                office_pipe_dir=office_pipe_dir,
+            )
+        except BaseException:
+            if office_pipe_dir is not None:
+                shutil.rmtree(office_pipe_dir, ignore_errors=True)
+            raise
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
     if pdeathsig:
@@ -552,12 +611,7 @@ def wrap_confined(
             "write_roots": [str(r) for r in write_roots],
             # B4: the per-child egress channel id (empty on the floor) — so a caller can close it.
             "net_child_id": net_child_id,
-            "office_seatbelt": bool(
-                office
-                and resolved_state.active
-                and resolved_state.mechanism == MECHANISM_CODEX
-                and sys.platform == "darwin"
-            ),
+            "office_seatbelt": office_seatbelt,
         },
     )
     return ConfinedSpawn(
@@ -566,6 +620,7 @@ def wrap_confined(
         env_overlay=env_overlay,
         popen_kwargs=popen_kwargs,
         result=per_call,
+        cleanup_dirs=(office_pipe_dir,) if office_pipe_dir is not None else (),
     )
 
 

@@ -6,6 +6,51 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.6.4] - 2026-11-12
+
+Ships iowarp/gact-tui v0.12.2. clio-kit 2.12.3, clio-schemas 0.7.0b1 and the
+marketplace pin (v0.8.0-beta.1) are unchanged.
+
+### Added
+
+- `POST /v1/workspaces/{workspace_id}/folder-attachments` attaches a folder on
+  CLIO's computer in place or as a full copy. `resources.max_bytes` now
+  defaults to `0` (no limit), so large folders and files no longer fail with
+  `resource exceeds deployment limit`. (#2175)
+- `GET /v1/folder-attachments/locality` returns `{same_computer, reason, host}`
+  so a client knows whether it runs on CLIO's computer; forwarded or unknown
+  clients count as another computer. (#2177)
+- Browser page state carries the page's favicon, so compacted workbench tabs
+  can be told apart. (#2157)
+- New conversations get a title from their first exchange. (#2191)
+
+### Changed
+
+- Each CLIO home runs its own clio-core daemon. A home that used another
+  home's daemon imports its own records once, without loss. (#2202, #2208)
+- A call stopped while its approval card waits (the turn was stopped or the
+  server restarted) now reads as stopped, not as denied by the person. (#2207)
+- Codex no longer offers the Ultra reasoning effort, which its API refuses.
+  (#2172)
+- Saving a runtime's server address in Settings > Providers moves the bound
+  model to the new address at once. (#2156)
+
+### Fixed
+
+- Sources that contain names unsafe to write locally (for example
+  `<<REVIEW QUESTIONS>>.pdf` on Google Drive) list and search again; such
+  entries appear under safe aliases and attach under their real name.
+  (#2186, #2190)
+- `prepare_document` accepts files attached from the person's computer.
+  (#2191)
+- Sessions of one CLIO home no longer appear in another home that shares the
+  same clio-core daemon. (#2176)
+- On Linux, the sandbox probes Codex's bubblewrap fence before reporting it
+  active, so hosts that refuse user namespaces fall back instead of failing
+  every tool call. (#2154)
+- `prepare_document_runtime` import checks no longer fail when a module prints
+  to stdout on import (PyMuPDF's `fitz`). (#2209)
+
 ## [0.9.6.3] - 2026-11-12
 
 A hotfix on 0.9.6.2. It ships the same iowarp/gact-tui v0.12.1, clio-kit

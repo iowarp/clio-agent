@@ -14,6 +14,12 @@ from clio_schemas.connected_resources import SourceCapabilities
 
 from clio_agent.gact.storage.filesystem import is_link, walk
 from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.storage.names import (
+    UNSAFE_PATH,
+    check_remote_relative,
+    listed_child,
+    resolve_remote,
+)
 from clio_agent.platform_paths import win_extended_path
 
 
@@ -26,9 +32,22 @@ def file_hash(path: Path) -> str:
 def safe_child(root: Path, relative: str) -> Path:
     """Resolve a validated name beneath its root and reject symlink aliases."""
     FileEntry(path=relative, kind="file")
-    candidate = root / relative
+    return source_child(root, relative)
+
+
+def source_child(root: Path, remote: str) -> Path:
+    """Resolve an existing provider name beneath its root, even when it is not portable.
+
+    Use only to read or replace a name the host itself listed; CLIO-owned copies
+    are always written under portable names through ``safe_child``.
+    """
+    check_remote_relative(remote)
+    parts = remote.split("/")
+    if os.name == "nt" and any("\\" in part or ":" in part for part in parts):
+        raise ValueError(UNSAFE_PATH)
+    candidate = root.joinpath(*parts)
     current = root
-    for part in Path(relative).parts:
+    for part in parts:
         current /= part
         if is_link(current):
             raise ValueError("Symbolic links and junctions require an explicit source selection")
@@ -80,25 +99,41 @@ class LocalSource:
         )
 
     def entries(self) -> list[FileEntry]:
-        """Inspect regular files and directories, bounded to 100,000 entries."""
-        rows: list[FileEntry] = []
-        for directory, names, files in walk(self.root):
-            for name in sorted(names + files):
-                path = Path(directory) / name
-                relative = path.relative_to(self.root).as_posix()
-                path = safe_child(self.root, relative)
-                from clio_agent.runtime.storage_access import check_storage_access  # noqa: PLC0415
+        """Inspect regular files and directories, bounded to 100,000 entries.
 
+        Names that are not portable are listed under their ``storage.names``
+        alias; a name that cannot be represented is skipped and counted.
+        """
+        from clio_agent.runtime.storage_access import check_storage_access  # noqa: PLC0415
+
+        rows: list[FileEntry] = []
+        self.skipped = 0
+        aliases = {"": ""}
+        for directory, names, files in walk(self.root):
+            remote_parent = Path(directory).relative_to(self.root).as_posix()
+            remote_parent = "" if remote_parent == "." else remote_parent
+            parent = aliases[remote_parent]
+            for name in sorted(names + files):
+                listed = listed_child(parent, remote_parent, name)
+                if listed is None:
+                    self.skipped += 1
+                    if name in names:
+                        names.remove(name)
+                    continue
+                relative, remote = listed
+                path = source_child(self.root, remote)
                 check_storage_access(path)
                 if len(rows) >= 100_000:
                     raise ValueError("Select a smaller source folder (limit 100,000 entries)")
                 if os.path.isdir(win_extended_path(path)):
-                    rows.append(FileEntry(path=relative, kind="directory"))
+                    rows.append(FileEntry(path=relative, remote_path=remote, kind="directory"))
+                    aliases[remote] = relative
                 elif os.path.isfile(win_extended_path(path)):
                     digest = file_hash(path)
                     rows.append(
                         FileEntry(
                             path=relative,
+                            remote_path=remote,
                             kind="file",
                             size=os.stat(win_extended_path(path)).st_size,
                             revision=digest,
@@ -109,9 +144,17 @@ class LocalSource:
                     raise ValueError("Sources may contain only regular files and directories")
         return sorted(rows, key=lambda row: row.path)
 
+    def local(self, path: str) -> Path:
+        """Locate a listed portable path among this folder's own names."""
+        FileEntry(path=path, kind="file")
+        return source_child(
+            self.root,
+            resolve_remote(path, lambda folder: os.listdir(win_extended_path(self.root / folder))),
+        )
+
     def open_read(self, entry: FileEntry) -> BinaryIO:
         """Open a selected regular file; reject changes from file to link."""
-        return open(win_extended_path(safe_child(self.root, entry.path)), "rb")
+        return open(win_extended_path(source_child(self.root, entry.source_path)), "rb")
 
     def apply(self, path: str, content: Path | None, expected: str | None) -> str | None:
         """Check the current hash immediately before a per-file atomic replacement.
@@ -121,7 +164,7 @@ class LocalSource:
         """
         if not self.writable:
             raise PermissionError("This source has not been approved for writes")
-        destination = safe_child(self.root, path)
+        destination = self.local(path)
         actual = file_hash(destination) if os.path.isfile(win_extended_path(destination)) else None
         if actual != expected:
             raise ValueError(f"Upstream changed after review: {path}")

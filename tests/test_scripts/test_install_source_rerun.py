@@ -116,13 +116,18 @@ def test_a_clone_of_another_repository_is_refused(tmp_path: Path) -> None:
     assert (clone / "notes.txt").read_text() == "keep"
 
 
-def test_a_release_install_environment_is_replaced(tmp_path: Path) -> None:
+def test_an_unfinished_source_install_puts_the_release_install_back(tmp_path: Path) -> None:
+    """The release environment is set aside for the clone, and back when the run stops early."""
     _origin(tmp_path)
     clone = tmp_path / "prefix" / "clio-agent"
     (clone / ".venv" / "bin").mkdir(parents=True)  # a release install: only its env
     result = _install(tmp_path)
-    assert result.returncode == STOP, result.stdout + result.stderr
-    assert (clone / "README.md").read_text() == "one\n"
+    assert result.returncode == STOP, result.stdout + result.stderr  # stops at uv sync
+    assert "Replacing the release install's environment" in result.stdout
+    assert "the release install in" in result.stderr and "is back as it was" in result.stderr
+    assert (clone / ".venv" / "bin").is_dir()
+    assert not (clone / "README.md").exists()
+    assert not (tmp_path / "prefix" / "clio-agent.release").exists()
 
 
 def _origin_with_submodule(tmp_path: Path) -> Path:

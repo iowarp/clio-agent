@@ -292,7 +292,8 @@ def _codex_direct_lm(config: LMProviderConfig) -> Any:
     effort = extras.pop("codex_reasoning_effort", None)
     generation = {k: v for k, v in extras.items() if not k.startswith("codex_")}
     if effort is not None:
-        generation["reasoning_effort"] = effort
+        # lm15 spells Codex's "none" as "off" (sent back as effort "none").
+        generation["reasoning_effort"] = "off" if effort == "none" else effort
     if config.max_tokens:
         generation["max_tokens"] = config.max_tokens
     http = config.codex_transport == "sse"  # the operator's explicit no-WebSocket choice

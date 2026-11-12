@@ -16,6 +16,10 @@ that binary.
 
 The build fails if the archive's binary differs from the wheel's, so the runtime never runs a
 Node.js other than the one this Playwright release was built and tested with.
+
+The record also pins the Chromium archive this Playwright release installs (``chromium``:
+its revision, URL, SHA-256 and size), so the install-time browser step can download it,
+check it and unpack it on several threads instead of Playwright's one.
 """
 
 from __future__ import annotations
@@ -24,9 +28,13 @@ import hashlib
 import io
 import json
 import platform
+import posixpath
+import re
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -72,6 +80,58 @@ def _member(archive: bytes, name: str, member: str) -> bytes:
         if source is None:
             raise SystemExit(f"stage_playwright_node: {member} is not a file in {name}")
         return source.read()
+
+
+def _chromium(node: Path, driver: Path) -> dict[str, object] | None:
+    """The Chromium archive this Playwright release installs here, pinned by its SHA-256.
+
+    Playwright's own ``install --dry-run`` names it; the archive is hashed as it streams
+    and is not kept. ``clio_agent.gact.browser.install`` downloads it at install time, keeps
+    only these bytes, and unpacks it on several threads. The macOS app bundle's symbolic
+    links are pinned too, when each stays inside the archive; the install makes them last.
+    """
+    listing = subprocess.run(  # noqa: S603 - the wheel's own pinned binary and installer
+        [str(node), str(driver / "package" / "cli.js"), "install", "--dry-run", "--no-shell"]
+        + ["chromium"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    revision = url = ""
+    for line in listing.stdout.splitlines():
+        found = re.search(r"\(playwright chromium v(\d+)\)", line)
+        if found:
+            revision = found.group(1)
+        elif revision and not url and line.strip().startswith("Download url:"):
+            url = line.split("Download url:", 1)[1].strip()
+    if listing.returncode != 0 or not url.startswith("https://"):
+        print("stage_playwright_node: Playwright named no Chromium download; not pinned")
+        return None
+    digest = hashlib.sha256()
+    size = 0
+    request = urllib.request.Request(url, headers={"User-Agent": "clio-agent-build"})
+    with (
+        tempfile.TemporaryFile() as kept,
+        urllib.request.urlopen(request, timeout=120) as answer,  # noqa: S310 - Playwright CDN
+    ):
+        while chunk := answer.read(1 << 20):
+            digest.update(chunk)
+            kept.write(chunk)
+            size += len(chunk)
+        kept.seek(0)
+        with zipfile.ZipFile(kept) as listing:
+            for entry in listing.infolist():
+                if not stat.S_ISLNK(entry.external_attr >> 16):
+                    continue
+                name = entry.filename.rstrip("/")
+                pointed = listing.read(entry).decode("utf-8")
+                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), pointed))
+                if posixpath.isabs(pointed) or resolved == ".." or resolved.startswith("../"):
+                    print(f"stage_playwright_node: the Chromium link {name} leaves it; not pinned")
+                    return None
+    print(f"stage_playwright_node: chromium v{revision} pinned: {url} ({size / 1e6:.0f} MB)")
+    return {"revision": revision, "url": url, "sha256": digest.hexdigest(), "size": size}
 
 
 def _drop_record_line(site: Path, relative: str) -> None:
@@ -132,6 +192,9 @@ def main(argv: list[str]) -> int:
         "node_size": len(wheel_node),
         "executable": executable,
     }
+    chromium = _chromium(node, driver)
+    if chromium is not None:
+        record["chromium"] = chromium
     (driver / MANIFEST).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     node.unlink()
     _drop_record_line(site, f"playwright/driver/{executable}")

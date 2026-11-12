@@ -128,6 +128,9 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
         PACKAGED_PYTHON_ACTION,
         REASON_MXC_PACKAGED_PYTHON,
     )
+    from clio_agent.runtime.sandbox_codex_probe import (  # noqa: PLC0415
+        REASON_CODEX_LINUX_FENCE_UNAVAILABLE,
+    )
 
     codex_missing = (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED)
     if resolved.reason in codex_missing and bundled_root() is not None:
@@ -152,6 +155,15 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             "The Windows sandbox accounts exist, but this CLIO installation has no successful "
             "verification receipt. Open Infrastructure > CLIO hosts > Protected execution and select "
             "Set up protected execution, or run `clio sandbox setup`, to verify it."
+        )
+    elif resolved.reason == REASON_CODEX_LINUX_FENCE_UNAVAILABLE:
+        detail = (resolved.details.get("codex_probe") or {}).get("detail") or "no detail"
+        next_action = (
+            f"Codex is installed, but its bubblewrap fence cannot start a child here ({detail}). "
+            "Allow unprivileged user namespaces (`sysctl kernel.unprivileged_userns_clone=1`; "
+            "on Ubuntu 23.10+ `sysctl kernel.apparmor_restrict_unprivileged_userns=0`; in a "
+            "container, a seccomp profile that permits them), or use a Landlock-capable "
+            "kernel (>=5.13), then restart CLIO."
         )
     elif resolved.reason == REASON_MXC_PACKAGED_PYTHON:
         next_action = PACKAGED_PYTHON_ACTION

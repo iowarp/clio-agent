@@ -18,7 +18,7 @@ import zipfile
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, BinaryIO
 
 import zstandard
@@ -29,7 +29,14 @@ if TYPE_CHECKING or __package__:
     from .office_fetch import MAX_DOWNLOAD
     from .office_fetch import download as _download
     from .office_fetch import mirror_rate as _mirror_rate
-    from .office_prune import UNREAD_DICTIONARY_SUFFIXES, UNREAD_EXTENSIONS, prune_unread, unread
+    from .office_prune import (
+        UNREAD_DICTIONARY_SUFFIXES,
+        UNREAD_EXTENSIONS,
+        UNREAD_PYTHON_PACKAGES,
+        UNREAD_TREES,
+        prune_unread,
+        unread,
+    )
     from .process import (
         DocumentError,
         _cleanup_profile,
@@ -45,7 +52,14 @@ else:
     from office_fetch import MAX_DOWNLOAD
     from office_fetch import download as _download
     from office_fetch import mirror_rate as _mirror_rate
-    from office_prune import UNREAD_DICTIONARY_SUFFIXES, UNREAD_EXTENSIONS, prune_unread, unread
+    from office_prune import (
+        UNREAD_DICTIONARY_SUFFIXES,
+        UNREAD_EXTENSIONS,
+        UNREAD_PYTHON_PACKAGES,
+        UNREAD_TREES,
+        prune_unread,
+        unread,
+    )
     from process import (
         DocumentError,
         _cleanup_profile,
@@ -223,11 +237,14 @@ def installer_download(name: str, checksum: str, url: str | None = None) -> Path
 def prepared_tree_name() -> str | None:
     """The release asset holding this host's Office as ``ensure_office`` lays it, if any.
 
-    Linux only: TDF's packages unpacked and pruned, with the private userland laid in,
-    as one ``.tar.zst`` (``scripts/build_office_tree.py``). The name changes with every
-    pin and layout revision it was laid from, so only a tree this code would have laid
-    itself is ever taken.
+    Linux: TDF's packages unpacked and pruned, with the private userland laid in, as one
+    ``.tar.zst`` (``scripts/build_office_tree.py``). Windows x64: TDF's MSI expanded and
+    pruned (``windows_msi``), which on this host is a CAB expanded one file at a time.
+    The name changes with every pin and layout revision it was laid from, so only a tree
+    this code would have laid itself is ever taken.
     """
+    if platform.system() == "Windows":
+        return _windows_tree_name()
     if platform.system() != "Linux" or not office_compat.supported():
         return None
     _, _, checksum = asset()
@@ -245,17 +262,69 @@ def prepared_tree_name() -> str | None:
     return f"office-{VERSION}-{digest}-linux-{architecture}.tar.zst"
 
 
+def _windows_tree_name() -> str | None:
+    """``prepared_tree_name`` on Windows: x64 only, the build every release job lays."""
+    try:
+        directory, _, checksum = _host_asset()
+    except DocumentError:
+        return None
+    if directory != "win/x86_64":
+        return None
+    identity = repr(
+        (
+            checksum,
+            "windows",
+            PREPARED_LAYOUT,
+            sorted(UNREAD_EXTENSIONS),
+            sorted(UNREAD_DICTIONARY_SUFFIXES),
+            sorted(UNREAD_TREES),
+            sorted(UNREAD_PYTHON_PACKAGES),
+        )
+    )
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    return f"office-{VERSION}-{digest}-windows-x64.tar.zst"
+
+
+#: Beside a Windows prepared tree's download: the SHA-256 its release's install plan
+#: names, which that release's SHA256SUMS authenticates (``install.ps1``).
+PREPARED_DIGEST_SUFFIX = ".sha256"
+#: Parallel file writers for a Windows prepared tree. Defender scans each file as it is
+#: closed, so one writer leaves the disk and the scanner idle between files.
+_WINDOWS_WRITERS = 4
+#: Decompressed file bytes held for the writers at once.
+_WINDOWS_WRITE_BUDGET = 64 * 1024 * 1024
+
+
 def installer_prepared_tree() -> Path | None:
     """The installer's download of this host's prepared Office tree, once it has landed.
 
     The installer renames ``NAME.part`` to ``NAME`` only after the bytes match the
-    release's install plan, which its SHA256SUMS authenticates.
+    release's install plan, which its SHA256SUMS authenticates. On Windows the download
+    is taken while it still arrives: the installer writes the plan's SHA-256 beside it
+    (``PREPARED_DIGEST_SUFFIX``), and ``_lay_prepared`` unpacks it as it grows and
+    publishes nothing unless the bytes match.
     """
     folder = os.environ.get(INSTALLER_DOWNLOADS, "")
     name = prepared_tree_name() if folder else None
     if not name:
         return None
     candidate = Path(folder) / name
+    if platform.system() == "Windows":
+        others = sorted(
+            path.name
+            for path in Path(folder).glob("office-*-windows-*.tar.zst*")
+            if not path.name.startswith(name)
+        )
+        if others:
+            logger.info(
+                "reason=office_prepared_tree_other_layout found=%s wanted=%s",
+                ",".join(others),
+                name,
+            )
+        partial = candidate.with_name(name + ".part")
+        if _expected_digest(candidate) and (candidate.is_file() or partial.is_file()):
+            return candidate
+        return None
     _await_installer_file(candidate)
     if not candidate.is_file() or candidate.is_symlink():
         return None
@@ -280,6 +349,173 @@ def _unpack_prepared_tree(archive: Path, image: Path) -> None:
         contents.extractall(image, members=limited(), filter="data")
     if not (image / office_compat.runtime_directory() / office_compat.loader()).is_file():
         raise DocumentError("Prepared Office tree does not hold this release's userland")
+
+
+def _expected_digest(candidate: Path) -> str:
+    """The SHA-256 the installer wrote beside ``candidate``, or ``""``."""
+    try:
+        text = candidate.with_name(candidate.name + PREPARED_DIGEST_SUFFIX).read_text("ascii")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    digest = text.strip().lower()
+    return digest if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest) else ""
+
+
+def _open_shared(path: Path) -> BinaryIO:
+    """Open ``path`` for reading without blocking the installer's rename or delete of it."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    generic_read, share_all, open_existing, normal = 0x80000000, 0x7, 3, 0x80
+    handle = kernel32.CreateFileW(
+        str(path), generic_read, share_all, None, open_existing, normal, None
+    )
+    if handle in (None, wintypes.HANDLE(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    return os.fdopen(descriptor, "rb", buffering=0)
+
+
+class _GrowingDownload(io.RawIOBase):
+    """The installer's download read while it arrives, hashed as it is read.
+
+    Reads ``NAME.part`` (or ``NAME`` once renamed) and waits at its end for more bytes.
+    The end is reached when ``NAME`` exists and every byte of it has been read; a
+    download that disappears or stops growing for ``_INSTALLER_STALL_S`` is an error.
+    """
+
+    def __init__(self, final: Path) -> None:
+        super().__init__()
+        self._final = final
+        self._partial = final.with_name(final.name + ".part")
+        self._stream: BinaryIO | None = None
+        self._read = 0
+        self._changed = time.monotonic()
+        self.hash = hashlib.sha256()
+
+    def readable(self) -> bool:
+        return True
+
+    def _size(self, path: Path) -> int | None:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return None
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        while True:
+            if self._stream is None:
+                for path in (self._partial, self._final):
+                    try:
+                        self._stream = _open_shared(path)
+                        break
+                    except OSError:
+                        continue
+            if self._stream is not None:
+                count = self._stream.readinto(buffer) or 0
+                if count:
+                    self.hash.update(buffer[:count])
+                    self._read += count
+                    self._changed = time.monotonic()
+                    return count
+            final = self._size(self._final)
+            if final is not None and final == self._read and self._size(self._partial) is None:
+                return 0
+            if final is None and self._size(self._partial) is None:
+                raise OSError(f"the installer's download of {self._final.name} was removed")
+            if time.monotonic() - self._changed > _INSTALLER_STALL_S:
+                raise OSError(f"the installer's download of {self._final.name} stalled")
+            time.sleep(0.05)
+
+    def close(self) -> None:
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+        super().close()
+
+
+def _unpack_parallel(contents: tarfile.TarFile, image: Path) -> int:
+    """Extract a streamed tar of plain files and folders into ``image`` with parallel writers.
+
+    Folders are made in order; each file's bytes are handed to a writer thread, so the
+    antivirus scan on close overlaps the next files. Returns the number of files.
+    """
+
+    def write(path: Path, data: bytes) -> None:
+        with path.open("wb") as handle:
+            handle.write(data)
+
+    destination = str(image)
+    made: set[Path] = {image}
+    pending: deque[tuple[Future[None], int]] = deque()
+    held = unpacked = files = 0
+    with ThreadPoolExecutor(_WINDOWS_WRITERS, thread_name_prefix="office-unpack") as writers:
+        for member in contents:
+            safe = tarfile.data_filter(member, destination)
+            target = image.joinpath(*PurePosixPath(safe.name).parts)
+            if safe.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                made.add(target)
+                continue
+            if not safe.isfile():
+                raise DocumentError(f"Prepared Office tree holds a non-file member: {member.name}")
+            unpacked += safe.size
+            if unpacked > MAX_PREPARED:
+                raise DocumentError("Prepared Office tree exceeds its unpacked size limit")
+            if target.parent not in made:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                made.add(target.parent)
+            source = contents.extractfile(member)
+            data = source.read() if source is not None else b""
+            while pending and (held + len(data) > _WINDOWS_WRITE_BUDGET or pending[0][0].done()):
+                future, size = pending.popleft()
+                future.result()
+                held -= size
+            pending.append((writers.submit(write, target, data), len(data)))
+            held += len(data)
+            files += 1
+        for future, _ in pending:
+            future.result()
+    return files
+
+
+def _unpack_windows_tree(prepared: Path, image: Path) -> None:
+    """Unpack the Windows tree as it downloads; raise unless its bytes match the plan."""
+    expected = _expected_digest(prepared)
+    if not expected:
+        raise DocumentError("Prepared Office tree has no SHA-256 from the install plan")
+    started = time.monotonic()
+    with _GrowingDownload(prepared) as raw:
+        with (
+            zstandard.ZstdDecompressor().stream_reader(raw, closefd=False) as stream,
+            tarfile.open(fileobj=stream, mode="r|") as contents,
+        ):
+            files = _unpack_parallel(contents, image)
+        while raw.read(1 << 20):
+            pass
+        actual = raw.hash.hexdigest()
+    if actual != expected:
+        raise DocumentError(f"Prepared Office tree {prepared.name} does not match its SHA-256")
+    if executable(image) is None:
+        raise DocumentError("Prepared Office tree holds no soffice executable")
+    logger.info(
+        "reason=office_prepared_tree_unpacked name=%s files=%d seconds=%.1f",
+        prepared.name,
+        files,
+        time.monotonic() - started,
+    )
 
 
 def executable(root: Path) -> Path | None:
@@ -670,9 +906,12 @@ def _lay_prepared(prepared: Path, root: Path, profile_templates: Path | None) ->
         image = staging / "image"
         image.mkdir()
         try:
-            _unpack_prepared_tree(prepared, image)
-            # Rewrites the launcher only: the tree's userland is this release's.
-            office_compat.prepare(image, download=_download, deb_data=_deb_data)
+            if platform.system() == "Windows":
+                _unpack_windows_tree(prepared, image)
+            else:
+                _unpack_prepared_tree(prepared, image)
+                # Rewrites the launcher only: the tree's userland is this release's.
+                office_compat.prepare(image, download=_download, deb_data=_deb_data)
             _finish_image(image, root, profile_templates)
         except (DocumentError, OSError, ValueError, tarfile.TarError, zstandard.ZstdError) as exc:
             if root.exists():

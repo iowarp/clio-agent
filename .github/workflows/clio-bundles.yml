@@ -272,7 +272,7 @@ jobs:
           done
           apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
           sudo apt-get "${apt_opts[@]}" update
-          sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev
+          sudo apt-get "${apt_opts[@]}" install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm zlib1g-dev libarchive-tools zstd
       - name: Install
         working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false
@@ -326,6 +326,23 @@ jobs:
               --output "$RUNNER_TEMP/office-tree" \
               --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"; then
             echo "::warning::could not build the prepared Office tree; the install plan keeps TDF's Office"
+            rm -rf "$RUNNER_TEMP/office-tree"
+          fi
+      # The same tree laid from TDF's MSI and pruned, published with its own plan
+      # (office-plan.TRIPLE.txt): install.ps1's source install unpacks it while it
+      # downloads instead of expanding the 373 MB MSI's CAB one file at a time. The
+      # bundled plan and the runtime archive (which already holds Office) are unchanged.
+      - name: Build prepared Office tree (Windows)
+        if: matrix.variant == 'bundled' && runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        # Not fatal: without it the source install lays Office from TDF's MSI as before,
+        # and check_release_completeness reports the missing asset.
+        run: |
+          if ! uv run --no-project --python 3.14 --with zstandard==0.25.0 --with 'filelock>=3.19,<4' \
+              --with truststore==0.10.4 python scripts/build_office_tree.py \
+              --output "$RUNNER_TEMP/office-tree" \
+              --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"; then
+            echo "::warning::could not build the prepared Office tree; the source install keeps TDF's MSI"
             rm -rf "$RUNNER_TEMP/office-tree"
           fi
       # Tauri signs only the app, its frameworks and the sidecar; the runtime
@@ -788,6 +805,8 @@ jobs:
               asset="$(jq -r .asset "$pack")"
               cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
               pattern="$asset"
+              office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
+              [ ! -f "$office_pack" ] || cp "$RUNNER_TEMP/office-tree/$(jq -r .asset "$office_pack")" "$stage/"
             elif [ "${{ runner.os }}" = "Linux" ]; then
               # The deb and rpm carry the archive; the plain install.sh one-liner installs
               # the agent from the same archive, published on its own (install plan).
@@ -798,6 +817,13 @@ jobs:
               esac
               asset="gact-runtime-${RELEASE_TAG#v}-linux-${arch}.tar.zst"
               cp external/gact-tui/desktop/src-tauri/gact-runtime.tar.zst "$stage/$asset"
+              # Arch Linux: the bundled deb's files as a pacman package, its maintainer
+              # scripts as the install hooks (install/linux-package/arch-package.sh).
+              deb="$(find "$stage" -maxdepth 1 -type f -name '*-bundled.deb' -print -quit)"
+              [ -n "$deb" ] || { echo "::error::no bundled deb to make the Arch package from"; exit 1; }
+              case "${{ matrix.target }}" in x86_64-*) pacarch=x86_64 ;; *) pacarch=aarch64 ;; esac
+              bash install/linux-package/arch-package.sh "$deb" "${RELEASE_TAG#v}" "$pacarch" \
+                "$stage/CLIO.Desktop-${RELEASE_TAG#v}-1-${pacarch}-bundled.pkg.tar.zst"
               jq --arg asset "$asset" \
                 --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$asset" \
                 '. + {asset: $asset, url: $url}' external/gact-tui/desktop/src-tauri/gact-runtime.pack.json \
@@ -828,11 +854,21 @@ jobs:
             pack_args=()
             if [ "${{ runner.os }}" = "Windows" ]; then
               pack_args=(--runtime-pack external/gact-tui/desktop/src-tauri/gact-runtime.pack.json)
+              # The source install's Office tree, in a plan of its own: the desktop and
+              # runtime installs fetch every bundled-plan line, and their archive has Office.
+              office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
+              [ ! -f "$office_pack" ] || "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" \
+                --office-pack "$office_pack" --only office --output "$stage/office-plan.${{ matrix.target }}.txt"
             elif [ "${{ runner.os }}" = "Linux" ]; then
               pack_args=(--runtime-pack "$RUNNER_TEMP/gact-runtime.asset.pack.json")
               office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
               [ ! -f "$office_pack" ] || pack_args+=(--office-pack "$office_pack")
             fi
+            # The browser archives the built runtime pins (Node.js, and Chromium where it
+            # is pinned): the installers fetch them while the runtime archive downloads.
+            browser_manifest="$(find external/gact-tui/desktop/src-tauri/gact-runtime \
+              -path '*/playwright/driver/clio-node.json' -print -quit 2>/dev/null || true)"
+            [ -z "$browser_manifest" ] || pack_args+=(--browser-manifest "$browser_manifest")
             "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" ${pack_args[@]+"${pack_args[@]}"} \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
           fi

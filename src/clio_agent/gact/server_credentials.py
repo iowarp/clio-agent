@@ -32,12 +32,20 @@ from typing import Literal
 import psutil
 
 from clio_agent.arc.clio_core_config import runtime_state_dir
+from clio_agent.arc.home_runtime import host_runtime_dir, pinned_state_dir
 from clio_agent.platform_paths import atomic_replace
 
 logger = logging.getLogger(__name__)
 
 RECORD_DIR_NAME = "gact-servers"
 RECORD_SCHEMA = 1
+
+
+def _records_root() -> Path:
+    # Desktop finds servers in the machine's host dir, whichever daemon a home uses.
+    if pinned_state_dir() is not None:
+        return runtime_state_dir()
+    return host_runtime_dir()
 
 
 def credential_record_path(port: int, *, state_dir: Path | None = None) -> Path:
@@ -51,7 +59,7 @@ def credential_record_path(port: int, *, state_dir: Path | None = None) -> Path:
         ``<runtime state dir>/gact-servers/<port>.json``.
     """
 
-    root = state_dir if state_dir is not None else runtime_state_dir()
+    root = state_dir if state_dir is not None else _records_root()
     return root / RECORD_DIR_NAME / f"{int(port)}.json"
 
 
@@ -145,7 +153,7 @@ def prune_stale_server_credentials(
         The records removed.
     """
 
-    root = (state_dir if state_dir is not None else runtime_state_dir()) / RECORD_DIR_NAME
+    root = (state_dir if state_dir is not None else _records_root()) / RECORD_DIR_NAME
     try:
         candidates = sorted(root.glob("*.json"))
     except OSError as exc:

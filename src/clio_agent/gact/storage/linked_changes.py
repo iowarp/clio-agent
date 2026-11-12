@@ -22,6 +22,7 @@ from .models import (
     ReviewedChange,
     SourceRecord,
 )
+from .names import plain_error
 from .review import _preview_change
 from .transfers import snapshot_revision
 
@@ -272,7 +273,7 @@ def publish_edits(
                         "but the linked index could not be refreshed",
                     )
             service.store.update_operation(
-                operation.id, state="failed", error=str(exc), applied_paths=applied
+                operation.id, state="failed", error=plain_error(exc), applied_paths=applied
             )
             # Already published paths must not be retried, even if refreshing the provider fails.
             raise

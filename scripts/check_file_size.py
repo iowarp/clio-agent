@@ -445,7 +445,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
     # Ratchet down 1789 -> 1772: the web UI mount moved to gact/web_mount.py.
-    "src/clio_agent/gact/app.py": 1780,
+    "src/clio_agent/gact/app.py": 1777,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -1096,7 +1096,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # probe cannot move to a sibling module; ratchet down when the worker body is split.
     "src/clio_agent/gact/infrastructure/node_models.py": 816,
     "src/clio_agent/gact/permission_gate.py": 837,
-    "src/clio_agent/gact/protocol/v3/message.py": 805,
+    # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
+    # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 828,
     "src/clio_agent/gact/sessions.py": 844,
     "src/clio_agent/gact/turn_finalize.py": 803,

@@ -34,7 +34,7 @@ def initialize_composer_state(app: Any, session_store_path: Path) -> None:
     max_resource_bytes = conf.resolve(
         "resources.max_bytes",
         env="CLIO_RESOURCE_MAX_BYTES",
-        default=250 * 1024 * 1024,
+        default=0,
         cast=conf.as_int,
     )
     app.state.resource_store = ResourceStore(

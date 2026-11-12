@@ -3,10 +3,13 @@ import { Badge } from '@/components/reui/badge';
 import { Frame, FramePanel } from '@/components/reui/frame';
 import { Button } from '@/components/ui/button';
 import {
+	BROWSER_INSTALL,
 	DOWNLOAD_NOTE,
 	PLATFORMS,
 	RELEASES_PAGE,
 	pickAsset,
+	type Alternative,
+	type Distribution,
 	type DownloadChoice,
 	type OS,
 	type PlatformDownloads,
@@ -47,8 +50,8 @@ export default function DownloadCards({ icons }: Props) {
 	);
 }
 
-function resolve(release: ReleaseState, choice: DownloadChoice) {
-	if (release.status !== 'ready') return null;
+function resolve(release: ReleaseState, choice: DownloadChoice | undefined) {
+	if (release.status !== 'ready' || !choice) return null;
 	return pickAsset(release.assets, choice.format, choice.arch ?? release.arch);
 }
 
@@ -61,6 +64,8 @@ interface CardProps {
 
 function PlatformCard({ platform, icon, release, detected }: CardProps) {
 	const primary = resolve(release, platform.primary);
+	const distributions = platform.distributions ?? [];
+	const offered = primary !== null || distributions.some((d) => resolve(release, d.choice) !== null);
 	return (
 		<Frame className={detected ? '[--frame-border-color:var(--color-primary)]' : undefined}>
 			<FramePanel className="flex h-full flex-col gap-4">
@@ -84,25 +89,24 @@ function PlatformCard({ platform, icon, release, detected }: CardProps) {
 					<p className="m-0 mt-1 text-sm text-muted-foreground">{platform.summary}</p>
 				</div>
 				<div className="mt-auto flex flex-col gap-3">
-					<Button
-						className="h-10 w-full gap-2"
-						render={<a href={primary?.url ?? RELEASES_PAGE} />}
-						nativeButton={false}
-					>
-						<Download aria-hidden="true" />
-						{platform.primary.label}
-					</Button>
-					{platform.alternative && (
-						<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-							<span className="text-muted-foreground">{platform.alternative.text}</span>
-							<a
-								href={platform.alternative.href}
-								className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
-							>
-								{platform.alternative.link}
-							</a>
-						</div>
+					{platform.primary && (
+						<Button
+							className="h-10 w-full gap-2"
+							render={<a href={primary?.url ?? RELEASES_PAGE} />}
+							nativeButton={false}
+						>
+							<Download aria-hidden="true" />
+							{platform.primary.label}
+						</Button>
 					)}
+					{distributions.length > 0 && (
+						<ul className="m-0 flex list-none flex-col gap-2 p-0">
+							{distributions.map((distribution) => (
+								<DistributionRow key={distribution.name} distribution={distribution} release={release} />
+							))}
+						</ul>
+					)}
+					{platform.alternative && <AlternativeLink alternative={platform.alternative} />}
 					{platform.others.length > 0 && (
 						<div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
 							<span className="text-muted-foreground">Also</span>
@@ -120,9 +124,52 @@ function PlatformCard({ platform, icon, release, detected }: CardProps) {
 							})}
 						</div>
 					)}
-					<p className="m-0 min-h-10 text-xs text-muted-foreground">{primary ? DOWNLOAD_NOTE : ''}</p>
+					<p className="m-0 min-h-10 text-xs text-muted-foreground">{offered ? DOWNLOAD_NOTE : ''}</p>
 				</div>
 			</FramePanel>
 		</Frame>
+	);
+}
+
+function AlternativeLink({ alternative }: { alternative: Alternative }) {
+	return (
+		<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+			<span className="text-muted-foreground">{alternative.text}</span>
+			<a
+				href={alternative.href}
+				className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+			>
+				{alternative.link}
+			</a>
+		</div>
+	);
+}
+
+/**
+ * One distribution family and its package. Before the release is known the link is the
+ * releases page; a release that lacks the package sends the visitor to the browser
+ * install instead of to a page that does not have it.
+ */
+function DistributionRow({ distribution, release }: { distribution: Distribution; release: ReleaseState }) {
+	const asset = resolve(release, distribution.choice);
+	const missing = distribution.choice && release.status === 'ready' && asset === null;
+	const alternative = distribution.alternative ?? (missing ? BROWSER_INSTALL : undefined);
+	return (
+		<li className="flex flex-col gap-1 border-t border-border pt-2 first:border-t-0 first:pt-0">
+			<span className="text-sm text-foreground">{distribution.name}</span>
+			{distribution.choice && !missing ? (
+				<Button
+					variant="outline"
+					className="h-9 w-full gap-2 text-foreground hover:text-foreground"
+					render={<a href={asset?.url ?? RELEASES_PAGE} />}
+					nativeButton={false}
+				>
+					<Download aria-hidden="true" />
+					Download {distribution.choice.label}
+				</Button>
+			) : (
+				alternative && <AlternativeLink alternative={alternative} />
+			)}
+		</li>
 	);
 }

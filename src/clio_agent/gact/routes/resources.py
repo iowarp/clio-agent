@@ -298,6 +298,81 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             schedule_processing(app, record, background_tasks)
         return payload
 
+    @app.get("/v1/folder-attachments/locality")
+    async def folder_attachment_locality(request: Request) -> dict[str, Any]:
+        """Whether this client runs on CLIO's computer, so a folder can be used in place.
+
+        The server decides from the connection itself, not from how the client
+        labelled its connection profile.
+        """
+
+        from clio_agent.gact import folder_attachments as folders  # noqa: PLC0415
+        from clio_agent.gact.auth import peer_address_from_scope  # noqa: PLC0415
+
+        getter = getattr(app.state, "peer_address_getter", peer_address_from_scope)
+        return folders.client_locality(getter(request.scope), request.headers)
+
+    @app.post("/v1/workspaces/{workspace_id}/folder-attachments", status_code=201)
+    async def attach_host_folder(workspace_id: str, request: Request) -> dict[str, Any]:
+        """Attach a folder on CLIO's computer in place (sandbox grant) or as a full copy.
+
+        Only a small notice resource enters custody, so no size or file-count
+        limit applies to the folder itself.
+        """
+
+        from clio_agent.gact import folder_attachments as folders  # noqa: PLC0415
+        from clio_agent.gact.routes.workspaces import _apply_root_kind_grant  # noqa: PLC0415
+
+        workspace = _workspace(app, workspace_id)
+        body = await json_body(
+            request, route="POST /v1/workspaces/{workspace_id}/folder-attachments"
+        )
+        placement = str(body.get("placement") or "")
+        if placement not in folders.PLACEMENTS:
+            raise _error(400, "invalid_request", "placement must be 'in_place' or 'copy'")
+        try:
+            original = folders.resolve_host_folder(str(body.get("path") or ""))
+            label = str(body.get("label") or "").strip()[:200] or original.name
+            if placement == "in_place":
+                refusal = await asyncio.to_thread(folders.protected_overlap, original)
+                if refusal:
+                    raise folders.FolderAttachmentError("folder_protected", refusal, status=409)
+                summary = await asyncio.to_thread(folders.summarize_folder, original)
+                grant = await _apply_root_kind_grant(app, workspace_id, str(original))
+                if not grant.get("granted"):
+                    raise folders.FolderAttachmentError(
+                        "folder_grant_failed",
+                        f"CLIO could not open {original} to the agent ({grant.get('reason')})",
+                        status=409,
+                    )
+                folder = original
+            else:
+                folder, summary = await asyncio.to_thread(
+                    folders.copy_folder, original, str(workspace.root_path)
+                )
+            record = await asyncio.to_thread(
+                lambda: folders.notice_resource(
+                    app.state.resource_store,
+                    workspace_id=workspace_id,
+                    placement=placement,  # type: ignore[arg-type]
+                    folder=folder,
+                    original=original,
+                    label=label,
+                    summary=summary,
+                )
+            )
+        except folders.FolderAttachmentError as exc:
+            raise _error(exc.status, exc.code, str(exc)) from exc
+        except ResourceConflictError as exc:
+            raise _error(409, "folder_attachment_conflict", str(exc)) from exc
+        # Settle the small notice like a connected folder's index, so the attachment
+        # reads as ready rather than waiting on a workspace copy nobody triggers.
+        record = await materialize_once(record)
+        payload = resource_wire(record)
+        emit_workspace_event(app, workspace_id, "resource.created", payload)
+        emit_workspace_event(app, workspace_id, "resource.ready", payload)
+        return payload
+
     @app.head("/v1/workspaces/{workspace_id}/resources/{resource_id}/content")
     async def head_resource_content(workspace_id: str, resource_id: str) -> Response:
         record = _resource(app, workspace_id, resource_id)

@@ -5,11 +5,15 @@ the window server and LaunchServices. Pinned here: only the ``office`` spawn on 
 the Codex fence leaves Codex (Linux, Windows and every other spawn are unchanged), the
 policy adds exactly the two named services to Codex's base, protected roots win over the
 territory, and a model's shell ``soffice`` abort is steered to ``prepare_document``.
+
+LibreOffice's single-instance pipe gets a private directory short enough for ``sun_path``:
+without one, a fenced ``soffice`` exits 0 at once without converting anything.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -87,6 +91,141 @@ def test_every_other_spawn_keeps_codex(roots, monkeypatch, platform, office_spaw
     )
     assert command == "codex"
     assert args[0] == "sandbox"
+
+
+def _short_parent(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    # macOS's per-user temp root exceeds sun_path; production uses /private/tmp there.
+    base = tmp_path_factory.getbasetemp()
+    return (
+        base
+        if office.pipe_dir_fits(str(base / "clio-lo-abcdefgh"))
+        else Path(office.PIPE_DIR_PARENT)
+    )
+
+
+@pytest.fixture
+def pipe_parent(monkeypatch, tmp_path_factory) -> Path:
+    parent = _short_parent(tmp_path_factory)
+    monkeypatch.setattr(office, "PIPE_DIR_PARENT", str(parent))
+    return parent
+
+
+def test_pipe_dir_is_private_short_and_grants_soffice_its_pipe(roots, pipe_parent) -> None:
+    pipe_dir = office.create_office_pipe_dir()
+    try:
+        assert Path(pipe_dir).parent == pipe_parent
+        assert Path(pipe_dir).stat().st_mode & 0o777 == 0o700
+        # Directory, separator, pipe name and NUL fit macOS sun_path.
+        name = f"OSL_PIPE_{os.getuid()}_SingleOfficeIPC_{'0' * 32}"
+        assert len(os.fsencode(f"{pipe_dir}/{name}")) + 1 <= office.SUN_PATH_MAX
+        command, args = office.office_seatbelt_prefix(
+            [str(roots["work"])],
+            "/Apps/LibreOffice.app/Contents/MacOS/soffice",
+            ["-env:OSL_SOCKET_PATH=/stale", "--headless", "--convert-to", "pdf"],
+            pipe_dir=pipe_dir,
+        )
+        assert command == office.SANDBOX_EXEC
+        params = [arg for arg in args if arg.startswith("-DW")]
+        assert params[0] == f"-DW0={roots['work']}"
+        assert f"={pipe_dir}" in params[-1]
+        assert '(allow file-write* (subpath (param "W0")) (subpath (param "W1"))' in args[1]
+        launch = args[args.index("/Apps/LibreOffice.app/Contents/MacOS/soffice") :]
+        assert launch[1:] == [
+            f"-env:OSL_SOCKET_PATH={pipe_dir}",
+            "--headless",
+            "--convert-to",
+            "pdf",
+        ]
+    finally:
+        office.remove_office_pipe_dir(pipe_dir)
+    assert not Path(pipe_dir).exists()
+
+
+def test_helper_launch_keeps_its_argv_and_reads_the_pipe_from_env(roots, pipe_parent) -> None:
+    pipe_dir = office.create_office_pipe_dir()
+    try:
+        _, args = office.office_seatbelt_prefix(
+            [str(roots["work"])], "python", ["cli.py", "render", "a.docx"], pipe_dir=pipe_dir
+        )
+        assert args[-4:] == ["python", "cli.py", "render", "a.docx"]
+        assert f"={pipe_dir}" in [arg for arg in args if arg.startswith("-DW")][-1]
+    finally:
+        office.remove_office_pipe_dir(pipe_dir)
+
+
+def test_pipe_dir_bound_rejects_long_paths() -> None:
+    assert office.office_pipe_name_length(501) == len("OSL_PIPE_501_SingleOfficeIPC_") + 32
+    assert office.pipe_dir_fits("/private/tmp/clio-lo-abcdefgh", uid=4294967295)
+    long_dir = "/Users/someone/Library/Application Support/ai.iowarp.clio.desktop/lo"
+    assert not office.pipe_dir_fits(long_dir, uid=501)
+    with pytest.raises(ValueError, match="sun_path"):
+        office.office_seatbelt_prefix(["/w"], "soffice", [], pipe_dir=long_dir)
+
+
+def test_wrap_confined_owns_the_pipe_dir_on_darwin(roots, pipe_parent, monkeypatch) -> None:
+    from clio_agent.runtime import sandbox_net
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sandbox_net, "open_child_egress", lambda state, roots: ("", None, {}))
+    confined = sandbox.wrap_confined(
+        "/opt/soffice",
+        ["--headless", "--convert-to", "pdf", "a.docx"],
+        write_roots=[str(roots["work"])],
+        net_policy=sandbox.NET_DENY,
+        profile=sandbox.PROFILE_SHELL,
+        state=_CODEX,
+        office=True,
+    )
+    (pipe_dir,) = confined.cleanup_dirs
+    assert confined.env_overlay["OSL_SOCKET_PATH"] == pipe_dir
+    assert f"-env:OSL_SOCKET_PATH={pipe_dir}" in confined.args
+    assert Path(pipe_dir).is_dir()
+    confined.release()
+    assert not Path(pipe_dir).exists()
+    confined.release()
+
+
+@pytest.mark.parametrize(("platform", "office_spawn"), [("linux", True), ("darwin", False)])
+def test_other_spawns_get_no_pipe_dir(roots, monkeypatch, platform, office_spawn) -> None:
+    from clio_agent.runtime import sandbox_net
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sandbox_net, "open_child_egress", lambda state, roots: ("", None, {}))
+    monkeypatch.setattr(
+        office, "create_office_pipe_dir", lambda: pytest.fail("no pipe dir expected")
+    )
+    confined = sandbox.wrap_confined(
+        "soffice",
+        ["--headless"],
+        write_roots=[str(roots["work"])],
+        net_policy=sandbox.NET_DENY,
+        profile=sandbox.PROFILE_SHELL,
+        state=_CODEX,
+        office=office_spawn,
+    )
+    assert confined.cleanup_dirs == ()
+    assert "OSL_SOCKET_PATH" not in confined.env_overlay
+    assert not any("OSL_SOCKET_PATH" in arg for arg in confined.args)
+
+
+def test_office_convert_passes_the_pipe_dir_to_soffice(tmp_path, monkeypatch) -> None:
+    from clio_agent.runtime.document_stack import process
+
+    source = tmp_path / "a.docx"
+    source.write_bytes(b"docx")
+    seen: list[list[str]] = []
+
+    def execute(command: list[str], cwd: Path) -> None:
+        seen.append(command)
+        (cwd / "a.pdf").write_bytes(b"%PDF")
+
+    monkeypatch.setattr(process, "new_office_profile", lambda profile, template: None)
+    monkeypatch.setenv("OSL_SOCKET_PATH", "/private/tmp/clio-lo-test")
+    process.office_convert(source, tmp_path / "out", "pdf", execute=execute, executable_path="so")
+    assert seen[0][:2] == ["so", "-env:OSL_SOCKET_PATH=/private/tmp/clio-lo-test"]
+    monkeypatch.delenv("OSL_SOCKET_PATH")
+    process.office_convert(source, tmp_path / "out2", "pdf", execute=execute, executable_path="so")
+    assert not any("OSL_SOCKET_PATH" in arg for arg in seen[1])
 
 
 @pytest.mark.skipif(

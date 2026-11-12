@@ -20,6 +20,7 @@ from clio_agent.gact.resource_custody import ResourceStore
 from clio_agent.gact.storage.adapters import file_hash
 from clio_agent.gact.storage.linked import link_folder, linked_adapter, linked_file
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord
+from clio_agent.gact.storage.names import plain_error
 from clio_agent.gact.storage.references import source_resource
 from clio_agent.gact.storage.service import StorageService
 from clio_agent.platform_paths import win_extended_path
@@ -236,7 +237,7 @@ class SourceFileSystem(AbstractFileSystem):
                     adapter.apply(path, stage, current.revision if current else None)
                     store.update_operation(operation.id, state="completed", applied_paths=[path])
                 except Exception as exc:
-                    store.update_operation(operation.id, state="failed", error=str(exc))
+                    store.update_operation(operation.id, state="failed", error=plain_error(exc))
                     raise
                 finally:
                     if stage is not None and os.path.exists(win_extended_path(stage)):

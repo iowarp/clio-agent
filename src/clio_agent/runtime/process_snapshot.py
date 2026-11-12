@@ -91,7 +91,9 @@ def snapshot_process_nodes(
     raw: dict[int, ProcessNode] = {}
     process_handles: dict[int, Any] = {}
     parents = _windows_parent_table(psutil)
-    fields = ["pid", "name", "create_time"]
+    # create_time is read only for the kept nodes below: for an access-denied process
+    # psutil's Windows fallback re-reads the whole-system table (~13 ms each, 2 s+ per boot).
+    fields = ["pid", "name"]
     if parents is None:
         fields.append("ppid")
     for proc in psutil.process_iter(fields):
@@ -109,7 +111,7 @@ def snapshot_process_nodes(
                 pid=pid,
                 ppid=ppid,
                 name=name,
-                create_time=float(info.get("create_time") or 0.0),
+                create_time=0.0,
                 kind=_classify_child(name),
             )
             process_handles[pid] = proc
@@ -177,7 +179,18 @@ def snapshot_process_nodes(
             raw[node.pid] = replace(candidate, cmdline=cmdline_resolver(node.pid))
             keep.add(node.pid)
 
-    return [raw[pid] for pid in keep if pid in raw]
+    kept: list[ProcessNode] = []
+    for pid in keep:
+        kept_node = raw.get(pid)
+        if kept_node is None:
+            continue
+        proc = process_handles.get(pid)
+        try:
+            created = float(proc.create_time() or 0.0) if proc is not None else 0.0
+        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, OSError):
+            created = 0.0
+        kept.append(replace(kept_node, create_time=created))
+    return kept
 
 
 __all__ = [

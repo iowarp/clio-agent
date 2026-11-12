@@ -295,6 +295,10 @@ def _text(value: Any, limit: int) -> str:
     return value[:limit] if isinstance(value, str) else ""
 
 
+def _object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _numbers(value: Any, count: int) -> list[float] | None:
     if not isinstance(value, list) or len(value) != count:
         return None
@@ -382,9 +386,9 @@ def _watched(raw: Any) -> list[dict[str, Any]]:
             continue
         if anchor.get("profile") not in ("dom", "text-quote", "region"):
             continue
-        source = anchor.get("source") if isinstance(anchor.get("source"), dict) else {}
-        page = source.get("page") if isinstance(source.get("page"), dict) else {}
-        ax = source.get("ax") if isinstance(source.get("ax"), dict) else {}
+        source = _object(anchor.get("source"))
+        page = _object(source.get("page"))
+        ax = _object(source.get("ax"))
         rect = _numbers(anchor.get("rect"), 4) if anchor["profile"] == "region" else None
         if anchor["profile"] == "region" and rect is None:
             continue

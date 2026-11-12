@@ -169,6 +169,49 @@ def test_document_tool_refuses_outside_workspace_before_preparing_runtime(
         document_tools.build_prepare_document_tool().func(path=str(outside))
 
 
+def test_document_tool_accepts_the_workspaces_uploaded_inputs_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An attachment's working copy lives in workspace state, outside the project root."""
+    from clio_agent import paths
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    state = tmp_path / "state" / "workspaces" / "ws-key"
+    upload = state / "inputs" / "res_abc123" / "report.docx"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"docx")
+    sibling = state / "sessions" / "notes.docx"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_bytes(b"docx")
+    monkeypatch.setattr(paths, "workspace_state_dir", lambda workspace: state)
+    monkeypatch.setattr(document_tools, "_workspace", lambda: root)
+    monkeypatch.setattr(
+        FileAccessPolicy, "from_env", classmethod(lambda cls: FileAccessPolicy((tmp_path,)))
+    )
+    monkeypatch.setattr(
+        document_tools,
+        "prepare_document_runtime",
+        lambda workspace: {"output_directory": str(workspace / "out")},
+    )
+    seen: list[list[str]] = []
+
+    def run(runtime: dict[str, Any], args: list[str], *, cwd: Path) -> dict[str, Any]:
+        seen.append(args)
+        assert cwd == root
+        return {"status": "ready"}
+
+    monkeypatch.setattr(document_tools, "run_document_helper", run)
+    tool = document_tools.build_prepare_document_tool()
+    assert tool.func(path=str(upload), action="render")["status"] == "ready"
+    assert seen[0][:2] == ["render", str(upload.resolve())]
+    with pytest.raises(ValueError, match="inside the active workspace"):
+        tool.func(path=str(sibling))
+    with pytest.raises(ValueError, match="inside the active workspace"):
+        tool.func(path=str(state / "inputs" / ".." / "sessions" / "notes.docx"))
+
+
 @pytest.mark.parametrize("args", [{"action": "execute"}, {"dpi": 999}])
 def test_document_tool_rejects_invalid_operations_before_side_effects(args: dict[str, Any]) -> None:
     with pytest.raises(ValueError):

@@ -1,8 +1,9 @@
 """Run one Codex qualification probe and keep what Codex said about it.
 
-Both Windows qualification probes (native MXC in :mod:`sandbox_codex_mxc`, the
-legacy elevated fence in :mod:`sandbox_codex`) launch ``codex sandbox`` and judge
-it by file witnesses. This module owns the launch, so a failure keeps Codex's own
+The Windows qualification probes (native MXC in :mod:`sandbox_codex_mxc`, the
+legacy elevated fence in :mod:`sandbox_codex`) and the Linux bubblewrap probe
+(:func:`probe_codex_linux_fence`) launch ``codex sandbox`` and judge it by file
+witnesses. This module owns the launch, so a failure keeps Codex's own
 explanation instead of a bare exit code:
 
 - stderr goes to an anonymous temporary file, never a pipe: Codex hands handles to
@@ -17,6 +18,7 @@ import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -94,6 +96,39 @@ def kill_tree(pid: int) -> None:
     psutil.wait_procs(processes, timeout=5)
 
 
+#: Codex is installed on Linux but its bubblewrap fence cannot start a confined child here
+#: (typically: unprivileged user namespaces are disabled or blocked by seccomp/AppArmor).
+REASON_CODEX_LINUX_FENCE_UNAVAILABLE = "codex_linux_fence_unavailable"
+_LINUX_FENCE_PROBE_TIMEOUT_S = 20
+
+
+def probe_codex_linux_fence(binary: str) -> EnforcementVerdict:
+    """Prove Codex can launch a confined child on this Linux host (never raises).
+
+    Codex wraps children in bubblewrap, which needs a new user namespace. Containers with
+    the default seccomp profile and hosts that restrict unprivileged user namespaces refuse
+    that, and every wrapped tool would then fail at spawn. The probe runs ``/bin/sh`` through
+    the same composition real spawns use and requires it to write a witness inside its root.
+    """
+    from .sandbox_codex import compose_codex_spawn  # noqa: PLC0415 - sandbox_codex imports this
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="clio-agent-codex-probe-", ignore_cleanup_errors=True
+        ) as allow:
+            command, args = compose_codex_spawn(
+                [allow], "/bin/sh", ["-c", ": > started"], binary=binary, platform="linux"
+            )
+            run = run_probe([command, *args], timeout=_LINUX_FENCE_PROBE_TIMEOUT_S)
+            if run.returncode == 0 and (Path(allow) / "started").is_file():
+                return EnforcementVerdict(True, "codex_linux_fence_verified")
+            return EnforcementVerdict(False, REASON_CODEX_LINUX_FENCE_UNAVAILABLE, run.describe())
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return EnforcementVerdict(
+            False, REASON_CODEX_LINUX_FENCE_UNAVAILABLE, f"the check could not run: {exc!r}"
+        )
+
+
 def mxc_summary(mxc: dict[str, Any]) -> str:
     """The native MXC outcome as a sentence for a failure message ('' when not tried)."""
     if not mxc.get("reason"):
@@ -108,11 +143,13 @@ def _tail(raw: bytes) -> str:
 
 
 __all__ = [
+    "REASON_CODEX_LINUX_FENCE_UNAVAILABLE",
     "RETRY_SETUP_ACTION",
     "STDERR_TAIL_CHARS",
     "EnforcementVerdict",
     "ProbeRun",
     "kill_tree",
     "mxc_summary",
+    "probe_codex_linux_fence",
     "run_probe",
 ]

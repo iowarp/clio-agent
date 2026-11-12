@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
 from clio_agent.gact.storage.knowledge_service import KnowledgeService
+from clio_agent.gact.storage.names import plain_error
 
 
 class OpenNote(BaseModel):
@@ -37,7 +38,7 @@ def register_knowledge_routes(app: FastAPI) -> None:
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(409, "Headless Sync timed out; check private client setup") from exc
         except (ValueError, OSError) as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, plain_error(exc)) from exc
 
     @app.get("/v1/workspaces/{wid}/sources/{source_id}/knowledge")
     async def snapshot(

@@ -142,6 +142,34 @@ def test_live_peer_probe_excludes_given_pids() -> None:
     assert all(p.pid != os.getpid() for p in peers)
 
 
+def test_live_peer_probe_scoped_to_this_instance_root(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "mine"))
+    mine = dict(os.environ)
+    other = {**mine, "CLIO_AGENT_HOME": str(tmp_path / "other")}
+    script = "import time; time.sleep(60)  # clio_agent.ui.cli serve"
+    procs = {
+        name: subprocess.Popen([sys.executable, "-c", script], env=env)
+        for name, env in (("mine", mine), ("other", other))
+    }
+    try:
+        time.sleep(0.5)
+        scoped = {
+            p.pid
+            for p in disk_gc.live_peer_clio_processes(exclude_pids={os.getpid()}, sharing="cache")
+        }
+        unscoped = {p.pid for p in disk_gc.live_peer_clio_processes(exclude_pids={os.getpid()})}
+    finally:
+        for proc in procs.values():
+            proc.kill()
+            proc.wait()
+    assert procs["mine"].pid in scoped
+    assert procs["other"].pid not in scoped
+    assert {procs["mine"].pid, procs["other"].pid} <= unscoped
+
+
 def test_gc_report_serializes() -> None:
     peer = disk_gc.ProcRef(pid=1, name="clio_run", marker="clio-core-daemon-pidfile")
     report = disk_gc.run_gc(dry_run=True, peer_prober=lambda: [peer])

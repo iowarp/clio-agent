@@ -77,6 +77,28 @@ async def prepare_protection(app: FastAPI, *, windows: bool) -> None:
         raise
 
 
+def start_plugin_sync(app: FastAPI) -> asyncio.Task:
+    """Install or refresh the shipped default marketplace off the loop, as a timed step.
+
+    A turn that resolves before it finishes waits on the same lock (PluginService.ready).
+    A failed install is recorded on ``ready_error`` (it does not raise): the step's
+    outcome names it instead of reporting ok.
+    """
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
+
+    plugins = app.state.plugin_service
+    task = asyncio.create_task(
+        boot_timing.timed(
+            app,
+            "marketplace",
+            asyncio.to_thread(plugins.ready),
+            lambda _: (plugins.ready_error or {}).get("reason", "ok"),
+        )
+    )
+    app.state.plugin_sync_task = task
+    return task
+
+
 def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:
     """Refresh provider discovery off the request path when enabled for this server."""
     if not getattr(app.state, "refresh_provider_catalog_on_startup", False):

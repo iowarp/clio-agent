@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from clio_agent.plugins.prebuilt import adopt_prebuilt
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.resolve import (
     NO_DELTA,
@@ -240,6 +241,15 @@ class PluginService:
                 return None
         if Path(source).is_dir() or source != DEFAULT_MARKETPLACE_URL:
             return self.store.install(source, name=DEFAULT_MARKETPLACE, default=True)
+        # A bundled runtime ships this pin installed (plugins/prebuilt.py): adopt it.
+        adopted = adopt_prebuilt(
+            self.store,
+            market=DEFAULT_MARKETPLACE,
+            url=DEFAULT_MARKETPLACE_URL,
+            commit=DEFAULT_MARKETPLACE_COMMIT,
+        )
+        if adopted is not None:
+            return adopted
         return self.store.install(
             source, commit=DEFAULT_MARKETPLACE_COMMIT, name=DEFAULT_MARKETPLACE, default=True
         )

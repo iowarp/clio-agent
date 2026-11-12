@@ -17,6 +17,7 @@ from clio_agent.gact.storage.models import (
     ReviewedChange,
     SourceRecord,
 )
+from clio_agent.gact.storage.names import plain_error
 from clio_agent.gact.storage.store import SourceStore
 from clio_agent.gact.storage.transfers import (
     TransferCancelled,
@@ -49,6 +50,7 @@ def _advance_baseline(
     destination = safe_child(next_root, row.path)
     entries = {entry.path: entry for entry in previous.entries}
     hashes = dict(previous.hashes)
+    prior = entries.get(row.path)
     if content is None:
         os.unlink(win_extended_path(destination))
         entries.pop(row.path, None)
@@ -60,6 +62,7 @@ def _advance_baseline(
         hashes[row.path] = digest
         entries[row.path] = FileEntry(
             path=row.path,
+            remote_path=prior.remote_path if prior else "",
             kind="file",
             revision=revision or "",
             size=os.stat(win_extended_path(destination)).st_size,
@@ -229,7 +232,7 @@ def apply_review(
         store.update_operation(
             operation.id,
             state="cancelled" if isinstance(exc, TransferCancelled) else "failed",
-            error=str(exc),
+            error=plain_error(exc),
             applied_paths=applied,
         )
         raise

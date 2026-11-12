@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from clio_agent.gact.resource_custody import ResourceRecord, ResourceStore
 from clio_agent.gact.storage.adapters import file_hash, safe_child
@@ -25,6 +25,21 @@ def folder_entries(manifest: Manifest, folder: str = "") -> list[FileEntry]:
     ):
         raise ValueError("Choose a folder in this source")
     return children
+
+
+def remote_relative(sources: SourceStore, record: SourceRecord, relative: str) -> str:
+    """Return the provider's own path for an approved portable ``relative`` path."""
+    for revision in (record.linked_manifest_id, record.manifest_id):
+        if not revision:
+            continue
+        try:
+            manifest = sources.get("manifest", revision, Manifest)
+        except (KeyError, OSError, ValueError):
+            continue
+        entry = next((row for row in manifest.entries if row.path == relative), None)
+        if entry is not None:
+            return entry.source_path
+    return relative
 
 
 def source_folder_resource(
@@ -160,14 +175,20 @@ def source_resource(
         "sha256": expected,
         "mode": source.mode,
     }
+    remote = remote_relative(sources, record, relative)
+    if remote != relative:
+        # ``path`` stays the portable identifier and local name; this is display only.
+        origin["remote_path"] = remote
     if source.source_kind == "knowledge":
         origin.update({"kind": "note", "source_kind": "knowledge", "connection": source.connection})
     identity = hashlib.sha256(
         f"{source.id}\0{record.linked_manifest_id if linked_path else source.revision}\0{relative}\0{expected}".encode()
     ).hexdigest()
+    if remote != relative:
+        identity = hashlib.sha256(f"{identity}\0{remote}".encode()).hexdigest()
     resource, _ = resources.create_or_resume(
         workspace_id=source.workspace_id or "",
-        name=path.name,
+        name=PurePosixPath(remote).name,
         declared_size=os.stat(win_extended_path(path)).st_size,
         client_upload_id="source:" + identity,
     )

@@ -260,6 +260,19 @@ def _check_runs(record: dict[str, Any], node: Path) -> None:
         raise ValueError(f"Node.js did not start (exit {done.returncode}): {tail}")
 
 
+def installer_archive(pin: dict[str, Any]) -> Path | None:
+    """The installer's download of a pinned archive (``url``, ``sha256``), when it has one.
+
+    The release's install plan lists the browser archives (``browser`` lines), and
+    ``install.ps1`` and ``install.sh`` fetch them while the runtime archive downloads. Only
+    a file matching the pin counts; one still arriving is waited for. The installer owns
+    the file: the caller reads it and leaves it in place.
+    """
+    from clio_agent.runtime.document_stack.office import installer_download  # noqa: PLC0415
+
+    return installer_download(str(pin["url"]).rsplit("/", 1)[-1], str(pin["sha256"]))
+
+
 def _attempt(record: dict[str, Any]) -> Path:
     root = _root(record)
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -267,12 +280,17 @@ def _attempt(record: dict[str, Any]) -> Path:
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir()
     try:
-        archive = staging / "archive"
         node = staging / _executable_name()
-        _download(record, archive)
+        archive = installer_archive(record)
+        if archive is None:
+            archive = staging / "archive"
+            _download(record, archive)
+        else:
+            trace.event("BROWSER", "node driver taken from the installer's download")
         _set_state(phase="checking")
         _extract(record, archive, node)
-        archive.unlink()
+        if archive.parent == staging:
+            archive.unlink()
         _check_runs(record, node)
         (staging / _COMPLETE).write_text(str(record["node_version"]), encoding="utf-8")
         if root.exists():  # a leftover without the completion marker

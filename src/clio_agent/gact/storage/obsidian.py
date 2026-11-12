@@ -7,10 +7,11 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable
 
-from clio_agent.gact.storage.adapters import LocalSource, file_hash, safe_child
+from clio_agent.gact.storage.adapters import LocalSource, file_hash, safe_child, source_child
 from clio_agent.gact.storage.filesystem import is_link
 from clio_agent.gact.storage.linked import FsspecFolder
 from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.storage.names import listed_child
 
 
 def vault_path(path: str, excluded: list[str]) -> None:
@@ -70,14 +71,22 @@ class ObsidianSource(LocalSource):
 
         check_storage_access(self.root)
         rows: list[FileEntry] = []
+        self.skipped = 0
+        aliases = {"": ""}
         for folder, directories, files in os.walk(self.root, followlinks=False):
             base = Path(folder)
-            if base != self.root:
-                safe_child(self.root, base.relative_to(self.root).as_posix())
+            remote_parent = "" if base == self.root else base.relative_to(self.root).as_posix()
+            if remote_parent:
+                source_child(self.root, remote_parent)
             for names in (directories, files):
                 for name in list(names):
                     child = base / name
-                    relative = child.relative_to(self.root).as_posix()
+                    listed = listed_child(aliases[remote_parent], remote_parent, name)
+                    if listed is None:
+                        self.skipped += 1
+                        names.remove(name)
+                        continue
+                    relative, remote = listed
                     try:
                         vault_path(relative, self.excluded)
                     except PermissionError:
@@ -92,9 +101,12 @@ class ObsidianSource(LocalSource):
                     directory = stat.S_ISDIR(info.st_mode)
                     if not directory and not stat.S_ISREG(info.st_mode):
                         raise ValueError("Vaults support regular notes and attachments only")
+                    if directory:
+                        aliases[remote] = relative
                     rows.append(
                         FileEntry(
                             path=relative,
+                            remote_path=remote,
                             kind="directory" if directory else "file",
                             size=0 if directory else info.st_size,
                             revision=f"{info.st_mtime_ns}:{info.st_size}:{info.st_ctime_ns}",
@@ -105,7 +117,7 @@ class ObsidianSource(LocalSource):
     def metadata(self, path: str) -> FileEntry | None:
         """Check one current file without rescanning the vault on every note read."""
         vault_path(path, self.excluded)
-        child = safe_child(self.root, path)
+        child = self.local(path)
         try:
             info = child.stat()
         except FileNotFoundError:
@@ -114,6 +126,7 @@ class ObsidianSource(LocalSource):
             return None
         return FileEntry(
             path=path,
+            remote_path=child.relative_to(self.root).as_posix(),
             kind="file",
             size=info.st_size,
             revision=f"{info.st_mtime_ns}:{info.st_size}:{info.st_ctime_ns}",
@@ -181,5 +194,5 @@ class ObsidianFolder(FsspecFolder):
         current = self.source.metadata(path)
         if (current.revision if current else None) != expected:
             raise ValueError("The note changed after review")
-        digest = file_hash(safe_child(self.source.root, path)) if current else None
+        digest = file_hash(self.source.local(path)) if current else None
         return self.source.apply(path, content, digest)

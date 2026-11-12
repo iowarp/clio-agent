@@ -260,6 +260,9 @@ def build_tracked_store(
         failure = ArcStoreUnavailableError(error=exc, config_path=cfg)
         mark_unavailable(failure.reason, str(exc), cfg, port)
         raise failure from exc
+    from clio_agent.arc import home_import  # noqa: PLC0415 - cycle
+
+    home_import.import_pending(store)  # before anything reads this home's records
     # The daemon's config, when this process adopted it (first config wins).
     effective = getattr(store, "_config_path", "") or cfg
     # Validating the requested file is insufficient when a shared daemon adopted

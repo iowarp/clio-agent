@@ -608,7 +608,8 @@ def _source_git(tmp_path: Path, env: dict[str, str], call: str = "source_git") -
         text=True,
         capture_output=True,
         timeout=30,
-        env={"HOME": str(tmp_path), **env},
+        # install.sh sets PREFIX before it resolves git; the extracted functions need it too.
+        env={"HOME": str(tmp_path), "PREFIX": str(tmp_path / "prefix"), **env},
     )
     if call.startswith("answer="):
         assert result.returncode == 0, result.stderr
@@ -641,6 +642,8 @@ def test_source_git_prefers_clio_git_then_a_real_git_then_the_desktops(tmp_path:
     assert _source_git(tmp_path, {"PATH": str(empty), **apps}) == str(bundled)
     assert _source_git(tmp_path, {"PATH": str(empty)}) == ""
     assert _source_git(tmp_path, {"CLIO_GIT": str(tmp_path / "absent/git")}) == ""
+    released = _executable(tmp_path / "prefix/clio-agent/.venv/git/libexec/git-core/git")
+    assert _source_git(tmp_path, {"PATH": str(empty)}) == str(released)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")

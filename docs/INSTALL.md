@@ -6,7 +6,7 @@ the supported interactive interfaces; both connect to the `clio-agent` service.
 
 **The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
 
-CLIO 0.9.6.3 uses standard Python 3.14 with the GIL enabled. Installers provision
+CLIO 0.9.6.4 uses standard Python 3.14 with the GIL enabled. Installers provision
 their managed Python and uv runtimes.
 
 ## Desktop app (recommended)
@@ -145,7 +145,7 @@ For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.6.3
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.6.4
 clio-agent serve
 ```
 
@@ -222,7 +222,10 @@ Remote bootstrap also protects data when it must invoke an older release's
 installer. Desktop gives fresh managed Agents their own `CLIO_AGENT_HOME`;
 existing `clio-user` installations remain readable until migration. Core host
 coordination is shared at native `state/core-hosts/<host>` (with legacy lookup)
-because the Core daemon has one fixed endpoint per host.
+because the Core daemon has one fixed endpoint per host. A CLI home set with
+`CLIO_AGENT_HOME` runs its own smaller Core daemon on its own store and imports
+its records from the shared store once on upgrade. See
+[ARC_MEMORY_LAYER.md](ARC_MEMORY_LAYER.md#explicit-homes-get-their-own-daemon-archome_runtimepy).
 
 Source installs require a new or explicitly emptied program directory; an
 existing checkout is never erased automatically. Uninstall retains Agent data,

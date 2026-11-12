@@ -16,14 +16,16 @@ desktop. If your lab already runs CLIO, you only need its address; see
 
 | Method | Windows | macOS | Linux | Use it for |
 |---|---|---|---|---|
-| [Desktop app download](#desktop-app) | x64 (ARM through emulation) | Apple Silicon, macOS 14+ | x86_64 and aarch64, `.deb` or `.rpm` | Your own computer |
-| [Desktop app from a terminal](#desktop-app-from-a-terminal) | yes | Apple Silicon | `apt` or `dnf` systems | The same app, installed by one command |
+| [Desktop app download](#desktop-app) | x64 (ARM through emulation) | Apple Silicon, macOS 14+ | x86_64 and aarch64: `.deb`, `.rpm` or Arch package | Your own computer |
+| [Desktop app from a terminal](#desktop-app-from-a-terminal) | yes | Apple Silicon | `apt`, `dnf`, `zypper` or `pacman` systems | The same app, installed by one command |
 | [Install script](#install-script) | yes | Apple Silicon and Intel | any | Servers, HPC, browsers |
 | [A remote computer, from the desktop app](#a-remote-computer-from-the-desktop-app) | the app runs here | the app runs here | the app runs here | Running CLIO where the data is |
 | [Docker](/docs/server-setup/#docker) | yes | yes | yes | Containers and shared servers |
 | [Your AI assistant](/docs/install-with-ai/) | yes | yes | yes | Letting an assistant do the steps |
 
-There is no desktop app for Intel Macs yet; use the [install script](#install-script) there.
+There is no desktop app for Intel Macs yet, nor for RHEL, Rocky and AlmaLinux 9, which do not
+ship the WebKitGTK 4.1 the app uses. Use the [install script](#install-script) there and open
+CLIO in your browser.
 
 ## Desktop app
 
@@ -73,10 +75,16 @@ Windows on ARM runs the same x64 installer through emulation.
 
 <Steps>
 
-1. On the [download section](/#download), choose **Download .deb** (Debian, Ubuntu) or
-   **.rpm** (Fedora, RHEL and similar). The package includes the CLIO service.
+1. On the [download section](/#download), choose your distribution's package. The package
+   includes the CLIO service.
 
-2. Install it with your package manager:
+   | Distribution | Package |
+   |---|---|
+   | Ubuntu 22.04+, Debian 12+, Mint 21+ | `.deb` |
+   | Fedora, openSUSE | `.rpm` |
+   | Arch, Manjaro, EndeavourOS | Arch package (`.pkg.tar.zst`) |
+
+2. Install it with your package manager, which also installs the system libraries it needs:
 
    ```sh
    sudo apt install ./CLIO.Desktop_*-bundled.deb
@@ -86,6 +94,13 @@ Windows on ARM runs the same x64 installer through emulation.
 
    ```sh
    sudo dnf install ./CLIO.Desktop-*-bundled.rpm
+   sudo zypper install --allow-unsigned-rpm ./CLIO.Desktop-*-bundled.rpm  # openSUSE
+   ```
+
+   or, for the Arch package:
+
+   ```sh
+   sudo pacman -U ./CLIO.Desktop-*-bundled.pkg.tar.zst
    ```
 
 3. Open **CLIO Desktop** from your applications menu, or run `clio-desktop`.
@@ -129,8 +144,9 @@ Set `CLIO_DESKTOP_DIR` to another absolute folder, such as `/Applications`.
 curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
-Installs the `.deb` with `apt` or the `.rpm` with `dnf`, asking for your password
-through `sudo`.
+Installs the `.deb` with `apt`, the `.rpm` with `dnf` or `zypper`, or the Arch package with
+`pacman`, asking for your password through `sudo`. On a distribution without WebKitGTK 4.1
+(RHEL, Rocky and AlmaLinux 9) it stops before downloading the app and says so.
 
 </TabItem>
 </Tabs>
@@ -217,7 +233,7 @@ Windows with `& ([scriptblock]::Create((irm https://clio.iowarp.ai/desktop.ps1))
 |---|---|
 | none | the latest stable release |
 | `--dev` | the newest release, betas included |
-| `--version <version>` | one release, for example `--version 0.9.6.3` |
+| `--version <version>` | one release, for example `--version 0.9.6.4` |
 | `--source` | the source code on `main`, built on your computer |
 | `--dev --source` | the source code on `develop` |
 

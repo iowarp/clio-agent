@@ -118,14 +118,29 @@ _INSTALL_SPEED_LABELS: set[str] = {
     "prepared Office (aarch64 Linux)",
 }
 
+# The Arch Linux pacman packages (#2168), made only from the bundled deb.
+_ARCH_ASSETS: list[str] = [
+    "CLIO.Desktop-0.9.6.3-1-x86_64-bundled.pkg.tar.zst",
+    "CLIO.Desktop-0.9.6.3-1-aarch64-bundled.pkg.tar.zst",
+]
+
+_ARCH_LABELS: set[str] = {
+    "bundled Arch package (x86_64 Linux)",
+    "bundled Arch package (aarch64 Linux)",
+}
+
+# Every asset added after the v0.9.4.18 snapshot below.
+_POST_V09418_ASSETS: list[str] = [*_INSTALL_SPEED_ASSETS, *_ARCH_ASSETS]
+_POST_V09418_LABELS: set[str] = _INSTALL_SPEED_LABELS | _ARCH_LABELS
+
 # The complete listing = v0.5.17 plus the one asset it dropped, plus the
-# signing-era, installer and install-speed assets its fixture lacks.
+# signing-era, installer, install-speed and Arch assets its fixture lacks.
 _COMPLETE_ASSETS: list[str] = [
     *_V0517_ASSETS,
     "CLIO.Desktop_0.7.1_aarch64-bundled.dmg",
     *_SIGNING_ASSETS,
     *_INSTALLER_ASSETS,
-    *_INSTALL_SPEED_ASSETS,
+    *_POST_V09418_ASSETS,
 ]
 
 # The real, complete v0.9.4.18 release listing (`gh release view v0.9.4.18
@@ -204,7 +219,7 @@ def test_v0517_flags_only_the_missing_bundled_dmg_and_predates_signing() -> None
         == {"bundled dmg (aarch64 macOS)"}
         | _SIGNING_LABELS
         | _INSTALLER_LABELS
-        | _INSTALL_SPEED_LABELS
+        | _POST_V09418_LABELS
     )
 
 
@@ -243,18 +258,30 @@ def test_extra_assets_are_ignored() -> None:
 
 def test_real_v09418_release_passes_the_publish_gate() -> None:
     """A real published release's asset list, plus the assets added after it, satisfies the gate."""
-    assert find_missing(_V09418_ASSETS + _INSTALL_SPEED_ASSETS) == []
-    assert {label for label, _ in find_missing(_V09418_ASSETS)} == _INSTALL_SPEED_LABELS
+    assert find_missing(_V09418_ASSETS + _POST_V09418_ASSETS) == []
+    assert {label for label, _ in find_missing(_V09418_ASSETS)} == _POST_V09418_LABELS
 
 
 def test_each_install_speed_asset_is_individually_required() -> None:
     """Dropping the Apple archive or a plan names exactly that asset."""
     for dropped in _INSTALL_SPEED_ASSETS:
-        listing = [n for n in _V09418_ASSETS + _INSTALL_SPEED_ASSETS if n != dropped]
+        listing = [n for n in _V09418_ASSETS + _POST_V09418_ASSETS if n != dropped]
         missing = find_missing(listing)
         assert len(missing) == 1, (dropped, missing)
         assert missing[0][0] in _INSTALL_SPEED_LABELS
         assert re.search(missing[0][1], dropped)
+
+
+def test_each_arch_package_is_individually_required() -> None:
+    """The site offers the Arch package, so a release missing either one stays a draft."""
+    for dropped in _ARCH_ASSETS:
+        listing = [n for n in _V09418_ASSETS + _POST_V09418_ASSETS if n != dropped]
+        missing = find_missing(listing)
+        assert len(missing) == 1, (dropped, missing)
+        assert missing[0][0] in _ARCH_LABELS
+        assert re.search(missing[0][1], dropped)
+    unbundled = [name.replace("-bundled", "") for name in _ARCH_ASSETS]
+    assert {label for label, _ in find_missing(unbundled)} >= _ARCH_LABELS
 
 
 def test_each_installer_asset_is_individually_required() -> None:
@@ -264,7 +291,7 @@ def test_each_installer_asset_is_individually_required() -> None:
     pathway, so a release missing one must stay a draft.
     """
     for dropped in _INSTALLER_ASSETS:
-        listing = [name for name in _V09418_ASSETS + _INSTALL_SPEED_ASSETS if name != dropped]
+        listing = [name for name in _V09418_ASSETS + _POST_V09418_ASSETS if name != dropped]
         missing = find_missing(listing)
         assert len(missing) == 1, (dropped, missing)
         label, pattern = missing[0]
@@ -280,7 +307,7 @@ def test_release_without_updater_manifests_fails_the_gate() -> None:
     """
     listing = [
         n
-        for n in _V09418_ASSETS + _INSTALL_SPEED_ASSETS
+        for n in _V09418_ASSETS + _POST_V09418_ASSETS
         if n not in {"latest.json", "latest-lite.json"}
     ]
     labels = {label for label, _ in find_missing(listing)}

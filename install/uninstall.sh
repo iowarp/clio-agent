@@ -214,16 +214,69 @@ if [[ "$ASSUME_YES" -ne 1 ]]; then
 fi
 
 # ---- stop the server -------------------------------------------------
+# A pid counts as this installation's only if its command line, executable or
+# working directory is under the install prefix. The pidfile can name a recycled
+# pid, and the port can be held by any program, so neither is trusted alone.
+prefix_real="$(cd -P -- "$CLIO_PREFIX" 2>/dev/null && pwd || true)"
+under_prefix() {
+  local path="$1" root
+  for root in "$CLIO_PREFIX" "$prefix_real"; do
+    [[ -n "$root" ]] || continue
+    case "$path" in "$root"/*) return 0 ;; esac
+  done
+  return 1
+}
+process_paths() {
+  local pid="$1"
+  if [[ -d "/proc/$pid" ]]; then
+    readlink "/proc/$pid/exe" 2>/dev/null || true
+    readlink "/proc/$pid/cwd" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    # The first txt entry is the executable.
+    lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1 || true
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' || true
+  fi
+}
+install_process() {
+  local pid="$1" args root path
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  for root in "$CLIO_PREFIX" "$prefix_real"; do
+    [[ -n "$root" ]] || continue
+    case "$args" in *"$root"/*) return 0 ;; esac
+  done
+  while IFS= read -r path; do
+    [[ -n "$path" ]] && under_prefix "$path" && return 0
+  done < <(process_paths "$pid")
+  return 1
+}
+describe_process() {
+  ps -p "$1" -o args= 2>/dev/null | cut -c1-160 || true
+}
+
 server_pid=""
 if [[ -f "$PIDFILE" ]]; then
-  p="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then server_pid="$p"; fi
+  p="$(awk 'NR == 1 { print $1 }' "$PIDFILE" 2>/dev/null || true)"
+  if install_process "$p"; then
+    server_pid="$p"
+  elif [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then
+    warn "The server pidfile names pid $p ($(describe_process "$p")), which is not part of this installation; leaving it running"
+  fi
 fi
 if [[ -z "$server_pid" ]] && command -v lsof >/dev/null 2>&1; then
-  server_pid="$(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+  while read -r p; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    if install_process "$p"; then
+      server_pid="$p"
+      break
+    fi
+    warn "Port $CLIO_PORT is held by pid $p ($(describe_process "$p")), which is not part of this installation; leaving it running"
+  done < <(lsof -ti "tcp:$CLIO_PORT" -sTCP:LISTEN 2>/dev/null || true)
 fi
+STOPPED_PIDS=()
 if [[ -n "$server_pid" ]]; then
   say "Stopping CLIO server (pid $server_pid)"
+  STOPPED_PIDS+=("$server_pid")
   kill "$server_pid" 2>/dev/null || true
   sleep 1
   kill -0 "$server_pid" 2>/dev/null && kill -9 "$server_pid" 2>/dev/null || true
@@ -234,8 +287,14 @@ fi
 # Sweep leftover server processes started from this prefix. Match both the
 # current entrypoint (clio-agent serve) and the retired pre-upgrade one
 # (clio-agent-gact) so an old server left running is still cleaned up.
+leftover_pattern="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?"
+if command -v pgrep >/dev/null 2>&1; then
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] && STOPPED_PIDS+=("$pid")
+  done < <(pgrep -f "$leftover_pattern" 2>/dev/null || true)
+fi
 if command -v pkill >/dev/null 2>&1; then
-  pkill -f "$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent(-gact)?" 2>/dev/null || true
+  pkill -f "$leftover_pattern" 2>/dev/null || true
 fi
 
 # ---- clio-core's files in ~/.clio ------------------------------------
@@ -291,7 +350,8 @@ core_daemon_pid() {
   local pidfile pid
   for pidfile in "$CLIO_HOST_STATE"/core-hosts/*/clio-runtime.pid; do
     [[ -f "$pidfile" ]] || continue
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    # The record is "<pid> <start time>"; older ones hold the pid alone.
+    pid="$(awk 'NR == 1 { print $1 }' "$pidfile" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       echo "$pid"
       return 0
@@ -331,6 +391,65 @@ purge_data() {
   done
 }
 
+# clio-core's file-backed shared memory lives in /tmp/clio_<user> (macOS: regular
+# files, up to ~1.5 GB per daemon; Linux: memfd symlinks). A process that is killed
+# before it unmaps leaves its files behind, and nothing cleans them once CLIO is
+# gone. Remove only what belongs to this install: the per-process files of the
+# processes stopped above, and the port-keyed segments of the daemon this install
+# recorded, once that daemon is dead. Any other runtime's files are kept.
+remove_core_memory_files() {
+  local user dir pid file name port record kb count=0 total_kb=0 waited=0 alive
+  local daemons=() owned=() dirs=()
+  user="${USER:-$(id -un 2>/dev/null || true)}"
+  [[ -n "$user" ]] || return 0
+  dirs=("/tmp/clio_$user")
+  if [[ -n "${TMPDIR:-}" && "${TMPDIR%/}/clio_$user" != "/tmp/clio_$user" ]]; then
+    dirs+=("${TMPDIR%/}/clio_$user")
+  fi
+  # The leftovers got SIGTERM; give them a moment to exit before their files go.
+  while ((waited < 20)); do
+    alive=0
+    for pid in ${STOPPED_PIDS[@]+"${STOPPED_PIDS[@]}"}; do
+      kill -0 "$pid" 2>/dev/null && alive=1
+    done
+    ((alive)) || break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  for pid in ${STOPPED_PIDS[@]+"${STOPPED_PIDS[@]}"}; do
+    kill -0 "$pid" 2>/dev/null || owned+=("$pid")
+  done
+  for record in "$CLIO_HOST_STATE"/core-hosts/*/clio-runtime.pid; do
+    [[ -f "$record" ]] || continue
+    pid="$(awk 'NR == 1 { print $1 }' "$record" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null && daemons+=("$pid")
+  done
+  for dir in "${dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    local files=()
+    for pid in ${daemons[@]+"${daemons[@]}"}; do
+      for record in "$dir/chi_runtime_pid_${user}_"*; do
+        [[ -f "$record" && "$(cat "$record" 2>/dev/null || true)" == "$pid" ]] || continue
+        port="${record##*_}"
+        [[ "$port" =~ ^[0-9]+$ ]] || continue
+        files+=("$record" "$dir/clio_$port.ipc")
+        for name in main metadata queue; do files+=("$dir/chi_${name}_segment_${user}_$port"); done
+        owned+=("$pid")
+      done
+    done
+    for pid in ${owned[@]+"${owned[@]}"}; do
+      files+=("$dir/clio-$pid-shm-"* "$dir/clio_${pid}_"* "$dir/clio_rambdev_${pid}_"*)
+    done
+    for file in ${files[@]+"${files[@]}"}; do
+      [[ -e "$file" || -L "$file" ]] || continue
+      kb="$(du -k "$file" 2>/dev/null | cut -f1)"
+      rm -f -- "$file" && count=$((count + 1)) && total_kb=$((total_kb + ${kb:-0}))
+    done
+    rmdir -- "$dir" 2>/dev/null || true
+  done
+  ((count == 0)) || say "Removed $count clio-core memory files ($((total_kb / 1024)) MB) from ${dirs[*]}"
+}
+remove_core_memory_files
 
 # Compare against the seeds before the payloads holding them go.
 if [[ "$PURGE" -eq 1 ]]; then purge_core_seed; fi

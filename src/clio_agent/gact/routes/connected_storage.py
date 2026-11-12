@@ -43,6 +43,7 @@ from clio_agent.gact.storage.models import (
     SftpCredentials,
     SourceRecord,
 )
+from clio_agent.gact.storage.names import plain_error, skipped_notice
 from clio_agent.gact.storage.ndp_source import public_selection
 from clio_agent.gact.storage.service import StorageService
 from clio_agent.gact.storage.sftp import SftpSource
@@ -137,7 +138,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
         except KeyError as exc:
             raise HTTPException(404, "Source not found on this CLIO workspace") from exc
         except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, plain_error(exc)) from exc
 
     async def run(action: Callable[[], T]) -> T:
         nonlocal controller_loop
@@ -149,7 +150,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
         except (OSError, ValueError, RuntimeError) as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, plain_error(exc)) from exc
 
     async def change_access(action: Callable[[], T]) -> T:
         def update() -> T:
@@ -378,6 +379,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
                 and not service.auth.connected(record)
             ):
                 raise PermissionError("Sign in to GitHub to access this repository")
+            skipped = 0
             if body.materialized:
                 if not record.manifest_id or not record.source.local_path:
                     raise ValueError("Transfer this source before browsing its approved inputs")
@@ -391,6 +393,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
                     rows = adapter.entries(
                         folder="" if body.query else body.folder, recursive=bool(body.query)
                     )
+                    skipped = getattr(adapter, "skipped", 0)
             else:
                 if not record.connected:
                     raise ValueError("Reconnect this live source before browsing it")
@@ -405,12 +408,14 @@ def register_connected_storage_routes(app: FastAPI) -> None:
                         if isinstance(adapter, SftpSource)
                         else adapter.entries()
                     )
+                    skipped = getattr(adapter, "skipped", 0)
             folder = body.folder.strip("/")
             rows = [
                 row
                 for row in rows
                 if (
                     body.query.casefold() in row.path.casefold()
+                    or body.query.casefold() in row.remote_path.casefold()
                     if body.query
                     else (
                         str(PurePosixPath(row.path).parent)
@@ -428,6 +433,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
                 "next_offset": body.offset + body.limit
                 if body.offset + body.limit < len(rows)
                 else None,
+                **({"notice": skipped_notice(skipped)} if skipped else {}),
             }
 
         return await run(browse)
@@ -582,7 +588,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
                     record.download_access = body.access
                     service.store.put("source", source_id, record)
             except ValueError as exc:
-                raise HTTPException(409, str(exc)) from exc
+                raise HTTPException(409, plain_error(exc)) from exc
         return await submit_source_action(
             app,
             wid,

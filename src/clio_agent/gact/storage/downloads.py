@@ -63,7 +63,8 @@ class SelectedDownload:
             return self.upstream.open_read(entry)
         if self.previous is None:
             raise ValueError("The retained download is missing")
-        return self.previous.open_read(entry)
+        # The retained copy is stored under portable names, not the provider's.
+        return self.previous.open_read(entry.model_copy(update={"remote_path": ""}))
 
     def apply(self, path: str, content: Path | None, expected: str | None) -> str | None:
         """Downloads never change the source."""

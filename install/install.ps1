@@ -33,7 +33,22 @@
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
 #   CLIO_INSTALL_PROGRESS human | json        (default: human; -Desktop only)
 
+# `& ([scriptblock]::Create((irm <url>))) <options>` (above; CLIO Desktop runs it so)
+# runs this text in a child scope, where $script: names the caller's scope: every
+# $script: variable read empty, the runtime archive's plan among them, so the install
+# fell back to PyPI. The same text is then run dot-sourced in a module of its own, whose
+# script scope is its top level; output, options and exit codes pass through unchanged.
+$ClioScopeProbe = $true
+if (-not (Test-Path -LiteralPath variable:script:ClioScopeProbe)) {
+    . (New-Module -Name clio-install -ScriptBlock { }) ([scriptblock]::Create($MyInvocation.MyCommand.ScriptBlock.ToString())) @args
+    return
+}
+
 $ErrorActionPreference = 'Stop'
+# CLIO_PORT names the server's API port, but clio-core reads the same name as its RPC
+# port. The installer starts no server, and its migrate step would otherwise put the
+# clio-core daemon and client on the API port and stall until the daemon-start limit.
+Remove-Item Env:CLIO_PORT -ErrorAction SilentlyContinue
 # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk, which
 # makes a large download many times slower than the network (the desktop setup took
 # 10-15 minutes). Large files go through Save-ClioDownload, which shows curl's own meter.
@@ -72,6 +87,21 @@ function Stop-OfficePrepare {
         }
     }
     $script:OfficeProc = $null
+    Remove-ClioOfficeTreeFetch
+}
+# The source install's LibreOffice download (Start-ClioOfficeTreeFetch), once the Office
+# worker no longer reads it.
+function Remove-ClioOfficeTreeFetch {
+    if (-not $script:OfficeTreeScratch) { return }
+    $fetch = $script:OfficeTreeFetch
+    if ($fetch -and -not $fetch.HasExited) { & taskkill.exe /T /F /PID $fetch.Id 2>&1 | Out-Null }
+    $script:ClioSideFetches = @($script:ClioSideFetches | Where-Object { $_ -ne $fetch })
+    $script:OfficeTreeFetch = $null
+    if ($env:CLIO_INSTALL_DOWNLOADS -and $env:CLIO_INSTALL_DOWNLOADS.StartsWith($script:OfficeTreeScratch)) {
+        Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $script:OfficeTreeScratch -Recurse -Force -ErrorAction SilentlyContinue
+    $script:OfficeTreeScratch = $null
 }
 # Run as a file (-File, CI), the installer exits with its status. Run from a URL
 # (`irm ... | iex`, or a script block) it has no file, and `exit` would close the
@@ -449,6 +479,38 @@ function Complete-ClioPrefetch($item) {
     Warn "could not fetch $($item.Name) ahead of time; the setup downloads it while preparing"
 }
 
+# Start-ClioSideFetch ITEM: a plan file the install does not wait for (the browser
+# archives), fetched by its own curl.exe from the start of the runtime download. It is
+# NAME.part while it downloads and NAME once complete, renamed by the same cmd.exe, so no
+# step of this script has to tend it. The browser step waits on that and keeps only bytes
+# matching the plan's pin (driver.py installer_archive); a failed fetch leaves neither
+# file, and that step downloads the archive itself.
+$ClioSideFetches = @()
+function Start-ClioSideFetch($item) {
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $curl) { return }
+    # The browser step finds NAME.part even before the first bytes arrive.
+    [IO.File]::WriteAllBytes($item.File, [byte[]]@())
+    $fetch = "`"$($curl.Source)`" --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-connrefused --output `"$($item.File)`" `"$($item.Url)`""
+    $command = "$fetch && move /y `"$($item.File)`" `"$($item.Final)`" >nul || del /f /q `"$($item.File)`""
+    try {
+        $process = Start-Process -FilePath $env:ComSpec -ArgumentList "/d /s /c `"$command`"" -NoNewWindow -PassThru
+    } catch {
+        Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $null = $process.Handle
+    $script:ClioSideFetches += $process
+}
+
+# Stop-ClioSideFetches: end the side fetches still running (with their curl.exe).
+function Stop-ClioSideFetches {
+    foreach ($process in $script:ClioSideFetches) {
+        if (-not $process.HasExited) { & taskkill.exe /T /F /PID $process.Id 2>&1 | Out-Null }
+    }
+    $script:ClioSideFetches = @()
+}
+
 # Get-ClioManifestSha MANIFEST NAME: NAME's SHA-256 in a release checksum manifest, or
 # $null. GitHub replaces spaces in asset names with dots; older checksum manifests keep the
 # original name. Accept sha256sum's text and binary markers.
@@ -508,12 +570,41 @@ function ConvertFrom-ClioReleaseTag([string]$Tag) {
     return [pscustomobject]@{ Tag = $Tag; Version = $text; Stable = ($pre[0] -eq 4); Key = $key }
 }
 
+# Get-ClioReleaseList: each published GitHub Release's tag_name, draft and published_at.
+# Invoke-RestMethod asks for the list uncompressed (~7 MB of JSON) and turns every field
+# of every asset into an object, about 5 s; compressed it is ~0.7 MB, and only these
+# fields are read. Each field is matched as a key (quotes inside JSON strings are
+# escaped); a list they do not account for is read with Invoke-RestMethod instead.
+function Get-ClioReleaseList {
+    $uri = 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100'
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($curl) {
+        $file = Join-Path ([IO.Path]::GetTempPath()) ("clio-releases-" + [guid]::NewGuid() + '.json')
+        try {
+            & $curl.Source --proto '=https' --tlsv1.2 --fail --silent --show-error --location --compressed --retry 3 --output $file $uri
+            if ($LASTEXITCODE -eq 0) {
+                $text = [IO.File]::ReadAllText($file)
+                $fields = [regex]::Matches($text, '"tag_name":\s*"([^"\\]*)"[\s\S]*?"draft":\s*(true|false)[\s\S]*?"published_at":\s*(?:"([^"\\]*)"|null)')
+                if ($fields.Count -gt 0 -and $fields.Count -eq [regex]::Matches($text, '"tag_name":').Count) {
+                    return @(foreach ($m in $fields) {
+                        [pscustomobject]@{ tag_name = $m.Groups[1].Value; draft = ($m.Groups[2].Value -eq 'true'); published_at = $m.Groups[3].Value }
+                    })
+                }
+            }
+        } catch {
+        } finally {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return Invoke-RestMethod -UseBasicParsing -Uri $uri
+}
+
 # Resolve-ClioRelease DEV: the release to install from the published GitHub Releases
 # (PyPI can hold strays that never became a release). Stable: the highest stable
 # version. -Dev: the most recently published release, whatever its version says (an
 # old alpha can sort above the newest beta). Drafts are never listed.
 function Resolve-ClioRelease([bool]$Dev) {
-    $releases = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100'
+    $releases = Get-ClioReleaseList
     $found = @(foreach ($r in $releases) {
         if ($r.draft) { continue }
         $v = ConvertFrom-ClioReleaseTag ([string]$r.tag_name)
@@ -842,6 +933,7 @@ function Start-OfficePrepare {
     if ($script:OfficeProc) { return }
     $worker = Join-Path $Src 'install/prepare-office.ps1'
     if (-not (Test-Path -LiteralPath $worker)) { return }  # older source ref
+    Start-ClioOfficeTreeFetch
     $stem = Join-Path ([IO.Path]::GetTempPath()) ("clio-office-" + [Guid]::NewGuid().ToString('N'))
     $script:OfficeLog = "$stem.log"
     $script:OfficeErr = "$stem.err.log"
@@ -861,6 +953,7 @@ function Complete-OfficePrepare {
     $code = $proc.ExitCode
     $seconds = [Math]::Round(($proc.ExitTime - $proc.StartTime).TotalSeconds, 1)
     $script:OfficeProc = $null
+    Remove-ClioOfficeTreeFetch
     if ($code -ne 0) {
         Get-Content -LiteralPath $script:OfficeLog, $script:OfficeErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
         DieWith $code "Managed-tool preparation failed (logs: $($script:OfficeLog), $($script:OfficeErr)); installation was not marked ready."
@@ -915,20 +1008,61 @@ function Get-ClioRuntimePlan([string]$Tag, [string]$Scratch) {
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return $null }
     $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
     if (-not (Test-Path -LiteralPath $tar)) { return $null }
+    $plan = @(Get-ClioReleasePlan $Tag $Scratch 'installing from PyPI')
+    if (@($plan | Where-Object { $_.Kind -eq 'runtime' -and $_.Name -like 'gact-runtime-*.tar.zst' }).Count -ne 1) { return $null }
+    return $plan
+}
+
+# Get-ClioReleasePlan TAG SCRATCH FALLBACK [NAME]: release TAG's plan file NAME (its bundled
+# install plan for this target), read only when it matches the release's SHA256SUMS.
+function Get-ClioReleasePlan([string]$Tag, [string]$Scratch, [string]$Fallback, [string]$Name = "install-plan.$($script:ClioRuntimeTriple).bundled.txt") {
     $base = "https://github.com/iowarp/clio-agent/releases/download/$Tag"
     $sums = Join-Path $Scratch 'checksums'
     $planFile = Join-Path $Scratch 'plan'
-    try { Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $sums } catch { return $null }
-    $planSha = Get-ClioManifestSha ([IO.File]::ReadAllText($sums)) "install-plan.$($script:ClioRuntimeTriple).bundled.txt"
-    if (-not $planSha) { return $null }
-    try { Invoke-WebRequest -UseBasicParsing "$base/install-plan.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $planFile } catch { return $null }
+    try { Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS.$($script:ClioRuntimeTriple).bundled.txt" -OutFile $sums } catch { return }
+    $planSha = Get-ClioManifestSha ([IO.File]::ReadAllText($sums)) $Name
+    if (-not $planSha) { return }
+    try { Invoke-WebRequest -UseBasicParsing "$base/$Name" -OutFile $planFile } catch { return }
     if ((Get-ClioSha256 $planFile) -ne $planSha) {
-        Warn "release $Tag's install plan does not match its checksum; installing from PyPI"
-        return $null
+        Warn "release $Tag's install plan does not match its checksum; $Fallback"
+        return
     }
-    $plan = @(Read-ClioPlan $planFile)
-    if (@($plan | Where-Object { $_.Kind -eq 'runtime' -and $_.Name -like 'gact-runtime-*.tar.zst' }).Count -ne 1) { return $null }
-    return $plan
+    Read-ClioPlan $planFile
+}
+
+# Start-ClioOfficeTreeFetch: a source install's LibreOffice as the newest release lays it
+# (scripts/build_office_tree.py): about 200 MB that the Office worker unpacks while it
+# downloads, instead of TDF's 373 MB MSI, whose CAB expands one file at a time. Its line
+# is a plan file of its own (office-plan.TRIPLE.txt), not in the bundled install plan,
+# whose every line the desktop and runtime installs fetch. The SHA-256 is written beside
+# the download; office.py takes the tree only when its name is this checkout's layout
+# and its bytes match. Otherwise the worker lays Office from the MSI.
+$OfficeTreeScratch = $null
+$OfficeTreeFetch = $null
+function Start-ClioOfficeTreeFetch {
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return }
+    try {
+        $release = Resolve-ClioRelease $true
+        if (-not $release) { return }
+        $scratch = Join-Path ([IO.Path]::GetTempPath()) ("clio-office-tree-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+        $script:OfficeTreeScratch = $scratch
+        $plan = @(Get-ClioReleasePlan $release.Tag $scratch "laying LibreOffice from TDF's MSI" "office-plan.$($script:ClioRuntimeTriple).txt")
+        $entry = @($plan | Where-Object { $_.Kind -eq 'office' -and $_.Name -like 'office-*-windows-x64.tar.zst' }) | Select-Object -First 1
+        if (-not $entry) { return }
+        $downloads = Join-Path $scratch 'downloads'
+        New-Item -ItemType Directory -Force -Path $downloads | Out-Null
+        $final = Join-Path $downloads $entry.Name
+        [IO.File]::WriteAllText("$final.sha256", $entry.Sha)
+        $running = @($script:ClioSideFetches).Count
+        Start-ClioSideFetch ([pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final })
+        if (@($script:ClioSideFetches).Count -eq $running) { return }  # no curl.exe
+        $script:OfficeTreeFetch = $script:ClioSideFetches[-1]
+        $env:CLIO_INSTALL_DOWNLOADS = $downloads
+        Say "Fetching LibreOffice as release $($release.Tag) lays it ($($entry.Name), $([math]::Round($entry.Bytes / 1e6)) MB)"
+    } catch {
+        Warn "could not fetch the release's LibreOffice ($_); laying it from TDF's MSI"
+    }
 }
 
 # Start-ClioUnpackers DIR ITEM: tar.exe processes that unpack ITEM's archive into DIR while
@@ -1079,6 +1213,11 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
         $final = Join-Path $downloads $entry.Name
         [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha; Bytes = $entry.Bytes; Ranges = (Join-Path $Scratch 'ranges'); Kind = $entry.Kind }
     })
+    # The browser archives are needed only by the managed-package step. They download once
+    # the runtime archive is in: sharing the line slowed it ~8 s (the critical path), while
+    # the line is idle as its last blocks unpack, and that ends well before the step needs them.
+    $side = @($items | Where-Object { $_.Kind -eq 'browser' })
+    $items = @($items | Where-Object { $_.Kind -ne 'browser' })
     $archive = @($items | Where-Object { $_.Kind -eq 'runtime' })[0]
     $total = [int64](($items | Measure-Object -Property Bytes -Sum).Sum)
     Say "Downloading and unpacking the CLIO runtime ($($archive.Name), $([math]::Round($archive.Bytes / 1e6)) MB)"
@@ -1091,6 +1230,10 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
         $failed = "$_"
     }
     Stop-ClioDownloads
+    if (-not $failed -and $side.Count) {
+        Say "Fetching while it unpacks: $(($side | ForEach-Object { $_.Name }) -join ', ')"
+        foreach ($item in $side) { Start-ClioSideFetch $item }
+    }
     $whole = -not $failed -and $archive.Ok -and $archive.Sha -eq $archive.Expected
     Stop-ClioUnpackers $(if ($whole) { $archive.Bytes } else { -1 })
     $bad = @($script:ClioUnpackers | Where-Object { $_.ExitCode -ne 0 })
@@ -1294,6 +1437,7 @@ if (-not $OptSource -and $RuntimePlan) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch | Select-Object -Last 1
     if ($failure) {
+        Stop-ClioSideFetches
         if ($DocJob) { try { $DocJob.Process.Kill(); $DocJob.Process.WaitForExit() } catch { } }
         RemoveTree $Venv
         if ($Previous) { [IO.Directory]::Move($Previous, $Venv) }
@@ -1493,6 +1637,7 @@ Complete-OfficePrepare
 if ($DocJob) {
     if ($DocsMigrate) { Say 'Finishing the managed packages, Office rendering and the CLIO store' }
     $docsStatus = Complete-ClioBackground $DocJob
+    Stop-ClioSideFetches
     if ($DocsMigrate -and $docsStatus -eq 0) { $MigrateStatus = Get-ClioDocsMigrateStatus $DocJob.LastLine }
     Complete-ClioMigrate
     if ($docsStatus -ne 0) {
@@ -1516,6 +1661,7 @@ if ($DocJob) {
     }
 }
 if ($RuntimeScratch) {
+    Stop-ClioSideFetches
     Remove-Item -LiteralPath $RuntimeScratch -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
 }

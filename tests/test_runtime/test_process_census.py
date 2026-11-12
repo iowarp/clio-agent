@@ -249,7 +249,7 @@ def test_snapshot_attaches_live_cmdline_only_to_orphan_candidates(
     nodes = pc._snapshot_process_nodes(_SERVER, None)
     by_pid = {n.pid: n for n in nodes}
 
-    assert requested_attrs == ["pid", "name", "create_time", "ppid"]
+    assert requested_attrs == ["pid", "name", "ppid"]
     assert by_pid[700].cmdline == live_marker, (
         "the reparented-orphan candidate must carry the LIVE-captured cmdline -- if "
         "this is empty, the `replace(node, cmdline=_process_cmdline(...))` wiring in "
@@ -296,9 +296,47 @@ def test_windows_snapshot_reads_parents_from_one_table(monkeypatch: pytest.Monke
 
     by_pid = {n.pid: n for n in pc._snapshot_process_nodes(_SERVER, None)}
 
-    assert requested_attrs == ["pid", "name", "create_time"]
+    assert requested_attrs == ["pid", "name"]
     assert by_pid[300].ppid == _SERVER
     assert by_pid[301].ppid == 300
+
+
+def test_snapshot_reads_create_time_only_for_kept_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A denied foreign process's create_time re-reads the system table on Windows."""
+
+    psutil = pytest.importorskip("psutil")
+    asked: list[int] = []
+
+    class _FakeProc:
+        def __init__(self, info: dict) -> None:
+            self.info = info
+
+        def create_time(self) -> float:
+            asked.append(self.info["pid"])
+            return 1000.0 + self.info["pid"]
+
+    monkeypatch.setattr(
+        psutil,
+        "process_iter",
+        lambda _attrs: [
+            _FakeProc({"pid": _SERVER, "name": "python.exe"}),
+            _FakeProc({"pid": 300, "name": "clio-kit.exe"}),
+            _FakeProc({"pid": 900, "name": "svchost.exe"}),
+        ],
+    )
+    monkeypatch.setattr(
+        process_snapshot,
+        "_windows_parent_table",
+        lambda _psutil: {_SERVER: 1, 300: _SERVER, 900: 4},
+    )
+
+    by_pid = {n.pid: n for n in pc._snapshot_process_nodes(_SERVER, None)}
+
+    assert sorted(asked) == sorted((300, _SERVER))
+    assert by_pid[300].create_time == 1300.0
+    assert 900 not in by_pid
 
 
 def _pin_live_create_time_matches_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:

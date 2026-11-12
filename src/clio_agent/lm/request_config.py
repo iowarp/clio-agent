@@ -56,7 +56,13 @@ def config_from_lm_kwargs(kwargs: Mapping[str, Any]) -> Config:
         elif name == "stop":
             fields["stop"] = (value,) if isinstance(value, str) else tuple(value)
         elif name == "reasoning_effort":
-            fields["reasoning"] = Reasoning(effort=str(value))
+            try:
+                fields["reasoning"] = Reasoning(effort=str(value))
+            except ValueError as exc:
+                raise UnmappedGenerationSetting(
+                    f"reasoning effort {value!r} has no lm15 Reasoning spelling; "
+                    "the provider's engine must send it"
+                ) from exc
         elif name == "extra_body" and isinstance(value, Mapping):
             # OpenAI-compatible servers read these at the payload top level; lm15
             # forwards extensions verbatim into the payload.

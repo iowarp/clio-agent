@@ -51,6 +51,11 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 1
 fi
 set -euo pipefail
+# CLIO_PORT names the server's API port, but clio-core reads the same name as its RPC
+# port. The installer starts no server, and its migrate and document steps would
+# otherwise put the clio-core daemon and client on the API port and stall until the
+# daemon-start limit (180 s) before failing the migration.
+unset CLIO_PORT
 # The PATH this person's shell gave us, before the installer prepends its own bin dir.
 CALLER_PATH="${PATH:-}"
 
@@ -187,11 +192,14 @@ finish_run() {
 }
 
 desktop_cleanup() {
-  local code=$? pid
+  local code=$? pid children
   # A job is a subshell; its curl would outlive it and keep writing into the scratch.
+  # The subshell goes first: one that outlived its child would report it "Terminated".
   for pid in $DESKTOP_MONITOR $DESKTOP_JOBS; do
-    pkill -TERM -P "$pid" 2>/dev/null || true
+    children="$(pgrep -P "$pid" 2>/dev/null || true)"
     kill "$pid" 2>/dev/null || true
+    # shellcheck disable=SC2086  # a list of PIDs
+    [ -z "$children" ] || kill $children 2>/dev/null || true
   done
   if [ -n "$DESKTOP_SCRATCH" ]; then
     [ ! -d "$DESKTOP_SCRATCH/mount" ] || hdiutil detach "$DESKTOP_SCRATCH/mount" -quiet 2>/dev/null || true
@@ -438,7 +446,7 @@ install_desktop() {
   if [ -n "$OPT_DESKTOP_PACKAGE" ]; then install_desktop_package; return; fi
   [ "$OPT_SOURCE" = 0 ] || die "--desktop installs a released app; --source builds the agent only (build the app from gact-tui)"
   have curl || die "curl is required"
-  local os cpu tag version asset triple expected url plan=""
+  local os cpu tag version asset triple expected url plan="" fetch
   os="$(uname -s)"; cpu="$(uname -m)"
   desktop_scratch
   step resolve
@@ -455,7 +463,7 @@ install_desktop() {
         aarch64|arm64) triple=aarch64-unknown-linux-gnu ;;
         *) die "unsupported processor: $cpu" ;;
       esac
-      have dpkg || have rpm || die "this Linux has neither dpkg nor rpm; download a desktop package from $REPO_URL/releases" ;;
+      [ -n "$(linux_package_format)" ] || die "CLIO Desktop is published as .deb, .rpm and Arch Linux packages, and this Linux has none of dpkg, rpm or pacman. Install CLIO without --desktop and open it in your browser with: clio web" ;;
     *) die "unsupported OS for --desktop: $os (use install.ps1 -Desktop on Windows)" ;;
   esac
   tag="$(desktop_tag)"
@@ -467,10 +475,12 @@ install_desktop() {
     || die "could not download the release checksums (SHA256SUMS.$triple.bundled.txt)"
   case "$triple" in
     *-apple-darwin) asset="$(mac_release_asset "$DESKTOP_SCRATCH/checksums" "$version")" ;;
-    x86_64-*) if have dpkg; then asset="CLIO.Desktop_${version}_amd64-bundled.deb"; else asset="CLIO.Desktop-${version}-1.x86_64-bundled.rpm"; fi ;;
-    aarch64-*) if have dpkg; then asset="CLIO.Desktop_${version}_arm64-bundled.deb"; else asset="CLIO.Desktop-${version}-1.aarch64-bundled.rpm"; fi ;;
+    *-linux-gnu) asset="$(linux_package_asset "$version" "${triple%%-*}")" ;;
   esac
   expected="$(manifest_sha "$DESKTOP_SCRATCH/checksums" "$asset" | tr 'A-F' 'a-f')"
+  if ! is_sha "$expected" && [ "$(linux_package_format)" = pacman ]; then
+    die "CLIO Desktop $tag has no Arch Linux package (the first is in the release after 0.9.6.1). Install a newer release, or install CLIO without --desktop and open it in your browser with: clio web"
+  fi
   is_sha "$expected" || die "release checksum missing or ambiguous for $asset; nothing installed"
   if [ -z "$OPT_DOWNLOAD_ONLY" ]; then
     [ "$os" != Darwin ] || mac_destination
@@ -484,6 +494,7 @@ install_desktop() {
   fi
   url="$REPO_URL/releases/download/$tag/$asset"
   step download
+  [ "$os" != Linux ] || [ -n "$OPT_DOWNLOAD_ONLY" ] || start_webkit_check
   start_prefetch "$plan"
   case "$asset" in
     *.aar|*.tar.gz)
@@ -495,9 +506,18 @@ install_desktop() {
       say "Downloading CLIO Desktop $tag ($asset)"
       DESKTOP_APP_FILE="$DESKTOP_SCRATCH/$asset"
       start_monitor
-      fetch_hashed "$url" "$DESKTOP_APP_FILE" -D "$DESKTOP_SCRATCH/app.headers" \
-        || die "could not download $asset from release $tag" ;;
+      fetch_hashed "$url" "$DESKTOP_APP_FILE" -D "$DESKTOP_SCRATCH/app.headers" &
+      fetch=$!
+      DESKTOP_JOBS="$DESKTOP_JOBS $fetch"
+      # A system that cannot install the package stops the download as soon as it says so.
+      while kill -0 "$fetch" 2>/dev/null; do
+        [ "$(webkit_check_result)" != missing ] || die "$WEBKIT_MISSING"
+        sleep 0.2
+      done
+      wait "$fetch" || die "could not download $asset from release $tag" ;;
   esac
+  [ -z "$WEBKIT_CHECK" ] || { wait "$WEBKIT_CHECK" 2>/dev/null || true; }
+  [ "$(webkit_check_result)" != missing ] || die "$WEBKIT_MISSING"
   # The app is what the next steps need. Its first-launch files keep downloading through
   # them when the app waits for them; an older app would fetch them a second time.
   [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
@@ -605,10 +625,92 @@ apt_prefetch() {  # SUDO PACKAGE DIR
       -o "$0.part" "$1" && mv "$0.part" "$0" || rm -f "$0.part"; exit 0' < "$dir/fetch"
 }
 
+# The desktop package format for this Linux: the one its own package manager installs
+# with dependencies (apt: deb; dnf or zypper: rpm; pacman: Arch), else one dpkg or rpm
+# installs alone. An Arch system can carry rpm from its repositories; it gets its own
+# package, not an rpm whose dependencies nothing would resolve.
+linux_package_format() {
+  if have apt-get; then echo deb
+  elif have dnf || have zypper; then echo rpm
+  elif have pacman; then echo pacman
+  elif have dpkg; then echo deb
+  elif have rpm; then echo rpm
+  fi
+}
+
+linux_package_asset() {  # VERSION ARCH (x86_64, aarch64)
+  case "$(linux_package_format)-$2" in
+    deb-x86_64) printf 'CLIO.Desktop_%s_amd64-bundled.deb' "$1" ;;
+    deb-aarch64) printf 'CLIO.Desktop_%s_arm64-bundled.deb' "$1" ;;
+    rpm-*) printf 'CLIO.Desktop-%s-1.%s-bundled.rpm' "$1" "$2" ;;
+    pacman-*) printf 'CLIO.Desktop-%s-1-%s-bundled.pkg.tar.zst' "$1" "$2" ;;
+  esac
+}
+
+# LINUX_SUDO: what runs a package manager as root: nothing for root, else sudo.
+LINUX_SUDO=""
+linux_sudo() {
+  LINUX_SUDO=""
+  [ "$(id -u)" = 0 ] && return 0
+  have sudo || die "installing CLIO Desktop needs root; run as root or install sudo"
+  LINUX_SUDO=sudo
+}
+
+# 0 when this system's repositories have no WebKitGTK 4.1, which the Tauri 2 desktop
+# links (RHEL, Rocky and Alma 9 ship only the 4.0 API): such a system would otherwise
+# learn it from dnf after downloading ~860 MB. The query runs as root so the metadata it
+# fetches is the cache the install reads. An answer that cannot be had (no network, apt
+# lists never fetched) is not "missing": the install step reports what it finds.
+desktop_webkit_missing() {  # SUDO
+  local lib='libwebkit2gtk-4.1.so.0()(64bit)' found rc=0
+  if have dnf || have zypper; then
+    ! rpm -q --whatprovides "$lib" >/dev/null 2>&1 || return 1
+  fi
+  if have dnf; then
+    found="$($1 dnf -q repoquery --whatprovides "$lib" 2>/dev/null)" || return 1
+    [ -z "$found" ]
+  elif have zypper; then
+    $1 zypper --non-interactive --quiet search --provides --match-exact "$lib" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 104 ]  # zypper: no package matched
+  elif have pacman; then
+    ! pacman -Qq webkit2gtk-4.1 >/dev/null 2>&1 || return 1
+    pacman -Sp --print-format '%n' webkit2gtk-4.1 >/dev/null 2>&1 && return 1
+    # Not in the sync databases, which may simply never have been fetched: unknown.
+    compgen -G '/var/lib/pacman/sync/*.db' >/dev/null
+  elif have apt-cache; then
+    ! dpkg -s libwebkit2gtk-4.1-0 >/dev/null 2>&1 || return 1
+    compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null || return 1
+    ! apt-cache show libwebkit2gtk-4.1-0 >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+# The WebKit check runs beside the download: dnf and zypper spend 9-40 s fetching the
+# repository metadata the install needs anyway, which the download then hides. The
+# install reads it from their cache. sudo asks for its password first, in the
+# foreground, where a prompt can be answered.
+WEBKIT_CHECK=""
+WEBKIT_MISSING="this system's package repositories provide no WebKitGTK 4.1 (libwebkit2gtk-4.1), which CLIO Desktop needs (RHEL, Rocky and Alma 9 ship only an older WebKitGTK). Install CLIO without --desktop and open it in your browser with: clio web"
+start_webkit_check() {
+  linux_sudo
+  # A command, not `sudo -v`: -v needs every matching sudoers rule to be passwordless
+  # (openSUSE's default `ALL ALL=(ALL) ALL` with targetpw), so it asks where they never do.
+  [ -z "$LINUX_SUDO" ] || sudo true || die "installing CLIO Desktop needs root, and sudo refused"
+  {
+    if desktop_webkit_missing "$LINUX_SUDO"; then echo missing; else echo found; fi > "$DESKTOP_SCRATCH/webkit.part"
+    mv "$DESKTOP_SCRATCH/webkit.part" "$DESKTOP_SCRATCH/webkit"
+  } </dev/null >/dev/null 2>&1 &
+  WEBKIT_CHECK=$!
+  DESKTOP_JOBS="$DESKTOP_JOBS $WEBKIT_CHECK"
+}
+webkit_check_result() { cat "$DESKTOP_SCRATCH/webkit" 2>/dev/null || true; }
+
 install_desktop_linux() {
-  local package="$1" sudo="" out=1 archives=()
+  local package="$1" sudo out=1 archives=()
   [ "$PROGRESS_JSON" = 0 ] || out=2
-  [ "$(id -u)" = 0 ] || { have sudo || die "installing $package needs root; run as root or install sudo"; sudo=sudo; }
+  linux_sudo
+  sudo="$LINUX_SUDO"
   case "$package" in
     *.deb)
       if have apt-get; then
@@ -616,8 +718,17 @@ install_desktop_linux() {
         $sudo apt-get install -y ${archives[@]+"${archives[@]}"} "$package" >&"$out" || die "apt-get could not install $package"
       else $sudo dpkg -i "$package" >&"$out" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
     *.rpm)
+      # rpm alone resolves no dependencies (WebKitGTK, GTK, zstd): dnf or zypper fetch them.
       if have dnf; then $sudo dnf install -y "$package" >&"$out" || die "dnf could not install $package"
-      else $sudo rpm -U --replacepkgs "$package" >&"$out" || die "rpm could not install $package"; fi ;;
+      elif have zypper; then
+        # The package is not signed with a key zypper knows; its SHA-256 was checked above.
+        $sudo zypper --non-interactive install --allow-unsigned-rpm "$package" >&"$out" \
+          || die "zypper could not install $package"
+      else $sudo rpm -U --replacepkgs "$package" >&"$out" || die "rpm could not install $package (missing dependencies: install them, then retry)"; fi ;;
+    *.pkg.tar.zst)
+      # Unsigned, as the deb and rpm are: its SHA-256 was checked above, and pacman checks
+      # each file against the package's own list. A re-run reinstalls it (a repair).
+      $sudo pacman -U --noconfirm "$package" >&"$out" || die "pacman could not install $package" ;;
   esac
   linux_runtime_ready "$sudo" "$out"
   say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."
@@ -886,9 +997,10 @@ macos_git_placeholder() {
 }
 
 # The git --source uses, as CLIO resolves it (runtime/git_executable.py): CLIO_GIT, a
-# real git on PATH, else the git bundled with an installed CLIO Desktop.
+# real git on PATH, else a bundled git (an installed CLIO Desktop's, or this prefix's
+# release install's).
 source_git() {
-  local candidate app
+  local candidate runtime
   if [ -n "${CLIO_GIT:-}" ]; then
     if [ -x "$CLIO_GIT" ]; then printf '%s' "$CLIO_GIT"; fi
     return 0
@@ -898,12 +1010,39 @@ source_git() {
     printf '%s' "$candidate"
     return
   fi
-  for app in "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app" "/Applications/CLIO Desktop.app"; do
-    candidate="$app/Contents/Resources/gact-runtime/git/libexec/git-core/git"
+  # A runtime's bundled git: CLIO Desktop's (macOS app, Linux deb/rpm) or the one a
+  # release install of this prefix unpacked.
+  for runtime in "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app/Contents/Resources/gact-runtime" \
+      "/Applications/CLIO Desktop.app/Contents/Resources/gact-runtime" "/usr/lib/CLIO Desktop/gact-runtime" \
+      "$PREFIX/clio-agent/.venv"; do
+    candidate="$runtime/git/libexec/git-core/git"
     [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
   done
   # No git: an empty answer, not a failure, so `set -e` reaches the guidance below.
   return 0
+}
+
+# The shim that puts SOURCE_GIT first on PATH, for this script's git calls and uv's (the
+# git-pinned dependencies). A bundled git must not use another git's helpers. On Linux its
+# statically linked curl has no usable default CA bundle: it gets the distribution's, as
+# clio_agent.runtime.git_executable gives it. A person's own git keeps its configuration.
+write_git_shim() {
+  local ca="" candidate
+  case "$OS-$SOURCE_GIT" in
+    linux-*/git/libexec/git-core/git)
+      for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+          /etc/ssl/ca-bundle.pem /etc/pki/tls/cacert.pem /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+          /etc/ssl/cert.pem; do
+        [ -f "$candidate" ] && { ca="$candidate"; break; }
+      done ;;
+  esac
+  {
+    printf '#!/bin/sh\nunset GIT_EXEC_PATH\n'
+    # shellcheck disable=SC2016  # expanded by the shim
+    [ -z "$ca" ] || printf 'GIT_SSL_CAINFO="${GIT_SSL_CAINFO:-%s}"\nexport GIT_SSL_CAINFO\n' "$ca"
+    printf 'exec "%s" "$@"\n' "$SOURCE_GIT"
+  } > "$git_shim/git"
+  chmod +x "$git_shim/git"
 }
 
 if [ "$OPT_SOURCE" = 1 ]; then
@@ -911,14 +1050,13 @@ if [ "$OPT_SOURCE" = 1 ]; then
   if [ -z "$SOURCE_GIT" ]; then
     [ "$OS" = darwin ] \
       && die "git is required for --source. This Mac has none (/usr/bin/git only offers the Command Line Tools). Install CLIO Desktop first (install.sh --desktop), whose git --source uses, or the Command Line Tools (xcode-select --install), or set CLIO_GIT"
-    die "git is required for --source"
+    die "git is required for --source: install git, or install CLIO without --source first (its release install includes a git this one then uses), or set CLIO_GIT"
   fi
   if [ "$SOURCE_GIT" != "$(command -v git 2>/dev/null || true)" ]; then
     # This script's git calls and uv's (the git-pinned dependencies) find this git
     # first on PATH; a bundled one must not use another git's helpers.
     git_shim="$(mktemp -d "${TMPDIR:-/tmp}/clio-git.XXXXXXXX")"
-    printf '#!/bin/sh\nunset GIT_EXEC_PATH\nexec "%s" "$@"\n' "$SOURCE_GIT" > "$git_shim/git"
-    chmod +x "$git_shim/git"
+    write_git_shim
     export PATH="$git_shim:$PATH"
     say "Using git: $SOURCE_GIT"
   fi
@@ -943,6 +1081,34 @@ python_of() {
 }
 
 # ---------- the source clone: upgrade or repair on a re-run -----------
+
+# A release install's environment that a source install replaces is set aside, not
+# removed, until the source install has finished: an install that fails (no network, a
+# ref that does not exist) puts it back, so the person keeps a working CLIO. The git this
+# install chose can live in it (a release install's bundled git, for a machine with
+# none): the bundled git is relocatable, and the shim follows it.
+RELEASE_ASIDE=""
+RELEASE_ORIGIN=""
+set_release_aside() {  # DIR
+  RELEASE_ORIGIN="$1"
+  RELEASE_ASIDE="$1.release"
+  rm -rf "$RELEASE_ASIDE"
+  mv "$1" "$RELEASE_ASIDE" || die "could not set the release install in '$1' aside"
+  [ -n "${git_shim:-}" ] || return 0
+  case "$SOURCE_GIT" in
+    "$1"/*)
+      SOURCE_GIT="$RELEASE_ASIDE/${SOURCE_GIT#"$1"/}"
+      write_git_shim ;;
+  esac
+}
+# On exit: the release install set aside is put back unless the install finished (it
+# then removed it). What replaced it is this run's own clone or link, holding no work.
+restore_release_aside() {
+  [ -n "$RELEASE_ASIDE" ] && [ -e "$RELEASE_ASIDE" ] || return 0
+  if [ -L "$RELEASE_ORIGIN" ]; then rm -f "$RELEASE_ORIGIN"; else rm -rf "$RELEASE_ORIGIN"; fi
+  mv "$RELEASE_ASIDE" "$RELEASE_ORIGIN" \
+    && printf '%s\n' "The source install did not finish; the release install in '$RELEASE_ORIGIN' is back as it was." >&2
+}
 # The clone mode installs into $PREFIX/clio-agent. Running the installer again upgrades
 # or repairs that clone in place; it never removes anything a person could have changed.
 
@@ -967,7 +1133,7 @@ source_clone_reusable() {
       esac
     done
     say "Replacing the release install's environment in '$src' (your data lives elsewhere)"
-    rm -rf "$src"
+    set_release_aside "$src"
     return 1
   fi
   origin="$(git -C "$src" config --get remote.origin.url 2>/dev/null || true)"
@@ -1059,6 +1225,7 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
 # Release installs carry Web; source installs provide the service without a frontend build.
 # The legacy TUI is frozen and unsupported. Do not build or download it here.
 on_exit() {
+  restore_release_aside
   [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
   [ -z "${git_shim:-}" ] || rm -rf "$git_shim"
   [ -z "${tool_shim:-}" ] || rm -rf "$tool_shim"
@@ -1137,16 +1304,20 @@ source_install_plan() {
   fi
 }
 
-# start_install_downloads PLAN: fetch the plan's LibreOffice and pnpm in the background.
-# Only those kinds: a plan's "runtime" archive is the desktop's own and not used here.
+# start_install_downloads PLAN [KINDS]: fetch the plan's files of KINDS (default: office
+# and npm, LibreOffice and pnpm) in the background. A plan's "runtime" archive is the
+# desktop's own and not used here; its "browser" archives (Playwright's Node.js and
+# Chromium) only a runtime install uses, as PyPI's Playwright brings its own Node.js.
 start_install_downloads() {
   [ -n "$1" ] && [ -s "$1" ] || return 0
-  awk '$1 == "capability" || $1 == "office" || $1 == "npm"' "$1" > "$DESKTOP_SCRATCH/plan.install"
-  start_prefetch "$DESKTOP_SCRATCH/plan.install"
+  local kinds="${2:-office npm}" part
+  part="$DESKTOP_SCRATCH/plan.install.${kinds// /-}"
+  awk -v kinds=" $kinds " '$1 == "capability" || index(kinds, " " $1 " ")' "$1" > "$part"
+  start_prefetch "$part"
   [ -n "$DESKTOP_JOBS" ] || return 0
   INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
   # A runtime that cannot wait for a download in progress would fetch it a second time.
-  if plan_capable "$DESKTOP_SCRATCH/plan.install" waits-for-partial-downloads; then
+  if plan_capable "$part" waits-for-partial-downloads; then
     DESKTOP_PLAN_WAITS=1
   fi
 }
@@ -1157,7 +1328,6 @@ WEB_JOB=""
 WEB_TAG=""
 web_url() { printf 'https://github.com/iowarp/clio-agent/releases/download/%s/clio-web-%s.zip' "$1" "${1#v}"; }
 start_web_download() {  # TAG
-  command -v unzip >/dev/null 2>&1 || return 0
   WEB_TAG="$1"
   curl -fsSL --retry 3 "$(web_url "$1")" -o "$DESKTOP_SCRATCH/clio-web.zip" 2>/dev/null &
   WEB_JOB=$!
@@ -1493,11 +1663,12 @@ install_runtime_archive() {
   fi
   site="$VENV/lib/python$version/site-packages"
   say "Downloading and unpacking the CLIO runtime ($name, $(megabytes "$bytes") MB)"
-  # Only the packages, the document wheels and uv: the runtime's own Python is not used.
+  # Only the packages, the document wheels, uv and git: the runtime's own Python is not used.
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --speed-limit 1 --speed-time 60 "$url" \
     | "$VENV/bin/python" -I -c "$RUNTIME_DECODER" "$RUNTIME_UNPACK/sum" \
     | tar -x --no-same-owner -C "$RUNTIME_UNPACK" -f - \
         "gact-runtime/python/lib/python$version/site-packages" gact-runtime/document-wheels gact-runtime/bin \
+        gact-runtime/git \
     && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
   if [ "${status[*]}" != "0 0 0" ]; then
     warn "downloading or unpacking $name failed (curl, decoder, tar: ${status[*]})"
@@ -1509,6 +1680,9 @@ install_runtime_archive() {
     warn "$name does not match the release's checksum"
     return 1
   fi
+  # The line is free now: the browser archives the runtime pins download while it is put
+  # in place, and the browser step of the package install finds them on disk.
+  start_install_downloads "${install_plan:-}" browser
   "$VENV/bin/python" -I -c "$RUNTIME_FINISHER" "$RUNTIME_UNPACK/gact-runtime/python/lib/python$version/site-packages" \
     "$site" "$RUNTIME_UNPACK/clio_runtime_launchers-1-py3-none-any.whl" || return 1
   uv pip install --quiet --offline --no-deps --python "$VENV/bin/python" \
@@ -1517,6 +1691,9 @@ install_runtime_archive() {
   for f in uv uvx; do
     [ -e "$VENV/bin/$f" ] || [ ! -f "$RUNTIME_UNPACK/gact-runtime/bin/$f" ] || mv "$RUNTIME_UNPACK/gact-runtime/bin/$f" "$VENV/bin/$f"
   done
+  # The relocatable git CLIO installs marketplace plugins with, for a machine without
+  # one; clio_agent.runtime.git_executable finds it beside the environment's Python.
+  mv "$RUNTIME_UNPACK/gact-runtime/git" "$VENV/git" || { warn "could not place the runtime's git"; return 1; }
   if [ -f "$RUNTIME_UNPACK/gact-runtime/document-wheels/manifest.json" ]; then
     [ -n "$INSTALL_DOWNLOADS" ] || INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
     mkdir -p "$INSTALL_DOWNLOADS"
@@ -1561,7 +1738,7 @@ if [ "$OPT_SOURCE" = 1 ]; then
     elif [ -e "$PREFIX/clio-agent/.git" ]; then
       die "Source reinstall refused: '$PREFIX/clio-agent' is a clone that may hold your changes. Move it, or choose another CLIO_PREFIX."
     else
-      rm -rf "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
+      set_release_aside "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
     fi
     ln -sfn "$SRC" "$PREFIX/clio-agent"
     install_scratch
@@ -1665,7 +1842,12 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   start_clio_kit "$py"
   runtime_installed=0
   ! finish_release_runtime "$package_version" || runtime_installed=1
-  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"
+  # The browser archives (Node.js and Chromium, from the runtime's pin) only the prebuilt agent uses.
+  if [ "$runtime_first" = 1 ] && [ "$runtime_installed" = 1 ]; then
+    start_install_downloads "$install_plan" "office npm browser"
+  elif [ "$runtime_first" = 1 ]; then
+    start_install_downloads "$install_plan"
+  fi
   start_web_download "$tag"
   if [ "$runtime_installed" = 1 ]; then
     CLIO_VERSION="$package_version"
@@ -1874,17 +2056,20 @@ if [ "$OPT_SOURCE" = 0 ]; then
   else
     web_fetched=0
   fi
-  if command -v unzip >/dev/null 2>&1 && { [ "$web_fetched" = 1 ] \
-      || curl -fsSL "$(web_url "$tag")" -o "$PREFIX/clio-web.zip" 2>/dev/null; }; then
+  if [ "$web_fetched" = 1 ] || curl -fsSL "$(web_url "$tag")" -o "$PREFIX/clio-web.zip" 2>/dev/null; then
     rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-agent/web"
-    unzip -q -o "$PREFIX/clio-web.zip" -d "$PREFIX/_webtmp"
-    mkdir -p "$PREFIX/clio-agent/web"
-    cp -r "$PREFIX/_webtmp/clio-web-${webver}/." "$PREFIX/clio-agent/web/" 2>/dev/null \
-      || cp -r "$PREFIX/_webtmp/." "$PREFIX/clio-agent/web/"
+    # The environment's Python unpacks it: unzip is not installed everywhere.
+    if "$VENV/bin/python" -I -m zipfile -e "$PREFIX/clio-web.zip" "$PREFIX/_webtmp"; then
+      mkdir -p "$PREFIX/clio-agent/web"
+      cp -r "$PREFIX/_webtmp/clio-web-${webver}/." "$PREFIX/clio-agent/web/" 2>/dev/null \
+        || cp -r "$PREFIX/_webtmp/." "$PREFIX/clio-agent/web/"
+      say "Web UI bundle installed (run: clio --web)"
+    else
+      warn "could not unpack the web UI bundle for $tag — 'clio --web' disabled until reinstalled with it"
+    fi
     rm -rf "$PREFIX/_webtmp" "$PREFIX/clio-web.zip"
-    say "Web UI bundle installed (run: clio --web)"
   else
-    warn "web UI bundle unavailable for $tag — 'clio --web' disabled until reinstalled with it"
+    warn "could not download the web UI bundle for $tag ($(web_url "$tag")) — 'clio --web' disabled until reinstalled with it"
   fi
 fi
 
@@ -1963,6 +2148,20 @@ else
   # Source installs carry no frontend build; say so instead of pointing at Web.
   frontend="none (source install); Desktop is available with --desktop"
   run_step="Run:   clio start (headless service); for Web set CLIO_WEB_DIR to a built web dist"
+fi
+# Installed: a release install a source install replaced is no longer needed. When its
+# bundled git is the git this install used (a machine without one), that git moves into
+# the source environment instead, where CLIO and the next source install find it.
+if [ -n "$RELEASE_ASIDE" ]; then
+  case "$SOURCE_GIT" in
+    "$RELEASE_ASIDE/.venv/git/"*)
+      if [ "$SRC" = "$RELEASE_ORIGIN" ] && [ -d "$SRC/.venv" ] && [ ! -e "$SRC/.venv/git" ] \
+          && mv "$RELEASE_ASIDE/.venv/git" "$SRC/.venv/git"; then
+        SOURCE_GIT="$SRC/.venv/git/${SOURCE_GIT#"$RELEASE_ASIDE/.venv/git/"}"
+        write_git_shim
+      fi ;;
+  esac
+  rm -rf "$RELEASE_ASIDE"
 fi
 clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; elif [ -n "$RUNTIME_SHA" ]; then echo "release runtime: $CLIO_VERSION"; else echo "PyPI: $CLIO_VERSION"; fi)"
 cat <<EOF

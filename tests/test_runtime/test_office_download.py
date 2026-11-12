@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,13 +17,32 @@ from clio_agent.runtime.document_stack import office_fetch
 from clio_agent.runtime.document_stack.process import DocumentError
 
 
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record this thread's backoff sleeps instead of sleeping.
+
+    ``office_fetch.time`` is the shared ``time`` module: other threads in the worker keep
+    sleeping for real and stay out of the record.
+    """
+    delays: list[float] = []
+    real_sleep, caller = time.sleep, threading.get_ident()
+
+    def sleep(seconds: float) -> None:
+        if threading.get_ident() == caller:
+            delays.append(seconds)
+        else:
+            real_sleep(seconds)
+
+    monkeypatch.setattr(office_fetch.time, "sleep", sleep)
+    return delays
+
+
 @pytest.mark.parametrize("failure", ["checksum", "network", "http503"])
 def test_fresh_request_recovers_without_accepting_unverified_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     payload = b"verified Office package"
     attempts: list[str] = []
-    delays: list[float] = []
+    delays = _record_sleeps(monkeypatch)
 
     def fetch(request: urllib.request.Request, **kwargs: Any) -> io.BytesIO:
         attempts.append(request.full_url)
@@ -35,7 +56,6 @@ def test_fresh_request_recovers_without_accepting_unverified_bytes(
         return io.BytesIO(payload)
 
     monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
-    monkeypatch.setattr(office_fetch.time, "sleep", delays.append)
     monkeypatch.setattr(office_fetch.random, "uniform", lambda low, high: 1.0)
     target = tmp_path / "package.part"
     office_fetch.download(
@@ -50,14 +70,13 @@ def test_repeated_corrupt_download_fails_closed_and_removes_partial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     attempts: list[str] = []
-    delays: list[float] = []
+    delays = _record_sleeps(monkeypatch)
 
     def fetch(request: urllib.request.Request, **kwargs: Any) -> io.BytesIO:
         attempts.append(request.full_url)
         return io.BytesIO(b"corrupt")
 
     monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
-    monkeypatch.setattr(office_fetch.time, "sleep", delays.append)
     target = tmp_path / "package.part"
     limit = office_fetch._MAX_ATTEMPTS
     with pytest.raises(DocumentError, match=f"all {limit} download attempts failed") as failure:
@@ -167,7 +186,7 @@ def test_unreachable_librarian_pin_falls_back_to_its_snapshot_copies(
         return io.BytesIO(payload)
 
     monkeypatch.setattr(office_fetch.urllib.request, "urlopen", fetch)
-    monkeypatch.setattr(office_fetch.time, "sleep", lambda seconds: None)
+    _record_sleeps(monkeypatch)
     target = tmp_path / "package.part"
     office_fetch.download(url, target, hashlib.sha256(payload).hexdigest(), (snapshot,))
     assert target.read_bytes() == payload

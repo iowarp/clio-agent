@@ -271,7 +271,7 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     import sys
     import threading
 
-    both_running = Barrier(2, timeout=10)
+    both_running = Barrier(3, timeout=10)
 
     def install(workspace: Path, **kwargs: Any) -> dict[str, Any]:
         both_running.wait()
@@ -283,8 +283,17 @@ def test_store_upgrade_runs_while_packages_are_prepared(
         emit("migrate status=done ran=0 seconds=0.000")
         return {"status": "done", "seconds": 0.0}
 
+    def browser(args: Any, emit: Any) -> dict[str, Any]:
+        both_running.wait()
+        return {"status": "ready", "seconds": 0.0}
+
     monkeypatch.setattr(installer, "install_document_runtime", install)
     monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(installer, "_prepare_browser", browser)
+    monkeypatch.setattr(
+        installer, "_prepare_default_marketplace", lambda args, emit: {"status": "ready"}
+    )
+    monkeypatch.setattr(installer, "_prewarm_runtime_files", lambda args: {"status": "done"})
     monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
     monkeypatch.setattr(
         installer, "collect_snapshots_after_install", lambda: {"status": "collected"}
@@ -296,6 +305,104 @@ def test_store_upgrade_runs_while_packages_are_prepared(
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["status"] == "ready"
     assert summary["store_migrations"] == {"status": "done", "seconds": 0.0}
+    assert summary["browser"] == {"status": "ready", "seconds": 0.0}
+    assert summary["marketplace"] == {"status": "ready"}
+    assert summary["prewarm"] == {"status": "done"}
+
+
+def test_prewarm_opens_bytecode_sources_and_native_libraries_only_on_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first start no longer meets every freshly written code file cold."""
+    import sys
+    from argparse import Namespace
+
+    lib = tmp_path / "Lib"
+    site = lib / "site-packages"
+    cache = site / "pkg" / "__pycache__"
+    cache.mkdir(parents=True)
+    tag = sys.implementation.cache_tag
+    (site / "pkg" / "mod.py").write_text("x = 1\n")
+    (cache / f"mod.{tag}.pyc").write_bytes(b"\0")
+    (cache / "mod.other-tag.pyc").write_bytes(b"\0")
+    (site / "pkg" / "_native.pyd").write_bytes(b"\0")
+    (site / "pkg" / "notes.txt").write_text("not code")
+    (site / "pkg" / "unused.py").write_text("y = 2\n")
+    stdlib = tmp_path / "python314.zip"
+    stdlib.write_bytes(b"PK")
+    monkeypatch.setattr(sys, "path", [str(stdlib), str(lib), str(site)])
+
+    files = sorted(
+        Path(p).relative_to(tmp_path).as_posix() for p in installer._runtime_code_files()
+    )
+    assert files == [
+        "Lib/site-packages/pkg/__pycache__/" + f"mod.{tag}.pyc",
+        "Lib/site-packages/pkg/_native.pyd",
+        "Lib/site-packages/pkg/mod.py",
+        "python314.zip",
+    ]
+    launch = installer._prewarm_runtime_files(Namespace(reuse_installed=True))
+    assert launch == {"status": "skipped", "reason": "reuse_installed"}
+    install = installer._prewarm_runtime_files(Namespace(reuse_installed=False))
+    assert install["status"] == "done"
+    assert (install["files"], install["unreadable"]) == (4, 0)
+
+
+def test_default_marketplace_is_installed_by_an_install_but_never_by_a_launch_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server's start finds the default marketplace current instead of fetching it."""
+    from argparse import Namespace
+
+    from clio_agent.plugins.service import DEFAULT_MARKETPLACE, PluginService
+
+    lines: list[str] = []
+    launch = installer._prepare_default_marketplace(Namespace(reuse_installed=True), lines.append)
+    assert launch == {"status": "skipped", "reason": "reuse_installed"}
+    assert DEFAULT_MARKETPLACE not in PluginService().store.marketplaces()
+    install = installer._prepare_default_marketplace(Namespace(reuse_installed=False), lines.append)
+    assert install["status"] == "ready", install
+    assert lines[-1] == "The default agents are installed."
+    assert PluginService().ensure_default_marketplace() is None
+
+
+def test_browser_is_fetched_by_an_install_but_never_by_a_launch_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from argparse import Namespace
+
+    from clio_agent.gact.browser import install as browser_install
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        browser_install, "prepare_at_install", lambda: calls.append("x") or {"status": "ready"}
+    )
+    lines: list[str] = []
+    launch = installer._prepare_browser(Namespace(reuse_installed=True), lines.append)
+    assert launch == {"status": "skipped", "reason": "reuse_installed"}
+    assert calls == []
+    install = installer._prepare_browser(Namespace(reuse_installed=False), lines.append)
+    assert install["status"] == "ready" and calls == ["x"]
+    assert lines[-1] == "The browser is ready."
+
+
+def test_failed_browser_fetch_is_typed_and_does_not_fail_the_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.browser import driver
+    from clio_agent.gact.browser import install as browser_install
+    from clio_agent.gact.browser.settings import BrowserError
+
+    def offline() -> None:
+        raise BrowserError("browser_runtime_install_failed", "nodejs.org is unreachable")
+
+    monkeypatch.setattr(browser_install, "playwright_version", lambda: "1.0")
+    monkeypatch.setattr(driver, "ensure_node", offline)
+    assert browser_install.prepare_at_install() == {
+        "status": "failed",
+        "reason": "browser_runtime_install_failed",
+        "error": "nodejs.org is unreachable",
+    }
 
 
 def test_failed_package_step_waits_for_store_upgrade(
@@ -316,6 +423,11 @@ def test_failed_package_step_waits_for_store_upgrade(
 
     monkeypatch.setattr(installer, "install_document_runtime", install)
     monkeypatch.setattr(installer, "_run_store_migrations", migrate)
+    monkeypatch.setattr(installer, "_prepare_browser", lambda args, emit: {"status": "ready"})
+    monkeypatch.setattr(
+        installer, "_prepare_default_marketplace", lambda args, emit: {"status": "ready"}
+    )
+    monkeypatch.setattr(installer, "_prewarm_runtime_files", lambda args: {"status": "done"})
     monkeypatch.setattr(
         sys, "argv", ["document_install", "--workspace", str(tmp_path / "workspace")]
     )

@@ -143,14 +143,31 @@ def notify_refused_call(
     name: str,
     args: Mapping[str, Any],
     reason: str,
-) -> PermissionError:
+    decision: Any = None,
+) -> Exception:
     """Record a call the permission gate or a hook refused; return the error to raise.
 
     The refused call is part of what the agent did, so the transcript and the UI
     show it as a refused (denied) call rather than leaving only the model's account of it.
+
+    A gate ``decision`` whose ``outcome`` is ``"cancelled"`` was not refused: the turn
+    was stopped, or the server shut down, while its approval waited. That call is
+    completed with the cancellation's own error and recorded as cancelled.
     """
 
     notify_tool_observer(observer, name, args, "started", None)
+    if getattr(decision, "outcome", "") == "cancelled":
+        from clio_agent.tools.foreground_cancellation import (  # noqa: PLC0415
+            _tool_cancellation_error,
+        )
+
+        error = _tool_cancellation_error(
+            name,
+            "permission_wait",
+            message=f"tool call cancelled by client before it was approved: {name!r} did not run",
+        )
+        notify_tool_observer(observer, name, args, "completed", str(error))
+        return error
     token = REFUSED_CALL.set(True)
     try:
         notify_tool_observer(observer, name, args, "completed", reason)

@@ -17,6 +17,7 @@ from clio_agent.gact.storage.auth import StorageAuth
 from clio_agent.gact.storage.globus import GlobusSource
 from clio_agent.gact.storage.globus_consent import GlobusConsentRequired
 from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.storage.names import resolve_remote
 
 
 class GlobusDownload:
@@ -85,7 +86,7 @@ class GlobusDownload:
     def open_read(self, entry: FileEntry) -> BinaryIO:
         """Delegate ranged reads, buffering and backend retries to globusfs."""
         entry = FileEntry.model_validate(entry.model_dump())
-        path = self.source.record.source.root.rstrip("/") + "/" + entry.path
+        path = self.source.record.source.root.rstrip("/") + "/" + entry.source_path
         return cast(
             BinaryIO,
             self.fs.open(
@@ -106,7 +107,12 @@ class GlobusDownload:
         current = next((row for row in self.entries() if row.path == path), None)
         if (current.revision if current else None) != expected:
             raise ValueError("The Globus file changed; review this edit again")
-        target = f"{self.collection}{self.source.record.source.root.rstrip('/')}/{path}"
+        remote = (
+            current.source_path
+            if current
+            else resolve_remote(path, lambda folder: self.source._names(folder))
+        )
+        target = f"{self.collection}{self.source.record.source.root.rstrip('/')}/{remote}"
         if content is None:
             self.fs.rm_file(target)
             return None

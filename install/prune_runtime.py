@@ -15,6 +15,12 @@ What goes:
 * The ``INSTALLER`` and ``REQUESTED`` markers in each ``.dist-info``. Neither
   importlib.metadata nor uv needs them to import, upgrade or uninstall a package.
 * ``globus_sdk.testing``, response fixtures for a caller's own test suite.
+* botocore's API models for AWS services CLIO never calls: 1,825 of its 1,926 data
+  files in 0.9.6. botocore reads ``botocore/data/<service>`` only when a client for
+  that service is created. Only litellm's Bedrock and SageMaker paths and botocore's
+  own credential providers create clients, for the ``BOTOCORE_SERVICES`` below.
+  Signing a request (SigV4) needs no model, and nor does ``host_credentials``'s
+  offline credential check.
 
 What stays: ``RECORD``, which uv needs to upgrade the runtime in place,
 ``direct_url.json`` and ``METADATA``, license files (redistribution requires them),
@@ -33,6 +39,34 @@ BUILD_SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".h", ".hpp", ".pxd", ".
 KEEPS_BUILD_SOURCES = frozenset({"cffi", "iowarp_core"})
 UNREAD_DIST_INFO_FILES = frozenset({"INSTALLER", "REQUESTED"})
 UNREAD_TREES = ("pip", "globus_sdk/testing")
+# Every service litellm, boto3, s3transfer or botocore's credential chain names
+# (sts, sso, sso-oidc and signin resolve credentials). A client for any other
+# service raises botocore's UnknownServiceError.
+BOTOCORE_SERVICES = frozenset(
+    {
+        "bedrock",
+        "bedrock-agent",
+        "bedrock-agent-runtime",
+        "bedrock-agentcore",
+        "bedrock-runtime",
+        "cloudwatch",
+        "dynamodb",
+        "iam",
+        "kms",
+        "logs",
+        "polly",
+        "s3",
+        "sagemaker",
+        "sagemaker-runtime",
+        "secretsmanager",
+        "signin",
+        "sqs",
+        "sso",
+        "sso-oidc",
+        "sts",
+        "transcribe",
+    }
+)
 
 
 def _count_files(path: Path) -> int:
@@ -49,7 +83,12 @@ def _remove_empty_dirs(root: Path) -> None:
 
 def prune(site: Path) -> dict[str, int]:
     """Delete the unread files under ``site`` and return how many went, by kind."""
-    removed = {"pip and unread trees": 0, "build sources": 0, "dist-info markers": 0}
+    removed = {
+        "pip and unread trees": 0,
+        "build sources": 0,
+        "dist-info markers": 0,
+        "AWS service models": 0,
+    }
 
     trees = [site / tree for tree in UNREAD_TREES]
     trees += sorted(site.glob("pip-*.dist-info"))
@@ -76,6 +115,14 @@ def prune(site: Path) -> dict[str, int]:
             if marker.is_file():
                 marker.unlink()
                 removed["dist-info markers"] += 1
+
+    # The root files (endpoints.json, partitions.json, _retry.json, ...) stay.
+    models = site / "botocore" / "data"
+    if models.is_dir():
+        for service in sorted(p for p in models.iterdir() if p.is_dir()):
+            if service.name not in BOTOCORE_SERVICES:
+                removed["AWS service models"] += _count_files(service)
+                shutil.rmtree(service)
     return removed
 
 
@@ -88,6 +135,9 @@ def main(argv: list[str]) -> int:
     removed = prune(site)
     if (site / "pip").exists():
         raise SystemExit("prune_runtime: pip is still installed")
+    models = site / "botocore" / "data"
+    if models.is_dir() and not (models / "sts").is_dir():
+        raise SystemExit("prune_runtime: botocore has no sts model to keep")
     detail = ", ".join(f"{kind} {count}" for kind, count in removed.items())
     print(f"[prune_runtime] removed {sum(removed.values())} unread files ({detail})")
     return 0

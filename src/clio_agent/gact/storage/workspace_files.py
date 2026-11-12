@@ -34,7 +34,7 @@ def connected_file_entries(
                         "path": str(
                             PurePosixPath(".clio-agent/links") / source.id / linked.id / entry.path
                         ),
-                        "display_path": f"Linked folders/{source.label}/{entry.path}",
+                        "display_path": f"Linked folders/{source.label}/{entry.source_path}",
                         "type": "dir" if entry.kind == "directory" else "file",
                         "internal": False,
                         "source_id": source.id,
@@ -67,7 +67,7 @@ def connected_file_entries(
                     continue
                 row: dict[str, Any] = {
                     "path": virtual,
-                    "display_path": f"Connected data/{display_name}/{entry.path}",
+                    "display_path": f"Connected data/{display_name}/{entry.source_path}",
                     "type": "dir" if entry.kind == "directory" else "file",
                     "internal": False,
                     "source_id": source.id,

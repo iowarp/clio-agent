@@ -40,8 +40,13 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
 
 ## What gets installed (default: release mode)
 
-- `clio-agent` (server, Python) — latest from **PyPI**, installed into a
-  managed virtualenv at `$CLIO_PREFIX/clio-agent/.venv`
+- `clio-agent` (server, Python), installed into a managed virtualenv at
+  `$CLIO_PREFIX/clio-agent/.venv` from the release's prebuilt runtime archive when
+  the release publishes one for your platform, otherwise from **PyPI**
+  (`CLIO_INSTALL_FROM=pypi` forces PyPI)
+- `git` — the runtime archive's relocatable git, at `$CLIO_PREFIX/clio-agent/.venv/git`.
+  CLIO uses your own `git` when one is on PATH and this one otherwise, to install
+  marketplace agents (including the default `clio/standard`)
 - Web frontend — the matching release bundle, unpacked to `$CLIO_PREFIX/clio-agent/web`
 - `clio-kit` MCP launcher — provisioned via `uv tool install clio-kit==2.12.3`
   using the backend's selected Python (idempotent) when `uv` is present. Scientific
@@ -64,9 +69,13 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
 - `curl` (Linux/macOS) / `Invoke-WebRequest` (PowerShell — built in)
 - The installer provisions `uv` when missing and the release's managed Python.
 
-That's it — no `git`, no `go`.
+- `git` only for a PyPI install (no runtime archive for your platform, or
+  `CLIO_INSTALL_FROM=pypi`): CLIO installs marketplace agents, including the default
+  one, with git. Without it, no conversation can start until git is installed.
 
-CLIO 0.9.6.3 selects standard Python 3.14 with the GIL enabled for source, release
+No `go` is needed.
+
+CLIO 0.9.6.4 selects standard Python 3.14 with the GIL enabled for source, release
 and bundled installations.
 
 ### Persistent backend-only install with uv
@@ -79,7 +88,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.6.3
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.6.4
 clio-agent serve
 ```
 
@@ -143,8 +152,8 @@ $u = 'https://clio.iowarp.ai/install.ps1'
 **Pins** (deployments and CI): `--version <pypi version>` for a release,
 `--ref <branch, tag or commit>` for source. The older spellings still work:
 `CLIO_VERSION=<v>` is `--version <v>`, `CLIO_REF=<ref>` is `--source --ref <ref>`.
-For this release, `CLIO_VERSION=0.9.6.3 bash install/install.sh` selects the stable
-0.9.6.3 frontend and backend.
+For this release, `CLIO_VERSION=0.9.6.4 bash install/install.sh` selects the stable
+0.9.6.4 frontend and backend.
 `GACT_REF` and `GACT_VERSION` no longer select a frontend: the TUI is frozen.
 `CLIO_INSTALLER_REF` selects a different launcher-script ref.
 

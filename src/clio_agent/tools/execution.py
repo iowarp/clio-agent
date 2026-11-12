@@ -642,7 +642,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 # retain the generic refusal. The typed policy audit reason is unchanged.
                 deny_message = getattr(decision, "deny_message", "")
                 message = deny_message or f"tool call {name!r} denied by permission gate"
-                raise notify_refused_call(tool_observer, name, effective_args, message)
+                raise notify_refused_call(tool_observer, name, effective_args, message, decision)
 
         raise_if_cancelled("tool_call_before")
 

@@ -381,3 +381,51 @@ async def test_a_custom_server_is_probed_with_its_own_key(monkeypatch: pytest.Mo
     await local_servers.check_address(preset, "http://127.0.0.1:35507/v1", "server-vllm-spotter")
     await local_servers.check_address(preset, "http://127.0.0.1:8000/v1", "vllm")
     assert sent == ["spotter-key", "main-key"]
+
+
+def test_the_bound_runtime_follows_its_saved_address(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saving where the bound runtime serves rebinds it; a binding pinned elsewhere stays."""
+    app = client.app
+    assert isinstance(app, FastAPI)
+    binds: list[Any] = []
+
+    async def bind(req: Any) -> Any:
+        binds.append(req)
+        app.state.lm_config = {**app.state.lm_config, "api_base": req.api_base}
+        return type("Info", (), {"state": "ready"})()
+
+    route = next(
+        r for r in app.routes if getattr(r, "path", "") == "/v1/providers/lm" and "PUT" in r.methods
+    )
+    monkeypatch.setattr(route, "endpoint", bind)
+    app.state.lm_config = {
+        "provider_id": "vllm",
+        "provider": "openai",
+        "api_base": "http://127.0.0.1:8000/v1",
+        "model": "qwen3-8b",
+        "temperature": None,
+        "max_tokens": 0,
+        "parallel": 2,
+    }
+
+    saved = client.post(
+        "/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"}
+    )
+    assert saved.json()["binding"] == {
+        "followed": True,
+        "provider_id": "vllm",
+        "api_base": "http://127.0.0.1:9999/v1",
+        "state": "ready",
+    }
+    assert (binds[-1].model, binds[-1].parallel, binds[-1].temperature) == ("qwen3-8b", 2, None)
+
+    removed = client.delete("/v1/providers/servers/vllm").json()
+    assert removed["binding"]["api_base"] == "http://127.0.0.1:8000/v1"
+
+    app.state.lm_config["api_base"] = "http://127.0.0.1:8001/v1"
+    pinned = client.post(
+        "/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"}
+    )
+    assert "binding" not in pinned.json() and len(binds) == 2

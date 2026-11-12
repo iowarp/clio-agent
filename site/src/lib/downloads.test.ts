@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { archOf, detectArch, detectOS, isBundled, pickAsset, type ReleaseAsset } from './downloads';
+import { PLATFORMS, archOf, detectArch, detectOS, isBundled, pickAsset, type ReleaseAsset } from './downloads';
 
 /** Asset names exactly as published on the v0.9.4.24 release. */
 const NAMES = [
@@ -29,7 +29,13 @@ const NAMES = [
 	'CLIO.Desktop_0.9.4.24_x64_en-US-bundled.msi',
 	'CLIO.Desktop_0.9.4.24_x64_en-US.msi',
 ];
-const ASSETS: ReleaseAsset[] = NAMES.map((name) => ({ name, browser_download_url: `https://dl/${name}` }));
+/** Arch Linux packages as install/linux-package/arch-package.sh names them (releases after 0.9.6.1). */
+const ARCH_NAMES = [
+	'CLIO.Desktop-0.9.6.2-1-x86_64-bundled.pkg.tar.zst',
+	'CLIO.Desktop-0.9.6.2-1-aarch64-bundled.pkg.tar.zst',
+	'gact-runtime-0.9.6.2-linux-x64.tar.zst',
+];
+const ASSETS: ReleaseAsset[] = [...NAMES, ...ARCH_NAMES].map((name) => ({ name, browser_download_url: `https://dl/${name}` }));
 
 describe('pickAsset', () => {
 	it.each([
@@ -40,6 +46,8 @@ describe('pickAsset', () => {
 		['deb', 'arm64', 'CLIO.Desktop_0.9.4.24_arm64-bundled.deb'],
 		['rpm', 'x64', 'CLIO.Desktop-0.9.4.24-1.x86_64-bundled.rpm'],
 		['rpm', 'arm64', 'CLIO.Desktop-0.9.4.24-1.aarch64-bundled.rpm'],
+		['pacman', 'x64', 'CLIO.Desktop-0.9.6.2-1-x86_64-bundled.pkg.tar.zst'],
+		['pacman', 'arm64', 'CLIO.Desktop-0.9.6.2-1-aarch64-bundled.pkg.tar.zst'],
 	] as const)('offers the bundled %s for %s', (format, arch, name) => {
 		expect(pickAsset(ASSETS, format, arch)).toMatchObject({ name });
 	});
@@ -62,6 +70,27 @@ describe('pickAsset', () => {
 	it('returns null when the release has no matching installer', () => {
 		expect(pickAsset([], 'dmg', 'arm64')).toBeNull();
 		expect(pickAsset(ASSETS.filter((a) => !a.name.endsWith('.dmg')), 'dmg', 'x64')).toBeNull();
+	});
+});
+
+describe('Linux distributions', () => {
+	const linux = PLATFORMS.find((p) => p.os === 'linux');
+
+	it('has no single installer: the visitor picks a distribution', () => {
+		expect(linux?.primary).toBeUndefined();
+		expect(linux?.distributions?.length).toBeGreaterThan(0);
+	});
+
+	it('offers each distribution a package or names what to use instead', () => {
+		for (const distribution of linux?.distributions ?? []) {
+			expect(Boolean(distribution.choice) !== Boolean(distribution.alternative)).toBe(true);
+		}
+	});
+
+	it('finds every offered package in a release that publishes them', () => {
+		for (const distribution of linux?.distributions ?? []) {
+			if (distribution.choice) expect(pickAsset(ASSETS, distribution.choice.format, 'x64')).not.toBeNull();
+		}
 	});
 });
 

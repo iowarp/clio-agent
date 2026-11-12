@@ -46,7 +46,13 @@ from filelock import FileLock
 from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
 from clio_agent.plugins.claude_code import import_claude_plugin
 from clio_agent.plugins.commands import BUILTIN_ROOT
-from clio_agent.plugins.loader import PluginLoadError, load_plugin, tree_digests
+from clio_agent.plugins.loader import (
+    PluginLoadError,
+    carry_digests,
+    hashing_once,
+    load_plugin,
+    tree_digests,
+)
 from clio_agent.plugins.manifest import within
 from clio_agent.plugins.marketplace import (
     GitPin,
@@ -350,6 +356,7 @@ class PluginStore:
         target = self.root / "snapshots" / market / digest
         target.parent.mkdir(parents=True, exist_ok=True)
         _copy_tree(source, target)
+        carry_digests(source, target)
         return target
 
     def _read(self, path: Path, *, trusted: bool, name: str = "") -> MarketplaceContents:
@@ -374,6 +381,14 @@ class PluginStore:
         source waits for :meth:`trust`.
         """
 
+        with hashing_once():
+            return self._install(
+                source, ref=ref, commit=commit, name=name, default=default, parent=parent
+            )
+
+    def _install(
+        self, source: str, *, ref: str, commit: str, name: str, default: bool, parent: str
+    ) -> dict[str, Any]:
         try:
             # A federated child's source is named by its parent's marketplace file.
             fetched = fetch(
