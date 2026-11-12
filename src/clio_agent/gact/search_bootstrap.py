@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from clio_agent.gact.infrastructure.models import (
     ServiceActionRequest,
     ServiceRecord,
 )
+from clio_agent.gact.infrastructure.reuse import OWNER_PROCESS_KEY
 from clio_agent.gact.infrastructure.searxng_service import SERVICE_ID, VARIANT_ID
 from clio_agent.search.backend import register_local_endpoint_resolver
 from clio_agent.search.settings import (
@@ -377,7 +379,10 @@ async def ensure_local_searxng(
         )
         if await _install(runtime, chosen, poll_seconds) != "succeeded":
             return "install_failed"
-    state = await _run(runtime, "start", poll_seconds)
+    # A forced stop of this server skips its graceful search shutdown: bind the
+    # service CLIO starts for itself to this process, so it never outlives it.
+    owner = {OWNER_PROCESS_KEY: str(os.getpid())}
+    state = await _run(runtime, "start", poll_seconds, owner)
     return "started" if state == "succeeded" else "start_failed"
 
 
