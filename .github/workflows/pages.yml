@@ -67,6 +67,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: gact-tui-checkout
       - run: node scripts/prepare-widget-engine.mjs ../gact-tui-checkout
+      # The workspace bundle imports the HDF5 viewer's built output
+      - run: pnpm --filter @clio/hdf5-viewer build
+        working-directory: gact-tui-checkout
       - run: pnpm --filter @clio/workspace exec tsc -b --pretty false
         working-directory: gact-tui-checkout
       - run: pnpm --filter @clio/workspace exec vite build --base /widgets/
