@@ -17,7 +17,11 @@ from typing import Any
 def selected_path(root: Path, relative: str) -> Path:
     """Constrain a relative path to the selected folder without following nested links."""
     parts = relative.split("/")
-    if relative and any(part in {"", ".", ".."} or "\\" in part or ":" in part for part in parts):
+    # On POSIX hosts "\\" and ":" are ordinary name characters; CLIO aliases them locally.
+    separators = ("\\", ":") if os.name == "nt" else ()
+    if relative and any(
+        part in {"", ".", ".."} or any(char in part for char in separators) for part in parts
+    ):
         raise ValueError("Invalid source-relative path")
     current = root
     for part in parts if relative else []:

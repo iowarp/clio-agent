@@ -20,10 +20,11 @@ from clio_schemas.connected_resources import SourceCapabilities
 from filelock import FileLock
 from fsspec.implementations.local import LocalFileSystem
 
-from clio_agent.gact.storage.adapters import safe_child, staged_file
-from clio_agent.gact.storage.drive import _EXPORTS
+from clio_agent.gact.storage.adapters import safe_child, source_child, staged_file
+from clio_agent.gact.storage.drive import _EXPORTS, _FOLDER
 from clio_agent.gact.storage.globus import GlobusSource
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord
+from clio_agent.gact.storage.names import listed_child, portable_name, resolve_remote
 from clio_agent.gact.storage.sftp import SftpSource
 from clio_agent.gact.storage.transfers import snapshot_revision
 from clio_agent.platform_paths import atomic_replace, win_extended_path
@@ -71,6 +72,14 @@ class FsspecFolder:
     def __init__(self, fs: Any, root: str, *, writable: bool = False) -> None:
         self.fs, self.root = fs, root.rstrip("/")
         self.writable = writable
+        self.skipped = 0
+
+    def _location(self, remote: str) -> str:
+        return posixpath.join(self.root, remote) if remote else self.root
+
+    def _children(self, remote: str) -> list[str]:
+        names = self.fs.ls(self._location(remote), detail=False)
+        return [str(name).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] for name in names]
 
     def entries(
         self,
@@ -80,27 +89,48 @@ class FsspecFolder:
         progress: Callable[[int], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> list[FileEntry]:
-        """Index names and revisions without reading any file bodies."""
+        """Index names and revisions without reading any file bodies.
+
+        Names that cannot be written on every CLIO host are listed under a portable
+        alias, keeping the provider's name in ``remote_path``; ``folder`` is a
+        portable path from an earlier listing.
+        """
         rows: list[FileEntry] = []
+        self.skipped = 0
+        remote_folder = ""
         if folder:
             FileEntry(path=folder, kind="directory")
-        pending = [(posixpath.join(self.root, folder) if folder else self.root, folder)]
+            remote_folder = resolve_remote(folder, self._children)
+        pending = [(self._location(remote_folder), folder, remote_folder)]
         while pending:
-            folder, relative = pending.pop()
+            folder, relative, remote_relative = pending.pop()
+            gdrive = getattr(self.fs, "protocol", None) == "gdrive"
+            listed: list[tuple[dict[str, Any], str, str]] = []
             for item in self.fs.ls(folder, detail=True):
                 if cancelled is not None and cancelled():
                     raise InterruptedError("Folder indexing cancelled")
                 name = str(item["name"]).replace("\\", "/")
                 leaf = name.rstrip("/").rsplit("/", 1)[-1]
-                path = posixpath.join(relative, leaf)
-                kind = item.get("type")
-                export = (
-                    _EXPORTS.get(item.get("mimeType", ""))
-                    if getattr(self.fs, "protocol", None) == "gdrive"
-                    else None
-                )
+                prefix = folder.strip("/") + "/"
+                if gdrive and name.startswith(prefix):
+                    # gdrive-fsspec joins a Drive title onto its folder, and titles may hold "/".
+                    leaf = name[len(prefix) :]
+                mime = str(item.get("mimeType", ""))
+                export = _EXPORTS.get(mime) if gdrive else None
                 if export:
-                    path += export[1]
+                    leaf += export[1]
+                elif gdrive and mime.startswith("application/vnd.google-apps.") and mime != _FOLDER:
+                    # Forms, maps and other native types have no file export.
+                    self.skipped += 1
+                    continue
+                listed.append((item, name, leaf))
+            seen: dict[str, int] = {}
+            for _, _, leaf in listed:
+                folded = (portable_name(leaf) or leaf).casefold()
+                seen[folded] = seen.get(folded, 0) + 1
+            for item, name, leaf in listed:
+                kind = item.get("type")
+                export = _EXPORTS.get(str(item.get("mimeType", ""))) if gdrive else None
                 if (
                     kind not in {"file", "directory"}
                     or item.get("islink")
@@ -110,6 +140,15 @@ class FsspecFolder:
                     raise ValueError("Linked folders support regular files and directories only")
                 if len(rows) >= 100_000:
                     raise ValueError("Select a smaller folder (limit 100,000 entries)")
+                # Same-named siblings would overwrite each other in a local copy; key them
+                # exactly as DriveSource does so browse, link and download agree.
+                repeated = seen[(portable_name(leaf) or leaf).casefold()] > 1
+                key = str(item.get("id") or leaf) if repeated else ""
+                child = listed_child(relative, remote_relative, leaf, key)
+                if child is None:
+                    self.skipped += 1
+                    continue
+                path, remote = child
                 revision = str(
                     item.get("sha")
                     or item.get("version")
@@ -120,6 +159,7 @@ class FsspecFolder:
                 rows.append(
                     FileEntry(
                         path=path,
+                        remote_path=remote,
                         kind=kind,
                         # Native exports and providers without a reported size are unknown,
                         # not empty; the read itself determines their bytes.
@@ -133,7 +173,7 @@ class FsspecFolder:
                     )
                 )
                 if kind == "directory" and recursive:
-                    pending.append((name, path))
+                    pending.append((name, path, remote))
                 if progress is not None:
                     progress(len(rows))
         return sorted(rows, key=lambda row: row.path)
@@ -150,13 +190,14 @@ class FsspecFolder:
         current = next((row for row in self.entries() if row.path == path), None)
         if (current.revision if current else None) != expected:
             raise ValueError("The original changed; review this edit again")
-        target = posixpath.join(self.root, path)
+        remote = current.source_path if current else resolve_remote(path, self._children)
+        target = self._location(remote)
         if getattr(self.fs, "protocol", None) == "gdrive" and current and current.locator != target:
             raise PermissionError(
                 "Google documents must be edited in Google Drive, not as exported files"
             )
         if isinstance(self.fs, LocalFileSystem):
-            target = safe_child(Path(self.root), path).as_posix()
+            target = source_child(Path(self.root), remote).as_posix()
         if content is None:
             if isinstance(self.fs, LocalFileSystem):
                 os.unlink(win_extended_path(target))

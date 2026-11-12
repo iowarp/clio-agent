@@ -11,6 +11,7 @@ from clio_schemas.connected_resources import SourceCapabilities
 
 from clio_agent.gact.storage.linked import FsspecFolder
 from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.storage.names import resolve_remote
 
 
 class GitHubSignInRequired(PermissionError):
@@ -55,12 +56,14 @@ class GitHubSource(FsspecFolder):
             raise PermissionError("This GitHub link does not allow publishing edits")
         for path, _, _ in changes:
             FileEntry(path=path, kind="file")
-        updates = [
-            (posixpath.join(self.root, path), content, expected)
-            for path, content, expected in changes
-        ]
+        # Listed aliases are published under the repository's own names.
+        targets = {
+            path: posixpath.join(self.root, resolve_remote(path, self._children))
+            for path, _, _ in changes
+        }
+        updates = [(targets[path], content, expected) for path, content, expected in changes]
         result = self.fs.commit_files(updates)
-        return {path: result[posixpath.join(self.root, path)] for path, _, _ in changes}
+        return {path: result[targets[path]] for path, _, _ in changes}
 
     @staticmethod
     def _checked(response: httpx.Response) -> None:

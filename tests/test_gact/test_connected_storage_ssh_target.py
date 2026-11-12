@@ -62,6 +62,34 @@ def test_drive_folder_links_normalized_before_auth_binding(value: str, tmp_path:
 @pytest.mark.parametrize(
     "value",
     [
+        "root",
+        "Root",
+        "ROOT",
+        "https://drive.google.com/drive/my-drive",
+        "https://drive.google.com/drive/u/2/my-drive/",
+        "https://drive.google.com/drive/my-drive?usp=sharing",
+        "https://drive.google.com/drive/folders/Root",
+    ],
+)
+def test_drive_my_drive_links_and_root_case_normalize_to_root(value: str) -> None:
+    assert drive_folder_id(value) == "root"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://drive.google.com/drive/u/1/folders/folder_ID-1?usp=drive_link",
+        "https://drive.google.com/drive/folders/folder_ID-1?resourcekey=0-abc&usp=sharing",
+        "https://drive.google.com/drive/u/0/folders/folder_ID-1/?resourcekey=0-abc",
+    ],
+)
+def test_drive_folder_links_accept_account_and_sharing_variants(value: str) -> None:
+    assert drive_folder_id(value) == "folder_ID-1"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         "https://example.org/folders/id",
         "https://drive.google.com.evil.test/drive/folders/id",
         "http://drive.google.com/drive/folders/id",

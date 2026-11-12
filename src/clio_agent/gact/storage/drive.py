@@ -14,6 +14,7 @@ import httpx
 from clio_schemas.connected_resources import SourceCapabilities
 
 from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.storage.names import listed_child, portable_name
 
 _API = "https://www.googleapis.com/drive/v3"
 _UPLOAD = "https://www.googleapis.com/upload/drive/v3"
@@ -36,12 +37,16 @@ def drive_folder_id(value: str) -> str:
     """Extract a folder ID from a Drive folder link without following arbitrary URLs."""
     value = value.strip()
     if re.fullmatch(r"[A-Za-z0-9_-]+", value):
-        return value
+        # Drive's alias for My Drive is case-sensitive; accept it as users type it.
+        return "root" if value.casefold() == "root" else value
     parsed = urlparse(value)
     if parsed.scheme == "https" and parsed.netloc == "drive.google.com":
+        # Query parameters such as ?usp=sharing or resourcekey do not change the folder.
+        if re.fullmatch(r"/drive/(?:u/\d+/)?my-drive/?", parsed.path):
+            return "root"
         match = re.fullmatch(r"/(?:drive/(?:u/\d+/)?)?folders/([A-Za-z0-9_-]+)/?", parsed.path)
         if match:
-            return match.group(1)
+            return "root" if match.group(1).casefold() == "root" else match.group(1)
     raise ValueError("Paste a Google Drive folder link or folder ID")
 
 
@@ -84,6 +89,7 @@ class DriveSource:
         self._owns_client = client is None
         self._files: dict[str, dict[str, Any]] = {}
         self._folders = {"": root}
+        self.skipped = 0
         metadata = self._json(
             "GET",
             f"{_API}/files/{root}",
@@ -132,13 +138,20 @@ class DriveSource:
         progress: Callable[[int], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> list[FileEntry]:
-        """List all selected descendants and identify native document exports explicitly."""
+        """List all selected descendants and identify native document exports explicitly.
+
+        A Drive name that is not portable, or that repeats in its folder, is listed
+        under a deterministic alias with its Drive name kept in ``remote_path``.
+        Unsupported Google types are skipped and counted in ``skipped``.
+        """
         rows: list[FileEntry] = []
         self._files = {}
         self._folders = {"": self.root}
-        pending = [(self.root, "")]
+        self.skipped = 0
+        pending = [(self.root, "", "")]
         while pending:
-            folder, parent = pending.pop()
+            folder, parent, remote_parent = pending.pop()
+            listed: list[tuple[dict[str, Any], str]] = []
             page = ""
             while True:
                 if cancelled is not None and cancelled():
@@ -154,50 +167,57 @@ class DriveSource:
                     parameters["pageToken"] = page
                 data = self._json("GET", _API + "/files", params=parameters)
                 for metadata in data.get("files", []):
-                    if cancelled is not None and cancelled():
-                        raise InterruptedError("Drive folder indexing cancelled")
-                    if len(rows) >= 100_000:
-                        raise ValueError("Select a smaller Drive folder (limit 100,000 entries)")
                     name, mime = str(metadata["name"]), str(metadata["mimeType"])
-                    if "/" in name or "\\" in name:
-                        raise ValueError(
-                            "A Drive filename contains a path separator; rename it before copying"
-                        )
                     if mime in _EXPORTS:
                         name += _EXPORTS[mime][1]
                     elif mime.startswith("application/vnd.google-apps.") and mime != _FOLDER:
-                        raise ValueError(
-                            "The selected folder contains an unsupported Drive shortcut or document type"
-                        )
-                    path = posixpath.join(parent, name)
-                    if path in self._files or path in self._folders:
-                        raise ValueError(
-                            "The Drive folder contains duplicate filenames; select or rename distinct files"
-                        )
-                    kind: Literal["directory", "file"] = "directory" if mime == _FOLDER else "file"
-                    rows.append(
-                        FileEntry(
-                            path=path,
-                            kind=kind,
-                            # Native documents are exported on read and report no size.
-                            size=int(metadata["size"])
-                            if metadata.get("size") is not None
-                            else (0 if kind == "directory" else None),
-                            revision=str(metadata.get("version", metadata.get("modifiedTime", ""))),
-                            locator=str(metadata["id"]),
-                            sha256=metadata.get("sha256Checksum"),
-                        )
-                    )
-                    if kind == "directory":
-                        self._folders[path] = metadata["id"]
-                        pending.append((metadata["id"], path))
-                    else:
-                        self._files[path] = metadata
-                    if progress is not None:
-                        progress(len(rows))
+                        self.skipped += 1
+                        continue
+                    listed.append((metadata, name))
                 page = data.get("nextPageToken", "")
                 if not page:
                     break
+            seen: dict[str, int] = {}
+            for _, name in listed:
+                folded = (portable_name(name) or name).casefold()
+                seen[folded] = seen.get(folded, 0) + 1
+            for metadata, name in listed:
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("Drive folder indexing cancelled")
+                if len(rows) >= 100_000:
+                    raise ValueError("Select a smaller Drive folder (limit 100,000 entries)")
+                # Same-named siblings would overwrite each other in a local copy.
+                repeated = seen[(portable_name(name) or name).casefold()] > 1
+                child = listed_child(
+                    parent, remote_parent, name, str(metadata["id"]) if repeated else ""
+                )
+                if child is None:
+                    self.skipped += 1
+                    continue
+                path, remote = child
+                mime = str(metadata["mimeType"])
+                kind: Literal["directory", "file"] = "directory" if mime == _FOLDER else "file"
+                rows.append(
+                    FileEntry(
+                        path=path,
+                        remote_path=remote,
+                        kind=kind,
+                        # Native documents are exported on read and report no size.
+                        size=int(metadata["size"])
+                        if metadata.get("size") is not None
+                        else (0 if kind == "directory" else None),
+                        revision=str(metadata.get("version", metadata.get("modifiedTime", ""))),
+                        locator=str(metadata["id"]),
+                        sha256=metadata.get("sha256Checksum"),
+                    )
+                )
+                if kind == "directory":
+                    self._folders[path] = metadata["id"]
+                    pending.append((metadata["id"], path, remote))
+                else:
+                    self._files[path] = metadata
+                if progress is not None:
+                    progress(len(rows))
         return sorted(rows, key=lambda row: row.path)
 
     def open_read(self, entry: FileEntry) -> BinaryIO:

@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import Callable, cast
 
 from clio_schemas.connected_resources import ConnectedSource, ResourceOwner, SourceCapabilities
 from pydantic import Field, field_validator
@@ -15,6 +15,12 @@ from pydantic import Field, field_validator
 from clio_agent.gact.resource_custody import ResourceStore
 from clio_agent.gact.storage.adapters import file_hash, safe_child
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord, StorageModel
+from clio_agent.gact.storage.names import (
+    UNSAFE_PATH,
+    check_remote_relative,
+    plain_error,
+    portable_name,
+)
 from clio_agent.gact.storage.store import SourceStore
 from clio_agent.gact.storage.transfers import make_read_only, remove_owned_tree, snapshot_revision
 from clio_agent.platform_paths import rename_extended, win_extended_path
@@ -30,8 +36,16 @@ class UploadedSourceFile(StorageModel):
     @field_validator("path")
     @classmethod
     def relative_path(cls, value: str) -> str:
-        """Use the same cross-platform path safety as every source adapter."""
-        return FileEntry(path=value, kind="file").path
+        """Accept the desktop's own names; traversal and absolute paths stay rejected."""
+        check_remote_relative(value)
+        if "\\" in value or any(portable_name(part) is None for part in value.split("/")):
+            raise ValueError(UNSAFE_PATH)
+        return value
+
+    @property
+    def portable(self) -> str:
+        """The name this file is stored and listed under on every CLIO host."""
+        return "/".join(cast(str, portable_name(part)) for part in self.path.split("/"))
 
 
 class UploadedSource(StorageModel):
@@ -59,9 +73,9 @@ def publish_uploaded_source(
     seen: set[str] = set()
     originals = []
     for item in sorted(request.files, key=lambda row: row.path):
-        if item.path.casefold() in seen:
+        if item.portable.casefold() in seen:
             raise ValueError("Desktop folder contains colliding filenames")
-        seen.add(item.path.casefold())
+        seen.add(item.portable.casefold())
         uploaded = resources.get(workspace_id, item.resource_id)
         if uploaded is None or uploaded.revision != item.revision or uploaded.state != "ready":
             raise ValueError("Every folder file must be fully uploaded to this CLIO workspace")
@@ -126,24 +140,30 @@ def publish_uploaded_source(
         entries: dict[str, FileEntry] = {}
         hashes = {}
         for item, resource in originals:
-            target = safe_child(stage, item.path)
+            target = safe_child(stage, item.portable)
             os.makedirs(win_extended_path(target.parent), exist_ok=True)
             shutil.copyfile(
                 win_extended_path(resources.content_path(resource)), win_extended_path(target)
             )
             if file_hash(target) != resource.sha256:
                 raise ValueError("Uploaded file failed its custody hash check")
-            entries[item.path] = FileEntry(
-                path=item.path,
+            entries[item.portable] = FileEntry(
+                path=item.portable,
+                remote_path=item.path,
                 kind="file",
                 size=resource.declared_size,
                 revision=resource.sha256,
                 sha256=resource.sha256,
             )
-            hashes[item.path] = resource.sha256
-            for parent in PurePosixPath(item.path).parents:
+            hashes[item.portable] = resource.sha256
+            remote_parents = PurePosixPath(item.path).parents
+            for parent, remote_parent in zip(
+                PurePosixPath(item.portable).parents, remote_parents, strict=True
+            ):
                 if str(parent) != ".":
-                    entries[str(parent)] = FileEntry(path=str(parent), kind="directory")
+                    entries[str(parent)] = FileEntry(
+                        path=str(parent), remote_path=str(remote_parent), kind="directory"
+                    )
             done += resource.declared_size
             store.update_operation(operation.id, bytes_done=done)
         rows = sorted(entries.values(), key=lambda entry: entry.path)
@@ -178,7 +198,7 @@ def publish_uploaded_source(
         store.update_operation(operation.id, state="completed", bytes_done=done)
         return record
     except (OSError, ValueError, RuntimeError) as exc:
-        store.update_operation(operation.id, state="failed", error=str(exc))
+        store.update_operation(operation.id, state="failed", error=plain_error(exc))
         record.source = record.source.model_copy(
             update={"materialization": "failed", "operation_id": operation.id}
         )
