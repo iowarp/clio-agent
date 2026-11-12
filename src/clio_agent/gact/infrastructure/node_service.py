@@ -470,7 +470,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         else:
             env.pop(name, None)
     env["CLIO_SECRET_VARIABLES"] = ",".join(sorted(secrets))
-    platform_helper().operation_environment(env, request)
+    platform_helper().operation_environment(env, request, identity)
     receipt = {
         **current,
         "phase": "installing" if action == "install" else "running",
@@ -543,8 +543,7 @@ rotate_log = platform_helper().rotate_log
 
 def _work(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
-    if os.name == "nt":
-        platform_helper().bind_worker(generation, root)
+    owner = platform_helper().bind_worker(generation, root, identity, process_group_helper)
     # Wait for the parent to commit the receipt under the same lifecycle lock.
     with locked(root):
         receipt = read_receipt(root)
@@ -672,7 +671,7 @@ def _work(root: Path, action: str, generation: str) -> None:
                         stderr=subprocess.STDOUT,
                         check=False,
                     ).returncode
-        if stopping:
+        if (owner is not None and owner.settle()) or stopping:  # settle: owner watch ended us
             return
         with locked(root):
             current = read_receipt(root)
