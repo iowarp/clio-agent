@@ -99,6 +99,8 @@ def supervised_plan(
                 body["from_scratch"] = True
             if verb == "start" and api_key:
                 body["api_key"] = api_key
+            if verb == "start" and (owner := configuration.get(reuse.OWNER_PROCESS_KEY, "")):
+                body["owner_process"] = int(owner)
             extra = {
                 "api_key_variable": key_variable,
                 "secret_env": dict(secret_env or {}),

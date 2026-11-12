@@ -36,8 +36,12 @@ def test_desktop_setup_keeps_the_existing_enforcement_gate(
 
     monkeypatch.setattr(sandbox_cli, "provision_codex_windows", provision)
     if state in {"failed_grant", "unverified"}:
-        with pytest.raises(DocumentRuntimeError, match="Protected execution verification failed"):
+        with pytest.raises(DocumentRuntimeError, match="Set up protected execution") as raised:
             codex_desktop_setup.prepare_existing_windows_fence(allow_elevation=allow_elevation)
+        # Grant records stay in the log; the message people read is plain prose.
+        assert "'status'" not in str(raised.value)
+        if state == "failed_grant":
+            assert str(raised.value).startswith("Could not prepare protected access")
     else:
         result = codex_desktop_setup.prepare_existing_windows_fence(allow_elevation=allow_elevation)
         assert result["status"] == state

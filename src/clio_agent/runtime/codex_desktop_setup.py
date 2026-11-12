@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_existing_windows_fence(
@@ -27,16 +30,17 @@ def prepare_existing_windows_fence(
     )
     if result.reason == REASON_CODEX_WINDOWS_UNPROVISIONED:
         return {"status": "setup_required", "next_action": result.next_action}
-    failed_grants = [
-        item for item in result.extra.get("fleet_runtime_grants", []) if item["status"] == "failed"
-    ]
+    grants = result.extra.get("fleet_runtime_grants", [])
+    failed_grants = [item for item in grants if item["status"] == "failed"]
     if not result.ok or failed_grants:
         from clio_agent.runtime.document_runtime import DocumentRuntimeError  # noqa: PLC0415
+        from clio_agent.runtime.sandbox_cli import _runtime_access_failure  # noqa: PLC0415
 
-        detail = failed_grants if failed_grants else result.detail
-        raise DocumentRuntimeError(
-            f"Protected execution verification failed: {detail} {result.next_action}"
-        )
+        if failed_grants:
+            # The per-grant records are diagnostics; people read the plain sentence.
+            logger.warning("protected execution runtime grants failed: %s", failed_grants)
+            result = _runtime_access_failure(grants, elevated=result.elevated) or result
+        raise DocumentRuntimeError(f"{result.detail} {result.next_action}")
     return {
         "status": "available",
         "reason": result.reason,

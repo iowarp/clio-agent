@@ -339,9 +339,9 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
             details["reason"] = "clio_core_daemon_lost_after_attach"
             summary = f"clio-core was attached, but its daemon is no longer listening ({where})."
             next_action = "Restart the clio-core daemon; retry the affected ARC operation."
-        elif details.get("home_import", {}).get("state") == "failed":  # type: ignore[union-attr]
+        elif isinstance(imp := details.get("home_import"), dict) and imp.get("state") == "failed":
             state_, required = IntegrationState.DEGRADED, False
-            details["reason"] = details["home_import"]["reason"]  # type: ignore[index]
+            details["reason"] = imp["reason"]
             summary = f"clio-core attached ({where}); this home's record import failed."
             next_action = "Restart CLIO to retry; see core-import/export.log in the data dir."
         else:

@@ -6,6 +6,27 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- The "Protected execution needs attention" notice says what failed in a plain
+  sentence instead of showing the raw per-folder grant records, which now go
+  to the log. An unexpected setup error no longer shows its exception text.
+- `PUT /v1/providers/lm` sent right after `/v1/health` answers now waits (up to
+  30 s) for the task runtime to finish starting instead of returning 503
+  `task_runtime_starting`. Other routes still refuse immediately while CLIO
+  starts.
+- Cancelling a model download on Windows stops it. Progress polling could make
+  the worker's receipt write fail, which silently ended its cancellation checks,
+  so cancel answered "worker has not stopped yet" while the download ran on.
+  Receipt writes now retry, verification checks for cancellation while hashing
+  large files, and a worker that still ignores a cancel is ended.
+
+## [0.9.6.6] - 2026-11-12
+
+No GACT-contract change. A CLIO installed by `install.ps1` with its own home
+keeps its clio-kit in that home and leaves the user's own clio-kit alone (#2226),
+and `install.ps1` refuses a home too long for Windows paths up front (#2227).
+
 ## [0.9.6.5] - 2026-11-12
 
 Installer hotfix. Ships the same iowarp/gact-tui v0.12.2, clio-kit 2.12.3,

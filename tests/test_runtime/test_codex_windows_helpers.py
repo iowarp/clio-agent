@@ -235,7 +235,7 @@ def test_installer_recovers_existing_fence_only_after_proof(
     if enforced:
         assert codex_desktop_setup.prepare_existing_windows_fence()["status"] == "available"
     else:
-        with pytest.raises(document_install.DocumentRuntimeError, match="verification failed"):
+        with pytest.raises(document_install.DocumentRuntimeError, match="real fence probe verdict"):
             codex_desktop_setup.prepare_existing_windows_fence()
 
 

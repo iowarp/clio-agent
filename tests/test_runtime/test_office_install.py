@@ -594,6 +594,12 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/tipoftheday/tipoftheday.png",
         "share/numbertext/en.sor",
         "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "share/config/images_colibre.zip",
+        "share/config/images_colibre_dark.zip",
+        "share/config/images_breeze.zip",
+        "share/config/images_sifr_dark_svg.zip",
+        "share/config/images_helpimg.zip",
+        "program/classes/hsqldb.jar",
         "readmes/readme_de.txt",
         "readmes/readme_en-US.txt",
         "program/python-core-3.12.14/lib/pip/__init__.py",
@@ -619,16 +625,45 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "readmes/readme_de.txt",
         "program/python-core-3.12.14/lib/pip/__init__.py",
         "program/python-core-3.12.14/lib/distutils-precedence.pth",
+        "share/autotext/en-US/standard.bau",
+        "share/config/images_breeze.zip",
+        "share/config/images_sifr_dark_svg.zip",
+        "share/config/images_helpimg.zip",
+        "program/classes/hsqldb.jar",
     } <= skipped
     # What a conversion reads: the startup Python, layout configuration, fonts, the
-    # NUMBERTEXT data, new-document templates, autotext and the English readme.
+    # NUMBERTEXT data, new-document templates, the fallback icon themes and the English
+    # readme.
     assert not skipped & {
         "program/python-core-3.12.14/lib/encodings/utf_8.py",
         "program/python-core-3.12.14/lib/re/__init__.py",
         "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "share/config/images_colibre.zip",
+        "share/config/images_colibre_dark.zip",
         "share/fonts/truetype/DejaVuSans.ttf",
         "share/numbertext/en.sor",
         "share/template/shellnew/soffice.odt",
-        "share/autotext/en-US/standard.bau",
         "readmes/readme_en-US.txt",
     }
+
+
+def test_icon_themes_autotext_and_java_are_pruned_only_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows-only prunes leave the Linux layout as it was."""
+    names = [
+        "share/config/images_breeze.zip",
+        "share/config/images_helpimg.zip",
+        "share/autotext/en-US/standard.bau",
+        "program/classes/hsqldb.jar",
+    ]
+    monkeypatch.setattr(office.platform, "system", lambda: "Linux")
+    image = tmp_path / "office"
+    for name in names:
+        (image / name).parent.mkdir(parents=True, exist_ok=True)
+        (image / name).write_bytes(b"x")
+    assert not any(office.unread(PurePath(name)) for name in names)
+    assert office.prune_unread(image) == 0
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    assert all(office.unread(PurePath(name)) for name in names)
+    assert office.prune_unread(image) == len(names)

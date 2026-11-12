@@ -6,13 +6,14 @@ import hashlib
 import io
 import logging
 import os
+import sys
 import tarfile
 import time
 from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 import zstandard
 
@@ -66,8 +67,12 @@ def expected_digest(candidate: Path) -> str:
     return digest if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest) else ""
 
 
-def _open_shared(path: Path) -> BinaryIO:
+def _open_shared(path: Path) -> io.FileIO:
     """Open ``path`` for reading without blocking the installer's rename or delete of it."""
+    if sys.platform != "win32":
+        # Unreachable (only the Windows unpack reads this way); narrows sys.platform so
+        # the type-checker admits the Windows-only ctypes/msvcrt API on other platforms.
+        raise OSError(f"shared-delete open is Windows-only: {path}")
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -106,7 +111,7 @@ class _GrowingDownload(io.RawIOBase):
         self._final = final
         self._partial = final.with_name(final.name + ".part")
         self._stall_s = stall_s
-        self._stream: BinaryIO | None = None
+        self._stream: io.FileIO | None = None
         self._read = 0
         self._changed = time.monotonic()
         self.hash = hashlib.sha256()
@@ -205,7 +210,9 @@ def unpack_windows_tree(prepared: Path, image: Path, *, max_unpacked: int, stall
         raise DocumentError("Prepared Office tree has no SHA-256 from the install plan")
     with _GrowingDownload(prepared, stall_s) as raw:
         with (
-            zstandard.ZstdDecompressor().stream_reader(raw, closefd=False) as stream,
+            zstandard.ZstdDecompressor().stream_reader(
+                cast(BinaryIO, raw), closefd=False
+            ) as stream,
             tarfile.open(fileobj=stream, mode="r|") as contents,
         ):
             files = _unpack_parallel(contents, image, max_unpacked)

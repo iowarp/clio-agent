@@ -135,9 +135,11 @@ def call_lm(lm: Any, request: Request) -> Response:
     except LMUnexpectedError as exc:
         # DSPy wraps an engine's own typed error (a refused sign-in, an exhausted plan,
         # a Codex transport failure) as unexpected; the turn classifies the original.
+        # Keep the original's own cause: ``from exc`` would close a cause cycle
+        # (exc.__cause__ is cause) and drop the engine's real reason.
         cause = exc.__cause__
         if isinstance(cause, Exception) and not isinstance(cause, LM15Error):
-            raise cause from exc
+            raise cause from cause.__cause__
         raise
 
 
