@@ -280,11 +280,14 @@ def test_digests_are_built_and_found_across_conversations(tmp_path: Path) -> Non
     got = _search(app, "bathymetry", ws)
     assert {hit.session_id for hit in got.hits} == {first, second}
     assert got.metadata["index"] == {"from_index": 2, "from_resident": 0, "from_transcript": 0}
+    index._delay_s = 3600.0  # hold the rebuild: a slow runner must not win the dirty read
     _converse(app, first, "m3", "bathymetry again, now the slope")  # the index catches up
     assert index.is_dirty(first)
     dirty = _search(app, "slope", ws)  # read from the transcript meanwhile, typed
     assert [hit.message_id for hit in dirty.hits] == ["m3"]
     assert dirty.metadata["index"]["transcript_reasons"] == {DIRTY_REASON: 1}
+    index._delay_s = 0.01
+    index.schedule(first)  # the held rebuild is due now
     assert index.flush(10.0)
     clean = _search(app, "slope", ws)
     assert [hit.message_id for hit in clean.hits] == ["m3"]
