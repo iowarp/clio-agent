@@ -231,7 +231,7 @@ def test_purge_keeps_the_core_records_of_a_running_daemon(tmp_path: Path) -> Non
     _installed(tmp_path)
     core = _host_state(tmp_path / "home") / "core-hosts" / "host"
     core.mkdir(parents=True)
-    (core / "clio-runtime.pid").write_text(str(os.getpid()))
+    (core / "clio-runtime.pid").write_text(f"{os.getpid()} 1794463303.946979\n")
 
     result = _uninstall(_env(tmp_path), "--purge")
 
@@ -288,7 +288,7 @@ def test_purge_data_keeps_everything_while_clio_core_runs(tmp_path: Path) -> Non
     env, data, state = _source_install_in_data(tmp_path)
     core = state / "core-hosts" / "host"
     core.mkdir(parents=True)
-    (core / "clio-runtime.pid").write_text(str(os.getpid()))
+    (core / "clio-runtime.pid").write_text(f"{os.getpid()} 1794463303.946979\n")
 
     result = _uninstall(env, "--purge-data")
 
@@ -321,3 +321,80 @@ def test_purge_data_with_desktop_removes_its_application_support(tmp_path: Path)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert not app.exists() and not support.exists()
+
+
+def _core_tmp(tmp_path: Path, env: dict[str, str]) -> Path:
+    """clio-core's /tmp/clio_<user>, under a user name unique to this test."""
+    user = f"cliotest{os.getpid()}{tmp_path.name[-12:]}".replace("_", "")
+    env["USER"] = user
+    env["TMPDIR"] = str(tmp_path / "tmpdir")
+    directory = Path(f"/tmp/clio_{user}")
+    directory.mkdir()
+    return directory
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
+
+
+def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
+    tmp_path: Path,
+) -> None:
+    import shutil
+    import threading
+
+    prefix = _installed(tmp_path)
+    env = _env(tmp_path)
+    shm = _core_tmp(tmp_path, env)
+    try:
+        server = subprocess.Popen(["sleep", "60"])
+        threading.Thread(target=server.wait, daemon=True).start()
+        (prefix / "clio-server.pid").write_text(str(server.pid))
+        mine = [f"clio-{server.pid}-shm-out", f"clio-{server.pid}-shm-in-0", f"clio_{server.pid}_0"]
+        foreign_pid = os.getpid()
+        theirs = [f"clio-{foreign_pid}-shm-out", f"clio_rambdev_{foreign_pid}_301_0"]
+        for name in mine + theirs:
+            (shm / name).write_bytes(b"x" * 4096)
+
+        result = _uninstall(env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert server.poll() is not None
+        assert sorted(p.name for p in shm.iterdir()) == sorted(theirs)
+        assert "Removed 3 clio-core memory files" in result.stdout
+    finally:
+        shutil.rmtree(shm, ignore_errors=True)
+
+
+def test_uninstall_removes_the_segments_of_its_own_dead_core_daemon_only(
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    _installed(tmp_path)
+    env = _env(tmp_path)
+    shm = _core_tmp(tmp_path, env)
+    user = env["USER"]
+    try:
+        daemon = _dead_pid()
+        core = _host_state(tmp_path / "home") / "core-hosts" / "host"
+        core.mkdir(parents=True)
+        (core / "clio-runtime.pid").write_text(f"{daemon} 1794463303.946979\n")
+        (shm / f"chi_runtime_pid_{user}_58961").write_text(str(daemon))
+        mine = [f"chi_runtime_pid_{user}_58961", "clio_58961.ipc", f"clio_rambdev_{daemon}_301_0"]
+        mine += [f"chi_{name}_segment_{user}_58961" for name in ("main", "metadata", "queue")]
+        # Another runtime on another port, recorded by a different daemon, is not ours.
+        (shm / f"chi_runtime_pid_{user}_9413").write_text(str(os.getpid()))
+        theirs = [f"chi_runtime_pid_{user}_9413", "clio_9413.ipc", f"chi_main_segment_{user}_9413"]
+        for name in mine + theirs:
+            if not (shm / name).exists():
+                (shm / name).write_bytes(b"x")
+
+        result = _uninstall(env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert sorted(p.name for p in shm.iterdir()) == sorted(theirs)
+    finally:
+        shutil.rmtree(shm, ignore_errors=True)
