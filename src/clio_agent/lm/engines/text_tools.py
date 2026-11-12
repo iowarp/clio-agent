@@ -550,11 +550,12 @@ _INVOKE_MARKUP = re.compile(
 #: or a line that begins with the container's word written without its markup
 #: (``function_calls="" invoke name="run_code">``, ``function_calls: invoke run_code``):
 #: what is left of a call block whose tags were lost, never prose. The service may also
-#: replace call markup the model wrote as text with ``<invoke_tool_placeholder>`` tags,
-#: and models write an invented ``<invoke:shell_bash>`` opener beside a real block.
+#: replace call markup the model wrote as text with ``<invoke_..._placeholder>`` tags
+#: (any spelling of the family), and models write an invented ``<invoke:shell_bash>``
+#: opener beside a real block.
 _INVOKE_OPENER = re.compile(
     r"""</?function_calls>|<invoke\s+name=|<parameter\s+name=|</invoke>"""
-    r"""|</?invoke_tool_placeholder>|</?invoke:[\w.-]+>"""
+    r"""|</?invoke_\w*placeholder>|</?invoke:[\w.-]+>"""
     r"""|(?<![^\n])[ \t]*<?/?function_calls\b"""
 )
 _INVOKE_OPENERS = (
@@ -570,8 +571,9 @@ _INVOKE_OPENERS = (
 )
 #: The container's word at a line start, held back while the line could still become it.
 _CALL_WORDS = ("function_calls", "<function_calls", "</function_calls")
-#: An invented ``<invoke:NAME`` opener still being written, held back until its ``>``.
-_UNFINISHED_INVOKE_NAME = re.compile(r"</?invoke:[\w.-]*$")
+#: An invented ``<invoke:NAME`` opener or an ``<invoke_..._placeholder`` tag still being
+#: written, held back until its ``>`` shows which it is.
+_UNFINISHED_INVOKE_NAME = re.compile(r"</?invoke(?::[\w.-]*|_\w*)$")
 #: A tag name still being written that could become a namespaced call tag
 #: (``<ns:parameter``): held back until it is one (then read as call markup) or is not.
 _UNFINISHED_TAG = re.compile(r"</?[A-Za-z_][\w.-]*(?::(?P<local>[\w]*))?$")
@@ -647,6 +649,11 @@ class StreamSplitter:
         self._known = frozenset(known)
         self.dropped_invoke_markup = 0
         self.dropped_fence_words = 0
+
+    @property
+    def stopped(self) -> bool:
+        """Whether the fence or a call block has begun (nothing more streams)."""
+        return self._stopped
 
     def push(self, chunk: str) -> str:
         """Add ``chunk``; return the newly showable text (possibly empty)."""

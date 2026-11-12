@@ -134,7 +134,9 @@ def atoms_active(app: "FastAPI") -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
+def assemble_session_messages(
+    arc: Any, session_id: str, *, report_incomplete: bool = True
+) -> list[Message]:
     """Assemble a session's transcript BY REFERENCE from its ``message_part`` atoms.
 
     The persistence projection: the LIVE (non-tombstoned) atoms on the ``_events/m``
@@ -155,6 +157,9 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     Args:
         arc: The process ARC memory (its ``_segments`` store holds the canonical log).
         session_id: The session whose transcript to assemble.
+        report_incomplete: ``False`` for a background reader that may run while a turn
+            is still writing: its message without an envelope is not reported as a turn
+            that died (:func:`~clio_agent.gact.part_atoms.reproduce_message_wire`).
 
     Returns:
         The chronological ``list[Message]`` — byte-equal to the live/persisted ledger
@@ -173,7 +178,7 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     lane = [seg.content for seg in lane_segments(store, session_id, base, include_tombstoned=False)]
     retracted = retracted_part_ids(lane)  # a compaction record whose fold failed
     messages = [
-        Message(**reproduce_message_wire(atoms, retracted))
+        Message(**reproduce_message_wire(atoms, retracted, report_incomplete=report_incomplete))
         for atoms in group_atoms_in_order(lane)
         if not fully_retracted(atoms, retracted)
     ]

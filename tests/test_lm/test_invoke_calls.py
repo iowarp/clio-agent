@@ -227,3 +227,35 @@ def test_a_loaded_deferred_tool_is_read_against_its_own_schema(invoke: None) -> 
     assert [(c.name, c.input) for c in split.calls] == [
         ("recall_context", {"ids": ["cmp_1"], "limit": 10})
     ]
+
+
+@pytest.mark.parametrize(
+    "tag", ["invoke_tool_placeholder", "invoke_tool_call_placeholder", "invoke_call_placeholder"]
+)
+def test_service_placeholders_for_a_call_are_refused_never_the_answer(
+    invoke: None, tag: str
+) -> None:
+    """Live (haiku, claude_code, 2026-11-12, plain "Show me the first 10 rows of
+    measurements.csv as a table"): the service replaced the model's call markup with
+    ``<invoke_tool_call_placeholder>`` tags, a spelling only ``invoke_tool_placeholder``
+    was known by, so those empty tags were the turn's whole answer. Any spelling of the
+    family is a lost call: refused so the model sends it again, never shown. SABOTAGE:
+    match one spelling again and the second case comes back as the answer."""
+    reply = f"\n<{tag}>\n</{tag}>\n\n\n<{tag}>\n</{tag}>"
+    split = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert call.input.get("error") == invoke_calls.CUT_BLOCK
+    assert "placeholder" not in split.text
+    for size in (1, 3, 7, len(reply)):
+        splitter = text_tools.StreamSplitter(TOOLS)
+        shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
+        assert "placeholder" not in shown and "<" not in shown, (size, shown)
+
+
+def test_an_invented_result_tag_is_not_a_placeholder(invoke: None) -> None:
+    """``<invoke_result>`` is not the service's substitution: it stays text (the overrun
+    rules, not this one, handle a model that writes its own results)."""
+    split = split_reply("<invoke_result>\nok\n</invoke_result>", call_prefix="c",
+                        available_tools=TOOLS, schemas=SCHEMAS)  # fmt: skip
+    assert split.calls == []

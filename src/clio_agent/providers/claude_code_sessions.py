@@ -191,6 +191,7 @@ class _StreamClientEntry:
         self._loop: Any = None
         self._thread: threading.Thread | None = None
         self._client: Any = None
+        self._disconnecting: Any = None  # the in-flight disconnect (owner loop), joinable
         self._connect_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
         self._query_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
         self._connect_slots = connect_slots
@@ -423,11 +424,21 @@ class _StreamClientEntry:
             return self._client
 
     async def _areset_client(self) -> None:
-        """Disconnect + drop the client (owner loop) so the next call reconnects."""
+        """Disconnect + drop the client (owner loop) so the next call reconnects.
+
+        A reset that finds the client already dropped joins the disconnect in flight:
+        ``close_*`` stop the owner loop once their reset returns, and stopping it under
+        a running disconnect strands it, so its slot is never released and its CLI
+        child is never reaped (live: four such resets held every connect slot).
+        """
         client, self._client = self._client, None
-        if client is None:
-            return
-        self.forget_conversation()
+        if client is not None:
+            self.forget_conversation()
+            self._disconnecting = asyncio.ensure_future(self._disconnect(client))
+        if self._disconnecting is not None:
+            await asyncio.shield(self._disconnecting)
+
+    async def _disconnect(self, client: Any) -> None:
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller

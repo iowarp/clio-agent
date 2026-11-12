@@ -1208,8 +1208,8 @@ function Start-ClioOfficeTreeFetch {
     }
 }
 
-# Start-ClioUnpackers DIR ITEM: tar.exe processes that unpack ITEM's archive into DIR while
-# it downloads. Defender scans each new file as it is closed, so one process leaves the
+# Start-ClioUnpackers DIR ITEM [PARTS]: tar.exe processes that unpack ITEM's archive into DIR while
+# it downloads, one per PARTS filter (the runtime archive's parts by default). Defender scans each new file as it is closed, so one process leaves the
 # disk idle between files; each process writes its own part of the tree and skips the
 # rest, which costs only decompression. Each is fed by its own thread reading the growing
 # download, so a process held up by its files never holds up the others.
@@ -1240,16 +1240,19 @@ $ClioFeederScript = {
     }
     $read
 }
-function Start-ClioUnpackers([string]$Dir, $Item) {
-    $site = 'gact-runtime/python/Lib/site-packages'
-    $documents = @('gact-runtime/documents/office', 'gact-runtime/documents/node_modules', 'gact-runtime/documents/office-profile.zip')
-    $parts = @(
-        (@($documents | ForEach-Object { "--include `"$_`"" }) -join ' '),
-        "--include `"$site/[_a-b]*`"",
-        "--include `"$site/[c-k]*`"",
-        "--include `"$site/[l-z]*`"",
-        ((@($documents | ForEach-Object { "--exclude `"$_`"" }) + "--exclude `"$site/[_a-z]*`"") -join ' ')
-    )
+function Start-ClioUnpackers([string]$Dir, $Item, [string[]]$Parts = $null) {
+    $parts = $Parts
+    if (-not $parts) {
+        $site = 'gact-runtime/python/Lib/site-packages'
+        $documents = @('gact-runtime/documents/office', 'gact-runtime/documents/node_modules', 'gact-runtime/documents/office-profile.zip')
+        $parts = @(
+            (@($documents | ForEach-Object { "--include `"$_`"" }) -join ' '),
+            "--include `"$site/[_a-b]*`"",
+            "--include `"$site/[c-k]*`"",
+            "--include `"$site/[l-z]*`"",
+            ((@($documents | ForEach-Object { "--exclude `"$_`"" }) + "--exclude `"$site/[_a-z]*`"") -join ' ')
+        )
+    }
     $script:ClioUnpackers = @(foreach ($part in $parts) {
         $info = New-Object Diagnostics.ProcessStartInfo (Join-Path $env:SystemRoot 'System32\tar.exe')
         $info.Arguments = "-x -f - --strip-components 1 -C `"$Dir`" $part"
@@ -1278,6 +1281,91 @@ function Stop-ClioUnpackers([int64]$Length) {
     foreach ($unpacker in $script:ClioUnpackers) {
         if (-not $unpacker.WaitForExit(120000)) { try { $unpacker.Kill() } catch { } }
     }
+}
+
+# Install-ClioSourceDeps PYTHON: a fresh source clone's locked dependencies as the newest
+# release built them (scripts/build_source_deps.py): one archive of the virtualenv, with
+# its bytecode, unpacked into $Venv while it downloads, instead of uv fetching, laying and
+# compiling ~200 wheels file by file. Its line is a plan file of its own
+# (deps-plan.TRIPLE.txt). It is taken only when its name carries the SHA-256 of this
+# clone's uv.lock and PYTHON's minor version; the virtualenv is then pointed at this
+# machine's PYTHON, and `uv sync --locked` installs the project over it as over any
+# environment, so the result is the environment uv sync makes. Any failure removes $Venv
+# and uv sync installs everything. CLIO_SOURCE_DEPS_ARCHIVE names a local archive instead
+# (a build's own, before a release publishes it).
+function Install-ClioSourceDeps([string]$Python) {
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return }
+    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    $lock = Join-Path $Src 'uv.lock'
+    if ((Test-Path -LiteralPath $Venv) -or -not (Test-Path -LiteralPath $tar) -or -not (Test-Path -LiteralPath $lock)) { return }
+    if ($Python -notmatch '^3\.(\d+)') { return }
+    $minor = $Matches[1]
+    $name = "clio-deps-$((Get-ClioSha256 $lock).Substring(0, 16))-py3$minor-windows-x64.tar.zst"
+    $scratch = Join-Path ([IO.Path]::GetTempPath()) ("clio-deps-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $failed = ''
+    try {
+        $local = $env:CLIO_SOURCE_DEPS_ARCHIVE
+        if ($local) {
+            if ((Split-Path -Leaf $local) -ne $name -or -not (Test-Path -LiteralPath $local -PathType Leaf)) {
+                Say "CLIO_SOURCE_DEPS_ARCHIVE is not $name; uv installs the dependencies"
+                return
+            }
+            $item = [pscustomobject]@{ Name = $name; File = $local; Final = $local; Bytes = (Get-Item -LiteralPath $local).Length }
+        } else {
+            $release = Resolve-ClioRelease $true
+            if (-not $release) { return }
+            $plan = @(Get-ClioReleasePlan $release.Tag $scratch 'uv installs the dependencies' "deps-plan.$($script:ClioRuntimeTriple).txt")
+            $entry = @($plan | Where-Object { $_.Kind -eq 'deps' -and $_.Name -eq $name }) | Select-Object -First 1
+            if (-not $entry) {
+                Say "Release $($release.Tag) has no dependencies prebuilt for this clone's uv.lock; uv installs them"
+                return
+            }
+            $final = Join-Path $scratch $entry.Name
+            $item = [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha; Bytes = $entry.Bytes; Ranges = (Join-Path $scratch 'ranges') }
+        }
+        Complete-ClioUvInstall
+        # uv fetches the interpreter while the archive unpacks.
+        $uvExe = (Get-Command uv -CommandType Application | Select-Object -First 1).Source
+        $fetchPython = Start-Process -FilePath $uvExe -ArgumentList "python install --quiet $Python" -WindowStyle Hidden -PassThru
+        $null = $fetchPython.Handle
+        Say "Downloading and unpacking the locked dependencies ($name, $([math]::Round($item.Bytes / 1e6)) MB)"
+        New-Item -ItemType Directory -Force -Path $Venv | Out-Null
+        $site = 'clio-deps/Lib/site-packages'
+        # Ten parts of 3,000-6,000 files each (Defender's cost is per file); the last is
+        # everything outside them: the launchers, and names that are not lowercase.
+        $parts = @(@('[_a-b]', '[c-f]', '[g-k]', 'l', '[m-n]', 'o', 'p[a-x]', 'p[y-z]', '[q-z]') | ForEach-Object { "--include `"$site/$_*`"" }) + "--exclude `"$site/[_a-z]*`""
+        Start-ClioUnpackers $Venv $item $parts
+        if ($local) {
+            $whole = $true
+        } else {
+            try { Save-ClioDownloads @($item) $item.Bytes } catch { $failed = "$_" }
+            Stop-ClioDownloads
+            $whole = -not $failed -and $item.Ok -and $item.Sha -eq $item.Expected
+        }
+        Stop-ClioUnpackers $(if ($whole) { $item.Bytes } else { -1 })
+        $bad = @($script:ClioUnpackers | Where-Object { $_.ExitCode -ne 0 })
+        if (-not $failed -and -not $whole) { $failed = "the download of $name failed or does not match its checksum" }
+        elseif (-not $failed -and $script:ClioUnpacked -ne $item.Bytes) { $failed = "only $($script:ClioUnpacked) of $($item.Bytes) bytes of $name were unpacked" }
+        elseif (-not $failed -and $bad.Count) { $failed = "tar.exe could not unpack $name (exit $($bad[0].ExitCode))" }
+        $fetchPython.WaitForExit()
+        if (-not $failed) {
+            # The archive holds no pyvenv.cfg: uv writes this machine's, keeping what is installed.
+            & uv venv --quiet --allow-existing --relocatable --python $Python $Venv
+            if ($LASTEXITCODE -ne 0) { $failed = "uv could not make a virtualenv of $name (exit $LASTEXITCODE)" }
+        }
+    } catch {
+        $failed = "$_"
+    } finally {
+        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($failed) {
+        Warn "$failed; uv installs the dependencies"
+        RemoveTree $Venv
+        return
+    }
+    Say "Prebuilt dependencies laid in $([math]::Round($clock.Elapsed.TotalSeconds, 1)) s"
 }
 
 # New-ClioLaunchers SITE WHEEL: a wheel of no code whose entry points are the runtime's
@@ -1556,6 +1644,7 @@ if ($OptSource) {
             if ($LASTEXITCODE -ne 0) { Die "could not fetch the submodules of '$Src' (git's message is above); run this installer again" }
         }
         $py = PythonOf (Join-Path $Src '.python-version')
+        Install-ClioSourceDeps $py
         $syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
     }
     Start-OfficePrepare

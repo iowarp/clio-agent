@@ -507,6 +507,43 @@ def _prepare_default_marketplace(
 
 
 _PREWARM_SUFFIXES = (".pyd", ".dll", ".so", ".dylib", ".zip")
+# The files a server start opens, recorded by scripts/record_server_imports.py: one path
+# per line, relative to the import-path folder that holds it, with "/" separators.
+SERVER_IMPORTS = Path(__file__).with_name("server_imports.txt")
+
+
+def _server_import_files(import_path: list[str]) -> list[str] | None:
+    """The files of ``SERVER_IMPORTS`` found on ``import_path``, or ``None`` without it.
+
+    Each line is looked up in the most specific import-path folder first. A ``.py``
+    module brings its compiled ``.pyc`` (the checked-hash bytecode is read with its
+    source). Lines that match nothing here (another platform's native libraries, a
+    module this install lacks) are skipped.
+    """
+    try:
+        lines = SERVER_IMPORTS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    entries = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    if not entries:
+        return None
+    suffix = f".{sys.implementation.cache_tag}.pyc"
+    folders = sorted({p for p in import_path if os.path.isdir(p)}, key=len, reverse=True)
+    files: list[str] = []
+    for entry in entries:
+        parts = entry.split("/")
+        for folder in folders:
+            path = os.path.join(folder, *parts)
+            if not os.path.isfile(path):
+                continue
+            files.append(path)
+            if path.endswith(".py"):
+                stem = os.path.splitext(parts[-1])[0]
+                compiled = os.path.join(os.path.dirname(path), "__pycache__", stem + suffix)
+                if os.path.isfile(compiled):
+                    files.append(compiled)
+            break
+    return files
 
 
 def _prepare_provider_support(
@@ -551,15 +588,23 @@ def _prepare_provider_support(
 
 
 def _runtime_code_files() -> list[str]:
-    """The runtime's shipped bytecode, each module's source, and its native libraries.
+    """The files a server start opens: ``SERVER_IMPORTS``, or else the whole runtime.
 
-    The shipped ``.pyc`` files are checked hash-based, so an import opens both the
-    bytecode and its source. The roots are this interpreter's import path, outermost
-    first, so a folder inside another (site-packages inside Lib) is walked once.
-    Only entries inside the interpreter's own prefixes count: ``python -m`` puts the
-    caller's working directory first on the path, and an installer run from a home
-    directory must not walk the whole home.
+    Opening every module of a fully compiled environment (about 31,000 files for a
+    source install laid from its prebuilt dependencies) takes far longer than the
+    server's own import set (about 5,000), so the recorded set is used when it ships.
+    Without it the runtime's shipped bytecode, each module's source and its native
+    libraries are opened. The shipped ``.pyc`` files are checked hash-based, so an
+    import opens both the bytecode and its source. The roots are this interpreter's
+    import path, outermost first, so a folder inside another (site-packages inside
+    Lib) is walked once. Only entries inside the interpreter's own prefixes count:
+    ``python -m`` puts the caller's working directory first on the path, and an
+    installer run from a home directory must not walk the whole home.
     """
+    import_path = [os.path.abspath(p) for p in sys.path if p]
+    listed = _server_import_files(import_path)
+    if listed is not None:
+        return [p for p in import_path if os.path.isfile(p)] + listed
     tag = sys.implementation.cache_tag
     suffix = f".{tag}.pyc"
     prefixes = {

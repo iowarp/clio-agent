@@ -82,8 +82,11 @@ def test_host_created_office_profile_is_accessible_to_its_confined_executor(tmp_
     )
     assert pdf.read_bytes() == b"%PDF-1.7\npreview"
     assert source.read_bytes() == b"immutable deck"
-    # Only the CLIO-written search-ignore marker remains; the temporary profile is gone.
-    assert [entry.name for entry in process.scratch_root(tmp_path).iterdir()] == [".ignore"]
+    # Only the CLIO-written search and git ignore markers remain; the temporary profile is gone.
+    assert sorted(entry.name for entry in process.scratch_root(tmp_path).iterdir()) == [
+        ".gitignore",
+        ".ignore",
+    ]
 
 
 @pytest.mark.parametrize("managed", [False, True])
