@@ -365,7 +365,8 @@ def test_uninstall_removes_the_core_memory_files_of_the_processes_it_stops(
         result = _uninstall(env)
 
         assert result.returncode == 0, result.stdout + result.stderr
-        assert server.poll() is not None
+        # Not poll(): until the reaper thread records the exit, it returns None.
+        assert server.wait(timeout=10) is not None
         assert sorted(p.name for p in shm.iterdir()) == sorted(theirs)
         assert "Removed 3 clio-core memory files" in result.stdout
     finally:

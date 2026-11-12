@@ -15,11 +15,21 @@ SCRIPT = ROOT / "install" / "uninstall.ps1"
 PWSH = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(PWSH is None, reason="PowerShell 7 (pwsh) is not installed")
 
-# The script under test runs as the relaunched copy; its Windows-only commands are no-ops.
-WRAPPER = """
+# The script under test runs as the relaunched copy; its Windows-only commands are no-ops,
+# except the hidden cmd.exe that deletes the renamed trees (#2194): its rd steps run here.
+WRAPPER = r"""
 function Get-NetTCPConnection { }
 function Get-CimInstance { }
 function taskkill { }
+function Start-Process($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru) {
+    $planned = $ArgumentList -join ' '
+    foreach ($step in [regex]::Matches($planned, 'rd( /s /q)? "\\\\\?\\([^"]+)"')) {
+        $path = $step.Groups[2].Value
+        if ($step.Groups[1].Success) { Remove-Item -LiteralPath $path -Recurse -Force }
+        else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+    }
+    [pscustomobject]@{ Id = 0 }
+}
 & $env:CLIO_TEST_UNINSTALLER -Relaunched @args
 exit $LASTEXITCODE
 """
@@ -46,6 +56,7 @@ def _uninstall(tmp_path: Path, home: Path, *flags: str) -> subprocess.CompletedP
         "CLIO_BIN_DIR": str(tmp_path / "bin"),
         "CLIO_AGENT_HOME": str(home),
         "CLIO_TEST_UNINSTALLER": str(SCRIPT),
+        "SystemRoot": os.environ.get("SystemRoot", str(tmp_path / "windows")),
     }
     for name in ("CLIO_PREFIX", "CLIO_USER_DIR", *(f"CLIO_AGENT_{r.upper()}_DIR" for r in ROLES)):
         env.pop(name, None)

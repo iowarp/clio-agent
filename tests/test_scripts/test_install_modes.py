@@ -441,5 +441,12 @@ def test_the_prebuilt_agent_downloads_first_and_pypi_remains_the_fallback() -> N
     assert plan < start
     assert 'if [ -n "$RUNTIME_JOB" ]; then runtime_first=1; else start_install_downloads' in text
     finish = text.index('  ! finish_release_runtime "$package_version" || runtime_installed=1')
-    after = text.index('  [ "$runtime_first" = 0 ] || start_install_downloads "$install_plan"')
+    # After the runtime: its browser archives too when the prebuilt agent installed.
+    after = text.index(
+        '  if [ "$runtime_first" = 1 ] && [ "$runtime_installed" = 1 ]; then\n'
+        '    start_install_downloads "$install_plan" "office npm browser"\n'
+        '  elif [ "$runtime_first" = 1 ]; then\n'
+        '    start_install_downloads "$install_plan"\n'
+        "  fi\n"
+    )
     assert start < finish < after < text.index('say "Installing $pkg_spec from PyPI', after)
