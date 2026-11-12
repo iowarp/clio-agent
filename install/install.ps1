@@ -449,6 +449,38 @@ function Complete-ClioPrefetch($item) {
     Warn "could not fetch $($item.Name) ahead of time; the setup downloads it while preparing"
 }
 
+# Start-ClioSideFetch ITEM: a plan file the install does not wait for (the browser
+# archives), fetched by its own curl.exe from the start of the runtime download. It is
+# NAME.part while it downloads and NAME once complete, renamed by the same cmd.exe, so no
+# step of this script has to tend it. The browser step waits on that and keeps only bytes
+# matching the plan's pin (driver.py installer_archive); a failed fetch leaves neither
+# file, and that step downloads the archive itself.
+$ClioSideFetches = @()
+function Start-ClioSideFetch($item) {
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $curl) { return }
+    # The browser step finds NAME.part even before the first bytes arrive.
+    [IO.File]::WriteAllBytes($item.File, [byte[]]@())
+    $fetch = "`"$($curl.Source)`" --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-connrefused --output `"$($item.File)`" `"$($item.Url)`""
+    $command = "$fetch && move /y `"$($item.File)`" `"$($item.Final)`" >nul || del /f /q `"$($item.File)`""
+    try {
+        $process = Start-Process -FilePath $env:ComSpec -ArgumentList "/d /s /c `"$command`"" -NoNewWindow -PassThru
+    } catch {
+        Remove-Item -LiteralPath $item.File -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $null = $process.Handle
+    $script:ClioSideFetches += $process
+}
+
+# Stop-ClioSideFetches: end the side fetches still running (with their curl.exe).
+function Stop-ClioSideFetches {
+    foreach ($process in $script:ClioSideFetches) {
+        if (-not $process.HasExited) { & taskkill.exe /T /F /PID $process.Id 2>&1 | Out-Null }
+    }
+    $script:ClioSideFetches = @()
+}
+
 # Get-ClioManifestSha MANIFEST NAME: NAME's SHA-256 in a release checksum manifest, or
 # $null. GitHub replaces spaces in asset names with dots; older checksum manifests keep the
 # original name. Accept sha256sum's text and binary markers.
@@ -1079,6 +1111,11 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
         $final = Join-Path $downloads $entry.Name
         [pscustomobject]@{ Name = $entry.Name; Url = $entry.Url; File = "$final.part"; Final = $final; Expected = $entry.Sha; Bytes = $entry.Bytes; Ranges = (Join-Path $Scratch 'ranges'); Kind = $entry.Kind }
     })
+    # The browser archives are needed only by the managed-package step. They download once
+    # the runtime archive is in: sharing the line slowed it ~8 s (the critical path), while
+    # the line is idle as its last blocks unpack, and that ends well before the step needs them.
+    $side = @($items | Where-Object { $_.Kind -eq 'browser' })
+    $items = @($items | Where-Object { $_.Kind -ne 'browser' })
     $archive = @($items | Where-Object { $_.Kind -eq 'runtime' })[0]
     $total = [int64](($items | Measure-Object -Property Bytes -Sum).Sum)
     Say "Downloading and unpacking the CLIO runtime ($($archive.Name), $([math]::Round($archive.Bytes / 1e6)) MB)"
@@ -1091,6 +1128,10 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
         $failed = "$_"
     }
     Stop-ClioDownloads
+    if (-not $failed -and $side.Count) {
+        Say "Fetching while it unpacks: $(($side | ForEach-Object { $_.Name }) -join ', ')"
+        foreach ($item in $side) { Start-ClioSideFetch $item }
+    }
     $whole = -not $failed -and $archive.Ok -and $archive.Sha -eq $archive.Expected
     Stop-ClioUnpackers $(if ($whole) { $archive.Bytes } else { -1 })
     $bad = @($script:ClioUnpackers | Where-Object { $_.ExitCode -ne 0 })
@@ -1294,6 +1335,7 @@ if (-not $OptSource -and $RuntimePlan) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch | Select-Object -Last 1
     if ($failure) {
+        Stop-ClioSideFetches
         if ($DocJob) { try { $DocJob.Process.Kill(); $DocJob.Process.WaitForExit() } catch { } }
         RemoveTree $Venv
         if ($Previous) { [IO.Directory]::Move($Previous, $Venv) }
@@ -1493,6 +1535,7 @@ Complete-OfficePrepare
 if ($DocJob) {
     if ($DocsMigrate) { Say 'Finishing the managed packages, Office rendering and the CLIO store' }
     $docsStatus = Complete-ClioBackground $DocJob
+    Stop-ClioSideFetches
     if ($DocsMigrate -and $docsStatus -eq 0) { $MigrateStatus = Get-ClioDocsMigrateStatus $DocJob.LastLine }
     Complete-ClioMigrate
     if ($docsStatus -ne 0) {
@@ -1516,6 +1559,7 @@ if ($DocJob) {
     }
 }
 if ($RuntimeScratch) {
+    Stop-ClioSideFetches
     Remove-Item -LiteralPath $RuntimeScratch -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
 }

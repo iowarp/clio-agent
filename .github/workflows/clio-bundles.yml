@@ -840,6 +840,11 @@ jobs:
               office_pack="$RUNNER_TEMP/office-tree/office-tree.pack.json"
               [ ! -f "$office_pack" ] || pack_args+=(--office-pack "$office_pack")
             fi
+            # The browser archives the built runtime pins (Node.js, and Chromium where it
+            # is pinned): the installers fetch them while the runtime archive downloads.
+            browser_manifest="$(find external/gact-tui/desktop/src-tauri/gact-runtime \
+              -path '*/playwright/driver/clio-node.json' -print -quit 2>/dev/null || true)"
+            [ -z "$browser_manifest" ] || pack_args+=(--browser-manifest "$browser_manifest")
             "$py" scripts/release_install_plan.py --target "${{ matrix.target }}" ${pack_args[@]+"${pack_args[@]}"} \
               --output "$stage/install-plan.${{ matrix.target }}.bundled.txt"
           fi
