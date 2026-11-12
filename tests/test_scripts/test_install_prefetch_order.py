@@ -52,9 +52,18 @@ def _run(tmp_path: Path, mode: str, office_s: float, wait_s: int = 40) -> tuple[
         f'  [ "$2" != LibreOffice.dmg ] || sleep {office_s}\n'
         '  echo "end $2" >> "$LOG"\n'
         "}\n"
+        # The parent shell logs each launch, in order, before the job forks: the
+        # background jobs' own lines race each other and say nothing about order.
+        "start_job() {\n"
+        '  case "$1" in\n'
+        '    prefetch) echo "launch now $3" ;;\n'
+        '    prefetch_after) [ -e "$DESKTOP_SCRATCH/downloads/$4.part" ] && p=" placeholder" || p=""\n'
+        '      echo "launch held $4$p" ;;\n'
+        '  esac >> "$LOG"\n'
+        '  "$@" & DESKTOP_JOBS="$DESKTOP_JOBS $!"\n'
+        "}\n"
         'DESKTOP_JOBS=""; DESKTOP_PLAN_BYTES=0\n'
         f'start_prefetch "$PLAN" {mode}\n'
-        'if [ -e "$DESKTOP_SCRATCH/downloads/chrome.zip.part" ]; then echo placeholder >> "$LOG"; fi\n'
         "wait $DESKTOP_JOBS\n"
         'echo "bytes $DESKTOP_PLAN_BYTES" >> "$LOG"\n'
     )
@@ -69,10 +78,11 @@ def _run(tmp_path: Path, mode: str, office_s: float, wait_s: int = 40) -> tuple[
 
 def test_office_first_holds_chromium_until_libreoffice_lands(tmp_path: Path) -> None:
     lines, _ = _run(tmp_path, "office-first", office_s=1.0)
-    assert lines.index("start LibreOffice.dmg") < lines.index("start pnpm.tgz")
-    assert "placeholder" in lines
+    launches = [line for line in lines if line.startswith("launch ")]
+    assert launches[0] == "launch now LibreOffice.dmg"
+    assert "launch held chrome.zip placeholder" in launches
+    assert "launch now pnpm.tgz" in launches
     assert lines.index("end LibreOffice.dmg") < lines.index("start chrome.zip")
-    assert lines.index("start pnpm.tgz") < lines.index("end LibreOffice.dmg")
     assert f"bytes {490 * _MB}" in lines
     assert "say Fetching at the same time: LibreOffice.dmg, chrome.zip, pnpm.tgz" in lines
 
@@ -84,9 +94,11 @@ def test_office_first_wait_is_capped(tmp_path: Path) -> None:
 
 def test_without_office_first_everything_starts_at_once(tmp_path: Path) -> None:
     lines, _ = _run(tmp_path, "", office_s=1.0)
-    assert "placeholder" not in lines
-    end = lines.index("end LibreOffice.dmg")
-    assert all(lines.index(f"start {name}") < end for name in ("chrome.zip", "pnpm.tgz"))
+    launches = sorted(line for line in lines if line.startswith("launch "))
+    assert launches == [
+        f"launch now {name}" for name in ("LibreOffice.dmg", "chrome.zip", "pnpm.tgz")
+    ]
+    assert not (tmp_path / "scratch" / "downloads" / "chrome.zip.part").exists()
 
 
 def test_plan_entries_without_kind_keeps_four_fields(tmp_path: Path) -> None:
