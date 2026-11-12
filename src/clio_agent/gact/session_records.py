@@ -48,7 +48,7 @@ import logging
 import threading
 import time
 import zlib
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,6 +79,8 @@ KIND = "session_records"
 INDEX_BUCKETS = 64
 _ROW = "row/"
 _BUCKET = "index/"
+#: Bare marker of a pre-namespace row another CLIO home adopted (value: its namespace).
+_CLAIMED = "claimed/"
 
 #: Typed reasons this module reports (no silent fallback).
 LEGACY_IMPORTED_REASON = "session_records_legacy_imported"
@@ -86,6 +88,7 @@ LEGACY_UNREADABLE_REASON = "session_records_legacy_unreadable"
 ROW_UNREADABLE_REASON = "session_record_unreadable"
 WRITE_FAILED_REASON = "session_record_write_failed"
 NOT_BOUND_REASON = "session_records_not_bound"
+LEGACY_ADOPTED_REASON = "session_records_home_adopted"
 #: Seconds an off-loop read waits for the announced clio-core store to be bound.
 _BIND_WAIT_SECONDS = 300.0
 #: Point reads of a view's records issued together.
@@ -303,6 +306,38 @@ class _Writer:
                 self._cond.notify_all()
 
 
+class _PrefixedStore:
+    """One CLIO home's session records inside a shared store: every name under ``prefix``
+    (:mod:`clio_agent.arc.home_namespace`)."""
+
+    def __init__(self, store: Any, prefix: str) -> None:
+        self.store = store
+        self.prefix = prefix
+
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        self.store.put_many(
+            kind, [PutRecord(self.prefix + record.name, record.data) for record in records]
+        )
+
+    def get(self, kind: str, name: str) -> Optional[bytes]:
+        return self.store.get(kind, self.prefix + name)
+
+    def delete(self, kind: str, name: str) -> None:
+        self.store.delete(kind, self.prefix + name)
+
+
+def _claimed(store: Any) -> dict[str, str]:
+    """``{session id: claiming namespace}``: bare rows another home adopted."""
+    scan = getattr(store, "scan_names", None)
+    if scan is None:
+        return {}
+    claims: dict[str, str] = {}
+    for name in scan(KIND, _CLAIMED):
+        body = store.get(KIND, name)
+        claims[name[len(_CLAIMED) :]] = body.decode() if body else ""
+    return claims
+
+
 def _on_server_loop() -> bool:
     from clio_agent.arc.loop_guard import on_server_loop  # noqa: PLC0415
 
@@ -316,6 +351,7 @@ class SessionRecords:
         self._lock = threading.RLock()
         self._memory = _MemoryRecords()
         self._writer = _Writer(self._memory, inline=True)
+        self._bound_to: Any = None  # the store bind() was given (unprefixed)
         self._bound = threading.Event()
         self._expected = False
         #: ``(reason, message)`` once boot refused the store (it will never bind).
@@ -349,17 +385,33 @@ class SessionRecords:
         """Boot refused the store (typed ``reason``): reads fail at once with ``message``."""
         self._refused = (reason, message)
 
-    def bind(self, store: Any) -> None:
-        """Move the records into ``store`` and load its index (off the server loop)."""
+    def bind(
+        self, store: Any, owns_legacy: Optional[Callable[[RecordColumns], bool]] = None
+    ) -> None:
+        """Move the records into ``store`` and load its index (off the server loop).
+
+        On another CLIO home's clio-core daemon the records live under this home's
+        name prefix (:func:`~clio_agent.arc.home_namespace.session_record_prefix`), and
+        the bare rows ``owns_legacy`` recognises (written before the prefix existed) are
+        adopted into it. A home on bare names stops listing rows another home adopted.
+        """
+        from clio_agent.arc import home_namespace  # noqa: PLC0415
 
         with self._lock:
-            if self._bound.is_set() and self._writer.store is store:
+            if self._bound.is_set() and self._bound_to is store:
                 return
             carried = dict(self._memory.data)
-            self._writer = _Writer(store)
+            prefix = home_namespace.session_record_prefix()
+            scoped = _PrefixedStore(store, prefix) if prefix else store
+            self._writer = _Writer(scoped)
+            self._bound_to = store
             for number in range(INDEX_BUCKETS):
                 bucket = f"{_BUCKET}{number:02d}"
-                self._load(store.get(KIND, bucket), store.get(KIND, extension_name(bucket)))
+                self._load(scoped.get(KIND, bucket), scoped.get(KIND, extension_name(bucket)))
+            if prefix:
+                self._adopt_legacy(store, prefix.rstrip("/"), owns_legacy)
+            else:
+                self._drop_claimed(store)
             if self._unfilled:
                 # Read as defaults until the session_record_columns migration fills them.
                 stream_audit(
@@ -389,6 +441,94 @@ class SessionRecords:
         for row in rows:
             self._index(row)
         self._unfilled |= unfilled
+
+    def _adopt_legacy(
+        self,
+        store: Any,
+        namespace: str,
+        owns: Optional[Callable[[RecordColumns], bool]],
+    ) -> None:
+        """Copy this home's pre-namespace bare rows under its prefix and mark them claimed.
+
+        A row is this home's when ``owns`` says so or its parent session is this home's.
+        Rows another home claimed, or no one recognises, are left as they are: an
+        upgrade may leave a session with the daemon's owner, but never hides it.
+        """
+        if owns is None:
+            return
+        claims = _claimed(store)
+        legacy: dict[str, RecordColumns] = {}
+        stale: set[str] = set()
+        for number in range(INDEX_BUCKETS):
+            bucket = f"{_BUCKET}{number:02d}"
+            rows, unfilled = decode_bucket(
+                store.get(KIND, bucket), store.get(KIND, extension_name(bucket))
+            )
+            stale |= unfilled
+            for row in rows:
+                # A claim of our own whose copy never landed is adopted again.
+                if row.id not in self._columns and claims.get(row.id, namespace) == namespace:
+                    legacy[row.id] = row
+        mine = {sid for sid, row in legacy.items() if owns(row)}
+        grew = True
+        while grew:
+            grew = False
+            for sid, row in legacy.items():
+                parent = row.parent_session_id
+                if sid not in mine and parent and (parent in mine or parent in self._columns):
+                    mine.add(sid)
+                    grew = True
+        changes: dict[str, Optional[bytes]] = {}
+        for sid in sorted(mine):
+            body = store.get(KIND, _ROW + sid)
+            if body is None:
+                continue
+            self._index(legacy[sid])
+            if sid in stale:
+                self._unfilled.add(sid)
+            changes[_ROW + sid] = body
+        if not changes:
+            return
+        adopted = [name[len(_ROW) :] for name in changes]
+        for bucket in {bucket_of(sid) for sid in adopted}:
+            changes.update(self._bucket_bodies(bucket))
+        ticket = self._writer.submit(changes)
+        if not self._writer.wait(ticket, _WRITE_WAIT_SECONDS):
+            # The copies are not confirmed: leave the bare rows unclaimed (still listed
+            # by the daemon's owner) and adopt again at the next attach.
+            logger.warning(
+                "legacy session adoption not confirmed reason=%s sessions=%d; retried next attach",
+                WRITE_FAILED_REASON,
+                len(adopted),
+            )
+            return
+        store.put_many(KIND, [PutRecord(_CLAIMED + sid, namespace.encode()) for sid in adopted])
+        stream_audit(LEGACY_ADOPTED_REASON, reason=LEGACY_ADOPTED_REASON, sessions=len(adopted))
+        logger.info(
+            "adopted this home's pre-namespace sessions reason=%s namespace=%s sessions=%d",
+            LEGACY_ADOPTED_REASON,
+            namespace,
+            len(adopted),
+        )
+
+    def _drop_claimed(self, store: Any) -> None:
+        """Stop listing bare rows another home adopted (their copies are that home's).
+
+        Rows this home claimed itself, while it ran on another home's daemon, stay
+        listed: the bare copies are still its own.
+        """
+        from clio_agent.arc import home_namespace  # noqa: PLC0415
+
+        own = home_namespace.namespace_for(home_namespace.home_identity())
+        claimed = [sid for sid, by in _claimed(store).items() if by != own and sid in self._columns]
+        for sid in claimed:
+            self._unindex(sid)
+        if claimed:
+            logger.info(
+                "sessions adopted by another CLIO home not listed here reason=%s sessions=%d",
+                LEGACY_ADOPTED_REASON,
+                len(claimed),
+            )
 
     def _ready(self) -> None:
         if not self._expected or self._bound.is_set():

@@ -386,6 +386,11 @@ def probe_clio_core_config_adoption(*, record: object | None = None) -> list[Int
     if snap is None:
         return []
     keys = ", ".join(sorted(snap.diffs)) or "unspecified keys"
+    apart = (
+        f" This CLIO's sessions are kept apart under namespace {snap.record_namespace}."
+        if snap.record_namespace
+        else ""
+    )
     return [
         IntegrationStatus(
             name="clio_core_config_adoption",
@@ -393,7 +398,7 @@ def probe_clio_core_config_adoption(*, record: object | None = None) -> list[Int
             summary=(
                 f"clio-core is running another CLIO's config ({snap.effective_config_path}); "
                 f"this CLIO asked for {snap.requested_config_path}, which differs in: {keys}. "
-                "The first config wins on the one daemon per machine."
+                f"The first config wins on the one daemon per machine.{apart}"
             ),
             config_source="runtime:clio_core_config_adoption",
             next_action=(
@@ -407,6 +412,7 @@ def probe_clio_core_config_adoption(*, record: object | None = None) -> list[Int
                 "requested_config_path": snap.requested_config_path,
                 "effective_config_path": snap.effective_config_path,
                 "diffs": snap.diffs,
+                "record_namespace": snap.record_namespace,
             },
             required=False,
         )
