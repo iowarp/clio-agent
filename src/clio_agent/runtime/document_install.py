@@ -387,10 +387,18 @@ def _main() -> None:
             reuse_prepared=args.reuse_prepared,
         )
         migrations = _run_store_migrations(args, emit)
-        result = installation.result()
-        browser_result = browser.result()
         marketplace_result = marketplace.result()
         providers_result = providers.result()
+        maintenance: dict[str, Any] = {}
+        if not args.reuse_installed:
+            # An install or upgrade, not a per-launch check: bound the MCP cache (B4) and
+            # collect superseded snapshots once the marketplace step has written its own,
+            # while the packages are still prepared (each scan of the process table took
+            # 0.4-1.4 s after them).
+            maintenance["mcp_cache"] = prune_after_install()
+            maintenance["marketplace_snapshots"] = collect_snapshots_after_install()
+        result = installation.result()
+        browser_result = browser.result()
         prewarm_result = prewarm.result()
     summary = {
         "status": result["status"],
@@ -401,11 +409,8 @@ def _main() -> None:
         "marketplace": marketplace_result,
         "provider_support": providers_result,
         "prewarm": prewarm_result,
+        **maintenance,
     }
-    if not args.reuse_installed:
-        # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
-        summary["mcp_cache"] = prune_after_install()
-        summary["marketplace_snapshots"] = collect_snapshots_after_install()
     print(json.dumps(summary), flush=True)
 
 
@@ -602,5 +607,30 @@ def _run_store_migrations(
     return {key: payload[key] for key in ("status", "reason", "seconds") if key in payload}
 
 
+def _exit_released() -> None:
+    """Run :func:`main`, then exit without the interpreter's module teardown.
+
+    Every pool is joined and the store is released (``clio-agent migrate`` closes it)
+    before :func:`main` returns; the exit handlers still run. The teardown skipped here,
+    a garbage collection over everything imported, held the installer that waits for
+    this process for seconds after its result line.
+    """
+    import atexit  # noqa: PLC0415
+
+    code = 0
+    try:
+        main()
+    except SystemExit as stop:
+        if stop.code is None or isinstance(stop.code, int):
+            code = stop.code or 0
+        else:
+            print(stop.code, file=sys.stderr)
+            code = 1
+    atexit._run_exitfuncs()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    main()
+    _exit_released()
