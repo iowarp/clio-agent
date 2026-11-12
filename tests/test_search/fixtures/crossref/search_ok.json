@@ -1,0 +1,710 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.crossref.org/works?query=lossy+compression+scientific+data&rows=5&mailto=tests@example.org",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "query": "lossy compression scientific data",
+      "rows": "5",
+      "mailto": "tests@example.org"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "x-rate-limit-limit": "3",
+    "x-rate-limit-interval": "1s",
+    "x-concurrency-limit": "3",
+    "x-api-pool": "polite-array"
+  },
+  "body": {
+    "status": "ok",
+    "message-type": "work-list",
+    "message-version": "1.0.0",
+    "message": {
+      "facets": {},
+      "total-results": 5515954,
+      "items": [
+        {
+          "indexed": {
+            "date-parts": [
+              [
+                2025,
+                5,
+                14
+              ]
+            ],
+            "date-time": "2025-05-14T13:01:21Z",
+            "timestamp": 1747227681301,
+            "version": "3.40.5"
+          },
+          "posted": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ]
+          },
+          "group-title": "display",
+          "reference-count": 0,
+          "publisher": "Copernicus GmbH",
+          "content-domain": {
+            "domain": [],
+            "crossmark-restriction": false
+          },
+          "abstract": "<jats:p>&amp;lt;p&amp;gt;Much of the research in lossy data compression has focused on minimizing the average error for a given storage budget. For scientific applications, the maximum point-wise error is often of greater interest than the average error. This paper introduces an algorithm that encodes outliers&amp;amp;#8212;data points exceeding a specified point-wise error tolerance&amp;amp;#8212;produced by a lossy compression algorithm optimized for minimizing average error. These outliers can then be corrected to be within the error tolerance when decoding. We pair this outlier coding algorithm with an in-house implementation of SPECK, a lossy compression algorithm based on wavelets that exhibits excellent rate-distortion performance (where distortion is measured by the average error), and introduce a new lossy compression product that we call SPERR. Compared to two leading scientific data compressors, SPERR uses less storage to guarantee an error bound and produces better overall rate-distortion curves at a moderate cost of added computation. Finally, SPERR facilitates interactive data exploration by exploiting the multiresolution properties of wavelets and their ability to reconstruct coarsened data volumes on the fly.&amp;lt;/p&amp;gt;</jats:p>",
+          "DOI": "10.5194/egusphere-egu22-946",
+          "type": "posted-content",
+          "created": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                26
+              ]
+            ],
+            "date-time": "2022-03-26T23:08:21Z",
+            "timestamp": 1648336101000
+          },
+          "source": "Crossref",
+          "is-referenced-by-count": 1,
+          "title": [
+            "Lossy Scientific Data Compression With SPERR"
+          ],
+          "prefix": "10.5194",
+          "author": [
+            {
+              "ORCID": "https://orcid.org/0000-0001-8295-2248",
+              "authenticated-orcid": false,
+              "given": "Samuel",
+              "family": "Li",
+              "sequence": "first",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            },
+            {
+              "given": "John",
+              "family": "Clyne",
+              "sequence": "additional",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            }
+          ],
+          "member": "3145",
+          "deposited": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                26
+              ]
+            ],
+            "date-time": "2022-03-26T23:08:27Z",
+            "timestamp": 1648336107000
+          },
+          "score": 34.776417,
+          "resource": {
+            "primary": {
+              "URL": "https://meetingorganizer.copernicus.org/EGU22/EGU22-946.html"
+            }
+          },
+          "issued": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ]
+          },
+          "references-count": 0,
+          "URL": "https://doi.org/10.5194/egusphere-egu22-946",
+          "published": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ]
+          },
+          "subtype": "other"
+        },
+        {
+          "indexed": {
+            "date-parts": [
+              [
+                2025,
+                5,
+                14
+              ]
+            ],
+            "date-time": "2025-05-14T12:58:32Z",
+            "timestamp": 1747227512648,
+            "version": "3.40.5"
+          },
+          "posted": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ]
+          },
+          "group-title": "display",
+          "reference-count": 0,
+          "publisher": "Copernicus GmbH",
+          "content-domain": {
+            "domain": [],
+            "crossmark-restriction": false
+          },
+          "abstract": "<jats:p>&amp;lt;p&amp;gt;Lossy compression methods are extremely efficient in terms of space and performance and allow for reduction of network bandwidth and disk space needed to store data arrays without sacrificing the number of stored values. &amp;amp;#160;Lossy compression involves an irreversible transformation of data that reduces the information content of the data. &amp;amp;#160;The transformation introduces a distortion that is normally measured in terms of absolute or relative error. The error is higher for higher compression ratios. &amp;amp;#160;A good choice of lossy compression parameters maximizes the compression ratio while keeping the introduced error within acceptable margins. &amp;amp;#160;Negligence or failure to chose a right compression method or its parameters leads to poor compression ratio, or loss of the data.&amp;lt;/p&amp;gt;&amp;lt;p&amp;gt;A good strategy for lossy compression would involve sepcification of the acceptible error margin and choice of compression parameters and storage format. We will discuss specific techniques of lossy compression, and illustrate pitfalls in choice of the error margins and tools for lossy/lossless compression. The following specific topics will be covered:&amp;lt;/p&amp;gt;&amp;lt;p&amp;gt;1. Packing of floating-point data to integers in NetCDF is sub-optimal in most cases, &amp;amp;#160; and for some quantities leads to severe errors.&amp;lt;br&amp;gt;2. Keeping relative vs absolute precision: false alternative.&amp;lt;br&amp;gt;3. Acceptible error margin depends on both the origin and the intended application of data.&amp;lt;br&amp;gt;4. Smart algorithms to decide on compression parameters have limited area of applicability, &amp;amp;#160; which has to be considered in each individual case.&amp;lt;br&amp;gt;5. Choice of a format for compressed data (NetCDF, GRIB2, Zarr): tradeoff between size, speed and precision.&amp;lt;br&amp;gt;6. What &amp;quot;number_of_significant_digits&amp;quot; and &amp;quot;least_significant_digit&amp;quot; mean in terms of relative/absolute error.&amp;lt;br&amp;gt;7. Bit-Shuffle is not always beneficial.&amp;lt;/p&amp;gt;</jats:p>",
+          "DOI": "10.5194/egusphere-egu22-1149",
+          "type": "posted-content",
+          "created": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ],
+            "date-time": "2022-03-27T06:52:15Z",
+            "timestamp": 1648363935000
+          },
+          "source": "Crossref",
+          "is-referenced-by-count": 0,
+          "title": [
+            "Practical notes on lossy compression of scientific data"
+          ],
+          "prefix": "10.5194",
+          "author": [
+            {
+              "ORCID": "https://orcid.org/0000-0001-5140-0037",
+              "authenticated-orcid": false,
+              "given": "Rostislav",
+              "family": "Kouznetsov",
+              "sequence": "first",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            }
+          ],
+          "member": "3145",
+          "deposited": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ],
+            "date-time": "2022-03-27T06:52:35Z",
+            "timestamp": 1648363955000
+          },
+          "score": 34.7583,
+          "resource": {
+            "primary": {
+              "URL": "https://meetingorganizer.copernicus.org/EGU22/EGU22-1149.html"
+            }
+          },
+          "issued": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ]
+          },
+          "references-count": 0,
+          "URL": "https://doi.org/10.5194/egusphere-egu22-1149",
+          "published": {
+            "date-parts": [
+              [
+                2022,
+                3,
+                27
+              ]
+            ]
+          },
+          "subtype": "other"
+        },
+        {
+          "indexed": {
+            "date-parts": [
+              [
+                2024,
+                10,
+                22
+              ]
+            ],
+            "date-time": "2024-10-22T20:17:40Z",
+            "timestamp": 1729628260708,
+            "version": "3.28.0"
+          },
+          "reference-count": 2,
+          "publisher": "IEEE Comput. Soc",
+          "content-domain": {
+            "domain": [],
+            "crossmark-restriction": false
+          },
+          "DOI": "10.1109/dcc.2000.838225",
+          "type": "proceedings-article",
+          "created": {
+            "date-parts": [
+              [
+                2002,
+                11,
+                7
+              ]
+            ],
+            "date-time": "2002-11-07T20:11:41Z",
+            "timestamp": 1036699901000
+          },
+          "page": "578",
+          "source": "Crossref",
+          "is-referenced-by-count": 2,
+          "title": [
+            "Wavelet-based lossy compression of turbulence data"
+          ],
+          "prefix": "10.1109",
+          "author": [
+            {
+              "given": "J.P.",
+              "family": "Wilson",
+              "sequence": "first",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            }
+          ],
+          "member": "263",
+          "reference": [
+            {
+              "key": "ref2",
+              "doi-asserted-by": "publisher",
+              "DOI": "10.1109/76.538934"
+            },
+            {
+              "key": "ref1",
+              "doi-asserted-by": "crossref",
+              "first-page": "55",
+              "DOI": "10.1146/annurev.fluid.31.1.55",
+              "volume": "31",
+              "author": "provenzale",
+              "year": "1999",
+              "journal-title": "Annual Review of Fluid Mechanics"
+            }
+          ],
+          "event": {
+            "name": "DCC 2000. Data Compression Conference",
+            "acronym": "DCC-00",
+            "location": "Snowbird, UT, USA"
+          },
+          "container-title": [
+            "Proceedings DCC 2000. Data Compression Conference"
+          ],
+          "link": [
+            {
+              "URL": "http://xplorestaging.ieee.org/ielx5/6760/18073/00838225.pdf?arnumber=838225",
+              "content-type": "unspecified",
+              "content-version": "vor",
+              "intended-application": "similarity-checking"
+            }
+          ],
+          "deposited": {
+            "date-parts": [
+              [
+                2017,
+                6,
+                15
+              ]
+            ],
+            "date-time": "2017-06-15T13:47:41Z",
+            "timestamp": 1497534461000
+          },
+          "score": 30.684837,
+          "resource": {
+            "primary": {
+              "URL": "http://ieeexplore.ieee.org/document/838225/"
+            }
+          },
+          "issued": {
+            "date-parts": [
+              [
+                null
+              ]
+            ]
+          },
+          "references-count": 2,
+          "URL": "https://doi.org/10.1109/dcc.2000.838225"
+        },
+        {
+          "indexed": {
+            "date-parts": [
+              [
+                2023,
+                7,
+                4
+              ]
+            ],
+            "date-time": "2023-07-04T04:58:15Z",
+            "timestamp": 1688446695360
+          },
+          "posted": {
+            "date-parts": [
+              [
+                2023
+              ]
+            ]
+          },
+          "group-title": "SSRN",
+          "reference-count": 54,
+          "publisher": "Elsevier BV",
+          "content-domain": {
+            "domain": [],
+            "crossmark-restriction": false
+          },
+          "DOI": "10.2139/ssrn.4494597",
+          "type": "posted-content",
+          "created": {
+            "date-parts": [
+              [
+                2023,
+                7,
+                3
+              ]
+            ],
+            "date-time": "2023-07-03T11:26:31Z",
+            "timestamp": 1688383591000
+          },
+          "source": "Crossref",
+          "is-referenced-by-count": 0,
+          "title": [
+            "Hierarchical Autoencoder-Based Lossy Compression for Large-Scale High-Resolution Scientific Data"
+          ],
+          "prefix": "10.2139",
+          "author": [
+            {
+              "given": "Hieu  Trung",
+              "family": "Le",
+              "sequence": "first",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            },
+            {
+              "given": "Hernan",
+              "family": "Santos",
+              "sequence": "additional",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            },
+            {
+              "given": "Jian",
+              "family": "Tao",
+              "sequence": "additional",
+              "affiliation": [],
+              "role": [
+                {
+                  "role": "author",
+                  "vocabulary": "crossref"
+                }
+              ]
+            }
+          ],
+          "member": "78",
+          "reference": [
+            {
+              "key": "ref1",
+              "author": "Ann Almgren",
+              "year": "2023",
+              "journal-title": "NYX simulation"
+            },
+            {
+              "key": "ref2",
+              "doi-asserted-by": "crossref",
+              "first-page": "203",
+              "DOI": "10.1145/2600212.2600217",
+              "article-title": "A methodology for evaluating the impact of data compression on climate simulation data",
+              "author": "Allison H Baker",
+              "year": "2014",
+              "journal-title": "Proceedings of the 23rd international symposium on High-performance parallel and distributed computing"
+            },
+            {
+              "key": "ref3",
+              "doi-asserted-by": "crossref",
+              "first-page": "30",
+              "DOI": "10.1007/978-3-319-67630-2_3",
+              "article-title": "Toward a multi-method approach: Lossy data compression for climate simulation data",
+              "author": "Allison H Baker",
+              "year": "2017",
+              "journal-title": "International Conference on High Performance Computing"
+            },
+            {
+              "key": "ref4",
+              "first-page": "248",
+              "article-title": "Efficient nonlinear transforms for lossy image compression",
+              "author": "Johannes Ball�",
+              "year": "2018",
+              "journal-title": "2018 Picture Coding Symposium (PCS)"
+            },
+            {
+              "key": "ref5",
+              "article-title": "Integer networks for data compression with latent-variable models",
+              "author": "Johannes Ball�",
+              "year": "2018",
+              "journal-title": "International Conference on Learning Representations"
+            }
+          ],
+          "deposited": {
+            "date-parts": [
+              [
+                2023,
+                7,
+                3
+              ]
+            ],
+            "date-time": "2023-07-03T14:18:29Z",
+            "timestamp": 1688393909000
+          },
+          "score": 30.609623,
+          "resource": {
+            "primary": {
+              "URL": "https://www.ssrn.com/abstract=4494597"
+            }
+          },
+          "issued": {
+            "date-parts": [
+              [
+                2023
+              ]
+            ]
+          },
+          "references-count": 54,
+          "URL": "https://doi.org/10.2139/ssrn.4494597",
+          "published": {
+            "date-parts": [
+              [
+                2023
+              ]
+            ]
+          },
+          "subtype": "preprint"
+        },
+        {
+          "indexed": {
+            "date-parts": [
+              [
+                2026,
+                8,
+                28
+              ]
+            ],
+            "date-time": "2026-08-28T03:51:35Z",
+            "timestamp": 1787889095133,
+            "version": "build-2784847793"
+          },
+          "reference-count": 40,
+          "publisher": "Institute of Electrical and Electronics Engineers (IEEE)",
+          "issue": "1",
+          "license": [
+            {
+              "start": {
+                "date-parts": [
+                  [
+                    2000,
+                    1,
+                    1
+                  ]
+                ],
+                "date-time": "2000-01-01T00:00:00Z",
+                "timestamp": 946684800000
+              },
+              "content-version": "vor",
+              "delay-in-days": 0,
+              "URL": "https://ieeexplore.ieee.org/Xplorehelp/downloads/license-information/IEEE.html"
+            }
+          ],
+          "content-domain": {
+            "domain": [],
+            "crossmark-restriction": false
+          },
+          "short-container-title": [
+            "IEEE Trans. Inform. Theory"
+          ],
+          "published-print": {
+            "date-parts": [
+              [
+                2000
+              ]
+            ]
+          },
+          "DOI": "10.1109/18.817514",
+          "type": "journal-article",
+          "created": {
+            "date-parts": [
+              [
+                2002,
+                8,
+                24
+              ]
+            ],
+            "date-time": "2002-08-24T20:54:49Z",
+            "timestamp": 1030222489000
+          },
+          "page": "136-152",
+          "source": "Crossref",
+          "is-referenced-by-count": 64,
+          "title": [
+            "Pointwise redundancy in lossy data compression and universal lossy data compression"
+          ],
+          "prefix": "10.1109",
+          "volume": "46",
+          "author": [
+            {
+              "given": "I.",
+              "family": "Kontoyiannis",
+              "sequence": "first",
+              "affiliation": [],
+              "role": [
+                {
+                  "vocabulary": "crossref",
+                  "role": "author"
+                }
+              ]
+            }
+          ],
+          "member": "263",
+          "reference": [
+            {
+              "key": "ref39",
+              "doi-asserted-by": "publisher",
+              "DOI": "10.1109/18.567651"
+            },
+            {
+              "key": "ref38",
+              "doi-asserted-by": "crossref",
+              "first-page": "813",
+              "DOI": "10.1109/18.256490",
+              "article-title": "a rate of convergence result for a universal <formula> <tex>$d$</tex></formula>-semifaithful code",
+              "volume": "39",
+              "author": "yu",
+              "year": "1993",
+              "journal-title": "IEEE Trans Information Theory"
+            },
+            {
+              "key": "ref33",
+              "doi-asserted-by": "publisher",
+              "DOI": "10.1109/5.286191"
+            },
+            {
+              "key": "ref32",
+              "doi-asserted-by": "publisher",
+              "DOI": "10.1002/j.1538-7305.1968.tb00062.x"
+            },
+            {
+              "key": "ref31",
+              "doi-asserted-by": "publisher",
+              "DOI": "10.2140/pjm.1958.8.171"
+            }
+          ],
+          "container-title": [
+            "IEEE Transactions on Information Theory"
+          ],
+          "link": [
+            {
+              "URL": "http://xplorestaging.ieee.org/ielx5/18/17721/00817514.pdf?arnumber=817514",
+              "content-type": "unspecified",
+              "content-version": "vor",
+              "intended-application": "similarity-checking"
+            }
+          ],
+          "deposited": {
+            "date-parts": [
+              [
+                2021,
+                11,
+                29
+              ]
+            ],
+            "date-time": "2021-11-29T19:08:36Z",
+            "timestamp": 1638212916000
+          },
+          "score": 30.096888,
+          "resource": {
+            "primary": {
+              "URL": "http://ieeexplore.ieee.org/document/817514/"
+            }
+          },
+          "issued": {
+            "date-parts": [
+              [
+                2000
+              ]
+            ]
+          },
+          "references-count": 40,
+          "journal-issue": {
+            "issue": "1"
+          },
+          "URL": "https://doi.org/10.1109/18.817514",
+          "ISSN": [
+            "0018-9448"
+          ],
+          "issn-type": [
+            {
+              "value": "0018-9448",
+              "type": "print"
+            }
+          ],
+          "published": {
+            "date-parts": [
+              [
+                2000
+              ]
+            ]
+          }
+        }
+      ],
+      "items-per-page": 5,
+      "query": {
+        "start-index": 0,
+        "search-terms": "lossy compression scientific data"
+      }
+    }
+  }
+}

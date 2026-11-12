@@ -1,0 +1,47 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://mcp.exa.ai/mcp?tools=web_search_advanced_exa,web_fetch_exa",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "accept": "application/json, text/event-stream",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "tools/call",
+      "params": {
+        "name": "web_search_advanced_exa",
+        "arguments": {
+          "query": "lossy compression scientific data",
+          "numResults": 5,
+          "includeDomains": [
+            "arxiv.org"
+          ],
+          "startPublishedDate": "2025-01-01T00:00:00.000Z",
+          "textMaxCharacters": 1000
+        }
+      }
+    },
+    "params": {
+      "tools": "web_search_advanced_exa,web_fetch_exa"
+    }
+  },
+  "status": 429,
+  "headers": {
+    "content-type": "application/json",
+    "retry-after": "14413",
+    "x-ratelimit-limit": "0",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1794528000000"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "You've hit Exa's free MCP rate limit. Create a free Exa account to get your own usage allowance and rate limits. No payment method required.\n\nFix: Create API key at https://dashboard.exa.ai/api-keys , then either:\n- Set the header: Authorization: Bearer YOUR_EXA_API_KEY\n- Or use the URL: https://mcp.exa.ai/mcp?exaApiKey=YOUR_EXA_API_KEY"
+    },
+    "id": 3
+  }
+}

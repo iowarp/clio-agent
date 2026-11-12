@@ -43,8 +43,8 @@ PROTECTED_FILES = frozenset(
 #: Services whose Windows launcher serves HTTP from an asyncio proactor loop (uvicorn):
 #: each starts under the accept guard so a client aborting mid-accept cannot close its
 #: listener (python/cpython#93821). The guard is delivered beside the launcher, outside
-#: the manifest, so an existing installation gains it without a new revision.
-ACCEPT_GUARDED_SERVICES = frozenset({"web_search"})
+#: the manifest, so an existing installation gains it without a new revision (none now).
+ACCEPT_GUARDED_SERVICES: frozenset[str] = frozenset()
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:

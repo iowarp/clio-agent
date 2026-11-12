@@ -29,22 +29,22 @@ def declared_mcp_specs(
     """
 
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
-    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
     server_set = session_server_set(app, session_id) if session_id else ""
     plugin_servers = server_set_declarations(server_set) if server_set else {}
-    return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
 
 
 def _draft_mcp_specs(app: Any, cwd: Path | None, agent_ref: str) -> dict[str, Any]:
     """The MCP specs a new conversation on ``agent_ref`` in this workspace would declare."""
 
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
-    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
     server_set = agent_server_set(app, agent_ref)
     plugin_servers = server_set_declarations(server_set) if server_set else {}
-    return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
 
 
 @dataclass(frozen=True)

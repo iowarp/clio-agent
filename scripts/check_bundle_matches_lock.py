@@ -89,12 +89,9 @@ BUNDLE_MACOSX_DEPLOYMENT_TARGET = "15.0"
 #: The bundled runtime's interpreter version (build-gact-runtime default).
 BUNDLE_PYTHON = "3.14"
 
-#: Installed distributions that are not lock-resolved packages:
-#: ``clio-agent`` is installed from the local checkout (the lock has no
-#: registry version for it) and ``web-mcp`` is clio-kit's Web Search adapter,
-#: installed from clio-kit's data directory (its dependencies ARE locked via
-#: the ``desktop`` extra and are checked like any other package).
-LOCAL_PROJECTS = frozenset({"clio-agent", "web-mcp"})
+#: Installed distributions that are not lock-resolved packages: ``clio-agent``
+#: is installed from the local checkout (the lock has no registry version for it).
+LOCAL_PROJECTS = frozenset({"clio-agent"})
 
 #: Distributions shipped INSIDE the python-build-standalone interpreter the
 #: runtime copies (its seeded ``pip``), present before any resolve runs. They

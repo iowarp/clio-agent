@@ -1,0 +1,39 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://search.parallel.ai/mcp",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "accept": "application/json, text/event-stream",
+      "mcp-session-id": "3d94378a-b15f-4dd1-927d-ca5708a7567a",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "tools/call",
+      "params": {
+        "name": "web_search",
+        "arguments": {
+          "objective": "ADIOS2 BP5 engine documentation",
+          "search_queries": [
+            "ADIOS2 BP5 engine"
+          ]
+        }
+      }
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "mcp-session-id": "3d94378a-b15f-4dd1-927d-ca5708a7567a"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "error": {
+      "code": -32000,
+      "message": "You've hit the free-tier rate limit for Parallel MCP. To continue with higher limits, sign in by connecting https://mcp.parallel.ai/mcp?login, or add your own API key — set header `x-api-key: YOUR_KEY` or `Authorization: Bearer YOUR_KEY`. Get a key at https://platform.parallel.ai."
+    }
+  }
+}
