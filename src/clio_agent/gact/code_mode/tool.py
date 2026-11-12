@@ -101,6 +101,17 @@ def _approve(app: Any, code: str) -> None:
     decision = _invoke_permission_gate(gate, "run_code", {"code": code}, context)
     if decision == "allow":
         return
+    if getattr(decision, "outcome", "") == "cancelled":
+        # Stopped while the approval waited: nobody refused the script.
+        from clio_agent.tools.foreground_cancellation import (  # noqa: PLC0415
+            _tool_cancellation_error,
+        )
+
+        raise _tool_cancellation_error(
+            "run_code",
+            "permission_wait",
+            message="tool call cancelled by client before it was approved: the script did not run",
+        )
     # The gate's own reason when it gave one (a deny policy, the plan ACL, a read-only
     # session's ACL), as the execution boundary gives it for any other tool.
     deny_message = str(getattr(decision, "deny_message", "") or "")

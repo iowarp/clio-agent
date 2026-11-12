@@ -81,7 +81,13 @@ def _wait(
                 if row.get("status") == "pending":
                     row["reason"] = REASON_PERMISSION_CANCELLED
                     resolve_permission(app, pid, "deny", grantor="system")
-            return DenyDecision(f"The invocation of {tool_name!r} was cancelled before approval.")
+            decision = DenyDecision(
+                f"The invocation of {tool_name!r} was cancelled before approval."
+            )
+            # Nobody refused it: the turn stopped (or the server shut down) while it
+            # waited. The tool layer records the call as cancelled, not denied.
+            decision.outcome = "cancelled"
+            return decision
         if event.is_set():
             return None
         if deadline is None:

@@ -1397,3 +1397,43 @@ def test_a_refused_call_is_recorded_with_its_reason():
         ("fake_echo", "started", None),
         ("fake_echo", "completed", "write guard: refused notes/x.md"),
     ]
+
+
+def test_a_call_whose_approval_wait_was_cancelled_is_recorded_as_cancelled():
+    """Stop, or a server shutdown, during the approval wait is not a refusal.
+
+    The gate's decision says the wait was cancelled; the row completes with the
+    cancellation's own error (the call did not run), classified ``cancelled``, never
+    ``denied``, so nobody is told they denied it.
+    """
+    from clio_agent.errors import CancellationError
+    from clio_agent.gact.permission_gate import DenyDecision
+    from clio_agent.gact.tool_observer_parts import completed_tool_outcome
+    from clio_agent.tools.tool_observation import REFUSED_CALL
+
+    decision = DenyDecision("The invocation of 'fake_echo' was cancelled before approval.")
+    decision.outcome = "cancelled"
+    seen: list[tuple[str, str, str | None, bool]] = []
+
+    def observer(name, args, phase, error=None):
+        seen.append((name, phase, error, REFUSED_CALL.get()))
+
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: FakeClient(),
+        permission_gate=lambda _name, _args: decision,
+        tool_observer=observer,
+    )
+    try:
+        with pytest.raises(CancellationError, match="did not run"):
+            executor.call_tool("fake_echo", {"value": "waiting"})
+    finally:
+        executor.close()
+    assert [(name, phase, refused) for name, phase, _error, refused in seen] == [
+        ("fake_echo", "started", False),
+        ("fake_echo", "completed", False),
+    ]
+    error = seen[-1][2]
+    assert error is not None and "did not run" in error
+    assert completed_tool_outcome(error, None, refused=False) == "cancelled"
