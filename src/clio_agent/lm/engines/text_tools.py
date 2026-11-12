@@ -648,6 +648,11 @@ class StreamSplitter:
         self.dropped_invoke_markup = 0
         self.dropped_fence_words = 0
 
+    @property
+    def stopped(self) -> bool:
+        """Whether the fence or a call block has begun (nothing more streams)."""
+        return self._stopped
+
     def push(self, chunk: str) -> str:
         """Add ``chunk``; return the newly showable text (possibly empty)."""
         if self._stopped:

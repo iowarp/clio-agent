@@ -209,6 +209,34 @@ def call_block_end(reply: str, known: Collection[str]) -> int | None:
     return end if reply[end:].strip() else None
 
 
+#: What may still follow a call block while it streams: the next ``<invoke`` being
+#: written, or the block's closing tags (whole ones are already part of the block).
+_BLOCK_CONTINUATIONS = (
+    "<invoke ",
+    "<invoke\n",
+    "<invoke\t",
+    "</invoke>",
+    "</tool>",
+    "</function_calls>",
+)
+
+
+def writing_past_block(reply: str, known: Collection[str]) -> bool:
+    """Whether a reply still streaming has gone on past its first call block.
+
+    Everything past the block is never the step's (:func:`call_block_end`): invented
+    results, prose about them, later blocks. A stream can stop there and lose nothing.
+    Text that could still be the block's next ``<invoke`` or its closing tag is not past
+    it yet, so a block of several calls is never cut while it is being written.
+    """
+    reply = plain_call_tags(reply)
+    end = call_block_end(reply, known)
+    if end is None:
+        return False
+    past = reply[end:].lstrip()
+    return not any(c.startswith(past) or past.startswith(c) for c in _BLOCK_CONTINUATIONS)
+
+
 def _parse(
     reply: str, schemas: Mapping[str, Mapping[str, Any]], known: Collection[str]
 ) -> InvokeCalls | None:
