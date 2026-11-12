@@ -40,10 +40,11 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.messaging import raise_on_reserved_metadata
-from clio_agent.gact.off_loop import run_off_loop
+from clio_agent.gact.off_loop import join_off_loop, run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
 from clio_agent.gact.routes.response_feedback import register_response_feedback_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
+from clio_agent.gact.session_auto_title import title_from_first_message
 from clio_agent.gact.transcript_pages import PageCursorNotFound, read_message_page
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -298,6 +299,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # ledgers on the event loop.
         # #1448: a message naming a pending question IS that question's answer.
         ack, status_code = await accept_message_async(app, deps, sid, req)
+        if status_code == 202:
+            await join_off_loop(title_from_first_message, app, sid, req.extract_text())
         del background_tasks
         response.status_code = status_code
         return ack
