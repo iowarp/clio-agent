@@ -436,7 +436,10 @@ def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any
 
 
 def reproduce_message_wire(
-    atoms: list[dict[str, Any]], retracted: set[str] | None = None
+    atoms: list[dict[str, Any]],
+    retracted: set[str] | None = None,
+    *,
+    report_incomplete: bool = True,
 ) -> dict[str, Any]:
     """Reconstruct ``Message.model_dump(exclude_none=True)`` from a message's atoms.
 
@@ -450,6 +453,8 @@ def reproduce_message_wire(
     Args:
         atoms: The ``content`` dicts of ONE message's atoms (any order).
         retracted: Part ids retracted anywhere on the lane (never served).
+        report_incomplete: Whether a message without its envelope is reported as a
+            turn that died (see :func:`_incomplete_envelope`).
 
     Returns:
         The reconstructed ``model_dump(exclude_none=True)`` dict.
@@ -482,21 +487,23 @@ def reproduce_message_wire(
         if inline:
             envelope = dict(inline[0]["message"])  # v1 / inline: every atom carries it
         else:
-            envelope = _incomplete_envelope(atoms)
+            envelope = _incomplete_envelope(atoms, report=report_incomplete)
     message = Message(**envelope, parts=part_dicts)
     return message.model_dump(exclude_none=True)
 
 
-def _incomplete_envelope(atoms: list[dict[str, Any]]) -> dict[str, Any]:
+def _incomplete_envelope(atoms: list[dict[str, Any]], *, report: bool = True) -> dict[str, Any]:
     """The TYPED envelope for sealed part atoms whose envelope never landed.
 
     A turn that died between its last seal and finalize left durable parts but no
     authority for tokens / cost / stop_reason. Reload serves those parts under
     ``stop_reason="incomplete"`` with ``metadata.transcript_incomplete`` naming the
     reason, and the stream audit records it — never a silently complete message.
-    """
 
-    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+    ``report=False`` is for a background reader that may run while the turn is still
+    writing (the recall index): there the missing envelope is a message in flight, not
+    a turn that died, so it is not reported as one. The envelope stays typed.
+    """
 
     stubs: list[dict[str, Any]] = [
         a["message_stub"] for a in atoms if isinstance(a.get("message_stub"), dict)
@@ -504,19 +511,8 @@ def _incomplete_envelope(atoms: list[dict[str, Any]]) -> dict[str, Any]:
     stub: dict[str, Any] = dict(stubs[0]) if stubs else {}
     sealed = sorted(str(a.get("sealed_at") or "") for a in atoms if a.get("sealed_at"))
     message_id = str(stub.get("id") or atoms[0].get("message_id") or "")
-    logger.warning(
-        "transcript reassembled WITHOUT its envelope: message=%s sealed_parts=%d reason=%s",
-        message_id,
-        len(atoms),
-        TRANSCRIPT_INCOMPLETE_REASON,
-    )
-    stream_audit(
-        "transcript.incomplete_no_envelope",
-        message_id=message_id,
-        session_id=str(stub.get("session_id") or ""),
-        sealed_parts=len(atoms),
-        reason=TRANSCRIPT_INCOMPLETE_REASON,
-    )
+    if report:
+        _report_incomplete(message_id, str(stub.get("session_id") or ""), len(atoms))
     created = str(stub.get("created_at") or (sealed[0] if sealed else ""))
     return {
         "id": message_id,
@@ -535,6 +531,25 @@ def _incomplete_envelope(atoms: list[dict[str, Any]]) -> dict[str, Any]:
             }
         },
     }
+
+
+def _report_incomplete(message_id: str, session_id: str, sealed_parts: int) -> None:
+    """Record a transcript served without its envelope: a turn that died before finalize."""
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    logger.warning(
+        "transcript reassembled WITHOUT its envelope: message=%s sealed_parts=%d reason=%s",
+        message_id,
+        sealed_parts,
+        TRANSCRIPT_INCOMPLETE_REASON,
+    )
+    stream_audit(
+        "transcript.incomplete_no_envelope",
+        message_id=message_id,
+        session_id=session_id,
+        sealed_parts=sealed_parts,
+        reason=TRANSCRIPT_INCOMPLETE_REASON,
+    )
 
 
 # --------------------------------------------------------------------------- #

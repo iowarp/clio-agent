@@ -44,8 +44,10 @@ _WORKSPACE_FACTS = (
     "points you.\n"
     "Writes are only permitted under: /w/project, /w/shared.\n"
     "Machine: node-a\n"
-    "Scratch folder for this session: /s/sess_f. Use it for temporary files (extracted "
-    "copies, intermediate results); it is yours alone and is removed after the session."
+    "Scratch folder for this session: /s/sess_f. It is yours alone and the person never "
+    'sees it: their files, and "this folder", are the workspace. Use it for your own '
+    "temporary files (extracted copies, intermediate results); it is removed after the "
+    "session."
 )
 _NODE_FACTS = (
     "Active workspace root: /w/project\n"

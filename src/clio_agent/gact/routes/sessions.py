@@ -18,16 +18,12 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.compaction import (
     CompactionError,
     compact_session_context,
-    forget_system_prompts,
 )
 from clio_agent.gact.context_rollback import follow_rollback
 from clio_agent.gact.events import Event
-from clio_agent.gact.goal import stop_session_goal
-from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
 from clio_agent.gact.message_marks import validated_session_metadata
 from clio_agent.gact.message_submission_errors import session_not_found
 from clio_agent.gact.off_loop import join_off_loop, run_off_loop
@@ -37,16 +33,14 @@ from clio_agent.gact.routes.dashboard_reports import register_dashboard_report_r
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state_async
 from clio_agent.gact.routes.session_creation import register_session_creation_route
+from clio_agent.gact.routes.session_delete import active_work, session_has_active_work
+from clio_agent.gact.routes.session_delete import delete_session as delete_session_record
 from clio_agent.gact.routes.session_export import register_session_export_routes
 from clio_agent.gact.routes.session_fork import register_session_fork_route
 from clio_agent.gact.routes.session_list import register_session_list_route
 from clio_agent.gact.routes.session_move import register_session_move_route
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.routes.turn_retry import register_turn_retry_routes
-from clio_agent.gact.session_delete_settle import settle_held_assignments
-from clio_agent.gact.session_processes import close_session_processes
-from clio_agent.gact.session_tool_output import delete_session_tool_output
-from clio_agent.gact.turn_reasoning import forget_session_reasoning
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -55,7 +49,6 @@ from clio_agent.gact.types import (
     UpdateSessionRequest,
 )
 from clio_agent.gact.usage import reported_cost_total
-from clio_agent.lm.session_clients import close_session_model_clients
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -184,41 +177,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
-        await app.state.turn_runner.settle_admission(sid)  # an input check is not work
-        await settle_held_assignments(app, sid)  # Stop's held assignment is not running work
-        active = app.state.task_history.tree_handles(sid, active_only=True)
-        if active or app.state.turn_runner.busy(sid):
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="session_has_active_work",
-                        message="Cancel and settle active work before deleting this session.",
-                        details={"session_id": sid, "handles": sorted(active)},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # P4.1 #1079 cancel-both: a deleted session must not orphan its loop wakeup.
-        stop_session_loop(app, sid)
-        stop_session_goal(app, sid)
-        try:
-            await cleanup_session_mcp_apps(app, sid)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="mcp_app_cleanup_failed",
-                        message="session retained because an owned MCP App failed to close",
-                        details={"session_id": sid, "reason": str(exc)},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        await run_off_loop(deps.delete_session_messages, app, sid)  # clio-core first: 503 keeps it
-        existed = await run_off_loop(app.state.sessions.delete, sid)  # trusted: off-loop only
-        if not existed:
+        blocked, active = await active_work(app, sid)
+        if blocked:
+            raise session_has_active_work(sid, active)
+        if not await delete_session_record(app, deps, sid, sess.workspace_id):
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -230,16 +192,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        forget_session_reasoning(app, sid)
-        await run_off_loop(close_session_model_clients, app, sid)
-        deps.delete_session_context_files(app, sid)
-        await run_off_loop(forget_system_prompts, sid)
-        await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
-        await run_off_loop(close_session_processes, app, sid)  # its kernels and pages (BR23)
-        await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes
-        await run_off_loop(app.state.task_history.restore)
-        app.state.a2ui_catalogs.forget_session(sid)
-        app.state.a2ui_store.forget_session(sid)
         return Response(status_code=204)
 
     async def copy_session_context(src: str, dst: str, at: str = "") -> int:

@@ -671,9 +671,11 @@ def attach_recall_index(app: "FastAPI", arc: Any) -> Optional[RecallIndex]:
     if not isinstance(current, RecallIndex) or current._store is not store:
 
         def assemble(session_id: str) -> list["Message"]:
-            # Never cached: a rebuild does not make the session resident.
+            # Never cached: a rebuild does not make the session resident. A rebuild can
+            # run while a turn is still writing; its message without an envelope is in
+            # flight, not a dead turn, and the finalize write schedules the next rebuild.
             with transient_reads():
-                return assemble_session_messages(arc, session_id)
+                return assemble_session_messages(arc, session_id, report_incomplete=False)
 
         def stamp(session_id: str) -> str:
             sessions = getattr(app.state, "sessions", None)

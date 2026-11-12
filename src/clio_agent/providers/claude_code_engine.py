@@ -55,7 +55,7 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key
-from clio_agent.lm.engines.invoke_calls import text_tool_protocol
+from clio_agent.lm.engines.invoke_calls import text_tool_protocol, writing_past_block
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
@@ -102,6 +102,9 @@ __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
 
 logger = logging.getLogger(__name__)
+
+#: How often (in characters) a reply with a call block is checked for text past it.
+_PAST_CALLS_STRIDE = 128
 #: A reply's opening lines that are each blank or one protocol word.
 _PROTOCOL_LINES = re.compile(r"(?:[ \t]*(?:_[a-z][a-z0-9_]*)?[ \t]*\r?\n)+")
 
@@ -215,7 +218,7 @@ class AsyncClaudeCodeEngine:
                             received = True
                             for out in turn.handle(message):
                                 yield out
-                            if turn.protocol_error:
+                            if turn.protocol_error or turn.past_calls:
                                 break
                     break
                 except RuntimeError as exc:
@@ -345,6 +348,11 @@ class _Turn:
         self.overran = False
         invoke = text_tool_protocol() == "invoke"
         self._splitter = StreamSplitter(available_tools if invoke else ())
+        # The reply went on past its first call block: the stream stops there, since
+        # nothing past the block is ever the step's (``reply_past_calls``). Checked every
+        # :data:`_PAST_CALLS_STRIDE` characters once a call block has begun.
+        self.past_calls = False
+        self._past_check_at = 0
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
         self._held = ""  # streamed text held back while it could still be non-progress
@@ -413,6 +421,20 @@ class _Turn:
             self._held = ""  # never shown
             return
         self.reply += text
+        if (
+            self._splitter.stopped
+            and self.available_tools
+            and len(self.reply) >= self._past_check_at
+        ):
+            self._past_check_at = len(self.reply) + _PAST_CALLS_STRIDE
+            if writing_past_block(self.reply, self.available_tools):
+                self.past_calls = True
+                logger.info(
+                    "provider reply stopped past call block reason=reply_past_calls "
+                    "model=%s chars=%d",
+                    self.model,
+                    len(self.reply),
+                )
         if self._progress.undecided:
             self._held += text
             return

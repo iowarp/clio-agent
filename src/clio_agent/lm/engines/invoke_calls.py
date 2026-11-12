@@ -44,11 +44,13 @@ _INVOKE_OPEN = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>""")
 _CUT = re.compile(r"""<parameter\s+name=|</invoke>|</function_calls>""")
 #: A line that begins with the container's word but is not its tag: what is left of a
 #: call block whose markup was lost (``function_calls="" invoke name="run_code">``,
-#: ``function_calls: invoke run_code``), or the ``<invoke_tool_placeholder>`` tags the
-#: service substitutes for call markup written as text, or an invented ``<invoke:NAME>``
-#: opener models write beside a real block. Never prose and never a call.
+#: ``function_calls: invoke run_code``), or the ``<invoke_..._placeholder>`` tags the
+#: service substitutes for call markup written as text (``<invoke_tool_placeholder>``;
+#: live, haiku 2026-11-12, ``<invoke_tool_call_placeholder>``: the family, not one
+#: spelling), or an invented ``<invoke:NAME>`` opener models write beside a real block.
+#: Never prose and never a call.
 _RESIDUE = re.compile(
-    r"""(?m)^[ \t]*(?:<?/?function_calls(?!>)\b|</?invoke_tool_placeholder>"""
+    r"""(?m)^[ \t]*(?:<?/?function_calls(?!>)\b|</?invoke_\w*placeholder>"""
     r"""|</?invoke:[\w.-]+>).*$"""
 )
 #: A call tag written with an XML namespace prefix (``<ns:invoke name=...>``,
@@ -207,6 +209,34 @@ def call_block_end(reply: str, known: Collection[str]) -> int | None:
     if close := _BLOCK_CLOSE.match(reply, end):
         end = close.end()
     return end if reply[end:].strip() else None
+
+
+#: What may still follow a call block while it streams: the next ``<invoke`` being
+#: written, or the block's closing tags (whole ones are already part of the block).
+_BLOCK_CONTINUATIONS = (
+    "<invoke ",
+    "<invoke\n",
+    "<invoke\t",
+    "</invoke>",
+    "</tool>",
+    "</function_calls>",
+)
+
+
+def writing_past_block(reply: str, known: Collection[str]) -> bool:
+    """Whether a reply still streaming has gone on past its first call block.
+
+    Everything past the block is never the step's (:func:`call_block_end`): invented
+    results, prose about them, later blocks. A stream can stop there and lose nothing.
+    Text that could still be the block's next ``<invoke`` or its closing tag is not past
+    it yet, so a block of several calls is never cut while it is being written.
+    """
+    reply = plain_call_tags(reply)
+    end = call_block_end(reply, known)
+    if end is None:
+        return False
+    past = reply[end:].lstrip()
+    return not any(c.startswith(past) or past.startswith(c) for c in _BLOCK_CONTINUATIONS)
 
 
 def _parse(
