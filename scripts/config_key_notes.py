@@ -784,6 +784,10 @@ KEY_NOTES: dict[str, str] = {
         "Maximum seconds waiting for local model admission or a provider concurrency cooldown. "
         "Cancellation removes queued work without sending a request."
     ),
+    "limits.lm_stall_wait_s": (
+        "Seconds a Claude Code reply may go silent before it counts as a stall (each later wait "
+        "doubles); the person sees the stall and can stop the turn, nothing fails on silence."
+    ),
     "limits.mcp_content_block_max_bytes": (
         "Byte cap on one MCP content block's decoded binary payload (image/audio/resource) before "
         "it's elided; raise for larger images."
