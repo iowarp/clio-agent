@@ -37,6 +37,8 @@ class _Executor:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.fail_with: dict[str, Any] | None = None
         self.raise_exc: BaseException | None = None
+        #: A reopen declaration the server puts in its result's private _meta.
+        self.reopen: Any = None
         self.definitions: dict[str, Any] = {
             "boards_open_board": SimpleNamespace(
                 title="Open a board",
@@ -59,6 +61,8 @@ class _Executor:
             "structuredContent": {"title": args.get("title"), "call": len(self.calls)},
             "_meta": {"fixture.private": {"secret": "private-result-only"}},
         }
+        if self.reopen is not None:
+            result["_meta"]["ai.iowarp.clio/reopen"] = self.reopen
         self.app.state.pending_mcp_app_observer(
             name, args, self.definitions[name], result, name.partition("_")[0]
         )
@@ -143,6 +147,39 @@ def test_reopen_replays_saved_call_and_returns_fresh_part(stack: Any) -> None:
     assert body["saved_call"]["reopened_from"] == app_id
     assert body["saved_call"]["display_mode"] == "fullscreen"
     assert saved_call(stack.app, stack.sid, app_id) is not None
+
+
+def test_a_server_declared_reopen_call_is_saved_and_replayed(stack: Any) -> None:
+    # open_view(path, new=true) starts an empty scene; its server says to reopen the scene.
+    stack.executor.reopen = {"arguments": {"title": "Q3", "scene": "q3-1"}}
+    app_id = _open(stack, {"title": "Q3", "new": True})
+
+    entry = saved_call(stack.app, stack.sid, app_id)
+    assert entry["arguments"] == {"title": "Q3", "scene": "q3-1"}
+    assert entry["arguments_from"] == "server_reopen_declaration"
+    record = stack.app.state.mcp_app_registry.records_for_session(stack.sid)[-1]
+    # Taken off the result at admission: the view never receives it.
+    assert "ai.iowarp.clio/reopen" not in json.dumps(record.tool_result)
+    assert record.tool_result["_meta"] == {"fixture.private": {"secret": "private-result-only"}}
+    assert "ai.iowarp.clio/reopen" not in json.dumps(
+        stack.client.get(f"/v1/sessions/{stack.sid}").json()
+    )
+
+    _reopen(stack, app_id)
+    assert stack.executor.calls[-1] == ("boards_open_board", {"title": "Q3", "scene": "q3-1"})
+
+
+@pytest.mark.parametrize("declared", [{"arguments": "scene"}, "scene", {"arguments": None}])
+def test_a_malformed_reopen_declaration_keeps_the_call(stack: Any, declared: Any) -> None:
+    stack.executor.reopen = declared
+    app_id = _open(stack, {"title": "Q3", "new": True})
+
+    entry = saved_call(stack.app, stack.sid, app_id)
+    assert entry["arguments"] == {"title": "Q3", "new": True}
+    assert "arguments_from" not in entry
+    record = stack.app.state.mcp_app_registry.records_for_session(stack.sid)[-1]
+    assert record.reopen_reason == "reopen_declaration_invalid"
+    assert "ai.iowarp.clio/reopen" not in json.dumps(record.tool_result)
 
 
 def test_reopen_after_record_is_gone(stack: Any) -> None:
