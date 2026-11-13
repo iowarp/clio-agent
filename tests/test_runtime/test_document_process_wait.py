@@ -173,3 +173,98 @@ def test_the_stall_message_names_the_macos_sandbox_cause(monkeypatch: pytest.Mon
     assert "no work for 45 s" in text and "sandbox denial" in text and "Stop the turn" in text
     monkeypatch.setattr(document_process.sys, "platform", "win32")
     assert "sandbox" not in document_process.stall_message("soffice", 45)
+
+
+def _deny_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Behave like macOS Seatbelt: listing processes raises a plain PermissionError."""
+
+    def denied(_self: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        raise PermissionError(1, "Operation not permitted (originated from sysctl() malloc 1/3)")
+
+    monkeypatch.setattr(psutil.Process, "children", denied)
+
+
+def test_a_fence_denying_the_process_list_never_fails_the_job(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The work meter is unknown, so the job runs on to its result instead of failing.
+
+    SABOTAGE: catch only ``psutil.Error`` in ``_tree_cpu`` -> PermissionError at the
+    first poll -> red.
+    """
+    _fast_stall(monkeypatch)
+    _deny_listing(monkeypatch)
+    caplog.set_level("INFO", logger=document_process.__name__)
+    reports: list[float | None] = []
+    stdout, _ = wait_process(
+        _sleeper(1.0), name="soffice", heartbeat=lambda _e, s: reports.append(s)
+    )
+    assert stdout.strip() == "done"
+    assert all(stalled is None for stalled in reports)
+    assert "reason=document_process_unmetered" in caplog.text
+
+
+def test_a_stop_ends_the_job_when_the_process_list_is_denied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kill_tree survives the denied listing and still ends the job, typed as cancelled."""
+    _deny_listing(monkeypatch)
+    process = _sleeper(30)
+    stop = threading.Event()
+    threading.Timer(0.5, stop.set).start()
+    with pytest.raises(DocumentCancelled):
+        wait_process(process, name="soffice", cancelled=stop.is_set)
+    assert process.poll() is not None
+
+
+def test_an_unexpected_error_while_waiting_ends_the_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whatever ends the wait early ends the process too: soffice is never orphaned."""
+
+    def broken(_self: object, _now: float) -> float | None:
+        raise RuntimeError("meter bug")
+
+    monkeypatch.setattr(document_process._WorkMeter, "stalled_s", broken)
+    process = _sleeper(30)
+    with pytest.raises(RuntimeError, match="meter bug"):
+        wait_process(process, name="soffice")
+    assert process.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_a_confined_job_leads_its_group_and_ends_whole_without_a_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside a fence the job is its own group, so a stop ends its children unlisted."""
+    monkeypatch.setenv("CLIO_DOCUMENT_CONFINED", "1")
+    _deny_listing(monkeypatch)
+    pid_file = Path.cwd() / f".clio-test-child-{time.monotonic_ns()}.pid"
+    script = (
+        "import pathlib, subprocess, sys, time;"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(c.pid)); time.sleep(60)"
+    )
+    stop = threading.Event()
+
+    def stop_once_child_runs() -> None:
+        deadline = time.monotonic() + 20
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        stop.set()
+
+    threading.Thread(target=stop_once_child_runs, daemon=True).start()
+    try:
+        with watched(stop.is_set), pytest.raises(DocumentCancelled):
+            run([sys.executable, "-c", script], cwd=Path.cwd())
+        child_pid = int(pid_file.read_text())
+    finally:
+        pid_file.unlink(missing_ok=True)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                break
+        except psutil.NoSuchProcess:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("the job's child outlived the stop")
