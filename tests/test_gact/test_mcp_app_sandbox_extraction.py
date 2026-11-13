@@ -11,7 +11,7 @@ def test_mcp_app_sandbox_symbols_are_reexported() -> None:
     moved_names = (
         "_host_origin",
         "_request_origin",
-            "_sandbox_url",
+        "_sandbox_url",
         "_safe_sources",
         "_csp_header",
         "_SANDBOX_DOCUMENT",
