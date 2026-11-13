@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from clio_agent.runtime import document_install as installer
+from clio_agent.runtime import install_tool_servers as tool_servers
 
 
 @pytest.mark.parametrize("javascript", ["ready", "failed"])
@@ -466,11 +467,11 @@ def test_tool_servers_wait_for_the_installer_kit_then_build_in_parallel(
 
     signal = tmp_path / "kit-ready.json"
     kit_bin = tmp_path / "kit-bin"
-    monkeypatch.setenv(installer.KIT_READY_ENV, str(signal))
+    monkeypatch.setenv(tool_servers.KIT_READY_ENV, str(signal))
     monkeypatch.setenv("PATH", "base")
-    monkeypatch.setattr(installer, "_KIT_READY_POLL_S", 0.01)
+    monkeypatch.setattr(tool_servers, "_KIT_READY_POLL_S", 0.01)
     servers = {"hdf5": object(), "parquet": object(), "adios": object()}
-    monkeypatch.setattr(installer, "_carried_kit_servers", lambda: servers)
+    monkeypatch.setattr(tool_servers, "_carried_kit_servers", lambda: servers)
     seen_path: list[str] = []
     both = Barrier(len(servers), timeout=5)
 
@@ -498,7 +499,7 @@ def test_tool_servers_wait_for_the_installer_kit_then_build_in_parallel(
     writer.start()
     started.set()
     lines: list[str] = []
-    result = installer._prepare_tool_servers(args, _done({"status": "ready"}), lines.append)
+    result = tool_servers._prepare_tool_servers(args, _done({"status": "ready"}), lines.append)
     writer.join()
     assert result["status"] == "failed"
     assert result["servers"]["hdf5"]["status"] == mcp_prepare.PROVISIONED
@@ -514,13 +515,13 @@ def test_tool_servers_are_skipped_without_the_flag_kit_or_marketplace(
     from argparse import Namespace
 
     calls: list[str] = []
-    monkeypatch.setattr(installer, "_carried_kit_servers", lambda: calls.append("x") or {})
+    monkeypatch.setattr(tool_servers, "_carried_kit_servers", lambda: calls.append("x") or {})
     ready = _done({"status": "ready"})
-    off = installer._prepare_tool_servers(
+    off = tool_servers._prepare_tool_servers(
         Namespace(prepare_tool_servers=False, reuse_installed=False), ready, print
     )
     assert off == {"status": "skipped", "reason": "not_requested"}
-    no_market = installer._prepare_tool_servers(
+    no_market = tool_servers._prepare_tool_servers(
         Namespace(prepare_tool_servers=True, reuse_installed=False),
         _done({"status": "failed"}),
         print,
@@ -528,8 +529,8 @@ def test_tool_servers_are_skipped_without_the_flag_kit_or_marketplace(
     assert no_market["reason"] == "tool_servers_marketplace_unavailable"
     signal = tmp_path / "kit-ready.json"
     signal.write_text(json.dumps({"status": "failed", "path": [], "env": {}}), encoding="utf-8")
-    monkeypatch.setenv(installer.KIT_READY_ENV, str(signal))
-    no_kit = installer._prepare_tool_servers(
+    monkeypatch.setenv(tool_servers.KIT_READY_ENV, str(signal))
+    no_kit = tool_servers._prepare_tool_servers(
         Namespace(prepare_tool_servers=True, reuse_installed=False), ready, print
     )
     assert no_kit["reason"] == "tool_servers_kit_unavailable"

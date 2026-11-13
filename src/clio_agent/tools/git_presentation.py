@@ -90,17 +90,18 @@ def _commit(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
     del snapshot
     row = _structured(result)
     if row.get("ok") is not True:
-        view = standard_mcp_presentation(result)
-        error = row.get("error") if isinstance(row.get("error"), Mapping) else {}
+        refused = standard_mcp_presentation(result)
+        raw_error = row.get("error")
+        error: Mapping[str, Any] = raw_error if isinstance(raw_error, Mapping) else {}
         if error.get("next_action"):
-            view["blocks"].append(
+            refused["blocks"].append(
                 {"id": "next", "type": "text", "label": "Next", "text": str(error["next_action"])}
             )
         path = str(row.get("path") or args.get("path") or "")
         if path:
-            view["blocks"].insert(0, _folder(path))
-            view["subject"] = "folder"
-        return view
+            refused["blocks"].insert(0, _folder(path))
+            refused["subject"] = "folder"
+        return refused
     path = str(row.get("path") or args.get("path") or "")
     view: dict[str, Any] = {"subject": "folder", "summary": "", "blocks": [_folder(path)]}
     if row.get("initialized"):
