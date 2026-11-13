@@ -215,6 +215,7 @@ def _tool_waiting(event: Event, payload: dict[str, Any], session: Any) -> _Proje
         "id": entity_id,
         "session_id": event.session_id,
         "name": str(payload.get("tool") or "Tool"),
+        **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
         "state": "pending",
         "input": payload.get("args"),
         **(

@@ -23,6 +23,29 @@ if TYPE_CHECKING:
 PermissionEventType = Literal["permission.requested", "permission.resolved"]
 
 
+def tool_title(name: str) -> str:
+    """The tool's own title (an MCP tool's ``title``), empty when it declares none."""
+
+    from clio_agent.gact.agents.tool_instrumentation import declared_tool_title  # noqa: PLC0415
+
+    return declared_tool_title(name)
+
+
+def permission_summary(name: str, context: Mapping[str, Any] | None, subject: str) -> str:
+    """The title a permission card shows for a call to ``name``.
+
+    A native tool's own summary wins. An external MCP tool reads as its declared title
+    ("Change the timestep"), so a person is not shown the namespaced identifier; a tool
+    without one keeps the plain ``<subject> call: <name>`` line.
+    """
+
+    if context and context.get("kind") == "native" and context.get("summary"):
+        return str(context["summary"])[:500]
+    if subject == "external MCP tool" and (title := tool_title(name)):
+        return title
+    return f"{subject} call: {name}"
+
+
 def attended_session_id(app: Any, session_id: str) -> str:
     """Return the top human-attended session for ``session_id``.
 
@@ -105,6 +128,11 @@ def publish_waiting_call(app: Any, row: Mapping[str, Any], *, resumed: bool = Fa
             payload={
                 "call_id": call_id,
                 "tool": str(tool_call.get("tool_name") or ""),
+                **(
+                    {"tool_title": title}
+                    if (title := tool_title(str(tool_call.get("tool_name") or "")))
+                    else {}
+                ),
                 "args": dict(tool_call.get("input") or {}),
                 "permission_id": str(row.get("id") or ""),
                 "requested_at": str(row.get("created_at") or ""),
