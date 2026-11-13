@@ -130,8 +130,18 @@ def live_tool_refresher(scope: LiveToolScope) -> LiveToolRefresher | None:
     return LiveToolRefresher(scope.executor, scope.namespaces)
 
 
+def agent_tool_refresher(scope: LiveToolScope) -> Any:
+    """A built agent's per-step refresh: its namespaces, then the open views' own tools
+    (:mod:`clio_agent.gact.mcp_app_tools`)."""
+
+    from clio_agent.gact.mcp_app_tools import app_tool_refresher  # noqa: PLC0415
+
+    return app_tool_refresher(live_tool_refresher(scope))
+
+
 __all__ = [
     "MCP_TOOLS_REACHED_AGENT",
+    "agent_tool_refresher",
     "LiveToolRefresher",
     "LiveToolScope",
     "live_tool_refresher",

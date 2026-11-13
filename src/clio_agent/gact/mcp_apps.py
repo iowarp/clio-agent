@@ -41,6 +41,7 @@ from clio_agent.gact.mcp_app_service_declaration import (
     ViewService,
     split_service_declaration,
 )
+from clio_agent.gact.mcp_app_tools import app_tool_table
 from clio_agent.gact.runtime.globals import (
     _gact_app_context,
     _resolve_tool_session,
@@ -61,7 +62,6 @@ if TYPE_CHECKING:
 
 
 _MAX_PRIVATE_RESULT_BYTES = 1024 * 1024
-_MAX_MODEL_CONTEXT_BYTES = 128 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -269,9 +269,6 @@ class MCPAppRecord:
     html: str | None = None
     csp: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
-    model_context: dict[str, Any] = field(default_factory=dict)
-    model_context_digest: str = ""
-    model_context_bytes: int = 0
     service: ViewService | None = None  # MA23: taken off tool_result at admission
     #: ``inline`` (the card) or ``fullscreen`` (a workbench tab), MA1/MA4.
     display_mode: str = "inline"
@@ -714,6 +711,7 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
 
     registry = _registry(app)
     failures: list[str] = []
+    app_tool_table(app).drop_session(session_id)
     for record in registry.records_for_session(session_id):
         try:
             await _cleanup_record(app, record)

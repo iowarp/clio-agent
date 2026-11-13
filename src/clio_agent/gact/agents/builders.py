@@ -23,7 +23,7 @@ from clio_agent.gact.agents.agent_prompt import final_agent_prompt
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.live_tool_refresh import (
     LiveToolScope,
-    live_tool_refresher,
+    agent_tool_refresher,
     refresh_executor_tools,
 )
 from clio_agent.gact.agents.lm_resolution import (
@@ -660,7 +660,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
             object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
-            object.__setattr__(self.program, "_clio_tool_refresh", live_tool_refresher(live))
+            object.__setattr__(self.program, "_clio_tool_refresh", agent_tool_refresher(live))
             object.__setattr__(
                 self.program,
                 "_clio_unlisted",
