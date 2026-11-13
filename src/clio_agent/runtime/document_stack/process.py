@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -67,7 +68,10 @@ class _WorkMeter:
     """Seconds since ``process``'s tree last used CPU; ``None`` when it cannot be measured.
 
     A tree containing a process this user may not inspect (a sandbox account's worker)
-    is never called stalled on partial evidence.
+    is never called stalled on partial evidence. Neither is a tree that may not be
+    listed: macOS Seatbelt denies a fenced worker the process listing, so the worker's
+    own meter is unknown and the job runs on. The host meters that worker's whole tree,
+    soffice included, from outside the fence, so the person still sees a stall.
     """
 
     def __init__(self, process: subprocess.Popen[Any]) -> None:
@@ -85,6 +89,7 @@ class _WorkMeter:
             cpu = self._tree_cpu()
             if cpu is None:
                 self._unknown = True
+                logger.info("reason=document_process_unmetered pid=%s", self._pid)
                 return None
             if self._cpu is None or cpu - self._cpu > _STALL_CPU_EPSILON_S:
                 self._busy_at = now
@@ -102,7 +107,8 @@ class _WorkMeter:
             tree = [root, *root.children(recursive=True)]
         except psutil.NoSuchProcess:
             return self._cpu
-        except psutil.Error:
+        except (psutil.Error, OSError):
+            # psutil reports a fence's denied sysctl as a plain PermissionError.
             return None
         total = 0.0
         for member in tree:
@@ -110,7 +116,7 @@ class _WorkMeter:
                 times = member.cpu_times()
             except psutil.NoSuchProcess:
                 continue
-            except psutil.Error:
+            except (psutil.Error, OSError):
                 return None
             total += times.user + times.system
         return total
@@ -135,22 +141,43 @@ def watched(
         _WATCH.reset(token)
 
 
+def _own_group(process: subprocess.Popen[Any]) -> int | None:
+    """``process``'s process group when it leads one (see :func:`run`) and is unreaped."""
+    if os.name == "nt" or process.returncode is not None:
+        return None
+    try:
+        return process.pid if os.getpgid(process.pid) == process.pid else None
+    except OSError:
+        return None
+
+
 def kill_tree(process: subprocess.Popen[Any]) -> None:
-    """Kill ``process`` and every descendant, then reap it."""
+    """Kill ``process`` and every descendant, then reap it.
+
+    Descendants are listed where the OS allows it. Where a fence denies the listing
+    (macOS Seatbelt), a process that leads its own group is still ended whole by
+    signalling the group, and ``process`` itself is always killed.
+    """
+    group = _own_group(process)
     try:
         import psutil
 
         try:
             children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.Error:
+        except (psutil.Error, OSError):
             children = []
         for child in reversed(children):
             try:
                 child.kill()
-            except psutil.Error:
+            except (psutil.Error, OSError):
                 pass
     except ImportError:
         pass
+    if group is not None:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except OSError:
+            pass
     try:
         process.kill()
     except OSError:
@@ -177,11 +204,32 @@ def wait_process(
 
     A job whose tree does no work for :data:`STALL_IDLE_S` (a sandboxed soffice
     blocked on a denied pipe, say) is not killed: it is logged and reported to
-    ``heartbeat`` at once as stalled, and a stop then says it was stuck.
+    ``heartbeat`` at once as stalled, and a stop then says it was stuck. Whatever
+    ends the wait early ends the process tree too, so nothing is left orphaned.
     """
     scoped_cancelled, scoped_heartbeat = _WATCH.get()
-    cancelled = cancelled or scoped_cancelled
-    heartbeat = heartbeat or scoped_heartbeat
+    try:
+        return _wait(
+            process,
+            name=name,
+            timeout=timeout,
+            cancelled=cancelled or scoped_cancelled,
+            heartbeat=heartbeat or scoped_heartbeat,
+        )
+    except BaseException:
+        if process.returncode is None:
+            kill_tree(process)
+        raise
+
+
+def _wait(
+    process: subprocess.Popen[Any],
+    *,
+    name: str,
+    timeout: float | None,
+    cancelled: Callable[[], bool] | None,
+    heartbeat: Heartbeat | None,
+) -> tuple[Any, Any]:
     started = time.monotonic()
     next_beat = started + HEARTBEAT_FIRST_S
     meter = _WorkMeter(process) if timeout is None else None
@@ -232,9 +280,6 @@ def wait_process(
                     process.pid,
                     exc_info=True,
                 )
-            except BaseException:
-                kill_tree(process)
-                raise
 
 
 # LibreOffice reads user settings from <UserInstallation>/user, not the profile root.
@@ -390,6 +435,10 @@ def run(
     flags: dict[str, Any] = {}
     if os.name == "nt":
         flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    elif os.environ.get("CLIO_DOCUMENT_CONFINED") == "1":
+        # A fence may deny listing processes; leading its own group, the job is
+        # still ended whole by kill_tree. The worker passes on its own termination.
+        flags["start_new_session"] = True
     try:
         process = subprocess.Popen(
             windows_command_line if windows_command_line is not None else command,
