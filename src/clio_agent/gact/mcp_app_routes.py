@@ -20,12 +20,22 @@ from clio_agent.gact.mcp_app_context import (
     provenance,
     stored_app_context,
 )
+from clio_agent.gact.mcp_app_downloads import DownloadRefused, save_app_download
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
     _csp_header,
     _host_origin,
     _sandbox_url,
 )
+from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
+from clio_agent.gact.mcp_app_service import (
+    close_app_service,
+    record_service_reason,
+    service_csp_sources,
+    service_descriptor_fields,
+)
+from clio_agent.gact.mcp_app_service_declaration import strip_service_declaration
+from clio_agent.gact.mcp_app_service_proxy import register_mcp_app_service_routes
 from clio_agent.gact.mcp_app_tool_routes import register_app_context_and_tool_routes
 from clio_agent.gact.mcp_apps import (
     MCPAppRecord,
@@ -40,7 +50,7 @@ from clio_agent.gact.mcp_apps import (
 )
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.types import Part, PostMessageRequest
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part, PostMessageRequest
 from clio_agent.tools.mcp_extension_registry import (
     MCP_APP_MIME_TYPE,
     MCP_APPS_PROTOCOL_REVISION,
@@ -60,6 +70,8 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             return _registry(app).get(sid, app_id, data_ref)
         except KeyError as exc:
             raise _not_found() from exc
+
+    register_mcp_app_service_routes(app, resolve)
 
     async def ensure_resource(record: MCPAppRecord) -> None:
         if record.html is not None:
@@ -99,7 +111,12 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 },
                 "tool_input": record.tool_input,
                 "tool_result": record.tool_result,
-                "sandbox_url": _sandbox_url(request, sandbox_path),
+                "sandbox_url": _sandbox_url(
+                    request, sandbox_path, namespace=record.source_namespace
+                ),
+                **await service_descriptor_fields(app, request, record),
+                "display_mode": record.display_mode,
+                "pinned": record.pinned,
             },
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
@@ -109,12 +126,17 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         sid: str, app_id: str, data_ref: str, request: Request
     ) -> HTMLResponse:
         record = resolve(sid, app_id, data_ref)
+        if request.url.hostname != sandbox_host_for(record.source_namespace):
+            # Never on the UI's or the API's origin: the view is same-origin with it.
+            raise HTTPException(status_code=403, detail="sandbox_host_mismatch")
         await ensure_resource(record)
         origin = _host_origin(request)
         return HTMLResponse(
             _SANDBOX_DOCUMENT,
             headers={
-                "Content-Security-Policy": _csp_header(record.csp, origin),
+                "Content-Security-Policy": _csp_header(
+                    record.csp, origin, await service_csp_sources(app, request, record)
+                ),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
             },
@@ -139,7 +161,10 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             result = await _run_bound(app, sid, call)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-        return call_tool_result_to_wire(result)
+        wire, dropped = strip_service_declaration(call_tool_result_to_wire(result))
+        if dropped:  # a service is declared only by the result that opens the view
+            record_service_reason("service_declaration_ignored", app_instance_id=app_id)
+        return wire
 
     @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/resources/read")
     async def read_mcp_app_resource(
@@ -158,6 +183,54 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         return read_resource_result_to_wire(result)
 
     register_app_context_and_tool_routes(app, resolve)
+
+    @app.put("/v1/sessions/{sid}/mcp-apps/{app_id}/display-mode")
+    async def put_mcp_app_display_mode(
+        sid: str, app_id: str, data_ref: str, request: Request
+    ) -> dict[str, Any]:
+        resolve(sid, app_id, data_ref)
+        body = await json_body(request, route="PUT MCP App display mode")
+        try:
+            record = _registry(app).set_display_mode(
+                sid, app_id, data_ref, str(body.get("mode") or "")
+            )
+        except KeyError as exc:
+            raise _not_found() from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"display_mode": record.display_mode, "pinned": record.pinned}
+
+    @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/downloads")
+    async def post_mcp_app_download(
+        sid: str, app_id: str, data_ref: str, request: Request
+    ) -> JSONResponse:
+        record = resolve(sid, app_id, data_ref)
+        body = await json_body(request, route="POST MCP App ui/download-file")
+        try:
+            saved = await asyncio.to_thread(save_app_download, app, record, body)
+        except DownloadRefused as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=False)
+                ).model_dump(exclude_none=True),
+            ) from exc
+        return JSONResponse(saved)
+
+    @app.put("/v1/sessions/{sid}/mcp-apps/{app_id}/pin")
+    async def put_mcp_app_pin(
+        sid: str, app_id: str, data_ref: str, request: Request
+    ) -> dict[str, Any]:
+        resolve(sid, app_id, data_ref)
+        body = await json_body(request, route="PUT MCP App pin")
+        pinned = body.get("pinned")
+        if not isinstance(pinned, bool):
+            raise HTTPException(status_code=422, detail="pinned must be a boolean")
+        try:
+            record = _registry(app).set_surface_pinned(sid, app_id, data_ref, pinned)
+        except KeyError as exc:
+            raise _not_found() from exc
+        return {"display_mode": record.display_mode, "pinned": record.pinned}
 
     @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/messages")
     async def post_mcp_app_message(
@@ -227,6 +300,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             record = _registry(app).claim_close(sid, app_id, data_ref)
         except KeyError as exc:
             raise _not_found() from exc
+        await close_app_service(app, app_id)  # the route is gone; end its connections
         try:
             await _cleanup_record(app, record)
         except PermissionError as exc:

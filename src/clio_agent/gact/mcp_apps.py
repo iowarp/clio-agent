@@ -30,12 +30,15 @@ from clio_agent.gact.mcp_app_observer_reasons import (
 )
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
-    _alternate_loopback_origin,
     _csp_header,
     _host_origin,
     _request_origin,
     _safe_sources,
     _sandbox_url,
+)
+from clio_agent.gact.mcp_app_service_declaration import (
+    ViewService,
+    split_service_declaration,
 )
 from clio_agent.gact.mcp_app_tools import app_tool_table
 from clio_agent.gact.runtime.globals import (
@@ -57,11 +60,46 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
-_REGISTRY_LIMIT = 64
-_REGISTRY_TTL_S = 60 * 60
 _MAX_PRIVATE_RESULT_BYTES = 1024 * 1024
 
 logger = logging.getLogger(__name__)
+
+DISPLAY_MODES = ("inline", "fullscreen")
+
+
+def registry_limit() -> int:
+    """How many unpinned (inline) App records the process keeps at once (MA6).
+
+    Config: ``gact.mcp_apps.registry_limit`` / ``CLIO_MCP_APP_REGISTRY_LIMIT``
+    (default 64). Records pinned by a tab or an A2UI surface are not counted.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.mcp_apps.registry_limit",
+        env="CLIO_MCP_APP_REGISTRY_LIMIT",
+        default=64,
+        cast=conf.as_int,
+    )
+
+
+def registry_ttl_s() -> float:
+    """Idle seconds after which an unpinned (inline) App record expires (MA6).
+
+    Config: ``gact.mcp_apps.registry_ttl_s`` / ``CLIO_MCP_APP_REGISTRY_TTL_S``
+    (default 3600). A pinned record and a record with a declared cleanup tool
+    never expire: no timer runs on a view the person has open (rule 6).
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.mcp_apps.registry_ttl_s",
+        env="CLIO_MCP_APP_REGISTRY_TTL_S",
+        default=3600.0,
+        cast=conf.as_float,
+    )
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -93,6 +131,17 @@ def _tool_ui(tool: Any) -> dict[str, Any]:
         return dict(ui)
     flat = meta_map.get("ui/resourceUri")
     return {"resourceUri": flat} if isinstance(flat, str) else {}
+
+
+def _tool_title(tool: Any) -> str:
+    """The tool's human title (``title`` or ``annotations.title``), for the tab label (MA1)."""
+
+    tool_map = _mapping(tool)
+    title = getattr(tool, "title", None) or tool_map.get("title")
+    if not title:
+        annotations = getattr(tool, "annotations", None) or tool_map.get("annotations")
+        title = getattr(annotations, "title", None) or _mapping(annotations).get("title")
+    return str(title).strip() if isinstance(title, str) else ""
 
 
 def _resource_uri(tool: Any) -> str:
@@ -219,6 +268,17 @@ class MCPAppRecord:
     html: str | None = None
     csp: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
+    service: ViewService | None = None  # MA23: taken off tool_result at admission
+    #: ``inline`` (the card) or ``fullscreen`` (a workbench tab), MA1/MA4.
+    display_mode: str = "inline"
+    #: Mounted in a visible A2UI surface (MA5); set through ``PUT …/pin``.
+    surface_pinned: bool = False
+
+    @property
+    def pinned(self) -> bool:
+        """A record in a tab or a surface is neither expired nor counted (MA6)."""
+
+        return self.display_mode == "fullscreen" or self.surface_pinned
 
 
 class MCPAppAdmissionError(RuntimeError):
@@ -232,7 +292,9 @@ class MCPAppAdmissionError(RuntimeError):
 class MCPAppRegistry:
     """Bounded active-App registry plus a lossless cleanup ownership ledger."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, limit: int | None = None, ttl_s: float | None = None) -> None:
+        self.limit = registry_limit() if limit is None else limit
+        self.ttl_s = registry_ttl_s() if ttl_s is None else ttl_s
         self._records: OrderedDict[str, MCPAppRecord] = OrderedDict()
         self._cleanup_records: OrderedDict[str, MCPAppRecord] = OrderedDict()
         self._closing_records: dict[str, MCPAppRecord] = {}
@@ -247,10 +309,12 @@ class MCPAppRegistry:
         resource_uri: str,
         tool_input: Mapping[str, Any],
         tool_result: Mapping[str, Any],
+        display_mode: str = "inline",
     ) -> MCPAppRecord:
         """Store one private result after enforcing size and count bounds."""
 
         namespace = source_namespace.strip() if isinstance(source_namespace, str) else ""
+        tool_result, service = split_service_declaration(tool_result)
         encoded = json.dumps(tool_result, sort_keys=True, default=str).encode("utf-8")
         record = MCPAppRecord(
             app_instance_id=secrets.token_urlsafe(18),
@@ -262,6 +326,8 @@ class MCPAppRegistry:
             tool_input=dict(tool_input),
             tool_result=dict(tool_result),
             cleanup=_private_cleanup(tool_result),
+            service=service,
+            display_mode=display_mode if display_mode in DISPLAY_MODES else "inline",
         )
         with self._lock:
             self._expire_locked()
@@ -270,8 +336,8 @@ class MCPAppRegistry:
                 rejection = "MCP App result has no exact originating server namespace"
             elif len(encoded) > _MAX_PRIVATE_RESULT_BYTES:
                 rejection = "MCP App private result exceeds the 1 MiB admission limit"
-            elif len(self._records) >= _REGISTRY_LIMIT:
-                rejection = f"MCP App active-instance limit ({_REGISTRY_LIMIT}) has been reached"
+            elif not record.pinned and self._unpinned_count_locked() >= self.limit:
+                rejection = f"MCP App active-instance limit ({self.limit}) has been reached"
             if rejection is not None:
                 # The remote tool has already succeeded. Never silently discard
                 # ownership metadata for a resource-bearing result: retain the
@@ -300,6 +366,31 @@ class MCPAppRegistry:
             record.last_access = time.monotonic()
             self._records.move_to_end(app_instance_id)
             return record
+
+    def set_display_mode(
+        self, session_id: str, app_instance_id: str, data_ref: str, mode: str
+    ) -> MCPAppRecord:
+        """Record where the App's one frame is (MA4); ``fullscreen`` pins it (MA6)."""
+
+        if mode not in DISPLAY_MODES:
+            raise ValueError(f"display mode must be one of {', '.join(DISPLAY_MODES)}")
+        with self._lock:
+            record = self.get(session_id, app_instance_id, data_ref)
+            record.display_mode = mode
+            return record
+
+    def set_surface_pinned(
+        self, session_id: str, app_instance_id: str, data_ref: str, pinned: bool
+    ) -> MCPAppRecord:
+        """Pin or unpin a record mounted in an A2UI surface (MA5/MA6)."""
+
+        with self._lock:
+            record = self.get(session_id, app_instance_id, data_ref)
+            record.surface_pinned = bool(pinned)
+            return record
+
+    def _unpinned_count_locked(self) -> int:
+        return sum(1 for record in self._records.values() if not record.pinned)
 
     def remove(self, app_instance_id: str) -> MCPAppRecord | None:
         """Remove and return an App record."""
@@ -378,14 +469,15 @@ class MCPAppRegistry:
             )
 
     def _expire_locked(self) -> None:
-        deadline = time.monotonic() - _REGISTRY_TTL_S
+        deadline = time.monotonic() - self.ttl_s
         # A cleanup-bearing record represents an owned remote attachment. It
         # cannot be TTL-evicted because doing so would discard the only cleanup
-        # identity. Records without cleanup semantics may expire normally.
+        # identity. A pinned record is a view the person has open in a tab or a
+        # surface (MA6, rule 6). Other records may expire normally.
         expired = [
             key
             for key, record in self._records.items()
-            if record.cleanup is None and record.last_access < deadline
+            if record.cleanup is None and not record.pinned and record.last_access < deadline
         ]
         for key in expired:
             self._records.pop(key, None)
@@ -482,6 +574,8 @@ def _make_mcp_app_observer(app: FastAPI):
                 tool_name=record.tool_name,
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
+                display_mode=record.display_mode,
+                title=_tool_title(tool),
                 metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )
@@ -599,6 +693,8 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
     the operator can retry instead of silently leaking the remote attachment.
     """
 
+    from clio_agent.gact.mcp_app_service import close_app_service  # noqa: PLC0415
+
     registry = _registry(app)
     failures: list[str] = []
     app_tool_table(app).drop_session(session_id)
@@ -609,6 +705,7 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
             failures.append(f"{record.app_instance_id}: {exc}")
         else:
             registry.remove(record.app_instance_id)
+            await close_app_service(app, record.app_instance_id)
     if failures:
         raise RuntimeError("; ".join(failures))
 
@@ -638,6 +735,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
 
 
 __all__ = [
+    "DISPLAY_MODES",
     "MCP_APP_MIME_TYPE",
     "MCPAppAdmissionError",
     "MCPAppRegistry",
@@ -649,8 +747,9 @@ __all__ = [
     "read_resource_result_to_wire",
     "recorded_mcp_app_observer_skips",
     "register_mcp_app_routes",
+    "registry_limit",
+    "registry_ttl_s",
     "_SANDBOX_DOCUMENT",
-    "_alternate_loopback_origin",
     "_csp_header",
     "_host_origin",
     "_request_origin",
