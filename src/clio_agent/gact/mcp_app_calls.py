@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import threading
 from collections.abc import Mapping
 from contextvars import ContextVar
@@ -351,8 +352,28 @@ def _session_not_found() -> HTTPException:
     )
 
 
+def app_is_live(app: FastAPI, sid: str, app_instance_id: str, data_ref: str) -> bool:
+    """Whether CLIO still holds this view, without touching its idle time."""
+
+    from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415 - cycle
+
+    return any(
+        record.app_instance_id == app_instance_id
+        and secrets.compare_digest(record.data_ref, data_ref)
+        for record in _registry(app).records_for_session(sid)
+    )
+
+
 def register_mcp_app_reopen_routes(app: FastAPI) -> None:
-    """Register ``POST /v1/sessions/{sid}/mcp-apps/reopen``."""
+    """Register the reopen route and the card's liveness check."""
+
+    @app.get("/v1/sessions/{sid}/mcp-apps/{app_id}/live")
+    async def mcp_app_live(sid: str, app_id: str, data_ref: str) -> dict[str, Any]:
+        """``{live}``: a card asks before mounting, so a closed view is not a failed request."""
+
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found()
+        return {"live": app_is_live(app, sid, app_id, data_ref)}
 
     @app.post("/v1/sessions/{sid}/mcp-apps/reopen")
     async def reopen_mcp_app(sid: str, request: Request) -> dict[str, Any]:
@@ -371,6 +392,7 @@ __all__ = [
     "REOPEN_REASONS",
     "SESSION_KEY",
     "ReopenFailure",
+    "app_is_live",
     "record_opening_call",
     "register_mcp_app_reopen_routes",
     "reopen_saved_call",

@@ -241,3 +241,18 @@ def test_display_mode_is_recorded(stack: Any) -> None:
 
 def test_saved_calls_of_unknown_session_are_empty(stack: Any) -> None:
     assert saved_calls(stack.app, "sess_missing") == {}
+
+
+def test_live_check_does_not_fail_for_a_closed_view(stack: Any) -> None:
+    app_id = _open(stack)
+    record = stack.app.state.mcp_app_registry.records_for_session(stack.sid)[0]
+    base = f"/v1/sessions/{stack.sid}/mcp-apps/{app_id}/live"
+
+    assert stack.client.get(base, params={"data_ref": record.data_ref}).json() == {"live": True}
+    assert stack.client.get(base, params={"data_ref": "wrong"}).json() == {"live": False}
+    stack.app.state.mcp_app_registry.drop_session(stack.sid)
+    assert stack.client.get(base, params={"data_ref": record.data_ref}).json() == {"live": False}
+    missing = stack.client.get(
+        "/v1/sessions/sess_missing/mcp-apps/x/live", params={"data_ref": "r"}
+    )
+    assert missing.status_code == 404
