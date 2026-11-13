@@ -165,6 +165,8 @@ export default async function (page, shot) {
   await page.goto(sessionUrl);
   await page.waitForTimeout(6000);
   // The person opens the workspace canvas; its tabs come back from the browser's storage.
+  const canvasToggle = page.getByRole("button", { name: /(Open|Close) workspace canvas/ });
+  await canvasToggle.first().waitFor({ timeout: 120000 });
   const canvas = page.getByRole("button", { name: "Open workspace canvas" });
   if (await canvas.count()) await canvas.first().click();
   const restored = page.locator('[data-tab-id^="mcp-app:"]').first();
