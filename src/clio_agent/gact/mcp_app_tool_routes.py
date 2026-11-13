@@ -60,7 +60,7 @@ def register_app_context_and_tool_routes(
             raise HTTPException(status_code=422, detail="tools must be a list")
         table = app_tool_table(app)
         try:
-            offered, skipped = table.set_tools(record, tools)
+            offered, skipped = table.set_tools(record, tools, str(body.get("holder") or ""))
         except AppToolsRejected as exc:
             trace.event("APPS", "%s app=%s %s", exc.reason, app_id, exc)
             return {"offered": [], "reason": exc.reason, "message": str(exc)}

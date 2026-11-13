@@ -166,16 +166,31 @@ class AppToolTable:
         self._apps: dict[str, dict[str, list[AppTool]]] = {}
         self._seen: dict[str, dict[str, AppTool]] = {}
         self._calls: dict[str, PendingCall] = {}
+        self._holders: dict[tuple[str, str], str] = {}
         self.revision = 0
 
-    def set_tools(self, record: Any, tools: Sequence[Any]) -> tuple[list[str], list[dict]]:
+    def set_tools(
+        self, record: Any, tools: Sequence[Any], holder: str = ""
+    ) -> tuple[list[str], list[dict]]:
         """Replace what one view offers. Returns the offered names and the skipped rows.
+
+        ``holder`` names the mount of the view that posted: an empty list from a mount
+        that a newer one replaced (a frame moving between the card and a tab) is
+        ignored, so it cannot withdraw the newer mount's tools.
 
         Raises:
             AppToolsRejected: the list breaks a limit; the view now offers nothing.
         """
         server = str(record.source_namespace or "")
         sid, app_id = record.session_id, record.app_instance_id
+        with self._lock:
+            current = self._holders.get((sid, app_id), "")
+            if not tools and holder and current and current != holder:
+                return [], []
+            if tools and holder:
+                self._holders[(sid, app_id)] = holder
+            elif not tools:
+                self._holders.pop((sid, app_id), None)
         try:
             accepted, skipped = _validated(server, record, tools)
         except AppToolsRejected:
@@ -261,6 +276,8 @@ class AppToolTable:
 
     def drop_app(self, sid: str, app_id: str) -> None:
         """The app closed: it offers nothing and every waiting call learns it is not open."""
+        with self._lock:
+            self._holders.pop((sid, app_id), None)
         self.set_offered(sid, app_id, [])
         for call in self.pending_for_app(sid, app_id):
             self.settle(sid, app_id, call.call_id, error=APP_TOOL_NOT_OPEN)
@@ -273,6 +290,8 @@ class AppToolTable:
         with self._lock:
             self._apps.pop(sid, None)
             self._seen.pop(sid, None)
+            for key in [k for k in self._holders if k[0] == sid]:
+                self._holders.pop(key, None)
 
 
 def app_tool_table(app: Any) -> AppToolTable:

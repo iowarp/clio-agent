@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>Readings board</title>
+  <style>
+    :root { font: 14px/1.5 system-ui, sans-serif; }
+    body { margin: 0; color: CanvasText; background: Canvas; }
+    main { display: grid; gap: 10px; padding: 16px; }
+    h1 { margin: 0; font-size: 17px; }
+    ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    li button {
+      width: 100%; display: flex; justify-content: space-between; gap: 12px; text-align: left;
+      border: 1px solid ButtonBorder; border-radius: 8px; padding: 8px 10px;
+      color: CanvasText; background: Canvas; font: inherit; cursor: pointer;
+    }
+    li button[aria-pressed=true] { outline: 3px solid var(--accent, Highlight); }
+    li button.highlight { background: var(--accent, Highlight); color: HighlightText; }
+    .state { font-size: 12px; opacity: .8; }
+    #notes { margin: 0; padding-left: 18px; }
+    #activity { margin: 0; min-height: 21px; font-size: 13px; opacity: .85; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Readings board</h1>
+    <ul id="readings" aria-label="Readings"></ul>
+    <ol id="notes" aria-label="Notes"></ol>
+    <p id="activity" role="status">Click a reading to select it.</p>
+  </main>
+  <script>
+  (() => {
+    const target = window.parent;
+    const send = (message) => target.postMessage(message, '*');
+    const state = { topic: '', readings: [], selected: null, highlight: null, color: '', notes: [] };
+    let phase = 1;
+    let initialized = false;
+
+    const TOOLS = {
+      set_highlight: {
+        name: 'set_highlight',
+        description: 'Highlight one reading on the board by its id, so the person sees it.',
+        inputSchema: {
+          type: 'object',
+          properties: { reading: { type: 'string', description: 'The reading id, e.g. pump-b' } },
+          required: ['reading'],
+        },
+      },
+      set_color: {
+        name: 'set_color',
+        description: 'Set the colour the board uses for highlights (a CSS colour name).',
+        inputSchema: {
+          type: 'object',
+          properties: { color: { type: 'string' } },
+          required: ['color'],
+        },
+      },
+      add_note: {
+        name: 'add_note',
+        description: 'Add a short note under the readings, where the person sees it.',
+        inputSchema: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text'],
+        },
+      },
+    };
+    const offered = () => phase === 1
+      ? [TOOLS.set_highlight, TOOLS.set_color]
+      : [TOOLS.set_highlight, TOOLS.add_note];
+
+    const reportSize = () => requestAnimationFrame(() => send({
+      jsonrpc: '2.0', method: 'ui/notifications/size-changed',
+      params: { height: Math.ceil(document.querySelector('main').getBoundingClientRect().bottom) + 8 },
+    }));
+
+    const describe = () => {
+      const lines = [`Board "${state.topic}" shows ${state.readings.length} readings:`];
+      for (const r of state.readings) lines.push(`- ${r.label} (${r.id}): ${r.value}, ${r.state}`);
+      const selected = state.readings.find((r) => r.id === state.selected);
+      lines.push(selected ? `The person selected: ${selected.label} (${selected.value}).` : 'Nothing is selected.');
+      if (state.highlight) lines.push(`Highlighted: ${state.highlight}.`);
+      if (state.notes.length) lines.push(`Notes: ${state.notes.join(' | ')}`);
+      return lines.join('\n');
+    };
+    let rpc = 0;
+    const reportContext = () => {
+      if (!initialized) return;
+      rpc += 1;
+      send({
+        jsonrpc: '2.0', id: `board-context-${rpc}`, method: 'ui/update-model-context',
+        params: {
+          content: [{ type: 'text', text: describe() }],
+          structuredContent: {
+            topic: state.topic, selected: state.selected, highlight: state.highlight,
+            color: state.color, notes: state.notes,
+          },
+        },
+      });
+    };
+
+    const render = () => {
+      document.querySelector('#title').textContent = state.topic ? `${state.topic} board` : 'Readings board';
+      document.documentElement.style.setProperty('--accent', state.color || 'Highlight');
+      const list = document.querySelector('#readings');
+      list.replaceChildren(...state.readings.map((r) => {
+        const item = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.reading = r.id;
+        button.setAttribute('aria-pressed', String(state.selected === r.id));
+        if (state.highlight === r.id) button.classList.add('highlight');
+        const name = document.createElement('span');
+        name.textContent = `${r.label}: ${r.value}`;
+        const status = document.createElement('span');
+        status.className = 'state';
+        status.textContent = (state.highlight === r.id ? 'highlighted, ' : '') + r.state;
+        button.append(name, status);
+        button.addEventListener('click', () => {
+          state.selected = r.id;
+          document.querySelector('#activity').textContent = `Selected ${r.label}.`;
+          render();
+          reportContext();
+        });
+        item.append(button);
+        return item;
+      }));
+      document.querySelector('#notes').replaceChildren(...state.notes.map((text) => {
+        const li = document.createElement('li');
+        li.textContent = text;
+        return li;
+      }));
+      reportSize();
+    };
+
+    const runTool = (name, args) => {
+      if (!offered().some((tool) => tool.name === name)) {
+        return { content: [{ type: 'text', text: `The board does not offer ${name}.` }], isError: true };
+      }
+      let text = '';
+      if (name === 'set_highlight') {
+        const reading = state.readings.find((r) => r.id === args.reading);
+        if (!reading) {
+          return { content: [{ type: 'text', text: `No reading ${args.reading}.` }], isError: true };
+        }
+        state.highlight = reading.id;
+        text = `Highlighted ${reading.label} on the board.`;
+      } else if (name === 'set_color') {
+        state.color = String(args.color || '');
+        text = `Highlights now use ${state.color}.`;
+      } else if (name === 'add_note') {
+        state.notes.push(String(args.text || ''));
+        text = `Added the note "${args.text}".`;
+      }
+      document.querySelector('#activity').textContent = `The agent: ${text}`;
+      render();
+      reportContext();
+      if (phase === 1) {
+        phase = 2;
+        send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed', params: {} });
+      }
+      return { content: [{ type: 'text', text }], structuredContent: { highlight: state.highlight, notes: state.notes } };
+    };
+
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || message.jsonrpc !== '2.0') return;
+      if (message.id === 'board-init' && message.result) {
+        initialized = true;
+        send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+        return;
+      }
+      if (message.method === 'ui/notifications/tool-input') {
+        state.topic = message.params?.arguments?.topic || 'Cooling loop';
+        render();
+        return;
+      }
+      if (message.method === 'ui/notifications/tool-result') {
+        const data = message.params?.structuredContent || {};
+        state.topic = data.topic || state.topic;
+        state.readings = Array.isArray(data.readings) ? data.readings : [];
+        render();
+        reportContext();
+        return;
+      }
+      if (message.method === 'tools/list' && message.id !== undefined) {
+        send({ jsonrpc: '2.0', id: message.id, result: { tools: offered() } });
+        return;
+      }
+      if (message.method === 'tools/call' && message.id !== undefined) {
+        const result = runTool(message.params?.name, message.params?.arguments || {});
+        send({ jsonrpc: '2.0', id: message.id, result });
+        return;
+      }
+      if (message.method === 'ping' && message.id !== undefined) {
+        send({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+    });
+
+    send({
+      jsonrpc: '2.0', id: 'board-init', method: 'ui/initialize',
+      params: {
+        protocolVersion: '2026-01-26',
+        appInfo: { name: 'Readings board', version: '1.0.0' },
+        appCapabilities: { tools: { listChanged: true }, availableDisplayModes: ['inline'] },
+      },
+    });
+  })();
+  </script>
+</body>
+</html>
