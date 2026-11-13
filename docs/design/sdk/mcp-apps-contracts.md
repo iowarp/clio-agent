@@ -22,7 +22,7 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
   - A decline returns the typed refusal `connector_declined` naming the connector.
 - **Events:** `connector.changed {connector_id}` triggers a UI refetch. `connector.setup.requested` and `connector.setup.resolved` carry `{session_id, interaction_id, connector_id}`.
 - The native tool is `set_connector_value(connector, key, value)`.
-- **Entry field `tools`** (added by `grounds`): an optional allowlist of the server's tool names the connector offers, `{"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}`. Absent means every tool. A listed name the server does not have is a typed diagnostic, not a silent drop. The loader filters the listed tools out of the connection's catalog, so neither the agent nor `search_tools` sees the others. The `burette` entry uses it to offer only the PDB-ID and Ketcher tools (plan, "Burette in detail").
+- **Entry field `tools`** (added by `grounds`): an optional allowlist of the server's tool names the connector offers, `{"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}`. Absent means every tool. A listed name the server does not have is a typed diagnostic, not a silent drop. The loader keeps only the listed tools in the connection's catalog, so neither the agent nor `search_tools` sees the others. The `burette` entry uses it to offer only the PDB-ID and Ketcher tools (plan, "Burette in detail").
 
 ## Display mode and the tab (owner: `host`)
 
