@@ -46,6 +46,7 @@ _EXTENSION_FIELDS = (
     "defer",
     "servers",
     "kernel_bindings",
+    "follows",
 )
 #: What one ``servers.<name>`` entry may set.
 _SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
@@ -219,6 +220,15 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
         for key, value in connections.items()
     ):
         raise ManifestError(f"{plugin}: connections must map tool namespaces to saved MCP names")
+    follows = ext.get("follows")
+    if follows is not None and (
+        not isinstance(follows, str)
+        or _validate_server_name(follows) is not None
+        or connections.get(follows) != follows
+    ):
+        raise ManifestError(
+            f"{plugin}: follows names a connector id and binds it with connections: {{<id>: <id>}}"
+        )
     if not isinstance(catalogs, list) or not all(isinstance(c, str) and c for c in catalogs):
         raise ManifestError(f"{plugin}: {NAMESPACE}.catalogs must list built-in A2UI catalog ids")
     for key in ("model", "prefers", "workflow_state"):

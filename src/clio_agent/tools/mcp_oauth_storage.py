@@ -57,6 +57,7 @@ class DurableFileTokenStorage:
         self, server_url: str, *, path: Path | None = None, connection_id: str | None = None
     ) -> None:
         self._server_url = server_url
+        self.connection_id = connection_id or ""
         self._entry_key = (
             json.dumps([server_url, connection_id], separators=(",", ":"))
             if connection_id
@@ -67,6 +68,10 @@ class DurableFileTokenStorage:
             self._generation = (self._load_entries().get(self._entry_key) or {}).get(
                 "generation", 0
             )
+
+    @property
+    def server_url(self) -> str:
+        return self._server_url
 
     def _load_entries(self) -> dict[str, dict[str, object]]:
         try:
@@ -222,6 +227,28 @@ class DurableFileTokenStorage:
                 self._server_url,
                 exc,
             )
+
+    def secret_values(self) -> dict[str, str]:
+        """A connection's secrets the person typed (CN8); never returned to a client."""
+        with _lock:
+            entry = self._load_entries().get(self._entry_key) or {}
+        secrets = entry.get("secrets")
+        return {str(k): str(v) for k, v in secrets.items()} if isinstance(secrets, dict) else {}
+
+    def set_secret_values(self, values: dict[str, str | None]) -> None:
+        """Store (or, with ``None``, forget) secrets beside this connection's credentials."""
+        with _lock:
+            entries = self._load_entries()
+            entry = dict(entries.get(self._entry_key) or {})
+            secrets = dict(entry.get("secrets") or {})
+            for key, value in values.items():
+                if value:
+                    secrets[key] = value
+                else:
+                    secrets.pop(key, None)
+            entry["secrets"] = secrets
+            entries[self._entry_key] = entry
+            self._save_entries(entries)
 
     async def get_client_info(self) -> "OAuthClientInformationFull | None":
         """Return the persisted dynamically-registered client info, or ``None``."""

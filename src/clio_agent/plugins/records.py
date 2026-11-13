@@ -207,6 +207,10 @@ class PluginRecord:
     #: Tool disclosure from the ``ai.iowarp.clio`` extension: ``defer`` for the whole
     #: plugin and ``servers`` (per MCP server: ``defer``, ``description``).
     disclosure: dict[str, Any] = field(default_factory=dict)
+    #: The connector this plugin follows (``follows`` in ``ai.iowarp.clio``, CN9): it
+    #: joins and leaves the person's additions with that connector and is not offered
+    #: in plugin pickers.
+    follows: str = ""
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -285,4 +289,5 @@ class PluginRecord:
             keywords=tuple(data.get("keywords") or ()),
             python_pending=bool(data.get("python_pending")),
             disclosure=dict(data.get("disclosure") or {}),
+            follows=str(data.get("follows") or ""),
         )

@@ -84,7 +84,7 @@ def _oauth_provider_from_config(
     from mcp.shared.auth import OAuthClientMetadata  # noqa: PLC0415
     from pydantic import ValidationError  # noqa: PLC0415
 
-    from clio_agent.tools.mcp_config import MCPTransportError  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import MCPSignInNeeded, MCPTransportError  # noqa: PLC0415
     from clio_agent.tools.mcp_durable_oauth import DurableOAuthProvider  # noqa: PLC0415
     from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
 
@@ -97,7 +97,7 @@ def _oauth_provider_from_config(
         and isinstance(storage, DurableFileTokenStorage)
         and not storage.has_tokens()
     ):
-        raise MCPTransportError("MCP sign-in required; connect this service in CLIO")
+        raise MCPSignInNeeded(config.connection_id or server_url)
 
     try:
         metadata = (

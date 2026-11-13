@@ -66,6 +66,7 @@ __all__ = [
     "transport_for",
     "transport_from_spec",
     "MCPTransportError",
+    "MCPSignInNeeded",
     "unreadable_mcp_yaml_snapshot",
 ]
 
@@ -117,6 +118,20 @@ class MCPTransportError(ValueError):
     """
 
 
+class MCPSignInNeeded(MCPTransportError):
+    """A connection needs the person's sign-in before CLIO can connect to it.
+
+    ``reason`` is the typed code ``mcp_sign_in_needed``. A tool call to a connector
+    never reaches this: it waits for the connector's setup card (CN5).
+    """
+
+    reason = "mcp_sign_in_needed"
+
+    def __init__(self, connection: str) -> None:
+        self.connection = connection
+        super().__init__(f"mcp_sign_in_needed: {connection or 'this connection'} needs a sign-in")
+
+
 class MCPSpawnError(RuntimeError):
     """A stdio MCP server cannot be spawned — raised loudly, never swallowed.
 
@@ -162,7 +177,7 @@ class MCPServerSpec:
     transport: Literal["stdio", "http"]
     command: str = ""
     args: tuple[str, ...] = ()
-    env: Mapping[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)
     url: str = ""
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     auth: MCPAuthConfig | None = field(default=None, repr=False)
@@ -176,6 +191,8 @@ class MCPServerSpec:
     #: (``command``/``args``/``url``); ``tools.mcp_redaction`` serves it in their
     #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    #: The connector this connection was saved for (``connector`` in the declaration).
+    connector: str = ""
 
     @property
     def usable(self) -> bool:
@@ -411,6 +428,13 @@ def spec_from_declaration(
                 f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",
             ),
         )
+    if isinstance(value, Mapping) and value.get("connector"):
+        # A connector's secrets are filled here, after ${VAR} expansion (CN8).
+        from clio_agent.connectors.materialize import fill_secrets  # noqa: PLC0415
+
+        connector = str(value["connector"])
+        filled = fill_secrets({"connector": connector, "env": spec.env, "headers": spec.headers})
+        spec = replace(spec, env=filled["env"], headers=filled["headers"], connector=connector)
     name_error = _validate_server_name(name)
     if name_error:
         spec = replace(spec, validation_errors=(name_error, *spec.validation_errors))
