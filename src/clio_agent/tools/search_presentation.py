@@ -41,7 +41,11 @@ def _notes(row: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "id": f"note-{index}",
                 "type": "text",
                 "severity": "warning",
-                "text": f"{source}{item.get('message', item.get('code', ''))}{detail}{until}",
+                "text": (
+                    f"{source}{item['advice']}"
+                    if item.get("advice")
+                    else f"{source}{item.get('message', item.get('code', ''))}{detail}{until}"
+                ),
             }
         )
     return blocks
@@ -58,11 +62,24 @@ def _subject_text(query: str) -> dict[str, Any]:
     return {"id": "subject", "type": "text", "text": query}
 
 
+def _advice(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A failed search's explanation and next step, in words."""
+
+    error = row.get("error")
+    advice = error.get("advice") if isinstance(error, Mapping) else None
+    if not isinstance(advice, str) or not advice:
+        return []
+    return [{"id": "advice", "type": "text", "severity": "warning", "text": advice}]
+
+
 def _web_search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
-    if structured_tool_result_error(result) is not None:
-        return standard_mcp_presentation(result)
     row = _structured(result)
+    if structured_tool_result_error(result) is not None:
+        failed = standard_mcp_presentation(result)
+        subject = _subject_text(str(args.get("query") or row.get("query") or ""))
+        failed["blocks"] = [subject, *_advice(row), *_notes(row), *failed.get("blocks", [])]
+        return failed
     hits = [h for h in row.get("results") or [] if isinstance(h, Mapping) and h.get("url")]
     blocks: list[dict[str, Any]] = [_subject_text(str(args.get("query") or row.get("query") or ""))]
     blocks += _notes(row)

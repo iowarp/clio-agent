@@ -13,9 +13,11 @@ does it ask an approved source's hosted reader, and it says so.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -33,6 +35,7 @@ from clio_agent.search.scheduler import (
     queue_notes,
 )
 from clio_agent.search.settings import (
+    DISPLAY_NAMES,
     SERVICE_SOURCE,
     SearchSettings,
     key_ref,
@@ -53,12 +56,18 @@ class SearchFailure(Exception):
     code: str
     detail: str
     notes: list[SearchNote]
+    source: str = ""
+    advice: str = ""
+    #: Extra fields for the result (``retry_after_s``, ``next_source``).
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def as_result(self) -> dict[str, Any]:
         """The tool result for the failure."""
 
-        primary = note(self.code, detail=self.detail).as_dict()
-        return {"ok": False, "error": primary, "notes": [n.as_dict() for n in self.notes]}
+        primary = note(self.code, self.source, self.detail, advice=self.advice).as_dict()
+        result = {"ok": False, "error": primary, "notes": [n.as_dict() for n in self.notes]}
+        result.update(self.extra)
+        return result
 
 
 def source_key(source: str) -> str:
@@ -123,6 +132,11 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
             index += 1
             continue
         resting = SEARCH_LIMITS.cooldown(source)
+        if resting is not None and _first_outright_failure(source, resting):
+            # The person's next source waits until this one failed twice: wait out the
+            # short rest and ask it again (the queue paces every waiting caller).
+            await asyncio.sleep(max(0.0, resting.until - time.time()))
+            resting = SEARCH_LIMITS.cooldown(source)
         if resting is not None:
             until = resting.until
             later = [name for name in sources[index + 1 :] if _usable(name)]
@@ -162,8 +176,15 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
             index += 1
             continue
         except SourceError as exc:
-            if SEARCH_LIMITS.cooldown(source) is None:  # not resting: report it and move on
+            resting = SEARCH_LIMITS.cooldown(source)
+            if resting is None:  # not resting: report it and move on
                 notes.append(note("search_source_failed", source, exc.detail))
+                index += 1
+                continue
+            if exc.kind == http.FAILED:
+                if _first_outright_failure(source, resting):
+                    raise _try_again(source, exc, resting, sources[index + 1 :], notes) from exc
+                notes.append(_switched(source, exc, resting, sources[index + 1 :]))
                 index += 1
             continue  # the queue rested the source: the branch above decides
         finally:
@@ -172,6 +193,52 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
             notes.append(note("search_rotated", source, f"after {', '.join(sources[:index])}"))
         return _result(query, source, answer_, notes, settings)
     raise SearchFailure("search_all_sources_unavailable", "", notes)
+
+
+def _first_outright_failure(source: str, resting: Any) -> bool:
+    """Whether ``source`` is resting after its first outright failure in a row."""
+
+    return resting.kind == http.FAILED and SEARCH_LIMITS.failures_in_row(source) == 1
+
+
+def _clock(epoch_seconds: float) -> str:
+    return time.strftime("%H:%M:%S", time.localtime(epoch_seconds))
+
+
+def _try_again(
+    source: str, exc: SourceError, resting: Any, later: list[str], notes: list[SearchNote]
+) -> SearchFailure:
+    """The first failure: say what happened and that a new call retries the same source."""
+
+    name = DISPLAY_NAMES.get(source, source)
+    wait = max(1, round(resting.until - time.time()))
+    following = next((n for n in later if not SEARCH_LIMITS.declined(n)), "")
+    then = (
+        f"If {name} fails again, CLIO moves this search to {DISPLAY_NAMES.get(following, following)}."
+        if following
+        else f"If {name} fails again, there is no further source to try."
+    )
+    advice = (
+        f"{name} did not answer ({exc.detail}). That points to a temporary problem at {name}, "
+        "not to there being no results. Call web_search again with the same query: the call "
+        f"waits until {_clock(resting.until)} (about {wait} s) and asks {name} again. {then} "
+        "Meanwhile you can read pages you already found with web_fetch."
+    )
+    extra: dict[str, Any] = {"retry_after_s": wait}
+    if following:
+        extra["next_source"] = following
+    return SearchFailure("search_source_temporarily_down", exc.detail, notes, source, advice, extra)
+
+
+def _switched(source: str, exc: SourceError, resting: Any, later: list[str]) -> SearchNote:
+    """The repeated failure: say that the search moved on and when the source returns."""
+
+    name = DISPLAY_NAMES.get(source, source)
+    following = next((n for n in later if not SEARCH_LIMITS.declined(n)), "")
+    advice = f"{name} failed again ({exc.detail}); CLIO rests it until {_clock(resting.until)}" + (
+        f" and asks {DISPLAY_NAMES.get(following, following)} instead." if following else "."
+    )
+    return note("search_source_switched", source, exc.detail, _iso(resting.until), advice)
 
 
 def _iso(epoch_seconds: float) -> str:

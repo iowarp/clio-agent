@@ -54,6 +54,8 @@ class SourceStatus:
     day: str = ""
     answered_today: int = 0
     failed_today: int = 0
+    #: Outright failures (network, server error) since the last answer.
+    failures_in_row: int = 0
 
     def roll(self) -> None:
         """Start today's counts when the local date changed."""
@@ -112,6 +114,8 @@ class SearchLimits:
             status.last_failure = now
             status.last_failure_kind = kind
             status.last_failure_detail = detail
+            if kind == "failed":
+                status.failures_in_row += 1
             return cooled
 
     def failed(self, source: str, kind: str, detail: str = "") -> None:
@@ -133,6 +137,14 @@ class SearchLimits:
             status.roll()
             status.answered_today += 1
             status.last_answered = time.time()
+            status.failures_in_row = 0
+
+    def failures_in_row(self, source: str) -> int:
+        """Outright failures of ``source`` since it last answered."""
+
+        with self._lock:
+            status = self._status.get(source)
+            return status.failures_in_row if status is not None else 0
 
     def clear(self, source: str) -> None:
         """Forget a source's cooldown (e.g. the person added a key)."""

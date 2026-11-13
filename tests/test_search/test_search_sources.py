@@ -204,7 +204,19 @@ def test_merge_joins_the_same_work_and_ranks_multi_source_first() -> None:
 
 def test_coverage_table_adds_field_and_kind_sources() -> None:
     settings = build_settings()
-    assert chosen_sources("any", "any", settings, {}) == ["openalex", "crossref"]
+    assert chosen_sources("any", "any", settings, {}) == [
+        "openalex",
+        "crossref",
+        "arxiv",
+        "europepmc",
+        "osti",
+        "datacite",
+    ]
+    assert chosen_sources("computing", "article", settings, {}) == [
+        "openalex",
+        "crossref",
+        "arxiv",
+    ]
     assert chosen_sources("life", "preprint", settings, {}) == [
         "openalex",
         "crossref",
@@ -221,6 +233,7 @@ def test_coverage_table_adds_field_and_kind_sources() -> None:
     assert chosen_sources("computing", "any", off, {"semantic_scholar": True}) == [
         "openalex",
         "arxiv",
+        "datacite",
         "semantic_scholar",
     ]
 

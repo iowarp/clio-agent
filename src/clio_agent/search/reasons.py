@@ -33,6 +33,11 @@ SEARCH_REASONS: dict[str, str] = {
     "fetch_failed": "The page could not be read.",
     "fetch_hosted_reader": "The page was read through a hosted reader after a local fetch failed.",
     "fetch_private_url": "A hosted reader was not used because the URL is private.",
+    "search_source_temporarily_down": (
+        "The source failed twice in a row (network or server error). That points to a "
+        "temporary problem at the source, not to an empty result."
+    ),
+    "search_source_switched": "The source kept failing, so CLIO used the next source.",
     "literature_source_failed": "A literature source failed; the others answered.",
     "literature_source_budget_used": "A literature source's free daily budget is used up.",
 }
@@ -46,6 +51,8 @@ class SearchNote:
     source: str = ""
     detail: str = ""
     until: str = ""
+    #: What the agent can do about it, in words.
+    advice: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         """The note as it appears in a tool result."""
@@ -57,16 +64,20 @@ class SearchNote:
             row["detail"] = self.detail
         if self.until:
             row["until"] = self.until
+        if self.advice:
+            row["advice"] = self.advice
         return row
 
 
-def note(code: str, source: str = "", detail: str = "", until: str = "") -> SearchNote:
+def note(
+    code: str, source: str = "", detail: str = "", until: str = "", advice: str = ""
+) -> SearchNote:
     """A typed note; unknown codes are a programming error, never a silent string."""
 
     if code not in SEARCH_REASONS:
         raise ValueError(f"unknown search reason {code!r}")
     trace.event("SEARCH", "%s source=%s %s", code, source or "-", detail[:200])
-    return SearchNote(code=code, source=source, detail=detail, until=until)
+    return SearchNote(code=code, source=source, detail=detail, until=until, advice=advice)
 
 
 __all__ = ["SEARCH_REASONS", "SearchNote", "note"]

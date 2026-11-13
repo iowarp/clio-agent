@@ -59,6 +59,8 @@ LITERATURE_PATIENCE_S = 30.0
 RETRY_PAUSE_S = 1.0
 #: Backoff for a too-many-requests answer without ``Retry-After``: first, longest.
 BACKOFF_S = (2.0, 60.0)
+#: Rest after a provider's first outright failure, and after a repeated one.
+FAILED_REST_S = (30.0, 300.0)
 #: Answers in a row after which one more request may run at once again.
 RECOVER_AFTER = 20
 #: Most times one request is put back in line after too-many-requests.
@@ -407,7 +409,11 @@ class ProviderScheduler:
             self._limits.failed(source, exc.kind, exc.detail)
             self._limits.cool(source, 600, http.FAILED, "key rejected")
             return "raise"
-        self._limits.cool(source, exc.cooldown_s(), exc.kind, exc.detail)
+        rest = exc.cooldown_s()
+        if exc.kind == http.FAILED and exc.retry_after_s is None:
+            first, repeated = FAILED_REST_S
+            rest = repeated if self._limits.failures_in_row(source) else first
+        self._limits.cool(source, rest, exc.kind, exc.detail)
         return "raise"
 
 

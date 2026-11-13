@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -145,9 +146,10 @@ def test_switch_always_saves_auto_switch(monkeypatch) -> None:
 
 
 def test_every_source_resting_is_one_typed_failure(monkeypatch) -> None:
-    down = SourceError("x", http.FAILED, "HTTP 503")
-    monkeypatch.setattr(web_sources, "search", FakeSources({"keenable": [down], "exa": [down]}))
-    monkeypatch.setattr(scheduler, "RETRY_PAUSE_S", 0.0)
+    for name in ("keenable", "exa"):  # both already failed once in a row and rest
+        SEARCH_LIMITS.cool(name, 0.0, http.FAILED, "HTTP 503")
+        SEARCH_LIMITS.cool(name, 300, http.FAILED, "HTTP 503")
+    monkeypatch.setattr(web_sources, "search", FakeSources({"keenable": [_ok()], "exa": [_ok()]}))
     _settings(
         approved=["keenable", "exa"],
         web={"order": ["keenable", "exa"], "disabled": ["firecrawl", "you", "parallel"]},
@@ -155,12 +157,36 @@ def test_every_source_resting_is_one_typed_failure(monkeypatch) -> None:
     with pytest.raises(web.SearchFailure) as failed:
         asyncio.run(web.web_search(WebQuery(query="q")))
     assert failed.value.code == "search_all_sources_unavailable"
-    assert [n.code for n in failed.value.notes] == [
-        "search_source_retried",
-        "search_source_failed",
-        "search_source_retried",
-        "search_source_failed",
-    ]
+    assert [n.code for n in failed.value.notes] == ["search_source_failed"] * 2
+
+
+def test_a_failing_source_says_try_again_then_the_search_switches(monkeypatch) -> None:
+    down = SourceError("keenable", http.FAILED, "HTTP 404")
+    fake = FakeSources({"keenable": [down], "exa": [_ok()]})
+    monkeypatch.setattr(web_sources, "search", fake)
+    monkeypatch.setattr(scheduler, "RETRY_PAUSE_S", 0.0)
+    monkeypatch.setattr(scheduler, "FAILED_REST_S", (0.05, 300.0))
+    _settings(approved=["keenable", "exa"], web={"order": ["keenable", "exa"]})
+
+    with pytest.raises(web.SearchFailure) as first:
+        asyncio.run(web.web_search(WebQuery(query="q")))
+    result = first.value.as_result()
+    assert result["error"]["code"] == "search_source_temporarily_down"
+    assert result["next_source"] == "exa" and result["retry_after_s"] >= 1
+    advice = result["error"]["advice"]
+    assert "temporary problem at Keenable" in advice and "Call web_search again" in advice
+    assert "moves this search to Exa" in advice
+    assert fake.calls == ["keenable", "keenable"]  # CLIO's own quick retry
+
+    again = asyncio.run(web.web_search(WebQuery(query="q")))  # waits out the rest
+    assert again["source"] == "exa"
+    assert fake.calls[2:] == ["keenable", "keenable", "exa"]
+    switched = next(n for n in again["notes"] if n["code"] == "search_source_switched")
+    assert "asks Exa instead" in switched["advice"]
+    assert SEARCH_LIMITS.cooldown("keenable").until - time.time() > 200  # rests longer now
+
+    assert asyncio.run(web.web_search(WebQuery(query="q")))["source"] == "exa"
+    assert fake.calls[-1] == "exa"  # the resting source is skipped, not retried
 
 
 def test_one_failure_retries_the_same_source_before_rotating(monkeypatch) -> None:

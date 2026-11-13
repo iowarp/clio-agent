@@ -718,6 +718,26 @@ def test_web_search_lists_results_with_the_answering_source_and_notes() -> None:
         },
     )
     assert "Every source rests" in json.dumps(failed)
+    down = present_mcp_result(
+        "web_search",
+        {"query": "research"},
+        {
+            "structuredContent": {
+                "ok": False,
+                "error": {
+                    "code": "search_source_temporarily_down",
+                    "message": "The source failed twice in a row.",
+                    "source": "keenable",
+                    "advice": "Keenable did not answer (HTTP 404). Call web_search again.",
+                },
+                "retry_after_s": 30,
+                "next_source": "exa",
+            }
+        },
+    )
+    down_blocks = {block["id"]: block for block in down["blocks"]}
+    assert down_blocks["subject"]["text"] == "research"
+    assert down_blocks["advice"]["text"].startswith("Keenable did not answer (HTTP 404).")
 
 
 def test_file_result_has_one_portable_filename_link() -> None:

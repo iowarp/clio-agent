@@ -32,6 +32,7 @@ from clio_agent.search.scheduler import (
     queue_notes,
 )
 from clio_agent.search.settings import (
+    DISPLAY_NAMES,
     LITERATURE_APPROVAL,
     SearchSettings,
     load_search_settings,
@@ -44,8 +45,10 @@ FIELDS = ("any", "physical", "life", "chemistry", "earth", "computing", "enginee
 KINDS = ("any", "article", "preprint", "review", "dataset")
 #: Sources every search asks.
 ALWAYS = ("openalex", "crossref")
-#: Declared coverage: which further sources a field or kind adds.
+#: Declared coverage: which further sources a field or kind adds. ``field="any"`` (the
+#: default) asks every broad source; naming a field narrows the search to its sources.
 COVERAGE: dict[str, tuple[str, ...]] = {
+    "field:any": ("arxiv", "europepmc", "osti"),
     "field:physical": ("arxiv", "osti"),
     "field:computing": ("arxiv",),
     "field:engineering": ("osti",),
@@ -53,6 +56,7 @@ COVERAGE: dict[str, tuple[str, ...]] = {
     "field:earth": ("osti",),
     "field:life": ("europepmc",),
     "kind:preprint": ("arxiv", "europepmc"),
+    "kind:any": ("datacite",),
     "kind:dataset": ("datacite",),
 }
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -117,7 +121,9 @@ async def _call(
             events=events,
         )
     except SourceError as exc:
-        notes.append(note(_failure_code(exc.kind), source, exc.detail))
+        notes.append(
+            note(_failure_code(exc.kind), source, exc.detail, advice=_missing(source, exc))
+        )
         return None
     finally:
         notes.extend(queue_notes(source, events))
@@ -125,6 +131,29 @@ async def _call(
 
 #: What one search request costs per source (only OpenAlex charges).
 _SEARCH_COST = {"openalex": OPENALEX_COST["search"]}
+
+
+def _missing(source: str, exc: SourceError) -> str:
+    """Why ``source`` is missing from these results, and what to do about it."""
+
+    name = DISPLAY_NAMES.get(source, source)
+    if exc.kind == http.ALLOWANCE_USED:
+        return (
+            f"{name}'s free allowance for today is used ({exc.detail}); the other sources "
+            f"answered. A free {name} key in Settings → Web search raises it."
+        )
+    if exc.kind == http.RATE_LIMITED:
+        return (
+            f"{name} was busy or asked CLIO to slow down ({exc.detail}); the other sources "
+            f"answered. Searching again in a minute may include {name}."
+        )
+    if exc.kind == http.KEY_REJECTED:
+        return f"{name} rejected the saved key; fix it in Settings → Web search."
+    return (
+        f"{name} did not answer ({exc.detail}). That points to a temporary problem at {name}, "
+        f"not to it having nothing; the other sources answered. Searching again in a minute "
+        f"may include {name}."
+    )
 
 
 def _title_key(record: PaperRecord) -> str:
