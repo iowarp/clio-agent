@@ -279,3 +279,7 @@ def test_a_string_or_list_parameter_written_as_a_json_list_is_the_list(invoke: N
     assert read("all")["signals"] == "all"
     assert read("[v(out)")["signals"] == "[v(out)"
     assert read("all", title='["x"]')["title"] == '["x"]'  # a plain string stays raw
+    by_ref = {"plot": {"properties": {"signals": {"$ref": "#/$defs/Signals"}}}}
+    [call] = split_reply(_call("plot", signals='{"names": ["v(out)"]}'), call_prefix="c",
+                         available_tools=["plot"], schemas=by_ref).calls  # fmt: skip
+    assert call.input == {"signals": {"names": ["v(out)"]}}  # a $ref may be a structure

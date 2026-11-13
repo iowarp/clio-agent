@@ -149,7 +149,8 @@ def _accepts_structure(schema: Mapping[str, Any]) -> bool:
     kind = schema.get("type")
     if kind is None:
         options = schema.get("anyOf") or schema.get("oneOf") or []
-        return any(_accepts_structure(o) for o in options if isinstance(o, Mapping))
+        # Untyped, or a ``$ref`` into the tool's definitions: anything, structures too.
+        return not options or any(_accepts_structure(o) for o in options if isinstance(o, Mapping))
     kinds = kind if isinstance(kind, list) else [kind]
     return "array" in kinds or "object" in kinds
 
