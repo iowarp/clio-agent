@@ -35,6 +35,10 @@ def main() -> int:
         )
         started.raise_for_status()
         flow = started.json()
+        if not flow.get("authorization_url"):
+            # The saved sign-in still works: the server asked for no consent.
+            print(flow["state"], flow.get("error") or "", ",".join(flow.get("tools") or []))
+            return 0 if flow["state"] in {"connected", "connecting"} else 1
         consent = urlsplit(client.get(flow["authorization_url"]).headers.get("location", ""))
         page = f"{consent.scheme}://{consent.netloc}{consent.path}"
         nonce = parse_qs(consent.query)["id"][0]
