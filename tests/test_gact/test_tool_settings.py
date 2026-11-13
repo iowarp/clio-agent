@@ -483,6 +483,7 @@ def test_the_tools_page_reads_one_mcp_server_by_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from fastapi.testclient import TestClient
+    from mcp.types import Tool, ToolAnnotations
 
     from clio_agent.gact import tool_settings_page as page
     from clio_agent.gact.app import build_app
@@ -495,24 +496,23 @@ def test_the_tools_page_reads_one_mcp_server_by_name(
         assert pending["tools"] == []
         assert pending["servers_not_loaded"] == ["docs"]
 
-        monkeypatch.setattr(
-            page,
-            "_mcp_definitions",
-            lambda _app: {
-                "docs_search": {
-                    "name": "docs_search",
-                    "description": "Search the docs.",
-                    "annotations": {"readOnlyHint": True},
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"],
-                    },
+        # The executor holds listed ``mcp.types.Tool`` models, whose annotations are read
+        # as attributes, so the fixture uses the same shape.
+        definitions = {
+            "docs_search": Tool(
+                name="docs_search",
+                description="Search the docs.",
+                annotations=ToolAnnotations(readOnlyHint=True),
+                inputSchema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
                 },
-                "docs_delete": {"name": "docs_delete", "description": "Delete a page."},
-                "other_tool": {"name": "other_tool", "description": "Not this server's."},
-            },
-        )
+            ),
+            "docs_delete": Tool(name="docs_delete", description="Delete a page.", inputSchema={}),
+            "other_tool": Tool(name="other_tool", description="Not this server's.", inputSchema={}),
+        }
+        monkeypatch.setattr(page, "_mcp_definitions", lambda _app: definitions)
         view = client.get("/v1/settings/tools", params={"server": "docs"}).json()
         rows = {row["name"]: row for row in view["tools"]}
         assert view["plugin"] == "docs"
