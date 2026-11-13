@@ -1,0 +1,12 @@
+# Burette: molecular structures in Mol*, and Ketcher for drawing them.
+# The hosted public service (SergeiNikolenko/Burette, MIT, read at b1ac8ae), served
+# over Streamable HTTP with no sign-in. Its file tool takes another host's file
+# parameter, so CLIO offers the PDB-ID and Ketcher tools only (apps ledger, grounds).
+- id: burette
+  name: Burette
+  logo: burette.svg
+  description: See molecular structures from the Protein Data Bank, and draw or edit molecules
+  server:
+    url: https://burette-plugin.vercel.app/mcp
+  needs: []
+  tools: [preview_pdb_structure, render_molecular_scene, open_ketcher, control_ketcher]

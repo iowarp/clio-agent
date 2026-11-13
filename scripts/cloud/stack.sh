@@ -41,6 +41,9 @@ if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
     mkdir -p "$dir"
     export "XDG_${role}_HOME=$dir"
   done
+  # Several stacks share one cloud disk: keep each clio-core store small (it
+  # preallocates about 1 GB otherwise).
+  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-128MB}"
 fi
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
 export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"

@@ -119,7 +119,8 @@ class McpSignIn:
 class McpSignIns:
     """Own pending SDK clients until success, cancellation, expiry or application shutdown."""
 
-    def __init__(self, on_connected: Callable[[], Awaitable[None]] | None = None) -> None:
+    def __init__(self, on_connected: Callable[[str], Awaitable[None]] | None = None) -> None:
+        """``on_connected`` is called with the connection's name once its sign-in connects."""
         self._flows: dict[str, McpSignIn] = {}
         self._on_connected = on_connected
 
@@ -316,7 +317,7 @@ class McpSignIns:
                     raise ValueError("Authorization could not be saved")
                 flow.tools = [str(tool.name) for tool in tools]
                 if self._on_connected is not None:
-                    await self._on_connected()
+                    await self._on_connected(flow.name)
                 flow.state = "connected"
         except TimeoutError:
             flow.state, flow.error = "expired", "Sign-in expired. Start again when you are ready."
