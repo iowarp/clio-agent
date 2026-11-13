@@ -28,7 +28,7 @@ import hashlib
 import os
 import shutil
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 #: Environment switch: ``1`` forces the overlay, ``0`` keeps installs in place.
@@ -226,15 +226,20 @@ def staging_dir(directory: Path) -> Path:
 
 
 def publish(
-    staging: Path, directory: Path, runtime_versions: Mapping[str, str] | None = None
+    staging: Path,
+    directory: Path,
+    runtime_versions: Mapping[str, str] | None = None,
+    *,
+    supersedes: Iterable[str] = (),
 ) -> list[str]:
     """Move a finished install from ``staging`` into the overlay ``directory``.
 
     Duplicates of the runtime are pruned in staging first, so they never appear in the
-    overlay. A distribution the overlay already holds is replaced by the staged one. Each
-    entry moves with a rename on the same filesystem, so readers see either the old or
-    the new package, never a partial one. ``staging`` is removed in every case. Returns
-    the distribution names published.
+    overlay. A distribution the overlay already holds is replaced by the staged one, or
+    removed when it is named in ``supersedes`` (the closure of an install that staged
+    only part of it). Each entry moves with a rename on the same filesystem, so readers
+    see either the old or the new package, never a partial one. ``staging`` is removed
+    in every case. Returns the distribution names published.
     """
     import importlib.metadata as metadata  # noqa: PLC0415
 
@@ -249,12 +254,13 @@ def publish(
             for dist in metadata.distributions(path=[str(staging)])
             if dist.metadata["Name"]
         }
+        replaced = installed | {normalized_name(name) for name in supersedes}
         # A staged copy equal to the runtime's is dropped, but it still supersedes the
         # overlay's own copy (a rollback): the runtime's version then shows through.
         duplicates = set(prune_duplicates(staging, versions))
         directory.mkdir(parents=True, exist_ok=True)
         for dist in list(metadata.distributions(path=[str(directory)])):
-            if normalized_name(dist.metadata["Name"] or "") in installed:
+            if normalized_name(dist.metadata["Name"] or "") in replaced:
                 _remove_distribution(dist, directory)
         _merge_tree(staging, directory)
         return sorted(installed - duplicates)
@@ -370,6 +376,20 @@ def prune_stale(directory: Path) -> list[Path]:
     return stale
 
 
+def runtime_lacks(pins: Iterable[str], directory: Path) -> list[str]:
+    """The ``name==version`` pins the runtime does not ship at that version.
+
+    These are what :func:`publish` keeps of an install of ``pins``: the rest are
+    duplicates of the runtime that it prunes.
+    """
+    versions = _runtime_versions(directory)
+    return [
+        pin
+        for pin in pins
+        if versions.get(normalized_name(pin.split("==", 1)[0])) != pin.split("==", 1)[1]
+    ]
+
+
 def runtime_constraints(directory: Path) -> list[str]:
     """``name==version`` for every distribution the runtime itself ships."""
     import importlib.metadata as metadata  # noqa: PLC0415
@@ -397,5 +417,6 @@ __all__ = [
     "prune_stale",
     "publish",
     "runtime_constraints",
+    "runtime_lacks",
     "staging_dir",
 ]
