@@ -130,6 +130,17 @@ def _tool_ui(tool: Any) -> dict[str, Any]:
     return {"resourceUri": flat} if isinstance(flat, str) else {}
 
 
+def _tool_title(tool: Any) -> str:
+    """The tool's human title (``title`` or ``annotations.title``), for the tab label (MA1)."""
+
+    tool_map = _mapping(tool)
+    title = getattr(tool, "title", None) or tool_map.get("title")
+    if not title:
+        annotations = getattr(tool, "annotations", None) or tool_map.get("annotations")
+        title = getattr(annotations, "title", None) or _mapping(annotations).get("title")
+    return str(title).strip() if isinstance(title, str) else ""
+
+
 def _resource_uri(tool: Any) -> str:
     """Return a validated ``ui://`` resource URI from a tool definition."""
 
@@ -561,6 +572,7 @@ def _make_mcp_app_observer(app: FastAPI):
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
                 display_mode=record.display_mode,
+                title=_tool_title(tool),
                 metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )

@@ -30,7 +30,9 @@ class _Executor:
 
     def __init__(self) -> None:
         self.definitions = {
-            "fixture_open": SimpleNamespace(meta={"ui": {"resourceUri": "ui://fixture/view"}})
+            "fixture_open": SimpleNamespace(
+                meta={"ui": {"resourceUri": "ui://fixture/view"}}, title="Fixture viewer"
+            )
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -139,6 +141,7 @@ def test_display_mode_route_sets_mode_and_pin(tmp_path: Path) -> None:
         sid = client.post("/v1/sessions", json={"title": "apps"}).json()["id"]
         part = _open_app(app, client, sid)
         assert part["display_mode"] == "inline"
+        assert part["title"] == "Fixture viewer"
         base = f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}"
         query = {"data_ref": part["data_ref"]}
         headers = {"Origin": "http://127.0.0.1:5173", "Referer": "http://127.0.0.1:5173/"}
