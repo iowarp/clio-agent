@@ -137,10 +137,12 @@ async def retry_after_setup(
     typed ``connector_declined`` refusal.
     """
 
-    from clio_agent.connectors.listing import needs_setup  # noqa: PLC0415
+    from clio_agent.connectors.listing import held_for_setup  # noqa: PLC0415
 
     connector = str(getattr(spec, "connector", "") or "")
-    if not connector or not needs_setup(error):
+    # A call routed through the proxy loses the error's type; the refused sign-in was
+    # forgotten (``DurableOAuthProvider``), so CLIO's own record then says what is missing.
+    if not connector or not await asyncio.to_thread(held_for_setup, connector, error):
         return False
 
     def wait() -> Any:

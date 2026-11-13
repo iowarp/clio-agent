@@ -193,8 +193,16 @@ def test_a_refused_sign_in_waits_for_the_card_then_runs_again(
     context = contextvars.copy_context()
     assert asyncio.run(connector_setup.retry_after_setup(app, context, spec, "t", failed))
     assert seen == ["fixture-signin"]
-    assert not asyncio.run(
+    seen.clear()
+    # A plain protocol error (the proxy dropped the type) still waits while CLIO's own
+    # record says the sign-in is missing, and does not for a connector with nothing missing.
+    assert asyncio.run(
         connector_setup.retry_after_setup(app, context, spec, "t", RuntimeError("other"))
+    )
+    state.update("fixture-plain", enabled=True)
+    ready = SimpleNamespace(connector="fixture-plain")
+    assert not asyncio.run(
+        connector_setup.retry_after_setup(app, context, ready, "t", RuntimeError("other"))
     )
     plain = SimpleNamespace(connector="")
     assert not asyncio.run(connector_setup.retry_after_setup(app, context, plain, "t", failed))
