@@ -25,6 +25,7 @@ from clio_agent.gact import context as gact_context
 from clio_agent.gact import mcp_app_fleet, view_call_cancel, view_call_transcript
 from clio_agent.gact.mcp_app_cleanup import publish_closed
 from clio_agent.gact.mcp_app_fleet import MCP_APP_SERVER_STOPPED, server_stopped
+from clio_agent.gact.mcp_app_label import view_label
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
@@ -134,17 +135,6 @@ def _tool_ui(tool: Any) -> dict[str, Any]:
         return dict(ui)
     flat = meta_map.get("ui/resourceUri")
     return {"resourceUri": flat} if isinstance(flat, str) else {}
-
-
-def _tool_title(tool: Any) -> str:
-    """The tool's human title (``title`` or ``annotations.title``), for the tab label (MA1)."""
-
-    tool_map = _mapping(tool)
-    title = getattr(tool, "title", None) or tool_map.get("title")
-    if not title:
-        annotations = getattr(tool, "annotations", None) or tool_map.get("annotations")
-        title = getattr(annotations, "title", None) or _mapping(annotations).get("title")
-    return str(title).strip() if isinstance(title, str) else ""
 
 
 def _resource_uri(tool: Any) -> str:
@@ -614,7 +604,7 @@ def _make_mcp_app_observer(app: FastAPI):
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
                 display_mode=record.display_mode,
-                title=_tool_title(tool),
+                title=view_label(record.source_namespace, tool, record.tool_input),
                 metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )

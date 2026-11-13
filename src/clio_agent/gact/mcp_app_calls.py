@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.errors import CancellationError
+from clio_agent.gact.mcp_app_label import view_label
 from clio_agent.gact.mcp_apps import (
     DISPLAY_MODES,
     MCP_APP_MIME_TYPE,
@@ -308,6 +309,7 @@ def _part(record: MCPAppRecord, display_mode: str) -> dict[str, Any]:
         data_ref=record.data_ref,
         mime_type=MCP_APP_MIME_TYPE,
         display_mode=display_mode,
+        title=view_label(record.source_namespace, None, record.tool_input),
         metadata={"stream_source": "reopen", "protocol": MCP_APPS_PROTOCOL_REVISION},
     ).to_wire()
 
