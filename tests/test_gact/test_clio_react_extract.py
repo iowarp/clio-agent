@@ -85,6 +85,21 @@ def test_a_workflow_step_extracts_only_workflow_state_on_a_short_answer(
     assert len(engine.requests) == 2
 
 
+def test_a_flow_child_that_declares_workflow_state_gets_it_on_an_empty_answer(
+    extract_config: Any,
+) -> None:
+    """A flow child (no workflow step) whose answer came back empty still hands its state."""
+    extract_config()
+    pred, engine = _run(
+        [*_steps(1), Reply(text=""), _extracted(workflow_state='{"audit": {"verified": []}}')],
+        "question -> answer, workflow_state",
+    )
+
+    assert pred.workflow_state == '{"audit": {"verified": []}}'
+    assert len(engine.requests) == 3
+    assert "look 0" in str(engine.requests[-1].messages), "the extract sees the trajectory"
+
+
 def test_a_short_loop_does_not_extract(extract_config: Any) -> None:
     extract_config()
     pred, engine = _run([*_steps(2), Reply(text="The answer.")], "question -> answer, summary")
