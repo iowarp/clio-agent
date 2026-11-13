@@ -1,0 +1,17 @@
+[
+  {"session": "sess_2ed3819fecd3", "workspace": "ws_793cffbafd46"},
+  {"showTab": true},
+  {"view": true},
+  {"status": "shown"},
+  {"wait": 25000},
+  {"status": "25 s later, following"},
+  {"shot": "aq46-followed"},
+  {"timeIndex": 1},
+  {"shot": "aq46-parked"},
+  {"wait": 30000},
+  {"status": "30 s later, parked"},
+  {"shot": "aq46-parked-newer"},
+  {"send": "Which time step is the newest one in that series right now, and which one am I looking at?"},
+  {"status": "after the answer"},
+  {"shot": "aq46-answer"}
+]

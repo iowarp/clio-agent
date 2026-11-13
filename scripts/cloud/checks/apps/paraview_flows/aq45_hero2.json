@@ -1,0 +1,12 @@
+[
+ {"session": "sess_79c3477300ae", "workspace": "ws_a0c41bab4a0f"},
+ {"showTab": true},
+ {"view": true},
+ {"send": "The isosurface is gone from the view. Show the RTData isosurface at 120 again."},
+ {"view": true},
+ {"modes": true},
+ {"shot": "aq45-remote-again"},
+ {"hero": "aq45-hero-remote"},
+ {"drag": true},
+ {"shot": "aq45-hero-remote-dragged"}
+]
