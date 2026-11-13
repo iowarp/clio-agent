@@ -6,6 +6,24 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.7.1] - 2026-11-13
+
+No GACT-contract change. Fixes for 0.9.7:
+
+### Fixed
+
+- On macOS, document conversions and renders inside the agent's sandbox no
+  longer fail with "Operation not permitted", and stopping such a job no longer
+  leaves LibreOffice running (#2302).
+- The default marketplace is pinned at the v0.8.0 commit, the same as the
+  submodule, so the PDF save-location fix is active (#2291).
+- A scoped installation's clio-kit is on the agent's PATH at start-up, so
+  plugin MCP servers (ADIOS, HDF5, Parquet) start in CLIO Desktop (#2295).
+- Without git, a GitHub marketplace is installed from GitHub's archive, so the
+  default agents install on Macs without the Command Line Tools (#2297).
+- The macOS prebuilt install writes every runtime entry point, including
+  `clio-agent-gact` (#2288).
+
 ## [0.9.7] - 2026-11-13
 
 ### Added
