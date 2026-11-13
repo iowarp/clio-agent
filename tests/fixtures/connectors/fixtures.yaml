@@ -20,7 +20,7 @@
     - key: address
       kind: address
       label: Server address
-      help: The fixture's MCP address, for example http://127.0.0.1:19101/mcp
+      help: "The fixture's MCP address, for example http://127.0.0.1:19101/mcp."
       agent_settable: true
     - key: account
       kind: sign-in

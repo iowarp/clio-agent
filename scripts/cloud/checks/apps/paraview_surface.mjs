@@ -9,6 +9,10 @@
 //      the channel calls set_timestep once and the view's bar shows that step;
 //   2. move the view's own time slider to step PV_VIEW_INDEX; the view reports the new
 //      time and the channel writes it to /selection/time, so the chart's selection moves.
+// PV_HEIGHT sets the view's height in the default prompt (460). DASH_HERO=1 adds hero shots
+// of the whole dashboard (navigation collapsed, canvas closed, the view and the chart in one
+// frame) in the dark and the light theme, after opening and after scrubbing the chart.
+// When a plain PV_SURFACE_PROMPT builds no surface, the step says so and stops.
 import { allowPending, api, openConversation, send, waitIdle } from "./_lib.mjs";
 
 const series = process.env.PV_SERIES || "/home/researcher/data/pulse_series.pvd";
@@ -21,7 +25,7 @@ const ROWS = [
 ].map(([time, temperature]) => ({ time, temperature }));
 const PROMPT =
   process.env.PV_SURFACE_PROMPT ||
-  `Use create_a2ui_surface to make surface pulse_dash. Its root is a Column with two children. First, a clio.mcp-app.v1 component with id view, server paraview, tool open_view, arguments {"path": "${series}"}, state [{"key": "time", "path": "/selection/time", "tool": "set_timestep"}] and height 460. Second, a clio.chart.v1 with id chart, title "Mean temperature by time", preset line, xField time, yField temperature, selection {"path": "/selection/time"}, selectionField time, and these inline data rows: ${JSON.stringify(ROWS)}. Do nothing else and reply with one short sentence.`;
+  `Use create_a2ui_surface to make surface pulse_dash. Its root is a Column with two children. First, a clio.mcp-app.v1 component with id view, server paraview, tool open_view, arguments {"path": "${series}"}, state [{"key": "time", "path": "/selection/time", "tool": "set_timestep"}] and height ${process.env.PV_HEIGHT || 460}. Second, a clio.chart.v1 with id chart, title "Mean temperature by time", preset line, xField time, yField temperature, selection {"path": "/selection/time"}, selectionField time, and these inline data rows: ${JSON.stringify(ROWS)}. Do nothing else and reply with one short sentence.`;
 
 const result = { log: [] };
 
@@ -55,6 +59,46 @@ async function until(page, sessionId, check, label, seconds = 180) {
   return false;
 }
 
+/** Navigation collapsed, canvas closed, the dashboard scrolled to fill the frame. */
+async function dashLayout(page) {
+  const navOpen = await page.getByRole("button", { name: "New conversation" }).first().isVisible().catch(() => false);
+  if (navOpen) {
+    const toggle = page
+      .locator('[data-slot="sidebar-trigger"]')
+      .or(page.getByRole("button", { name: "Toggle Sidebar" }))
+      .filter({ visible: true })
+      .first();
+    if (await toggle.count()) await toggle.click().catch(() => undefined);
+  }
+  const close = page.getByRole("button", { name: "Close workspace canvas" }).filter({ visible: true });
+  if (await close.count()) await close.first().click().catch(() => undefined);
+  await page.waitForTimeout(1500);
+  // The surface's top at the top of the conversation, so the view and the chart both show.
+  await page.locator("[data-mcp-app-component]").first().evaluate((el) => {
+    const card = el.closest('[data-slot="a2ui-surface"], [data-a2ui-surface], section, article') || el;
+    card.scrollIntoView({ block: "start" });
+  });
+  await page.waitForTimeout(3000);
+}
+
+async function dashHero(page, shot, label) {
+  if (process.env.DASH_HERO !== "1") return;
+  await dashLayout(page);
+  for (const theme of ["dark", "light"]) {
+    await page.evaluate((dark) => {
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+      document.documentElement.classList.toggle("dark", dark);
+    }, theme === "dark");
+    await page.waitForTimeout(4000);
+    await shot(`${label}-${theme}`);
+  }
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "dark";
+    document.documentElement.classList.add("dark");
+  });
+  await page.waitForTimeout(2000);
+}
+
 async function chartSelection(page) {
   const chart = page.locator('[data-slot="a2ui-chart"]').first();
   return chart.evaluate((el) => {
@@ -76,6 +120,19 @@ export default async function (page, shot) {
     await waitIdle(page, sessionId, result.log, 15);
   }
   result.session = sessionId;
+  const built = await until(
+    page,
+    sessionId,
+    async () => (await page.locator("[data-mcp-app-component]").count()) > 0,
+    "the surface",
+    process.env.CHECK_SESSION_PATH ? 180 : 30,
+  );
+  if (!built) {
+    await shot("no-surface");
+    result.surface = false;
+    console.log(`PV_SURFACE_RESULT ${JSON.stringify(result)}`);
+    return;
+  }
   await until(page, sessionId, () => page.locator("[data-mcp-app-channel]").first().isVisible(), "the app");
   await page.locator("[data-mcp-app-component]").first().scrollIntoViewIfNeeded();
   await until(page, sessionId, async () => Boolean(trame(page)), "the ParaView view", 300);
@@ -84,6 +141,7 @@ export default async function (page, shot) {
   await page.waitForTimeout(3000);
   result.opened = { ...(await counters(page)), bar: await bar(page) };
   await shot("surface-open");
+  await dashHero(page, shot, "dash-open");
 
   // 1. Scrub the chart: the view's timestep follows.
   const before = await counters(page);
@@ -107,6 +165,7 @@ export default async function (page, shot) {
   };
   await page.locator("[data-mcp-app-component]").first().scrollIntoViewIfNeeded();
   await shot("chart-scrubbed-view-follows");
+  await dashHero(page, shot, "dash-scrubbed");
 
   // 2. Change time in the view: the chart's selection moves.
   const before2 = await counters(page);

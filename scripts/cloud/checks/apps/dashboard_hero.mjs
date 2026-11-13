@@ -50,6 +50,9 @@ async function themed(page, shot, label) {
 
 export default async function (page, shot) {
   page_ = page;
+  page.on("pageerror", (error) =>
+    result.log.push({ pageerror: error?.message, stack: String(error?.stack || "").slice(0, 600) }),
+  );
   const sid = process.env.DASH_SESSION.split("/").at(-1);
   await page.goto(new URL(process.env.DASH_SESSION, page.url()).toString());
   await page.waitForTimeout(6000);

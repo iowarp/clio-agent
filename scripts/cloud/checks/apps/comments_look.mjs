@@ -149,7 +149,7 @@ export default async function (page, shot) {
     await page.waitForTimeout(8000);
   }
   if (env.CM_TAB === "1" && !(await page.locator('[data-mcp-app-placement="tab"]').count())) {
-    const open = page.getByRole("button", { name: /Open in tab|Reopen/ }).filter({ visible: true });
+    const open = page.getByRole("button", { name: /Open in tab|Show tab|Reopen/ }).filter({ visible: true });
     if (await open.count()) await open.last().click({ timeout: 10000 }).catch(() => undefined);
     await page.waitForTimeout(10000);
   }

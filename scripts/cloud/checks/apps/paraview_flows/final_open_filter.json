@@ -1,0 +1,17 @@
+[
+ {"open": "final-pv"},
+ {"send": "Open /home/user/wt/final/clio-agent/.cloud-run/apps-work/final-pv/wavelet.vti in ParaView and show it to me."},
+ {"view": true},
+ {"shot": "fin-pv-opened"},
+ {"maximize": true},
+ {"panel": "Pipeline"},
+ {"row": "wavelet.vti"},
+ {"filter": "Contour"},
+ {"panel": "Pipeline"},
+ {"shot": "fin-pv-hero-panel-contour"},
+ {"closePanel": true},
+ {"restore": true},
+ {"send": "Look at the view and tell me what you see."},
+ {"shot": "fin-pv-look-answer"},
+ {"hero": "fin-pv-look-hero"}
+]
