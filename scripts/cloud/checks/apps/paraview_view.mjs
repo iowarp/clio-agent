@@ -35,7 +35,7 @@ async function allowUntil(page, done, timeout = 600000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (await done()) return true;
-    const allow = page.getByRole("button", { name: /This session/ });
+    const allow = page.getByRole("button", { name: /this session/i }).filter({ visible: true });
     if (await allow.count()) await allow.first().click().catch(() => undefined);
     await page.waitForTimeout(1000);
   }
@@ -102,12 +102,15 @@ export default async function (page, shot) {
   }
   const appId = await app.getAttribute("data-mcp-app-iframe");
   report.session = new URL(await app.getAttribute("src")).pathname.split("/")[3];
-  const viewFrame = () =>
-    page.frames().find((f) => f.url().includes("/service/") && f.url().includes("index.html"));
+  report.frameUrls = () => page.frames().map((f) => f.url());
+  const viewFrame = () => page.frames().find((f) => f.url().includes("/service/"));
   await allowUntil(page, async () => Boolean(viewFrame()), 240000);
   await settle(page);
+  // Moving the app between card and tab reloads its frame (MA3): wait for it again.
+  await allowUntil(page, async () => Boolean(viewFrame()), 120000);
   const trame = viewFrame();
   if (!trame) {
+    console.log(JSON.stringify(report.frameUrls()));
     await shot("no-trame");
     throw new Error("the view never framed the ParaView service");
   }

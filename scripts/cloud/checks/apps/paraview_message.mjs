@@ -19,7 +19,7 @@ export default async function (page, shot) {
   let started = false;
   const deadline = Date.now() + 600000;
   while (Date.now() < deadline && quiet < 6) {
-    const allow = page.getByRole("button", { name: /This session/ });
+    const allow = page.getByRole("button", { name: /this session/i }).filter({ visible: true });
     if (await allow.count()) await allow.first().click().catch(() => undefined);
     const stop = page.getByRole("button", { name: /^Stop/ });
     const busy = (await stop.count()) > 0 && (await stop.first().isVisible().catch(() => false));
