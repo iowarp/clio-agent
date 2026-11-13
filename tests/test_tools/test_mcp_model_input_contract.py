@@ -40,3 +40,41 @@ def test_model_contract_keeps_description_optional_and_forwards_only_backend_arg
         assert seen == [(str(target), "head")]
     finally:
         executor.close()
+
+
+def test_an_argument_typed_through_the_contracts_defs_reaches_the_server() -> None:
+    """AQ32: ltspice-mcp declares ``circuits`` as
+    ``{"items": {"$ref": "#/$defs/ExperimentCircuit"}}``. DSPy checked each argument
+    against its property schema alone, the reference pointed at nothing, and every call
+    failed before the server. SABOTAGE: drop MCPBoundTool._validate_and_parse_args and
+    the call raises "'/$defs/ExperimentCircuit' does not exist"."""
+    from types import SimpleNamespace
+
+    from clio_agent.tools.execution import _make_dspy_tool
+
+    seen: list[Any] = []
+    schema = {
+        "type": "object",
+        "properties": {
+            "circuits": {"type": "array", "items": {"$ref": "#/$defs/ExperimentCircuit"}}
+        },
+        "required": ["circuits"],
+        "$defs": {
+            "ExperimentCircuit": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            }
+        },
+    }
+    mcp_tool = SimpleNamespace(description="Run circuits.", inputSchema=schema)
+    tool = _make_dspy_tool("run_experiments", mcp_tool, lambda name, args: seen.append(args))
+    tool(circuits=[{"path": "rc.cir"}])
+    assert seen and seen[0]["circuits"] == [{"path": "rc.cir"}]
+    assert tool.args["circuits"] == schema["properties"]["circuits"]  # the prompt is unchanged
+    try:
+        tool(circuits=[{"wrong": 1}])
+    except ValueError as exc:
+        assert "path" in str(exc)
+    else:  # pragma: no cover - the validation must refuse it
+        raise AssertionError("an invalid circuit reached the server")

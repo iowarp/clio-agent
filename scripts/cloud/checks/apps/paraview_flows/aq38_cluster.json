@@ -1,0 +1,71 @@
+[
+ {
+  "open": "pv-cluster"
+ },
+ {
+  "send": "I'm planning how to look at a 3D scalar field from a simulation. In two or three sentences: what is an isosurface, and when is it more useful than a slice?"
+ },
+ {
+  "send": "Thanks. Briefly, what does a VTK .vti file hold?"
+ },
+ {
+  "send": "Connect to the ParaView on node08, through login, and open /home/researcher/data/wavelet.vti with an isosurface of RTData. On node08, ParaView needs `module load paraview` first."
+ },
+ {
+  "view": true
+ },
+ {
+  "shot": "aq38-view"
+ },
+ {
+  "shell": "bash scripts/cloud/checks/apps/paraview_ssh.sh list",
+  "label": "AQ39 this machine"
+ },
+ {
+  "shell": "bash $PV_CLUSTER ps login node08 2>&1 | tail -n 40",
+  "label": "AQ39 login and node08"
+ },
+ {
+  "drag": true
+ },
+ {
+  "shot": "aq38-rotated"
+ },
+ {
+  "send": "How long did connecting to node08 take, and did it have to install anything there?"
+ },
+ {
+  "shell": "bash scripts/cloud/checks/apps/paraview_ssh.sh kill",
+  "label": "AQ41 kill the ssh"
+ },
+ {
+  "until": "Lost the link",
+  "seconds": 90
+ },
+ {
+  "shot": "aq41-lost-link"
+ },
+ {
+  "send": "Add a slice through the middle of the data, normal to Z."
+ },
+ {
+  "reconnect": true
+ },
+ {
+  "until": "Lost the link|RTData|wavelet",
+  "seconds": 60
+ },
+ {
+  "shot": "aq41-after-filter"
+ },
+ {
+  "shell": "bash scripts/cloud/checks/apps/paraview_ssh.sh list",
+  "label": "AQ41 after re-attach"
+ },
+ {
+  "send": "List every object in the ParaView scene now, with its type."
+ },
+ {
+  "shot": "aq41-scene"
+ }
+]

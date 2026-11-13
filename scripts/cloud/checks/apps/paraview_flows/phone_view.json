@@ -1,0 +1,13 @@
+[
+ {"session": "sess_dfb375c3a62f", "workspace": "ws_e957fa6fcb31"},
+ {"showTab": true},
+ {"view": true},
+ {"modes": true},
+ {"wait": 3000},
+ {"shot": "phone-view-remote"},
+ {"modeLocal": true},
+ {"wait": 3000},
+ {"shot": "phone-view-local"},
+ {"drag": true},
+ {"shot": "phone-view-local-rotated"}
+]
