@@ -28,7 +28,8 @@ def test_561_identical_calls_run_once_and_distinct_calls_all_run() -> None:
     with dspy.context(lm=lm):
         pred = agent(question="q")
 
-    assert RAN == ["same", "other"]
+    # A step's calls run concurrently, so only the results (below) keep call order.
+    assert sorted(RAN) == ["other", "same"]
     tool_message = pred.messages[2]
     assert tool_message.role == "tool"
     assert len(tool_message.parts) == 2  # one result per distinct call
