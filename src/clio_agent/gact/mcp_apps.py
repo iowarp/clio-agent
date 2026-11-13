@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact import view_call_cancel
+from clio_agent.gact import view_call_cancel, view_call_transcript
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
@@ -626,7 +626,11 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = N
     def invoke() -> Any:
         token = gact_context.set_session_id(sid)
         try:
-            with _gact_app_context(app), _tool_session_context(sid):
+            with (
+                _gact_app_context(app),
+                _tool_session_context(sid),
+                view_call_transcript.collecting(app, sid),  # never inside an open turn
+            ):
                 return operation(_bound_executor(app, sid))
         finally:
             gact_context.reset(token)
