@@ -1,7 +1,7 @@
 """``set_connector_value``: the agent sets a connector need marked ``agent_settable`` (CN6).
 
 The agent uses it when the person gives a value in the conversation ("connect to
-the ParaView on node08") or another tool just produced one. It is refused for a
+the server on node08") or another tool just produced one. It is refused for a
 secret and for a sign-in (only the person types or signs in, in the setup card)
 and for a need not marked ``agent_settable``. Like any built-in it passes the
 session's tool permission rules (``tool_permission_layers.native_gate``). The value

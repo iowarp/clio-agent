@@ -220,6 +220,8 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
     choice = choice or state.choice(found.id)
     absent = missing(found, choice)
     cached = _probes(app).get(found.id) if choice.enabled else None
+    if cached and cached["key"] != _probe_key(found, choice):
+        cached = None  # checked under another configuration (a sign-in since, a new value)
     status, needs, reason = "ready", [need.key for need in absent], None
     if absent and not any(need.kind == "sign-in" for need in absent):
         status = "needs"

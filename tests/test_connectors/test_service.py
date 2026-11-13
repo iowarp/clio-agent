@@ -56,8 +56,9 @@ def test_rows_say_what_is_missing_and_why_unreachable(fixture_catalog: Path) -> 
     signin = catalog["fixture-signin"]
     state.update("fixture-signin", enabled=True, values={"address": "http://127.0.0.1:9/mcp"})
     assert service.row(app, signin)["state"]["needs"] == ["account"]
+    key = service._probe_key(signin, state.choice("fixture-signin"))
     app.state.connector_probes = {
-        "fixture-signin": {"status": "unreachable", "reason": "Nothing answered", "key": ""}
+        "fixture-signin": {"status": "unreachable", "reason": "Nothing answered", "key": key}
     }
     assert service.row(app, signin)["state"] == {
         "status": "unreachable",
@@ -67,6 +68,8 @@ def test_rows_say_what_is_missing_and_why_unreachable(fixture_catalog: Path) -> 
     assert service.unreachable_reason(
         signin, {"url": "http://h:1/mcp?x=1"}, "httpx.ConnectError: All connection attempts failed"
     ) == ("Nothing answered at http://h:1/mcp: the connection was refused.")
+    app.state.connector_probes["fixture-signin"]["key"] = "an older configuration"
+    assert service.row(app, signin)["state"]["needs"] == ["account"]
 
 
 def test_a_waiting_call_continues_on_submit_and_is_refused_on_decline(
