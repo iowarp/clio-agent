@@ -1256,10 +1256,46 @@ function Start-ClioOfficeTreeFetch {
 # Start-ClioUnpackers DIR ITEM [PARTS]: tar.exe processes that unpack ITEM's archive into DIR while
 # it downloads, one per PARTS filter (the runtime archive's parts by default). Defender scans each new file as it is closed, so one process leaves the
 # disk idle between files; each process writes its own part of the tree and skips the
-# rest, which costs only decompression. Each is fed by its own thread reading the growing
-# download, so a process held up by its files never holds up the others.
+# rest. One more tar.exe, the decoder, decompresses the growing download once into a plain
+# tar; a fan-out thread hands each 1 MB record to every unpacker's queue, and a thread per
+# unpacker feeds it from its queue. A process held up by its files holds up the others only
+# once its queue is full, ClioQueueRecords records behind.
 $ClioFeeders = @()
+$ClioPumps = @()
 $ClioFeed = $null
+$ClioQueueRecords = 64
+$ClioFanOutScript = {
+    param($In, $Queues)
+    $read = [int64]0
+    try {
+        while ($true) {
+            $record = New-Object byte[] 1048576
+            $n = $In.Read($record, 0, $record.Length)
+            if ($n -le 0) { break }
+            if ($n -lt $record.Length) {
+                $short = New-Object byte[] $n
+                [Buffer]::BlockCopy($record, 0, $short, 0, $n)
+                $record = $short
+            }
+            foreach ($queue in $Queues) { $queue.Add($record) }
+            $read += $n
+        }
+    } finally {
+        foreach ($queue in $Queues) { $queue.CompleteAdding() }
+    }
+    $read
+}
+# An unpacker that has failed stops being written to but keeps its queue draining, so the
+# fan-out never waits on it.
+$ClioQueueScript = {
+    param($Queue, $Out)
+    $open = $true
+    foreach ($record in $Queue.GetConsumingEnumerable()) {
+        if (-not $open) { continue }
+        try { $Out.Write($record, 0, $record.Length) } catch { $open = $false }
+    }
+    try { $Out.Close() } catch { }
+}
 $ClioFeederScript = {
     param([string]$File, [string]$Final, $Out, $Feed)
     $buffer = New-Object byte[] 1048576
@@ -1298,24 +1334,43 @@ function Start-ClioUnpackers([string]$Dir, $Item, [string[]]$Parts = $null) {
             ((@($documents | ForEach-Object { "--exclude `"$_`"" }) + "--exclude `"$site/[_a-z]*`"") -join ' ')
         )
     }
-    $script:ClioUnpackers = @(foreach ($part in $parts) {
-        $info = New-Object Diagnostics.ProcessStartInfo (Join-Path $env:SystemRoot 'System32\tar.exe')
+    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    # The decoder copies the archive's entries to a plain tar in 1 MB records (-b 2048). It
+    # warns on stderr for every entry without a group name, so its stderr is discarded.
+    $info = New-Object Diagnostics.ProcessStartInfo $tar
+    $info.Arguments = '-c -b 2048 -f - @-'
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $decoder = [Diagnostics.Process]::Start($info)
+    $null = $decoder.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+    $unpackers = @(foreach ($part in $parts) {
+        $info = New-Object Diagnostics.ProcessStartInfo $tar
         $info.Arguments = "-x -f - --strip-components 1 -C `"$Dir`" $part"
         $info.UseShellExecute = $false
         $info.RedirectStandardInput = $true
         [Diagnostics.Process]::Start($info)
     })
+    $script:ClioUnpackers = @($decoder) + $unpackers
     $script:ClioFeed = [hashtable]::Synchronized(@{ Length = [int64]-1; Abort = $false })
-    $script:ClioFeeders = @(foreach ($unpacker in $script:ClioUnpackers) {
+    $queues = New-Object 'Collections.Generic.List[object]'
+    foreach ($unpacker in $unpackers) { $queues.Add([Collections.Concurrent.BlockingCollection[byte[]]]::new($script:ClioQueueRecords)) }
+    $pumps = @(for ($i = 0; $i -lt $unpackers.Count; $i++) {
         $shell = [PowerShell]::Create()
-        $null = $shell.AddScript($script:ClioFeederScript).AddArgument($Item.File).AddArgument($Item.Final).AddArgument($unpacker.StandardInput.BaseStream).AddArgument($script:ClioFeed)
+        $null = $shell.AddScript($script:ClioQueueScript).AddArgument($queues[$i]).AddArgument($unpackers[$i].StandardInput.BaseStream)
         [pscustomobject]@{ Shell = $shell; Handle = $shell.BeginInvoke() }
     })
+    $shell = [PowerShell]::Create()
+    $null = $shell.AddScript($script:ClioFanOutScript).AddArgument($decoder.StandardOutput.BaseStream).AddArgument($queues)
+    $script:ClioPumps = $pumps + [pscustomobject]@{ Shell = $shell; Handle = $shell.BeginInvoke() }
+    $shell = [PowerShell]::Create()
+    $null = $shell.AddScript($script:ClioFeederScript).AddArgument($Item.File).AddArgument($Item.Final).AddArgument($decoder.StandardInput.BaseStream).AddArgument($script:ClioFeed)
+    $script:ClioFeeders = @([pscustomobject]@{ Shell = $shell; Handle = $shell.BeginInvoke() })
 }
 
 # Stop-ClioUnpackers LENGTH: the archive is complete at LENGTH bytes (feed it to the end),
-# or -1 (the download failed: stop now). Sets $ClioUnpacked to the fewest bytes any
-# unpacker was fed.
+# or -1 (the download failed: stop now). Sets $ClioUnpacked to the bytes the decoder was fed.
 function Stop-ClioUnpackers([int64]$Length) {
     if ($Length -ge 0) { $script:ClioFeed.Length = $Length } else { $script:ClioFeed.Abort = $true }
     $fed = @(foreach ($feeder in $script:ClioFeeders) {
@@ -1325,6 +1380,10 @@ function Stop-ClioUnpackers([int64]$Length) {
     $script:ClioUnpacked = if ($fed.Count) { [int64](($fed | Measure-Object -Minimum).Minimum) } else { [int64]-1 }
     foreach ($unpacker in $script:ClioUnpackers) {
         if (-not $unpacker.WaitForExit(120000)) { try { $unpacker.Kill() } catch { } }
+    }
+    foreach ($pump in $script:ClioPumps) {
+        try { $null = $pump.Shell.EndInvoke($pump.Handle) } catch { }
+        $pump.Shell.Dispose()
     }
 }
 
