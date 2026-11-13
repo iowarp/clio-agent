@@ -157,7 +157,7 @@ def test_every_source_resting_is_one_typed_failure(monkeypatch) -> None:
     with pytest.raises(web.SearchFailure) as failed:
         asyncio.run(web.web_search(WebQuery(query="q")))
     assert failed.value.code == "search_all_sources_unavailable"
-    assert [n.code for n in failed.value.notes] == ["search_source_failed"] * 2
+    assert [n.code for n in failed.value.notes] == ["search_source_switched"] * 2
 
 
 def test_a_failing_source_says_try_again_then_the_search_switches(monkeypatch) -> None:

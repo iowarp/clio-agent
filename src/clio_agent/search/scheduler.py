@@ -61,6 +61,12 @@ RETRY_PAUSE_S = 1.0
 BACKOFF_S = (2.0, 60.0)
 #: Rest after a provider's first outright failure, and after a repeated one.
 FAILED_REST_S = (30.0, 300.0)
+#: How long a provider's own report of its remaining budget is trusted, and the
+#: longest CLIO rests a provider on that report before asking it again.
+PROVIDER_TRUST_S = 600.0
+#: A refusal while the provider still reports at least this many dollars is a rate
+#: limit, not a spent allowance (keyless allowances are shared and move constantly).
+BUDGET_MARGIN_USD = 0.005
 #: Answers in a row after which one more request may run at once again.
 RECOVER_AFTER = 20
 #: Most times one request is put back in line after too-many-requests.
@@ -106,6 +112,16 @@ class _Lane:
     learned_interval: float | None = None
     learned_concurrency: int | None = None
     remaining_usd: float | None = None
+    #: When ``remaining_usd`` was read, and when the provider says its budget resets.
+    remaining_at: float = 0.0
+    reset_at: float = 0.0
+
+    def provider_remaining(self, now: float) -> float | None:
+        """The provider's reported dollars left, while the report is fresh."""
+
+        if self.remaining_usd is None or now - self.remaining_at > PROVIDER_TRUST_S:
+            return None
+        return self.remaining_usd
 
     def base_concurrency(self) -> int:
         """The tier's concurrency, or less when the provider declared less."""
@@ -185,9 +201,11 @@ class ProviderScheduler:
                 try:
                     value = await run()
                 except SourceError as exc:
-                    action = self._settle_failure(source, exc, failed_once, report, deadline)
+                    action, error = self._settle_failure(source, exc, failed_once, report, deadline)
                     if action == "raise":
-                        raise
+                        if error is exc:
+                            raise
+                        raise error from exc
                     failed_once = failed_once or exc.kind == http.FAILED
                     if action == "retry":
                         await asyncio.sleep(RETRY_PAUSE_S)
@@ -216,8 +234,12 @@ class ProviderScheduler:
             if most:
                 lane.learned_concurrency = int(most)
             usd = _number(lowered.get("x-ratelimit-remaining-usd"))
+            now = time.time()
             if usd is not None:
-                lane.remaining_usd = usd
+                lane.remaining_usd, lane.remaining_at = usd, now
+            reset_in = _number(lowered.get("x-ratelimit-reset"))
+            if reset_in:
+                lane.reset_at = reset_in if reset_in > 1e9 else now + reset_in
         remaining = _number(lowered.get("x-ratelimit-remaining"))
         reset = _number(lowered.get("x-ratelimit-reset"))
         if remaining is not None and remaining <= 0 and reset:
@@ -347,11 +369,15 @@ class ProviderScheduler:
             used_up = ""
             reset_s = 0.0
             if terms is not None and terms.usd_per_day is not None and cost_usd > 0:
-                left = terms.usd_per_day - lane.usage.day_usd
-                if lane.remaining_usd is not None:
-                    left = min(left, lane.remaining_usd)
-                if left < cost_usd:
-                    used_up, reset_s = "today's free budget is spent", _to_next_day(now)
+                until_reset = lane.reset_at - now if lane.reset_at > now else 0.0
+                reported = lane.provider_remaining(now)
+                if terms.usd_per_day - lane.usage.day_usd < cost_usd:
+                    used_up = "CLIO spent today's free budget"
+                    reset_s = until_reset or _to_next_day(now)
+                elif reported is not None and reported < cost_usd:
+                    # The network shares this budget; ask again soon, not tomorrow.
+                    used_up = f"the provider reports ${reported:.4f} of its free budget left"
+                    reset_s = min(PROVIDER_TRUST_S, until_reset or PROVIDER_TRUST_S)
             elif terms is not None and terms.per_day is not None:
                 if lane.usage.day_requests >= terms.per_day:
                     used_up, reset_s = "today's free requests are used", _to_next_day(now)
@@ -385,9 +411,16 @@ class ProviderScheduler:
         failed_once: bool,
         report: CallEvents,
         deadline: float,
-    ) -> str:
-        """Record a failure; return ``"requeue"``, ``"retry"`` or ``"raise"``."""
+    ) -> tuple[str, SourceError]:
+        """Record a failure; return ``("requeue"|"retry"|"raise", error to raise)``."""
 
+        if exc.kind == http.ALLOWANCE_USED:
+            with self._lock:
+                reported = self._lanes[source].provider_remaining(time.time())
+            if reported is not None and reported >= BUDGET_MARGIN_USD:
+                wait = min(exc.retry_after_s or BACKOFF_S[0], BACKOFF_S[1])
+                detail = f"{exc.detail} while the provider reports ${reported:.4f} left"
+                exc = SourceError(source, http.RATE_LIMITED, detail, wait)
         if exc.kind == http.RATE_LIMITED:
             with self._lock:
                 lane = self._lanes[source]
@@ -400,21 +433,21 @@ class ProviderScheduler:
             self._limits.cool(source, pause, exc.kind, exc.detail)
             if report.requeued < MAX_REQUEUES and time.monotonic() + pause <= deadline:
                 report.requeued += 1
-                return "requeue"
-            return "raise"
+                return "requeue", exc
+            return "raise", exc
         if exc.kind == http.FAILED and not failed_once:
             report.retried.append(exc.detail)
-            return "retry"
+            return "retry", exc
         if exc.kind == http.KEY_REJECTED:
             self._limits.failed(source, exc.kind, exc.detail)
             self._limits.cool(source, 600, http.FAILED, "key rejected")
-            return "raise"
+            return "raise", exc
         rest = exc.cooldown_s()
         if exc.kind == http.FAILED and exc.retry_after_s is None:
             first, repeated = FAILED_REST_S
             rest = repeated if self._limits.failures_in_row(source) else first
         self._limits.cool(source, rest, exc.kind, exc.detail)
-        return "raise"
+        return "raise", exc
 
 
 #: A wait in line shorter than this is not worth a note.

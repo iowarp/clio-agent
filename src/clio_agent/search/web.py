@@ -147,12 +147,15 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
                         "add a key in Settings → Web search" if answer == broker.ADD_KEY else ""
                     )
                     raise SearchFailure("search_stopped_by_person", detail, notes)
+            if resting.kind == http.FAILED:
+                failure = SourceError(source, http.FAILED, resting.detail)
+                notes.append(_switched(source, failure, resting, sources[index + 1 :]))
+                index += 1
+                continue
             code = (
                 "search_source_allowance_used"
                 if resting.kind == http.ALLOWANCE_USED
                 else "search_source_rate_limited"
-                if resting.kind == http.RATE_LIMITED
-                else "search_source_failed"
             )
             notes.append(note(code, source, resting.detail, _iso(until)))
             index += 1

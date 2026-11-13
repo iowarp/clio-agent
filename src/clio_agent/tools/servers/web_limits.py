@@ -54,7 +54,8 @@ class SourceStatus:
     day: str = ""
     answered_today: int = 0
     failed_today: int = 0
-    #: Outright failures (network, server error) since the last answer.
+    #: Outright failures (network, server error) since the last answer, counted once
+    #: per rest: failures during a rest for a failure belong to the same outage.
     failures_in_row: int = 0
 
     def roll(self) -> None:
@@ -104,6 +105,9 @@ class SearchLimits:
         now = time.time()
         with self._lock:
             current = self._cooldowns.get(source)
+            # Failures while the source already rests for a failure are the same strike:
+            # parallel callers hit by one outage must not count it once each.
+            same_outage = current is not None and current.until > now and current.kind == "failed"
             epoch = current.epoch if current and current.until > now else int(now * 1000)
             until = max(now + max(seconds, 0.0), current.until if current else 0.0)
             cooled = Cooldown(until=until, kind=kind, detail=detail, epoch=epoch)
@@ -114,7 +118,7 @@ class SearchLimits:
             status.last_failure = now
             status.last_failure_kind = kind
             status.last_failure_detail = detail
-            if kind == "failed":
+            if kind == "failed" and not same_outage:
                 status.failures_in_row += 1
             return cooled
 

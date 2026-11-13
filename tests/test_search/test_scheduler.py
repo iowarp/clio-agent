@@ -203,3 +203,49 @@ def test_a_request_behind_a_long_line_reports_busy_without_resting_the_provider(
     asyncio.run(main())
     assert SEARCH_LIMITS.cooldown("exa") is None
     assert SCHEDULER.view("exa")["waiting"] == 0
+
+
+def test_failures_during_one_outage_are_one_strike() -> None:
+    SEARCH_LIMITS.cool("keenable", 30, http.FAILED, "HTTP 502")
+    for _ in range(5):  # parallel callers hit by the same outage
+        SEARCH_LIMITS.cool("keenable", 30, http.FAILED, "HTTP 502")
+    assert SEARCH_LIMITS.failures_in_row("keenable") == 1
+    SEARCH_LIMITS.answered("keenable")
+    assert SEARCH_LIMITS.failures_in_row("keenable") == 0
+
+
+def test_a_refusal_while_the_provider_reports_budget_left_is_a_rate_limit() -> None:
+    terms = Terms(KEYLESS, usd_per_day=0.10)
+    asyncio.run(SCHEDULER.call("openalex", _answer(), terms=terms))
+    SCHEDULER.learn("openalex", {"x-ratelimit-remaining-usd": "0.03"})
+    calls = 0
+
+    async def refuse_once() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise SourceError("openalex", http.ALLOWANCE_USED, "HTTP 429", 0.02)
+        return "ok"
+
+    result = asyncio.run(
+        SCHEDULER.call("openalex", refuse_once, terms=terms, cost_usd=0.001, patience_s=5)
+    )
+    assert result == "ok" and calls == 2
+
+
+def test_a_low_budget_report_rests_the_provider_minutes_not_a_day(monkeypatch) -> None:
+    terms = Terms(KEYLESS, usd_per_day=0.10)
+    asyncio.run(SCHEDULER.call("openalex", _answer(), terms=terms))
+    SCHEDULER.learn("openalex", {"x-ratelimit-remaining-usd": "0.0002"})
+    with pytest.raises(SourceError):
+        asyncio.run(SCHEDULER.call("openalex", _answer(), terms=terms, cost_usd=0.001))
+    resting = SEARCH_LIMITS.cooldown("openalex")
+    assert resting.until - __import__("time").time() <= scheduler.PROVIDER_TRUST_S + 1
+    # an old report is no longer believed
+    SEARCH_LIMITS.reset()
+    lane = SCHEDULER._lanes["openalex"]
+    lane.remaining_at -= scheduler.PROVIDER_TRUST_S + 1
+    assert (
+        asyncio.run(SCHEDULER.call("openalex", _answer("again"), terms=terms, cost_usd=0.001))
+        == "again"
+    )
