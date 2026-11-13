@@ -328,6 +328,9 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "tool_name": str(part.get("tool_name") or ""),
             "data_ref": str(part.get("data_ref") or ""),
             "mime_type": str(part.get("mime_type") or "text/html;profile=mcp-app"),
+            "display_mode": (
+                "fullscreen" if part.get("display_mode") == "fullscreen" else "inline"
+            ),
             **(
                 {"height": int(part["height"])}
                 if isinstance(part.get("height"), int) and int(part["height"]) > 0
