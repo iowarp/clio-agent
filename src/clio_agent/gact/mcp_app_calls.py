@@ -41,6 +41,7 @@ from clio_agent.gact.mcp_apps import (
     _registry,
     _resource_uri,
     _run_bound,
+    _tool_visible_to_app,
     call_tool_result_to_wire,
 )
 from clio_agent.gact.routes._body import json_body
@@ -195,7 +196,7 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
     if unsaved:
         entry["unsaved_reason"] = unsaved
         _audit("mcp_app_call_not_saved", sid, record.app_instance_id, unsaved, entry)
-    if capture is not None:
+    if capture is not None and capture.reopened_from:
         entry["reopened_from"] = capture.reopened_from
     _write(app, sid, record.app_instance_id, entry)
     if capture is None:
@@ -210,17 +211,28 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
 
 
 def set_saved_display_mode(app: FastAPI, sid: str, app_instance_id: str, mode: str) -> bool:
-    """Record a view's display mode on its saved call. Returns whether one was saved."""
+    """Record a view's display mode on its saved call. Returns whether one was saved.
+
+    A reopened view's mode is also recorded on the calls it was reopened from, so
+    the card the view came from reopens it where the person last had it.
+    """
 
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode {mode!r}")
     with _LOCK:
-        entry = saved_call(app, sid, app_instance_id)
-        if entry is None:
+        calls = saved_calls(app, sid)
+        if app_instance_id not in calls:
             return False
-        if entry.get("display_mode") != mode:
-            entry["display_mode"] = mode
-            _write(app, sid, app_instance_id, entry)
+        changed, current, seen = False, app_instance_id, set()
+        while current in calls and current not in seen:
+            seen.add(current)
+            entry = calls[current]
+            if entry.get("display_mode") != mode:
+                entry["display_mode"] = mode
+                changed = True
+            current = str(entry.get("reopened_from") or "")
+        if changed:
+            app.state.sessions.update(sid, metadata_patch={SESSION_KEY: calls})
         return True
 
 
@@ -291,49 +303,91 @@ async def reopen_saved_call(app: FastAPI, sid: str, app_instance_id: str) -> dic
     ``{error: {reason, detail}, saved_call}``.
     """
 
-    entry = saved_call(app, sid, app_instance_id)
-    if (
-        entry is None
-        or entry.get("unsaved_reason")
-        or not isinstance(entry.get("arguments"), Mapping)
-    ):
-        reason = "no_saved_call" if entry is None else "arguments_not_saved"
-        _audit("mcp_app_reopen_failed", sid, app_instance_id, reason, entry)
-        return {"error": {"reason": reason, "detail": REOPEN_REASONS[reason]}, "saved_call": entry}
-    capture = _ReplayCapture(
-        reopened_from=app_instance_id,
-        display_mode=str(entry.get("display_mode") or "inline"),
+    return await replay_call(
+        app, sid, saved_call(app, sid, app_instance_id), reopened_from=app_instance_id
     )
-    outcome = await replay_call(app, sid, entry, capture)
-    if "part" in outcome:
-        outcome["saved_call"] = saved_call(app, sid, outcome["part"]["app_instance_id"])
-    return outcome
+
+
+def server_tools(definitions: Mapping[str, Any], server: str) -> list[str]:
+    """The tools of ``server`` its views may call, without the server's prefix."""
+
+    prefix = f"{server}_"
+    return sorted(
+        name[len(prefix) :]
+        for name, tool in definitions.items()
+        if name.startswith(prefix) and _tool_visible_to_app(tool)
+    )
+
+
+def call_entry(call: Mapping[str, Any]) -> dict[str, Any]:
+    """A saved-call entry from a caller-given call (an A2UI component's props, MA20)."""
+
+    server, tool = call.get("server"), call.get("tool")
+    arguments = call.get("arguments") or {}
+    mode = call.get("display_mode") or "inline"
+    if not isinstance(server, str) or not server.strip():
+        raise ValueError("call.server is required")
+    if not isinstance(tool, str) or not tool.strip():
+        raise ValueError("call.tool is required")
+    if not isinstance(arguments, Mapping):
+        raise ValueError("call.arguments must be an object")
+    if mode not in DISPLAY_MODES:
+        raise ValueError(f"call.display_mode must be one of {', '.join(DISPLAY_MODES)}")
+    saved, unsaved = _saved_arguments(arguments)
+    entry: dict[str, Any] = {
+        "server": server.strip(),
+        "tool": tool.strip(),
+        "arguments": saved,
+        "display_mode": mode,
+        "resource_uri": "",
+        "label": "",
+    }
+    if unsaved:
+        entry["unsaved_reason"] = unsaved
+    return entry
 
 
 async def replay_call(
-    app: FastAPI, sid: str, entry: Mapping[str, Any], capture: _ReplayCapture
+    app: FastAPI,
+    sid: str,
+    entry: dict[str, Any] | None,
+    *,
+    reopened_from: str,
+    save: bool = True,
 ) -> dict[str, Any]:
-    """Make the call ``entry`` names and mount the view it opens (MA19, MA20).
+    """Call one opening call through the gated executor path and admit its view.
 
-    Returns ``{part, saved_call: entry}`` with a fresh ``mcp_app`` part, or
-    ``{error: {reason, detail}, saved_call: entry}``. ``capture.reopened_from``
-    names what is being reopened, for the audit; ``capture.save`` says whether
-    the new view's call is saved on the session.
+    ``reopened_from`` names the view the call was saved for; it is empty for a call
+    a caller gives directly (the A2UI component's), which opens a view for the
+    first time. ``save`` says whether the new view's call is saved on the session
+    and answered as ``saved_call``; a call held by an A2UI surface is not (MA20):
+    the surface keeps it, and saving it on every mount would grow the session.
+    Every answer that opens a view lists ``server_tools``, the server's tools the
+    view may call, so a surface can tell a server tool from one of the view's own.
     """
 
-    app_instance_id = capture.reopened_from
-
     def failed(reason: str, detail: str = "") -> dict[str, Any]:
-        _audit("mcp_app_reopen_failed", sid, app_instance_id, reason, entry)
+        _audit("mcp_app_reopen_failed", sid, reopened_from, reason, entry)
         return {
             "error": {"reason": reason, "detail": detail or REOPEN_REASONS[reason]},
-            "saved_call": dict(entry),
+            "saved_call": entry,
         }
 
-    arguments = dict(entry.get("arguments") or {})
+    if entry is None:
+        return failed("no_saved_call")
+    if entry.get("unsaved_reason") or not isinstance(entry.get("arguments"), Mapping):
+        return failed("arguments_not_saved")
+    capture = _ReplayCapture(
+        reopened_from=reopened_from,
+        display_mode=str(entry.get("display_mode") or "inline"),
+        save=save,
+    )
+    arguments = dict(entry["arguments"])
+    tools: list[str] = []
 
     def replay(executor: Any) -> Any:
         full_name = _resolve_opening_tool(executor, entry)
+        tools.extend(server_tools(executor.get_all_tool_definitions(), str(entry["server"])))
         token = _REPLAY.set(capture)
         try:
             return executor.call_tool_result(full_name, arguments)
@@ -357,11 +411,15 @@ async def replay_call(
         "mcp_app_reopened",
         session_id=sid,
         app_instance_id=capture.record.app_instance_id,
-        reopened_from=app_instance_id,
+        reopened_from=reopened_from,
         server=entry.get("server", ""),
         tool=entry.get("tool", ""),
     )
-    return {"part": _part(capture.record, capture.display_mode), "saved_call": dict(entry)}
+    return {
+        "part": _part(capture.record, capture.display_mode),
+        "saved_call": saved_call(app, sid, capture.record.app_instance_id) if save else entry,
+        "server_tools": tools,
+    }
 
 
 def _session_not_found() -> HTTPException:
@@ -384,7 +442,13 @@ def app_is_live(app: FastAPI, sid: str, app_instance_id: str, data_ref: str) -> 
 
 
 def register_mcp_app_reopen_routes(app: FastAPI) -> None:
-    """Register the reopen route and the card's liveness check."""
+    """Register the reopen route and the card's liveness check.
+
+    ``POST …/mcp-apps/reopen`` takes ``{app_instance_id}`` (replay a saved call) or
+    ``{call: {server, tool, arguments, display_mode?}, save?}`` (open a view from a
+    call the caller holds). The A2UI component sends ``save: false``: it holds the
+    call itself. Both answer as :func:`replay_call`.
+    """
 
     @app.get("/v1/sessions/{sid}/mcp-apps/{app_id}/live")
     async def mcp_app_live(sid: str, app_id: str, data_ref: str) -> dict[str, Any]:
@@ -399,9 +463,19 @@ def register_mcp_app_reopen_routes(app: FastAPI) -> None:
         if app.state.sessions.get(sid) is None:
             raise _session_not_found()
         body = await json_body(request, route="POST MCP App reopen")
+        call = body.get("call")
+        if isinstance(call, Mapping):
+            save = body.get("save", True)
+            if not isinstance(save, bool):
+                raise HTTPException(status_code=422, detail="save must be a boolean")
+            try:
+                entry = call_entry(call)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return await replay_call(app, sid, entry, reopened_from="", save=save)
         app_instance_id = str(body.get("app_instance_id") or "").strip()
         if not app_instance_id:
-            raise HTTPException(status_code=422, detail="app_instance_id is required")
+            raise HTTPException(status_code=422, detail="app_instance_id or call is required")
         return await reopen_saved_call(app, sid, app_instance_id)
 
 
@@ -412,11 +486,13 @@ __all__ = [
     "SESSION_KEY",
     "ReopenFailure",
     "app_is_live",
+    "call_entry",
+    "replay_call",
     "record_opening_call",
     "register_mcp_app_reopen_routes",
     "reopen_saved_call",
-    "replay_call",
     "saved_call",
     "saved_calls",
+    "server_tools",
     "set_saved_display_mode",
 ]

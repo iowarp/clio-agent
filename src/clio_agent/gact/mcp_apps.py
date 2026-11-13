@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
-from clio_agent.gact import context as _ctx
+from clio_agent.gact import context as gact_context
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
@@ -31,7 +31,6 @@ from clio_agent.gact.mcp_app_observer_reasons import (
 )
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
-    _alternate_loopback_origin,
     _csp_header,
     _host_origin,
     _request_origin,
@@ -618,18 +617,20 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
 
 
 async def _run_bound(app: FastAPI, sid: str, operation: Any) -> Any:
-    """Run a blocking executor operation in the exact session context."""
+    """Run a blocking executor operation in the exact session context.
+
+    A view's call arrives outside any turn, so the session is bound as the turn
+    session too: an external server's call is then owned by the session's latest
+    assignment, as the call that opened the view was.
+    """
 
     def invoke() -> Any:
-        # A call made for a view runs outside a turn: the session it belongs to is
-        # also the call's own session, so a server whose calls are owned through the
-        # session's assignment (external tasks) finds it.
-        token = _ctx.set_session_id(sid)
+        token = gact_context.set_session_id(sid)
         try:
             with _gact_app_context(app), _tool_session_context(sid):
                 return operation(_bound_executor(app, sid))
         finally:
-            _ctx.reset(token)
+            gact_context.reset(token)
 
     return await asyncio.to_thread(invoke)
 
@@ -750,9 +751,6 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
     from clio_agent.gact.mcp_app_calls import register_mcp_app_reopen_routes  # noqa: PLC0415
 
     register_mcp_app_reopen_routes(app)
-    from clio_agent.gact.mcp_app_open import register_mcp_app_open_route  # noqa: PLC0415
-
-    register_mcp_app_open_route(app, deps)
 
 
 __all__ = [
@@ -771,7 +769,6 @@ __all__ = [
     "registry_limit",
     "registry_ttl_s",
     "_SANDBOX_DOCUMENT",
-    "_alternate_loopback_origin",
     "_csp_header",
     "_host_origin",
     "_request_origin",

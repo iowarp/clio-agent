@@ -1,4 +1,4 @@
-"""Opening an MCP App from a call, for an A2UI surface (MA20) or a reopen (MA19)."""
+"""Opening an MCP App from a call an A2UI surface holds (MA20), through the reopen route."""
 
 from __future__ import annotations
 
@@ -72,8 +72,11 @@ def test_open_admits_the_view_without_adding_it_to_the_transcript(tmp_path: Path
     with client:
         sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
         response = client.post(
-            f"/v1/sessions/{sid}/mcp-apps/open",
-            json={"server": "clock", "tool": "open_timeline", "arguments": {"time": 3}},
+            f"/v1/sessions/{sid}/mcp-apps/reopen",
+            json={
+                "call": {"server": "clock", "tool": "open_timeline", "arguments": {"time": 3}},
+                "save": False,
+            },
         )
         assert response.status_code == 200
         body = response.json()
@@ -86,11 +89,8 @@ def test_open_admits_the_view_without_adding_it_to_the_transcript(tmp_path: Path
         assert part["source_server"] == "clock"
         assert part["tool_name"] == "clock_open_timeline"
         assert part["display_mode"] == "inline"
-        assert body["saved_call"] == {
-            "server": "clock",
-            "tool": "open_timeline",
-            "arguments": {"time": 3},
-        }
+        assert body["saved_call"]["server"] == "clock"
+        assert body["saved_call"]["arguments"] == {"time": 3}
         assert record.tool_input == {"time": 3}
         # The view tool is model-and-app; set_time is app-callable; model_only is not.
         assert body["server_tools"] == ["open_timeline", "plain", "set_time"]
@@ -101,8 +101,10 @@ def test_open_admits_the_view_without_adding_it_to_the_transcript(tmp_path: Path
         assert SESSION_KEY not in (app.state.sessions.get(sid).metadata or {})
 
 
-def _open(client: TestClient, sid: str, **body: Any) -> dict[str, Any]:
-    response = client.post(f"/v1/sessions/{sid}/mcp-apps/open", json=body)
+def _open(client: TestClient, sid: str, **call: Any) -> dict[str, Any]:
+    response = client.post(
+        f"/v1/sessions/{sid}/mcp-apps/reopen", json={"call": call, "save": False}
+    )
     assert response.status_code == 200
     return response.json()
 
@@ -114,7 +116,7 @@ def test_every_failure_is_a_typed_reason_with_the_saved_call(tmp_path: Path) -> 
 
         missing = _open(client, sid, server="clock", tool="nope", arguments={})
         assert missing["error"]["reason"] == "tool_unavailable"
-        assert missing["saved_call"] == {"server": "clock", "tool": "nope", "arguments": {}}
+        assert missing["saved_call"]["tool"] == "nope"
 
         no_view = _open(client, sid, server="clock", tool="set_time")
         assert no_view["error"]["reason"] == "tool_has_no_view"
@@ -133,28 +135,30 @@ def test_every_failure_is_a_typed_reason_with_the_saved_call(tmp_path: Path) -> 
             assert outcome["error"]["reason"] in REOPEN_REASONS
 
 
-def test_open_validates_the_request_and_the_session(tmp_path: Path) -> None:
+def test_open_validates_save_and_the_session(tmp_path: Path) -> None:
     client, _executor, _app = _client(tmp_path)
+    call = {"server": "clock", "tool": "open_timeline", "arguments": {}}
     with client:
         sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
-        assert (
-            client.post(f"/v1/sessions/{sid}/mcp-apps/open", json={"server": "clock"}).status_code
-            == 422
+        refused = client.post(
+            f"/v1/sessions/{sid}/mcp-apps/reopen", json={"call": call, "save": "no"}
         )
-        assert (
-            client.post(
-                f"/v1/sessions/{sid}/mcp-apps/open",
-                json={"server": "clock", "tool": "open_timeline", "arguments": [1]},
-            ).status_code
-            == 422
-        )
-        assert (
-            client.post(
-                "/v1/sessions/sess_missing/mcp-apps/open",
-                json={"server": "clock", "tool": "open_timeline"},
-            ).status_code
-            == 404
-        )
+        assert refused.status_code == 422
+        missing = client.post("/v1/sessions/sess_missing/mcp-apps/reopen", json={"call": call})
+        assert missing.status_code == 404
+
+
+def test_a_saved_given_call_still_lists_the_server_tools(tmp_path: Path) -> None:
+    client, _executor, app = _client(tmp_path)
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
+        body = client.post(
+            f"/v1/sessions/{sid}/mcp-apps/reopen",
+            json={"call": {"server": "clock", "tool": "open_timeline", "arguments": {}}},
+        ).json()
+        assert body["server_tools"] == ["open_timeline", "plain", "set_time"]
+        assert body["saved_call"]["tool"] == "open_timeline"
+        assert SESSION_KEY in (app.state.sessions.get(sid).metadata or {})
 
 
 def test_agent_calls_still_add_the_view_to_the_transcript(tmp_path: Path) -> None:

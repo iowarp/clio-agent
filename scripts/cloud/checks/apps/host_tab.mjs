@@ -1,4 +1,4 @@
-// AQ13, AQ14, AQ23, AQ24: run after `--send` asked for the host panel fixture's view.
+// AQ13, AQ14, AQ23, AQ24: opens a conversation and asks for the host panel fixture's view.
 // The view asks for full screen and opens in a tab; it moves between card and tab
 // with one frame each time and replays input and result; https and file: links;
 // a download becomes a workspace file and an artifact. Also checks that switching
@@ -9,11 +9,15 @@ import {
   frameCount,
   json,
   log,
+  openConversation,
+  sendAndSettle,
   sessionIdFrom,
   viewIn,
 } from "./_app_view.mjs";
 
 export default async function (page, shot) {
+  await openConversation(page, process.env.CHECK_WORKSPACE || "host-panel");
+  await sendAndSettle(page, "Open the host panel for the topic alpha.");
   const sid = sessionIdFrom(page);
   log("session", sid);
   const inline = viewIn(page, "inline");
@@ -21,6 +25,16 @@ export default async function (page, shot) {
   await expectText(inline.locator("#modes"), /inline, fullscreen/);
   log("host features", await inline.locator("#caps").textContent());
   await expectText(inline.locator("#caps"), /downloadFile.*openLinks/);
+  // The view is same-origin with its own sandbox host, which carries no API authority.
+  const origin = await inline.locator("#origin").textContent();
+  const storage = await expectText(inline.locator("#storage"), /\S/);
+  // The probe's own refused request is the one expected 403 line in the console.
+  await inline.locator("#probe").click();
+  const api = await expectText(inline.locator("#api"), /HTTP|blocked/);
+  log("view origin, storage, API", { origin, storage, api });
+  check(/\.mcp-apps\.localhost:/.test(origin), "the view runs on its sandbox host");
+  check(storage === "available", "the view can use its storage");
+  check(/HTTP 403 sandbox_origin_refused/.test(api), "the sandbox host refuses the API");
   await shot("inline");
 
   // AQ13: the view requests full screen.
@@ -61,7 +75,7 @@ export default async function (page, shot) {
   await tab.locator("#link-https").click();
   await expectText(tab.locator("#status"), /link opened|refused/);
   log("https link", await tab.locator("#status").textContent());
-  await page.locator('[data-slot="browser-surface"]').first().waitFor({ timeout: 30000 });
+  await page.getByRole("tab", { name: /Example Domain|example\.org/ }).first().waitFor({ timeout: 30000 });
   const pages = await json(`/v1/sessions/${sid}/browser/pages`);
   log("browser pages", (pages.body?.pages ?? pages.body ?? []).map?.((p) => p.url ?? p.host));
   await shot("link-opened");
@@ -77,7 +91,7 @@ export default async function (page, shot) {
 
   // AQ24: a download is a workspace file and an artifact.
   await tab.locator("#download").click();
-  const saved = await expectText(tab.locator("#status"), /saved: .*\.csv|refused/);
+  const saved = await expectText(tab.locator("#status"), /saved: .*\.csv|refused: (?!Only http)/);
   log("download", saved);
   check(/saved: /.test(saved), "the download was saved");
   const artifacts = await json(`/v1/sessions/${sid}/artifacts`);

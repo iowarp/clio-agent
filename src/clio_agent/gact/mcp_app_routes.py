@@ -24,6 +24,7 @@ from clio_agent.gact.mcp_app_sandbox import (
     _host_origin,
     _sandbox_url,
 )
+from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
 from clio_agent.gact.mcp_app_service import (
     close_app_service,
     record_service_reason,
@@ -107,7 +108,9 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 },
                 "tool_input": record.tool_input,
                 "tool_result": record.tool_result,
-                "sandbox_url": _sandbox_url(request, sandbox_path),
+                "sandbox_url": _sandbox_url(
+                    request, sandbox_path, namespace=record.source_namespace
+                ),
                 **await service_descriptor_fields(app, request, record),
                 "display_mode": record.display_mode,
                 "pinned": record.pinned,
@@ -120,6 +123,9 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         sid: str, app_id: str, data_ref: str, request: Request
     ) -> HTMLResponse:
         record = resolve(sid, app_id, data_ref)
+        if request.url.hostname != sandbox_host_for(record.source_namespace):
+            # Never on the UI's or the API's origin: the view is same-origin with it.
+            raise HTTPException(status_code=403, detail="sandbox_host_mismatch")
         await ensure_resource(record)
         origin = _host_origin(request)
         return HTMLResponse(

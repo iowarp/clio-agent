@@ -269,3 +269,56 @@ def test_display_mode_route_updates_the_saved_call(stack: Any) -> None:
     )
     assert response.status_code == 200
     assert saved_call(stack.app, stack.sid, app_id)["display_mode"] == "fullscreen"
+
+
+def test_a_reopened_views_mode_reaches_the_card_it_came_from(stack: Any) -> None:
+    first = _open(stack)
+    reopened = _reopen(stack, first)["part"]["app_instance_id"]
+
+    assert set_saved_display_mode(stack.app, stack.sid, reopened, "fullscreen")
+
+    assert saved_call(stack.app, stack.sid, first)["display_mode"] == "fullscreen"
+    assert saved_call(stack.app, stack.sid, reopened)["display_mode"] == "fullscreen"
+
+
+def test_a_given_call_opens_a_view_and_is_saved(stack: Any) -> None:
+    response = stack.client.post(
+        f"/v1/sessions/{stack.sid}/mcp-apps/reopen",
+        json={
+            "call": {
+                "server": "boards",
+                "tool": "open_board",
+                "arguments": {"title": "From a surface"},
+                "display_mode": "fullscreen",
+            }
+        },
+    )
+    body = response.json()
+
+    assert stack.executor.calls[-1] == ("boards_open_board", {"title": "From a surface"})
+    assert body["part"]["display_mode"] == "fullscreen"
+    assert "reopened_from" not in body["saved_call"]
+    assert body["saved_call"]["arguments"] == {"title": "From a surface"}
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        {"tool": "open_board"},
+        {"server": "boards"},
+        {"server": "boards", "tool": "open_board", "arguments": [1]},
+        {"server": "boards", "tool": "open_board", "display_mode": "pip"},
+    ],
+)
+def test_a_malformed_call_is_refused(stack: Any, call: dict[str, Any]) -> None:
+    response = stack.client.post(f"/v1/sessions/{stack.sid}/mcp-apps/reopen", json={"call": call})
+    assert response.status_code == 422
+
+
+def test_a_given_call_to_a_tool_without_a_view_is_refused(stack: Any) -> None:
+    body = stack.client.post(
+        f"/v1/sessions/{stack.sid}/mcp-apps/reopen",
+        json={"call": {"server": "boards", "tool": "plain", "arguments": {}}},
+    ).json()
+    assert body["error"]["reason"] == "tool_has_no_view"
+    assert stack.executor.calls == []

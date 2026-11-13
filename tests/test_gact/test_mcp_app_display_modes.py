@@ -250,3 +250,19 @@ def test_download_without_a_workspace_folder_is_refused(tmp_path: Path) -> None:
 )
 def test_safe_file_name(uri: str, expected: str) -> None:
     assert safe_file_name(uri) == expected
+
+
+def test_app_calls_run_as_the_session_outside_a_turn(tmp_path: Path) -> None:
+    """A view's call binds its session as the turn session (external calls need its owner)."""
+
+    import asyncio
+
+    from clio_agent.gact import context as gact_context
+    from clio_agent.gact.mcp_apps import _run_bound
+
+    app, client = _client(tmp_path)
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "apps"}).json()["id"]
+        seen = asyncio.run(_run_bound(app, sid, lambda _executor: gact_context.active_session_id()))
+    assert seen == sid
+    assert gact_context.active_session_id() == ""

@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
+from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
 from clio_agent.gact.mcp_app_service_declaration import is_loopback_source
 
 
@@ -47,39 +48,17 @@ def _request_origin(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
 
 
-def _alternate_loopback_origin(origin: str) -> str:
-    """Return the same listener through a distinct loopback web origin."""
+def _sandbox_url(request: Request, path: str, *, namespace: str | None) -> str:
+    """Advertise an absolute sandbox URL on the app's own sandbox host.
 
-    parsed = urlparse(origin)
-    hostname = (parsed.hostname or "").lower()
-    if hostname == "127.0.0.1":
-        alternate = "localhost"
-    elif hostname in {"localhost", "::1"}:
-        alternate = "127.0.0.1"
-    else:
-        return origin
-    port = f":{parsed.port}" if parsed.port is not None else ""
-    return f"{parsed.scheme}://{alternate}{port}"
-
-
-def _sandbox_url(request: Request, path: str) -> str:
-    """Advertise an absolute sandbox URL on a distinct host origin.
-
-    The packaged web client and GACT API share an origin. In that case the
-    same loopback listener is addressed through the other canonical loopback
-    hostname (``127.0.0.1`` versus ``localhost``). Development web servers and
-    Tauri already differ from the HTTP backend, so they keep the backend
-    origin. The web host still rejects any accidental same-origin result.
+    The host is ``s<digest>.mcp-apps.localhost`` on this server's port, one per
+    originating server (:mod:`clio_agent.gact.mcp_app_sandbox_origin`): never the
+    web UI's or the API's origin, so the view may be same-origin with it.
     """
 
-    backend = f"{request.url.scheme}://{request.url.netloc}"
-    embedding = _request_origin(request.headers.get("origin", ""))
-    if not embedding:
-        embedding = _request_origin(request.headers.get("referer", ""))
-    sandbox_origin = backend
-    if not embedding or embedding == backend:
-        sandbox_origin = _alternate_loopback_origin(backend)
-    return f"{sandbox_origin}{path}"
+    port = request.url.port
+    netloc = sandbox_host_for(namespace) + (f":{port}" if port else "")
+    return f"{request.url.scheme}://{netloc}{path}"
 
 
 def _safe_sources(value: Any) -> list[str]:
@@ -145,7 +124,9 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
     if (error instanceof Error && error.message === 'sandbox isolation failed') throw error;
   }
   const inner = document.createElement('iframe');
-  inner.setAttribute('sandbox', 'allow-scripts allow-forms');
+  // The view is same-origin with this sandbox host, which carries no API authority.
+  const base = 'allow-scripts allow-same-origin allow-forms';
+  inner.setAttribute('sandbox', base);
   document.body.appendChild(inner);
   window.addEventListener('message', (event) => {
     if (event.source === window.parent) {
@@ -153,10 +134,10 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
       if (event.data?.method === 'ui/notifications/sandbox-resource-ready') {
         const { html, sandbox, permissions } = event.data.params || {};
         if (typeof sandbox === 'string') {
-          const allowed = new Set(['allow-scripts', 'allow-forms', 'allow-modals',
-            'allow-popups', 'allow-downloads', 'allow-pointer-lock']);
+          const allowed = new Set(['allow-scripts', 'allow-same-origin', 'allow-forms',
+            'allow-modals', 'allow-popups', 'allow-downloads', 'allow-pointer-lock']);
           const tokens = sandbox.split(/\s+/).filter(token => allowed.has(token));
-          inner.setAttribute('sandbox', tokens.join(' ') || 'allow-scripts allow-forms');
+          inner.setAttribute('sandbox', tokens.join(' ') || base);
         }
         const allow = [];
         if (permissions?.camera) allow.push('camera');
@@ -169,7 +150,8 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
       } else {
         inner.contentWindow?.postMessage(event.data, '*');
       }
-    } else if (event.source === inner.contentWindow && event.origin === 'null') {
+    } else if (event.source === inner.contentWindow
+        && (event.origin === 'null' || event.origin === window.location.origin)) {
       window.parent.postMessage(event.data, parentTarget);
     }
   });
@@ -180,7 +162,6 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
 
 __all__ = [
     "_SANDBOX_DOCUMENT",
-    "_alternate_loopback_origin",
     "_csp_header",
     "_host_origin",
     "_request_origin",
