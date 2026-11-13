@@ -53,22 +53,22 @@ def _wait_for_installer_kit() -> dict[str, Any] | None:
 
 
 def _carried_kit_servers() -> dict[str, Any]:
-    """The clio-kit tool servers declared by plugins that an installed agent carries."""
+    """The clio-kit tool servers declared by plugins that an installed agent carries.
+
+    Only installed plugins are read: the built-ins declare no MCP servers, and loading
+    them imports the agent engine (about 15 s of a cold Windows install).
+    """
     from clio_agent.plugins.service import PluginService  # noqa: PLC0415
     from clio_agent.runtime.mcp_launcher import discover_declared_mcp_servers  # noqa: PLC0415
     from clio_agent.tools.launcher_cache_lock import _launcher_name  # noqa: PLC0415
 
     service = PluginService()
     carried = {selection.ref.id for entry in service.agents() for selection in entry.spec.plugins}
-    names = {
-        name
-        for record in service.store.records()
-        if record.id in carried
-        for name in record.mcp_servers
-    }
+    installed = service.store.installed_records()
+    names = {name for record in installed if record.id in carried for name in record.mcp_servers}
     return {
         name: spec
-        for name, spec in discover_declared_mcp_servers().items()
+        for name, spec in discover_declared_mcp_servers(records=installed).items()
         if name in names
         and _launcher_name(str(spec.command)) == "clio-kit"
         and [str(arg) for arg in spec.args][:1] == ["mcp-server"]
