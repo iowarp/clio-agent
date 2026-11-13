@@ -17,24 +17,14 @@ def stdio_environment(
     """Merge an MCP spec environment without leaking ambient Python overrides.
 
     The server starts quiet (no FastMCP banner or update check) unless its
-    declaration sets those knobs itself. The Web MCP server (``command``/``args``
-    launch it) is pointed at the ``search.backend`` CLIO resolved
-    (:func:`clio_agent.search.backend.web_mcp_environment`) beneath the
-    declaration's own values, with a writable state directory under CLIO's data
-    root (:func:`clio_agent.search.web_mcp_default.web_mcp_state_dir`).
+    declaration sets those knobs itself.
     """
 
-    from clio_agent.search.backend import is_web_search_mcp, web_mcp_environment  # noqa: PLC0415
-    from clio_agent.search.web_mcp_default import web_mcp_state_dir  # noqa: PLC0415
-
-    search = web_mcp_environment(command, args, spec_env) if command else {}
-    if command and is_web_search_mcp(command, args) and "WEB_STATE_DIR" not in spec_env:
-        search["WEB_STATE_DIR"] = str(web_mcp_state_dir())
     from clio_agent.tools.mcp_prepare import uv_project_environment  # noqa: PLC0415
 
     # A ``uv run --project`` server runs from CLIO's environment, never ``<project>/.venv``.
     project_env = uv_project_environment(command, args, spec_env) if command else {}
-    env = {**os.environ, **_QUIET_SERVER_DEFAULTS, **search, **project_env, **dict(spec_env)}
+    env = {**os.environ, **_QUIET_SERVER_DEFAULTS, **project_env, **dict(spec_env)}
     launcher = command.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if launcher.removesuffix(".exe").removesuffix(".cmd") == "clio-kit":
         from clio_agent import paths  # noqa: PLC0415 - resolve this instance's private cache

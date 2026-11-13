@@ -1,59 +1,105 @@
-"""``/v1/search``: the resolved backend, a direct query and engine API keys."""
+"""Settings routes for search sources, keys and the removed SearXNG keys."""
 
 from __future__ import annotations
-
-from collections.abc import Iterator
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from clio_agent import conf
 from clio_agent.gact.routes.search import register_search_routes
 from clio_agent.providers.api_key_store import ProviderApiKeyStore
-from clio_agent.search.backend import register_local_endpoint_resolver
+from clio_agent.search.settings import key_ref
+from clio_agent.tools.servers.web_limits import SEARCH_LIMITS
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client() -> TestClient:
+    SEARCH_LIMITS.reset()
     app = FastAPI()
     register_search_routes(app)
-    try:
-        yield TestClient(app)
-    finally:
-        register_local_endpoint_resolver(None)
+    return TestClient(app)
 
 
-def test_search_off_reports_the_typed_error(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
-    status = client.get("/v1/search/backend").json()
-    assert status["backend"] == "none" and status["ready"] is False
-    assert status["error"]["error"] == "search_not_configured"
-    answer = client.post("/v1/search/query", json={"query": "hdf5"})
-    assert answer.status_code == 503
-    assert answer.json()["detail"]["error"] == "search_not_configured"
-    assert client.post("/v1/search/query", json={}).status_code == 422
+def test_view_lists_both_source_lists_in_order(client: TestClient) -> None:
+    view = client.get("/v1/search/providers").json()
+    assert view["enabled"] is True
+    assert [row["id"] for row in view["web"]] == ["keenable", "exa", "firecrawl", "you", "parallel"]
+    assert {row["id"] for row in view["literature"]} >= {"openalex", "crossref", "arxiv"}
+    keenable = view["web"][0]
+    assert keenable["approved"] is False and keenable["has_key"] is False
+    assert keenable["free_use"].startswith("1,000")
+    scholar = next(r for r in view["literature"] if r["id"] == "semantic_scholar")
+    assert scholar["key_required"] is True
 
 
-def test_the_default_backend_lists_its_engine_policy(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CLIO_SEARCH_SEARXNG_ENGINES", "wikipedia,baidu")
-    status = client.get("/v1/search/backend").json()
-    assert status["backend"] == "local_searxng"
-    assert status["engines"] == ["wikipedia"] and status["dropped_engines"] == ["baidu"]
+def test_patch_reorders_and_toggles(client: TestClient) -> None:
+    view = client.patch(
+        "/v1/search/providers",
+        json={"web_order": ["exa", "keenable"], "web_disabled": ["parallel"], "auto_switch": True},
+    ).json()
+    assert [row["id"] for row in view["web"]][:2] == ["exa", "keenable"]
+    assert next(r for r in view["web"] if r["id"] == "parallel")["enabled"] is False
+    assert view["auto_switch"] is True
 
 
-def test_engine_keys_go_to_the_credential_store_and_are_never_returned(
-    client: TestClient,
-) -> None:
-    saved = client.put("/v1/search/engine-keys/braveapi", json={"api_key": "brave-key-1"})
-    assert saved.status_code == 200 and "brave-key-1" not in saved.text
-    assert ProviderApiKeyStore().load("search-engine:braveapi") == "brave-key-1"
-    status = client.get("/v1/search/backend")
-    assert status.json()["keyed_engines"]["braveapi"] is True
-    assert "brave-key-1" not in status.text
-    assert client.put("/v1/search/engine-keys/duckduckgo", json={"api_key": "x"}).status_code == 422
-    assert client.delete("/v1/search/engine-keys/braveapi").json()["removed"] is True
-    assert ProviderApiKeyStore().load("search-engine:braveapi") == ""
+def test_patch_rejects_unknown_sources(client: TestClient) -> None:
+    response = client.patch("/v1/search/providers", json={"web_order": ["searxng"]})
+    assert response.status_code == 422
+    assert "unknown source" in response.json()["detail"]
+
+
+def test_saving_a_key_moves_the_source_first_and_clears_its_rest(client: TestClient) -> None:
+    SEARCH_LIMITS.cool("you", 3600, "allowance_used")
+    answer = client.put("/v1/search/providers/you/key", json={"api_key": "secret-value"}).json()
+    assert answer["saved"] is True
+    assert answer["settings"]["web"][0]["id"] == "you"
+    assert answer["settings"]["web"][0]["has_key"] is True
+    assert SEARCH_LIMITS.cooldown("you") is None
+    assert ProviderApiKeyStore().load(key_ref("you")) == "secret-value"
+    assert "secret-value" not in client.get("/v1/search/providers").text
+    kept = client.put(
+        "/v1/search/providers/exa/key", json={"api_key": "k2", "placement": "keep"}
+    ).json()
+    assert kept["settings"]["web"][0]["id"] == "you"
+    assert client.delete("/v1/search/providers/you/key").json() == {
+        "source": "you",
+        "removed": True,
+    }
+
+
+def test_rows_show_tier_allowance_and_paid_mark(client: TestClient) -> None:
+    view = client.get("/v1/search/providers").json()
+    openalex = next(r for r in view["literature"] if r["id"] == "openalex")
+    assert openalex["tier"] == "keyless"
+    assert openalex["allowance"] == {"spent": 0, "limit": 0.1, "unit": "usd", "per": "day"}
+    you = next(r for r in view["web"] if r["id"] == "you")
+    assert you["allowance"]["per"] == "day" and you["waiting"] == 0
+    crossref = next(r for r in view["literature"] if r["id"] == "crossref")
+    assert crossref["tier"] == "keyless" and crossref["allowance"] is None
+
+    view = client.patch(
+        "/v1/search/providers", json={"contact_email": "me@example.org", "paid": ["exa"]}
+    ).json()
+    crossref = next(r for r in view["literature"] if r["id"] == "crossref")
+    assert crossref["tier"] == "registered"
+    exa = next(r for r in view["web"] if r["id"] == "exa")
+    assert exa["paid"] is True and exa["tier"] == "keyless"  # paid needs a key too
+    client.put("/v1/search/providers/exa/key", json={"api_key": "k", "placement": "keep"})
+    exa = next(r for r in client.get("/v1/search/providers").json()["web"] if r["id"] == "exa")
+    assert exa["tier"] == "paid" and exa["allowance"] is None
+    client.delete("/v1/search/providers/exa/key")
+
+
+def test_unknown_source_key_is_404(client: TestClient) -> None:
+    assert client.put("/v1/search/providers/google/key", json={"api_key": "x"}).status_code == 404
+
+
+def test_searxng_keys_are_refused_as_removed(tmp_path, monkeypatch) -> None:
+    from clio_agent.errors import RemovedConfigKeyError
+    from clio_agent.removed_config_keys import reject_removed_config_keys
+
+    monkeypatch.setenv("CLIO_SEARCH_BACKEND", "local_searxng")
+    conf.reload()
+    with pytest.raises(RemovedConfigKeyError, match="SearXNG was removed"):
+        reject_removed_config_keys()

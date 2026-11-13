@@ -108,24 +108,10 @@ def test_bytecode_newer_than_the_build_fails_before_any_other_check(
     assert verified == [app]
 
 
-def test_find_record_walks_the_inventory_to_the_searxng_row() -> None:
-    row = {"id": "local:searxng", "observation": {"serving": True}}
-    inventory = {"targets": [{"id": "local", "services": [{"id": "local:other"}, row]}]}
-
-    assert smoke.find_record(inventory, "local:searxng") is row
-    assert smoke.find_record(inventory, "local:missing") is None
-
-
-def test_web_search_waits_through_the_starting_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    serving = {
-        "id": "local:searxng",
-        "observation": {"serving": True},
-        "configuration": {"port": 1},
-    }
+def test_web_search_check_waits_through_the_starting_503(monkeypatch: pytest.MonkeyPatch) -> None:
     answers: list[object] = [
-        smoke.HTTPError("inventory", 503, "starting", None, None),  # type: ignore[arg-type]
-        {"services": [serving]},
-        {"results": [{}]},
+        smoke.HTTPError("providers", 503, "starting", None, None),  # type: ignore[arg-type]
+        {"web": [{"id": "keenable"}, {"id": "exa"}], "literature": []},
     ]
     urls: list[str] = []
 
@@ -140,35 +126,16 @@ def test_web_search_waits_through_the_starting_503(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(smoke.time, "sleep", lambda _seconds: None)
     smoke.use_web_search(2, "token")
 
-    assert urls[-1] == "http://127.0.0.1:1/search?q=python&format=json"
+    assert urls[-1] == "http://127.0.0.1:2/v1/search/providers"
     assert not answers
 
 
-def test_web_search_timeout_dumps_the_searxng_operation_logs(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_web_search_check_fails_without_the_built_in_sources(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    install = {"id": "op-1", "service_id": "searxng", "action": "install", "state": "running"}
-    other = {"id": "op-2", "service_id": "ollama", "action": "install", "state": "running"}
-    inventory = {
-        "services": [{"id": "local:searxng", "state": "unknown", "observation": None}],
-        "operations": [install, other],
-    }
-    log = {"lines": [{"at": "t", "line": "Resolved 42 packages"}]}
-
-    def get_json(url: str, token: str | None = None) -> object:
-        return log if url.endswith("/operations/op-1/log?limit=5000") else inventory
-
-    clock = iter([0.0, 0.0, 400.0])
-    monkeypatch.setattr(smoke, "get_json", get_json)
-    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(smoke.time, "sleep", lambda _seconds: None)
-    with pytest.raises(TimeoutError, match="never served"):
+    monkeypatch.setattr(smoke, "get_json", lambda url, token=None: {"web": []})
+    with pytest.raises(RuntimeError, match="sources missing"):
         smoke.use_web_search(2, "token")
-
-    output = capsys.readouterr().out
-    assert "SearXNG install: running" in output
-    assert "t Resolved 42 packages" in output
-    assert "op-2" not in output
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="quarantine is a macOS xattr")

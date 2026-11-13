@@ -1,0 +1,1992 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=wildfire%20smoke%20PM2.5&format=json&pageSize=5&resultType=core",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "query": "wildfire smoke PM2.5",
+      "format": "json",
+      "pageSize": "5",
+      "resultType": "core"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "version": "6.9",
+    "hitCount": 1674,
+    "nextCursorMark": "AoIIQbhbJig1NjQyNTE5NA==",
+    "nextPageUrl": "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=wildfire+smoke+PM2.5&cursorMark=AoIIQbhbJig1NjQyNTE5NA%3D%3D&resultType=core&pageSize=5&format=json",
+    "request": {
+      "queryString": "wildfire smoke PM2.5",
+      "resultType": "core",
+      "cursorMark": "*",
+      "pageSize": 5,
+      "sort": "",
+      "synonym": false
+    },
+    "resultList": {
+      "result": [
+        {
+          "id": "42915998",
+          "source": "MED",
+          "pmid": "42915998",
+          "pmcid": "PMC13674056",
+          "fullTextIdList": {
+            "fullTextId": [
+              "PMC13674056"
+            ]
+          },
+          "doi": "10.1021/acs.est.6c07219",
+          "title": "Carbonaceous Components Underlying Wildfire Smoke PM2.5-Associated Mortality in Older U.S. Adults.",
+          "authorString": "Jin Z, Xu K, Hao H, Qi M, Ferrada GA, Fu JS, Scovronick N, Chang HH, Alonso A, Steenland K, Liu Y.",
+          "authorList": {
+            "author": [
+              {
+                "fullName": "Jin Z",
+                "lastName": "Jin",
+                "firstName": "Zhihao",
+                "initials": "Z",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0003-3510-4339"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Xu K",
+                "lastName": "Xu",
+                "firstName": "Ke",
+                "initials": "K",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Hao H",
+                "lastName": "Hao",
+                "firstName": "Hua",
+                "initials": "H",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Qi M",
+                "lastName": "Qi",
+                "firstName": "Meng",
+                "initials": "M",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Ferrada GA",
+                "lastName": "Ferrada",
+                "firstName": "Gonzalo A",
+                "initials": "GA",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Civil and Environmental Engineering, University of Tennessee, Knoxville, Tennessee37996, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Fu JS",
+                "lastName": "Fu",
+                "firstName": "Joshua S",
+                "initials": "JS",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0001-5464-9225"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Civil and Environmental Engineering, University of Tennessee, Knoxville, Tennessee37996, United States."
+                    },
+                    {
+                      "affiliation": "Integrated Computational Earth Sciences Group, Computational Sciences and Engineering Division, Oak Ridge National Laboratory, Oak Ridge, Tennessee37831, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Scovronick N",
+                "lastName": "Scovronick",
+                "firstName": "Noah",
+                "initials": "N",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0003-1410-3337"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Chang HH",
+                "lastName": "Chang",
+                "firstName": "Howard H",
+                "initials": "HH",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0002-6316-1640"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Biostatistics and Bioinformatics, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Alonso A",
+                "lastName": "Alonso",
+                "firstName": "Alvaro",
+                "initials": "A",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0002-2225-8323"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Epidemiology, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Steenland K",
+                "lastName": "Steenland",
+                "firstName": "Kyle",
+                "initials": "K",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0001-7873-4678"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Liu Y",
+                "lastName": "Liu",
+                "firstName": "Yang",
+                "initials": "Y",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0001-5477-2186"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "authorIdList": {
+            "authorId": [
+              {
+                "type": "ORCID",
+                "value": "0000-0001-5464-9225"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0001-5477-2186"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0001-7873-4678"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0002-2225-8323"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0002-6316-1640"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0003-1410-3337"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0003-3510-4339"
+              }
+            ]
+          },
+          "journalInfo": {
+            "issue": "40",
+            "volume": "60",
+            "journalIssueId": 4298482,
+            "dateOfPublication": "2026 Oct",
+            "monthOfPublication": 10,
+            "yearOfPublication": 2026,
+            "journal": {
+              "medlineAbbreviation": "Environ Sci Technol",
+              "title": "Environmental science & technology",
+              "essn": "1520-5851",
+              "issn": "0013-936X",
+              "nlmid": "0213155",
+              "isoabbreviation": "Environ Sci Technol"
+            },
+            "printPublicationDate": "2026-10-01"
+          },
+          "pubYear": "2026",
+          "pageInfo": "28397-28407",
+          "abstractText": "Wildland fire activity has increased in the U.S., elevating population exposure to smoke-derived fine particulate matter (PM2.5). Emerging studies suggest higher toxicity per unit mass for PM2.5 from wildfire smoke. However, source-resolved evidence on long-term mortality effects of major carbonaceous components in smoke PM2.5 remains scarce. We linked annual, high-resolution estimates of smoke and non-smoke PM2.5 mass and carbonaceous matter to 77,470,752 Medicare beneficiaries during 2002-2019 and fit stratified Cox models. Long-term exposure to smoke PM2.5 mass and its carbonaceous fraction were associated with higher all-cause mortality risk per unit mass than their non-smoke counterparts. Per 1 μg/m3 increase, hazard ratios were 1.032 (95% CI: 1.027-1.037) for smoke PM2.5 mass and 1.087 (1.076-1.098) for smoke carbonaceous components. On the interquartile-range scale, the association was larger for non-smoke PM2.5 than for smoke PM2.5, whereas smoke carbon remained more strongly associated with mortality. Associations were stronger among Black and other racial groups and Medicaid-eligible beneficiaries. Substantial spatial heterogeneity was observed across empirical smoke regimes and geographic regions. The associations correspond to 22,420 annual deaths attributable to smoke PM2.5, with the carbonaceous fraction accounting for most of this burden. These findings support strengthening wildfire smoke health-impact assessment and mitigation as climate change increases population exposure to wildfire smoke.",
+          "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, Georgia30322, United States.",
+          "publicationStatus": "ppublish",
+          "language": "eng",
+          "pubModel": "Print",
+          "pubTypeList": {
+            "pubType": [
+              "research-article",
+              "Journal Article"
+            ]
+          },
+          "grantsList": {
+            "grant": [
+              {
+                "agency": "NIA NIH HHS",
+                "acronym": "AG",
+                "grantId": "R01 AG074357",
+                "orderIn": 0
+              },
+              {
+                "agency": "U.S. Department of Energy, Office of Science",
+                "grantId": "DE-AC05-00OR22725",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "R01 ES034175",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "R01ES034175",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIA NIH HHS",
+                "acronym": "AG",
+                "grantId": "R01AG074357",
+                "orderIn": 0
+              }
+            ]
+          },
+          "meshHeadingList": {
+            "meshHeading": [
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Humans"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Carbon"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Air Pollutants"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Smoke"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Aged"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "United States"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Particulate Matter"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Wildfires"
+              }
+            ]
+          },
+          "keywordList": {
+            "keyword": [
+              "Mortality",
+              "Medicare",
+              "Fine Particulate Matter",
+              "Wildland Fire",
+              "Carbonaceous Pm2.5"
+            ]
+          },
+          "chemicalList": {
+            "chemical": [
+              {
+                "name": "Carbon",
+                "registryNumber": "7440-44-0"
+              },
+              {
+                "name": "Air Pollutants",
+                "registryNumber": "0"
+              },
+              {
+                "name": "Smoke",
+                "registryNumber": "0"
+              },
+              {
+                "name": "Particulate Matter",
+                "registryNumber": "0"
+              }
+            ]
+          },
+          "subsetList": {
+            "subset": [
+              {
+                "code": "IM",
+                "name": "Index Medicus"
+              }
+            ]
+          },
+          "fullTextUrlList": {
+            "fullTextUrl": [
+              {
+                "availability": "Subscription required",
+                "availabilityCode": "S",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1021/acs.est.6c07219"
+              },
+              {
+                "availability": "Open access",
+                "availabilityCode": "OA",
+                "documentStyle": "html",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13674056"
+              },
+              {
+                "availability": "Open access",
+                "availabilityCode": "OA",
+                "documentStyle": "pdf",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13674056?pdf=render"
+              }
+            ]
+          },
+          "commentCorrectionList": {
+            "commentCorrection": [
+              {
+                "source": "MED",
+                "id": "42927022",
+                "reference": "medRxiv. 2026 Oct 11:2026.10.08.26364863. doi: 10.64898/2026.10.08.26364863.",
+                "type": "Update of",
+                "orderIn": 1
+              }
+            ]
+          },
+          "isOpenAccess": "Y",
+          "inEPMC": "Y",
+          "inPMC": "Y",
+          "citedByCount": 0,
+          "hasReferences": "Y",
+          "hasTextMinedTerms": "Y",
+          "hasDbCrossReferences": "N",
+          "hasPDF": "Y",
+          "hasBook": "N",
+          "hasSuppl": "Y",
+          "hasLabsLinks": "N",
+          "hasData": "Y",
+          "license": "cc by",
+          "authMan": "N",
+          "epmcAuthMan": "N",
+          "nihAuthMan": "N",
+          "hasTMAccessionNumbers": "N",
+          "dateOfCompletion": "2026-10-23",
+          "dateOfCreation": "2026-10-23",
+          "dateOfRevision": "2026-11-03",
+          "firstPublicationDate": "2026-10-01",
+          "firstIndexDate": "2026-10-25",
+          "fullTextReceivedDate": "2026-10-19",
+          "hasEvaluations": "N"
+        },
+        {
+          "id": "42085200",
+          "source": "MED",
+          "pmid": "42085200",
+          "doi": "10.1093/ajrccm/aamag084",
+          "title": "Latest research on wildfire smoke PM2.5 and emergency respiratory diseases.",
+          "authorString": "Rui Y, Chen Z.",
+          "authorList": {
+            "author": [
+              {
+                "fullName": "Rui Y",
+                "lastName": "Rui",
+                "firstName": "Yang",
+                "initials": "Y",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Laboratory of Cough, Affiliated Kunshan Hospital of Jiangsu University, Kunshan Key Laboratory of Chronic Cough, Suzhou, China."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Chen Z",
+                "lastName": "Chen",
+                "firstName": "Zhe",
+                "initials": "Z",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0003-2611-9635"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Laboratory of Cough, Affiliated Kunshan Hospital of Jiangsu University, Kunshan Key Laboratory of Chronic Cough, Suzhou, China."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "authorIdList": {
+            "authorId": [
+              {
+                "type": "ORCID",
+                "value": "0000-0003-2611-9635"
+              }
+            ]
+          },
+          "journalInfo": {
+            "issue": "6",
+            "volume": "212",
+            "journalIssueId": 4214843,
+            "dateOfPublication": "2026 Jun",
+            "monthOfPublication": 6,
+            "yearOfPublication": 2026,
+            "journal": {
+              "medlineAbbreviation": "Am J Respir Crit Care Med",
+              "title": "American journal of respiratory and critical care medicine",
+              "essn": "1535-4970",
+              "issn": "1073-449X",
+              "nlmid": "9421642",
+              "isoabbreviation": "Am J Respir Crit Care Med"
+            },
+            "printPublicationDate": "2026-06-01"
+          },
+          "pubYear": "2026",
+          "pageInfo": "1392-1393",
+          "affiliation": "Laboratory of Cough, Affiliated Kunshan Hospital of Jiangsu University, Kunshan Key Laboratory of Chronic Cough, Suzhou, China.",
+          "publicationStatus": "ppublish",
+          "language": "eng",
+          "pubModel": "Print",
+          "pubTypeList": {
+            "pubType": [
+              "Comment",
+              "Editorial"
+            ]
+          },
+          "grantsList": {
+            "grant": [
+              {
+                "agency": "National Natural Science Foundation of China",
+                "grantId": "82470110",
+                "orderIn": 0
+              },
+              {
+                "agency": "Kunshan Key Laboratory of Chronic Cough",
+                "grantId": "KZ202401",
+                "orderIn": 0
+              },
+              {
+                "agency": "Key R&D Program of Jiangsu Province",
+                "grantId": "BE2022761",
+                "orderIn": 0
+              },
+              {
+                "agency": "National Natural Science Foundation of China",
+                "grantId": "81900100",
+                "orderIn": 0
+              }
+            ]
+          },
+          "subsetList": {
+            "subset": [
+              {
+                "code": "IM",
+                "name": "Index Medicus"
+              }
+            ]
+          },
+          "fullTextUrlList": {
+            "fullTextUrl": [
+              {
+                "availability": "Subscription required",
+                "availabilityCode": "S",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1093/ajrccm/aamag084"
+              }
+            ]
+          },
+          "commentCorrectionList": {
+            "commentCorrection": [
+              {
+                "source": "MED",
+                "id": "42085207",
+                "reference": "Am J Respir Crit Care Med. 2026 Jun 1;212(6):1390-1391. doi: 10.1093/ajrccm/aamag083.",
+                "type": "Comment in",
+                "orderIn": 1
+              },
+              {
+                "source": "MED",
+                "id": "42085207",
+                "reference": "Am J Respir Crit Care Med. 2026 Jun 1;212(6):1390-1391. doi: 10.1093/ajrccm/aamag083.",
+                "type": "Comment on",
+                "orderIn": 2
+              },
+              {
+                "source": "MED",
+                "id": "42085223",
+                "reference": "Am J Respir Crit Care Med. 2026 Jun 1;212(6):1394-1395. doi: 10.1093/ajrccm/aamag085.",
+                "type": "Comment on",
+                "orderIn": 3
+              }
+            ]
+          },
+          "isOpenAccess": "N",
+          "inEPMC": "N",
+          "inPMC": "N",
+          "citedByCount": 0,
+          "hasReferences": "N",
+          "hasTextMinedTerms": "N",
+          "hasDbCrossReferences": "N",
+          "hasPDF": "N",
+          "hasBook": "N",
+          "hasSuppl": "N",
+          "hasLabsLinks": "N",
+          "hasData": "N",
+          "authMan": "N",
+          "epmcAuthMan": "N",
+          "nihAuthMan": "N",
+          "hasTMAccessionNumbers": "N",
+          "dateOfCreation": "2026-05-05",
+          "dateOfRevision": "2026-06-11",
+          "firstPublicationDate": "2026-06-01",
+          "firstIndexDate": "2026-05-13",
+          "hasEvaluations": "N"
+        },
+        {
+          "id": "42999790",
+          "source": "MED",
+          "pmid": "42999790",
+          "pmcid": "PMC13744005",
+          "fullTextIdList": {
+            "fullTextId": [
+              "PMC13744005"
+            ]
+          },
+          "doi": "10.1029/2026gh001972",
+          "title": "Asthma Exacerbations Following Wildfire Smoke PM&lt;sub&gt;2.5&lt;/sub&gt; Exposure Among U.S. Adults.",
+          "authorString": "Huang Y, Luo L, Leng S, Zhang S, Lavin RP, Buenemann M, Lin Y, Campen M, Gong X.",
+          "authorList": {
+            "author": [
+              {
+                "fullName": "Huang Y",
+                "lastName": "Huang",
+                "firstName": "Yanhong",
+                "initials": "Y",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Veterinary Physiology and Pharmacology Texas A&M University College Station TX USA."
+                    },
+                    {
+                      "affiliation": "Department of Biobehavioral Health The Pennsylvania State University University Park PA USA."
+                    },
+                    {
+                      "affiliation": "Department of Geography & Environmental Studies University of New Mexico Albuquerque NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Luo L",
+                "lastName": "Luo",
+                "firstName": "Li",
+                "initials": "L",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Internal Medicine University of New Mexico Albuquerque NM USA."
+                    },
+                    {
+                      "affiliation": "University of New Mexico Comprehensive Cancer Center Albuquerque NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Leng S",
+                "lastName": "Leng",
+                "firstName": "Shuguang",
+                "initials": "S",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Internal Medicine University of New Mexico Albuquerque NM USA."
+                    },
+                    {
+                      "affiliation": "University of New Mexico Comprehensive Cancer Center Albuquerque NM USA."
+                    },
+                    {
+                      "affiliation": "Lung Cancer Program Lovelace Biomedical Research Institute Albuquerque NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Zhang S",
+                "lastName": "Zhang",
+                "firstName": "Su",
+                "initials": "S",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Geography & Environmental Studies University of New Mexico Albuquerque NM USA."
+                    },
+                    {
+                      "affiliation": "Earth Data Analysis Center (EDAC) University of New Mexico Albuquerque NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Lavin RP",
+                "lastName": "Lavin",
+                "firstName": "Roberta P",
+                "initials": "RP",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Center for Health Equity and Preparedness College of Nursing University of New Mexico Albuquerque NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Buenemann M",
+                "lastName": "Buenemann",
+                "firstName": "Michaela",
+                "initials": "M",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0002-5139-739X"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Geography and Environmental Studies New Mexico State University Las Cruces NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Lin Y",
+                "lastName": "Lin",
+                "firstName": "Yan",
+                "initials": "Y",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Geography The Pennsylvania State University University Park PA USA."
+                    },
+                    {
+                      "affiliation": "Social Science Research Institute (SSRI) The Pennsylvania State University University Park PA USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Campen M",
+                "lastName": "Campen",
+                "firstName": "Matthew",
+                "initials": "M",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Pharmaceutical Sciences College of Pharmacy University of New Mexico Albuquerque NM USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Gong X",
+                "lastName": "Gong",
+                "firstName": "Xi",
+                "initials": "X",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0001-7899-6213"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Biobehavioral Health The Pennsylvania State University University Park PA USA."
+                    },
+                    {
+                      "affiliation": "Institute for Computational and Data Sciences (ICDS) The Pennsylvania State University University Park PA USA."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "authorIdList": {
+            "authorId": [
+              {
+                "type": "ORCID",
+                "value": "0000-0001-7899-6213"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0002-5139-739X"
+              }
+            ]
+          },
+          "dataLinksTagsList": {
+            "dataLinkstag": [
+              "supporting_data"
+            ]
+          },
+          "journalInfo": {
+            "issue": "11",
+            "volume": "10",
+            "journalIssueId": 4303339,
+            "dateOfPublication": "2026 Nov",
+            "monthOfPublication": 11,
+            "yearOfPublication": 2026,
+            "journal": {
+              "medlineAbbreviation": "Geohealth",
+              "title": "GeoHealth",
+              "essn": "2471-1403",
+              "issn": "2471-1403",
+              "nlmid": "101706476",
+              "isoabbreviation": "Geohealth"
+            },
+            "printPublicationDate": "2026-11-01"
+          },
+          "pubYear": "2026",
+          "pageInfo": "e2026GH001972",
+          "abstractText": "Asthma exacerbation can be triggered by various forms of air pollution, including PM<sub>2.5</sub> from wildfire smoke. This study aims to investigate the association between wildfire smoke PM<sub>2.5</sub> exposure and asthma exacerbations in adults during the warm months (April-August) between 2006 and 2019. Using a case-crossover design, we analyzed 18,935 asthma exacerbation events and four matched control periods per event from the National Institutes of Health (NIH) <i>All of Us</i> research program. We used the conditional logistic regression to estimate the association (odds ratios [ORs]) between wildfire smoke PM<sub>2.5</sub> exposure and asthma exacerbation, considering lag periods of 0-7 days and adjusting for temperature, precipitation, and humidity. Significant positive associations were observed across all lag periods, with adjusted ORs ranging from 1.27 (95% CI: 1.22-1.33) to 1.38 (95% CI: 1.32-1.44). Stratified analyses showed higher odds of asthma exacerbation among older adults, non-Hispanic Whites, midwestern residents, and those exposed in May. These findings highlight the potential contribution of wildfire smoke PM<sub>2.5</sub> to asthma exacerbations in adults and the importance of targeted public health strategies to reduce exposure during wildfire events.",
+          "affiliation": "Department of Veterinary Physiology and Pharmacology Texas A&M University College Station TX USA.",
+          "publicationStatus": "epublish",
+          "language": "eng",
+          "pubModel": "Electronic-eCollection",
+          "pubTypeList": {
+            "pubType": [
+              "research-article",
+              "Journal Article"
+            ]
+          },
+          "grantsList": {
+            "grant": [
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026557",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIMHD NIH HHS",
+                "acronym": "MD",
+                "grantId": "P50 MD015706",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD023205",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026550",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026551",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "U2C OD023196",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD025337",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026554",
+                "orderIn": 0
+              },
+              {
+                "agency": "NICHD NIH HHS",
+                "acronym": "HD",
+                "grantId": "P2C HD041025",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "P42 ES025589",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD025277",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "R01 ES035421",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD023206",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026548",
+                "orderIn": 0
+              },
+              {
+                "agency": "NHLBI NIH HHS",
+                "acronym": "HL",
+                "grantId": "R21 HL173388",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "U24 OD023121",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "U24 OD023176",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD025276",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD025315",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026552",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026553",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "P30 CA118100",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "P30 ES032755",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026549",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026555",
+                "orderIn": 0
+              },
+              {
+                "agency": "NINR NIH HHS",
+                "acronym": "NR",
+                "grantId": "P20 NR021824",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "OT2 OD026556",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "U24 OD023163",
+                "orderIn": 0
+              }
+            ]
+          },
+          "keywordList": {
+            "keyword": [
+              "Environmental Health",
+              "Asthma Exacerbation",
+              "All Of Us Research Program",
+              "Case‐Crossover Study",
+              "Wildfire Smoke Pm2.5"
+            ]
+          },
+          "fullTextUrlList": {
+            "fullTextUrl": [
+              {
+                "availability": "Subscription required",
+                "availabilityCode": "S",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1029/2026GH001972"
+              },
+              {
+                "availability": "Open access",
+                "availabilityCode": "OA",
+                "documentStyle": "html",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13744005"
+              },
+              {
+                "availability": "Open access",
+                "availabilityCode": "OA",
+                "documentStyle": "pdf",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13744005?pdf=render"
+              }
+            ]
+          },
+          "isOpenAccess": "Y",
+          "inEPMC": "Y",
+          "inPMC": "Y",
+          "citedByCount": 0,
+          "hasReferences": "Y",
+          "hasTextMinedTerms": "Y",
+          "hasDbCrossReferences": "N",
+          "hasPDF": "Y",
+          "hasBook": "N",
+          "hasSuppl": "Y",
+          "hasLabsLinks": "N",
+          "hasData": "Y",
+          "license": "cc by",
+          "authMan": "N",
+          "epmcAuthMan": "N",
+          "nihAuthMan": "N",
+          "hasTMAccessionNumbers": "Y",
+          "tmAccessionTypeList": {
+            "accessionType": [
+              "doi"
+            ]
+          },
+          "dateOfCompletion": "2026-11-08",
+          "dateOfCreation": "2026-11-08",
+          "dateOfRevision": "2026-11-09",
+          "electronicPublicationDate": "2026-11-07",
+          "firstPublicationDate": "2026-11-07",
+          "firstIndexDate": "2026-11-08",
+          "fullTextReceivedDate": "2026-11-09",
+          "hasEvaluations": "N"
+        },
+        {
+          "id": "42612421",
+          "source": "MED",
+          "pmid": "42612421",
+          "pmcid": "PMC13628883",
+          "fullTextIdList": {
+            "fullTextId": [
+              "PMC13628883"
+            ]
+          },
+          "doi": "10.1016/j.canep.2026.103199",
+          "title": "Wildfire smoke PM&lt;sub&gt;2.5&lt;/sub&gt; and cancer history prevalence in the contiguous United States.",
+          "authorString": "Zewdie HY, Karasaki S, Cortez M, Lin J, Nondin C, Chao SLS, Donzella SM, Phipps AI, VoPham T.",
+          "authorList": {
+            "author": [
+              {
+                "fullName": "Zewdie HY",
+                "lastName": "Zewdie",
+                "firstName": "Hiwot Y",
+                "initials": "HY",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Epidemiology, University of Washington School of Public Health, University of Washington, Seattle, WA, USA; Department of Environmental Health, Harvard T.H. Chan School of Public Health, Harvard University, Boston, MA, USA. Electronic address: hzewdie@hsph.harvard.edu."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Karasaki S",
+                "lastName": "Karasaki",
+                "firstName": "Seigi",
+                "initials": "S",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0003-4009-3865"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Epidemiology, University of Washington School of Public Health, University of Washington, Seattle, WA, USA; Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Cortez M",
+                "lastName": "Cortez",
+                "firstName": "Malia",
+                "initials": "M",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0009-0000-3264-5215"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Lin J",
+                "lastName": "Lin",
+                "firstName": "Jiayu",
+                "initials": "J",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Nondin C",
+                "lastName": "Nondin",
+                "firstName": "Caroline",
+                "initials": "C",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Chao SLS",
+                "lastName": "Chao",
+                "firstName": "Sam L S",
+                "initials": "SLS",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Donzella SM",
+                "lastName": "Donzella",
+                "firstName": "Sidney M",
+                "initials": "SM",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Epidemiology, University of Washington School of Public Health, University of Washington, Seattle, WA, USA; Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Phipps AI",
+                "lastName": "Phipps",
+                "firstName": "Amanda I",
+                "initials": "AI",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Epidemiology, University of Washington School of Public Health, University of Washington, Seattle, WA, USA; Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "VoPham T",
+                "lastName": "VoPham",
+                "firstName": "Trang",
+                "initials": "T",
+                "authorId": {
+                  "type": "ORCID",
+                  "value": "0000-0003-4787-1201"
+                },
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Epidemiology, University of Washington School of Public Health, University of Washington, Seattle, WA, USA; Epidemiology Program, Public Health Sciences Division, Fred Hutchinson Cancer Center, Seattle, WA, USA."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "authorIdList": {
+            "authorId": [
+              {
+                "type": "ORCID",
+                "value": "0000-0003-4009-3865"
+              },
+              {
+                "type": "ORCID",
+                "value": "0000-0003-4787-1201"
+              },
+              {
+                "type": "ORCID",
+                "value": "0009-0000-3264-5215"
+              }
+            ]
+          },
+          "journalInfo": {
+            "volume": "104",
+            "journalIssueId": 4251039,
+            "dateOfPublication": "2026 Oct",
+            "monthOfPublication": 10,
+            "yearOfPublication": 2026,
+            "journal": {
+              "medlineAbbreviation": "Cancer Epidemiol",
+              "title": "Cancer epidemiology",
+              "essn": "1877-783X",
+              "issn": "1877-7821",
+              "nlmid": "101508793",
+              "isoabbreviation": "Cancer Epidemiol"
+            },
+            "printPublicationDate": "2026-10-01"
+          },
+          "pubYear": "2026",
+          "pageInfo": "103199",
+          "abstractText": "<h4>Background</h4>Little is known about the role of wildfire smoke PM<sub>2.5</sub> in cancer burden, despite ambient PM<sub>2.5</sub> being classified as a human carcinogen.<h4>Methods</h4>Daily wildfire smoke PM<sub>2.5</sub> estimates were aggregated into cumulative (2006-2020) and recent (2018-2020) averages, and linked to 2022 tract-level cancer history prevalence estimates for all tracts in the contiguous US. Quasi-Poisson generalized additive models with random effects and spatial splines estimated prevalence ratios and 95% CIs for each exposure window, modeling smoke PM<sub>2.5</sub> continuously (per IQR) and across tertiles. Models adjusted for tract-level sociodemographic factors, health behaviors, health status, population density, climate, and Census region. Effect modification was assessed using interaction terms and stratified analyses.<h4>Results</h4>Smoke PM<sub>2.5</sub> exposure was not associated with cancer history prevalence in fully adjusted models across either exposure window. However, we observed effect modification by Census region. Higher cumulative and 3-year smoke PM<sub>2.5</sub> exposure was associated with higher cancer history prevalence in the Midwest (IQR-difference in 3-year exposure PR: 1.020; 95% CI: 1.013-1.026) and Northeast (PR: 1.040; 95% CI: 1.032-1.049).<h4>Conclusion</h4>Wildfire smoke PM2.5 was not associated with cancer history prevalence at the tract level in this cross-sectional ecological study, although there may be potential effect modification by region. Further investigation using individual-level data on smoke PM<sub>2.5</sub> exposure and cancer outcomes is needed to confirm these findings and better understand the implications of wildfires for cancer burden.",
+          "affiliation": "Department of Epidemiology, University of Washington School of Public Health, University of Washington, Seattle, WA, USA; Department of Environmental Health, Harvard T.H. Chan School of Public Health, Harvard University, Boston, MA, USA. Electronic address: hzewdie@hsph.harvard.edu.",
+          "publicationStatus": "ppublish",
+          "language": "eng",
+          "pubModel": "Print-Electronic",
+          "pubTypeList": {
+            "pubType": [
+              "research-article",
+              "Journal Article"
+            ]
+          },
+          "grantsList": {
+            "grant": [
+              {
+                "agency": "NCATS NIH HHS",
+                "acronym": "TR",
+                "grantId": "UL1 TR002319",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIDDK NIH HHS",
+                "acronym": "DK",
+                "grantId": "K01 DK125612",
+                "orderIn": 0
+              },
+              {
+                "agency": "National Institutes of Health",
+                "grantId": "T32ES015459",
+                "orderIn": 0
+              },
+              {
+                "agency": "National Institutes of Health",
+                "grantId": "UL1TR002319",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "T32 ES015459",
+                "orderIn": 0
+              },
+              {
+                "agency": "National Institutes of Health",
+                "grantId": "T32CA094880",
+                "orderIn": 0
+              },
+              {
+                "agency": "National Institute of Diabetes and Digestive and Kidney Diseases",
+                "grantId": "K01DK125612",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "T32 CA094880",
+                "orderIn": 0
+              }
+            ]
+          },
+          "meshHeadingList": {
+            "meshHeading": [
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Humans"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Neoplasms",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "ET",
+                      "qualifierName": "etiology"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "EP",
+                      "qualifierName": "epidemiology"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Prevalence"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Smoke",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "AE",
+                      "qualifierName": "adverse effects"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Environmental Exposure",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "AE",
+                      "qualifierName": "adverse effects"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "United States",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "EP",
+                      "qualifierName": "epidemiology"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Female"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Male"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Particulate Matter",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "AE",
+                      "qualifierName": "adverse effects"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "AN",
+                      "qualifierName": "analysis"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Wildfires"
+              }
+            ]
+          },
+          "keywordList": {
+            "keyword": [
+              "Cancer",
+              "particulate matter",
+              "Wildfire Smoke"
+            ]
+          },
+          "chemicalList": {
+            "chemical": [
+              {
+                "name": "Smoke",
+                "registryNumber": "0"
+              },
+              {
+                "name": "Particulate Matter",
+                "registryNumber": "0"
+              }
+            ]
+          },
+          "subsetList": {
+            "subset": [
+              {
+                "code": "IM",
+                "name": "Index Medicus"
+              }
+            ]
+          },
+          "fullTextUrlList": {
+            "fullTextUrl": [
+              {
+                "availability": "Subscription required",
+                "availabilityCode": "S",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1016/j.canep.2026.103199"
+              },
+              {
+                "availability": "Free",
+                "availabilityCode": "F",
+                "documentStyle": "html",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13628883"
+              },
+              {
+                "availability": "Free",
+                "availabilityCode": "F",
+                "documentStyle": "pdf",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13628883?pdf=render"
+              },
+              {
+                "availability": "Free",
+                "availabilityCode": "F",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1016/j.canep.2026.103199"
+              }
+            ]
+          },
+          "isOpenAccess": "N",
+          "inEPMC": "Y",
+          "inPMC": "Y",
+          "citedByCount": 0,
+          "hasReferences": "Y",
+          "hasTextMinedTerms": "Y",
+          "hasDbCrossReferences": "N",
+          "hasPDF": "Y",
+          "hasBook": "N",
+          "hasSuppl": "Y",
+          "hasLabsLinks": "N",
+          "hasData": "Y",
+          "authMan": "Y",
+          "epmcAuthMan": "N",
+          "nihAuthMan": "Y",
+          "manuscriptId": "NIHMS2205310",
+          "hasTMAccessionNumbers": "N",
+          "dateOfCompletion": "2026-08-29",
+          "dateOfCreation": "2026-08-18",
+          "dateOfRevision": "2026-10-03",
+          "electronicPublicationDate": "2026-08-18",
+          "firstPublicationDate": "2026-08-18",
+          "firstIndexDate": "2026-08-19",
+          "fullTextReceivedDate": "2026-10-03",
+          "hasEvaluations": "N"
+        },
+        {
+          "id": "42743939",
+          "source": "MED",
+          "pmid": "42743939",
+          "pmcid": "PMC13661141",
+          "fullTextIdList": {
+            "fullTextId": [
+              "PMC13661141"
+            ]
+          },
+          "doi": "10.1016/s1470-2045(26)00295-0",
+          "title": "Long-term exposure to wildfire-related PM&lt;sub&gt;2·5&lt;/sub&gt; and overall survival of older patients with lung cancer: a retrospective, registry-based cohort study.",
+          "authorString": "Zhang M, Wisnivesky JP, Qiu M, Danesh Yazdi M, Yin K, Wright RJ, Schwartz JD, Ekenga CC, Wright RO, Wei Y.",
+          "authorList": {
+            "author": [
+              {
+                "fullName": "Zhang M",
+                "lastName": "Zhang",
+                "firstName": "Min",
+                "initials": "M",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Environmental Medicine, Icahn School of Medicine at Mount Sinai, New York, NY, USA. Electronic address: min.zhang@mssm.edu."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Wisnivesky JP",
+                "lastName": "Wisnivesky",
+                "firstName": "Juan P",
+                "initials": "JP",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Medicine, Icahn School of Medicine at Mount Sinai, New York, NY, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Qiu M",
+                "lastName": "Qiu",
+                "firstName": "Minghao",
+                "initials": "M",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "School of Marine and Atmospheric Sciences, Stony Brook University, Stony Brook, NY, USA; Program in Public Health, Stony Brook University, Stony Brook, NY, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Danesh Yazdi M",
+                "lastName": "Danesh Yazdi",
+                "firstName": "Mahdieh",
+                "initials": "M",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Program in Public Health, Stony Brook University, Stony Brook, NY, USA; Department of Family, Population, and Preventive Medicine, Stony Brook University, Stony Brook, NY, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Yin K",
+                "lastName": "Yin",
+                "firstName": "Kanhua",
+                "initials": "K",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Surgery, University of Missouri-Kansas City School of Medicine, Kansas City, MO, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Wright RJ",
+                "lastName": "Wright",
+                "firstName": "Rosalind J",
+                "initials": "RJ",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Environmental Medicine, Icahn School of Medicine at Mount Sinai, New York, NY, USA; Department of Public Health, Icahn School of Medicine at Mount Sinai, New York, NY, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Schwartz JD",
+                "lastName": "Schwartz",
+                "firstName": "Joel D",
+                "initials": "JD",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Environmental Health, Harvard T H Chan School of Public Health, Boston, MA, USA; Department of Epidemiology, Harvard T H Chan School of Public Health, Boston, MA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Ekenga CC",
+                "lastName": "Ekenga",
+                "firstName": "Christine C",
+                "initials": "CC",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Gangarosa Department of Environmental Health, Rollins School of Public Health, Emory University, Atlanta, GA, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Wright RO",
+                "lastName": "Wright",
+                "firstName": "Robert O",
+                "initials": "RO",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Environmental Medicine, Icahn School of Medicine at Mount Sinai, New York, NY, USA."
+                    }
+                  ]
+                }
+              },
+              {
+                "fullName": "Wei Y",
+                "lastName": "Wei",
+                "firstName": "Yaguang",
+                "initials": "Y",
+                "authorAffiliationDetailsList": {
+                  "authorAffiliation": [
+                    {
+                      "affiliation": "Department of Environmental Medicine, Icahn School of Medicine at Mount Sinai, New York, NY, USA."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "dataLinksTagsList": {
+            "dataLinkstag": [
+              "supporting_data"
+            ]
+          },
+          "journalInfo": {
+            "issue": "10",
+            "volume": "27",
+            "journalIssueId": 4272885,
+            "dateOfPublication": "2026 Oct",
+            "monthOfPublication": 10,
+            "yearOfPublication": 2026,
+            "journal": {
+              "medlineAbbreviation": "Lancet Oncol",
+              "title": "The Lancet. Oncology",
+              "essn": "1474-5488",
+              "issn": "1470-2045",
+              "nlmid": "100957246",
+              "isoabbreviation": "Lancet Oncol"
+            },
+            "printPublicationDate": "2026-10-01"
+          },
+          "pubYear": "2026",
+          "pageInfo": "1304-1313",
+          "abstractText": "<h4>Background</h4>Fine particulate matter (PM<sub>2·5</sub>) has been identified as a key risk factor for lung cancer incidence and survival. PM<sub>2·5</sub> from wildfire smoke is an increasingly important contributor to total PM<sub>2·5</sub> in the USA, driven by climate change, and potentially more toxic than non-wildfire PM<sub>2·5</sub> due to its smaller particle size and higher toxic contents. However, the effects of wildfire-related PM<sub>2·5</sub> on the overall survival of patients with lung cancer remain unclear.<h4>Methods</h4>This retrospective cohort study included patients aged 65 years or older with histologically confirmed primary small-cell lung cancer or non-small-cell lung cancer (as defined by the International Classification of Diseases for Oncology, Third Edition) from the Surveillance, Epidemiology, and End Results (SEER)-Medicare database between Jan 1, 2006, and Dec 31, 2019, for whom residential zip code-based estimates of wildfire-related PM<sub>2·5</sub> and non-wildfire PM<sub>2·5</sub> were available. Individuals diagnosed at the in situ stage, without continuous enrolment in Medicare Parts A and B, or with missing exposure or covariate data were excluded. Participants were followed up annually from diagnosis until death, loss to follow-up, or the end of the study in 2019, whichever came first. Daily estimates of ambient wildfire-related PM<sub>2·5</sub> and total PM<sub>2·5</sub> across the contiguous USA (from 2006 to 2019) were obtained from previously developed and validated models and spatially aggregated to zip code level. Non-wildfire PM<sub>2·5</sub> was calculated as the difference between total PM<sub>2·5</sub> and wildfire-related PM<sub>2·5</sub>, and negative values were excluded. The main outcome was all-cause mortality. A time-varying Cox proportional hazards model was applied to estimate the primary exposure of interest of the long-term effects of 3-year moving averages of wildfire-related PM<sub>2·5</sub> and non-wildfire PM<sub>2·5</sub> concentrations on overall survival.<h4>Findings</h4>Between Jan 1, 2008, and Dec 31, 2019 (the analysis period), 414 016 patients with lung cancer contributed 1 211 490 person-years of follow-up, with a median follow-up of 2 years (IQR 1-4). Of these, 208 468 (50·4%) patients were female, 205 548 (49·6%) were male, 356 356 (86·1%) were White, 36 914 (8·9%) were Black, 18 982 (4·6%) were Asian or Pacific Islander, and 1269 (0·3%) were American Indian or Alaska Native; race or ethnicity was unknown for 495 patients (0·1%). The median concentrations of PM<sub>2·5</sub> were 0·28 μg/m<sup>3</sup> (IQR 0·21-0·39) for wildfire-related PM<sub>2·5</sub> and 8·11 μg/m<sup>3</sup> (6·84-9·47) for non-wildfire PM<sub>2·5</sub>. Each 1-SD increase in wildfire-related PM<sub>2·5</sub> or non-wildfire PM<sub>2·5</sub> was associated with an increased risk of death for patients with lung cancer (HR 1·0229, 95% CI 1·0189-1·0270; p<0·0001 for wildfire-related PM<sub>2·5</sub> and HR 1·0384, 1·0335-1·0432; p<0·0001 for non-wildfire PM<sub>2·5</sub>). The HR per 1-μg/m<sup>3</sup> increase in PM<sub>2·5</sub> concentration was 1·0782 (1·0641-1·0924; p<0·0001) for wildfire-related PM<sub>2·5</sub> and 1·0171 (1·0149-1·0192; p<0·0001) for non-wildfire PM<sub>2·5</sub>. Overall, 696 (95% CI 576-814) average annual excess deaths in this cohort were attributable to wildfire-related PM<sub>2·5</sub> and 3465 (3061-3864) were attributable to non-wildfire PM<sub>2·5</sub>.<h4>Interpretation</h4>Wildfire-related PM<sub>2·5</sub> showed greater toxicity per unit exposure than non-wildfire PM<sub>2·5</sub>. As wildfire-related PM<sub>2·5</sub> is the fastest-growing contributor to ambient air pollution, there is an urgent need for updated strategies to manage wildfires and mitigate their effects.<h4>Funding</h4>National Institute of Environmental Health Sciences, National Cancer Institute, National Institutes of Health, National Center for Advancing Translational Science…[trimmed]",
+          "affiliation": "Department of Environmental Medicine, Icahn School of Medicine at Mount Sinai, New York, NY, USA. Electronic address: min.zhang@mssm.edu.",
+          "publicationStatus": "ppublish",
+          "language": "eng",
+          "pubModel": "Print-Electronic",
+          "pubTypeList": {
+            "pubType": [
+              "research-article",
+              "Journal Article"
+            ]
+          },
+          "grantsList": {
+            "grant": [
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "HHSN261201800009I",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "HHSN261201800015I",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "HHSN261201800032I",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "R01 ES036566",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "S10 OD026880",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "HHSN261201800032C",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "P30 ES019776",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "HHSN261201800015C",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "P30 CA138292",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIH HHS",
+                "acronym": "OD",
+                "grantId": "S10 OD030463",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCI NIH HHS",
+                "acronym": "CA",
+                "grantId": "HHSN261201800009C",
+                "orderIn": 0
+              },
+              {
+                "agency": "NIEHS NIH HHS",
+                "acronym": "ES",
+                "grantId": "P30 ES023515",
+                "orderIn": 0
+              },
+              {
+                "agency": "NCATS NIH HHS",
+                "acronym": "TR",
+                "grantId": "UL1 TR004419",
+                "orderIn": 0
+              }
+            ]
+          },
+          "meshHeadingList": {
+            "meshHeading": [
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Humans"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Carcinoma, Non-Small-Cell Lung",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "MO",
+                      "qualifierName": "mortality"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "PA",
+                      "qualifierName": "pathology"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Lung Neoplasms",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "ET",
+                      "qualifierName": "etiology"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "MO",
+                      "qualifierName": "mortality"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "EP",
+                      "qualifierName": "epidemiology"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "PA",
+                      "qualifierName": "pathology"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Registries"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "SEER Program"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Risk Factors"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Retrospective Studies"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Environmental Exposure",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "AE",
+                      "qualifierName": "adverse effects"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Time Factors"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Aged"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Aged, 80 and over"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "United States",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "EP",
+                      "qualifierName": "epidemiology"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Female"
+              },
+              {
+                "majorTopic_YN": "N",
+                "descriptorName": "Male"
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Particulate Matter",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "AE",
+                      "qualifierName": "adverse effects"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Small Cell Lung Carcinoma",
+                "meshQualifierList": {
+                  "meshQualifier": [
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "MO",
+                      "qualifierName": "mortality"
+                    },
+                    {
+                      "majorTopic_YN": "N",
+                      "abbreviation": "PA",
+                      "qualifierName": "pathology"
+                    }
+                  ]
+                }
+              },
+              {
+                "majorTopic_YN": "Y",
+                "descriptorName": "Wildfires"
+              }
+            ]
+          },
+          "chemicalList": {
+            "chemical": [
+              {
+                "name": "Particulate Matter",
+                "registryNumber": "0"
+              }
+            ]
+          },
+          "subsetList": {
+            "subset": [
+              {
+                "code": "IM",
+                "name": "Index Medicus"
+              }
+            ]
+          },
+          "fullTextUrlList": {
+            "fullTextUrl": [
+              {
+                "availability": "Subscription required",
+                "availabilityCode": "S",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1016/S1470-2045(26)00295-0"
+              },
+              {
+                "availability": "Free",
+                "availabilityCode": "F",
+                "documentStyle": "html",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13661141"
+              },
+              {
+                "availability": "Free",
+                "availabilityCode": "F",
+                "documentStyle": "pdf",
+                "site": "Europe_PMC",
+                "url": "https://europepmc.org/articles/PMC13661141?pdf=render"
+              },
+              {
+                "availability": "Free",
+                "availabilityCode": "F",
+                "documentStyle": "doi",
+                "site": "DOI",
+                "url": "https://doi.org/10.1016/s1470-2045(26)00295-0"
+              }
+            ]
+          },
+          "isOpenAccess": "N",
+          "inEPMC": "Y",
+          "inPMC": "Y",
+          "citedByCount": 0,
+          "hasReferences": "Y",
+          "hasTextMinedTerms": "Y",
+          "hasDbCrossReferences": "N",
+          "hasPDF": "Y",
+          "hasBook": "N",
+          "hasSuppl": "Y",
+          "hasLabsLinks": "N",
+          "hasData": "Y",
+          "authMan": "Y",
+          "epmcAuthMan": "N",
+          "nihAuthMan": "Y",
+          "manuscriptId": "NIHMS2212786",
+          "hasTMAccessionNumbers": "Y",
+          "tmAccessionTypeList": {
+            "accessionType": [
+              "doi"
+            ]
+          },
+          "dateOfCompletion": "2026-09-28",
+          "dateOfCreation": "2026-09-15",
+          "dateOfRevision": "2026-10-16",
+          "electronicPublicationDate": "2026-09-15",
+          "firstPublicationDate": "2026-09-15",
+          "firstIndexDate": "2026-09-16",
+          "fullTextReceivedDate": "2026-10-16",
+          "hasEvaluations": "N"
+        }
+      ]
+    }
+  }
+}

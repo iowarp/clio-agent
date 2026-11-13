@@ -1634,7 +1634,7 @@ function Set-ClioVenvAside([string]$Venv) {
         $root = [IO.Path]::GetFullPath($Venv).TrimEnd('\') + '\'
         $users = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })
         $detail = if ($users.Count) { ' These processes run from it: ' + (($users | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" } | Select-Object -First 6) -join '; ') + '.' } else { '' }
-        Die "CLIO is still running from $Venv, so it cannot be replaced.$detail Stop it ('clio stop', or quit CLIO Desktop; CLIO's services, such as web search, may need ending too) and run this installer again; the installed CLIO is unchanged."
+        Die "CLIO is still running from $Venv, so it cannot be replaced.$detail Stop it ('clio stop', or quit CLIO Desktop; CLIO's services, such as model servers, may need ending too) and run this installer again; the installed CLIO is unchanged."
     }
     return $previous
 }

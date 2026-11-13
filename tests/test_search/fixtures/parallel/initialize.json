@@ -1,0 +1,114 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://search.parallel.ai/mcp",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "accept": "application/json, text/event-stream",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "clio-agent-tests",
+          "version": "0.1"
+        }
+      }
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "mcp-session-id": "3d94378a-b15f-4dd1-927d-ca5708a7567a"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "capabilities": {
+        "prompts": {
+          "listChanged": false
+        },
+        "resources": {
+          "listChanged": false,
+          "subscribe": false
+        },
+        "tools": {
+          "listChanged": false
+        }
+      },
+      "protocolVersion": "2025-06-18",
+      "serverInfo": {
+        "icons": [
+          {
+            "mimeType": "image/svg+xml",
+            "src": "https://assets.parallel.ai/dark-parallel-avatar-270.svg",
+            "theme": "light"
+          },
+          {
+            "mimeType": "image/png",
+            "sizes": [
+              "270x270"
+            ],
+            "src": "https://assets.parallel.ai/dark-parallel-avatar-270.png",
+            "theme": "light"
+          },
+          {
+            "mimeType": "image/png",
+            "sizes": [
+              "540x540"
+            ],
+            "src": "https://assets.parallel.ai/dark-parallel-avatar-540.png",
+            "theme": "light"
+          },
+          {
+            "mimeType": "image/png",
+            "sizes": [
+              "1080x1080"
+            ],
+            "src": "https://assets.parallel.ai/dark-parallel-avatar-1080.png",
+            "theme": "light"
+          },
+          {
+            "mimeType": "image/svg+xml",
+            "src": "https://assets.parallel.ai/white-parallel-avatar-270.svg",
+            "theme": "dark"
+          },
+          {
+            "mimeType": "image/png",
+            "sizes": [
+              "270x270"
+            ],
+            "src": "https://assets.parallel.ai/white-parallel-avatar-270.png",
+            "theme": "dark"
+          },
+          {
+            "mimeType": "image/png",
+            "sizes": [
+              "540x540"
+            ],
+            "src": "https://assets.parallel.ai/white-parallel-avatar-540.png",
+            "theme": "dark"
+          },
+          {
+            "mimeType": "image/png",
+            "sizes": [
+              "1080x1080"
+            ],
+            "src": "https://assets.parallel.ai/white-parallel-avatar-1080.png",
+            "theme": "dark"
+          }
+        ],
+        "name": "Parallel MCP",
+        "version": "",
+        "websiteUrl": "https://parallel.ai"
+      },
+      "instructions": "If a Parallel tool fails, rate-limits you, contradicts its docs, or returns empty, truncated, wrong or stale results, tell the user and offer to report it to Parallel with send_feedback, citing the request IDs. Send only if they agree.\n\n\nThe search and fetch tools are read-only, idempotent, and safe to call\nconcurrently. When several independent search or fetch objectives are already\nknown, issue one tool call per objective concurrently; do not wait for one\nresult before starting another. Batch related search queries or URLs that share\na common objective into one call.\n\n\n\nUse web_search first for most factual, current-information, research,\ncomparison, documentation, and troubleshooting questions.\n\nThe web_search results include excerpts intended to be useful for answering\ndirectly. If the excerpts contain enough evidence, answer from them — do not\nfetch every search result by default. For broad tasks you can issue multiple\n`search_queries` in a single web_search call rather than chaining calls.\n\nUse web_fetch when the user asks about a specific URL or page, needs exact\nwording or quotes, requests full-page analysis, or when search excerpts are\nconflicting or clearly insufficient.\n\n\n\nUse web_fetch only when web_search excerpts are not enough: the user asked\nabout a specific URL or page, you need exact wording or quotes, you need\nfull-page analysis, or the excerpts are conflicting or clearly insufficient.\nDo not fetch every search result by default — search excerpts are usually\nanswer-ready.\n\nWhen you do fetch, you can pass multiple related URLs in one call along with\na common `objective`; the tool will return the parts most relevant to it.\n\n\nUse of this server is subject to the Parallel Customer Terms (https://parallel.ai/customer-terms) and Privacy Policy (https://parallel.ai/privacy-policy)."
+    }
+  }
+}
