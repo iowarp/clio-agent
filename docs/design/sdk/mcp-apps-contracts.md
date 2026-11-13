@@ -59,6 +59,36 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
 
 ## A view's service (owner: `service`)
 
-- A CLIO-launched server declares, in the private `_meta` of the result that opens the view, `_meta["ai.iowarp.clio/service"] = {port, token}`. The port must be loopback.
-- CLIO strips the token before the result reaches the view or the model. It gives the view `service_url` through the descriptor, and in host context as `hostContext["ai.iowarp.clio/service"] = {url}`.
-- The proxy route is `…/service/…`. The owner decides how the capability travels so that relative URLs and WebSocket upgrades keep it (a path segment or a cookie), and records the choice here.
+Final shape (MA23). The ParaView front and any other server with a live view use it as written here.
+
+**Declaring a service.**
+
+- The result of the tool call that opens the view carries, in its private `_meta`, `"ai.iowarp.clio/service": {"port": <int 1..65535>, "token": "<single-line string, at most 4096 characters>"}`.
+- The service listens on `127.0.0.1:<port>` on the machine CLIO runs on. CLIO always connects to `127.0.0.1`; there is no host field.
+- CLIO carries it only when the view's server is a stdio server CLIO launched: the source namespace has a `stdio` spec on the session's tool executor (`_clio_namespace_specs`). A URL server's declaration is refused with `service_server_not_launched`. A port equal to CLIO's own listener is refused with `service_port_is_clio`. A malformed declaration is refused with `service_declaration_invalid`.
+- The service must refuse every HTTP request and WebSocket upgrade that lacks `Authorization: Bearer <token>`. CLIO adds that header on the way through; the browser, the view, the transcript and the model never see the token or the port.
+- A declaration in any other result (a tool the view calls through `tools/call`) is removed and ignored, with reason `service_declaration_ignored`.
+
+**What CLIO strips.** `MCPAppRegistry.register` takes the declaration off the stored result, so the descriptor's `tool_result` and the replayed `ui/notifications/tool-result` never hold it. `call_tool_result_to_observer` and the model text never carried `_meta`.
+
+**The route.** `/v1/sessions/{sid}/mcp-apps/{app_id}/service/{data_ref}/{path}` for any HTTP method and for WebSocket upgrades.
+
+- The capability travels as the `data_ref` path segment, so relative URLs and WebSockets opened from a page under the route keep it. It is checked by the same `resolve` (`MCPAppRegistry.get`: session, app id and constant-time `data_ref` match) as the other app routes. A wrong session, app or capability, or a closed app, gets the same non-oracular 404 `not_found`.
+- `…/service/{data_ref}` without the slash redirects (307) to `…/service/{data_ref}/`.
+- The service receives the path and query below the prefix, unchanged: `…/service/{data_ref}/a/b?q=1` reaches `http://127.0.0.1:<port>/a/b?q=1`.
+- A service's pages use relative URLs. An absolute path (`/static/x.js`) leaves the route. A redirect to an absolute path, or to the service's own `127.0.0.1`/`localhost` address, is rewritten under the route.
+- CLIO drops the browser's `Authorization`, `Cookie`, `Origin` and `Referer`, and the service's `Set-Cookie` and `Access-Control-*`.
+- A view is a sandboxed frame (`Origin: null`). CLIO answers its CORS: `Access-Control-Allow-Origin: null` on responses, and preflights for this route answered by CLIO without reaching the service. The token-less origin guard does not apply its state-changing-method check to this route; the capability in the path is the guard.
+- WebSocket subprotocols the browser offers are offered to the service, and the service's choice is returned. Text and binary frames are relayed both ways. There is no read timeout and no keep-alive ping on an open connection; only connecting has a 10 second limit.
+- Errors: 403 with the typed reasons above; 502 `service_unreachable` when nothing answers on the port. A refused WebSocket is rejected before the upgrade (HTTP 403). An unreachable one is accepted and closed with 1011 `service_unreachable`.
+
+**What the view is told.**
+
+- The descriptor gains `service_url` (an absolute URL ending in `/`, on the sandbox origin, or null), `service_refusal` (`{reason, message}` or null) and `csp_refused` (`[{directive, source, reason: "csp_loopback_source_refused"}]`).
+- The host puts `hostContext["ai.iowarp.clio/service"] = {url}` in `ui/initialize` and in every `ui/notifications/host-context-changed`, only when `service_url` is the app's own route on the sandbox origin.
+- A view reaches its service only at that URL. The sandbox CSP drops every loopback source a resource declares (`127.0.0.0/8`, `localhost`, `*.localhost`, `::1`, `0.0.0.0`) and adds the app's service route, `http(s)://<sandbox origin>/…/service/{data_ref}/` and its `ws(s)://` form, to `connect-src` and `frame-src`.
+- Frames nested in the view inherit its sandbox, so a framed service page is also `Origin: null` and is served the same way.
+
+**Closing.** Closing the app (`DELETE …/mcp-apps/{app_id}`), deleting the session or shutting CLIO down removes the record, so the route answers 404, and ends the app's open WebSockets with close code `4410` and reason `mcp_app_closed`, and its in-flight HTTP responses. A WebSocket whose record expired closes at its next frame.
+
+**Where the browser is.** The service URL is on the sandbox origin, so it works wherever the sandbox works: the browser never addresses the service's port.
