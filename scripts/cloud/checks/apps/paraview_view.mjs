@@ -2,7 +2,7 @@
 //
 // Needs the paraview server reachable as a CLIO connection or connector (the
 // `clio-kit mcp-server paraview` command) and Chromium with WebGL (run ui_check
-// with UI_CHECK_CHROMIUM_ARGS=--use-angle=swiftshader,--enable-unsafe-swiftshader
+// (ui_check asks for software WebGL itself)
 // where the machine has no GPU). Environment:
 //   PV_PROMPT     the opening request (default: a plain request naming no tool)
 //   PV_DATASET    dataset path on the machine where ParaView runs

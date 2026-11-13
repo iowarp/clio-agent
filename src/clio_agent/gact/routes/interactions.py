@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from clio_agent import conf
 from clio_agent.arc.task_types import QuestionReply
 from clio_agent.errors import ClioError
+from clio_agent.gact import connector_setup
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
@@ -444,6 +445,8 @@ def project_pending_interactions(
         if str(permission.get("session_id") or "") in owners:
             row = _permission_interaction(app, permission)
             (pending if row.status == "pending" else resolved).append(row)
+    for row in connector_setup.projected(app, owners):
+        (pending if row.status == "pending" else resolved).append(row)
     ordered_owners = _owners_newest_first(app, owners)
     limit = interactions_projection_limit()
     if limit > 0 and len(ordered_owners) > limit:
@@ -503,6 +506,7 @@ def recorded_session_interactions(app: FastAPI, session_id: str) -> list[dict[st
         for permission in app.state.permissions.values()
         if str(permission.get("session_id") or "") == session_id
     )
+    rows.extend(connector_setup.projected(app, {session_id}))
     surfaces, _ = _a2ui_interactions(app, session_id)
     rows.extend(surfaces)
     rows.sort(key=lambda row: (row.created_at, row.id))
@@ -633,6 +637,15 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             return {
                 "interaction": _interaction_wire(_permission_interaction(app, updated_permission))
             }
+
+        if interaction_id.startswith(connector_setup.PREFIX):
+            try:
+                answered = await connector_setup.respond(
+                    app, scope, interaction_id, request.action, request.values
+                )
+            except connector_setup.SetupResponseError as exc:
+                raise _error(exc.status, exc.code, str(exc), **exc.details) from None
+            return {"interaction": _interaction_wire(answered)}
 
         for owner in scope:
             prefix = f"a2ui:{owner}:"

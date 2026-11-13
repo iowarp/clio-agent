@@ -16,6 +16,7 @@ from mcp.shared.auth import OAuthMetadata
 
 from clio_agent.tools.mcp_config import MCPTransportError
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
+from clio_agent.tools.mcp_sign_in import MCPSignInNeeded
 
 
 class DurableOAuthProvider(OAuthClientProvider):
@@ -67,7 +68,7 @@ class DurableOAuthProvider(OAuthClientProvider):
         self, request: httpx2.Request
     ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         if self._sign_in_required and not self._durable.has_tokens():
-            raise MCPTransportError("MCP sign-in required; connect this service in CLIO")
+            raise MCPSignInNeeded(self._durable.connection_id or self._durable.server_url)
         flow = super().async_auth_flow(request)
         try:
             outgoing = await anext(flow)

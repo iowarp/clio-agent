@@ -137,12 +137,32 @@ def _list_one_namespace(
         # record_task_capability inside load_listing itself.
         listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
     if listed is None:
-        with probe_server_context(namespace, timeout_retries=spec.probe_timeout_retries):
-            if uses_shared_launcher_cache(spec):
-                with acquire_launcher_cache_lock(namespace):
+        try:
+            with probe_server_context(namespace, timeout_retries=spec.probe_timeout_retries):
+                if uses_shared_launcher_cache(spec):
+                    with acquire_launcher_cache_lock(namespace):
+                        listed = _list_declared_tools(spec, attempt_key=attempt_key)
+                else:
                     listed = _list_declared_tools(spec, attempt_key=attempt_key)
-            else:
-                listed = _list_declared_tools(spec, attempt_key=attempt_key)
+        except Exception as exc:
+            from clio_agent.connectors import listing  # noqa: PLC0415
+
+            # A connector that needs a sign-in keeps its tools, so a call waits for
+            # its setup card (CN5) rather than the tool disappearing.
+            if not (spec.connector and listing.needs_setup(exc)):
+                raise
+            listed = listing.last_listed(spec.connector)
+            if not listed:
+                raise
+            from clio_agent.runtime import trace  # noqa: PLC0415
+
+            trace.event("TOOLS", "connector_tools_from_last_listing namespace=%s", namespace)
+            cacheable = False
+        else:
+            if spec.connector:
+                from clio_agent.connectors import listing  # noqa: PLC0415
+
+                listing.remember(spec.connector, listed)
         if cacheable:
             # #1281 F3: persist the capability THIS live listing just
             # recorded so the NEXT cache hit can replay it.
@@ -157,6 +177,10 @@ def _list_one_namespace(
                 source=source,
                 era=era,
             )
+    if spec.connector:
+        from clio_agent.connectors import listing  # noqa: PLC0415
+
+        listed = listing.offered(spec.connector, list(listed))
     return {
         f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})
         for tool in listed
