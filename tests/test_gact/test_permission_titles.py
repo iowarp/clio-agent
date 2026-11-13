@@ -73,3 +73,18 @@ def test_waiting_row_carries_the_title(titled: None) -> None:
     projected = _tool_waiting(event, dict(event.payload), None)
     assert projected.payload["title"] == "Change the timestep"
     assert projected.payload["name"] == "viewer_set_timestep"
+
+
+def test_a_snapshot_of_a_waiting_call_carries_the_title(titled: None) -> None:
+    from clio_agent.gact.permission_delivery import overlay_waiting_calls
+
+    row = {
+        "id": "perm_1",
+        "session_id": "sess_1",
+        "status": "pending",
+        "tool_call": {"tool_name": "viewer_set_timestep", "input": {}, "call_id": "c1"},
+    }
+    app = SimpleNamespace(state=SimpleNamespace(permissions={"perm_1": row}))
+    (tool,) = overlay_waiting_calls(app, "sess_1", [])
+    assert tool["title"] == "Change the timestep"
+    assert tool["state"] == "pending"

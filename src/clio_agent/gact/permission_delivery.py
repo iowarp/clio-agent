@@ -174,11 +174,13 @@ def overlay_waiting_calls(
         projected.append(tool)
     for call_id, row in waiting.items():
         tool_call = row["tool_call"]
+        name = str(tool_call.get("tool_name") or "Tool")
         projected.append(
             {
                 "id": call_id,
                 "session_id": session_id,
-                "name": str(tool_call.get("tool_name") or "Tool"),
+                "name": name,
+                **({"title": title} if (title := tool_title(name)) else {}),
                 "state": "pending",
                 "input": tool_call.get("input"),
                 "permission_id": str(row.get("id") or ""),
