@@ -293,8 +293,8 @@ def test_it_is_a_write_the_gate_asks_about_and_the_gateway_serves() -> None:
     assert not is_read_only("tool", "fs_git_commit", {}, None)
     tools = asyncio.run(get_gateway().list_tools())
     listed = next(tool for tool in tools if tool.name == "fs_git_commit")
-    assert listed.annotations.readOnlyHint is False
-    assert listed.annotations.openWorldHint is False
+    assert listed.annotations.read_only_hint is False
+    assert listed.annotations.open_world_hint is False
     assert set(listed.parameters["required"]) == {"path", "message"}
 
 
