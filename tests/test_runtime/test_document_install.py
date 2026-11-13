@@ -448,6 +448,94 @@ def test_default_marketplace_is_installed_by_an_install_but_never_by_a_launch_ch
     assert PluginService().ensure_default_marketplace() is None
 
 
+def _done(value: dict[str, Any]) -> Any:
+    from concurrent.futures import Future
+
+    future: Future[dict[str, Any]] = Future()
+    future.set_result(value)
+    return future
+
+
+def test_tool_servers_wait_for_the_installer_kit_then_build_in_parallel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The agents' clio-kit servers are built at install, after the installer's clio-kit."""
+    from argparse import Namespace
+
+    from clio_agent.tools import mcp_prepare
+
+    signal = tmp_path / "kit-ready.json"
+    kit_bin = tmp_path / "kit-bin"
+    monkeypatch.setenv(installer.KIT_READY_ENV, str(signal))
+    monkeypatch.setenv("PATH", "base")
+    monkeypatch.setattr(installer, "_KIT_READY_POLL_S", 0.01)
+    servers = {"hdf5": object(), "parquet": object(), "adios": object()}
+    monkeypatch.setattr(installer, "_carried_kit_servers", lambda: servers)
+    seen_path: list[str] = []
+    both = Barrier(len(servers), timeout=5)
+
+    def provision(name: str, spec: Any) -> str:
+        seen_path.append(__import__("os").environ["PATH"])
+        both.wait()  # every server builds at once
+        if name == "adios":
+            raise mcp_prepare.PrepareError(mcp_prepare.PROVISION_NETWORK, "offline")
+        return mcp_prepare.PROVISIONED
+
+    monkeypatch.setattr(mcp_prepare, "provision", provision)
+    args = Namespace(prepare_tool_servers=True, reuse_installed=False)
+    started = Event()
+
+    def write_signal() -> None:
+        started.wait(5)
+        signal.write_text(
+            json.dumps({"status": "ready", "path": [str(kit_bin)], "env": {"UV_TOOL_DIR": "t"}}),
+            encoding="utf-8",
+        )
+
+    from threading import Thread
+
+    writer = Thread(target=write_signal)
+    writer.start()
+    started.set()
+    lines: list[str] = []
+    result = installer._prepare_tool_servers(args, _done({"status": "ready"}), lines.append)
+    writer.join()
+    assert result["status"] == "failed"
+    assert result["servers"]["hdf5"]["status"] == mcp_prepare.PROVISIONED
+    assert result["servers"]["adios"]["reason"] == mcp_prepare.PROVISION_NETWORK
+    assert all(path.startswith(str(kit_bin)) for path in seen_path)
+    assert __import__("os").environ["UV_TOOL_DIR"] == "t"
+    assert lines[-1].endswith("adios")
+
+
+def test_tool_servers_are_skipped_without_the_flag_kit_or_marketplace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argparse import Namespace
+
+    calls: list[str] = []
+    monkeypatch.setattr(installer, "_carried_kit_servers", lambda: calls.append("x") or {})
+    ready = _done({"status": "ready"})
+    off = installer._prepare_tool_servers(
+        Namespace(prepare_tool_servers=False, reuse_installed=False), ready, print
+    )
+    assert off == {"status": "skipped", "reason": "not_requested"}
+    no_market = installer._prepare_tool_servers(
+        Namespace(prepare_tool_servers=True, reuse_installed=False),
+        _done({"status": "failed"}),
+        print,
+    )
+    assert no_market["reason"] == "tool_servers_marketplace_unavailable"
+    signal = tmp_path / "kit-ready.json"
+    signal.write_text(json.dumps({"status": "failed", "path": [], "env": {}}), encoding="utf-8")
+    monkeypatch.setenv(installer.KIT_READY_ENV, str(signal))
+    no_kit = installer._prepare_tool_servers(
+        Namespace(prepare_tool_servers=True, reuse_installed=False), ready, print
+    )
+    assert no_kit["reason"] == "tool_servers_kit_unavailable"
+    assert calls == []
+
+
 def test_browser_is_fetched_by_an_install_but_never_by_a_launch_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
