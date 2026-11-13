@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact import view_call_cancel, view_call_transcript
+from clio_agent.gact import mcp_app_fleet, view_call_cancel, view_call_transcript
+from clio_agent.gact.mcp_app_fleet import MCP_APP_SERVER_STOPPED, server_stopped
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
@@ -275,6 +276,8 @@ class MCPAppRecord:
     display_mode: str = "inline"
     #: Mounted in a visible A2UI surface (MA5); set through ``PUT …/pin``.
     surface_pinned: bool = False
+    #: Weak reference to the fleet whose server opened the view (``mcp_app_fleet``).
+    fleet: Any = None
 
     @property
     def pinned(self) -> bool:
@@ -481,7 +484,11 @@ class MCPAppRegistry:
             for key, record in self._records.items()
             if record.cleanup is None and not record.pinned and record.last_access < deadline
         ]
-        for key in expired:
+        # A view whose server's fleet was closed is not live: Reopen replays it (MA19).
+        stopped = [key for key, record in self._records.items() if server_stopped(record)]
+        for key in stopped:
+            logger.warning("%s app_instance_id=%s", MCP_APP_SERVER_STOPPED, key)
+        for key in (*expired, *stopped):
             self._records.pop(key, None)
 
 
@@ -554,6 +561,7 @@ def _make_mcp_app_observer(app: FastAPI):
         except MCPAppAdmissionError as exc:
             _schedule_rejected_cleanup(app, exc.record)
             raise
+        mcp_app_fleet.admitted(app, record)  # its server stays up while the view is held
         from clio_agent.gact.mcp_app_calls import record_opening_call  # noqa: PLC0415
 
         if record_opening_call(app, sid, record, tool):
