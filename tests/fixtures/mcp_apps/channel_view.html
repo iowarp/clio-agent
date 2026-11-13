@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>Timeline</title>
+  <style>
+    :root { font: 14px/1.5 system-ui, sans-serif; }
+    body { margin: 0; color: CanvasText; background: Canvas; }
+    main { display: grid; gap: 10px; padding: 16px; }
+    h1, p { margin: 0; }
+    h1 { font-size: 16px; }
+    #step { font-size: 28px; font-variant-numeric: tabular-nums; }
+    input[type=range] { width: 100%; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    button {
+      border: 1px solid ButtonBorder; border-radius: 8px; padding: 6px 10px;
+      color: ButtonText; background: ButtonFace; font: inherit;
+    }
+    [role=status] { color: GrayText; min-height: 21px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Timeline</h1>
+    <p>Time step <span id="step">–</span> <span id="of"></span></p>
+    <label class="row">Move <input id="slider" type="range" min="0" max="23" value="0"></label>
+    <div class="row">
+      <button id="burst" type="button">Send 60 reports in one second</button>
+    </div>
+    <p id="status" role="status">Waiting for the host</p>
+    <p id="counts" data-reports="0" data-host-sets="0">Reports sent: 0. Set by the host: 0.</p>
+  </main>
+  <script>
+  (() => {
+    const send = (message) => window.parent.postMessage(message, '*');
+    const step = document.getElementById('step');
+    const of = document.getElementById('of');
+    const slider = document.getElementById('slider');
+    const status = document.getElementById('status');
+    const counts = document.getElementById('counts');
+    let reports = 0;
+    let hostSets = 0;
+    let results = 0;
+    let nextId = 1;
+    const showCounts = () => {
+      counts.dataset.reports = String(reports);
+      counts.dataset.hostSets = String(hostSets);
+      counts.textContent = `Reports sent: ${reports}. Set by the host: ${hostSets}.`;
+    };
+    const show = (state) => {
+      if (typeof state?.steps === 'number') {
+        slider.max = String(state.steps - 1);
+        of.textContent = `of ${state.steps}`;
+      }
+      if (typeof state?.time === 'number') {
+        step.textContent = String(state.time);
+        slider.value = String(state.time);
+      }
+    };
+    const report = (time) => {
+      reports += 1;
+      showCounts();
+      send({
+        jsonrpc: '2.0', id: `ctx-${nextId++}`, method: 'ui/update-model-context',
+        params: {
+          content: [{ type: 'text', text: `The timeline shows time step ${time}.` }],
+          structuredContent: { time },
+        },
+      });
+    };
+    const reportSize = () => requestAnimationFrame(() => send({
+      jsonrpc: '2.0', method: 'ui/notifications/size-changed',
+      params: { height: Math.ceil(document.querySelector('main').getBoundingClientRect().bottom) },
+    }));
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || message.jsonrpc !== '2.0') return;
+      if (message.id === 'init' && message.result) {
+        send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+        status.textContent = 'Connected';
+        reportSize();
+        return;
+      }
+      if (message.method === 'ui/notifications/tool-result') {
+        results += 1;
+        // The first result is the opening call; each later one is a host-made set_time.
+        if (results > 1) hostSets += 1;
+        showCounts();
+        show(message.params?.structuredContent);
+        status.textContent = results > 1 ? `The host moved the timeline to ${step.textContent}` : 'Connected';
+        return;
+      }
+      if (message.method === 'ui/resource-teardown' && message.id !== undefined) {
+        send({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+    });
+    slider.addEventListener('input', () => {
+      const time = Number(slider.value);
+      step.textContent = String(time);
+      report(time);
+    });
+    document.getElementById('burst').addEventListener('click', () => {
+      const steps = Number(slider.max) + 1;
+      let sent = 0;
+      const timer = setInterval(() => {
+        sent += 1;
+        const time = sent % steps;
+        step.textContent = String(time);
+        slider.value = String(time);
+        report(time);
+        if (sent >= 60) {
+          clearInterval(timer);
+          status.textContent = `Burst done: the last report was ${time}`;
+        }
+      }, 1000 / 60);
+    });
+    send({
+      jsonrpc: '2.0', id: 'init', method: 'ui/initialize',
+      params: {
+        protocolVersion: '2026-01-26',
+        appInfo: { name: 'timeline', version: '1.0.0' },
+        appCapabilities: { availableDisplayModes: ['inline'] },
+      },
+    });
+  })();
+  </script>
+</body>
+</html>

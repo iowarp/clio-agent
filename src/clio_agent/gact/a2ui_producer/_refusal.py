@@ -168,6 +168,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "check the registered grid format and two-dimensional shape; for NetCDF/Zarr "
         "choose a variable, or set band for a multiband GeoTIFF"
     ),
+    "a2ui_mcp_app_tool_not_found": (
+        "name a connected server and one of its tools that opens a view; the detail "
+        "lists the server's tools"
+    ),
     "a2ui_components_source_conflict": (
         "pass exactly one of components or components_path, never both"
     ),
@@ -230,6 +234,7 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_data_reference_shape_invalid",
         "a2ui_mesh_format_invalid",
         "a2ui_raster_invalid",
+        "a2ui_mcp_app_tool_not_found",
         "a2ui_components_source_conflict",
         "a2ui_components_source_missing",
         "a2ui_components_path_unresolved",

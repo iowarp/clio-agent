@@ -12,6 +12,7 @@ from clio_agent.gact.a2ui_producer import (
     _data_reference,
     _definition_artifact,
     _export,
+    _mcp_app_reference,
 )
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import catalog_selection_refusal, refusal
@@ -92,6 +93,9 @@ def build_create_a2ui_surface_tool() -> Any:
         chart_spec_error = _chart_spec.validate_chart_components(components)
         if chart_spec_error is not None:
             return chart_spec_error
+        app_error = _mcp_app_reference.validate_mcp_app_components(app, components)
+        if app_error is not None:
+            return app_error
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
