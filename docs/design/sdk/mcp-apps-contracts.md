@@ -22,6 +22,13 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
   - A decline returns the typed refusal `connector_declined` naming the connector.
 - **Events:** `connector.changed {connector_id}` triggers a UI refetch. `connector.setup.requested` and `connector.setup.resolved` carry `{session_id, interaction_id, connector_id}`.
 - The native tool is `set_connector_value(connector, key, value)`.
+- **As built (`conn-be` at `7f44754fb`, read by `conn-ui`):**
+  - A need row also carries `options: [str]`; the card shows a picker when it is not empty.
+  - `scope.agents` lists agent **refs** and is never empty.
+  - `DELETE /v1/connectors/{id}` removes a `custom` connector (only those). `GET /v1/connectors/{id}` reads one; `GET /v1/connectors` also returns `diagnostics` and takes `?refresh=true`.
+  - A saved MCP connection is not a connector. The UI's "Add by URL or command" calls `POST /v1/connectors` (`{url | command, args, name, scope: "all"}`) when the form holds only an address or a command; any advanced setting keeps it a raw MCP connection.
+  - The `connector_setup` interaction id is `connector:<hex>`, its payload also has `interaction_id`, `connector_name` and `logo_url`, and a declined card's status is `denied`.
+  - `connector.changed` carries an empty `session_id`, so every session stream receives it.
 
 ## Display mode and the tab (owner: `host`)
 
