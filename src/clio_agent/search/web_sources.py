@@ -150,7 +150,11 @@ async def _exa(query: WebQuery, key: str, timeout: float) -> SourceAnswer:
     if query.exclude_domains:
         args["excludeDomains"] = query.exclude_domains
         applied.add("exclude_domains")
-    if query.kind in _EXA_CATEGORY:
+    # Exa refuses domain filters with category=publication (HTTP 400): the person's
+    # domains are the stronger restriction, so the kind is then CLIO's to apply.
+    if query.kind in _EXA_CATEGORY and not (
+        _EXA_CATEGORY[query.kind] == "publication" and query.include_domains
+    ):
         args["category"] = _EXA_CATEGORY[query.kind]
         applied.add("kind")
     headers = {"Authorization": f"Bearer {key}"} if key else {}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -166,6 +167,17 @@ def _learn(source: str, response: httpx.Response) -> None:
     SCHEDULER.learn(source, response.headers)
 
 
+_REFUSED_TEXT = re.compile(r"-32602|input validation|\((400|413|414|422)\)", re.IGNORECASE)
+
+
+def tool_error(source: str, result: dict[str, Any]) -> SourceError:
+    """An MCP tool's error answer, with its own words; invalid arguments are a refusal."""
+
+    text = " ".join(mcp_text(result).split())[:240] or "tool reported an error"
+    kind = REFUSED if _REFUSED_TEXT.search(text) else FAILED
+    return SourceError(source, kind, text)
+
+
 def json_body(source: str, response: httpx.Response) -> Any:
     """The JSON body, or a typed failure when it is not JSON."""
 
@@ -278,7 +290,7 @@ async def mcp_tool(
         if not isinstance(result, dict):
             raise SourceError(source, FAILED, "MCP result missing")
         if result.get("isError"):
-            raise SourceError(source, FAILED, "tool reported an error")
+            raise tool_error(source, result)
         return result
     raise SourceError(source, FAILED, "MCP session could not be reopened")
 

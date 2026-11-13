@@ -251,3 +251,40 @@ def test_coverage_table_adds_field_and_kind_sources() -> None:
 )
 def test_parse_identifier(raw: str, parsed: dict[str, str]) -> None:
     assert parse_identifier(raw) == parsed
+
+
+def test_exa_drops_the_publication_category_when_domains_are_given() -> None:
+    from clio_agent.search import web_sources as ws
+
+    sent: dict = {}
+
+    async def fake_tool(source, url, tool, args, **_):
+        sent.update(args)
+        return {"content": [{"type": "text", "text": '{"results": []}'}]}
+
+    import asyncio
+
+    original = ws.http.mcp_tool
+    ws.http.mcp_tool = fake_tool
+    try:
+        query = ws.WebQuery(query="q", kind="research", include_domains=["arxiv.org"])
+        answer = asyncio.run(ws._exa(query, "", 10))
+    finally:
+        ws.http.mcp_tool = original
+    assert "category" not in sent and sent["includeDomains"] == ["arxiv.org"]
+    assert "kind" not in answer.applied
+
+
+def test_an_mcp_tool_error_keeps_its_text_and_invalid_arguments_are_refused() -> None:
+    from clio_agent.search import http as h
+
+    refused = h.tool_error(
+        "exa",
+        {
+            "isError": True,
+            "content": [{"type": "text", "text": "web_search error (400): bad domain"}],
+        },
+    )
+    assert refused.kind == h.REFUSED and "bad domain" in refused.detail
+    failed = h.tool_error("exa", {"isError": True, "content": [{"type": "text", "text": "boom"}]})
+    assert failed.kind == h.FAILED and failed.detail == "boom"
