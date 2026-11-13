@@ -291,9 +291,12 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"uninstall marketplace {name}",
             reason="user_requested_marketplace_uninstall",
         )
-        await _call(plugin_service(app).store.uninstall, name)
-        installed_changed()
-        return {"uninstalled": name}
+        try:
+            removed = await _call(plugin_service(app).store.uninstall, name)
+        finally:
+            # The state changed even when a downloaded folder could not be deleted.
+            installed_changed()
+        return {"uninstalled": name, "removed": removed}
 
     @app.post("/v1/plugins/check")
     async def check_plugins(request: Request) -> dict[str, Any]:
