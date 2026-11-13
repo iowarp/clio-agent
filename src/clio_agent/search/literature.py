@@ -48,14 +48,15 @@ ALWAYS = ("openalex", "crossref")
 #: Declared coverage: which further sources a field or kind adds. ``field="any"`` (the
 #: default) asks every broad source; naming a field narrows the search to its sources.
 COVERAGE: dict[str, tuple[str, ...]] = {
-    "field:any": ("arxiv", "europepmc", "osti"),
+    "field:any": ("arxiv", "chemrxiv", "europepmc", "osti"),
     "field:physical": ("arxiv", "osti"),
+    "field:chemistry": ("chemrxiv",),
     "field:computing": ("arxiv",),
     "field:engineering": ("osti",),
     "field:energy": ("osti",),
     "field:earth": ("osti",),
     "field:life": ("europepmc",),
-    "kind:preprint": ("arxiv", "europepmc"),
+    "kind:preprint": ("arxiv", "chemrxiv", "europepmc"),
     "kind:any": ("datacite",),
     "kind:dataset": ("datacite",),
 }
@@ -111,10 +112,11 @@ async def _call(
     settings = load_search_settings()
     events = CallEvents()
     try:
+        lane = _LANE.get(source, source)
         return await SCHEDULER.call(
-            source,
+            lane,
             run,
-            terms=terms_of(source, settings, has_key=bool(source_key(source))),
+            terms=terms_of(lane, settings, has_key=bool(source_key(lane))),
             caller=caller_id(),
             cost_usd=cost_usd,
             patience_s=LITERATURE_PATIENCE_S,
@@ -129,6 +131,8 @@ async def _call(
         notes.extend(queue_notes(source, events))
 
 
+#: Sources reached through another source's API share its request queue and terms.
+_LANE = {"chemrxiv": "crossref"}
 #: What one search request costs per source (only OpenAlex charges).
 _SEARCH_COST = {"openalex": OPENALEX_COST["search"]}
 
@@ -276,6 +280,9 @@ async def literature_search(
             query, per, email=email, after=after, before=before, kind=kind
         ),
         "arxiv": lambda: src.arxiv_search(query, per),
+        "chemrxiv": lambda: src.chemrxiv_search(
+            query, per, email=email, after=after, before=before
+        ),
         "europepmc": lambda: src.europepmc_search(
             query, per, after=after, before=before, kind=kind
         ),
