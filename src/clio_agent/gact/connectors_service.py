@@ -187,7 +187,7 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
         tools, error = [], f"timed out after {int(PROBE_SECONDS)} s"
     result: dict[str, Any] = {"key": key, "tool_count": None, "status": "ready", "reason": None}
     if error is None:
-        result["tool_count"] = len(tools)
+        result["tool_count"] = len(listing.offered(found.id, list(tools)))
         listing.remember(found.id, [tool for tool in tools if isinstance(tool, dict)])
     elif error.startswith("mcp_auth_required"):
         result["status"] = "needs_sign_in"

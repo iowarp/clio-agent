@@ -18,7 +18,8 @@
         "description": {"type": "string", "minLength": 1, "maxLength": 300},
         "server": {"oneOf": [{"$ref": "#/$defs/url_server"}, {"$ref": "#/$defs/command_server"}]},
         "needs": {"type": "array", "items": {"$ref": "#/$defs/need"}, "default": []},
-        "plugin": {"$ref": "#/$defs/id", "description": "The plugin that follows this connector"}
+        "plugin": {"$ref": "#/$defs/id", "description": "The plugin that follows this connector"},
+        "tools": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true, "description": "The server tools this connector offers; absent means every tool"}
       }
     },
     "url_server": {

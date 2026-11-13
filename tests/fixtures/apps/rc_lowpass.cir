@@ -1,0 +1,7 @@
+* RC low-pass filter driven by a 1 kHz square wave; the output node is "out".
+* Fixture for the spice connector (apps ledger, grounds): simulate it, then plot V(out).
+V1 in 0 PULSE(0 1 0 1u 1u 0.5m 1m)
+R1 in out 1k
+C1 out 0 100n
+.tran 1u 5m
+.end

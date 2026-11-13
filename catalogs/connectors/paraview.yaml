@@ -1,0 +1,32 @@
+# ParaView: IOWarp's ParaView server from clio-kit, rebuilt for this connector (plan PV1
+# to PV13). It runs on this machine, or reaches ParaView on another one over SSH.
+- id: paraview
+  name: ParaView
+  logo: paraview.svg
+  description: Open scientific data in ParaView, on this machine or another, and see it in a tab
+  server:
+    command: clio-kit
+    args: [mcp-server, paraview]
+    env:
+      PARAVIEW_ADDRESS: ${need.address}
+      PARAVIEW_VIA: ${need.via}
+      PARAVIEW_PREPARE: ${need.prepare}
+  needs:
+    - key: address
+      kind: address
+      label: Where ParaView runs
+      required: false
+      agent_settable: true
+      help: Leave empty for this machine. Otherwise an SSH host name.
+    - key: via
+      kind: value
+      label: Jump host
+      required: false
+      agent_settable: true
+    - key: prepare
+      kind: value
+      label: Command to run first
+      required: false
+      agent_settable: true
+      help: For example "module load paraview".
+  plugin: paraview

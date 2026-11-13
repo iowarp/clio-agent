@@ -177,6 +177,10 @@ def _list_one_namespace(
                 source=source,
                 era=era,
             )
+    if spec.connector:
+        from clio_agent.connectors import listing  # noqa: PLC0415
+
+        listed = listing.offered(spec.connector, list(listed))
     return {
         f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})
         for tool in listed

@@ -70,3 +70,33 @@ def needs_setup(error: BaseException) -> bool:
             pending.extend(current.exceptions)
         pending.extend(item for item in (current.__cause__, current.__context__) if item)
     return False
+
+
+def offered(connector_id: str, tools: list[Any]) -> list[Any]:
+    """The listed tools (MCP ``Tool`` objects or rows) the connector's entry offers.
+
+    All of them when the entry names none.
+
+    A name the entry lists that the server does not have is a typed trace,
+    ``connector_tool_not_listed``, never a silent drop.
+    """
+
+    from clio_agent.connectors import state  # noqa: PLC0415
+
+    entry = state.all_entries().get(connector_id)
+    allowed = tuple(getattr(entry, "tools", ()) or ())
+    if not allowed:
+        return tools
+    names = {_name(tool) for tool in tools}
+    for name in allowed:
+        if name not in names:
+            trace.event(
+                "TOOLS", "connector_tool_not_listed connector=%s tool=%s", connector_id, name
+            )
+    return [tool for tool in tools if _name(tool) in allowed]
+
+
+def _name(tool: Any) -> str:
+    """A tool's name, from an MCP ``Tool`` or a listed row."""
+
+    return str(tool.get("name") or "") if isinstance(tool, dict) else str(getattr(tool, "name", ""))
