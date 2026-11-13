@@ -1686,6 +1686,10 @@ def run_server(
     from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
 
     relocate_home()  # a moved home: its records point here before any store opens them
+    from clio_agent.runtime.installation_tools import adopt_installation_tools  # noqa: PLC0415
+
+    # A scoped installation's clio-kit, which only the CLI launchers put on PATH.
+    adopt_installation_tools()
     # Always build a fresh app here — the module-level ``app`` symbol is
     # intentionally lazy (see __getattr__ above) so that just importing
     # ``clio_agent.gact.app`` doesn't pay build_app's cost. When the env
