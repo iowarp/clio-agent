@@ -1,0 +1,57 @@
+[
+ {
+  "session": "sess_467c4f8fdcd6",
+  "workspace": "ws_3a043b270ad3"
+ },
+ {
+  "showTab": true
+ },
+ {
+  "view": true
+ },
+ {
+  "shot": "phone-view"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "shot": "phone-pipeline"
+ },
+ {
+  "row": "Clip6"
+ },
+ {
+  "filter": "Threshold"
+ },
+ {
+  "shot": "phone-threshold"
+ },
+ {
+  "panel": "Display"
+ },
+ {
+  "shot": "phone-display"
+ },
+ {
+  "closePanel": true
+ },
+ {
+  "play": "phone-playing"
+ },
+ {
+  "status": "paused"
+ },
+ {
+  "theme": "light"
+ },
+ {
+  "panel": "Camera"
+ },
+ {
+  "shot": "phone-light-camera"
+ },
+ {
+  "theme": "dark"
+ }
+]
