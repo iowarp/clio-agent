@@ -1,0 +1,17 @@
+[
+ {"open": "pv-large"},
+ {"send": "On node08, open /home/researcher/data/wavelet.vti in ParaView and show an isosurface of RTData at 120."},
+ {"view": true},
+ {"status": "opened"},
+ {"modes": true},
+ {"shot": "aq45-remote"},
+ {"drag": true},
+ {"shot": "aq45-dragged"},
+ {"click": true},
+ {"hero": "aq45-hero-remote"},
+ {"send": "What did I just pick in the view?"},
+ {"shot": "aq45-answer"},
+ {"wait": 170000},
+ {"status": "170 s after the last tool call, view left open"},
+ {"shot": "aq45-after-idle"}
+]
