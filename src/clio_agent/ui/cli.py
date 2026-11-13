@@ -886,6 +886,10 @@ def main() -> None:
     import argparse
     import sys
 
+    from clio_agent.runtime.installation_tools import adopt_installation_tools
+
+    # Local verbs (doctor, mcp, plugin) resolve and spawn MCP launchers in-process.
+    adopt_installation_tools()
     if handle_local_command(sys.argv[1:]):
         return
 
