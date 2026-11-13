@@ -110,6 +110,11 @@ export default async function (page, shot) {
   await settle(page, 3000);
   await shot(`after-${action}`);
   report.cardGone = (await card.count()) === 0;
+  // The card's line sits under the call it held (CN5), inside the turn's activity group.
+  for (const group of await page.getByRole("button", { name: /Called \d+ tools?/i }).all())
+    await group.click().catch(() => undefined);
+  await settle(page, 1500);
+  await shot(`after-${action}-expanded`);
   report.inlineAfter = await page
     .locator('[data-slot="connector-setup-activity"]')
     .allInnerTexts()

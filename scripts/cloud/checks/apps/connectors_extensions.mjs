@@ -10,6 +10,7 @@
 //   CHECK_SIGNIN=1    sign in from that card's sign-in row (the fixture's consent page)
 //   CHECK_DISABLE=1   press Turn off on that card
 //   CHECK_ADD_URL     add a server by URL through "Add by URL or command" (name CHECK_ADD_NAME)
+//   CHECK_THEMES=1    shoot the list in the light and the dark theme (CLIO's own switch)
 // It prints one JSON line with the list's rows and the open card's state and rows.
 const settle = (page, ms = 1500) => page.waitForTimeout(ms);
 
@@ -46,6 +47,16 @@ export default async function (page, shot) {
   await settle(page, 2500);
   await shot("extensions-list");
   const report = { list: await rows(page) };
+  if (process.env.CHECK_THEMES) {
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate((dark) => {
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        document.documentElement.classList.toggle("dark", dark);
+      }, theme === "dark");
+      await settle(page, 2500);
+      await shot(`extensions-list-${theme}`);
+    }
+  }
 
   if (process.env.CHECK_ADD_URL) {
     await page.getByRole("button", { name: "Add options" }).click();
@@ -78,7 +89,16 @@ export default async function (page, shot) {
     await shot("card-open");
     if (process.env.CHECK_ENABLE) {
       await card.getByRole("button", { name: "Enable" }).click();
-      await settle(page, 6000);
+      // While it starts, the state says so in words (QG-S2, CN3), in the card and its row.
+      await settle(page, 400);
+      report.starting = {
+        state: await card.locator('[data-slot="connector-state"]').innerText(),
+        button: await card.locator('[data-slot="connector-scope"] button').first().innerText(),
+        list: await rows(page),
+      };
+      await shot("card-starting");
+      await card.getByRole("button", { name: "Starting…" }).waitFor({ state: "detached", timeout: 180000 });
+      await settle(page, 2000);
       await shot("card-enabled");
     }
     for (const pair of (process.env.CHECK_FILL || "").split(";").filter(Boolean)) {
