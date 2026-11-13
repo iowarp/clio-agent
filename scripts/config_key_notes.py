@@ -1291,6 +1291,10 @@ KEY_NOTES: dict[str, str] = {
         "osti, opencitations, datacite, semantic_scholar)."
     ),
     "search.max_results": "Default number of results a search returns (1-50).",
+    "search.paid": (
+        "Sources whose saved key is on a paid plan; CLIO then sets no daily allowance of its own "
+        "for them and lets more requests run at once."
+    ),
     "search.request_timeout_s": (
         "Seconds CLIO waits for one search source or page download (2-120); raise on slow or "
         "proxied networks such as HPC login nodes."

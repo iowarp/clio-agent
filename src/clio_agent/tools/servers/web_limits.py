@@ -1,12 +1,11 @@
 """Process-wide search state shared by every session: cooldowns, pacing, questions.
 
 The GACT server is one process and child sessions run in it, so one table here
-serves every parallel researcher. It records, per source:
+serves every parallel researcher. It records, per source (the request queue that
+paces calls is :mod:`clio_agent.search.scheduler`):
 
 * a **cooldown** after a rate limit, used-up allowance or failure, with the
   ``epoch`` it started (a new exhaustion is a new epoch, so a new question);
-* **pacing**: a minimum interval between calls and a concurrency cap (arXiv asks
-  for one request every three seconds, one connection at a time);
 * **status** for Settings: last answered, last failure, limited until.
 
 and, per decision **topic** (``approve:<source>``, ``exhausted:<source>:<epoch>``),
@@ -32,20 +31,6 @@ QUESTION_LEASE_S = 20 * 60.0
 #: How long a waiting caller polls for another caller's answer before giving up.
 FOLLOWER_PATIENCE_S = 15 * 60.0
 _POLL_S = 0.5
-
-#: Per-source pacing: (minimum seconds between calls, most calls at once).
-PACING: dict[str, tuple[float, int]] = {
-    "arxiv": (3.0, 1),
-    # Crossref's public pool allows one request at a time (three in the polite pool).
-    "crossref": (0.25, 1),
-    "openalex": (0.15, 2),
-    "europepmc": (0.1, 4),
-    "osti": (0.2, 2),
-    "opencitations": (0.2, 2),
-    "datacite": (0.2, 2),
-    "semantic_scholar": (1.0, 1),
-}
-_DEFAULT_PACING = (0.0, 3)
 
 
 @dataclass
@@ -96,8 +81,6 @@ class SearchLimits:
         self._lock = threading.Lock()
         self._cooldowns: dict[str, Cooldown] = {}
         self._status: dict[str, SourceStatus] = {}
-        self._next_slot: dict[str, float] = {}
-        self._active: dict[str, int] = {}
         self._topics: dict[str, Topic] = {}
         self._declined: set[str] = set()
 
@@ -184,28 +167,6 @@ class SearchLimits:
                 rows[name] = row
             return rows
 
-    # --------------------------------------------------------------- pacing
-    async def slot(self, source: str) -> None:
-        """Wait for this source's pacing: its minimum interval and concurrency cap."""
-
-        interval, most = PACING.get(source, _DEFAULT_PACING)
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                start = self._next_slot.get(source, 0.0)
-                if self._active.get(source, 0) < most and start <= now:
-                    self._active[source] = self._active.get(source, 0) + 1
-                    self._next_slot[source] = now + interval
-                    return
-                wait = max(start - now, _POLL_S / 5)
-            await asyncio.sleep(wait)
-
-    def release(self, source: str) -> None:
-        """Free the slot taken by :meth:`slot`."""
-
-        with self._lock:
-            self._active[source] = max(0, self._active.get(source, 0) - 1)
-
     # ------------------------------------------------------------- questions
     def claim(self, topic: str, context: dict[str, Any] | None = None) -> tuple[str, str]:
         """Become leader of ``topic`` or learn who answers it.
@@ -291,8 +252,6 @@ class SearchLimits:
         with self._lock:
             self._cooldowns.clear()
             self._status.clear()
-            self._next_slot.clear()
-            self._active.clear()
             self._topics.clear()
             self._declined.clear()
 
@@ -300,4 +259,4 @@ class SearchLimits:
 #: The one table for this process.
 SEARCH_LIMITS = SearchLimits()
 
-__all__ = ["PACING", "SEARCH_LIMITS", "Cooldown", "SearchLimits", "SourceStatus"]
+__all__ = ["SEARCH_LIMITS", "Cooldown", "SearchLimits", "SourceStatus"]

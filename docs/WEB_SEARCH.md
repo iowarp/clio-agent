@@ -70,10 +70,43 @@ signed/token query. A PDF is also saved locally (`pdf_path`) for `view_pdf`.
 (life sciences, preprints), OSTI.gov (energy, engineering, earth, physical) and
 DataCite (datasets). Semantic Scholar answers only with the person's key. Works are
 merged across sources by DOI, arXiv id or PMID, and works found by more sources come
-first. Sources are paced by their published terms (arXiv: one request every three
-seconds). OpenAlex without a key has a small daily budget per network; Settings can
+first. OpenAlex without a key has a small daily budget per network; Settings can
 request a free OpenAlex key for the person's email (it works after they click the
 emailed link).
+
+## One request queue per provider
+
+Every session and every agent in it sends provider requests through one queue per
+provider for the whole CLIO server (`clio_agent.search.scheduler.SCHEDULER`). To a
+provider, CLIO is one well-behaved client, however many researchers run.
+
+- **Tiers.** CLIO reaches each provider on a tier: *no key* (shared by the network),
+  *contact email* (Crossref's polite pool), *your key* (free plan) or *paid* (the
+  person marks the key as a paid plan, `search.paid`). Each provider's published
+  terms per tier (`clio_agent.search.terms.TERMS`) set its rate, how many requests
+  run at once and its free allowance: arXiv one request every 3 s; Crossref 5/s one
+  at a time, or 10/s three at a time with the contact email; OpenAlex $0.10 a day
+  without a key, $1 with a free key (a search $0.001, a list $0.0001, one work free);
+  Keenable 1,000 an hour; You.com 100 a day. A paid key has no CLIO allowance.
+- **Fair turns.** Sessions take turns; within a session, first come first served.
+- **Push-back.** Too-many-requests pauses the provider for everyone (its
+  `Retry-After`, else a backoff from 2 s doubling to 60 s), lets one fewer request
+  run at once until 20 answers in a row, and puts the request back at the head of
+  its line (at most three times). A request that would wait past its patience
+  (web 10 s, literature 30 s) leaves with the typed reason: web search moves to
+  the next source, literature search notes it. One outright failure (network, 404,
+  5xx) is asked again after 1 s before the provider rests.
+- **Allowance.** CLIO counts what it used this hour/day (OpenAlex in dollars) and
+  stops before the free allowance is used (`allowance_used`, the same question as a
+  provider refusal), instead of spending the network's shared allowance to zero.
+  Counts start when the server starts; other programs on the network share keyless
+  allowances, so the provider's own answer stays the final word.
+- **Headers.** Crossref's `X-Rate-Limit-Limit`/`-Interval` and
+  `X-Concurrency-Limit`, OpenAlex's `X-RateLimit-Remaining-USD`, and generic
+  `X-RateLimit-Remaining`/`-Reset` adjust the queue as answers arrive.
+
+Settings shows each source's tier, the allowance this CLIO used, and how many
+requests wait or run.
 
 ## Search service
 
@@ -98,6 +131,7 @@ leftover one is a typed `config_key_removed` error.
 Every degradation is a note or error code in the result and the trace
 (`clio_agent.search.reasons.SEARCH_REASONS`): `search_not_approved`,
 `search_source_rate_limited`, `search_source_allowance_used`, `search_rotated`,
-`search_stopped_by_person`, `search_waiting_for_person`,
+`search_stopped_by_person`, `search_waiting_for_person`, `search_source_retried`,
+`search_source_waited`, `search_source_busy`,
 `search_all_sources_unavailable`, `search_filters_approximate`, `fetch_hosted_reader`,
 `fetch_private_url`, `literature_source_budget_used`, and the others in that table.

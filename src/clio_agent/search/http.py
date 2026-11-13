@@ -124,10 +124,19 @@ async def request(
         response = await client().request(method, url, timeout=timeout, **kwargs)
     except httpx.HTTPError as exc:
         raise SourceError(source, FAILED, f"{type(exc).__name__}: {exc}"[:300]) from exc
+    _learn(source, response)
     failure = classify(source, response, keyed=keyed)
     if failure is not None:
         raise failure
     return response
+
+
+def _learn(source: str, response: httpx.Response) -> None:
+    """Let the request queue read the provider's rate-limit headers."""
+
+    from clio_agent.search.scheduler import SCHEDULER  # noqa: PLC0415 - scheduler imports http
+
+    SCHEDULER.learn(source, response.headers)
 
 
 def json_body(source: str, response: httpx.Response) -> Any:

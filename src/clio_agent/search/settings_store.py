@@ -56,6 +56,7 @@ def update_search_settings(change: Callable[[dict[str, Any]], None]) -> SearchSe
             literature_disabled=_as_list(
                 literature.get("disabled", sorted(current.literature_disabled))
             ),
+            paid=_as_list(section.get("paid", sorted(current.paid))),
             service_url=str(service.get("url", current.service_url) or ""),
             contact_email=str(section.get("contact_email", current.contact_email) or ""),
         )

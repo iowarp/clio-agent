@@ -68,6 +68,29 @@ def test_saving_a_key_moves_the_source_first_and_clears_its_rest(client: TestCli
     }
 
 
+def test_rows_show_tier_allowance_and_paid_mark(client: TestClient) -> None:
+    view = client.get("/v1/search/providers").json()
+    openalex = next(r for r in view["literature"] if r["id"] == "openalex")
+    assert openalex["tier"] == "keyless"
+    assert openalex["allowance"] == {"spent": 0, "limit": 0.1, "unit": "usd", "per": "day"}
+    you = next(r for r in view["web"] if r["id"] == "you")
+    assert you["allowance"]["per"] == "day" and you["waiting"] == 0
+    crossref = next(r for r in view["literature"] if r["id"] == "crossref")
+    assert crossref["tier"] == "keyless" and crossref["allowance"] is None
+
+    view = client.patch(
+        "/v1/search/providers", json={"contact_email": "me@example.org", "paid": ["exa"]}
+    ).json()
+    crossref = next(r for r in view["literature"] if r["id"] == "crossref")
+    assert crossref["tier"] == "registered"
+    exa = next(r for r in view["web"] if r["id"] == "exa")
+    assert exa["paid"] is True and exa["tier"] == "keyless"  # paid needs a key too
+    client.put("/v1/search/providers/exa/key", json={"api_key": "k", "placement": "keep"})
+    exa = next(r for r in client.get("/v1/search/providers").json()["web"] if r["id"] == "exa")
+    assert exa["tier"] == "paid" and exa["allowance"] is None
+    client.delete("/v1/search/providers/exa/key")
+
+
 def test_unknown_source_key_is_404(client: TestClient) -> None:
     assert client.put("/v1/search/providers/google/key", json={"api_key": "x"}).status_code == 404
 

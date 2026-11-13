@@ -24,6 +24,8 @@ SEARCH_REASONS: dict[str, str] = {
     "search_source_key_rejected": "The source rejected the saved key.",
     "search_source_failed": "The source failed (network, server error or unreadable answer).",
     "search_source_retried": "The source failed once and was asked again before moving on.",
+    "search_source_waited": "The request waited in CLIO's queue for the source's pace or limit.",
+    "search_source_busy": "Other requests to the source were ahead in CLIO's queue too long.",
     "search_rotated": "The search moved to the next source in the person's order.",
     "search_all_sources_unavailable": "Every enabled source is cooling down or failed.",
     "search_filters_approximate": "A filter the source cannot apply was applied to its results.",

@@ -1686,8 +1686,10 @@ clio_agent/search/literature.py
 clio_agent/search/literature_sources.py
 clio_agent/search/reasons.py
 clio_agent/search/records.py
+clio_agent/search/scheduler.py
 clio_agent/search/settings.py
 clio_agent/search/settings_store.py
+clio_agent/search/terms.py
 clio_agent/search/web.py
 clio_agent/search/web_sources.py
 clio_agent/serve.py

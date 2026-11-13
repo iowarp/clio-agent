@@ -13,7 +13,6 @@ does it ask an approved source's hosted reader, and it says so.
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import re
 from dataclasses import dataclass
@@ -25,20 +24,26 @@ from clio_agent.search import broker, http, web_sources
 from clio_agent.search.http import SourceError
 from clio_agent.search.reasons import SearchNote, note
 from clio_agent.search.records import save_payload
+from clio_agent.search.scheduler import (
+    SCHEDULER,
+    WEB_PATIENCE_S,
+    CallEvents,
+    QueueBusy,
+    caller_id,
+    queue_notes,
+)
 from clio_agent.search.settings import (
     SERVICE_SOURCE,
     SearchSettings,
     key_ref,
     load_search_settings,
 )
+from clio_agent.search.terms import terms_of
 from clio_agent.search.web_sources import WebQuery
 from clio_agent.tools.servers.web_limits import SEARCH_LIMITS
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RESTING_FOR_ALLOWANCE = (http.ALLOWANCE_USED,)
-#: A source that fails outright (network, 404, 5xx) is asked once more after this pause
-#: before it rests, so one glitch does not move the search to the next source.
-RETRY_PAUSE_S = 1.0
 
 
 @dataclass
@@ -110,7 +115,6 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
     if not sources:
         raise SearchFailure("search_no_source", "", [])
     notes: list[SearchNote] = []
-    retried: set[str] = set()
     index = 0
     while index < len(sources):
         source = sources[index]
@@ -140,27 +144,30 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
             index += 1
             continue
         key = source_key(source)
-        await SEARCH_LIMITS.slot(source)
+        events = CallEvents()
         try:
-            answer_ = await web_sources.search(
-                source, query, key=key, timeout=settings.request_timeout_s,
-                service_url=settings.service_url,
+            answer_ = await SCHEDULER.call(
+                source,
+                lambda source=source, key=key: web_sources.search(
+                    source, query, key=key, timeout=settings.request_timeout_s,
+                    service_url=settings.service_url,
+                ),
+                terms=terms_of(source, settings, has_key=bool(key)),
+                caller=caller_id(),
+                patience_s=WEB_PATIENCE_S,
+                events=events,
             )  # fmt: skip
+        except QueueBusy as exc:
+            notes.append(note("search_source_busy", source, exc.detail))
+            index += 1
+            continue
         except SourceError as exc:
-            if exc.kind == http.FAILED and source not in retried:
-                retried.add(source)
-                notes.append(note("search_source_retried", source, exc.detail))
-                await asyncio.sleep(RETRY_PAUSE_S)
-                continue  # the same source, once more
-            if exc.kind == http.KEY_REJECTED:
-                SEARCH_LIMITS.failed(source, exc.kind, exc.detail)
-                SEARCH_LIMITS.cool(source, 600, http.FAILED, "key rejected")
-            else:
-                SEARCH_LIMITS.cool(source, exc.cooldown_s(), exc.kind, exc.detail)
-            continue  # the same source is now resting: the branch above decides
+            if SEARCH_LIMITS.cooldown(source) is None:  # not resting: report it and move on
+                notes.append(note("search_source_failed", source, exc.detail))
+                index += 1
+            continue  # the queue rested the source: the branch above decides
         finally:
-            SEARCH_LIMITS.release(source)
-        SEARCH_LIMITS.answered(source)
+            notes.extend(queue_notes(source, events))
         if index:
             notes.append(note("search_rotated", source, f"after {', '.join(sources[:index])}"))
         return _result(query, source, answer_, notes, settings)
@@ -253,16 +260,18 @@ async def hosted_read(url: str, settings: SearchSettings, why: str) -> dict[str,
     if not is_public_url(url):
         return {"note": note("fetch_private_url", detail=why)}
     for source in _readers(settings):
-        await SEARCH_LIMITS.slot(source)
+        key = source_key(source)
         try:
-            title, text = await web_sources.read_page(source, url, key=source_key(source))
-        except SourceError as exc:
-            SEARCH_LIMITS.cool(source, exc.cooldown_s(), exc.kind, exc.detail)
+            title, text = await SCHEDULER.call(
+                source,
+                lambda source=source, key=key: web_sources.read_page(source, url, key=key),
+                terms=terms_of(source, settings, has_key=bool(key)),
+                caller=caller_id(),
+                patience_s=WEB_PATIENCE_S,
+            )
+        except SourceError:
             continue
-        finally:
-            SEARCH_LIMITS.release(source)
         if text.strip():
-            SEARCH_LIMITS.answered(source)
             return {
                 "title": title,
                 "text": text,

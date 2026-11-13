@@ -1893,6 +1893,11 @@ search.enabled: true
 # Default number of results a search returns (1-50).
 search.max_results: 8
 
+# CLIO_SEARCH_PAID  (list)  <- src/clio_agent/search/settings.py
+# Sources whose saved key is on a paid plan; CLIO then sets no daily
+# allowance of its own for them and lets more requests run at once.
+# search.paid:  # computed at runtime: no_names
+
 # CLIO_SEARCH_REQUEST_TIMEOUT_S  (float)  <- src/clio_agent/search/settings.py
 # Seconds CLIO waits for one search source or page download (2-120); raise
 # on slow or proxied networks such as HPC login nodes.

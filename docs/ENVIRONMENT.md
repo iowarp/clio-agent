@@ -324,6 +324,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SEARCH_ENABLED` | `search.enabled` | bool | `true` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_LITERATURE_DISABLED` | `search.literature.disabled` | list | `no_names` _(computed)_ | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_MAX_RESULTS` | `search.max_results` | int | `8` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_PAID` | `search.paid` | list | `no_names` _(computed)_ | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_REQUEST_TIMEOUT_S` | `search.request_timeout_s` | float | `20.0` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SERVICE_URL` | `search.service.url` | str | _(unset)_ | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SNIPPET_CHARS` | `search.snippet_chars` | int | `300` | `src/clio_agent/search/settings.py` |

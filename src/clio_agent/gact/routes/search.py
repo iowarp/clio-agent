@@ -3,10 +3,12 @@
 Settings (Settings → Web search):
 
 * ``GET /v1/search/providers`` -- every web and literature source in order, with
-  whether it is on, approved, has a key, is resting (``limited_until``) and how
+  whether it is on, approved, has a key, its access tier (no key, contact email,
+  free key, paid key), how much of the free allowance this CLIO used, how many
+  requests wait in CLIO's queue, whether it is resting (``limited_until``), and how
   often it answered or failed today.
 * ``PATCH /v1/search/providers`` -- change order, toggles, approvals, automatic
-  switching, the service URL or the contact email.
+  switching, the service URL, the contact email, or which keys are on a paid plan.
 * ``PUT``/``DELETE /v1/search/providers/{id}/key`` -- keep a source's key in CLIO's
   credential store (never returned, logged or written to config). Adding a key
   puts the source first unless ``placement`` is ``keep``.
@@ -31,6 +33,7 @@ from clio_agent.providers.api_key_store import ProviderApiKeyStore
 from clio_agent.search import broker, http
 from clio_agent.search.catalog import LITERATURE_INFO, WEB_INFO
 from clio_agent.search.fetch import web_fetch
+from clio_agent.search.scheduler import SCHEDULER
 from clio_agent.search.settings import (
     LITERATURE_APPROVAL,
     LITERATURE_SOURCES,
@@ -42,6 +45,7 @@ from clio_agent.search.settings import (
     load_search_settings,
 )
 from clio_agent.search.settings_store import update_search_settings
+from clio_agent.search.terms import TIER_WORDS, terms_for, tier_of
 from clio_agent.search.web import SearchFailure, web_search
 from clio_agent.search.web_sources import WebQuery
 from clio_agent.tools.servers.web_limits import SEARCH_LIMITS
@@ -62,10 +66,19 @@ def _row(
 ) -> dict[str, Any]:
     source = str(info["id"])
     state = status.get(source, {})
+    keyed = _has_key(source)
+    tier = tier_of(source, settings, has_key=keyed)
+    queue = SCHEDULER.view(source, terms_for(source, tier))
     return {
         **info,
         **extra,
-        "has_key": _has_key(source),
+        "has_key": keyed,
+        "paid": source in settings.paid,
+        "tier": tier,
+        "tier_words": TIER_WORDS[tier],
+        "allowance": queue["used"],
+        "waiting": queue["waiting"],
+        "running": queue["running"],
         "declined": SEARCH_LIMITS.declined(source),
         "limited_until": state.get("limited_until"),
         "limited_kind": state.get("limited_kind"),
@@ -144,6 +157,8 @@ def _apply_patch(body: dict[str, Any]) -> SearchSettings:
             section["approved"] = [str(x) for x in body["approved"]]
         if "service_url" in body:
             section.setdefault("service", {})["url"] = str(body["service_url"] or "")
+        if "paid" in body:
+            section["paid"] = [str(x) for x in body["paid"]]
         if "contact_email" in body:
             section["contact_email"] = str(body["contact_email"] or "")
 
@@ -249,7 +264,12 @@ def register_search_routes(app: FastAPI) -> None:
 
     @app.get("/v1/limits")
     async def service_limits() -> dict[str, Any]:
-        return {"sources": SEARCH_LIMITS.status()}
+        settings = load_search_settings()
+        rows = SEARCH_LIMITS.status()
+        for name, row in rows.items():
+            tier = tier_of(name, settings, has_key=_has_key(name))
+            row.update(tier=tier, **SCHEDULER.view(name, terms_for(name, tier)))
+        return {"sources": rows}
 
 
 __all__ = ["providers_view", "register_search_routes"]

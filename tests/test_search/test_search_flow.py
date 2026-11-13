@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from clio_agent.search import broker, fetch, http, web, web_sources
+from clio_agent.search import broker, fetch, http, scheduler, web, web_sources
 from clio_agent.search.http import SourceError
 from clio_agent.search.records import WebResult
 from clio_agent.search.settings import build_settings, load_search_settings
@@ -147,7 +147,7 @@ def test_switch_always_saves_auto_switch(monkeypatch) -> None:
 def test_every_source_resting_is_one_typed_failure(monkeypatch) -> None:
     down = SourceError("x", http.FAILED, "HTTP 503")
     monkeypatch.setattr(web_sources, "search", FakeSources({"keenable": [down], "exa": [down]}))
-    monkeypatch.setattr(web, "RETRY_PAUSE_S", 0.0)
+    monkeypatch.setattr(scheduler, "RETRY_PAUSE_S", 0.0)
     _settings(
         approved=["keenable", "exa"],
         web={"order": ["keenable", "exa"], "disabled": ["firecrawl", "you", "parallel"]},
@@ -167,7 +167,7 @@ def test_one_failure_retries_the_same_source_before_rotating(monkeypatch) -> Non
     glitch = SourceError("keenable", http.FAILED, "HTTP 404")
     fake = FakeSources({"keenable": [glitch, _ok()], "exa": [_ok()]})
     monkeypatch.setattr(web_sources, "search", fake)
-    monkeypatch.setattr(web, "RETRY_PAUSE_S", 0.0)
+    monkeypatch.setattr(scheduler, "RETRY_PAUSE_S", 0.0)
     _settings(approved=["keenable"], web={"order": ["keenable", "exa"]})
     result = asyncio.run(web.web_search(WebQuery(query="q")))
     assert result["source"] == "keenable"

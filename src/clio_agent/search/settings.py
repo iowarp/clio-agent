@@ -88,6 +88,7 @@ class SearchSettings:
     auto_switch: bool = False
     approved: frozenset[str] = frozenset()
     literature_disabled: frozenset[str] = frozenset()
+    paid: frozenset[str] = frozenset()
     service_url: str = ""
     contact_email: str = ""
     request_timeout_s: float = 20.0
@@ -153,6 +154,7 @@ def build_settings(
     auto_switch: bool = False,
     approved: Iterable[str] = (),
     literature_disabled: Iterable[str] = (),
+    paid: Iterable[str] = (),
     service_url: str = "",
     contact_email: str = "",
     request_timeout_s: float = 20.0,
@@ -192,6 +194,7 @@ def build_settings(
         literature_disabled=frozenset(
             _names("search.literature.disabled", literature_disabled, LITERATURE_SOURCES)
         ),
+        paid=frozenset(_names("search.paid", paid, (*web_known, *LITERATURE_SOURCES))),
         service_url=url,
         contact_email=email,
         request_timeout_s=float(request_timeout_s),
@@ -235,6 +238,9 @@ def load_search_settings() -> SearchSettings:
             default=no_names,
             cast=conf.as_csv,
         ),
+        paid=conf.resolve(
+            "search.paid", env="CLIO_SEARCH_PAID", default=no_names, cast=conf.as_csv
+        ),
         service_url=conf.resolve(
             "search.service.url", env="CLIO_SEARCH_SERVICE_URL", default="", cast=conf.as_str
         ),
@@ -268,6 +274,7 @@ def settings_document(settings: SearchSettings) -> dict[str, Any]:
         },
         "approved": sorted(settings.approved),
         "literature": {"disabled": sorted(settings.literature_disabled)},
+        "paid": sorted(settings.paid),
         "service": {"url": settings.service_url},
         "contact_email": settings.contact_email,
     }

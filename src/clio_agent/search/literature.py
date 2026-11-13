@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -25,11 +24,19 @@ from clio_agent.search import literature_sources as src
 from clio_agent.search.http import SourceError
 from clio_agent.search.reasons import SearchNote, note
 from clio_agent.search.records import PaperRecord, save_payload
+from clio_agent.search.scheduler import (
+    LITERATURE_PATIENCE_S,
+    SCHEDULER,
+    CallEvents,
+    caller_id,
+    queue_notes,
+)
 from clio_agent.search.settings import (
     LITERATURE_APPROVAL,
     SearchSettings,
     load_search_settings,
 )
+from clio_agent.search.terms import OPENALEX_COST, terms_of
 from clio_agent.search.web import SearchFailure, source_key
 from clio_agent.tools.servers.web_limits import SEARCH_LIMITS
 
@@ -80,10 +87,6 @@ async def _approved(settings: SearchSettings) -> None:
         raise SearchFailure("search_not_approved", "literature sources", [])
 
 
-#: A burst limit that lifts within this many seconds is waited out, not reported.
-SHORT_WAIT_S = 20.0
-
-
 def _failure_code(kind: str) -> str:
     return (
         "literature_source_budget_used"
@@ -92,34 +95,36 @@ def _failure_code(kind: str) -> str:
     )
 
 
-async def _call(source: str, run: Callable[[], Awaitable[Any]], notes: list[SearchNote]) -> Any:
-    """Ask one source, waiting out a short burst limit once; a failure becomes a note."""
+async def _call(
+    source: str,
+    run: Callable[[], Awaitable[Any]],
+    notes: list[SearchNote],
+    *,
+    cost_usd: float = 0.0,
+) -> Any:
+    """Ask one source through CLIO's request queue; a failure becomes a note."""
 
-    for attempt in (1, 2):
-        resting = SEARCH_LIMITS.cooldown(source)
-        if resting is not None:
-            remaining = resting.until - time.time()
-            if attempt == 1 and resting.kind == http.RATE_LIMITED and remaining <= SHORT_WAIT_S:
-                await asyncio.sleep(max(remaining, 0.0))
-                continue
-            notes.append(note(_failure_code(resting.kind), source, resting.detail))
-            return None
-        await SEARCH_LIMITS.slot(source)
-        try:
-            value = await run()
-        except SourceError as exc:
-            SEARCH_LIMITS.cool(source, exc.cooldown_s(), exc.kind, exc.detail)
-            if attempt == 1 and exc.kind == http.RATE_LIMITED and exc.cooldown_s() <= SHORT_WAIT_S:
-                await asyncio.sleep(exc.cooldown_s())
-                continue
-            notes.append(note(_failure_code(exc.kind), source, exc.detail))
-            return None
-        finally:
-            SEARCH_LIMITS.release(source)
-        SEARCH_LIMITS.answered(source)
-        return value
-    notes.append(note("literature_source_failed", source, "still rate-limited"))
-    return None
+    settings = load_search_settings()
+    events = CallEvents()
+    try:
+        return await SCHEDULER.call(
+            source,
+            run,
+            terms=terms_of(source, settings, has_key=bool(source_key(source))),
+            caller=caller_id(),
+            cost_usd=cost_usd,
+            patience_s=LITERATURE_PATIENCE_S,
+            events=events,
+        )
+    except SourceError as exc:
+        notes.append(note(_failure_code(exc.kind), source, exc.detail))
+        return None
+    finally:
+        notes.extend(queue_notes(source, events))
+
+
+#: What one search request costs per source (only OpenAlex charges).
+_SEARCH_COST = {"openalex": OPENALEX_COST["search"]}
 
 
 def _title_key(record: PaperRecord) -> str:
@@ -247,7 +252,12 @@ async def literature_search(
         ),
     }
     notes: list[SearchNote] = []
-    batches = await asyncio.gather(*(_call(name, runners[name], notes) for name in sources))
+    batches = await asyncio.gather(
+        *(
+            _call(name, runners[name], notes, cost_usd=_SEARCH_COST.get(name, 0.0))
+            for name in sources
+        )
+    )
     answered = [name for name, batch in zip(sources, batches, strict=True) if batch is not None]
     if not answered:
         raise SearchFailure("search_all_sources_unavailable", "literature sources", notes)
@@ -380,6 +390,7 @@ async def _references(
             "openalex",
             lambda: src.openalex_list("openalex_id:" + "|".join(batch), len(batch), key=key),
             notes,
+            cost_usd=OPENALEX_COST["list"],
         )
         if found:
             rows = [_brief(r) for r in found]
@@ -397,7 +408,10 @@ async def _citers(
     openalex_id = record.ids.get("openalex", "").rsplit("/", 1)[-1]
     if openalex_id:
         found = await _call(
-            "openalex", lambda: src.openalex_list(f"cites:{openalex_id}", limit, key=key), notes
+            "openalex",
+            lambda: src.openalex_list(f"cites:{openalex_id}", limit, key=key),
+            notes,
+            cost_usd=OPENALEX_COST["list"],
         )
         if found:
             rows = [_brief(r) for r in found]
