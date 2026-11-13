@@ -19,6 +19,7 @@ class _Executor:
     def __init__(self, app_ref: list[Any]) -> None:
         self.app_ref = app_ref
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.sessions: list[str] = []
         self.fail: Exception | None = None
         self.error_result = False
         self.definitions = {
@@ -36,6 +37,10 @@ class _Executor:
 
     def call_tool_result(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, args))
+        from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+        # A call made for a view belongs to the session as a turn's call does.
+        self.sessions.append(gact_context.active_session_id())
         if self.fail is not None:
             raise self.fail
         result: dict[str, Any] = {
@@ -90,6 +95,7 @@ def test_open_admits_the_view_without_adding_it_to_the_transcript(tmp_path: Path
         # The view tool is model-and-app; set_time is app-callable; model_only is not.
         assert body["server_tools"] == ["open_timeline", "plain", "set_time"]
         assert executor.calls == [("clock_open_timeline", {"time": 3})]
+        assert executor.sessions == [sid]
         assert not getattr(app.state, "live_assistant_parts", {}).get(sid)
         # The surface holds the call; it is not saved on the session (MA18 is for transcript views).
         assert SESSION_KEY not in (app.state.sessions.get(sid).metadata or {})
