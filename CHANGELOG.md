@@ -6,6 +6,13 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+
+- Pin `clio-kit==2.12.5`. The ADIOS server no longer builds ADIOS2 from source on
+  Windows (no Windows wheels exist); its ADIOS2 tools report `Adios2Unavailable`
+  there instead. This cuts the first ADIOS prepare on a new Windows install from
+  minutes to seconds. `install.sh` keeps its own pin.
+
 ## [0.9.7.1] - 2026-11-13
 
 No GACT-contract change. Fixes for 0.9.7:

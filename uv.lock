@@ -788,7 +788,7 @@ requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.159" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "copilot", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
-    { name = "clio-kit", specifier = "==2.12.3" },
+    { name = "clio-kit", specifier = "==2.12.5" },
     { name = "clio-schemas", specifier = "==0.7.0" },
     { name = "dspy", specifier = "==3.4.0" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -878,16 +878,16 @@ install-bootstrap = [
 
 [[package]]
 name = "clio-kit"
-version = "2.12.3"
+version = "2.12.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },
     { name = "tomli-w" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/27/ac/185eec6d0e73e0fb6da517a70b3c1492489c8cbe72aeb0b823e48ff8ecc6/clio_kit-2.12.3.tar.gz", hash = "sha256:a6e3570b294a019e10011d701ee3f70aa40d0459af2d2d7a327577728116bcc1", size = 267526, upload-time = "2026-11-11T20:08:42.339Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/cb/f3fe7660e936bdcc89aa322cd58d71bc62b293862f6b4892ec987c1c05af/clio_kit-2.12.5.tar.gz", hash = "sha256:4d9c7f9af234fa7499d55bfec906df809fd10231be6cbea6c9b4ccb4d50e0df2", size = 267555, upload-time = "2026-11-13T17:04:07.125Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/a0/7f3cd21c658cb34ee8c141e08bbf0d3810212eada6cf57552cd2c777f936/clio_kit-2.12.3-py3-none-any.whl", hash = "sha256:a1bf04284dd640d006a587dbc7c20ac71412a0971f2403f27d3a30ee0f74290f", size = 301722, upload-time = "2026-11-11T20:08:40.853Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/91/fd80707b864614cbbb4c6ae5ad3779cb0756a780e58a695c2fec89e813a7/clio_kit-2.12.5-py3-none-any.whl", hash = "sha256:543f37cf165808daa8fe2f23499d4258a5557ed6ea659380b9971fdc73a8b08c", size = 301710, upload-time = "2026-11-13T17:04:05.713Z" },
 ]
 
 [[package]]
