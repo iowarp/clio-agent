@@ -1,0 +1,12 @@
+[
+ {"open": "pv-h2"},
+ {"send": "Open /home/user/wt/q-pv/clio-agent/.cloud-run/pvdata/wavelet.vti in ParaView on this machine as a fresh scene, discarding any saved one. Then add an isosurface of RTData at 150 and a slice through the middle, normal to Z."},
+ {"view": true},
+ {"status": "built"},
+ {"shot": "h2-built"},
+ {"restart": true},
+ {"view": true},
+ {"status": "reopened after restart"},
+ {"shot": "h2-reopened"},
+ {"hero": "h2-hero-reopened"}
+]

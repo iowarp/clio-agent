@@ -83,3 +83,46 @@ def test_a_rebound_spec_takes_the_new_values_and_keeps_the_plugin_folders(
     assert after.env["FIXTURE_WHERE"] == "node08"
     assert after.env["PLUGIN_ROOT"] == "/p" and after.env["PLUGIN_DATA"] == "/d"
     assert after.source == "plugin:fixture-secret-skills" and after.connector == "fixture-secret"
+
+
+def test_a_rebind_lists_the_namespace_once_for_every_fleet(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each listing starts the server: two resident fleets must not cost two starts.
+    import threading
+    from types import SimpleNamespace
+
+    from clio_agent.gact import connector_rebind
+    from clio_agent.tools import gateway, mcp_discovery
+
+    found = entries.load_catalog().entries["fixture-secret"]
+    declared = materialize.declaration(found, {"where": "node08"})
+    current = spec_from_declaration("fixture-secret", declared, source="connector")
+    listings: list[str] = []
+    monkeypatch.setattr(
+        mcp_discovery,
+        "ensure_namespace",
+        lambda namespace, spec: listings.append(namespace) or {"fixture-secret_check": {}},
+    )
+    monkeypatch.setattr(gateway, "build_gateway", lambda *_a, **_k: object())
+    monkeypatch.setattr(gateway, "namespace_proxies", lambda _g: {})
+    monkeypatch.setattr(gateway, "namespace_direct_factories", lambda _g: {})
+
+    def fleet() -> SimpleNamespace:
+        merged: list[dict] = []
+        return SimpleNamespace(
+            _clio_namespace_specs={"fixture-secret": current},
+            reset_namespace=lambda _n: None,
+            merge_namespace_tools=lambda _n, tools: merged.append(tools),
+            merged=merged,
+        )
+
+    default, workspace = fleet(), fleet()
+    agent = SimpleNamespace(
+        tool_executor=default,
+        _workspace_state=lambda: (threading.Lock(), {"/w": workspace}, {}),
+    )
+    touched = connector_rebind.rebind_namespace(agent, "fixture-secret", declared)
+    assert touched == ["", "/w"]
+    assert listings == ["fixture-secret"]
+    assert default.merged == workspace.merged == [{"fixture-secret_check": {}}]

@@ -19,7 +19,14 @@ from clio_agent.gact.mcp_app_snapshot_script import SNAPSHOT_METHOD, SNAPSHOT_SC
 
 
 def _host_origin(request: Request) -> str:
-    """Validate and return the loopback/Tauri embedding origin."""
+    """Validate and return the embedding origin: loopback, Tauri, or a trusted UI origin.
+
+    A UI served from another name is trusted when its origin is a configured
+    ``gact.cors.origins`` entry or its host is in ``gact.allowed_hosts`` (a CLIO
+    reached over the network).
+    """
+
+    from clio_agent.gact.cors import gact_allowed_hosts, gact_cors_origins  # noqa: PLC0415
 
     referer = request.headers.get("referer", "")
     if not referer:
@@ -27,13 +34,15 @@ def _host_origin(request: Request) -> str:
     parsed = urlparse(referer)
     if parsed.scheme in {"tauri", "asset"}:
         return f"{parsed.scheme}:"
-    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
-        "127.0.0.1",
-        "localhost",
-        "::1",
-    }:
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    hostname = (parsed.hostname or "").lower()
+    allowed = gact_allowed_hosts()
+    trusted = hostname in {"127.0.0.1", "localhost", "::1"} or (
+        "*" not in allowed and hostname in allowed
+    )
+    if parsed.scheme not in {"http", "https"} or not (trusted or origin in gact_cors_origins()):
         raise HTTPException(status_code=403, detail="sandbox embedding origin is not allowed")
-    return f"{parsed.scheme}://{parsed.netloc}"
+    return origin
 
 
 def _request_origin(value: str) -> str:
@@ -58,7 +67,8 @@ def _sandbox_url(request: Request, path: str, *, namespace: str | None) -> str:
     """
 
     port = request.url.port
-    netloc = sandbox_host_for(namespace) + (f":{port}" if port else "")
+    host = sandbox_host_for(namespace, (request.url.hostname or "localhost").lower())
+    netloc = host + (f":{port}" if port else "")
     return f"{request.url.scheme}://{netloc}{path}"
 
 

@@ -30,7 +30,13 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -39,8 +45,10 @@ from websockets.asyncio.client import connect as connect_websocket
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from clio_agent.gact.mcp_app_service import (
+    SERVICE_DOWN_MESSAGE,
     record_service_reason,
     service_connections,
+    service_error_page,
     service_refusal,
 )
 from clio_agent.gact.mcp_app_service_declaration import (
@@ -77,7 +85,14 @@ APP_CLOSED_CODE = 4410
 _CONNECT_TIMEOUT_S = 10.0
 
 
-def _envelope(status: int, reason: str, message: str) -> JSONResponse:
+def _envelope(status: int, reason: str, message: str, request: Request | None = None) -> Response:
+    """The proxy's own error: JSON for a fetch, a readable page for a page load."""
+    if request is not None and _is_navigation(request):
+        return HTMLResponse(
+            service_error_page(message, reason),
+            status_code=status,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
     body = ErrorEnvelope(error=ErrorInfo(error=reason, message=message, recoverable=False))
     return JSONResponse(
         status_code=status,
@@ -86,8 +101,16 @@ def _envelope(status: int, reason: str, message: str) -> JSONResponse:
     )
 
 
-def _refused(denied: ServiceRefusal) -> JSONResponse:
-    return _envelope(403, denied.reason, denied.message)
+def _is_navigation(request: Request) -> bool:
+    """A frame or page loading this URL as a document, not a script's fetch."""
+    mode = request.headers.get("sec-fetch-mode", "")
+    if mode:
+        return mode == "navigate"
+    return request.headers.get("accept", "").lstrip().startswith("text/html")
+
+
+def _refused(denied: ServiceRefusal, request: Request | None = None) -> Response:
+    return _envelope(403, denied.reason, denied.message, request)
 
 
 def _upstream_target(scope: Scope, data_ref: str) -> str:
@@ -215,7 +238,7 @@ def register_mcp_app_service_routes(
         record = resolve(sid, app_id, data_ref)
         denied = await admit(request, record)
         if denied is not None:
-            return _refused(denied)
+            return _refused(denied, request)
         service = record.service
         target = f"http://127.0.0.1:{service.port}{_upstream_target(request.scope, data_ref)}"
         body = None if request.method in {"GET", "HEAD"} else await request.body()
@@ -237,11 +260,7 @@ def register_mcp_app_service_routes(
             record_service_reason(
                 "service_unreachable", app_instance_id=app_id, error=type(exc).__name__
             )
-            return _envelope(
-                502,
-                "service_unreachable",
-                "This view's live service did not answer. Its server may have stopped.",
-            )
+            return _envelope(502, "service_unreachable", SERVICE_DOWN_MESSAGE, request)
 
         connections = service_connections(app)
 

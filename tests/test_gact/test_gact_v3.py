@@ -373,6 +373,8 @@ def test_v3_projects_mcp_app_as_a_typed_opaque_block() -> None:
         "data_ref": "opaque-capability",
         "mime_type": "text/html;profile=mcp-app",
         "height": 420,
+        # The mode the part was made in (mcp-apps-contracts.md, MA4).
+        "display_mode": "inline",
     }
 
 

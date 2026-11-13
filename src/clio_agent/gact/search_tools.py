@@ -249,6 +249,8 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
                 "text": f"Not found: {', '.join(missing)}",
             }
         )
+    if row.get("loading"):
+        blocks.append({"id": "loading", "type": "text", "text": str(row["loading"])})
     if tools:
         summary = f"Loaded {len(tools)} tool{'s' if len(tools) != 1 else ''}"
         status = ""
@@ -292,6 +294,11 @@ def build_search_tools_tool() -> Any:
         loop = active_loop()
         catalog = getattr(getattr(loop, "agent", None), "_clio_deferred_catalog", None)
         text, structured = search_result(catalog, query, limit)
+        if structured["missing"] or not structured["tools"]:  # a view may still be loading
+            from clio_agent.gact.mcp_app_tools import loading_note  # noqa: PLC0415
+
+            if loading := loading_note(_ctx.active_app(), _ctx.active_session_id()):
+                text, structured["loading"] = f"{text}\n\n{loading}", loading
         names = [row["name"] for row in structured["tools"]]
         _record_loaded(_ctx.active_app(), _ctx.active_session_id(), names)
         trace.event(

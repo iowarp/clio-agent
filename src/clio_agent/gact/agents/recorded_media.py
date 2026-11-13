@@ -55,7 +55,9 @@ def _attached(call_id: str, descriptor: Mapping[str, Any]) -> tuple[Any, ...]:
     path = str(descriptor.get("path") or "")
     pages = str(descriptor.get("pages") or "")
     kind = "PDF" if str(descriptor.get("media_type") or "") == "application/pdf" else "image"
-    label = f"[{kind} viewed by the script: {path}{f' pages {pages}' if pages else ''}]"
+    label = str(descriptor.get("label") or "") or (
+        f"[{kind} viewed by the script: {path}{f' pages {pages}' if pages else ''}]"
+    )
     try:
         part = _media(descriptor)
     except ValueError as exc:

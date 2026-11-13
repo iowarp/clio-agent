@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from clio_agent.gact.mcp_app_calls import set_saved_display_mode
+from clio_agent.gact.mcp_app_cleanup import _cleanup_record
 from clio_agent.gact.mcp_app_context import (
     app_context_block,
     forget_closed_app,
@@ -29,7 +30,10 @@ from clio_agent.gact.mcp_app_sandbox import (
     _host_origin,
     _sandbox_url,
 )
-from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
+from clio_agent.gact.mcp_app_sandbox_origin import (
+    SandboxHostUnavailable,
+    sandbox_host_matches,
+)
 from clio_agent.gact.mcp_app_service import (
     close_app_service,
     record_service_reason,
@@ -41,7 +45,6 @@ from clio_agent.gact.mcp_app_service_proxy import register_mcp_app_service_route
 from clio_agent.gact.mcp_app_tool_routes import register_app_context_and_tool_routes
 from clio_agent.gact.mcp_apps import (
     MCPAppRecord,
-    _cleanup_record,
     _not_found,
     _registry,
     _resolve_app_tool,
@@ -101,6 +104,16 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         sandbox_path = (
             f"/v1/sessions/{sid}/mcp-apps/{app_id}/sandbox?{urlencode({'data_ref': data_ref})}"
         )
+        try:
+            sandbox_url = _sandbox_url(request, sandbox_path, namespace=record.source_namespace)
+            service_fields = await service_descriptor_fields(app, request, record)
+        except SandboxHostUnavailable as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=False)
+                ).model_dump(exclude_none=True),
+            ) from exc
         return JSONResponse(
             {
                 "protocol_version": MCP_APPS_PROTOCOL_REVISION,
@@ -113,10 +126,8 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 },
                 "tool_input": record.tool_input,
                 "tool_result": record.tool_result,
-                "sandbox_url": _sandbox_url(
-                    request, sandbox_path, namespace=record.source_namespace
-                ),
-                **await service_descriptor_fields(app, request, record),
+                "sandbox_url": sandbox_url,
+                **service_fields,
                 "display_mode": record.display_mode,
                 "pinned": record.pinned,
             },
@@ -128,7 +139,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         sid: str, app_id: str, data_ref: str, request: Request
     ) -> HTMLResponse:
         record = resolve(sid, app_id, data_ref)
-        if request.url.hostname != sandbox_host_for(record.source_namespace):
+        if not sandbox_host_matches(request.url.hostname or "", record.source_namespace):
             # Never on the UI's or the API's origin: the view is same-origin with it.
             raise HTTPException(status_code=403, detail="sandbox_host_mismatch")
         await ensure_resource(record)

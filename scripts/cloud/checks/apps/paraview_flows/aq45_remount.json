@@ -1,0 +1,33 @@
+[
+ {
+  "session": "sess_dfb375c3a62f",
+  "workspace": "ws_e957fa6fcb31"
+ },
+ {
+  "showTab": true
+ },
+ {
+  "view": true
+ },
+ {
+  "modes": true
+ },
+ {
+  "shot": "aq45-remote-tab"
+ },
+ {
+  "maximize": true
+ },
+ {
+  "shot": "aq45-hero-remote-maximized"
+ },
+ {
+  "drag": true
+ },
+ {
+  "wait": 3000
+ },
+ {
+  "shot": "aq45-hero-remote-maximized-dragged"
+ }
+]

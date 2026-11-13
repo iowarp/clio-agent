@@ -167,3 +167,139 @@ def test_the_tool_row_shows_the_value_or_the_refusal() -> None:
     )
     assert refused["status"] == "failed"
     assert refused["blocks"][0]["detail"] == "connector_secret_not_agent_settable"
+
+
+def test_a_refused_sign_in_waits_for_the_card_then_runs_again(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextvars
+
+    from clio_agent.tools.mcp_sign_in import MCPSignInNeeded
+
+    app = _app()
+    spec = SimpleNamespace(connector="fixture-signin")
+    seen: list[str] = []
+
+    def answered(_app: Any, sid: str, connector: str, tool: str) -> Any:
+        seen.append(connector)
+        return None
+
+    monkeypatch.setattr(connector_setup, "await_setup", answered)
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.globals._resolve_tool_session", lambda _app: ("sess_a", None)
+    )
+    failed = RuntimeError("Client failed to connect")
+    failed.__cause__ = MCPSignInNeeded("fixture-signin")
+    context = contextvars.copy_context()
+    assert asyncio.run(connector_setup.retry_after_setup(app, context, spec, "t", failed))
+    assert seen == ["fixture-signin"]
+    seen.clear()
+    # A plain protocol error (the proxy dropped the type) still waits while CLIO's own
+    # record says the sign-in is missing, and does not for a connector with nothing missing.
+    assert asyncio.run(
+        connector_setup.retry_after_setup(app, context, spec, "t", RuntimeError("other"))
+    )
+    state.update("fixture-plain", enabled=True)
+    ready = SimpleNamespace(connector="fixture-plain")
+    assert not asyncio.run(
+        connector_setup.retry_after_setup(app, context, ready, "t", RuntimeError("other"))
+    )
+    plain = SimpleNamespace(connector="")
+    assert not asyncio.run(connector_setup.retry_after_setup(app, context, plain, "t", failed))
+
+    monkeypatch.setattr(
+        connector_setup,
+        "await_setup",
+        lambda *_: SimpleNamespace(deny_message="connector_declined: x"),
+    )
+    with pytest.raises(PermissionError, match="connector_declined"):
+        asyncio.run(connector_setup.retry_after_setup(app, context, spec, "t", failed))
+
+
+def test_the_stdio_preload_offers_only_the_entrys_tools(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mcp.types import Tool
+
+    from clio_agent.connectors import listing
+    from clio_agent.tools import listing_cache
+
+    tools = [Tool(name=n, inputSchema={"type": "object"}) for n in ("fixture_ping", "other")]
+    monkeypatch.setattr(listing_cache, "load_listing", lambda *_a, **_k: tools)
+    entry = entries.load_catalog().entries["fixture-plain"]
+    monkeypatch.setattr(
+        state,
+        "all_entries",
+        lambda: {
+            "fixture-plain": entry.__class__(**{**entry.__dict__, "tools": ("fixture_ping",)})
+        },
+    )
+    spec = SimpleNamespace(command="py", args=(), env={}, connector="fixture-plain")
+    assert [t.name for t in listing.cached_offered("fixture-plain", spec)] == ["fixture_ping"]
+    unbound = SimpleNamespace(command="py", args=(), env={}, connector="")
+    assert len(listing.cached_offered("fixture-plain", unbound)) == 2
+
+
+def test_several_values_are_set_with_one_apply(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Each apply restarts the connector's server: a host, a jump host and a prepare
+    # line given together cost one restart, not three.
+    from clio_agent.gact import connector_tool, context
+
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "remote.yaml").write_text(
+        """- id: fixture-remote
+  name: Fixture Remote
+  description: A test connector reached through a jump host
+  server:
+    command: python3
+    args: [-c, "pass"]
+    env: {WHERE: "${need.address}", VIA: "${need.via}"}
+  needs:
+    - {key: address, kind: address, label: Where it runs, required: false, agent_settable: true}
+    - {key: via, kind: value, label: Jump host, required: false, agent_settable: true}
+    - {key: token, kind: secret, label: Token, required: false}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLIO_CONNECTOR_CATALOG_DIRS", f"{fixture_catalog}:{catalog}")
+    state.update("fixture-remote", enabled=True)
+    applied: list[dict[str, Any]] = []
+
+    async def set_values(_app: Any, connector_id: str, values: Any, **kw: Any) -> dict:
+        applied.append({"connector": connector_id, "values": dict(values), **kw})
+        return {"state": {"status": "ready"}, "tool_count": 2}
+
+    monkeypatch.setattr(service, "set_values", set_values)
+    monkeypatch.setattr(context, "active_app", lambda: _app())
+    result = asyncio.run(
+        connector_tool.set_connector_value(
+            "Fixture Remote", values={"address": "node08", "Jump host": "login"}
+        )
+    )
+    assert applied == [
+        {
+            "connector": "fixture-remote",
+            "values": {"address": "node08", "via": "login"},
+            "by_agent": True,
+        }
+    ]
+    assert result["values"] == {"Where it runs": "node08", "Jump host": "login"}
+    row = connector_tool.present(
+        {"connector": "Fixture Remote", "values": {"address": "node08", "via": "login"}},
+        None,
+        result,
+    )
+    assert row["subject"] == "Where it runs, Jump host of Fixture Remote"
+    assert [b["text"] for b in row["blocks"]] == ["node08", "login", "Ready (2 tools)"]
+
+    one = asyncio.run(connector_tool.set_connector_value("fixture-remote", "via", "ares"))
+    assert applied[-1]["values"] == {"via": "ares"} and one["value"] == "ares"
+    unknown = asyncio.run(
+        connector_tool.set_connector_value("fixture-remote", values={"nope": "x"})
+    )
+    assert unknown["error"] == "connector_need_unknown" and len(applied) == 2
+    empty = asyncio.run(connector_tool.set_connector_value("fixture-remote"))
+    assert empty["error"] == "connector_value_missing"

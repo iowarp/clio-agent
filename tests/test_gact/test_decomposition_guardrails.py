@@ -259,10 +259,14 @@ from clio_agent.gact.app import build_app
 # 443 -> 451: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
 # /v1/connectors, POST /v1/connectors, GET and DELETE /v1/connectors/{id}, GET .../logo,
 # PUT .../values, POST .../enable and POST .../disable.
-# 451 -> 469: the integration head registered 467 (the apps streams' MCP App routes:
-# display mode, pin, downloads, app tools, reopen, live, the service route) and the
-# look routes add PUT /v1/sessions/{sid}/mcp-apps/{app_id}/shown and POST
-# .../looks/{call_id} (gact/mcp_app_look_routes.py, CM1).
+# 451 -> 467: MCP Apps surfaces, all under /v1/sessions/{sid}/mcp-apps/ in owner modules:
+# PUT {app_id}/display-mode, POST {app_id}/downloads, PUT {app_id}/pin (mcp_app_routes.py);
+# GET {app_id}/live, POST reopen (mcp_app_calls.py); PUT {app_id}/app-tools, POST
+# {app_id}/app-tool-results/{call_id} (mcp_app_tool_routes.py); the service proxy
+# {app_id}/service/{data_ref} GET and HEAD, and .../{path:path} GET, HEAD, POST, PUT, PATCH,
+# DELETE and OPTIONS (mcp_app_service_proxy.py).
+# 467 -> 469: looking at a view (gact/mcp_app_look_routes.py, CM1): PUT
+# {app_id}/shown and POST {app_id}/looks/{call_id}.
 EXPECTED_ROUTE_METHOD_PAIRS = 469
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is

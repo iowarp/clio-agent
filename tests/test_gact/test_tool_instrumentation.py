@@ -621,6 +621,8 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
             "set_goal": {"condition": "Save the fictional report"},
             "wait_for": {"tasks": "missing-task"},
             "goal_status": {},
+            # No enabled connector of that name: the typed connector_not_enabled reply.
+            "set_connector_value": {"connector": "missing", "key": "address", "value": "x"},
             # No parent AgentTask in this harness -> returns the typed
             # alert_card_no_parent error rather than raising; the tool_call part
             # still lands unconditionally (that is exactly the invariant here).

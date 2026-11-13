@@ -216,6 +216,11 @@ KEY_NOTES: dict[str, str] = {
         "Seconds after which an unused interactive tool view in the conversation closes; "
         "views in a tab or a dashboard never close on a timer."
     ),
+    "gact.mcp_apps.sandbox_host": (
+        "Host name (or *.pattern for one host per server) that interactive tool views load "
+        "from when CLIO is reached over the network; it must reach CLIO and differ from the "
+        "name the web UI uses."
+    ),
     "gact.mcp_apps.download_max_bytes": (
         "Byte ceiling on one file download an interactive tool view saves into the workspace."
     ),

@@ -1,0 +1,114 @@
+# Ledger fragment: `q-pv` (ParaView connector qualified through CLIO)
+
+Phase 3 qualification of AQ35 to AQ50 and AQ52, run through CLIO's real UI on the merged code. Stack N=15: agent 8815, UI 5215, `CLIO_CLOUD_ISOLATE=1`, `CLIO_ARC_CTE_FILE_CAPACITY=128MB`, provider `claude_code`.
+
+Branches are `ws/q-pv` in clio-agent, gact-tui (a merge of the integration branch only), clio-kit and clio-agent-marketplace (unchanged). clio-agent merged `claude/parallel-agents-plan-uzpzm0` at `2f5aaa614` midway, before AQ47.
+
+clio-agent's venv runs the `ws/q-pv` clio-kit editable, which holds paraview-mcp 3.0.0. The connector launched the new server: `GET /v1/mcp/configuration/paraview` listed the 13 tools, and the server lists `ui://paraview/view`.
+
+The cluster fixture ran in its container form. Build and run:
+
+- `tests/fixtures/paraview-cluster/cluster.sh up`;
+- `variant pvserver` for AQ40;
+- `grow start --interval 10 --steps 60` for AQ46;
+- `scenarios 50`;
+- `down` at the end.
+
+## Harness (`scripts/cloud/checks/apps/`)
+
+- **`paraview_flow.mjs`** runs a JSON list of actions (`PV_ACTIONS`) through the real UI, for example:
+  - open a conversation, send a plain request and settle;
+  - wait for the trame view through the service route;
+  - drag, counting the WebSocket frames;
+  - move the view's time slider, press its drawing toggle or pick;
+  - close the tab, Show tab or Reopen, restart the stack;
+  - take a `hero` shot: navigation collapsed, workbench maximized.
+
+  It records every request, socket, page error and answer to `PV_OUT` for the token search.
+- **`paraview_flows/*.json`** holds the runs below.
+- **`paraview_surface.mjs`** is AQ48.
+- **`paraview_ssh.sh list|kill|count`** acts only on this checkout's front and ssh processes. It finds them by their ancestry.
+- **`paraview_token.sh CLUSTER_SH [PV_OUT…]`** is AQ49.
+
+Screenshots are in `.cloud-run/shots/`. The meaningful ones are copied to `/home/user/wt/gallery/q-pv/`.
+
+## Decisions
+
+| ID | Decision | Source | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| QPV-D1 | **The cluster fixture moved out of the server package**, from `mcp-servers/paraview/cluster/` to clio-kit `tests/fixtures/paraview-cluster/`. Its pvserver form starts `pvserver --multi-clients` to stand for a ParaView session someone already runs. ParaView 6.2.1's pvserver exits when its first client disconnects (PVC8, PV5-F1). That is the site, not the server. The server package now holds no `--multi-clients`, `viz.html` or old tool name, as AQ52 asks. `aq_cluster.py`, the README and the include marker point at the new path. | AQ52; brief | clio-kit `b06f47d`; AQ52 below | done |
+| QPV-D2 | **The historical website demo keeps its recording's prompts.** Its tool list shows the five 3.0.0 tools that do the same steps, under the heading "The same steps with today's tools", so it does not claim the recording called them. | brief | `website/src/pages/demos.js`, `b06f47d` | done |
+| QPV-D3 | **The view's drawing control is one two-icon toggle.** A monitor icon means "Draw in browser"; a server icon means "Render on ParaView machine". The active choice is pressed, with `aria-pressed` and a pressed style, not colour alone. An automatic switch shows only in the tooltip, for example "Switched: geometry 1.1 MB, over 0.5 MB". The "Drawn in this browser" text and the "Render in ParaView" button are gone. This follows the integrator's correction of the person's request; a wordier first version was replaced. | person, via integrator | clio-kit `36b42ce`; hero shots `pv-view-hero-*`, AQ45 | done |
+
+## Fixes made
+
+| ID | Fix | Found in | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| QPV-F1 | **`create_filter` sets a property of a filter's part.** A dotted name (`"SliceType.Normal"`) or a nested object reaches the part, with `unknown_property` and close matches at each level. Before, the plain request "add a slice … normal to Z" failed: the agent got `Slice has no property 'SliceType.Origin'` and `AddProxy argument 1`, then built a Z-coordinate contour instead. | AQ41, `sess_9abc83ef27db` | clio-kit `78118e0`; `test_slice_plane_is_set_through_its_part` with pvpython 6.2.1, 7 node-half and 25 front tests pass | done |
+| QPV-F2 | **An MCP tool's image results reach the model.** The model read only `[image image/png 1280x800]`, so the agent said "the image did not reach me". Each image block of a model-facing call is now snapshotted into the workspace and joins the call's media slot, as `view_image` does (`tools/mcp_result_media.py`, one line in `tools/execution.py` with the ratchet kept at 986). App and host calls attach nothing, and an image that cannot be shown is logged with a typed reason. | AQ46, `sess_2ed3819fecd3` | clio-agent `a4804b6e2`; `tests/test_tools/test_mcp_result_media.py` (5 tests) with `test_model_media.py` (23 pass), `test_execution.py` (48 pass); live AQ37 below | passed (live, CLIO) |
+| QPV-F3 | **A remote view draws again after its frame remounts.** A remote-mode view that was maximized, or moved between card and tab, stayed white until the next drag. The page now asks the node half for a picture once the view has mounted and sized itself, and on every resize. Only remote mode re-renders. | AQ45 hero, `sess_79c3477300ae` | clio-kit `a33e1aa`; before: `aq45h3-3-aq45-hero-remote.png` (white); after: `aq45r2-3-aq45-hero-remote-maximized.png` (the isosurface, no drag) | passed (live, CLIO) |
+| QPV-F4 | **The time slider has its accessible name again.** trame drops `aria_label`, so it is now set through `raw_attrs`. `make_datasets.py` is formatted. | AQ46 harness | clio-kit `36b42ce`, `b06f47d` | done |
+
+## Qualification
+
+| ID | Scenario | Evidence | Status |
+| --- | --- | --- | --- |
+| AQ35 | No ParaView here | Not re-run on the merged stack. pv-server's run through CLIO stands (`sess_268e57779bd9`, stack N=8). This run had a connector ready with 13 tools on the merged code. | passed (live, CLIO; earlier stack) |
+| AQ36 | Isosurface, rotated in the browser | node08 instead of this machine. In `sess_9abc83ef27db` the drag rotated the scene with **0 WebSocket frames** (`drag: {"frames":0}`), and so did the phone run `sess_dfb375c3a62f` (`--touch`). Screenshots `aq38-3-aq38-rotated.png` and `pvphone2-4-phone-view-local-rotated.png` were read. The run on this machine is pv-server's, through CLIO. | passed (live, CLIO) |
+| AQ37 | Measure, pick and capture at the view's camera | Picking in AQ45 (`sess_79c3477300ae`, plain "What did I just pick in the view?"): `inspect_selection` gave point 1618 of `o2`, RTData 120, with its normal. **Capture pixels reach the model** (after QPV-F2), plain request "Look at the ParaView view and tell me what you see…" (`sess_7d7497b994ce`). The agent said "a single small, roughly spherical wireframe in dark blue, centred on a grey background … the camera is on the +z axis". That matches `aq47e-3-aq47-hero-restarted.png`. In AQ40 it described "the outline of the unit cube … a small dark-blue sphere to the right of centre", which matches `aq40-3-aq40-hero.png`. | passed (live, CLIO) |
+| AQ38 | node08 through login, plain request mid-conversation | `sess_9abc83ef27db`. Two unrelated turns came first, then the plain request "Connect to the ParaView on node08, through login, and open /home/researcher/data/wavelet.vti with an isosurface of RTData. On node08, ParaView needs `module load paraview` first." The agent loaded `paraview-scenes`, found `set_connector_value`, set address `node08`, via `login` and prepare, then ran `open_view`, `measure_field`, a Contour at 157, `capture` and `fit_camera`. The first attach built the folder on the fresh cluster through the jump host: `env.json` `"built": "jump host login"`, with `site/` and `code/` written at 16:04 during the turn. The tab showed node08's isosurface through CLIO's route (`aq38-2-aq38-view.png`). Agent-judgement evidence. | passed (live, CLIO) |
+| AQ39 | What runs where | During AQ38 (`paraview_ssh.sh list` and `cluster.sh ps login node08`). **This machine:** CLIO, the paraview front and one ssh connection: the master `ssh … ControlMaster=yes … -N node08` and its ProxyJump child `ssh -W [node08]:22 login`. A second, idle front process of the same workspace fleet was also present, with no ssh. **login:** "researcher processes other than sshd: (none)". **node08:** only the node half (`pvpython … run_node.py`). | passed (live, CLIO) |
+| AQ40 | A pvserver already running | `variant pvserver`, `sess_e6c2fcb24b2b`. Plain request: "Someone already has ParaView running on node08 … Show me what that ParaView session has." The agent ran `open_view {}`, attached as a client of `localhost:11111` and showed `pulse_series.pvd` and `pressure isosurface` without opening a file. The tab bar reads "ParaView session localhost:11111", step 12 of 12. node08 ran the fixture's pvserver and holder plus the node half. Screenshot `aq40-3-aq40-hero.png`. | passed (live, CLIO) |
+| AQ41 | Kill the ssh, ask for a new filter | `sess_9abc83ef27db`. `paraview_ssh.sh kill` killed the master ssh. The service WebSocket closed, and the view showed "Lost the link to ParaView. The scene is kept there; the next ParaView action reconnects it. Reconnect" (`aq38-4-aq41-lost-link.png`). The plain request "Add a slice through the middle of the data, normal to Z." re-attached with a new master ssh (pid 29078) and added the filter. "List every object…" then showed `o1` wavelet.vti, `o2` the RTData isosurface (the earlier filter), `o5` and `o6` (`aq38-6-aq41-scene.png`). The slice failure itself is QPV-F1. | passed (live, CLIO) |
+| AQ42 | Idle shutdown | Stack restarted with `PARAVIEW_IDLE_SECONDS=90`. The node half ran with `--idle-seconds 90.0`. The stack was stopped at 18:02:27, which left no front or ssh of this checkout. The node half was gone from node08 by 18:03:34, `node.json` was removed, and `scenes/wavelet-3a3484d6/manifest.json` was rewritten at 18:03:34. | passed (live) |
+| AQ43 | locked | `sess_04977e6cc8aa`, plain "Connect to the ParaView on the host called locked and open …". The agent set the address to `locked`. `open_view` failed with "locked asks for interactive sign-in (a password or a one-time code) … `[interactive_sign_in]`". No ssh to `locked` was left (`pgrep`). The call took 14.7 s, which is CLIO restarting the server after the value change (server start 17:28:28, result 17:28:30). The ssh refusal itself is under 2 s. A misleading "may come from CLIO's sandbox" note was appended (H5). | passed (live, CLIO) |
+| AQ44 | Second attach | After a CLIO restart, `scene_state` in `sess_7d7497b994ce` reported "The last attach took 1.13 s; the prepared folder was reused". Same in AQ41: "last attach took 2.13 s with the prepared folder reused". | passed (live, CLIO) |
+| AQ45 | Remote mode above the threshold | `PARAVIEW_REMOTE_RENDER_THRESHOLD_MB=0.5` (lowered for the test), `sess_79c3477300ae` and `sess_dfb375c3a62f`. The toggle showed "Render on ParaView machine" pressed, with tooltip "Render on ParaView machine. Switched: geometry 1.1 MB, over 0.5 MB". A drag streamed images (`frames 36, imageFrames 4`). A pick answered through `inspect_selection`. After QPV-F3 the maximized view draws without interaction. Desktop and phone shots read. | passed (live, CLIO) |
+| AQ46 | Growing series on node08 | `sess_2ed3819fecd3`, plain request to open `growing.vti.series` and keep showing its newest step. The agent ran `open_view(growing=true)` and `set_timestep(latest)`. The bar went "Step 14 of 14 Following the latest step", then 30 s later "Step 17 of 17", with no frame reload (no service socket closed). Parked on step 2 with the view's slider, it read "Step 2 of 60 · Follow latest · 58 newer step(s) available". The next turn ("Which time step is the newest…") answered "step 60 of 60 (time 5.9) … you are looking at step 2". | passed (live, CLIO) |
+| AQ47 | Close and reopen; restart CLIO | `sess_7d7497b994ce`: pulse_series, an isosurface as wireframe, time 0.5. **Close and reopen:** closing the tab of the latest view left its card with "Show tab" (RO-D12), and Show tab brought back "Step 6 of 12" with the wireframe (`aq47d-4`). **Restart:** after `stack.sh restart` the card offered Reopen. The replay attached to node08 again and restored the wireframe, step 6 of 12 (time 0.5) and the hidden source (`aq47d-2`, `aq47e-2`, hero `aq47e-3`). The agent confirmed o1 hidden, o2 Wireframe, step 6 of 12. The tab was not restored on its own after the restart; the card's Reopen brought it back. Caveat: a call saved with `new=true` restores an empty scene (H2). | passed (live, CLIO) |
+| AQ48 | Surface with the view and a chart on one `time` path | `paraview_surface.mjs`, `sess_85a968ef5b56`, at 1440×900 and 390×844. Tool-directed prompt: mechanism verified, not evidence of agent judgement. **Chart to view:** choosing 0.8 in the chart called `set_timestep` once, and the view showed "Step 9 of 12" (phone: 0.2, "Step 3 of 12"). **View to chart:** the slider at index 3 wrote `/selection/time` = 0.3 once with no tool call, and the chart's marker moved (phone: 0.7). `consoleErrors` and `failedRequests` were empty. The surface frame's title is the raw tool id (H4). | passed (live, CLIO; mechanism) |
+| AQ49 | Token in no text | `paraview_token.sh` read the node half's token from `node.json` on node08 (AQ40 and final node halves). It was found nowhere under `.cloud-run` (transcripts, session metadata, question records, logs, ARC store) and in none of the 18 runs' recorded browser URLs and headers. None of the 38 167 recorded requests went to the node half's port, and no browser request carried `Authorization`. Every request went to CLIO's agent, its per-app sandbox origins on the same port, or the UI. | passed (live, CLIO) |
+| AQ50 | Port from login and from here | `cluster.sh scenarios 50`, twice. The node half bound `127.0.0.1:44587` and later `127.0.0.1:33505`. From login: "Couldn't connect to server". On node08 without a token: 401. From this machine: "Could not resolve host: node08". PASS both times. | passed (live) |
+| AQ52 | Old server gone | Searched clio-kit `mcp-servers/paraview` for `multi-clients`, `viz.html` and the 26 old tool names (parsed from `1fbf73a^`'s `server.py`): nothing. The only `--multi-clients` is the fixture in `tests/fixtures/paraview-cluster/` (QPV-D1). In the whole repository, the old names appeared only in `website/src/pages/demos.js`, now replaced (QPV-D2). gact-tui `package.json` files and `pnpm-lock.yaml`: no `vtk.js`, `@kitware/vtk.js` or `molstar`. | static |
+
+UI checks used 1440×900 and 390×844. `consoleErrors` and `failedRequests` were empty in every run after the AQ38 flow. That flow recorded `pageerror: Object` twice around the forced link loss (the ssh kill). The harness now records page error details; the error was not seen again.
+
+## Handed over
+
+| ID | Fault | Evidence | Owner, proposed fix |
+| --- | --- | --- | --- |
+| H1 | **A reaped workspace fleet leaves a dead live view.** After about 2 min with nobody viewing the conversation, the fleet is reaped (`workspace_fleet_reaped reason=idle_ttl`), which kills the front, its ssh and its port. The registry still says the pinned app is live, so the card offers "Show tab". Mounting it gives `service_unreachable` (502), and the tab shows the proxy's raw JSON under "Ready". A conversation being viewed keeps its fleet: 170 s open in `sess_79c3477300ae` with no loss. | `sess_e6c2fcb24b2b`, `pvphone-2-failure.png` | `tools/reaper.py`, the `gact/mcp_apps.py` registry, `gact/mcp_app_service_proxy.py`. When a fleet is reaped, mark its apps not live so the card replays them (MA19), and serve a readable page for an HTML 502. Optionally, count a live pinned app with a service as a lease. Sent to the integrator. |
+| H2 | **Replaying `open_view(path, new=true)` wipes the scene.** Replay uses the saved first call. With `new=true` it starts an empty scene and overwrites the manifest, so a reopen shows the outline only and loses the filters (PV11 versus MA19). The agent uses `new=true` often (AQ38, AQ45). | `sess_79c3477300ae`, `aq45p-3-max-after-drag.png` | `gact/mcp_app_calls.py` (reopen) and the contracts. Let the opening result's private `_meta` declare the arguments to replay with, for example `"ai.iowarp.clio/reopen": {"arguments": {"scene": "<id>"}}`; ParaView would declare its scene id. |
+| H3 | **A remote path makes a successful `open_view` show "degraded".** `provenance_warnings: external_input_contract_unknown` for `path` is shown as a warning chip on every ParaView open of a path on another machine. | `sess_7d7497b994ce` | `gact/artifacts/external_inputs.py`, `transform_edges.py`. The input contract is a per-tool-name table, and a service name may not be added there (rule 3). Let a server declare its path arguments as remote, for example in tool `_meta`. |
+| H4 | **The A2UI surface's app header shows `paraview_open_view`**, not the tool title "Open a ParaView view". | `aq48-3-…png` | gact-tui `web/src/components/clio/a2ui-mcp-app.tsx` passes no `label`, and `humanizeToolName` is the identity. Return the tool title in the reopen answer and pass `mcpAppLabel(tool, server, title)`. |
+| H5 | **`boundary_error_note` adds "may come from CLIO's sandbox"** to an ssh "Permission denied (password)" from a remote host, and the agent repeated the doubt to the person. | `sess_04977e6cc8aa` | `tools/tool_hooks.py`. It matches error text, so gate it on a typed fence reason, not wording. |
+| H6 | **Each `set_connector_value` takes 20 to 29 s.** The paraview server restarted six times in one minute across workspace fleets during AQ43. Setting three values takes about a minute. | `sess_7d7497b994ce`, `sess_04977e6cc8aa`, agent.log 17:27 to 17:28 | Connectors. Batch values in one call, or restart once per turn. |
+
+## Resources
+
+Started and retired:
+
+- The cluster: three containers, two networks and the `clio-pv-home` volume, removed by `cluster.sh down`. `~/.ssh/config` and `~/.ssh/clio-pv-cluster` were removed; `~/.ssh` is empty again. Images are kept.
+- The stack on 8815 and 5215, stopped. Slot 3 released, and the clio-core store freed.
+- The fronts and ssh masters, which ended with the stack. `paraview_ssh.sh list` showed none left.
+- The node halves on node08, which ended with the containers.
+- The scratch copy of node08's trame site, used for the node-half tests, removed.
+- The uv venvs created in clio-kit and in `mcp-servers/paraview`, removed.
+
+Screenshots are kept in `.cloud-run/shots/` and the gallery.
+
+## Follow-up fixes (H2, H4, H6)
+
+These were asked for by the integrator after the first merge. The branches first merged `claude/parallel-agents-plan-uzpzm0` in clio-agent, gact-tui and clio-kit. Live checks ran on stack N=15 on this machine (a local ParaView), with no cluster.
+
+| ID | Fix | Evidence | Status |
+| --- | --- | --- | --- |
+| H2 | **A server declares what a reopen replays.** The opening result's private `_meta` may carry `"ai.iowarp.clio/reopen": {"arguments": {...}}`. CLIO saves those arguments instead of the call's and marks `arguments_from: "server_reopen_declaration"`. The declaration is taken off the result at admission, like the service declaration. A malformed one keeps the call's arguments, with the typed reason `reopen_declaration_invalid`. New owner module `gact/mcp_app_reopen_declaration.py`; `mcp_apps.py` registers it; `mcp_app_calls.record_opening_call` saves it. Documented in `mcp-apps-contracts.md`, "Saved call and reopening". The ParaView `open_view` declares `{"scene": <id>}`. | clio-agent `009e28f26`, clio-kit `1d3fb9e`; `test_mcp_app_calls.py` (26 pass), `test_front.py` (25 pass). **Live (`sess_7cc0827514ef`, `h2_reopen_new.json`):** plain request "Open …/wavelet.vti … as a fresh scene, discarding any saved one. Then add an isosurface of RTData at 150 and a slice through the middle, normal to Z." The agent called `open_view(new=true)`, then a Slice with `SliceType.Normal` (QPV-F1) and a Contour. `stack.sh restart` followed, then the card's Reopen. Both saved calls read `{"scene": "wavelet-0e454941"}` from `server_reopen_declaration`, and the key appears in neither the session wire nor the transcript. The reopened tab shows the isosurface and the Z slice (`h2-2-h2-built.png` and `h2-4-h2-hero-reopened.png` read). Restoring the colours exactly is outside this fix: the reopened view uses a different RTData colour map. | passed (live, CLIO) |
+| H4 | **A surface's app header shows the tool's title.** The reopen route's call form answered with an empty label; it now answers with the tool's title, as a saved card does. gact-tui `a2ui-mcp-app.tsx` passes `mcpAppLabel(tool, server, savedCall.label)` to the frame and to the live set. | clio-agent `68eed9fb8`, gact-tui `c27bf9caa`; `test_a_surface_call_is_answered_with_its_tools_title`, `a2ui-mcp-app.test.tsx` (5 pass), `pnpm lint` clean. **Live (`sess_3d654f8e681e`, `paraview_surface.mjs`):** the header reads "Open a ParaView view", not `paraview_open_view`, at 1440×900 and 390×844 (`h4-3`, `h4m-3` read). The channel still works both ways; `consoleErrors` and `failedRequests` are empty. | passed (live, CLIO) |
+| H6 | **Why each `set_connector_value` was slow:** every call applied (CN7) on its own. Each apply re-listed the namespace in every resident fleet, one server start per fleet, and then probed it with another start that re-ran `clio-kit mcp-server --prepare` (1 to 11 s), one after the other. Three values meant three applies. **Fixes:** the tool takes `values: {key: value}` for one connector and applies them together; the rebind lists once and gives that listing to every fleet; the rebind runs beside the probe. The paraview skill gives the values in one call (marketplace `7560104`). | clio-agent `6f6d5f696`, `245e48599`; `test_several_values_are_set_with_one_apply`, `test_a_rebind_lists_the_namespace_once_for_every_fleet` (`tests/test_connectors`, 25 pass). **Before:** three calls of 19.7, 22.9 and 23.3 s (`sess_7d7497b994ce`); one call of 29.3 s (`sess_04977e6cc8aa`); one batched call on the old apply, with two resident fleets, 24.9 s (`sess_376d2f9a8629`). **After:** plain request "…on node08; you reach it through login, and it needs `module load paraview` first. Point the ParaView connector there…". The agent made one call with all three values: **12.1 s** and **12.0 s** (`sess_7bc80524a8b9`, `sess_09caa13b2723`). Pointing the connector at another machine went from about 66 s to about 12 s. | passed (live, CLIO) |
+
+Not caused by these changes, and seen on the merged base:
+
+- `tests/test_gact/test_decomposition_guardrails.py::test_build_app_registers_expected_route_count` fails. No route was added here.
+- `tsc` reports 4 errors in gact-tui `web/src/components/clio/mcp-app-reopen.test.tsx`, all about the `McpAppPlacementState` mock types.
+- `pnpm typecheck` needs `NODE_OPTIONS=--max-old-space-size=4096` on this machine; it ran out of heap otherwise.

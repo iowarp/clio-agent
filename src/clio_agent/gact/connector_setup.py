@@ -125,6 +125,39 @@ def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) ->
     return None
 
 
+async def retry_after_setup(
+    app: Any, context: Any, spec: Any, tool_name: str, error: BaseException
+) -> bool:
+    """A connector's call the server refused for want of a sign-in waits for its card.
+
+    The server can reject what CLIO holds after the call was allowed (it revoked the
+    sign-in on its side; the refresh is refused). The call then waits for the same
+    setup card as a call made while not ready, on a worker thread in the call's own
+    context. ``True``: set up again, run the call once more. A decline raises the
+    typed ``connector_declined`` refusal.
+    """
+
+    from clio_agent.connectors.listing import held_for_setup  # noqa: PLC0415
+
+    connector = str(getattr(spec, "connector", "") or "")
+    # A call routed through the proxy loses the error's type; the refused sign-in was
+    # forgotten (``DurableOAuthProvider``), so CLIO's own record then says what is missing.
+    if not connector or not await asyncio.to_thread(held_for_setup, connector, error):
+        return False
+
+    def wait() -> Any:
+        from clio_agent.gact.runtime.globals import _resolve_tool_session  # noqa: PLC0415
+
+        session_id, _session = _resolve_tool_session(app)
+        return await_setup(app, str(session_id or ""), connector, tool_name)
+
+    trace.event("TOOLS", "connector_sign_in_refused connector=%s tool=%s", connector, tool_name)
+    refusal = await asyncio.to_thread(context.run, wait)
+    if refusal is not None:
+        raise PermissionError(getattr(refusal, "deny_message", "") or str(refusal)) from error
+    return True
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

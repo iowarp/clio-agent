@@ -439,6 +439,12 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         )
                     except Exception as error:
                         self._namespace_call_failed(namespace if proxy is not None else None, error)
+                        from clio_agent.gact.connector_setup import retry_after_setup
+
+                        if proxy is not None and await retry_after_setup(
+                            app, captured, spec, name, error
+                        ):
+                            return await product_call()  # the same call, set up again (CN5)
                         raise
                     self._namespace_succeeded(namespace if proxy is not None else None)
                     return _MCPCallOutcome(

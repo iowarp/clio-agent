@@ -30,7 +30,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from clio_agent.gact.cron_tools import cancel_schedule
-from clio_agent.gact.off_loop import join_off_loop
+from clio_agent.gact.off_loop import join_off_loop, run_off_loop
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.scheduler import CronError, default_timezone_name
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -38,6 +38,19 @@ from clio_agent.gact.work_state import retained_work_history, work_snapshot
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+
+def _work_rows(app: FastAPI, sid: str) -> tuple[list[Any], list[dict[str, Any]]]:
+    """The session's messages and its current schedules, read with blocking store I/O."""
+    messages = getattr(app.state, "messages", {})
+    rows = list(messages.get(sid, [])) if hasattr(messages, "get") else []
+    schedule_store = getattr(app.state, "schedules", None)
+    schedules = (
+        [row.to_wire() for row in schedule_store.list(session_id=sid)]
+        if schedule_store is not None
+        else []
+    )
+    return rows, schedules
 
 
 def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -76,14 +89,9 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         snapshot = work_snapshot(session.metadata or {}, cursor)
-        messages = getattr(app.state, "messages", {})
-        rows = list(messages.get(sid, [])) if hasattr(messages, "get") else []
-        schedule_store = getattr(app.state, "schedules", None)
-        current_schedules = (
-            [row.to_wire() for row in schedule_store.list(session_id=sid)]
-            if schedule_store is not None
-            else []
-        )
+        # Off the loop: the first read after a restart rehydrates the session's resident
+        # ledger from the store, which the loop thread must never wait on (#1334).
+        rows, current_schedules = await run_off_loop(_work_rows, app, sid)
         snapshot.update(
             retained_work_history(
                 rows,

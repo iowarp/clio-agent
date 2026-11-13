@@ -1,0 +1,5 @@
+[
+ {"open": "pv-values"},
+ {"send": "The ParaView I want to use is on node08; you reach it through login, and it needs `module load paraview` first. Point the ParaView connector there; don't open anything yet."},
+ {"shot": "h6-values-set"}
+]

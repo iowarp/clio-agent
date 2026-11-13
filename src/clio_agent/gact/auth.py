@@ -178,7 +178,30 @@ class BearerAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
+        if _sandbox_document_or_service(scope):
+            # An MCP App's sandbox and service routes are bound by the app's
+            # capability in the URL; a frame cannot carry the bearer header.
+            await self._app(scope, receive, send)
+            return
+
         await _authentication_refusal()(scope, receive, send)
+
+
+def _sandbox_document_or_service(scope: Scope) -> bool:
+    """A request on an MCP App sandbox host for its sandbox document or service."""
+
+    from starlette.datastructures import Headers  # noqa: PLC0415
+
+    from clio_agent.gact.mcp_app_sandbox_origin import (  # noqa: PLC0415
+        is_sandbox_host,
+        sandbox_route_allowed,
+    )
+
+    host = Headers(scope=scope).get("host", "")
+    hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else host
+    return is_sandbox_host(hostname) and sandbox_route_allowed(
+        str(scope.get("path") or ""), str(scope.get("method") or "").upper()
+    )
 
 
 def configure_bearer_auth(app: FastAPI) -> None:

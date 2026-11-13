@@ -36,6 +36,25 @@ async function ask(page, text) {
   return sid;
 }
 
+/** Desktop hero: navigation collapsed, the canvas widened beside the agent's tool call. */
+async function hero(page, shot) {
+  const toggle = page.getByRole("button", { name: "Toggle Sidebar" }).first();
+  if (await toggle.isVisible().catch(() => false)) await toggle.click();
+  await page.waitForTimeout(800);
+  const handle = page.getByRole("separator", { name: "Resize workspace canvas" }).first();
+  const box = await handle.boundingBox().catch(() => null);
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(560, box.y + box.height / 2, { steps: 12 });
+    await page.mouse.up();
+  }
+  const group = page.getByRole("button", { name: /^Expand Called/ }).last();
+  if (await group.isVisible().catch(() => false)) await group.click().catch(() => {});
+  await page.waitForTimeout(1500);
+  await shot("hero-board-in-tab-agent-highlight");
+}
+
 async function boardPart(sid) {
   const { body } = await json(`/v1/sessions/${sid}/messages`);
   const parts = (body?.messages || []).flatMap((m) => m.parts || []);
@@ -94,6 +113,7 @@ export default async function (page, shot) {
     await showTab();
     await expectText(tab().locator("#activity"), /Highlighted Outlet temperature/, 30000);
     await shot("board-highlighted");
+    if (placement === "tab" && (page.viewportSize()?.width ?? 0) >= 1200) await hero(page, shot);
   }
   if (phases.has("changed")) {
     sid = await ask(page, "Add a note on the board: check pump B bearings.");

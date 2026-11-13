@@ -1330,10 +1330,13 @@ async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host
             # (4) again, on the STORED record (not just the wire projection).
             assert record.tool_result["_meta"]["x-clio-agent/unknown"] == {"scratch": True}
 
-            # (3) the sandbox route serves the resource with its CSP header.
+            # (3) the sandbox route serves the resource with its CSP header, on the
+            # app's own sandbox host (the API host refuses it, sandbox_origin_refused).
+            from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
+
             prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
             sandbox = client.get(
-                f"{prefix}/sandbox",
+                f"http://{sandbox_host_for(namespace)}:8100{prefix}/sandbox",
                 params={"data_ref": record.data_ref},
                 headers={"referer": "http://127.0.0.1:8100/session"},
             )
