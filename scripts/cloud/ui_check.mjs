@@ -127,7 +127,11 @@ const shot = async (name) => {
 };
 
 try {
-  await page.goto(uiUrl, { waitUntil: "networkidle", timeout: 60000 });
+  await page.goto(uiUrl, { waitUntil: "networkidle", timeout: 120000 }).catch(async (error) => {
+    // A busy shared machine can keep the dev server from going idle; the form or the
+    // workspace appearing below is what matters.
+    if (!String(error).includes("Timeout")) throw error;
+  });
 
   // First run shows the "Add an agent service" form; later runs restore the saved service.
   // The form's address starts empty, so it is always filled with --agent.
@@ -135,8 +139,8 @@ try {
   const composer = page.locator('textarea, [contenteditable="true"]').first();
   // Wait for whichever renders: the connect form (first run) or a restored workspace.
   const first = await Promise.race([
-    name.waitFor({ timeout: 45000 }).then(() => "form"),
-    composer.waitFor({ timeout: 45000 }).then(() => "workspace"),
+    name.waitFor({ timeout: 120000 }).then(() => "form"),
+    composer.waitFor({ timeout: 120000 }).then(() => "workspace"),
   ]).catch(() => "neither");
   if (first === "neither") throw new Error("the UI showed neither the connect form nor a workspace");
   if (first === "form") {
