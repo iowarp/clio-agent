@@ -24,7 +24,7 @@ function signIn(ui) {
 export default async function (page, shot) {
   const log = [];
   const ui = new URL(page.url()).origin;
-  signIn(ui); // CLIO holds a sign-in the server accepts
+  if ((await api("GET", "/v1/connectors/fixture-signin")).state.status !== "ready") signIn(ui);
   const before = await api("GET", "/v1/connectors/fixture-signin");
   log.push(`before: ${before.state.status}`);
   const revoked = await (await fetch(`${FIXTURE}/fixture-revoke`, { method: "POST" })).json();
