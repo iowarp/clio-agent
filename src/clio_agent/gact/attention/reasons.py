@@ -71,8 +71,12 @@ REASON_TEXT: dict[str, str] = {
     "attention_file_unavailable": "The attention file is not reachable from this CLIO.",
     "attention_file_mismatch": "The attention file differs from the one recorded.",
     "attention_record_malformed": "The attention record does not match the contract.",
-    "range_alignment_mismatch": "Declared sections do not match the captured segments.",
-    "output_alignment_mismatch": "The answer's tokens do not match the captured steps.",
+    "range_alignment_mismatch": (
+        "The prompt does not re-tokenize to the captured one, so no heat can be shown."
+    ),
+    "output_alignment_mismatch": (
+        "The answer does not re-tokenize to the captured steps, so no heat can be shown."
+    ),
 }
 
 

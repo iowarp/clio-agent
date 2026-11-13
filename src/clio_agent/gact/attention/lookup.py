@@ -9,6 +9,7 @@ from typing import Any, Literal
 from clio_schemas.attention import AttentionProfile, display_intensities
 from clio_schemas.connected_resources import ContentSelection
 
+from clio_agent.gact.attention.alignment import diagnosed
 from clio_agent.gact.attention.capture import load_capture
 from clio_agent.gact.attention.chat_render import ChatRenderer
 from clio_agent.gact.attention.content_references import message_content_references
@@ -134,7 +135,8 @@ def _source_view(
     keys = {(text.message_id, text.part_id, text.field) for text in eligible}
     if not any((text.message_id, text.part_id, text.field) in keys for _, text, _, _ in selections):
         return None
-    capture = load_capture(call, store, renderer_for)
+    with diagnosed(call):
+        capture = load_capture(call, store, renderer_for)
     anchors = anchor_texts(eligible, capture.encoded, capture.sections)
     positions: set[int] = set()
     matched: list[dict[str, Any]] = []
@@ -147,15 +149,16 @@ def _source_view(
         matched.append(ref.model_dump())
     if not positions:
         return None
-    span = output_steps(
-        capture.renderer,
-        call.content or "",
-        0,
-        len(call.content or ""),
-        capture.summary.record,
-        reasoning=call.reasoning,
-        opened=prompt_opens_thinking(capture.encoded.text),
-    )
+    with diagnosed(call):
+        span = output_steps(
+            capture.renderer,
+            call.content or "",
+            0,
+            len(call.content or ""),
+            capture.summary.record,
+            reasoning=call.reasoning,
+            opened=prompt_opens_thinking(capture.encoded.text),
+        )
     if len(span.steps) > 4096:
         raise AttentionUnavailable("selection_too_large", "model output exceeds 4096 tokens")
     steps = store.steps(capture.summary, span.steps[0], span.steps[-1])
