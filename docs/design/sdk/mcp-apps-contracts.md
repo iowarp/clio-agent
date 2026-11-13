@@ -31,6 +31,10 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
   - A plugin row (`GET /v1/plugins`, `/v1/plugins/inspect`) and each plugin of a resolution carry `follows` (the connector id, or ""). A connector with no installed following plugin is carried by one CLIO builds, id `connector-<id>`, marketplace `clio-connectors`, which also carries `follows`.
   - Errors are the usual envelope with typed codes: `connector_not_found` (404), `connection_name_taken` (409), `connector_scope_invalid`, `connector_need_unknown`, `connector_sign_in_not_a_value`, `connector_secret_not_agent_settable`, `connector_need_not_agent_settable`, `connector_value_invalid` (422).
 - **Entry field `tools`** (added by `grounds`): an optional allowlist of the server's tool names the connector offers, `{"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}`. Absent means every tool. A listed name the server does not have is a typed diagnostic, not a silent drop. The loader keeps only the listed tools in the connection's catalog, so neither the agent nor `search_tools` sees the others. The `burette` entry uses it to offer only the PDB-ID and Ketcher tools (plan, "Burette in detail").
+- **As read by `conn-ui`** (in addition to the refinements above):
+  - `scope.agents` lists agent **refs** and is never empty; the card sends refs.
+  - A saved MCP connection is not a connector. The UI's "Add by URL or command" calls `POST /v1/connectors` (`{url | command, args, name, scope: "all"}`) when the form holds only an address or a command; any advanced setting (headers, SSE, an authentication mode, environment, every conversation) keeps it a raw MCP connection.
+  - Every `connector.*` event refreshes the connectors, servers, tools, plugins, agents, agent resolutions and session agents, so the plugin-change notice follows `sessions`; `connector.setup.*` refreshes pending interactions.
 
 ## Display mode and the tab (owner: `host`)
 
