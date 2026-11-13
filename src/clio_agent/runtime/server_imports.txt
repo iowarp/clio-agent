@@ -1627,6 +1627,7 @@ clio_agent/runtime/console_encoding.py
 clio_agent/runtime/cte_cold_tier.py
 clio_agent/runtime/cte_store_location.py
 clio_agent/runtime/doctor_rows.py
+clio_agent/runtime/document_office.py
 clio_agent/runtime/document_runtime.py
 clio_agent/runtime/document_stack/node_paths.py
 clio_agent/runtime/document_stack/npm_package.py
