@@ -195,9 +195,25 @@ A need is required or optional, can have a default, and can be marked `agent_set
 
 **CN5. The same card in the conversation.** When the agent calls a tool on a connector that is not ready, the call does not fail. It waits, the card appears in the conversation with the rows that are missing, and when they are filled the same call continues and returns its result. If the person declines, the call returns a typed refusal that names the connector. This replaces the "MCP sign-in required" failure.
 
-**CN6. The agent can set a value.** A native tool, `set_connector_value`, sets a need that is marked `agent_settable`, when the person gives the value in the conversation or another tool has just produced it. It follows the session's tool permission rules. It is refused for a secret and for a sign-in. The card shows the new value.
+**CN6. The agent can set a value.** A native tool, `set_connector_value`, sets a need that is marked `agent_settable`, when the person gives the value in the conversation or another tool has just produced it. It follows the session's tool permission rules. It is refused for a secret and for a sign-in. The card shows the new value. *Amended (ledger CV-D4):* the value is set for the conversation the agent runs in, never as the person's default (CN7, amended).
 
 **CN7. Applying a change.** When a value changes, CLIO reconnects to a URL server or restarts a command server with the new values, and lists its tools again. A view that was open reconnects through its saved call (MA19).
+
+*Amended (ledger CV-D1 to CV-D7): connector values are per conversation.* A value the agent sets with `set_connector_value`, or the person types in a setup card inside a conversation, belongs to that conversation: "connect to the ParaView on node08" in one conversation must not re-point another conversation's view, nor carry its "Command to run first" there (first-run journey JR-P2, JR7). Where each part of a connector lives:
+
+| Part | Where it lives | Who changes it | Reaches |
+| --- | --- | --- | --- |
+| Enabled and where it applies (CN10) | `connectors.yaml` | The person, in Extensions or an offer card | Every conversation in scope |
+| Defaults of `address` and `value` needs | `connectors.yaml` | The person, in Extensions, or "Save as default" on a conversation's card | Every conversation that did not set its own |
+| A conversation's own `address` and `value` needs | The session's metadata, `connector_values` | `set_connector_value` in that conversation; the conversation's setup or offer card | That conversation only |
+| Secrets (CN8) | The connection credential store | The person, on any card | Every conversation |
+| Sign-ins | The existing MCP sign-in for the connection | The person | Every conversation |
+
+- The saved connection is a template: every need stays `${need.<key>}`. When a conversation's servers are resolved, its own values are filled in over the defaults; secrets are filled when the server starts. Session metadata reaches the client and can be patched by it, so a conversation's values are checked again whenever they are read (the CN6 refusals, plus one plain line, no `${`, an address that does not start with `-`), and a refused value is dropped with a typed reason before it can reach a command, an argument, the environment or an address.
+- A conversation with values of its own is served by its own server: workspace fleets are keyed by the workspace root and the digest of those values. Conversations with none share one fleet, as before; two with the same values share theirs. Server names inside a fleet stay the connector ids, so tool names, permission grants and listings do not change.
+- Applying a conversation's value (CN7) builds that conversation's server and lists its tools; a turn of that conversation that is running takes the connector's tools from the new server from its next step. A default change reconnects or restarts only the servers whose connection changes, so a conversation that set its own value keeps its server and its open views.
+- In a conversation the setup card (CN5) and the offer card (CD-D2) show the value in use there, and each `address` or `value` row has "Save as default": ticked, the value becomes the person's default (and the conversation follows it); unticked, it is this conversation's. Extensions keeps editing the defaults. A call waiting on a setup card runs on the server its turn started with, so when the card gives the conversation values of its own the call returns the typed `connector_values_set_for_conversation` and the agent calls it again, now on the conversation's server.
+- Reopening a view (MA19) replays its saved call with the conversation's values in use at the time of the reopen.
 
 **CN8. Secrets.** A secret is stored in the same store CLIO uses for connection credentials today, and the ledger records which. It is never returned to the UI after saving, and it is in no model text, transcript, question record or log.
 
