@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -355,6 +355,14 @@ def _main() -> None:
         metavar="KINDS",
         help="Comma-separated provider kinds (e.g. claude_code) whose SDK to install now.",
     )
+    parser.add_argument(
+        "--prepare-tool-servers",
+        action="store_true",
+        help=(
+            "Build the environments of the clio-kit tool servers the installed agents carry. "
+            f"Waits for the installer's clio-kit when {KIT_READY_ENV} names its signal file."
+        ),
+    )
     args = parser.parse_args()
     if args.prefetch_only:
         # The full step that follows finds all three ready and only checks them.
@@ -405,9 +413,13 @@ def _main() -> None:
     # install just wrote out of the first start (see _prewarm_runtime_files).
     # A provider SDK the caller names is a download too; without it the first turn
     # with that provider would install it.
-    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="clio-packages") as installing:
+    # The agents' clio-kit tool servers each build an environment on first use (minutes
+    # for a cold cache), so an install that asks for them builds them here, once the
+    # marketplace that declares them is installed.
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="clio-packages") as installing:
         browser = installing.submit(_prepare_browser, args, emit)
         marketplace = installing.submit(_prepare_default_marketplace, args, emit)
+        tool_servers = installing.submit(_prepare_tool_servers, args, marketplace, emit)
         providers = installing.submit(_prepare_provider_support, args, emit)
         prewarm = installing.submit(_prewarm_runtime_files, args)
         installation_timings: dict[str, float] = {}
@@ -427,6 +439,8 @@ def _main() -> None:
         migrations = _run_store_migrations(args, emit)
         marketplace_result = marketplace.result()
         providers_result = providers.result()
+        # The MCP cache prune must not run while the tool servers' builds use that cache.
+        tool_servers_result = tool_servers.result()
         maintenance: dict[str, Any] = {}
         if not args.reuse_installed:
             # An install or upgrade, not a per-launch check: bound the MCP cache (B4) and
@@ -446,6 +460,7 @@ def _main() -> None:
         "store_migrations": migrations,
         "browser": browser_result,
         "marketplace": marketplace_result,
+        "tool_servers": tool_servers_result,
         "provider_support": providers_result,
         "prewarm": prewarm_result,
         **maintenance,
@@ -504,6 +519,119 @@ def _prepare_default_marketplace(
         return {"status": "failed", **service.ready_error, "seconds": seconds}
     emit("The default agents are installed.")
     return {"status": "ready", "seconds": seconds}
+
+
+#: The file the Windows installer writes once its clio-kit launcher is installed:
+#: ``{"status": "ready" | "failed", "path": [folders to put first on PATH], "env": {...}}``.
+KIT_READY_ENV = "CLIO_INSTALL_KIT_READY"
+_KIT_READY_MAX_WAIT_S = 600.0
+_KIT_READY_POLL_S = 0.25
+
+
+def _wait_for_installer_kit() -> dict[str, Any] | None:
+    """Wait for the installer's clio-kit when it names a signal file, then adopt its PATH.
+
+    Returns ``None`` when the tool servers can be prepared, else the typed outcome.
+    """
+    signal = os.environ.get(KIT_READY_ENV, "")
+    if not signal:
+        return None
+    deadline = time.monotonic() + _KIT_READY_MAX_WAIT_S
+    while True:
+        try:
+            ready = json.loads(Path(signal).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            ready = None
+        if isinstance(ready, dict) and ready.get("status"):
+            break
+        if time.monotonic() >= deadline:
+            return {"status": "failed", "reason": "tool_servers_kit_wait_timeout"}
+        time.sleep(_KIT_READY_POLL_S)
+    if ready["status"] != "ready":
+        return {"status": "skipped", "reason": "tool_servers_kit_unavailable"}
+    for name, value in dict(ready.get("env") or {}).items():
+        if value:
+            os.environ[str(name)] = str(value)
+    first = [str(folder) for folder in ready.get("path") or [] if folder]
+    if first:
+        os.environ["PATH"] = os.pathsep.join([*first, os.environ.get("PATH", "")])
+    return None
+
+
+def _carried_kit_servers() -> dict[str, Any]:
+    """The clio-kit tool servers declared by plugins that an installed agent carries."""
+    from clio_agent.plugins.service import PluginService  # noqa: PLC0415
+    from clio_agent.runtime.mcp_launcher import discover_declared_mcp_servers  # noqa: PLC0415
+    from clio_agent.tools.launcher_cache_lock import _launcher_name  # noqa: PLC0415
+
+    service = PluginService()
+    carried = {selection.ref.id for entry in service.agents() for selection in entry.spec.plugins}
+    names = {
+        name
+        for record in service.store.records()
+        if record.id in carried
+        for name in record.mcp_servers
+    }
+    return {
+        name: spec
+        for name, spec in discover_declared_mcp_servers().items()
+        if name in names
+        and _launcher_name(str(spec.command)) == "clio-kit"
+        and [str(arg) for arg in spec.args][:1] == ["mcp-server"]
+    }
+
+
+def _prepare_tool_servers(
+    args: argparse.Namespace, marketplace: Future[dict[str, Any]], emit: Callable[[str], None]
+) -> dict[str, Any]:
+    """Build the agents' clio-kit tool server environments during an install, reported typed.
+
+    Each one is otherwise built by the first turn that uses it: about a minute of
+    downloads and thousands of files on a cold cache. They are built in parallel, with
+    the same step and environment the server's start uses (``mcp_prepare.provision``),
+    which then finds them complete. A failure does not fail the install; the first use
+    retries it.
+    """
+    if not args.prepare_tool_servers:
+        return {"status": "skipped", "reason": "not_requested"}
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    if marketplace.result().get("status") != "ready":
+        return {"status": "skipped", "reason": "tool_servers_marketplace_unavailable"}
+    started = time.monotonic()
+    waited = _wait_for_installer_kit()
+    if waited is not None:
+        return {**waited, "seconds": round(time.monotonic() - started, 1)}
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+
+    kit_seconds = round(time.monotonic() - started, 1)
+    servers = _carried_kit_servers()
+    if not servers:
+        return {"status": "skipped", "reason": "no_tool_servers", "seconds": kit_seconds}
+    emit(f"Preparing the agents' data tools: {', '.join(sorted(servers))}...")
+
+    def build(name: str) -> dict[str, Any]:
+        began = time.monotonic()
+        try:
+            outcome: dict[str, Any] = {"status": mcp_prepare.provision(name, servers[name])}
+        except mcp_prepare.PrepareError as error:
+            outcome = {"status": "failed", "reason": error.reason, "error": str(error)[-300:]}
+        outcome["seconds"] = round(time.monotonic() - began, 1)
+        return outcome
+
+    with ThreadPoolExecutor(max_workers=len(servers), thread_name_prefix="clio-tools") as pool:
+        results = dict(zip(servers, pool.map(build, servers), strict=True))
+    failed = sorted(name for name, outcome in results.items() if outcome["status"] == "failed")
+    if failed:
+        emit(f"Some data tools were not prepared; their first use will retry: {', '.join(failed)}")
+    else:
+        emit("The agents' data tools are ready.")
+    return {
+        "status": "failed" if failed else "ready",
+        "kit_wait_seconds": kit_seconds,
+        "seconds": round(time.monotonic() - started, 1),
+        "servers": results,
+    }
 
 
 _PREWARM_SUFFIXES = (".pyd", ".dll", ".so", ".dylib", ".zip")

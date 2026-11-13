@@ -1559,6 +1559,13 @@ function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
         $script:DocsMigrate = $FreshHome -and (Select-String -LiteralPath $docInstall -SimpleMatch '_run_store_migrations' -Quiet)
         $providerFlag = ''
         if ($ProviderSupport -and (Select-String -LiteralPath $docInstall -SimpleMatch 'provider-support' -Quiet)) { $providerFlag = " --provider-support $ProviderSupport" }
+        # The agents' clio-kit tool servers are built in this step too, once the clio-kit
+        # launcher installed below is ready (Write-ClioKitReady tells it).
+        if (Select-String -LiteralPath $docInstall -SimpleMatch 'prepare-tool-servers' -Quiet) {
+            $script:KitReadyFile = Join-Path ([System.IO.Path]::GetTempPath()) "clio-kit-ready-$([guid]::NewGuid()).json"
+            $env:CLIO_INSTALL_KIT_READY = $script:KitReadyFile
+            $providerFlag += ' --prepare-tool-servers'
+        }
         if ($script:DocsMigrate) {
             Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering, and creating the CLIO store'
             $script:DocJob = Start-ClioBackground (Join-Path $Venv 'python\python.exe') "-m clio_agent.runtime.document_install --setup-protected-execution$providerFlag" 'documents'
@@ -2001,6 +2008,72 @@ function Complete-ClioMigrate {
     }
 }
 
+# ---------- provision clio-kit MCP runtime ----------------------------
+# Marketplace packs launch their MCP servers via the installed `clio-kit
+# mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
+# explicit legacy shared-runtime candidates select their science dependency union.
+# Installed-tool launchers (not per-server `uvx` calls)
+# avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
+# deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
+# is idempotent (re-run is a no-op / version pin). Needs uv; without it the
+# packs' tools simply stay unprovisioned until uv is installed.
+# It is completed before the managed-package step, which then builds the agents'
+# tool servers with it (Write-ClioKitReady).
+# Write-ClioKitReady READY: tell the managed-package step whether clio-kit is installed,
+# with the folders that put it and uv on its PATH.
+function Write-ClioKitReady([bool]$Ready) {
+    if (-not $script:KitReadyFile) { return }
+    $record = [ordered]@{ status = 'failed'; path = @(); env = @{} }
+    $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($Ready -and $uvCommand) {
+        Use-ClioKitToolDirs
+        try { $bin = (& $uvCommand.Source tool dir --bin 2>$null | Select-Object -First 1) } finally { Use-ClioKitToolDirs -Restore }
+        if ($bin) {
+            $record.status = 'ready'
+            $record.path = @($bin.Trim(), (Split-Path -Parent $uvCommand.Source))
+            if ($KitToolDirs.Count) { $record.env = $KitToolDirs }
+        }
+    }
+    $partial = "$($script:KitReadyFile).partial"
+    [System.IO.File]::WriteAllText($partial, (ConvertTo-Json $record -Compress), (New-Object System.Text.UTF8Encoding $false))
+    Move-Item -LiteralPath $partial -Destination $script:KitReadyFile -Force
+}
+$kitStatus = 1
+if ($KitJob -or $KitKept -or (Have uv)) {
+    if (-not $ClioKitPackage) {
+        Say "Provisioning released clio-kit launcher ($ClioKitSpec)"
+    } else {
+        Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
+    }
+    if ($KitToolDirs.Count) { Say "clio-kit goes in this installation's own tool folder: $($KitToolDirs.UV_TOOL_DIR)" }
+    if (-not $KitJob -and -not $KitKept) {
+        $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        $KitJob = Start-ClioKitInstall $uvCommand.Source
+    }
+    if ($KitKept) {
+        Warn $KitKept
+        $kitStatus = 0
+    } elseif ($KitJob) {
+        $kitStatus = Complete-ClioBackground $KitJob
+    } else {
+        $kitStatus = 1
+    }
+    if ($kitStatus -ne 0) {
+        Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install `"$ClioKitSpec`"' succeeds and the dir from 'uv tool dir --bin' is on PATH"
+    }
+} else {
+    Warn "uv not found - skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
+}
+if (-not $DocJob -and -not $KitReadyFile -and (Test-Path $VenvPython)) {
+    & $VenvPython -c "import importlib.util, sys; s = importlib.util.find_spec('clio_agent.runtime.document_install'); sys.exit(0 if s and '--prepare-tool-servers' in open(s.origin, encoding='utf-8').read() else 3)"
+    if ($LASTEXITCODE -eq 0) {
+        $KitReadyFile = Join-Path ([System.IO.Path]::GetTempPath()) "clio-kit-ready-$([guid]::NewGuid()).json"
+        $env:CLIO_INSTALL_KIT_READY = $KitReadyFile
+        $DocFlags += '--prepare-tool-servers'
+    }
+}
+Write-ClioKitReady ($kitStatus -eq 0)
+
 Complete-OfficePrepare
 if ($PrefetchJob) {
     $null = Complete-ClioBackground $PrefetchJob
@@ -2040,40 +2113,9 @@ if ($RuntimeScratch) {
     Remove-Item -LiteralPath $RuntimeScratch -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
 }
-
-# ---------- provision clio-kit MCP runtime ----------------------------
-# Marketplace packs launch their MCP servers via the installed `clio-kit
-# mcp-server <name>` launcher. The default matches this CLIO release's Kit pin;
-# explicit legacy shared-runtime candidates select their science dependency union.
-# Installed-tool launchers (not per-server `uvx` calls)
-# avoid the concurrent cold-cache ephemeral-env race and `uv cache prune`
-# deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
-# is idempotent (re-run is a no-op / version pin). Needs uv; without it the
-# packs' tools simply stay unprovisioned until uv is installed.
-if ($KitJob -or $KitKept -or (Have uv)) {
-    if (-not $ClioKitPackage) {
-        Say "Provisioning released clio-kit launcher ($ClioKitSpec)"
-    } else {
-        Say "Provisioning candidate shared clio-kit science runtime ($ClioKitSpec)"
-    }
-    if ($KitToolDirs.Count) { Say "clio-kit goes in this installation's own tool folder: $($KitToolDirs.UV_TOOL_DIR)" }
-    if (-not $KitJob -and -not $KitKept) {
-        $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        $KitJob = Start-ClioKitInstall $uvCommand.Source
-    }
-    if ($KitKept) {
-        Warn $KitKept
-        $kitStatus = 0
-    } elseif ($KitJob) {
-        $kitStatus = Complete-ClioBackground $KitJob
-    } else {
-        $kitStatus = 1
-    }
-    if ($kitStatus -ne 0) {
-        Warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install `"$ClioKitSpec`"' succeeds and the dir from 'uv tool dir --bin' is on PATH"
-    }
-} else {
-    Warn "uv not found - skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
+if ($KitReadyFile) {
+    Remove-Item -LiteralPath $KitReadyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:CLIO_INSTALL_KIT_READY -ErrorAction SilentlyContinue
 }
 
 # ---------- install the released Web frontend -------------------------
