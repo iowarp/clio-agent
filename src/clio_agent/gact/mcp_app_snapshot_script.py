@@ -17,7 +17,8 @@ so its context's draw calls are watched, the view is nudged to redraw (its frame
 by one pixel for two frames), and the canvas is copied when the app's drawing task ends.
 
 Every gap is typed, never silent: ``skipped`` lists ``frame_cross_origin``,
-``webgl_frame_not_redrawn``, ``cross_origin_pixels``, ``not_drawable`` and
+``webgl_frame_not_redrawn``, ``webgl_canvas_idle`` (a blank canvas beside one that redrew),
+``cross_origin_pixels``, ``not_drawable`` and
 ``wrapped_text_not_drawn``; a refused snapshot answers ``{error: {reason, message}}``
 (``view_not_laid_out``, ``view_not_readable``, ``snapshot_tainted``, ``snapshot_failed``).
 """
@@ -116,10 +117,18 @@ const clioViewSnapshot = (() => {
     try {
       await nudge();
       copies.clear();
+      // Until every canvas redrew, or the ones that did have been quiet for a while (a view
+      // may keep a canvas it never draws on).
       const until = performance.now() + 2000;
+      let drawn = 0;
+      let quietSince = performance.now();
       while (performance.now() < until) {
         await frame(window);
         if (entries.every(({ canvas }) => copies.get(canvas)?.width === canvas.width)) break;
+        if (copies.size !== drawn) {
+          drawn = copies.size;
+          quietSince = performance.now();
+        } else if (drawn && performance.now() - quietSince > 400) break;
       }
       // One more frame so a redraw in several passes ends on its last one.
       await frame(window);
@@ -275,7 +284,9 @@ const clioViewSnapshot = (() => {
       try {
         if (kind === 'canvas' && copies.has(element)) source = copies.get(element);
         else if (kind === 'canvas' && live.some((entry) => entry.canvas === element)) {
-          skipped.push({ what: 'canvas', reason: 'webgl_frame_not_redrawn' });
+          // Nothing drew when asked: the whole view is missing, or this canvas is one the
+          // view keeps blank beside one that did draw.
+          skipped.push({ what: 'canvas', reason: copies.size ? 'webgl_canvas_idle' : 'webgl_frame_not_redrawn' });
           continue;
         }
         if (kind === 'img' && !(element.complete && element.naturalWidth)) continue;

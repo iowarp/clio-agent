@@ -17,6 +17,7 @@
 //   {"wait": MS}
 //   {"shell": CMD, "label": L} run a command on this machine and log its output
 //   {"drag": true}             rotate the scene, counting the view's WebSocket frames
+//   {"wheel": N}               scroll the mouse wheel N notches over the view (negative zooms in)
 //   {"timeIndex": N}           move the view's own time slider to step N (0-based)
 //   {"followLatest": true}     press the view's "Follow latest"
 //   {"modeRemote": true} / {"modeLocal": true}   press the view's drawing toggle
@@ -270,6 +271,19 @@ const run = {
     const during = out.frames.filter((f) => f.at >= start && f.at <= Date.now() + 150);
     note("drag", { frames: during.length, imageFrames: during.filter((f) => f.binary && f.size > 2000).length });
     await page.waitForTimeout(2000);
+  },
+  async wheel(page, notches) {
+    const box = await canvasBox(page);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < Math.abs(notches); i += 1) {
+      await page.mouse.wheel(0, Math.sign(notches) * 120);
+      await page.waitForTimeout(120);
+    }
+    // The browser reports its camera after the interaction ends.
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(2000);
+    note("wheel", notches);
   },
   async timeIndex(page, index) {
     const { trame } = frames(page);
