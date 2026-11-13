@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from clio_agent.gact.mcp_app_calls import set_saved_display_mode
 from clio_agent.gact.mcp_app_downloads import DownloadRefused, save_app_download
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
@@ -206,6 +207,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             raise _not_found() from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        set_saved_display_mode(app, sid, app_id, record.display_mode)  # MA18: reopen restores it
         return {"display_mode": record.display_mode, "pinned": record.pinned}
 
     @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/downloads")
