@@ -1,0 +1,22 @@
+[
+ {
+  "session": "sess_0d662de1931f",
+  "workspace": "ws_e149a8d87c8b"
+ },
+ {
+  "showTab": true
+ },
+ {
+  "view": true
+ },
+ {
+  "wait": 5000
+ },
+ {
+  "shell": "python3 -c \"import json,glob,os;p=max(glob.glob('.cloud-run/xdg/data/clio-kit/paraview/3.1.0/scenes/wavelet-*/manifest.json'),key=os.path.getmtime);print(p, json.dumps(json.load(open(p))['camera']))\"",
+  "label": "camera after restart"
+ },
+ {
+  "hero": "fo3-camera-after-restart-hero"
+ }
+]

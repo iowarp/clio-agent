@@ -1,0 +1,15 @@
+[
+ {"open": "final-pv3"},
+ {"send": "Open /home/user/wt/final/clio-agent/.cloud-run/apps-work/final-pv3/wavelet.vti in ParaView and show me an isosurface of RTData at 150."},
+ {"view": true},
+ {"drag": true},
+ {"wheel": -6},
+ {"wait": 3000},
+ {"shell": "python3 -c \"import json,glob,os;p=max(glob.glob('.cloud-run/xdg/data/clio-kit/paraview/3.1.0/scenes/wavelet-*/manifest.json'),key=os.path.getmtime);print(p, json.dumps(json.load(open(p))['camera']))\"", "label": "camera before restart"},
+ {"hero": "fo3-camera-before-restart-hero"},
+ {"restart": true},
+ {"view": true},
+ {"wait": 5000},
+ {"shell": "python3 -c \"import json,glob,os;p=max(glob.glob('.cloud-run/xdg/data/clio-kit/paraview/3.1.0/scenes/wavelet-*/manifest.json'),key=os.path.getmtime);print(p, json.dumps(json.load(open(p))['camera']))\"", "label": "camera after restart"},
+ {"hero": "fo3-camera-after-restart-hero"}
+]
