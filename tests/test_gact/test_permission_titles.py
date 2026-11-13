@@ -103,3 +103,28 @@ def test_a_recorded_waiting_call_gains_the_title(titled: None) -> None:
     recorded = [{"id": "c1", "name": "viewer_set_timestep", "state": "running"}]
     (tool,) = overlay_waiting_calls(app, "sess_1", recorded)
     assert (tool["state"], tool["title"]) == ("pending", "Change the timestep")
+
+
+def _projected(kind: str | None) -> dict[str, Any]:
+    from clio_agent.gact.routes.interactions import _permission_interaction
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(sessions=None, workspaces=None, task_history=None, agent_tasks=None)
+    )
+    row: dict[str, Any] = {
+        "id": "perm_1",
+        "session_id": "sess_1",
+        "status": "pending",
+        "summary": "Open a view",
+        "task_id": "task_1",
+        "tool_call": {"tool_name": "viewer_open", "input": {"path": "/remote/data.vti"}},
+    }
+    if kind:
+        row["kind"] = kind
+    return _permission_interaction(app, row).payload
+
+
+def test_an_external_tool_card_does_not_claim_the_workspace_host() -> None:
+    # The connector's server decides where the call runs (another machine, a hosted service).
+    assert "execution" not in _projected("external_mcp")
+    assert set(_projected(None)["execution"]) == {"computer", "cwd"}
