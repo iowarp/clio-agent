@@ -40,6 +40,8 @@
 //   {"press": LABEL}           press a button of the ParaView page by its accessible name
 //   {"panelText": LABEL}       log the open panel's text and the pipeline rows
 //   {"theme": "dark"|"light"}  switch CLIO's theme as its own switch does
+//   {"stepMenu": NAME}         open the step n/N menu (previous, slider, next), shoot NAME,
+//                              close it, and log the bar's height (one row is about 36 px)
 //   {"play": NAME}             press Play, sample the step four times, shoot NAME, press Pause
 // Every request and WebSocket the page opens is recorded. PV_OUT (a file) receives the
 // log, the requests, the sockets and the turns' answers as JSON, for the token search (AQ49).
@@ -393,6 +395,19 @@ const run = {
     await page.mouse.move(page.viewportSize().width - 60, page.viewportSize().height - 30);
     await page.waitForTimeout(3000);
     note(`press ${label}`, await panelText(page));
+  },
+  async stepMenu(page, name, action, shot) {
+    const { trame } = frames(page);
+    const bar = await trame.locator(".clio-bar").evaluate((b) => Math.round(b.getBoundingClientRect().height));
+    await trame.locator(".clio-bar .clio-step").click();
+    await page.waitForTimeout(1000);
+    const menu = await trame.locator(".clio-step-menu").evaluate((m) =>
+      [...m.querySelectorAll("button, input")].map((e) => e.getAttribute("aria-label")),
+    ).catch(() => []);
+    await shot(name);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(600);
+    note("step menu", { barHeight: bar, menu, ...(await viewText(page)) });
   },
   async play(page, name, action, shot) {
     const { trame } = frames(page);

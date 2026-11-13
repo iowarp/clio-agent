@@ -1,57 +1,51 @@
 [
  {
-  "session": "sess_467c4f8fdcd6",
-  "workspace": "ws_3a043b270ad3"
+  "session": "sess_efb4eb88ed5c",
+  "workspace": "ws_f46cdef189c5"
  },
  {
-  "showTab": true
+  "send": "Now open /home/user/wt/pv-ui/clio-agent/.cloud-run/apps-work/pvui4/pulse_series.pvd in ParaView instead and show it to me."
  },
  {
   "view": true
  },
  {
-  "shot": "phone-view"
+  "theme": "dark"
+ },
+ {
+  "shot": "phone-dark-view"
+ },
+ {
+  "stepMenu": "phone-dark-step-menu"
  },
  {
   "panel": "Pipeline"
  },
  {
-  "shot": "phone-pipeline"
- },
- {
-  "row": "Clip6"
- },
- {
-  "filter": "Threshold"
- },
- {
-  "shot": "phone-threshold"
+  "shot": "phone-dark-pipeline-sheet"
  },
  {
   "panel": "Display"
  },
  {
-  "shot": "phone-display"
+  "shot": "phone-dark-display-sheet"
  },
  {
   "closePanel": true
  },
  {
-  "play": "phone-playing"
- },
- {
-  "status": "paused"
+  "play": "phone-dark-playing"
  },
  {
   "theme": "light"
  },
  {
+  "stepMenu": "phone-light-step-menu"
+ },
+ {
   "panel": "Camera"
  },
  {
-  "shot": "phone-light-camera"
- },
- {
-  "theme": "dark"
+  "shot": "phone-light-camera-sheet"
  }
 ]
