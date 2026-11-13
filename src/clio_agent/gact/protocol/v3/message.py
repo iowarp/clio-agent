@@ -331,6 +331,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "display_mode": (
                 "fullscreen" if part.get("display_mode") == "fullscreen" else "inline"
             ),
+            **({"title": str(part["title"])} if part.get("title") else {}),
             **(
                 {"height": int(part["height"])}
                 if isinstance(part.get("height"), int) and int(part["height"]) > 0

@@ -24,26 +24,33 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import threading
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.mcp_apps import (
+    DISPLAY_MODES,
+    MCP_APP_MIME_TYPE,
+    MCPAppRecord,
+    _registry,
+    _resource_uri,
+    _run_bound,
+    call_tool_result_to_wire,
+)
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
 from clio_agent.runtime.stream_audit import stream_audit
-
-if TYPE_CHECKING:
-    from clio_agent.gact.mcp_apps import MCPAppRecord
+from clio_agent.tools.mcp_extension_registry import MCP_APPS_PROTOCOL_REVISION
 
 logger = logging.getLogger(__name__)
 
 SESSION_KEY = "mcp_app_calls"
-DISPLAY_MODES = frozenset({"inline", "fullscreen"})
 #: Arguments above this size are not kept in session metadata, which is sent to
 #: the client in full. The entry is still saved, with a typed reason, so the
 #: card can say why it cannot reopen.
@@ -193,6 +200,11 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
     _write(app, sid, record.app_instance_id, entry)
     if capture is None:
         return False
+    # A view reopened into a tab is pinned from its first moment (MA6).
+
+    _registry(app).set_display_mode(
+        sid, record.app_instance_id, record.data_ref, capture.display_mode
+    )
     capture.record = record
     return True
 
@@ -232,8 +244,6 @@ def _audit(
 def _resolve_opening_tool(executor: Any, entry: Mapping[str, Any]) -> str:
     """The executor's name for the saved tool, which must still open a view."""
 
-    from clio_agent.gact.mcp_apps import _resource_uri  # noqa: PLC0415 - cycle
-
     server = str(entry.get("server") or "")
     tool = str(entry.get("tool") or "")
     if not server or not tool:
@@ -260,11 +270,6 @@ def _error_text(result_wire: Mapping[str, Any]) -> str:
 
 
 def _part(record: MCPAppRecord, display_mode: str) -> dict[str, Any]:
-    from clio_agent.gact.mcp_apps import MCP_APP_MIME_TYPE  # noqa: PLC0415 - cycle
-    from clio_agent.tools.mcp_extension_registry import (  # noqa: PLC0415
-        MCP_APPS_PROTOCOL_REVISION,
-    )
-
     return Part(
         id=f"mcp_app_{record.app_instance_id}",
         type="mcp_app",
@@ -274,11 +279,8 @@ def _part(record: MCPAppRecord, display_mode: str) -> dict[str, Any]:
         tool_name=record.tool_name,
         data_ref=record.data_ref,
         mime_type=MCP_APP_MIME_TYPE,
-        metadata={
-            "stream_source": "reopen",
-            "protocol": MCP_APPS_PROTOCOL_REVISION,
-            "display_mode": display_mode,
-        },
+        display_mode=display_mode,
+        metadata={"stream_source": "reopen", "protocol": MCP_APPS_PROTOCOL_REVISION},
     ).to_wire()
 
 
@@ -318,11 +320,6 @@ async def replay_call(
     names what is being reopened, for the audit; ``capture.save`` says whether
     the new view's call is saved on the session.
     """
-
-    from clio_agent.gact.mcp_apps import (  # noqa: PLC0415 - cycle
-        _run_bound,
-        call_tool_result_to_wire,
-    )
 
     app_instance_id = capture.reopened_from
 
@@ -376,8 +373,26 @@ def _session_not_found() -> HTTPException:
     )
 
 
+def app_is_live(app: FastAPI, sid: str, app_instance_id: str, data_ref: str) -> bool:
+    """Whether CLIO still holds this view, without touching its idle time."""
+
+    return any(
+        record.app_instance_id == app_instance_id
+        and secrets.compare_digest(record.data_ref, data_ref)
+        for record in _registry(app).records_for_session(sid)
+    )
+
+
 def register_mcp_app_reopen_routes(app: FastAPI) -> None:
-    """Register ``POST /v1/sessions/{sid}/mcp-apps/reopen``."""
+    """Register the reopen route and the card's liveness check."""
+
+    @app.get("/v1/sessions/{sid}/mcp-apps/{app_id}/live")
+    async def mcp_app_live(sid: str, app_id: str, data_ref: str) -> dict[str, Any]:
+        """``{live}``: a card asks before mounting, so a closed view is not a failed request."""
+
+        if app.state.sessions.get(sid) is None:
+            raise _session_not_found()
+        return {"live": app_is_live(app, sid, app_id, data_ref)}
 
     @app.post("/v1/sessions/{sid}/mcp-apps/reopen")
     async def reopen_mcp_app(sid: str, request: Request) -> dict[str, Any]:
@@ -396,6 +411,7 @@ __all__ = [
     "REOPEN_REASONS",
     "SESSION_KEY",
     "ReopenFailure",
+    "app_is_live",
     "record_opening_call",
     "register_mcp_app_reopen_routes",
     "reopen_saved_call",

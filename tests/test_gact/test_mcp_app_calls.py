@@ -131,11 +131,12 @@ def test_reopen_replays_saved_call_and_returns_fresh_part(stack: Any) -> None:
     assert part["app_instance_id"] != app_id
     assert part["resource_uri"] == _VIEW
     assert part["source_server"] == "boards"
-    assert part["metadata"]["display_mode"] == "fullscreen"
+    assert part["display_mode"] == "fullscreen"
     record = stack.app.state.mcp_app_registry.get(
         stack.sid, part["app_instance_id"], part["data_ref"]
     )
     assert record.tool_input == {"title": "Q3", "count": 4}
+    assert record.pinned  # reopened into its tab, so pinned at once (MA6)
     # The card that asked mounts the part; no second card enters the transcript.
     assert list(stack.app.state.live_assistant_parts.get(stack.sid, [])) == parts_before
     # The reopened view has its own saved call, so a later reopen (tab restore) works.
@@ -241,3 +242,30 @@ def test_display_mode_is_recorded(stack: Any) -> None:
 
 def test_saved_calls_of_unknown_session_are_empty(stack: Any) -> None:
     assert saved_calls(stack.app, "sess_missing") == {}
+
+
+def test_live_check_does_not_fail_for_a_closed_view(stack: Any) -> None:
+    app_id = _open(stack)
+    record = stack.app.state.mcp_app_registry.records_for_session(stack.sid)[0]
+    base = f"/v1/sessions/{stack.sid}/mcp-apps/{app_id}/live"
+
+    assert stack.client.get(base, params={"data_ref": record.data_ref}).json() == {"live": True}
+    assert stack.client.get(base, params={"data_ref": "wrong"}).json() == {"live": False}
+    stack.app.state.mcp_app_registry.drop_session(stack.sid)
+    assert stack.client.get(base, params={"data_ref": record.data_ref}).json() == {"live": False}
+    missing = stack.client.get(
+        "/v1/sessions/sess_missing/mcp-apps/x/live", params={"data_ref": "r"}
+    )
+    assert missing.status_code == 404
+
+
+def test_display_mode_route_updates_the_saved_call(stack: Any) -> None:
+    app_id = _open(stack)
+    record = stack.app.state.mcp_app_registry.records_for_session(stack.sid)[0]
+    response = stack.client.put(
+        f"/v1/sessions/{stack.sid}/mcp-apps/{app_id}/display-mode",
+        params={"data_ref": record.data_ref},
+        json={"mode": "fullscreen"},
+    )
+    assert response.status_code == 200
+    assert saved_call(stack.app, stack.sid, app_id)["display_mode"] == "fullscreen"
