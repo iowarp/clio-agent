@@ -194,4 +194,11 @@ try {
   await browser.close();
 }
 
-console.log(JSON.stringify({ shots, consoleErrors, failedRequests }, null, 2));
+// A Docker network created or removed on this machine (another stack's containers) makes
+// Chromium abort every request in flight with ERR_NETWORK_CHANGED. That is the shared
+// machine, not the UI: say so, so the run is repeated rather than debugged.
+const networkChanged = failedRequests.some((r) => r.includes("ERR_NETWORK_CHANGED"));
+if (networkChanged) {
+  console.error("ui_check: the host's network changed during the run (ERR_NETWORK_CHANGED); run it again");
+}
+console.log(JSON.stringify({ shots, consoleErrors, failedRequests, ...(networkChanged ? { networkChanged } : {}) }, null, 2));
