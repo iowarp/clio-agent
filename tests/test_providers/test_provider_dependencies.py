@@ -310,6 +310,108 @@ class TestSealedRuntimeOverlay:
         assert f"pytest=={metadata.version('pytest')}" in seen["pins"]
         assert not any(pin.startswith("globus-sdk==") for pin in seen["pins"])
 
+    @staticmethod
+    def _dist(root: Path, name: str, module: str, version: str) -> None:
+        (root / module).mkdir(parents=True)
+        (root / module / "__init__.py").write_text("", encoding="utf-8")
+        info = root / f"{module}-{version}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8"
+        )
+        (info / "RECORD").write_text(
+            f"{module}/__init__.py,,\n{info.name}/METADATA,,\n{info.name}/RECORD,,\n",
+            encoding="utf-8",
+        )
+
+    def _overlay_install(
+        self, tmp_path: Path, monkeypatch: Any, results: dict[str, int | str]
+    ) -> tuple[Path, list[list[str]]]:
+        """Run an overlay install whose fake uv answers each step from ``results``.
+
+        The resolve names globus-sdk (lacking) and pytest at the runtime's version,
+        which the overlay holds a stale copy of.
+        """
+        import importlib.metadata as metadata  # noqa: PLC0415
+
+        from clio_agent.runtime import package_overlay  # noqa: PLC0415
+
+        overlay = tmp_path / "data" / "runtime-packages" / "key"
+        self._dist(overlay, "pytest", "pytest_stale", "0.0.1")
+        monkeypatch.setattr(package_overlay, "overlay_for", lambda _python: overlay)
+        monkeypatch.setattr(package_overlay, "prepend", lambda _directory: None)
+        availability = iter((False, False, True))
+        monkeypatch.setattr(dependencies, "_module_available", lambda _name: next(availability))
+        monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: "uv")
+        pytest_pin = f"pytest=={metadata.version('pytest')}"
+        commands: list[list[str]] = []
+
+        def _fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            step = "dry" if "--dry-run" in command else "gaps" if "--no-deps" in command else "full"
+            outcome = results.get(step, 0)
+            if step == "dry":
+                if isinstance(outcome, int) and outcome:
+                    return subprocess.CompletedProcess(command, outcome, "", "no solution")
+                listing = (
+                    outcome
+                    if isinstance(outcome, str)
+                    else f"Would install 2 packages\n + globus-sdk==3.0.0\n + {pytest_pin}\n"
+                )
+                return subprocess.CompletedProcess(command, 0, "", listing)
+            if outcome:
+                return subprocess.CompletedProcess(command, int(outcome), "", "boom")
+            target = Path(command[command.index("--target") + 1])
+            self._dist(target, "globus-sdk", "globus_sdk", "3.0.0")
+            if step == "full":
+                self._dist(target, "pytest", "pytest", metadata.version("pytest"))
+            return subprocess.CompletedProcess(command, 0, "installed", "")
+
+        monkeypatch.setattr(dependencies, "_run_install_command", _fake_runner)
+        assert dependencies.ensure_provider_extra(
+            extra_name="argonne",
+            module_name="globus_sdk",
+            display_name="ALCF support",
+            python_executable="python",
+        )
+        # Either way the published overlay is the same: the lacking distribution, and the
+        # stale copy of a runtime distribution superseded by the runtime's own.
+        assert sorted(p.name for p in overlay.iterdir()) == [
+            "globus_sdk",
+            "globus_sdk-3.0.0.dist-info",
+        ]
+        assert not [p for p in overlay.parent.iterdir() if p.name.startswith(".staging-")]
+        return overlay, commands
+
+    def test_installs_only_what_the_runtime_lacks_without_its_dependencies(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        _overlay, commands = self._overlay_install(tmp_path, monkeypatch, {})
+        assert len(commands) == 2
+        dry_run, gaps = commands
+        assert "--dry-run" in dry_run and dry_run[-1] == "globus-sdk>=3.0.0"
+        assert "--no-deps" in gaps and "--compile-bytecode" in gaps
+        assert gaps[-1] == "globus-sdk==3.0.0"
+
+    @pytest.mark.parametrize(
+        "results",
+        [
+            {"dry": 2},
+            {"dry": "Resolved 2 packages\n + globus-sdk @ file:///wheel.whl\n"},
+            {"dry": "Audited 1 package\n"},
+            {"gaps": 1},
+        ],
+        ids=["resolve-fails", "unpinned-resolve", "nothing-resolved", "gap-install-fails"],
+    )
+    def test_falls_back_to_the_full_install(
+        self, tmp_path: Path, monkeypatch: Any, results: dict[str, int | str]
+    ) -> None:
+        _overlay, commands = self._overlay_install(tmp_path, monkeypatch, results)
+        full = commands[-1]
+        assert "--dry-run" not in full and "--no-deps" not in full
+        assert full[-1] == "globus-sdk>=3.0.0"
+        assert len(commands) == (3 if "gaps" in results else 2)
+
     def test_pip_fallback_also_targets_the_overlay(self, tmp_path: Path, monkeypatch: Any) -> None:
         monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: None)
         overlay = tmp_path / "overlay"
