@@ -8,6 +8,11 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- Pin `clio-kit==2.12.7`. Every MCP server picks up opentelemetry-api 1.45.2
+  (CVE-2026-126360). The adios and paraview servers install ADIOS2 from wheels
+  on macOS, the hdf5 server keeps its metrics under its granted cache directory
+  instead of creating `~/.hdf5_mcp`, and every Python server runs on Python
+  3.12. `install.sh` keeps its own pin.
 - Pin `clio-kit==2.12.5`. The ADIOS server no longer builds ADIOS2 from source on
   Windows (no Windows wheels exist); its ADIOS2 tools report `Adios2Unavailable`
   there instead. This cuts the first ADIOS prepare on a new Windows install from
