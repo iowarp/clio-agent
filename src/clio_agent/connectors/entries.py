@@ -72,6 +72,8 @@ class Entry:
     needs: tuple[Need, ...] = ()
     logo: str = ""
     plugin: str = ""
+    #: The server tools offered (``tools`` in the entry); empty offers every tool.
+    tools: tuple[str, ...] = ()
     source: Literal["catalog", "custom"] = "catalog"
     folder: str = ""
 
@@ -111,6 +113,7 @@ class Entry:
                 for need in self.needs
             ],
             **({"plugin": self.plugin} if self.plugin else {}),
+            **({"tools": list(self.tools)} if self.tools else {}),
         }
 
 
@@ -238,6 +241,7 @@ def entry_from_raw(
         ),
         logo=str(raw.get("logo") or ""),
         plugin=str(raw.get("plugin") or ""),
+        tools=tuple(str(name) for name in raw.get("tools") or ()),
         source=source,
         folder=folder,
     )
