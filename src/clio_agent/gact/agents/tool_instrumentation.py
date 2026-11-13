@@ -429,6 +429,7 @@ def rebuilt_tool(
         START_PRESENTER_ATTR,
         DOMAIN_ATTR,
         READ_ONLY_ATTR,
+        OUTSIDE_ATTR,
         CALLERS_ATTR,
     ):
         value = getattr(inner_func, attr, None)

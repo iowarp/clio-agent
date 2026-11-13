@@ -22,6 +22,7 @@ from clio_agent import conf
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.dspy_native_tool import ClioNativeTool
 from clio_agent.gact.agents.tool_instrumentation import acts_outside, native_tool
+from clio_agent.gact.agents.tool_recording import recording_tool
 from clio_agent.gact.code_mode import grants
 from clio_agent.gact.connector_tool import build_set_connector_value_tool
 from clio_agent.gact.mcp_app_tools import AppTool, _agent_tool
@@ -122,6 +123,8 @@ def test_the_declaration_marks_view_tools_and_set_connector_value() -> None:
     assert acts_outside(_view_tool())
     assert not acts_outside(_view_tool(read_only=True))  # readOnlyHint: exempt
     assert acts_outside(build_set_connector_value_tool())
+    # The agent's recorded wrapper keeps the declaration (live: it was lost there first).
+    assert acts_outside(recording_tool(build_set_connector_value_tool()))
     assert not acts_outside(_bookkeeping())
     assert not acts_outside(ClioNativeTool(lambda: "x", name="plain", desc="Plain."))
 
