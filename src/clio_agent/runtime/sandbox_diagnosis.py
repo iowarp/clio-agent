@@ -287,6 +287,47 @@ def diagnose_confined(
     return diagnosis.to_payload() if diagnosis is not None else None
 
 
+#: The ``signature`` of a diagnosis made from a call's declared write targets, not its text.
+WRITE_TARGET_SIGNATURE = "write_target_outside_territory"
+
+
+def diagnose_write_targets(
+    targets: Sequence[Path | str],
+    *,
+    write_roots: Sequence[Path | str],
+    mechanism: str,
+    platform: str = sys.platform,
+    seam: Seam = "tool",
+) -> BoundaryDiagnosis | None:
+    """Diagnose a failed confined call from the local paths it was asked to write.
+
+    A confined stdio MCP server reports its failures as prose, which may describe anything:
+    a remote host's ``Permission denied`` reads like a fenced write. This diagnosis reads no
+    text. It needs a fence that ran (``mechanism`` not ``none``) and absolute local
+    ``targets`` the call's arguments name as writes; only targets outside ``write_roots``
+    that the person's own account could write stay. ``None`` when none does.
+    """
+    if not mechanism or mechanism == "none":
+        return None
+    flavor = _flavor(platform)
+    absolute = [str(t) for t in targets if str(t) and flavor.absolute(str(t))]
+    resolved = _dedupe(_resolve(t, None, flavor) for t in absolute)
+    outside = [p for p in resolved if not within_roots(p, write_roots, platform=platform)]
+    blocked = [p for p in outside if _person_could_write(p, flavor)]
+    if not blocked:
+        return None
+    roots = _dedupe(nearest_existing_parent(p, platform=platform) for p in blocked)
+    return BoundaryDiagnosis(
+        kind=KIND_WRITE_DENIED,
+        confidence=CONFIRMED,
+        mechanism=mechanism,
+        paths=tuple(blocked),
+        request_roots=tuple(roots),
+        message=write_denied_message(roots, seam=seam),
+        signature=WRITE_TARGET_SIGNATURE,
+    )
+
+
 def _scope_narrowed() -> bool:
     from clio_agent.tools.write_scope import (  # noqa: PLC0415 - avoid import cycle
         active_tool_read_only,
@@ -596,9 +637,11 @@ __all__ = [
     "KIND_OFFICE_IN_SHELL",
     "KIND_WRITE_DENIED",
     "POSSIBLE",
+    "WRITE_TARGET_SIGNATURE",
     "BoundaryDiagnosis",
     "diagnose_boundary",
     "diagnose_confined",
+    "diagnose_write_targets",
     "hedged",
     "nearest_existing_parent",
     "publish_call_boundary",

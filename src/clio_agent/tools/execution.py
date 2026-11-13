@@ -24,6 +24,7 @@ from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
+from clio_agent.tools import tool_path_contract as tool_paths
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,
     AsyncMCPToolExecutor,
@@ -613,10 +614,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         # The call runs exactly as the agent asked (relative paths resolve against the
         # workspace root); a failed call gets a "did you mean" hint, never a rewrite.
-        effective_args = _ground_output_paths(
-            dict(args),
-            _tool_input_schema(self._mcp_tools.get(name)),  # fastmcp-4 snake-case-aware read
-            get_active_tool_workspace_root(),
+        definition = tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
+        effective_args = _ground_output_paths(  # fastmcp-4 snake-case-aware schema read
+            dict(args), _tool_input_schema(definition), get_active_tool_workspace_root()
         )
         if refusal := _node_output_refusal(effective_args):  # outside an isolated node's folder
             raise notify_refused_call(tool_observer, name, effective_args, refusal)
@@ -729,7 +729,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 injections.note("path_hint", hint)
             from clio_agent.tools.tool_hooks import boundary_error_note  # noqa: PLC0415
 
-            if note := boundary_error_note(error_text):  # #1905: why a fenced server refused
+            if note := boundary_error_note(name, effective_args):  # #1905: fence refusal
                 exc.add_note(note)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
                 if warning := self._record_tool_failure(name, error_text):

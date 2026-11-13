@@ -121,3 +121,34 @@ Final shape (MA23). The ParaView front and any other server with a live view use
 **Closing.** Closing the app (`DELETE …/mcp-apps/{app_id}`), deleting the session or shutting CLIO down removes the record, so the route answers 404, and ends the app's open WebSockets with close code `4410` and reason `mcp_app_closed`, and its in-flight HTTP responses. A WebSocket whose record expired closes at its next frame.
 
 **Where the browser is.** The service URL is on the sandbox origin, so it works wherever the sandbox works: the browser never addresses the service's port.
+
+## A tool's path arguments (owner: `fix2`)
+
+A server declares which arguments of a tool are paths, and on which machine they live, in the private `_meta` of the tool definition (the `tools/list` entry, not a result):
+
+```json
+"_meta": {
+  "ai.iowarp.clio/paths": {
+    "path": {"machine": "remote", "access": "read", "host": "node08"},
+    "out":  {"machine": "local",  "access": "write"}
+  }
+}
+```
+
+- `machine`: `local` (the machine CLIO runs on), `remote` (another machine the server reaches; `host` optionally names it for display, at most 255 characters, one line) or `none` (path-shaped but not a file, such as a name inside a dataset).
+- `access`: `read` (the default) or `write`.
+- An argument not declared keeps CLIO's existing reading (its own contract table for built-in tools; a path-named argument of an unknown tool is `external_input_contract_unknown`).
+- A malformed declaration, or a malformed entry, is ignored with the log reason `path_declaration_invalid`; the call is never refused for it.
+- A server whose machine is a setting (an SSH host) computes the declaration when it lists its tools. CLIO restarts the server when that setting changes, so the listing names the current machine.
+
+**What CLIO does with it** (`clio_agent.tools.tool_path_contract`, bound per call by the execution boundary):
+
+| Declared | Provenance (`TransformRecord.used`) | Tool row | Sandbox note on a confined server's failed call |
+| --- | --- | --- | --- |
+| `local` `read` | Inside the workspace: the usual hash/stat edge. Outside: `external:<path>`, note `external_input_not_hashed` | Input link block | No |
+| `local` `write` | Not an input | Unchanged | Yes, when the path is outside the fence's territory and the person could write there (hedged `possible`, naming the folder); also a `prevented`/`detected` policy violation |
+| `remote` `read` | On success, `remote:<host>:<path>` (`remote:<path>` without a host), evidence `schema-arg`, note `remote_input_not_observed`; never resolved, read or hashed here | Unchanged, never `degraded` | No |
+| `remote` `write`, `none` | Nothing | Unchanged | No |
+
+The sandbox note for a confined stdio server's failed call never reads the error's text: it needs a confined child that served the call and a local write target outside the territory, from the declared `local` `write` arguments or the designated output arguments (`output_path`, `out`, …).
+

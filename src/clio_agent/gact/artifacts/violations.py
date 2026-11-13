@@ -10,10 +10,12 @@ attempt now surfaces differently and MORE precisely:
   (:mod:`clio_agent.runtime.sandbox_diagnosis`, #1905) the confined seam attached to its
   result as ``boundary`` (the shell, ``run_code``), checked against the roots that seam gave
   its fence. A confined stdio MCP server cannot attach one, so for a call such a server
-  served (``resolve_serving_child_id``) and that failed, the diagnosis is made here from its
-  error text with the recomputed fleet roots, at ``possible`` confidence, and published for
-  the model's observation of that call. An in-process tool is not fenced, so its denial is
-  never one;
+  served (``resolve_serving_child_id``) and that failed, the diagnosis is made here from the
+  local paths its arguments name as writes (designated output args and the args its server
+  declared, :mod:`clio_agent.tools.tool_path_contract`) with the recomputed fleet roots, at
+  ``possible`` confidence, and published for the model's observation of that call. Its
+  error text is never read: a server's prose may describe a remote host's denial. An
+  in-process tool is not fenced, so its denial is never one;
 * a designated out-of-root output path is absent post-call → ``prevented``; present and
   provably fresh → ``detected`` (the fence was escaped) — worse than prevented, and recorded
   as such.
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -38,12 +41,11 @@ from pydantic import BaseModel, ConfigDict
 from clio_agent.runtime.sandbox_diagnosis import (
     KIND_WRITE_DENIED,
     BoundaryDiagnosis,
-    diagnose_boundary,
+    diagnose_write_targets,
     hedged,
     nearest_existing_parent,
     publish_call_boundary,
     result_boundary,
-    result_text,
     within_roots,
     write_denied_message,
 )
@@ -123,13 +125,13 @@ def observe_policy_violations(
     PRECISION OVER RECALL (#966.10 — a false attribution is worse than a missed one). Both
     signals require the denied path to be PROVEN out-of-root before a mint:
 
-    * the call's sandbox-boundary diagnosis (the ``boundary`` its confined seam attached, or
-      the one made here for a confined stdio MCP server's failed call) names write-denied
+    * the ``boundary`` diagnosis its confined seam attached (the shell, ``run_code``) names write-denied
       ``paths`` outside the territory → one ``prevented`` per path, carrying the diagnosis'
       signature and message. A diagnosis with no path (a bare "permission denied", SSH
       publickey) or for elevation is a typed debug skip (``violation_signal_unattributed``),
       never a fabricated out-of-root violation; an in-root denial has no diagnosis at all;
-    * a designated output path OUTSIDE the territory — absent post-call → ``prevented``;
+    * a designated output path, or a path the tool's server declared as a local write
+      (:func:`local_write_targets`), OUTSIDE the territory — absent post-call → ``prevented``;
       present AND provably fresh within the call window → ``detected``. Without a call window
       (``started_at is None``) a PRESENT file is NEVER upgraded to ``detected`` (F5) — a typed
       skip, since escape cannot be proven.
@@ -138,15 +140,21 @@ def observe_policy_violations(
     if resolved is None or not resolved.active:
         return []
     mechanism = str(resolved.mechanism)
-    from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
-        grounded_output_paths,
-        result_declared_paths,
-    )
+    from clio_agent.gact.artifacts.designation import result_declared_paths  # noqa: PLC0415
+    from clio_agent.gact.artifacts.minting import _workspace_root  # noqa: PLC0415
 
-    boundary = result_boundary(result) or _served_call_boundary(
-        app, call_id=call_id, result=result, workspace_id=workspace_id, mechanism=mechanism
-    )
-    designated = {**grounded_output_paths(args), **result_declared_paths(result)}
+    boundary = result_boundary(result)
+    targets = local_write_targets(tool_name, args, lambda: _workspace_root(app, workspace_id))
+    if boundary is None:  # published for the model; its paths are the designated ones below
+        _served_call_boundary(
+            app,
+            call_id=call_id,
+            targets=targets,
+            result=result,
+            workspace_id=workspace_id,
+            mechanism=mechanism,
+        )
+    designated = {**targets, **result_declared_paths(result)}
     if boundary is None and not designated:
         # Nothing to place against the write territory: resolving it (every root through
         # the filesystem) was most of the observer's own time on a read-only call burst.
@@ -208,37 +216,77 @@ def observe_policy_violations(
     return violations
 
 
+def local_write_targets(
+    tool_name: str, args: dict[str, Any], workspace_root: Callable[[], Optional[Path]]
+) -> dict[str, str]:
+    """The local paths a call's arguments name as writes, by argument name.
+
+    Structure only: the designated output args (:func:`grounded_output_paths`) and the args
+    the tool's server declared as ``local`` ``write`` paths
+    (:mod:`clio_agent.tools.tool_path_contract`). A relative declared path is the server's
+    own, resolved against the workspace root it was started in (``workspace_root`` is asked
+    only then). A path declared ``remote`` or ``none`` is never a local target.
+    """
+    from clio_agent.gact.artifacts.designation import grounded_output_paths  # noqa: PLC0415
+    from clio_agent.tools.tool_path_contract import (  # noqa: PLC0415
+        ACCESS_WRITE,
+        MACHINE_LOCAL,
+        declared_args,
+    )
+
+    targets = dict(grounded_output_paths(args))
+    for arg in declared_args(tool_name, machine=MACHINE_LOCAL, access=ACCESS_WRITE):
+        value = args.get(arg)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = Path(value.strip()).expanduser()
+        if not path.is_absolute():
+            root = workspace_root()
+            if root is None:
+                continue
+            path = root / path
+        targets[arg] = str(path)
+    return targets
+
+
 def _served_call_boundary(
-    app: "FastAPI", *, call_id: str, result: Any, workspace_id: str, mechanism: str
+    app: "FastAPI",
+    *,
+    call_id: str,
+    targets: dict[str, str],
+    result: Any,
+    workspace_id: str,
+    mechanism: str,
 ) -> Optional[BoundaryDiagnosis]:
     """Diagnose a failed call a confined stdio MCP server served, and publish it for the
     model's observation of that call (#1905).
 
-    ``None`` for a result that is not an error, or a call no confined child served (an
-    in-process tool is not fenced). See :func:`_diagnose_served`.
+    ``None`` for a result that is not an error (its ``isError`` flag, never its text), or a
+    call no confined child served (an in-process tool is not fenced). See
+    :func:`_diagnose_served`.
     """
     if not (isinstance(result, dict) and (result.get("isError") or result.get("is_error"))):
         return None
     diagnosis = _diagnose_served(
-        app,
-        call_id=call_id,
-        text=result_text(result),
-        workspace_id=workspace_id,
-        mechanism=mechanism,
+        app, call_id=call_id, targets=targets, workspace_id=workspace_id, mechanism=mechanism
     )
     if diagnosis is not None:
         publish_call_boundary(call_id, diagnosis)
     return diagnosis
 
 
-def raised_call_boundary(error_text: str) -> Optional[BoundaryDiagnosis]:
+def raised_call_boundary(tool_name: str, args: Mapping[str, Any]) -> Optional[BoundaryDiagnosis]:
     """The diagnosis for the running call when it RAISED (FastMCP raises a server's error
-    result, so the observer never sees its text); the execution boundary notes its message
-    on the error. ``None`` off a turn, on the floor, or for a call no confined child served.
+    result, so the observer never sees it); the execution boundary notes its message on the
+    error. ``None`` off a turn, on the floor, for a call no confined child served, or one
+    whose arguments name no local write outside the territory.
 
     Never raises: it runs on the failing call's own error path, whose error must stand.
     """
-    from clio_agent.gact.artifacts.minting import _session_workspace_id  # noqa: PLC0415
+    from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
+        _session_workspace_id,
+        _workspace_root,
+    )
     from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _resolve_tool_session  # noqa: PLC0415
 
@@ -248,11 +296,14 @@ def raised_call_boundary(error_text: str) -> Optional[BoundaryDiagnosis]:
         return None
     try:
         sid, _session = _resolve_tool_session(app)
+        workspace_id = _session_workspace_id(app, sid) if sid else ""
         return _diagnose_served(
             app,
             call_id=observer_call_id(),
-            text=error_text,
-            workspace_id=_session_workspace_id(app, sid) if sid else "",
+            targets=local_write_targets(
+                tool_name, dict(args), lambda: _workspace_root(app, workspace_id)
+            ),
+            workspace_id=workspace_id,
             mechanism=str(state.mechanism),
         )
     except (OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
@@ -269,25 +320,26 @@ def _active_app() -> Optional["FastAPI"]:
 
 
 def _diagnose_served(
-    app: "FastAPI", *, call_id: str, text: str, workspace_id: str, mechanism: str
+    app: "FastAPI",
+    *,
+    call_id: str,
+    targets: dict[str, str],
+    workspace_id: str,
+    mechanism: str,
 ) -> Optional[BoundaryDiagnosis]:
-    """A confined stdio MCP server's error, diagnosed at ``possible`` confidence.
+    """A confined stdio MCP server's failed call, diagnosed at ``possible`` confidence.
 
-    A long-lived server has no per-call roots, so its error text is checked against the
-    recomputed fleet territory (:func:`_effective_roots`, the roots its spawn was given,
-    plus grants since). ``None`` for a call no confined child served.
+    Both signals are structural: a confined child served the call
+    (``resolve_serving_child_id``), and its arguments name local write ``targets`` outside
+    the recomputed fleet territory (:func:`_effective_roots`, the roots its spawn was given,
+    plus grants since). ``None`` otherwise, whatever the error says.
     """
     from clio_agent.gact.artifacts.ingest_edges import resolve_serving_child_id  # noqa: PLC0415
 
-    if not resolve_serving_child_id(app, call_id):
+    if not targets or not resolve_serving_child_id(app, call_id):
         return None
-    from clio_agent.gact.artifacts.minting import _workspace_root  # noqa: PLC0415
-
-    diagnosis = diagnose_boundary(
-        exit_code=None,
-        stderr=text,
-        command=None,
-        cwd=_workspace_root(app, workspace_id),
+    diagnosis = diagnose_write_targets(
+        tuple(targets.values()),
         write_roots=_effective_roots(app, workspace_id),
         mechanism=mechanism,
         seam="tool",
@@ -473,6 +525,7 @@ __all__ = [
     "VIOLATION_PREVENTED",
     "PolicyViolation",
     "observe_policy_violations",
+    "local_write_targets",
     "policy_violations",
     "raised_call_boundary",
 ]
