@@ -3,7 +3,7 @@
 The model-facing text of an MCP result names each image block with a placeholder
 (``[image image/png 1280x800]``, :mod:`clio_agent.tools.mcp_result_text`): the bytes
 never ride the text lane. Before this module that placeholder was all the model got,
-so a server whose tool returns a rendering (a ParaView ``capture``, a plot) could not
+so a server whose tool returns a rendering (a scene capture, a plot) could not
 be looked at. Each image block of a model-facing call is now kept as a workspace
 snapshot and joins the call's media slot (:data:`clio_agent.gact.model_media.CALL_MEDIA`,
 or a foreground script's slot), the same path ``view_image`` uses: the agent loop

@@ -283,8 +283,8 @@ its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`)
 
 Untouched screenshots of real development sessions on the cloud stack (`claude_code`
 provider), 13 November 2026, 1440 x 900, dark mode, copied from the qualification
-gallery. The full record is in `docs/design/sdk/mcp-apps-ledger.d/` (stream named
-below). `node08` and `login` are containers of the ParaView cluster test fixture, and
+gallery. The full record is in `docs/design/sdk/mcp-apps-ledger.md` (its rows name
+the stream given below). `node08` and `login` are containers of the ParaView cluster test fixture, and
 `wave.pvd`, `pulse_series.pvd` and `rc_lowpass.cir` are synthetic test data.
 
 | File | What it shows | Source |
