@@ -75,6 +75,7 @@ def _gateway_tool_funcs() -> dict[str, Callable[..., Any]]:
 
     from clio_agent.tools.servers.fs_server import (  # noqa: PLC0415
         edit_file,
+        git_commit,
         glob,
         list_directory,
         read_file,
@@ -98,6 +99,7 @@ def _gateway_tool_funcs() -> dict[str, Callable[..., Any]]:
         "fs_glob": glob,
         "fs_write_file": write_file,
         "fs_edit_file": edit_file,
+        "fs_git_commit": git_commit,
         "shell_bash": bash,
         "web_search": web_search,
         "web_fetch": web_fetch,
