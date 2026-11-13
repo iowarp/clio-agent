@@ -151,6 +151,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_FLEET_DELEGATION` | `fleet.delegation` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet/guard.py` |
+| `CLIO_FLEET_FAST` | `fleet.fast` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_JUDGES` | `fleet.judges` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_SEARCH` | `fleet.search` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_SPOTTER` | `fleet.spotter` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
@@ -403,6 +404,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
 | `CLIO_BIND_ADDR` | unmigrated | `src/clio_agent/arc/core_control_port.py` |
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
+| `CLIO_BOOTSTRAP_SYNC_SECONDS` | unmigrated | `src/clio_agent/runtime/office_bootstrap.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
 | `CLIO_CORE_ATTACH_ONLY` | unmigrated | `src/clio_agent/arc/home_runtime.py` |

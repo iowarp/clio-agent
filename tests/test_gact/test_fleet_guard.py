@@ -98,6 +98,19 @@ def test_allowed_accounts_inherited_models_and_the_callers_own_account_never_ask
     assert asked == []
 
 
+def test_a_conversation_on_the_default_model_is_on_that_models_account() -> None:
+    """A fast helper on the default model's own account is not delegated elsewhere."""
+    app, asked = _app(["deny"])
+    app.state.sessions.get("root").model = {"provider_id": "", "model_id": ""}
+    app.state.session_defaults = SimpleNamespace(
+        get=lambda: SimpleNamespace(provider_id="openrouter", model_id="x")
+    )
+    assert asyncio.run(guard_spending(app, "root", _choice("openrouter", "prefers"))) is None
+    assert asked == []
+    refused = asyncio.run(guard_spending(app, "root", _choice("anthropic", "prefers")))
+    assert refused is not None and refused["reason"] == "model_spending_not_allowed"
+
+
 def test_model_exhausted_says_who_chose_and_what_else_can_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

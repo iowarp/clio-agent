@@ -982,10 +982,12 @@ function Start-ClioPythonPrefetch {
     $wait = if ($script:UvInstall) { $script:UvInstall.Id } else { 0 }
     $body = @"
 `$ProgressPreference = 'SilentlyContinue'
-try { `$v = ([string](Invoke-RestMethod -UseBasicParsing -TimeoutSec 20 -Uri 'https://raw.githubusercontent.com/iowarp/clio-agent/$ref/.python-version')).Trim() } catch { exit 0 }
-if (`$v -notmatch '^3\.\d+(\.\d+)?$') { exit 0 }
-if ($wait) { Wait-Process -Id $wait -ErrorAction SilentlyContinue }
-if (Test-Path -LiteralPath '$uv') { & '$uv' python install --quiet `$v }
+`$v = ''
+try { `$v = ([string](Invoke-RestMethod -UseBasicParsing -TimeoutSec 20 -Uri 'https://raw.githubusercontent.com/iowarp/clio-agent/$ref/.python-version')).Trim() } catch { }
+if (`$v -match '^3\.\d+(\.\d+)?$') {
+    if ($wait) { Wait-Process -Id $wait -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath '$uv') { & '$uv' python install --quiet `$v }
+}
 "@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
     $shell = (Get-Process -Id $PID).Path
@@ -1477,10 +1479,29 @@ function New-ClioLaunchers([string]$Site, [string]$Wheel) {
     }
 }
 
+# The protected-execution sandbox users (clio_agent.runtime.sandbox_cli.CODEX_SANDBOX_USERS).
+$script:ClioSandboxUsers = @('CodexSandboxOffline', 'CodexSandboxOnline')
+
+# Grant-ClioRuntimeAccessEarly ROOT PREVIOUS: when the runtime this install replaces
+# (PREVIOUS) gave the sandbox users read access, give it to the new, still empty ROOT,
+# so every unpacked file inherits it as it is created. The agent applies the same grant
+# otherwise, after the unpack, rewriting the permissions of every file (7-9 s).
+function Grant-ClioRuntimeAccessEarly([string]$Root, [string]$Previous) {
+    if (-not $Previous) { return $false }
+    $acl = (& icacls $Previous 2>$null) -join "`n"
+    if ($LASTEXITCODE -ne 0) { return $false }
+    foreach ($user in $script:ClioSandboxUsers) {
+        if ($acl -notmatch "\\${user}:(\(I\))?\(OI\)\(CI\)\(RX\)") { return $false }
+    }
+    $grants = @($script:ClioSandboxUsers | ForEach-Object { "${_}:(OI)(CI)(RX)" })
+    & icacls $Root /grant @grants /Q *> $null
+    return $LASTEXITCODE -eq 0
+}
+
 # Install-ClioRuntime PLAN SCRATCH: the runtime archive, unpacked into $Venv as it arrives,
 # and the virtualenv over it. The plan's other files (the npm packages the managed-package
 # step installs) download beside it into SCRATCH\downloads, which that step reads.
-function Install-ClioRuntime($Plan, [string]$Scratch) {
+function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
     $downloads = Join-Path $Scratch 'downloads'
     New-Item -ItemType Directory -Force -Path $downloads | Out-Null
     $items = @(foreach ($entry in $Plan) {
@@ -1496,6 +1517,9 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
     $total = [int64](($items | Measure-Object -Property Bytes -Sum).Sum)
     Say "Downloading and unpacking the CLIO runtime ($($archive.Name), $([math]::Round($archive.Bytes / 1e6)) MB)"
     New-Item -ItemType Directory -Force -Path $Venv | Out-Null
+    $marker = Join-Path (Split-Path -Parent $Venv) 'runtime-access.json'
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    $granted = Grant-ClioRuntimeAccessEarly $Venv $Previous
     Start-ClioUnpackers $Venv $archive
     $failed = ''
     try {
@@ -1517,6 +1541,11 @@ function Install-ClioRuntime($Plan, [string]$Scratch) {
     Remove-Item -LiteralPath $archive.Final, $archive.File -Force -ErrorAction SilentlyContinue
     if ($failed) { return $failed }
     if (-not (Test-Path -LiteralPath (Join-Path $Venv 'runtime.json'))) { return "$($archive.Name) holds no runtime.json" }
+    if ($granted) {
+        # Tells the agent's protected-execution step that the access is already in place.
+        $record = [ordered]@{ schema = 1; runtime = (Split-Path -Leaf $Venv); users = $script:ClioSandboxUsers }
+        Set-Content -LiteralPath $marker -Value (ConvertTo-Json $record -Compress) -Encoding ascii
+    }
     # The managed-package step takes the plan's npm packages from here.
     $env:CLIO_INSTALL_DOWNLOADS = $downloads
     # The managed packages, Office included, are prepared from the runtime's own
@@ -1725,11 +1754,12 @@ if (-not $OptSource -and $RuntimePlan) {
     # place: an install that fails puts it back.
     $Previous = Set-ClioVenvAside $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
-    $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch | Select-Object -Last 1
+    $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch $Previous | Select-Object -Last 1
     if ($failure) {
         Stop-ClioSideFetches
         if ($DocJob) { try { $DocJob.Process.Kill(); $DocJob.Process.WaitForExit() } catch { } }
         RemoveTree $Venv
+        Remove-Item -LiteralPath (Join-Path $Prefix 'clio-agent\runtime-access.json') -Force -ErrorAction SilentlyContinue
         if ($Previous) { [IO.Directory]::Move($Previous, $Venv) }
         Die "could not install CLIO $PackageVersion from release $tag's runtime: $failure$(if ($Previous) { '; the previous installation is unchanged' })"
     }

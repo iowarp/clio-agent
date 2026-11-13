@@ -224,8 +224,17 @@ def wait_process(
             next_beat = now + HEARTBEAT_EVERY_S
             try:
                 heartbeat(now - started, stalled)
-            except Exception:  # noqa: BLE001 - a watcher never stops the job
-                pass
+            except (RuntimeError, TimeoutError):
+                # The watcher's delivery failed (its loop is gone or busy); the job runs on.
+                logger.warning(
+                    "reason=document_heartbeat_failed name=%s pid=%s",
+                    name,
+                    process.pid,
+                    exc_info=True,
+                )
+            except BaseException:
+                kill_tree(process)
+                raise
 
 
 # LibreOffice reads user settings from <UserInstallation>/user, not the profile root.

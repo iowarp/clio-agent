@@ -64,15 +64,23 @@ def register_search_assistant_routes(app: FastAPI) -> None:
             raise HTTPException(422, detail=agent_unavailable_envelope(exc)) from exc
         choice = fleet_settings()["search"]
         defaults = app.state.session_defaults.get()
-        model = (
-            choice
-            or (parent.model if parent else None)
-            or (
-                {"provider_id": defaults.provider_id, "model_id": defaults.model_id}
-                if defaults.provider_id or defaults.model_id
-                else None
-            )
+        inherited = (parent.model if parent else None) or (
+            {"provider_id": defaults.provider_id, "model_id": defaults.model_id}
+            if defaults.provider_id or defaults.model_id
+            else None
         )
+        if not choice:
+            from clio_agent.gact.fleet.fast_model import fast_identity  # noqa: PLC0415
+
+            try:
+                fast = fast_identity(
+                    app=app, account=str((inherited or {}).get("provider_id") or "")
+                )
+            except (ValueError, OSError):
+                fast = None
+            if fast is not None:
+                choice = {"provider_id": fast["provider_id"], "model_id": fast["model_id"]}
+        model = choice or inherited
         session = app.state.sessions.create(
             workspace_id=req.workspace_id,
             title="CLIO Search",

@@ -144,7 +144,7 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
             if not output.is_file():
                 raise RenditionError("pandoc completed without producing a PDF")
             return output, "pandoc+typst" if typst is not None else "pandoc"
-    from clio_agent.runtime.document_runtime import (
+    from clio_agent.runtime.document_office import (
         office_profile_templates,
         prepare_office_runtime,
     )
