@@ -21,6 +21,26 @@ class MCPBoundTool(dspy.Tool):
         formatted["function"]["parameters"] = copy.deepcopy(self._input_contract)
         return formatted
 
+    def _validate_and_parse_args(self, **kwargs: Any) -> Any:
+        """DSPy's per-argument check, with the contract's definitions in reach.
+
+        DSPy validates each argument against its own property schema, which is then
+        the root, so ``{"$ref": "#/$defs/ExperimentCircuit"}`` pointed at nothing and
+        every call of a tool with ``$defs`` failed before reaching its server (AQ32).
+        """
+        defs = {
+            key: self._input_contract[key]
+            for key in ("$defs", "definitions")
+            if key in self._input_contract
+        }
+        if not defs:
+            return super()._validate_and_parse_args(**kwargs)
+        args = {
+            name: {**schema, **defs} if isinstance(schema, Mapping) else schema
+            for name, schema in (self.args or {}).items()
+        }
+        return dspy.Tool._validate_and_parse_args(self.model_copy(update={"args": args}), **kwargs)
+
 
 def bind_input_contract(tool: MCPBoundTool, schema: Mapping[str, Any]) -> MCPBoundTool:
     """Preserve required fields and definitions instead of requiring every property."""

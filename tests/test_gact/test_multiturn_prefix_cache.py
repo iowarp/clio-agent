@@ -282,7 +282,7 @@ def test_sessions_in_different_workspaces_share_the_system_prompt(
     (workspace root, scratch folder) means no cache reads across sessions.
     SABOTAGE: add the workspace context back to ``system_prompt`` and this fails.
     """
-    from clio_agent.gact import plan_mode, session_plan, todos, working_state
+    from clio_agent.gact import mcp_app_context, plan_mode, session_plan, todos, working_state
     from clio_agent.gact.agents import composition
 
     _patch_runtime(monkeypatch)
@@ -299,6 +299,7 @@ def test_sessions_in_different_workspaces_share_the_system_prompt(
     monkeypatch.setattr(session_plan, "take_person_edit", lambda *a, **k: "")
     monkeypatch.setattr(session_plan, "plan_injection", lambda *a, **k: "")
     monkeypatch.setattr(todos, "todo_recitation", lambda *a, **k: "")
+    monkeypatch.setattr(mcp_app_context, "app_context_injection", lambda *a, **k: "")
     injected = working_state.working_state_injections(None, world.sid, None)
     assert injected[0][0] == working_state.SESSION_FACTS_SOURCE
     assert injected[0][1].startswith("Active workspace root: /ws/")
