@@ -476,3 +476,76 @@ def test_the_tools_page_reads_and_writes(tmp_path: Path, monkeypatch: pytest.Mon
         assert removed.json() == {"removed": 1}
         bad = client.put("/v1/settings/tools", json={"tools": ["cron_list"], "permission": "never"})
         assert bad.status_code == 422
+
+
+@pytest.mark.usefixtures("host_agent_executor")
+def test_the_tools_page_reads_one_mcp_server_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from clio_agent.gact import tool_settings_page as page
+    from clio_agent.gact.app import build_app
+
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        pending = client.get("/v1/settings/tools", params={"server": "docs"}).json()
+        assert pending["tools"] == []
+        assert pending["servers_not_loaded"] == ["docs"]
+
+        monkeypatch.setattr(
+            page,
+            "_mcp_definitions",
+            lambda _app: {
+                "docs_search": {
+                    "name": "docs_search",
+                    "description": "Search the docs.",
+                    "annotations": {"readOnlyHint": True},
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+                "docs_delete": {"name": "docs_delete", "description": "Delete a page."},
+                "other_tool": {"name": "other_tool", "description": "Not this server's."},
+            },
+        )
+        view = client.get("/v1/settings/tools", params={"server": "docs"}).json()
+        rows = {row["name"]: row for row in view["tools"]}
+        assert view["plugin"] == "docs"
+        assert view["servers_not_loaded"] == []
+        assert set(rows) == {"docs_search", "docs_delete"}
+        assert rows["docs_search"]["server"] == "docs"
+        assert rows["docs_search"]["group"] == "read"
+        assert rows["docs_delete"]["group"] == "write"
+        assert rows["docs_search"]["plugin_permission_source"] == "annotations"
+        assert rows["docs_search"]["input_schema"]["required"] == ["query"]
+        assert rows["docs_delete"]["input_schema"] == {}
+        assert set(rows["docs_delete"]["outcomes"]) == set(view["approval_modes"])
+
+        assert client.get("/v1/settings/tools").status_code == 422
+        both = client.get("/v1/settings/tools", params={"ref": "clio-builtin/core", "server": "x"})
+        assert both.status_code == 422
+        assert client.get("/v1/settings/tools", params={"server": " "}).status_code == 422
+
+
+def test_mcp_definitions_include_workspace_fleets() -> None:
+    import threading
+    from types import SimpleNamespace
+
+    from clio_agent.gact import tool_settings_page as page
+
+    def executor(definitions: dict) -> SimpleNamespace:
+        return SimpleNamespace(get_all_tool_definitions=lambda: definitions)
+
+    workspaces = {"D:/ws": executor({"docs_search": {"name": "docs_search"}})}
+    agent = SimpleNamespace(
+        tool_executor=executor({"fs_read": {"name": "fs_read"}}),
+        _workspace_state=lambda: (threading.Lock(), workspaces, {}),
+    )
+    definitions = page._mcp_definitions(SimpleNamespace(state=SimpleNamespace(agent=agent)))
+    assert set(definitions) == {"fs_read", "docs_search"}
+    assert page._mcp_definitions(SimpleNamespace(state=SimpleNamespace(agent=None))) == {}

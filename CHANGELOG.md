@@ -72,6 +72,11 @@ marketplace pin (v0.8.0-beta.1) are unchanged.
 
 ### Added
 
+- `GET /v1/settings/tools?server=<name>` returns the Tools settings page for one
+  MCP server by name, for a server the person or a workspace configured rather
+  than a plugin. Its rows have the same permission, I/O and per-mode outcomes as
+  a plugin's; until a conversation loads the server, its name is in
+  `servers_not_loaded`. Pass exactly one of `ref` and `server`.
 - `POST /v1/workspaces/{workspace_id}/folder-attachments` attaches a folder on
   CLIO's computer in place or as a full copy. `resources.max_bytes` now
   defaults to `0` (no limit), so large folders and files no longer fail with
