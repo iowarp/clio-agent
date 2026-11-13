@@ -48,7 +48,7 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
   CLIO uses your own `git` when one is on PATH and this one otherwise, to install
   marketplace agents (including the default `clio/standard`)
 - Web frontend — the matching release bundle, unpacked to `$CLIO_PREFIX/clio-agent/web`
-- `clio-kit` MCP launcher — provisioned via `uv tool install clio-kit==2.12.3`
+- `clio-kit` MCP launcher — provisioned via `uv tool install clio-kit==2.12.5`
   using the backend's selected Python (idempotent) when `uv` is present. Scientific
   servers use the released Kit's locked component environments. Marketplace packs
   launch their MCP servers through the installed `clio-kit mcp-server
@@ -56,7 +56,7 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
   concurrent cold-cache ephemeral-env race and `uv cache prune` deleting
   envs under running servers ([astral-sh/uv#11694](https://github.com/astral-sh/uv/issues/11694)).
   Without `uv`, this step is skipped with a warning — install `uv`, then
-  run `uv tool install clio-kit==2.12.3` and ensure the directory from
+  run `uv tool install clio-kit==2.12.5` and ensure the directory from
   `uv tool dir --bin` is on PATH. `clio doctor` flags a missing launcher.
   An installation with its own `CLIO_PREFIX`, `CLIO_AGENT_HOME`, `CLIO_AGENT_DATA_DIR`
   or `CLIO_USER_DIR` puts clio-kit in `$CLIO_PREFIX/uv-tools` instead (unless the
