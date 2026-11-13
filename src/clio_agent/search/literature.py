@@ -147,6 +147,11 @@ def _missing(source: str, exc: SourceError) -> str:
             f"{name} was busy or asked CLIO to slow down ({exc.detail}); the other sources "
             f"answered. Searching again in a minute may include {name}."
         )
+    if exc.kind == http.REFUSED:
+        return (
+            f"{name} refused this search as invalid ({exc.detail}); the other sources "
+            f"answered. Simpler keywords may let {name} answer."
+        )
     if exc.kind == http.KEY_REJECTED:
         return f"{name} rejected the saved key; fix it in Settings → Web search."
     return (

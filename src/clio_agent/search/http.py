@@ -26,9 +26,19 @@ RATE_LIMITED = "rate_limited"  # too many requests now; retry after a short wait
 ALLOWANCE_USED = "allowance_used"  # free allowance used up until it resets
 KEY_REJECTED = "key_rejected"  # the person's key was refused
 FAILED = "failed"  # network, server error or an answer CLIO cannot read
+REFUSED = "refused"  # the source refused this one request as invalid; it is not down
+
+#: Statuses that refuse one request, not the source: the next source may take it.
+REQUEST_REFUSED_STATUSES = frozenset({400, 413, 414, 422})
 
 #: Cooldown when a source gives no Retry-After.
-DEFAULT_COOLDOWN_S = {RATE_LIMITED: 15.0, ALLOWANCE_USED: 3600.0, KEY_REJECTED: 0.0, FAILED: 30.0}
+DEFAULT_COOLDOWN_S = {
+    RATE_LIMITED: 15.0,
+    ALLOWANCE_USED: 3600.0,
+    KEY_REJECTED: 0.0,
+    FAILED: 30.0,
+    REFUSED: 0.0,
+}
 #: A Retry-After longer than this means the allowance is used up, not a burst limit.
 ALLOWANCE_THRESHOLD_S = 900.0
 
@@ -85,7 +95,24 @@ def classify(source: str, response: httpx.Response, *, keyed: bool) -> SourceErr
         return SourceError(source, ALLOWANCE_USED, detail, wait)
     if status in (401, 403) and keyed:
         return SourceError(source, KEY_REJECTED, detail)
+    if status in REQUEST_REFUSED_STATUSES:
+        return SourceError(source, REFUSED, f"{detail}: {_reason(response)}".rstrip(": "))
     return SourceError(source, FAILED, detail, wait)
+
+
+def _reason(response: httpx.Response) -> str:
+    """The provider's own words for a refusal, short (never its whole body)."""
+
+    try:
+        body = response.json()
+    except ValueError:
+        return " ".join(response.text.split())[:200]
+    if isinstance(body, dict):
+        for key in ("detail", "message", "error"):
+            value = body.get(key)
+            if value:
+                return " ".join(str(value).split())[:200]
+    return " ".join(str(body).split())[:200]
 
 
 #: One client per event loop: an httpx connection pool belongs to the loop that made it.
@@ -284,6 +311,8 @@ __all__ = [
     "FAILED",
     "KEY_REJECTED",
     "RATE_LIMITED",
+    "REFUSED",
+    "REQUEST_REFUSED_STATUSES",
     "SourceError",
     "classify",
     "client",

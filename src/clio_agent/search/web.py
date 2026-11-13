@@ -179,6 +179,10 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
             index += 1
             continue
         except SourceError as exc:
+            if exc.kind == http.REFUSED:
+                notes.append(_refused(source, exc, sources[index + 1 :]))
+                index += 1
+                continue
             resting = SEARCH_LIMITS.cooldown(source)
             if resting is None:  # not resting: report it and move on
                 notes.append(note("search_source_failed", source, exc.detail))
@@ -231,6 +235,19 @@ def _try_again(
     if following:
         extra["next_source"] = following
     return SearchFailure("search_source_temporarily_down", exc.detail, notes, source, advice, extra)
+
+
+def _refused(source: str, exc: SourceError, later: list[str]) -> SearchNote:
+    """The source refused this request as invalid: say so; the source stays in use."""
+
+    name = DISPLAY_NAMES.get(source, source)
+    following = next((n for n in later if not SEARCH_LIMITS.declined(n)), "")
+    advice = (
+        f"{name} refused this search as invalid ({exc.detail})"
+        + (f"; CLIO asked {DISPLAY_NAMES.get(following, following)} instead." if following else ".")
+        + f" {name} keeps answering other searches."
+    )
+    return note("search_source_refused_request", source, exc.detail, advice=advice)
 
 
 def _switched(source: str, exc: SourceError, resting: Any, later: list[str]) -> SearchNote:

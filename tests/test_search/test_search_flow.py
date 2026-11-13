@@ -360,3 +360,25 @@ def test_literature_reports_a_long_limit_without_waiting(monkeypatch) -> None:
     notes: list[Any] = []
     assert asyncio.run(literature._call("openalex", used, notes)) is None
     assert [n.code for n in notes] == ["literature_source_budget_used"]
+
+
+def test_a_refused_request_moves_this_search_only(monkeypatch) -> None:
+    refused = SourceError("keenable", http.REFUSED, "HTTP 422: query too long")
+    fake = FakeSources({"keenable": [refused, _ok()], "exa": [_ok()]})
+    monkeypatch.setattr(web_sources, "search", fake)
+    _settings(approved=["keenable", "exa"], web={"order": ["keenable", "exa"]})
+    first = asyncio.run(web.web_search(WebQuery(query="q")))
+    assert first["source"] == "exa"
+    advice = next(n for n in first["notes"] if n["code"] == "search_source_refused_request")
+    assert "refused this search as invalid (HTTP 422: query too long)" in advice["advice"]
+    assert SEARCH_LIMITS.cooldown("keenable") is None
+    assert SEARCH_LIMITS.failures_in_row("keenable") == 0
+    assert asyncio.run(web.web_search(WebQuery(query="q")))["source"] == "keenable"
+    assert fake.calls == ["keenable", "exa", "keenable"]  # refused once, never retried
+
+
+def test_a_422_is_classified_as_a_refused_request() -> None:
+    response = httpx.Response(422, json={"detail": "query too long"})
+    error = http.classify("keenable", response, keyed=False)
+    assert error.kind == http.REFUSED and error.detail == "HTTP 422: query too long"
+    assert http.classify("keenable", httpx.Response(404), keyed=False).kind == http.FAILED

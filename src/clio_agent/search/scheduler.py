@@ -436,6 +436,8 @@ class ProviderScheduler:
                 report.requeued += 1
                 return "requeue", exc
             return "raise", exc
+        if exc.kind == http.REFUSED:  # this request, not the provider: no rest, no strike
+            return "raise", exc
         if exc.kind == http.FAILED and not failed_once:
             report.retried.append(exc.detail)
             return "retry", exc

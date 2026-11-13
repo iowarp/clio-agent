@@ -38,6 +38,9 @@ SEARCH_REASONS: dict[str, str] = {
         "temporary problem at the source, not to an empty result."
     ),
     "search_source_switched": "The source kept failing, so CLIO used the next source.",
+    "search_source_refused_request": (
+        "The source refused this one search as invalid; the next source took it."
+    ),
     "literature_source_failed": "A literature source failed; the others answered.",
     "literature_source_budget_used": "A literature source's free daily budget is used up.",
 }
