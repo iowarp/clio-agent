@@ -104,6 +104,29 @@ def _ask(app: "FastAPI", sid: str, account: str, model: str) -> str:
     )
 
 
+def _caller_account(app: "FastAPI", sid: str) -> str:
+    """The account the caller's conversation runs on, its inherited default included.
+
+    A conversation without its own model runs the server's default, so that model's
+    account is the caller's account, not "another" one.
+    """
+
+    caller = app.state.sessions.get(sid)
+    account = str((getattr(caller, "model", None) or {}).get("provider_id") or "")
+    if account:
+        return account
+    defaults = getattr(app.state, "session_defaults", None)
+    account = str(getattr(defaults.get(), "provider_id", "") or "") if defaults else ""
+    if account:
+        return account
+    from clio_agent.gact.providers.config import _active_lm_model_ref  # noqa: PLC0415
+
+    try:
+        return str(_active_lm_model_ref(app).get("provider_id") or "")
+    except (AttributeError, ValueError, OSError):
+        return ""
+
+
 async def guard_spending(
     app: "FastAPI", caller_sid: str, choice: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -117,8 +140,7 @@ async def guard_spending(
         return None
     ran = dict(choice.get("ran") or {})
     account, model_id = str(ran.get("provider_id") or ""), str(ran.get("model_id") or "")
-    caller = app.state.sessions.get(caller_sid)
-    if not account or account == str((getattr(caller, "model", None) or {}).get("provider_id")):
+    if not account or account == _caller_account(app, caller_sid):
         return None
     if delegation_allowed(account):
         return None
