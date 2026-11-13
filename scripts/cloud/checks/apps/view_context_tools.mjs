@@ -53,8 +53,6 @@ async function hero(page, shot) {
   if (await group.isVisible().catch(() => false)) await group.click().catch(() => {});
   await page.waitForTimeout(1500);
   await shot("hero-board-in-tab-agent-highlight");
-  if (await toggle.isVisible().catch(() => false)) await toggle.click();
-  await page.waitForTimeout(800);
 }
 
 async function boardPart(sid) {
