@@ -1,5 +1,5 @@
 export const widgetGroups = [
-  { title: 'Data and space', names: ['clio.chart.v1', 'clio.data-table.v1', 'clio.map.v1', 'clio.raster-viewport.v1', 'clio.mesh-viewport.v1'] },
+  { title: 'Data and space', names: ['clio.chart.v1', 'clio.data-table.v1', 'clio.map.v1', 'clio.raster-viewport.v1', 'clio.mesh-viewport.v1', 'clio.mcp-app.v1'] },
   { title: 'Decisions and work', names: ['clio.weather.v1', 'clio.message-draft.v1', 'clio.steps.v1', 'clio.action-card.v1', 'clio.approval.v1', 'clio.workflow.v1'] },
   { title: 'Information', names: ['clio.metric.v1', 'clio.status.v1', 'clio.progress.v1', 'clio.callout.v1', 'clio.artifact.v1', 'clio.code.v1', 'clio.diff.v1', 'clio.mermaid.v1'] },
   { title: 'Controls', names: ['Button', 'CheckBox', 'ChoicePicker', 'DateTimeInput', 'Slider', 'TextField', 'clio.slider.v1'] },
@@ -9,6 +9,7 @@ export const widgetGroups = [
 const labels = {
   'clio.chart.v1': 'Chart', 'clio.data-table.v1': 'Data table', 'clio.map.v1': 'Map',
   'clio.raster-viewport.v1': 'Raster viewport', 'clio.mesh-viewport.v1': '3D viewport',
+  'clio.mcp-app.v1': 'App view',
   'clio.weather.v1': 'Weather', 'clio.message-draft.v1': 'Message draft',
   'clio.steps.v1': 'Steps', 'clio.action-card.v1': 'Action card',
   'clio.approval.v1': 'Approval', 'clio.workflow.v1': 'Workflow',
@@ -36,6 +37,7 @@ export const widgetUses = {
   'clio.map.v1': 'Place sites, observations, shapes, or trajectories in geographic context and follow their spatial relationships.',
   'clio.raster-viewport.v1': 'Inspect a spatial field or image, including regions that can be captured for a follow-up question.',
   'clio.mesh-viewport.v1': 'Orbit a scientific 3D mesh and compare geometry or field results from different design states.',
+  'clio.mcp-app.v1': 'Place a connector\'s interactive view in a dashboard and link its time step, selection or parameters to the charts, tables and maps beside it.',
   'clio.weather.v1': 'Present a forecast and the conditions that affect a planned activity.',
   'clio.message-draft.v1': 'Offer an editable message that a person can review before opening it in their mail app.',
   'clio.steps.v1': 'Show a short ordered process and where work stands within it.',
@@ -75,6 +77,9 @@ export const widgetUses = {
 // Plain-language documentation supplements fields whose catalog has no prose.
 // These explanations do not add inputs or change the renderer contract.
 export const widgetFieldHelp = {
+  'clio.mcp-app.v1': {
+    height: 'Height of the view in pixels, from 160 to 2000.',
+  },
   Carousel: {
     children: 'Ordered child component ids. Combine an Image and Text in a Column for a captioned slide.',
     activeChild: 'Child id of the displayed slide. Bind it when another control should navigate the carousel or retain its position.',

@@ -51,7 +51,15 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
 ## A2UI component (owner: `a2ui`)
 
 - `clio.mcp-app.v1` takes `{server, tool, arguments, state: [{key, path, tool?}], height}`.
-- It opens through the reopen path. A surface placement is pinned.
+  - `server` is the tool namespace (the `mcp_app` part's `source_server`), `tool` the server's own tool name. Both match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`. At most 16 channels; keys and paths are distinct.
+  - The producer refuses a `server`/`tool` that is not a view-opening tool with `a2ui_mcp_app_tool_not_found`, listing the server's view tools. A channel `tool` is not checked there, since it may be a view app tool.
+- It opens through the reopen path: `POST /v1/sessions/{sid}/mcp-apps/open` takes `{server, tool, arguments}` and calls `mcp_app_calls.replay_call` with a capture whose `save` is false. The call is not saved in `mcp_app_calls` and no `mcp_app` part is added to the transcript. It returns the reopen answer plus the server's app-callable tools: `{part, saved_call, server_tools: [name]}` or `{error: {reason, detail}, saved_call}`, with the reopen stream's reasons.
+- A surface placement is pinned with `PUT …/pin {pinned: true}` through the live set's `registerMcpAppSurface`. The last unmount closes the app through `releaseMcpAppSurface`.
+- State bridge (MA21, MA22):
+  - View to surface: a `structuredContent` key of `ui/update-model-context` that a channel names is written to the channel's path, at most once per 100 ms per channel, with the latest value.
+  - At a `/selection/<key>` path the value is written as `SelectionState {field: <channel key>, values: [value] (or the list), source: <component id>}`, and read back as the one value (or the list). A cleared selection calls nothing.
+  - Surface to view: a path change the bridge did not write, whose value the view does not already show, calls the channel tool once with `{[key]: value}`. A name in `server_tools` goes to `POST …/tools/call`, and the view then receives `ui/notifications/tool-input` and `ui/notifications/tool-result` for it, as in the specification's interactive phase. Any other name goes to the view as an app tool (`callAppTool`).
+  - The host's `McpAppSurfaceHandle` gains `sendToolResult(result)` for that notification.
 
 ## A view's service (owner: `service`)
 
