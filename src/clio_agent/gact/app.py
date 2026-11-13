@@ -1684,19 +1684,15 @@ def run_server(
     port = claim_api_port(port)
     trace.configure()  # trace verbosity (file -> env -> default) + the formatted log handler
     from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
-
-    relocate_home()  # a moved home: its records point here before any store opens them
     from clio_agent.runtime.installation_tools import adopt_installation_tools  # noqa: PLC0415
 
-    # A scoped installation's clio-kit, which only the CLI launchers put on PATH.
-    adopt_installation_tools()
-    # Always build a fresh app here — the module-level ``app`` symbol is
-    # intentionally lazy (see __getattr__ above) so that just importing
-    # ``clio_agent.gact.app`` doesn't pay build_app's cost. When the env
-    # requests an agent we set want_agent so the lifespan startup task
-    # constructs ClioAgent in the background — uvicorn binds the port
-    # immediately, beating gact-tui's 3-second deploy probe. POST /messages
-    # 503s until app.state.agent is stamped by the background task.
+    relocate_home()  # a moved home: its records point here before any store opens them
+    adopt_installation_tools()  # a scoped install's clio-kit: only the CLI launchers PATH it
+    # Always build a fresh app: the module-level ``app`` is lazy (see __getattr__ above) so
+    # importing this module doesn't pay build_app's cost. When the env requests an agent,
+    # want_agent makes the lifespan task construct ClioAgent in the background: uvicorn binds
+    # the port at once, beating gact-tui's 3-second deploy probe, and POST /messages 503s
+    # until the background task stamps app.state.agent.
     app_to_run: FastAPI = build_app()
     app_to_run.state.refresh_provider_catalog_on_startup = True
     server_boot.mark_real_server(app_to_run)  # owns its process, clio-core and boot doctor
