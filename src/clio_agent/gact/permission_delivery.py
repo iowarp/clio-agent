@@ -170,6 +170,8 @@ def overlay_waiting_calls(
         tool_id = str(tool.get("id") or "")
         if tool_id in waiting and tool.get("state") not in _TERMINAL_TOOL_STATES:
             tool = {**tool, "state": "pending"}
+            if not tool.get("title") and (title := tool_title(str(tool.get("name") or ""))):
+                tool["title"] = title
         waiting.pop(tool_id, None)
         projected.append(tool)
     for call_id, row in waiting.items():

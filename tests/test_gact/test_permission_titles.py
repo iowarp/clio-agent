@@ -88,3 +88,18 @@ def test_a_snapshot_of_a_waiting_call_carries_the_title(titled: None) -> None:
     (tool,) = overlay_waiting_calls(app, "sess_1", [])
     assert tool["title"] == "Change the timestep"
     assert tool["state"] == "pending"
+
+
+def test_a_recorded_waiting_call_gains_the_title(titled: None) -> None:
+    from clio_agent.gact.permission_delivery import overlay_waiting_calls
+
+    row = {
+        "id": "perm_1",
+        "session_id": "sess_1",
+        "status": "pending",
+        "tool_call": {"tool_name": "viewer_set_timestep", "input": {}, "call_id": "c1"},
+    }
+    app = SimpleNamespace(state=SimpleNamespace(permissions={"perm_1": row}))
+    recorded = [{"id": "c1", "name": "viewer_set_timestep", "state": "running"}]
+    (tool,) = overlay_waiting_calls(app, "sess_1", recorded)
+    assert (tool["state"], tool["title"]) == ("pending", "Change the timestep")
