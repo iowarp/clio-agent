@@ -6,7 +6,7 @@ and a call waiting on the setup card (CN5) is inside such a turn. So a value cha
 also rebinds the connector's namespace in every resident fleet in place: the
 namespace takes the new declaration (a URL server reconnects, a command server is
 stopped and starts again with the new arguments and environment on its next use),
-and its tools are listed again. What the plugin added (``PLUGIN_ROOT``,
+and its tools are listed again, once for all fleets. What the plugin added (``PLUGIN_ROOT``,
 ``PLUGIN_DATA``) is kept. A namespace whose new listing fails keeps its last tools,
 with the typed trace ``connector_relist_failed``.
 """
@@ -68,6 +68,9 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
     from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
 
     touched: list[str] = []
+    # The namespace's tools do not depend on the fleet: list them once, with the first
+    # fleet's server, and give the same listing to every other fleet.
+    listed: dict[str, Any] | None = None
     for root, executor in _executors(agent):
         specs = getattr(executor, "_clio_namespace_specs", None)
         if not isinstance(specs, dict) or namespace not in specs:
@@ -97,7 +100,7 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
         if not spec.usable:
             continue
         try:
-            tools = ensure_namespace(namespace, spec)
+            tools = listed if listed is not None else ensure_namespace(namespace, spec)
         except Exception as exc:  # noqa: BLE001 - typed; the namespace keeps its tools
             trace.event(
                 "TOOLS",
@@ -107,6 +110,7 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
                 type(exc).__name__,
             )
             continue
+        listed = tools
         merge = getattr(executor, "merge_namespace_tools", None)
         if callable(merge):
             merge(namespace, tools)
