@@ -144,12 +144,31 @@ def _accepts_string(schema: Mapping[str, Any]) -> bool:
     return kind == "string" or (isinstance(kind, list) and "string" in kind)
 
 
+def _accepts_structure(schema: Mapping[str, Any]) -> bool:
+    """Whether ``schema`` also takes a JSON array or object (``list[str] | Literal["all"]``)."""
+    kind = schema.get("type")
+    if kind is None:
+        options = schema.get("anyOf") or schema.get("oneOf") or []
+        return any(_accepts_structure(o) for o in options if isinstance(o, Mapping))
+    kinds = kind if isinstance(kind, list) else [kind]
+    return "array" in kinds or "object" in kinds
+
+
 def _value(raw: str, schema: Mapping[str, Any]) -> Any:
     text = raw[1:] if raw.startswith("\n") else raw
     text = text[:-1] if text.endswith("\n") else text
-    if _accepts_string(schema):
-        return text
-    return json.loads(text)
+    if not _accepts_string(schema):
+        return json.loads(text)
+    if _accepts_structure(schema) and text.lstrip()[:1] in ("[", "{"):
+        # A string-or-structure parameter written as a JSON array or object is that
+        # structure; read as text it reaches the tool as the string '["v(out)"]'.
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return text
+        if isinstance(parsed, (list, dict)):
+            return parsed
+    return text
 
 
 def parse_invoke_calls(
