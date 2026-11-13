@@ -101,6 +101,44 @@ def test_boot_runs_an_owed_migration_once_as_a_typed_step(
     assert row.state is IntegrationState.READY
 
 
+def test_boot_markers_on_a_new_store_leave_the_row_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A desktop drag install (DMG, AppImage) has no install step: its first start writes
+    # the markers, and on a store with nothing to convert nothing was skipped.
+    calls: list[str] = []
+    empty = StoreMigration(
+        "records", "x", lambda _app: None, has_input=lambda _app: False, mark_empty=lambda _app: {}
+    )
+    monkeypatch.setattr(store_migrations, "MIGRATIONS", (_counting("lane", calls), empty))
+    monkeypatch.setattr(store_migrations, "_holds_conversation", lambda _app: False)
+    app = _app()
+    app.state.task_history.arc = object()  # a history with a store
+
+    assert ensure_at_boot(app, "lane") is True
+    assert ensure_at_boot(app, "records") is True
+
+    assert calls == ["lane"]
+    (row,) = health_rows(app)
+    assert row.state is IntegrationState.READY
+    assert row.summary.startswith("New store: boot recorded 2 migration marker(s)")
+    assert [m["details"]["input"] for m in row.details["migrations"]] == ["none", "none"]
+
+
+def test_boot_conversion_of_a_store_with_conversations_stays_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(store_migrations, "MIGRATIONS", (_counting("lane", calls),))
+    monkeypatch.setattr(store_migrations, "_holds_conversation", lambda _app: True)
+    app = _app()
+    app.state.task_history.arc = object()  # a history with a store
+
+    assert ensure_at_boot(app, "lane") is True
+
+    (row,) = health_rows(app)
+    assert row.state is IntegrationState.DEGRADED
+    assert "input" not in app.state.store_migrations_boot["lane"].details
+
+
 def test_a_boot_migration_failure_is_reported_and_raised(monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(_app: Any) -> None:
         raise OSError("disk gone")
