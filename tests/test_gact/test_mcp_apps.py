@@ -30,7 +30,6 @@ from urllib.parse import urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact import mcp_apps as mcp_apps_module
 from clio_agent.gact import turn as turn_module
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_apps import (
@@ -325,13 +324,10 @@ def test_burst_of_ordinary_skips_never_evicts_a_recorded_no_session_row(tmp_path
 
 def test_registry_rejects_overflow_without_evicting_cleanup_ownership(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Count/TTL bounds never discard an owned remote cleanup identity."""
 
-    monkeypatch.setattr(mcp_apps_module, "_REGISTRY_LIMIT", 1)
-    monkeypatch.setattr(mcp_apps_module, "_REGISTRY_TTL_S", 1)
-    registry = MCPAppRegistry()
+    registry = MCPAppRegistry(limit=1, ttl_s=1)
     first = registry.register(
         session_id="session-owned",
         source_namespace="vigil",
