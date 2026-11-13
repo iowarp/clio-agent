@@ -18,6 +18,7 @@ block. Selected by ``lm.text_tool_protocol`` (``json`` or ``invoke``).
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from collections.abc import Collection, Mapping
@@ -237,6 +238,42 @@ def writing_past_block(reply: str, known: Collection[str]) -> bool:
         return False
     past = reply[end:].lstrip()
     return not any(c.startswith(past) or past.startswith(c) for c in _BLOCK_CONTINUATIONS)
+
+
+#: Identical ``<invoke>`` elements in a row after which a reply is repeating itself.
+REPEATED_CALLS_LIMIT = 8
+
+
+def repeated_call_end(
+    reply: str, known: Collection[str], limit: int = REPEATED_CALLS_LIMIT
+) -> int | None:
+    """Where to stop a reply whose call block keeps repeating one identical call.
+
+    A model can write the same ``<invoke>`` (same tool, same parameters) hundreds of
+    times in one reply (561 ``search_tools`` loads in one 209 s reply, 2026-11-13).
+    Once ``limit`` identical elements follow one another, the rest adds nothing: the
+    loop runs identical calls once (``tool_calls_collapsed``). Returns the end of the
+    last complete element in ``plain_call_tags(reply)``, or ``None`` while the block
+    is still varied or too short.
+    """
+    plain = plain_call_tags(reply)
+    fences = [m.span() for m in _FENCED.finditer(plain)]
+    invokes = [m for m in _INVOKE.finditer(plain) if not any(a <= m.start() < b for a, b in fences)]
+    if len(invokes) <= limit or not any(m["name"] in known for m in invokes):
+        return None
+    run, end = 1, invokes[0].end()
+    for previous, invoke in itertools.pairwise(invokes):
+        if invoke.start() != _GAP.match(plain, end).end():  # type: ignore[union-attr]
+            return None  # the block ended; a later block is writing_past_block's case
+        end = invoke.end()
+        same = (invoke["name"], invoke["body"].strip()) == (
+            previous["name"],
+            previous["body"].strip(),
+        )
+        run = run + 1 if same else 1
+        if run > limit:
+            return end
+    return None
 
 
 def _parse(

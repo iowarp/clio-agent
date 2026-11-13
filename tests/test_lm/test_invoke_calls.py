@@ -259,3 +259,19 @@ def test_an_invented_result_tag_is_not_a_placeholder(invoke: None) -> None:
     split = split_reply("<invoke_result>\nok\n</invoke_result>", call_prefix="c",
                         available_tools=TOOLS, schemas=SCHEMAS)  # fmt: skip
     assert split.calls == []
+
+
+def test_a_block_repeating_one_identical_call_is_cut_after_its_last_whole_copy(
+    invoke: None,
+) -> None:
+    same = _call("shell_bash", command="ls")
+    varied = "".join(_call("shell_bash", command=f"ls {n}") for n in range(20))
+    assert invoke_calls.repeated_call_end(varied, TOOLS) is None
+    assert invoke_calls.repeated_call_end(same * 8, TOOLS) is None  # at the limit
+    reply = "Loading.\n" + same * 30 + '<invoke name="shell_bash">\n<parameter'
+    end = invoke_calls.repeated_call_end(reply, TOOLS)
+    assert end is not None
+    kept = reply[:end]
+    assert kept.endswith("</invoke>") and kept.count("<invoke ") == 9
+    split = split_reply(kept, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
+    assert len(split.calls) == 9 and all(c.name == "shell_bash" for c in split.calls)

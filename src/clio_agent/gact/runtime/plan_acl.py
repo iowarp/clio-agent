@@ -320,9 +320,12 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
             f"This tool{tool_ref} would modify the system, so it is blocked. "
             "Write the plan with plan_update, or hand it back with plan_exit to execute."
         )
+    # ``architect`` is how the person's "Deep research" choice runs; the model and the
+    # person read that name, never the internal mode value.
     return (
-        f"You are in Architect Mode: direct file modification is blocked except registered "
-        f"artifact publication. This tool{tool_ref} would modify the system, so it is blocked. "
+        "You are in Deep research mode: it searches and reads but does not change files, "
+        "except publishing a registered report. "
+        f"This tool{tool_ref} would modify the system, so it is blocked. "
         "Describe source changes as diffs for the user to apply."
     )
 
