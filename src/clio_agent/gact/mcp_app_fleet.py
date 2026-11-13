@@ -1,24 +1,23 @@
-"""An open app view keeps its server up; a view whose server stopped is not live.
+"""A view whose server stopped is not live: its card offers Reopen (MA19).
 
 A view is drawn by the MCP server whose tool opened it, and a view with a live service
 (MA23) talks to a port that server opened. That server lives in its conversation's
-workspace fleet, which the workspace reaper (:mod:`clio_agent.tools.reaper`) closed
-after ``tools.mcp.workspace_ttl_s`` without a tool call or a turn: a view pinned in a
-tab or a surface then pointed at a stopped server, and showing it mounted a dead
-service (seen live: ``service_unreachable`` and the proxy's error under a "Ready"
-header). Plan rule 6: no timer or expiry on an open view.
+workspace fleet. A conversation someone views keeps its fleet (``view_fleet``); once
+nobody has viewed it for ``tools.mcp.workspace_ttl_s`` the reaper
+(:mod:`clio_agent.tools.reaper`) closes the fleet, and a configuration change, a
+write-root grant or the LRU cap can close it too. A pinned view then pointed at a
+stopped server, and showing it mounted a dead service (seen live:
+``service_unreachable`` and the proxy's error under a "Ready" header).
 
-* :func:`held_roots` is a reaper hold provider: every record the app registry holds
-  (an inline card while the registry keeps it, a tab, a surface) keeps its session's
-  fleet resident. The registry's own rules decide how long an inline card lives; a
-  pinned one lives until it is closed.
 * :func:`admitted` stamps a new record with the fleet whose server opened it (a weak
-  reference) and registers the hold provider once.
-* :func:`server_stopped` tells the registry a record's fleet was closed anyway (a
-  configuration change, a write-root grant, the LRU cap with no hold): the registry
-  drops it with the typed reason :data:`MCP_APP_SERVER_STOPPED`, so the card and the
-  tab answer "not live" and offer Reopen, which replays the opening call (MA19) and
-  starts the server again, instead of mounting a dead service.
+  reference to the executor).
+* :func:`server_stopped` tells the registry that fleet was closed: the registry drops
+  the record with the typed reason :data:`MCP_APP_SERVER_STOPPED` and tells the
+  session's UI (``mcp_app_closed``), so the card and the tab show the app ended and
+  offer Reopen, which replays the opening call and starts the server again.
+
+The fleet is not kept alive for an open view the person cannot see: the reap happens
+only when no one views the conversation, so no open view is lost (plan rule 6).
 """
 
 from __future__ import annotations
@@ -27,20 +26,11 @@ import logging
 import weakref
 from typing import Any
 
-from clio_agent.runtime import trace
-
 logger = logging.getLogger(__name__)
 
 MCP_APP_SERVER_STOPPED = "mcp_app_server_stopped"
-MCP_APP_FLEET_UNHELD = "mcp_app_fleet_unheld"
 
-__all__ = [
-    "MCP_APP_FLEET_UNHELD",
-    "MCP_APP_SERVER_STOPPED",
-    "admitted",
-    "held_roots",
-    "server_stopped",
-]
+__all__ = ["MCP_APP_SERVER_STOPPED", "admitted", "server_stopped"]
 
 
 def _canonical_root(app: Any, sid: str) -> str:
@@ -65,35 +55,8 @@ def _current_fleet(app: Any, sid: str) -> Any:
     return getattr(agent, "tool_executor", None)
 
 
-def held_roots(app: Any) -> set[str]:
-    """The workspace roots whose fleets serve a view the registry holds."""
-    from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415
-
-    registry = _registry(app)
-    roots: set[str] = set()
-    for sid in registry.session_ids():
-        root = _canonical_root(app, sid)
-        if root:
-            roots.add(root)
-    return roots
-
-
-def _ensure_hold_provider(app: Any) -> None:
-    state = getattr(app, "state", None)
-    if state is None or getattr(state, "mcp_app_fleet_hold", False):
-        return
-    reaper = getattr(getattr(state, "agent", None), "_workspace_reaper", None)
-    add = getattr(reaper, "add_hold_provider", None)
-    if not callable(add):
-        trace.event("TOOLS", "%s reason=no_reaper", MCP_APP_FLEET_UNHELD)
-        return
-    add(lambda: held_roots(app))
-    state.mcp_app_fleet_hold = True
-
-
 def admitted(app: Any, record: Any) -> None:
-    """Stamp ``record`` with the fleet that opened it; keep open views' fleets resident."""
-    _ensure_hold_provider(app)
+    """Stamp ``record`` with the fleet whose server opened it."""
     try:
         fleet = _current_fleet(app, record.session_id)
         record.fleet = weakref.ref(fleet) if fleet is not None else None

@@ -127,10 +127,6 @@ class WorkspaceExecutorReaper:
         # chokepoint listeners when its fleet is torn down (reap OR restart), so
         # the previously-unwired ``close_child_channel`` seam stops leaking.
         self._channel_closer = channel_closer or _default_channel_closer
-        # Roots something outside a turn keeps in use (an open app view's server, rule 6):
-        # each provider returns canonical roots; they are reaped neither for idleness nor
-        # for the LRU cap, and their idle window restarts while held. Restarts still run.
-        self._hold_providers: list[Callable[[], set[str]]] = []
         self._ttl_s = workspace_fleet_ttl_s() if ttl_s is None else ttl_s
         self._max_resident = (
             workspace_fleet_max_resident() if max_resident is None else max_resident
@@ -156,30 +152,13 @@ class WorkspaceExecutorReaper:
             except Exception as exc:  # noqa: BLE001 - the reaper must never die silently
                 trace.event("TOOLS", "workspace fleet reaper tick failed: reason=%s", exc)
 
-    def add_hold_provider(self, provider: Callable[[], set[str]]) -> None:
-        """Register a source of roots to keep resident (read at every reap pass)."""
-        self._hold_providers.append(provider)
-
-    def _held_roots(self) -> set[str]:
-        """The roots the hold providers keep; a failing provider holds nothing (typed)."""
-        held: set[str] = set()
-        for provider in tuple(self._hold_providers):
-            try:
-                held |= set(provider())
-            except Exception as exc:  # noqa: BLE001 - typed; never aborts the pass
-                trace.event("TOOLS", "workspace_fleet_hold_probe_failed reason=%s", exc)
-        return held
-
     def reap_once(self) -> list[str]:
         """One reap pass; returns the roots reaped (test seam)."""
 
         to_close: list[tuple[str, Any, str]] = []
-        held = self._held_roots()  # outside the registry lock: providers read app state
         now = time.monotonic()
         try:
             with self._lock:
-                for root in held & set(self._registry):
-                    self._resolved_at[root] = now  # held: its idle window starts on release
                 # #1033 deferred restarts FIRST: a root whose grant landed while
                 # busy fires here the moment it goes idle+unleased — reason-tagged
                 # ``grant_restart`` so the close+channel-close path (below) rebuilds
@@ -213,7 +192,6 @@ class WorkspaceExecutorReaper:
                         expired = (
                             not executor.busy
                             and self._leases.get(root, 0) == 0
-                            and root not in held
                             and not self._recently_resolved(root, now)
                             and executor.idle_for() >= self._ttl_s
                         )
@@ -235,7 +213,6 @@ class WorkspaceExecutorReaper:
                             if (
                                 not ex.busy
                                 and self._leases.get(root, 0) == 0
-                                and root not in held
                                 and not self._recently_resolved(root, now)
                             ):
                                 candidates.append((root, ex, ex.idle_for()))
