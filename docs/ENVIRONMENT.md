@@ -236,6 +236,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_APP_DOWNLOAD_MAX_BYTES` | `gact.mcp_apps.download_max_bytes` | int | `67108864` | `src/clio_agent/gact/mcp_app_downloads.py` |
 | `CLIO_MCP_APP_REGISTRY_LIMIT` | `gact.mcp_apps.registry_limit` | int | `64` | `src/clio_agent/gact/mcp_apps.py` |
 | `CLIO_MCP_APP_REGISTRY_TTL_S` | `gact.mcp_apps.registry_ttl_s` | float | `3600.0` | `src/clio_agent/gact/mcp_apps.py` |
+| `CLIO_MCP_APP_SANDBOX_HOST` | `gact.mcp_apps.sandbox_host` | str | _(unset)_ | `src/clio_agent/gact/mcp_app_sandbox_origin.py` |
 | `CLIO_MCP_CACHE_MAX_AGE_DAYS` | `tools.mcp_cache.max_age_days` | float | `14.0` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_MAX_BYTES` | `tools.mcp_cache.max_bytes` | int | `2147483648` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |

@@ -165,6 +165,8 @@ export default async function (page, shot) {
   await page.goto(sessionUrl);
   await page.waitForTimeout(6000);
   // The person opens the workspace canvas; its tabs come back from the browser's storage.
+  const canvasToggle = page.getByRole("button", { name: /(Open|Close) workspace canvas/ });
+  await canvasToggle.first().waitFor({ timeout: 120000 });
   const canvas = page.getByRole("button", { name: "Open workspace canvas" });
   if (await canvas.count()) await canvas.first().click();
   const restored = page.locator('[data-tab-id^="mcp-app:"]').first();
@@ -190,4 +192,37 @@ export default async function (page, shot) {
   const restoredView = await boardText(page, "tab");
   log("AQ26 retried", { view: restoredView, last: calls().at(-1) });
   await shot("restored-replayed");
+
+  // MA2/MA5 for a reopened view: the latest card (closed by the restart) is reopened, moved
+  // to a tab, and the tab closed. It returns to its card instead of closing, with no new call.
+  const latestLine = page.locator("[data-mcp-app-reopen]:visible").last();
+  await latestLine.scrollIntoViewIfNeeded();
+  const latestCard = await latestLine.getAttribute("data-mcp-app-reopen");
+  const beforeLatest = calls().length;
+  await latestLine.getByRole("button", { name: "Reopen" }).click();
+  await allowOnce(page);
+  const inlineFrame = page.locator('[data-mcp-app-placement="inline"]').last();
+  await inlineFrame.waitFor({ timeout: 90000 });
+  const latestId = await inlineFrame.getAttribute("data-mcp-app");
+  await inlineFrame.getByRole("button", { name: "Open in tab" }).click();
+  await page.locator(`[data-mcp-app-tab="${latestId}"]`).waitFor({ timeout: 30000 });
+  await shot("latest-in-tab");
+  const latestChip = page.locator(`[data-tab-id="mcp-app:${latestId}"]`);
+  await latestChip.hover();
+  await latestChip.locator('[data-slot="frame-tab-close"]').click({ force: true });
+  const back = page.locator(`[data-mcp-app-placement="inline"][data-mcp-app="${latestId}"]`);
+  await back.waitFor({ timeout: 30000 });
+  await back.scrollIntoViewIfNeeded();
+  const backView = page
+    .frameLocator(`[data-mcp-app-placement="inline"][data-mcp-app="${latestId}"] [data-mcp-app-iframe]`)
+    .frameLocator("iframe");
+  await expectText(backView.locator("#call"), /Produced by call \d+/, 60000);
+  check(calls().length === beforeLatest + 1, "returning to the card made no new call");
+  log("RO-D12 returned to its card", {
+    card: latestCard,
+    view: latestId,
+    calls: calls().slice(beforeLatest),
+    text: await backView.locator("#call").textContent(),
+  });
+  await shot("latest-returned-to-card");
 }

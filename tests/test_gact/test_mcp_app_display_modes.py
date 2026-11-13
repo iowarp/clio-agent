@@ -266,3 +266,101 @@ def test_app_calls_run_as_the_session_outside_a_turn(tmp_path: Path) -> None:
         seen = asyncio.run(_run_bound(app, sid, lambda _executor: gact_context.active_session_id()))
     assert seen == sid
     assert gact_context.active_session_id() == ""
+
+
+def _remote_app(
+    tmp_path: Path, headers: dict[str, str] | None = None
+) -> tuple[Any, TestClient, dict[str, Any], str]:
+    """An app opened while CLIO is reached as ``clio.lan.test`` (a LAN name)."""
+
+    set_config("gact.allowed_hosts", "clio.lan.test")
+    app, _local = _client(tmp_path)
+    client = TestClient(app, base_url="http://clio.lan.test:8100", headers=headers)
+    client.__enter__()
+    sid = client.post("/v1/sessions", json={"title": "remote"}).json()["id"]
+    return app, client, _open_app(app, client, sid), sid
+
+
+def test_a_remote_browser_needs_a_configured_sandbox_host(tmp_path: Path) -> None:
+    """Reached by a LAN name, CLIO refuses to serve a view on an origin it cannot isolate."""
+
+    _app, client, part, sid = _remote_app(tmp_path)
+    try:
+        base = f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}"
+        refused = client.get(base, params={"data_ref": part["data_ref"]})
+        assert refused.status_code == 409
+        assert refused.json()["error"]["error"] == "sandbox_host_unconfigured"
+        set_config("gact.mcp_apps.sandbox_host", "clio.lan.test")
+        same = client.get(base, params={"data_ref": part["data_ref"]})
+        assert same.json()["error"]["error"] == "sandbox_host_unconfigured"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_a_remote_browser_gets_a_per_server_sandbox_host(tmp_path: Path) -> None:
+    """``*.apps…`` gives each server its own host, serving only the view and its service."""
+
+    from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
+
+    _app, client, part, sid = _remote_app(tmp_path)
+    try:
+        set_config("gact.mcp_apps.sandbox_host", "*.apps.lan.test")
+        base = f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}"
+        query = {"data_ref": part["data_ref"]}
+        descriptor = client.get(
+            base, params=query, headers={"Referer": "http://clio.lan.test:5173/"}
+        ).json()
+        host = sandbox_host_for("fixture", "clio.lan.test")
+        assert host.endswith(".apps.lan.test") and host.startswith("s")
+        assert descriptor["sandbox_url"].startswith(f"http://{host}:8100{base}/sandbox?")
+        sandbox = client.get(
+            f"http://{host}:8100{base}/sandbox",
+            params=query,
+            headers={"Referer": "http://clio.lan.test:5173/session"},
+        )
+        assert sandbox.status_code == 200, sandbox.text
+        csp = sandbox.headers["content-security-policy"]
+        assert "frame-ancestors http://clio.lan.test:5173" in csp
+        foreign = client.get(
+            f"http://{host}:8100{base}/sandbox",
+            params=query,
+            headers={"Referer": "http://elsewhere.test/"},
+        )
+        assert foreign.status_code == 403
+        api = client.get(f"http://{host}:8100/v1/sessions")
+        assert api.status_code == 403
+        assert api.json()["error"]["error"] == "sandbox_origin_refused"
+        other = client.get(
+            f"http://{sandbox_host_for('other', 'clio.lan.test')}:8100{base}/sandbox",
+            params=query,
+            headers={"Referer": "http://clio.lan.test:5173/"},
+        )
+        assert other.status_code == 403
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_the_sandbox_route_needs_no_bearer_but_the_api_on_its_host_does(tmp_path: Path) -> None:
+    """A frame cannot send the bearer: the app's capability admits its sandbox document."""
+
+    from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
+
+    set_config("gact.auth.bearer_token", "secret-token")
+    app, authed, part, sid = _remote_app(tmp_path, {"Authorization": "Bearer secret-token"})
+    client = TestClient(app, base_url="http://clio.lan.test:8100")
+    try:
+        app.state.peer_address_getter = lambda _scope: "10.0.0.5"
+        set_config("gact.mcp_apps.sandbox_host", "*.apps.lan.test")
+        host = sandbox_host_for("fixture", "clio.lan.test")
+        base = f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}"
+        query = {"data_ref": part["data_ref"]}
+        sandbox = client.get(
+            f"http://{host}:8100{base}/sandbox",
+            params=query,
+            headers={"Referer": "http://clio.lan.test:5173/"},
+        )
+        assert sandbox.status_code == 200, sandbox.text
+        assert client.get(f"http://{host}:8100/v1/sessions").status_code in {401, 403}
+        assert client.get("/v1/sessions").status_code == 401
+    finally:
+        authed.__exit__(None, None, None)

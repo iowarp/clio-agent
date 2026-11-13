@@ -246,7 +246,7 @@ def _connector_tools_kept(
     connector = str(getattr(spec, "connector", "") or "")
     if not connector:
         return None
-    if not listing.needs_setup(exc):
+    if not listing.held_for_setup(connector, exc):
         logger.warning(
             "reason=connector_listing_failed namespace=%s error=%s chain=%s",
             namespace,

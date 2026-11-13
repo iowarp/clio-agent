@@ -216,6 +216,11 @@ KEY_NOTES: dict[str, str] = {
         "Seconds after which an unused interactive tool view in the conversation closes; "
         "views in a tab or a dashboard never close on a timer."
     ),
+    "gact.mcp_apps.sandbox_host": (
+        "Host name (or *.pattern for one host per server) that interactive tool views load "
+        "from when CLIO is reached over the network; it must reach CLIO and differ from the "
+        "name the web UI uses."
+    ),
     "gact.mcp_apps.download_max_bytes": (
         "Byte ceiling on one file download an interactive tool view saves into the workspace."
     ),
@@ -1446,6 +1451,11 @@ KEY_NOTES: dict[str, str] = {
     "tools.unknown_window_result_tokens": (
         "Tokens of one tool result the model is shown when its context window is unknown (no "
         "handshake or catalog entry); a longer result is saved to a file with its head."
+    ),
+    "tools.script_media_max": (
+        "Images or PDFs one run_code script may attach to its result by viewing them "
+        "(view_image, view_pdf); they reach the model's next step. Views past this count are "
+        "refused with a typed reason. At least 1."
     ),
     "tools.recall_result_chars": (
         "Characters of a recall_context result shown inline (default 16000, about 4,000 "

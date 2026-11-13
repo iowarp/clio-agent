@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from fastmcp.client.transports import FastMCPTransport, SSETransport, StdioTrans
 from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
+from clio_agent.gact import view_call_cancel
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
@@ -170,6 +172,31 @@ async def connection(
             self._opening.pop(key, None)
 
 
+def accepted_call(host: ExternalConnection, handle: str) -> bool:
+    """Whether the server accepted submission ``handle`` as a task on ``host``."""
+    return any(call.submission.handle == handle for call in host.calls.values())
+
+
+async def abandon_view_call(
+    self: ExternalTasks, host: ExternalConnection, handle: str, rpc: Any, lazy: Any
+) -> None:
+    """Cancel the RPC of a view's call outside a turn whose request went away.
+
+    Only for a plain call (no task was accepted for it): nothing else waits for its
+    reply, so the RPC is cancelled on the wire and its record says so with the typed
+    reason. A turn's call and an accepted task keep their custody rules unchanged.
+    """
+    if not view_call_cancel.requested() or accepted_call(host, handle):
+        return
+    rpc.cancel()
+    if lazy is None:  # written ahead: its record says it was cancelled, outcome unknown
+        await self._record_or_defer(
+            "external-call:" + handle,
+            partial(self._attention, handle, view_call_cancel.VIEW_CALL_CANCELLED_TEXT, lost=False),
+        )
+    self._lazy.pop(handle, None)
+
+
 async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -> None:
     """Retire idle retained connections to a replaced in-process server (typed)."""
 
@@ -191,6 +218,14 @@ async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -
         )
         if idle:
             await retire_connection(self, host, shutdown=True)
+        else:  # its calls end with their server, and their records name why
+            host.superseded = True
+
+
+def failure_reason(host: ExternalConnection, error: BaseException) -> str:
+    """The recorded reason of a failed submission; a superseded connection is typed."""
+    text = str(error) or type(error).__name__
+    return f"{EXTERNAL_MCP_CONNECTION_SUPERSEDED}: {text}" if host.superseded else text
 
 
 async def retire_connection(
