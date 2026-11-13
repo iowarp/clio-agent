@@ -149,7 +149,7 @@ def _list_one_namespace(
 
             # A connector that needs a sign-in keeps its tools, so a call waits for
             # its setup card (CN5) rather than the tool disappearing.
-            if not (spec.connector and listing.needs_setup(exc)):
+            if not (spec.connector and listing.held_for_setup(spec.connector, exc)):
                 raise
             listed = listing.last_listed(spec.connector)
             if not listed:
