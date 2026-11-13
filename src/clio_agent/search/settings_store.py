@@ -41,11 +41,13 @@ def update_search_settings(change: Callable[[dict[str, Any]], None]) -> SearchSe
         section = document.get("search")
         section = dict(section) if isinstance(section, dict) else {}
         change(section)
-        web = section.get("web") if isinstance(section.get("web"), dict) else {}
+        web = web_value if isinstance(web_value := section.get("web"), dict) else {}
         literature = (
-            section.get("literature") if isinstance(section.get("literature"), dict) else {}
+            literature_value
+            if isinstance(literature_value := section.get("literature"), dict)
+            else {}
         )
-        service = section.get("service") if isinstance(section.get("service"), dict) else {}
+        service = service_value if isinstance(service_value := section.get("service"), dict) else {}
         current = load_search_settings()
         build_settings(
             enabled=section.get("enabled", current.enabled),

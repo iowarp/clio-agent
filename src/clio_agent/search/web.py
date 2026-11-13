@@ -14,6 +14,7 @@ does it ask an approved source's hosted reader, and it says so.
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
 import re
 import time
@@ -73,10 +74,8 @@ class SearchFailure(Exception):
 def source_key(source: str) -> str:
     """The person's saved key for ``source`` (``""`` when none)."""
 
-    try:
-        return ProviderApiKeyStore().load(key_ref(source))
-    except Exception:  # noqa: BLE001 - an unreadable key store means "no key", reported in Settings
-        return ""
+    # load() reads an unreadable or mismatched store as "no key"; it does not raise.
+    return ProviderApiKeyStore().load(key_ref(source))
 
 
 def check_query(query: WebQuery) -> None:
@@ -165,8 +164,12 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
         try:
             answer_ = await SCHEDULER.call(
                 source,
-                lambda source=source, key=key: web_sources.search(
-                    source, query, key=key, timeout=settings.request_timeout_s,
+                functools.partial(
+                    web_sources.search,
+                    source,
+                    query,
+                    key=key,
+                    timeout=settings.request_timeout_s,
                     service_url=settings.service_url,
                 ),
                 terms=terms_of(source, settings, has_key=bool(key)),
@@ -351,7 +354,7 @@ async def hosted_read(url: str, settings: SearchSettings, why: str) -> dict[str,
         try:
             title, text = await SCHEDULER.call(
                 source,
-                lambda source=source, key=key: web_sources.read_page(source, url, key=key),
+                functools.partial(web_sources.read_page, source, url, key=key),
                 terms=terms_of(source, settings, has_key=bool(key)),
                 caller=caller_id(),
                 patience_s=WEB_PATIENCE_S,

@@ -96,17 +96,25 @@ def _openalex_abstract(index: Any) -> str:
 def openalex_record(row: dict[str, Any]) -> PaperRecord:
     """One OpenAlex work as a record."""
 
-    ids = row.get("ids") if isinstance(row.get("ids"), dict) else {}
+    ids = ids_value if isinstance(ids_value := row.get("ids"), dict) else {}
     doi = norm_doi(row.get("doi") or ids.get("doi"))
     arxiv = arxiv_id_of(doi) if doi.startswith("10.48550") else ""
     pmid = str(ids.get("pmid") or "").rsplit("/", 1)[-1]
     pmcid = str(ids.get("pmcid") or "").rstrip("/").rsplit("/", 1)[-1]
-    primary = row.get("primary_location") if isinstance(row.get("primary_location"), dict) else {}
-    best = row.get("best_oa_location") if isinstance(row.get("best_oa_location"), dict) else {}
+    primary = (
+        primary_location_value
+        if isinstance(primary_location_value := row.get("primary_location"), dict)
+        else {}
+    )
+    best = (
+        best_oa_location_value
+        if isinstance(best_oa_location_value := row.get("best_oa_location"), dict)
+        else {}
+    )
     for location in row.get("locations") or []:
         if isinstance(location, dict) and not arxiv:
             arxiv = arxiv_id_of(location.get("landing_page_url"))
-    source = primary.get("source") if isinstance(primary.get("source"), dict) else {}
+    source = source_value if isinstance(source_value := primary.get("source"), dict) else {}
     authors = [
         str(a.get("author", {}).get("display_name"))
         for a in row.get("authorships") or []
@@ -196,7 +204,7 @@ async def openalex_list(filter_expr: str, limit: int, *, key: str) -> list[Paper
         "openalex", "GET", f"{OPENALEX}/works", keyed=bool(key), params=params
     )
     data = http.json_body("openalex", response)
-    rows = data.get("results") if isinstance(data, dict) else []
+    rows = (data.get("results") or []) if isinstance(data, dict) else []
     return [openalex_record(row) for row in rows if isinstance(row, dict)]
 
 
@@ -219,7 +227,7 @@ def crossref_record(row: dict[str, Any]) -> PaperRecord:
         if isinstance(a, dict)
     ]
     versions = []
-    relation = row.get("relation") if isinstance(row.get("relation"), dict) else {}
+    relation = relation_value if isinstance(relation_value := row.get("relation"), dict) else {}
     for name in ("is-preprint-of", "has-preprint", "is-version-of", "has-version"):
         for item in relation.get(name) or []:
             if isinstance(item, dict) and item.get("id-type") == "doi":
@@ -445,10 +453,10 @@ async def osti_search(query: str, limit: int, *, after: str, before: str) -> lis
 def datacite_record(row: dict[str, Any]) -> PaperRecord:
     """One DataCite DOI (datasets, software) as a record."""
 
-    attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else row
+    attrs = attributes_value if isinstance(attributes_value := row.get("attributes"), dict) else row
     titles = attrs.get("titles") or [{}]
     descriptions = attrs.get("descriptions") or [{}]
-    types = attrs.get("types") if isinstance(attrs.get("types"), dict) else {}
+    types = types_value if isinstance(types_value := attrs.get("types"), dict) else {}
     doi = norm_doi(attrs.get("doi"))
     record = PaperRecord(
         title=plain(titles[0].get("title") if titles and isinstance(titles[0], dict) else ""),
@@ -502,8 +510,16 @@ async def semantic_scholar_search(query: str, limit: int, *, key: str) -> list[P
     for row in rows:
         if not isinstance(row, dict):
             continue
-        ext = row.get("externalIds") if isinstance(row.get("externalIds"), dict) else {}
-        pdf = row.get("openAccessPdf") if isinstance(row.get("openAccessPdf"), dict) else {}
+        ext = (
+            external_ids_value
+            if isinstance(external_ids_value := row.get("externalIds"), dict)
+            else {}
+        )
+        pdf = (
+            open_access_pdf_value
+            if isinstance(open_access_pdf_value := row.get("openAccessPdf"), dict)
+            else {}
+        )
         record = PaperRecord(
             title=plain(row.get("title")),
             ids=_ids(
