@@ -82,7 +82,11 @@ from clio_agent.gact.permission_context import (
 from clio_agent.gact.permission_context import (
     _normalize_mcp_tool_annotations as _normalize_mcp_tool_annotations,
 )
-from clio_agent.gact.permission_delivery import publish_permission_event, publish_waiting_call
+from clio_agent.gact.permission_delivery import (
+    permission_summary,
+    publish_permission_event,
+    publish_waiting_call,
+)
 from clio_agent.gact.permission_delivery import (
     record_resolved_permission as _record_resolved_permission,
 )
@@ -531,11 +535,7 @@ def _ask_and_wait(
             # The waiting call's own row identity (the tool entity's id).
             **({"call_id": call_id} if call_id else {}),
         },
-        "summary": (
-            str(context["summary"])[:500]
-            if context and context.get("kind") == "native" and context.get("summary")
-            else f"{subject} call: {name}"
-        ),
+        "summary": permission_summary(name, context, subject),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "pending",
     }

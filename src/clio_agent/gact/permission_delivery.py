@@ -23,6 +23,53 @@ if TYPE_CHECKING:
 PermissionEventType = Literal["permission.requested", "permission.resolved"]
 
 
+def tool_title(name: str) -> str:
+    """The tool's own title (an MCP tool's ``title``), empty when it declares none."""
+
+    from clio_agent.gact.agents.tool_instrumentation import declared_tool_title  # noqa: PLC0415
+
+    return declared_tool_title(name)
+
+
+def permission_summary(name: str, context: Mapping[str, Any] | None, subject: str) -> str:
+    """The title a permission card shows for a call to ``name``.
+
+    A native tool's own summary wins. An external MCP tool reads as its declared title
+    ("Change the timestep"), so a person is not shown the namespaced identifier: the
+    title an agent's tools registered, else the one in the call's own annotations (a
+    view reopened after a restart, before any agent listed its tools). A tool without
+    one keeps the plain ``<subject> call: <name>`` line.
+    """
+
+    if context and context.get("kind") == "native" and context.get("summary"):
+        return str(context["summary"])[:500]
+    if subject == "external MCP tool":
+        annotations = (context or {}).get("annotations")
+        listed = annotations.get("title") if isinstance(annotations, Mapping) else None
+        if title := tool_title(name) or sanitize_title(listed):
+            return title
+    return f"{subject} call: {name}"
+
+
+def sanitize_title(title: object) -> str:
+    from clio_agent.gact.agents.tool_instrumentation import sanitize_tool_title  # noqa: PLC0415
+
+    return sanitize_tool_title(title) if isinstance(title, str) else ""
+
+
+def row_title(row: Mapping[str, Any]) -> str:
+    """The title of the call a permission row holds: its tool's, or the one its card shows."""
+
+    tool_call = row.get("tool_call")
+    name = str(tool_call.get("tool_name") or "") if isinstance(tool_call, Mapping) else ""
+    summary = str(row.get("summary") or "")
+    if title := tool_title(name):
+        return title
+    if row.get("kind") == "external_mcp" and summary and not summary.endswith(f" call: {name}"):
+        return summary
+    return ""
+
+
 def attended_session_id(app: Any, session_id: str) -> str:
     """Return the top human-attended session for ``session_id``.
 
@@ -105,6 +152,7 @@ def publish_waiting_call(app: Any, row: Mapping[str, Any], *, resumed: bool = Fa
             payload={
                 "call_id": call_id,
                 "tool": str(tool_call.get("tool_name") or ""),
+                **({"tool_title": title} if (title := row_title(row)) else {}),
                 "args": dict(tool_call.get("input") or {}),
                 "permission_id": str(row.get("id") or ""),
                 "requested_at": str(row.get("created_at") or ""),
@@ -142,15 +190,19 @@ def overlay_waiting_calls(
         tool_id = str(tool.get("id") or "")
         if tool_id in waiting and tool.get("state") not in _TERMINAL_TOOL_STATES:
             tool = {**tool, "state": "pending"}
+            if not tool.get("title") and (title := row_title(waiting[tool_id])):
+                tool["title"] = title
         waiting.pop(tool_id, None)
         projected.append(tool)
     for call_id, row in waiting.items():
         tool_call = row["tool_call"]
+        name = str(tool_call.get("tool_name") or "Tool")
         projected.append(
             {
                 "id": call_id,
                 "session_id": session_id,
-                "name": str(tool_call.get("tool_name") or "Tool"),
+                "name": name,
+                **({"title": title} if (title := row_title(row)) else {}),
                 "state": "pending",
                 "input": tool_call.get("input"),
                 "permission_id": str(row.get("id") or ""),

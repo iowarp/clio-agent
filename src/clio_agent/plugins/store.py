@@ -80,9 +80,9 @@ USER_MARKETPLACE = "user"
 AGENTS_DIGEST = "@agents"
 STATE_VERSION = 1
 #: The reader's version. Bump it when reading an installed snapshot gives a different
-#: record than before (a hook event the importer now maps, say): installed
+#: record than before (a hook event the importer maps, ``follows`` (3) now read): installed
 #: marketplaces are then re-read from their own snapshots, without fetching.
-READER_VERSION = 2
+READER_VERSION = 3
 
 
 class StoreError(RuntimeError):
