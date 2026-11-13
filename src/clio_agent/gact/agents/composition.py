@@ -62,7 +62,8 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
 
 
 def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
-    """Connected sources and uploaded resources, each only when there is one."""
+    """Connected sources, uploaded resources and the connectors the agent can offer,
+    each only when there is one."""
     from clio_agent.gact.agents import session_inventory  # noqa: PLC0415
 
     sessions = getattr(getattr(app, "state", None), "sessions", None)
@@ -74,6 +75,11 @@ def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
     resources, total = session_inventory.resource_facts(app, workspace_id)
     if total:
         lines.append(fact("_resources", {"resources": resources, "total": total}))
+    from clio_agent.gact.connector_offer import offerable_facts  # noqa: PLC0415
+
+    connectors, total = offerable_facts(app, session_id)
+    if total:
+        lines.append(fact("_connectors", {"connectors": connectors, "total": total}))
     return lines
 
 
