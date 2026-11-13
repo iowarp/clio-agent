@@ -78,6 +78,10 @@ REPRESENTATION_ATTR = "_clio_tool_representation"
 TITLE_ATTR = "_clio_tool_title"
 #: Marker a native tool construction stamps when it DECLARES no side effects.
 READ_ONLY_ATTR = "_clio_tool_read_only"
+#: Marker a native tool construction stamps when it DECLARES it acts outside CLIO's own
+#: records (a server, a view the person sees, a connector's state): its calls follow the
+#: session's approval mode like an MCP tool's (:func:`acts_outside`).
+OUTSIDE_ATTR = "_clio_tool_acts_outside"
 PRESENTER_ATTR = "_clio_tool_result_presenter"
 START_PRESENTER_ATTR = "_clio_tool_start_presenter"
 # #1350: the tool's server-declared functional domain (desktop Tools view
@@ -303,6 +307,7 @@ def native_tool(
     representation: str = DEFAULT_REPRESENTATION,
     read_only: bool = False,
     callers: str | None = None,
+    outside: bool = False,
 ) -> Any:
     """Construct a native ``dspy.Tool`` with its DECLARED presentation.
 
@@ -324,6 +329,14 @@ def native_tool(
     ``callers`` is the built-in's own I/O declaration (``direct`` for tools that talk
     to the person or hold the agent's state); a plugin's claim or ``tools.callers``
     overrides it (:mod:`clio_agent.gact.agents.tool_settings`).
+
+    ``outside`` declares that the tool acts outside CLIO's own records: it drives a
+    server, a view the person sees or a connector's state, and does not ask the person
+    by its own card or its own gate call. Such a tool's calls follow the session's
+    approval mode exactly as an MCP tool's do (asked in ``ask``, run in ``bypass``),
+    unless it is ``read_only`` (:func:`clio_agent.gact.runtime.tool_permission_layers.native_gate`).
+    The default is ``False``: CLIO's bookkeeping tools (``search_tools``, ``load_skill``,
+    plans, todos) keep running without a question unless a rule or default says otherwise.
     """
 
     from clio_agent.gact.agents.native_presenters import validate_declaration
@@ -335,6 +348,7 @@ def native_tool(
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     setattr(func, DOMAIN_ATTR, _validated_domain(domain, tool_name=name))
     setattr(func, READ_ONLY_ATTR, bool(read_only))
+    setattr(func, OUTSIDE_ATTR, bool(outside))
     if callers is not None:
         setattr(func, CALLERS_ATTR, check_callers(callers, f"native tool {name!r}"))
     tool = _clio_native_tool_class()(func=func, name=name, desc=desc, args=args)
@@ -415,6 +429,7 @@ def rebuilt_tool(
         START_PRESENTER_ATTR,
         DOMAIN_ATTR,
         READ_ONLY_ATTR,
+        OUTSIDE_ATTR,
         CALLERS_ATTR,
     ):
         value = getattr(inner_func, attr, None)
@@ -702,6 +717,21 @@ def declared_tool_representation(name: str) -> str:
     """The declared representation for ``name`` (``"row"`` when undeclared)."""
 
     return _TOOL_PRESENTATIONS.get(str(name or ""), (DEFAULT_REPRESENTATION, ""))[0]
+
+
+def acts_outside(tool: Any) -> bool:
+    """Whether a built tool declared ``outside`` and is not read-only (``native_tool``)."""
+
+    func = getattr(tool, "func", tool)
+    return bool(getattr(func, OUTSIDE_ATTR, False)) and not bool(
+        getattr(func, READ_ONLY_ATTR, False)
+    )
+
+
+def callable_title(tool: Any) -> str:
+    """The title a built tool's construction declared (empty when none)."""
+
+    return str(getattr(getattr(tool, "func", tool), TITLE_ATTR, "") or "")
 
 
 def declared_tool_title(name: str) -> str:
