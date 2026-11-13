@@ -43,7 +43,14 @@ bypass mode, never answered by an agent). An approval is saved in `search.approv
 "Don't use" lasts until the server restarts.
 
 **Rotation.** A source that answers too-many-requests rests and the next one answers,
-with a note. When a source's *free allowance* is used up, CLIO asks once for every
+with a note. A source that fails outright (network, 404, 5xx) is asked again after
+1 s; if it fails again, `web_search` returns `search_source_temporarily_down` with
+advice in words (a temporary problem at the source, not an empty result; call again
+and CLIO retries the same source after a 30 s rest, then moves to `next_source`).
+Failures during one outage count once, however many researchers hit it. A second
+outage in a row moves the search on (`search_source_switched`) and rests the source
+for 5 minutes. A source that refuses one request as invalid (400, 413, 414, 422)
+moves only that search, with the provider's reason (`search_source_refused_request`). When a source's *free allowance* is used up, CLIO asks once for every
 waiting caller: switch to the next source, switch and always switch from now on
 (`search.web.auto_switch`), add a key in Settings, or stop searching until it resets.
 
