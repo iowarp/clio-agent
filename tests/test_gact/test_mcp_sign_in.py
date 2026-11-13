@@ -176,8 +176,8 @@ async def test_consent_is_exact_one_use_and_only_connected_after_handshake(
 ) -> None:
     refreshed: list[bool] = []
 
-    async def refresh() -> None:
-        refreshed.append(True)
+    async def refresh(name: str) -> None:
+        refreshed.append(name == "home")
 
     owner = mcp_auth.McpSignIns(refresh)
     try:
