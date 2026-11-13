@@ -107,7 +107,8 @@ sha256_of() {
 }
 
 fetch() {  # url sha256 destination
-  curl -fsSL --retry 3 -o "$3" "$1"
+  # Checksummed below, so any failed attempt (HTTP/2 stream resets included) is safe to retry.
+  curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 -o "$3" "$1"
   local actual
   actual="$(sha256_of "$3")"
   [ "$actual" = "$2" ] || die "checksum mismatch for $1: expected $2, got $actual"
