@@ -852,6 +852,11 @@ KEY_NOTES: dict[str, str] = {
         "Optional operator ceiling in seconds on any shell command; 0 (default) means no "
         "ceiling. When set, a call without a timeout runs up to this ceiling."
     ),
+    "limits.tool_structured_bytes": (
+        "Byte bound on a tool result's structured content in the transcript and trace (a "
+        "script still receives the whole value); larger payloads are recorded as an envelope "
+        "with reason structured_content_over_wire_cap."
+    ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
         "keep more result text visible in the transcript. Not what the model is shown "

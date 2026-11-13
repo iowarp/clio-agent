@@ -36,6 +36,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.structured_wire_bound import wire_structured
 from clio_agent.gact.task_wait_presentation import completed_after_cancel_error, completion_status
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_call_merge import (
@@ -662,16 +663,8 @@ def _make_tool_observer(app: "FastAPI"):
             # A native tool may DECLARE its typed structured payload (P5; the model's
             # return value is unchanged). Read + cleared once per completed call so it
             # never leaks onto a later call; else the MCP-shaped extraction below.
-            declared_structured = pop_declared_structured_content()
-            structured_content = (
-                declared_structured
-                if declared_structured is not None
-                else (
-                    result.get("structuredContent")
-                    if isinstance(result, Mapping) and "structuredContent" in result
-                    else None
-                )
-            )
+            # The caller already holds the full value; the wire and trace copies are bounded.
+            structured_content, result = wire_structured(pop_declared_structured_content(), result)
             result, presentation = completed_presentation(
                 name,
                 args,

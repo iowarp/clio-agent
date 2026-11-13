@@ -122,7 +122,8 @@ def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]
     env = {**os.environ, **prepared, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
     for internal in ("CLIO_AUTH_TOKEN", "CLIO_GACT_BEARER_TOKEN"):
         env.pop(internal, None)
-    env = {k: v for k, v in env.items() if not k.startswith("CLIO_SECRET_")}
+    # Host credentials (CLIO's own secrets, and cloud keys a source may use) stay host-side.
+    env = {k: v for k, v in env.items() if not k.startswith(("CLIO_SECRET_", "AWS_"))}
     env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(workspace))
     return python, env
 

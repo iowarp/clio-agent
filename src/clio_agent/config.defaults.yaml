@@ -375,6 +375,12 @@ limits.shell_max_timeout_s: 0.0
 # the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
+# CLIO_TOOL_STRUCTURED_BYTES  (int)  <- src/clio_agent/gact/structured_wire_bound.py
+# Byte bound on a tool result's structured content in the transcript and
+# trace (a script still receives the whole value); larger payloads are
+# recorded as an envelope with reason structured_content_over_wire_cap.
+limits.tool_structured_bytes: 262144
+
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
 # Comma-separated backoff delays (seconds) between retries of a transient
 # provider error; set empty to disable these retries.

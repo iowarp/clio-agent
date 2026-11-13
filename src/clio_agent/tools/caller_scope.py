@@ -3,8 +3,12 @@
 A plugin's MCP server serves every session of a workspace, so it cannot tell which
 session called it. CLIO tells it: each call's ``_meta`` carries
 ``ai.iowarp.clio/caller`` = ``{"session": <calling session>, "root": <the root of its
-task tree>}``. A server that keeps per-branch state (a study's readings, a game's
-branch) keys it by these ids. The ids are opaque; they grant nothing.
+task tree>, "via": "direct" | "code"}``. A server that keeps per-branch state (a study's
+readings, a game's branch) keys it by these ids. The ids are opaque; they grant nothing.
+
+``via`` says whether the model called the tool itself (``direct``) or a ``run_code``
+script did (``code``). A server may use it to decide what a result carries: a whole
+array is useful to a script and only fills a model's context.
 """
 
 from __future__ import annotations
@@ -36,8 +40,12 @@ def tool_caller_context(session: str, root: str) -> Iterator[None]:
 def caller_meta() -> dict[str, Any] | None:
     """The ``_meta`` entry naming the caller, or ``None`` off-turn."""
 
+    from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
+
     caller = _ACTIVE_CALLER.get()
-    return {CALLER_META_KEY: dict(caller)} if caller else None
+    if not caller:
+        return None
+    return {CALLER_META_KEY: {**caller, "via": "code" if PARENT_CALL_ID.get() else "direct"}}
 
 
 __all__ = ["CALLER_META_KEY", "caller_meta", "tool_caller_context"]

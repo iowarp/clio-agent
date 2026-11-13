@@ -387,6 +387,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
 | `CLIO_TOOL_RESULT_SHARE` | `tools.result_share` | float | `0.125` | `src/clio_agent/tools/result_room.py` |
+| `CLIO_TOOL_STRUCTURED_BYTES` | `limits.tool_structured_bytes` | int | `262144` | `src/clio_agent/gact/structured_wire_bound.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_UNKNOWN_WINDOW_RESULT_TOKENS` | `tools.unknown_window_result_tokens` | int | `25000` | `src/clio_agent/tools/result_room.py` |
