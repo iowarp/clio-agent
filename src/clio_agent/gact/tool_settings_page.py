@@ -3,6 +3,8 @@
 Reads (``GET /v1/settings/tools``), for one installed plugin (``?ref=``) or one MCP
 server by name (``?server=``, for a server no plugin brings):
 
+- each MCP tool's declared ``input_schema`` from the loaded definition, so its
+  details can show its inputs (built-in schemas come from the tool catalog);
 - its tools, grouped into read-only and write tools by their flags: MCP
   ``readOnlyHint`` / ``destructiveHint`` annotations (from the agent runtime's loaded
   MCP definitions), CLIO's built-in annotations (the tool catalog), a built-in's
@@ -153,12 +155,14 @@ def _tool_rows(app: Any, record: Any) -> list[dict[str, Any]]:
                 continue
             found = True
             read_only, destructive = _flags(normalize_mcp_annotations(definition))
+            schema = runtime_tool_value(definition, "input_schema", "inputSchema")
             rows.append(
                 {
                     "name": name,
                     "kind": "mcp",
                     "server": server,
                     "description": str(runtime_tool_value(definition, "description") or ""),
+                    "input_schema": dict(schema) if isinstance(schema, Mapping) else {},
                     "read_only": read_only,
                     "destructive": destructive,
                     "flags_known": True,

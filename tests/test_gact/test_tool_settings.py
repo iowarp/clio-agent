@@ -503,6 +503,11 @@ def test_the_tools_page_reads_one_mcp_server_by_name(
                     "name": "docs_search",
                     "description": "Search the docs.",
                     "annotations": {"readOnlyHint": True},
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
                 },
                 "docs_delete": {"name": "docs_delete", "description": "Delete a page."},
                 "other_tool": {"name": "other_tool", "description": "Not this server's."},
@@ -517,6 +522,8 @@ def test_the_tools_page_reads_one_mcp_server_by_name(
         assert rows["docs_search"]["group"] == "read"
         assert rows["docs_delete"]["group"] == "write"
         assert rows["docs_search"]["plugin_permission_source"] == "annotations"
+        assert rows["docs_search"]["input_schema"]["required"] == ["query"]
+        assert rows["docs_delete"]["input_schema"] == {}
         assert set(rows["docs_delete"]["outcomes"]) == set(view["approval_modes"])
 
         assert client.get("/v1/settings/tools").status_code == 422
