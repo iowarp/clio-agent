@@ -6,8 +6,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
-import signal
 import sys
 import uuid
 from pathlib import Path
@@ -22,7 +20,7 @@ from inspection import (
     validate_source,
     workbook_calculation_evidence,
 )
-from process import DocumentError, office_convert
+from process import DocumentError, end_on_termination, office_convert
 
 
 def _hash(path: Path) -> str:
@@ -204,25 +202,9 @@ def prepare(
     return manifest
 
 
-def _end_on_termination() -> None:
-    """Turn SIGTERM/SIGHUP into an exit that unwinds, so a running job's tree is ended.
-
-    A confined worker starts LibreOffice in its own process group (``process.run``),
-    out of reach of a signal sent to this worker's group.
-    """
-    if os.name == "nt":
-        return
-
-    def terminated(number: int, _frame: object) -> None:
-        raise SystemExit(128 + number)
-
-    for number in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(number, terminated)
-
-
 def main() -> int:
     """Run a preparation stage; failure is reflected in JSON and exit status."""
-    _end_on_termination()
+    end_on_termination()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("inspect", "render", "recalculate"))
     parser.add_argument("source", type=Path)
