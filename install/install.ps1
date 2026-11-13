@@ -982,10 +982,12 @@ function Start-ClioPythonPrefetch {
     $wait = if ($script:UvInstall) { $script:UvInstall.Id } else { 0 }
     $body = @"
 `$ProgressPreference = 'SilentlyContinue'
-try { `$v = ([string](Invoke-RestMethod -UseBasicParsing -TimeoutSec 20 -Uri 'https://raw.githubusercontent.com/iowarp/clio-agent/$ref/.python-version')).Trim() } catch { exit 0 }
-if (`$v -notmatch '^3\.\d+(\.\d+)?$') { exit 0 }
-if ($wait) { Wait-Process -Id $wait -ErrorAction SilentlyContinue }
-if (Test-Path -LiteralPath '$uv') { & '$uv' python install --quiet `$v }
+`$v = ''
+try { `$v = ([string](Invoke-RestMethod -UseBasicParsing -TimeoutSec 20 -Uri 'https://raw.githubusercontent.com/iowarp/clio-agent/$ref/.python-version')).Trim() } catch { }
+if (`$v -match '^3\.\d+(\.\d+)?$') {
+    if ($wait) { Wait-Process -Id $wait -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath '$uv') { & '$uv' python install --quiet `$v }
+}
 "@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
     $shell = (Get-Process -Id $PID).Path
