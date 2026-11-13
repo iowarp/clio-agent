@@ -294,7 +294,8 @@ provider). Nothing is painted or composited.
 | `chat-permission.png` | 1440 x 1000 | The Ask first permission request for the first literature search. |
 | `chat-approval.png` | 1440 x 1000 | The first-use question for Keenable. |
 | `chat-web-results.png`, `chat-literature-results.png` | 1440 x 1000 | Opened search rows from the same conversation. |
-| `deep-*.png` | 1440 x 1000 | A Deep research run from a plain literature-review request. |
+| `deep-mode-menu.png` | 1440 x 1000, cropped | The composer's mode menu. |
+| `deep-running.png`, `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: in progress (the conversation reopened 6 minutes in), the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
 
 The chat requests were plain questions with no tool or step named. The capture script
 answered the search approvals and allowed the search tools for the session, as a person

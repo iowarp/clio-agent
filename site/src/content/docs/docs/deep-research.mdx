@@ -19,8 +19,8 @@ comparison of methods, a literature review. CLIO plans the investigation, sends
 several researchers out at once, has an independent critic check what they found,
 and writes a report from the claims the critic verified.
 
-A deep research run takes longer than an ordinary answer, often 15 to 40
-minutes, and makes many searches. Use an ordinary conversation for a quick fact.
+A deep research run takes longer than an ordinary answer, often 15 minutes to
+an hour, and makes hundreds of searches and page reads. Use an ordinary conversation for a quick fact.
 
 ## Start a run
 
@@ -79,16 +79,18 @@ You can follow the researchers and the critic while they work in **Work**; see
 
 ## Read the report
 
-When the run ends, CLIO saves the report as a Markdown file in the conversation's
-`deep-research` folder, opens it as a report, and summarizes the outcome.
+When the run ends, CLIO saves the report as a Markdown file in a `deep-research`
+folder of the workspace, attaches it to its answer, and summarizes the outcome:
+what was verified, what was not, and what the critic still questions. Choose the
+file to open the report beside the conversation.
 
 <Capture client:visible image={await captureImage(delivered)}
-  alt="The end of a deep research run: a summary of verified and rejected claims and the report card"
-  caption="The answer summarizes the run: how many claims were verified and rejected, and what remains open." />
+  alt="The end of a deep research answer: throughput findings, what was not verified, problems the critic flagged in the report, and the attached Markdown report"
+  caption="The answer ends with what the run could not verify and what the critic still disputes, then the saved report." />
 
 <Capture client:visible image={await captureImage(report)}
-  alt="The deep research report open beside the conversation, with its executive answer and findings"
-  caption="The report starts with a short answer, then its findings with a citation on each claim." />
+  alt="The report open beside the conversation: question and scope, executive answer, and findings with a source link under each claim"
+  caption="The report states its scope, gives a short answer, then lists its findings with the source of each claim." />
 
 The report has these sections:
 
