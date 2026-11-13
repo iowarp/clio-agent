@@ -153,6 +153,9 @@ export default async function (page, shot) {
     if (await open.count()) await open.last().click({ timeout: 10000 }).catch(() => undefined);
     await page.waitForTimeout(10000);
   }
+  // A view being reopened (its saved call replays) takes a while to mount.
+  for (let i = 0; i < 36 && !(await appFrame(page)); i += 1) await page.waitForTimeout(5000);
+  await page.waitForTimeout(8000);
   if (env.CM_LOOK) {
     await turn(page, shot, env.CM_LOOK, "look");
     if (!env.CM_PHONE) await hero(page, shot, "look-hero");
@@ -199,6 +202,14 @@ export default async function (page, shot) {
   await page.waitForTimeout(1500);
   if (!env.CM_PHONE) await heroOff(page);
   await shot("comment-attached");
+  if (env.CM_PHONE) {
+    // On a phone the canvas covers the conversation: close it to reach the composer.
+    const close = page.getByRole("button", { name: "Close workspace canvas" }).filter({ visible: true });
+    if (await close.count()) await close.first().click().catch(() => undefined);
+    else await page.keyboard.press("Control+Shift+B"); // the canvas toggle's shortcut
+    await page.waitForTimeout(2000);
+    await shot("comment-in-composer");
+  }
   await turn(page, shot, env.CM_SEND || "", "comment");
   if (!env.CM_PHONE) await hero(page, shot, "comment-answer-hero");
   if (env.CM_OUT) writeFileSync(env.CM_OUT, JSON.stringify(out, null, 2));

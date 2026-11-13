@@ -103,25 +103,29 @@ class ViewLooks:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._holders: dict[tuple[str, str], str] = {}
+        # Every mount that holds the view now (a card and a tab can overlap while a frame
+        # moves); the view is shown while any holds it.
+        self._holders: dict[tuple[str, str], list[str]] = {}
         self._looks: dict[str, PendingLook] = {}
 
     def set_shown(self, sid: str, app_id: str, holder: str, shown: bool) -> bool:
-        """A surface mounted (``shown``) or unloaded the view; returns whether it holds it.
-
-        An unload from a mount a newer one replaced (a frame moving between the card and
-        a tab) is ignored, so it cannot hide the newer mount.
+        """A mount of the view loaded (``shown``) or unloaded; returns whether any mount
+        still holds the view. An unload names its own mount, so a frame moving between the
+        card and a tab never hides the other mount; an empty ``holder`` lets every mount go.
         """
         key = (sid, app_id)
         with self._lock:
-            current = self._holders.get(key, "")
+            holders = self._holders.setdefault(key, [])
+            if holder in holders:
+                holders.remove(holder)
             if shown:
-                self._holders[key] = holder
-                return True
-            if holder and current and current != holder:
-                return True
-            self._holders.pop(key, None)
-            return False
+                holders.append(holder)
+            elif not holder:
+                holders.clear()
+            if not holders:
+                self._holders.pop(key, None)
+                return False
+            return True
 
     def shown(self, sid: str, app_id: str) -> bool:
         with self._lock:

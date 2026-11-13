@@ -235,11 +235,15 @@ def test_a_look_ends_when_no_window_shows_the_conversation(
 
 def test_an_older_mount_unloading_does_not_hide_a_newer_one() -> None:
     table = ViewLooks()
+    table.set_shown("s", "a", "card", True)
     table.set_shown("s", "a", "tab", True)
     assert table.set_shown("s", "a", "card", False) is True  # the card unloads after the tab
     assert table.shown("s", "a")
     assert table.set_shown("s", "a", "tab", False) is False
     assert not table.shown("s", "a")
+    table.set_shown("s", "a", "tab", True)
+    table.set_shown("s", "a", "card", True)
+    assert table.set_shown("s", "a", "", False) is False  # nobody watches: every mount goes
 
 
 def test_context_lines_are_readable_and_cut() -> None:
