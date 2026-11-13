@@ -133,6 +133,42 @@ def test_a_waiting_call_continues_on_submit_and_is_refused_on_decline(
     assert "Fixture Secret" in outcome["value"].deny_message
 
 
+def test_the_card_names_the_call_it_holds(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card carries the waiting call's id, so the conversation shows its line there."""
+
+    from clio_agent.tools.tool_observation import call_identity_scope, peek_call_identity
+
+    app = _app()
+    monkeypatch.setattr(
+        "clio_agent.gact.permission_delivery.attended_session_id", lambda _app, sid: sid
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.code_task_context.question_cancel_token", lambda _app, _sid: None
+    )
+    state.update("fixture-secret", enabled=True)
+    seen: dict[str, str] = {}
+
+    def call() -> None:
+        with call_identity_scope():
+            seen["id"] = peek_call_identity()
+            connector_setup.await_setup(
+                app, "sess_a", "fixture-secret", "fixture-secret_fixture_secret_check"
+            )
+
+    worker = threading.Thread(target=call)
+    worker.start()
+    for _ in range(100):
+        if getattr(app.state, "connector_setups", None):
+            break
+        worker.join(0.05)
+    card = connector_setup.projected(app, {"sess_a"})[0]
+    assert card.source.invocation_id and card.source.invocation_id == seen["id"]
+    asyncio.run(connector_setup.respond(app, {"sess_a"}, card.id, "decline", {}))
+    worker.join(5)
+
+
 def test_a_ready_or_disabled_connector_never_waits(fixture_catalog: Path) -> None:
     app = _app()
     assert connector_setup.await_setup(app, "s", "fixture-secret", "t") is None
