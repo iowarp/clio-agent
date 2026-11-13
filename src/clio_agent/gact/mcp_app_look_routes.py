@@ -5,7 +5,8 @@ by the ``resolve`` the app routes pass in).
 
 * ``PUT .../shown`` ``{holder, shown}``: the surface mounted the view (or unloaded it).
   Showing it re-sends every look still waiting on the app, so a surface that mounts
-  after a look was published answers it.
+  after a look was published answers it. Unloading a view the server already closed
+  answers ``{"shown": false}``, not 404: there is nothing left to undo.
 * ``POST .../looks/{call_id}`` ``{image, width, height, scale, painted, skipped}`` or
   ``{error: {reason, message}}``: the snapshot for one waiting look (404 when none waits,
   422 when the image is not a PNG).
@@ -41,11 +42,18 @@ def register_app_look_routes(
     async def put_mcp_app_shown(
         sid: str, app_id: str, data_ref: str, request: Request
     ) -> dict[str, Any]:
-        resolve(sid, app_id, data_ref)
         body = await json_body(request, route="PUT MCP App shown")
         shown = body.get("shown")
         if not isinstance(shown, bool):
             raise HTTPException(status_code=422, detail="shown must be a boolean")
+        try:
+            resolve(sid, app_id, data_ref)
+        except HTTPException as exc:
+            # A surface unloading a view the server already closed (a newer view of the
+            # server replaced it, or the card closed it first) has nothing to undo.
+            if exc.status_code == 404 and not shown:
+                return {"shown": False}
+            raise
         table = look_table(app)
         held = table.set_shown(sid, app_id, str(body.get("holder") or ""), shown)
         if held:
