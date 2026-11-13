@@ -26,6 +26,8 @@ raise_alert_card = native_tool("raise_alert_card")
 recall_context = native_tool("recall_context")
 load_skill = native_tool("load_skill")
 search_tools = native_tool("search_tools")
+# A value one of the person's connectors needs, given in the conversation (CN6).
+set_connector_value = native_tool("set_connector_value")
 run_code = native_tool("run_code")
 
 # Goals, loops and schedules.

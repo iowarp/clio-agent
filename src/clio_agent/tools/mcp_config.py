@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 
+from clio_agent.connectors.materialize import connector_spec
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.tools import desktop_mcp_runtime as dmr
 from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
@@ -69,11 +70,8 @@ __all__ = [
     "unreadable_mcp_yaml_snapshot",
 ]
 
-# clio-agent's built-in universal defaults (always present, not declarations).
-# These MUST match what ``tools.gateway._mount_builtins`` actually mounts: a name
-# listed here but not mounted is silently un-mountable as a user server (the
-# gateway skips it as "builtin") — that phantom ``"web"`` bug is why this set is
-# kept in lockstep with the mounts, not aspirational.
+# Built-in defaults, in lockstep with ``tools.gateway._mount_builtins``: a name listed but not
+# mounted is silently un-mountable as a user server (the phantom ``"web"`` bug).
 BUILTIN_SERVER_NAMES = frozenset({"fs", "shell"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
@@ -162,7 +160,7 @@ class MCPServerSpec:
     transport: Literal["stdio", "http"]
     command: str = ""
     args: tuple[str, ...] = ()
-    env: Mapping[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)
     url: str = ""
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     auth: MCPAuthConfig | None = field(default=None, repr=False)
@@ -176,6 +174,7 @@ class MCPServerSpec:
     #: (``command``/``args``/``url``); ``tools.mcp_redaction`` serves it in their
     #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    connector: str = ""  # the connector this connection was saved for
 
     @property
     def usable(self) -> bool:
@@ -411,6 +410,8 @@ def spec_from_declaration(
                 f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",
             ),
         )
+    if isinstance(value, Mapping) and value.get("connector"):  # its secrets (CN8)
+        spec = connector_spec(spec, str(value["connector"]))
     name_error = _validate_server_name(name)
     if name_error:
         spec = replace(spec, validation_errors=(name_error, *spec.validation_errors))

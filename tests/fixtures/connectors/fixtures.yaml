@@ -1,0 +1,49 @@
+# Test connectors (plan "Qualification"): never shipped. A stack or a test enables
+# this folder with CLIO_CONNECTOR_CATALOG_DIRS=<repo>/tests/fixtures/connectors and
+# sets CLIO_CONNECTOR_FIXTURE_PYTHON (a Python with fastmcp) and
+# CLIO_CONNECTOR_FIXTURE_DIR (<repo>/tests/fixtures), which the command servers use.
+- id: fixture-plain
+  name: Fixture Plain
+  logo: fixture-plain.svg
+  description: A test connector with nothing to set up
+  server:
+    command: ${CLIO_CONNECTOR_FIXTURE_PYTHON}
+    args: [-B, "${CLIO_CONNECTOR_FIXTURE_DIR}/connector_fixture_server.py", --mode, plain]
+  needs: []
+
+- id: fixture-signin
+  name: Fixture Sign-in
+  description: A test connector that needs an address and a sign-in to a synthetic account
+  server:
+    url: ${need.address}
+  needs:
+    - key: address
+      kind: address
+      label: Server address
+      help: The fixture's MCP address, for example http://127.0.0.1:19101/mcp
+      agent_settable: true
+    - key: account
+      kind: sign-in
+      label: Test account
+
+- id: fixture-secret
+  name: Fixture Secret
+  logo: fixture-secret.svg
+  description: A test connector that needs an access token and brings a plugin
+  server:
+    command: ${CLIO_CONNECTOR_FIXTURE_PYTHON}
+    args: [-B, "${CLIO_CONNECTOR_FIXTURE_DIR}/connector_fixture_server.py", --mode, secret]
+    env:
+      FIXTURE_TOKEN: ${need.token}
+      FIXTURE_WHERE: ${need.where}
+  needs:
+    - key: token
+      kind: secret
+      label: Access token
+    - key: where
+      kind: address
+      label: Where it runs
+      required: false
+      agent_settable: true
+      help: Leave empty for this machine. Otherwise a host name.
+  plugin: fixture-secret-skills

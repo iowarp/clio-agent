@@ -438,6 +438,12 @@ agents.react_extract.after_steps: 3
 # strict one-call-per-step contract.
 agents.react_extract.enabled: true
 
+# CLIO_CONNECTOR_CATALOG_DIRS  (str)  <- src/clio_agent/connectors/entries.py
+# More folders of connector entries, separated like PATH, read after the
+# shipped catalogs/connectors; a later folder cannot replace an entry. Set
+# it for test fixtures.
+# connectors.catalog_dirs:  # default unset; resolved in code
+
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
 # asking. Unset accounts follow their billing: subscriptions and free
