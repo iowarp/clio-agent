@@ -133,7 +133,8 @@ ASSETS = {
 PROFILE_STARTER = "office-profile.zip"
 # Raised whenever what ``_lay_image`` writes changes in a way the constants named in
 # ``prepared_tree_name`` do not capture, so an older prepared tree is not taken.
-PREPARED_LAYOUT = 1
+# 2: ``office_prune`` drops the unread UI configuration and grammar-checker dialogs.
+PREPARED_LAYOUT = 2
 # A prepared tree's unpacked size limit (the pruned x86_64 tree is about 600 MB).
 MAX_PREPARED = 2 * 1024 * 1024 * 1024
 logger = logging.getLogger(__name__)
