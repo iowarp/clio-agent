@@ -81,6 +81,7 @@ def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) ->
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
     from clio_agent.gact.code_task_context import question_cancel_token  # noqa: PLC0415
     from clio_agent.runtime.commitment_activity import track  # noqa: PLC0415
+    from clio_agent.tools.tool_observation import peek_call_identity  # noqa: PLC0415
 
     found = state.all_entries().get(connector_id)
     choice = state.choice(connector_id)
@@ -97,6 +98,8 @@ def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) ->
         "connector_id": found.id,
         "connector_name": found.name,
         "tool_name": tool_name,
+        # The waiting call's own id: the conversation shows the card's line under its row.
+        "invocation_id": peek_call_identity(),
         "missing": [service.need_row(found, choice, need) for need in absent],
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -212,7 +215,11 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                 title=f"Set up {row['connector_name']}",
                 prompt=f"{row['tool_name']} waits for {row['connector_name']} to be set up.",
                 requires_human_response=pending,
-                source=PendingInteractionSource(protocol="mcp", tool_name=row["tool_name"]),
+                source=PendingInteractionSource(
+                    protocol="mcp",
+                    tool_name=row["tool_name"],
+                    invocation_id=str(row.get("invocation_id") or ""),
+                ),
                 created_at=row["created_at"],
                 revision=str(row.get("updated_at") or row["created_at"]),
                 payload={
