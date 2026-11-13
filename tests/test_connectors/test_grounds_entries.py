@@ -67,5 +67,7 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
         "connector_tool_not_listed connector=burette tool=control_ketcher",
         "connector_tool_not_listed connector=burette tool=render_molecular_scene",
     ]
+    rows = [{"name": "open_ketcher"}, {"name": "preview_molecular_file"}]
+    assert listing.offered("burette", rows) == [{"name": "open_ketcher"}]
     assert listing.offered("spice", listed) == listed
     assert listing.offered("unknown", listed) == listed

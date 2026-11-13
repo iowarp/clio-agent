@@ -73,7 +73,9 @@ def needs_setup(error: BaseException) -> bool:
 
 
 def offered(connector_id: str, tools: list[Any]) -> list[Any]:
-    """The listed tools the connector's entry offers (all of them when it names none).
+    """The listed tools (MCP ``Tool`` objects or rows) the connector's entry offers.
+
+    All of them when the entry names none.
 
     A name the entry lists that the server does not have is a typed trace,
     ``connector_tool_not_listed``, never a silent drop.
@@ -85,10 +87,16 @@ def offered(connector_id: str, tools: list[Any]) -> list[Any]:
     allowed = tuple(getattr(entry, "tools", ()) or ())
     if not allowed:
         return tools
-    names = {getattr(tool, "name", "") for tool in tools}
+    names = {_name(tool) for tool in tools}
     for name in allowed:
         if name not in names:
             trace.event(
                 "TOOLS", "connector_tool_not_listed connector=%s tool=%s", connector_id, name
             )
-    return [tool for tool in tools if getattr(tool, "name", "") in allowed]
+    return [tool for tool in tools if _name(tool) in allowed]
+
+
+def _name(tool: Any) -> str:
+    """A tool's name, from an MCP ``Tool`` or a listed row."""
+
+    return str(tool.get("name") or "") if isinstance(tool, dict) else str(getattr(tool, "name", ""))
