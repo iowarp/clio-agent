@@ -55,7 +55,7 @@ def last_listed(connector_id: str) -> list[Any]:
 def needs_setup(error: BaseException) -> bool:
     """Whether ``error`` (or anything it wraps) says the connection needs a sign-in."""
 
-    from clio_agent.tools.mcp_config import MCPSignInNeeded  # noqa: PLC0415
+    from clio_agent.tools.mcp_sign_in import MCPSignInNeeded  # noqa: PLC0415
 
     pending: list[BaseException] = [error]
     seen: set[int] = set()

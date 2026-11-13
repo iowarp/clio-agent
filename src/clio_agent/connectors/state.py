@@ -45,8 +45,11 @@ class Choice:
         wanted = (
             set((self.scope or {}).get("agents") or ()) if isinstance(self.scope, dict) else set()
         )
-        names = set(agent_refs) | {ref.split("/", 1)[-1] for ref in agent_refs}
-        return bool(wanted & names)
+
+        def bare(refs: set[str]) -> set[str]:
+            return refs | {ref.split("/", 1)[-1].split("@", 1)[0] for ref in refs}
+
+        return bool(bare(wanted) & bare(set(agent_refs)))
 
 
 def state_path() -> Path:

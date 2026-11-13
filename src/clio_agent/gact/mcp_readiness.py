@@ -231,6 +231,29 @@ def _prepare_attempt(
     return tools
 
 
+def _connector_tools_kept(
+    tool_executor: Any, namespace: str, spec: Any, exc: BaseException
+) -> Mapping[str, Any] | None:
+    """A connector needing a sign-in keeps its last tools, so a call waits for setup (CN5)."""
+
+    from clio_agent.connectors import listing  # noqa: PLC0415
+
+    connector = str(getattr(spec, "connector", "") or "")
+    if not connector or not listing.needs_setup(exc):
+        return None
+    kept = {
+        f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})
+        for tool in listing.last_listed(connector)
+    }
+    if not kept:
+        return None
+    merger = getattr(tool_executor, "merge_namespace_tools", None)
+    if callable(merger):
+        merger(namespace, kept)
+    logger.warning("reason=connector_tools_from_last_listing namespace=%s", namespace)
+    return kept
+
+
 def mount_namespace_for_session(
     tool_executor: Any,
     namespace: str,
@@ -293,6 +316,8 @@ def mount_namespace_for_session(
                     raise RuntimeError("live MCP executor cannot accept mounted tools")
                 merger(namespace, mounted_tools)
         except Exception as exc:
+            if (kept := _connector_tools_kept(tool_executor, namespace, spec, exc)) is not None:
+                return kept
             # A preparation names its failures in the preparation vocabulary; a
             # listing-only mount keeps the discovery vocabulary it always used.
             reason = (

@@ -13,9 +13,10 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from clio_agent.gact import mcp_auth
 from clio_agent.gact.routes.mcp_auth import _redirect_uri
-from clio_agent.tools.mcp_config import MCPAuthConfig, MCPSignInNeeded
+from clio_agent.tools.mcp_config import MCPAuthConfig
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
 from clio_agent.tools.mcp_runtime import _oauth_provider_from_config
+from clio_agent.tools.mcp_sign_in import MCPSignInNeeded
 
 
 def test_sign_in_errors_explain_recovery_without_disclosing_provider_payloads() -> None:
