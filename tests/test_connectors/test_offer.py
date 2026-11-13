@@ -163,7 +163,7 @@ def test_not_now_is_a_typed_refusal_and_changes_nothing(conversation: Any) -> No
     )
     worker.join(5)
     assert answered.status == "denied"
-    assert outcome["value"]["error"] == offer.OFFER_DECLINED
+    assert outcome["value"]["refusal"] == offer.OFFER_DECLINED and "error" not in outcome["value"]
     assert "Fixture Plain" in outcome["value"]["message"]
     assert not state.choice("fixture-plain").enabled
 
@@ -307,7 +307,7 @@ def test_join_namespace_merges_the_enable_listing(
 
 def test_the_row_reads_offer_and_says_what_the_person_chose() -> None:
     turned_on = offer.present(
-        {"connector": "paraview", "reason": "Show it in 3D."},
+        {"connector": "fixture-viewer", "reason": "Show it in 3D."},
         None,
         {
             "connector_name": "A Very Long Connector Name For Scientific Data Views",
@@ -319,13 +319,22 @@ def test_the_row_reads_offer_and_says_what_the_person_chose() -> None:
         },
     )
     assert turned_on["action"] == "Offer" and "status" not in turned_on
+    assert turned_on["blocks"][0] == {
+        "id": "connector",
+        "type": "text",
+        "text": "A Very Long Connector Name For Scientific Data Views",
+    }
+    started = offer.present_start({"connector": "fixture-viewer", "reason": "Show it in 3D."})
+    assert started["subject"] == "connector" and started["blocks"][1]["text"] == "Show it in 3D."
+    assert offer.present_start({})["action"] == "List"
     texts = {block["id"]: block["text"] for block in turned_on["blocks"]}
     assert texts["reason"] == "Show it in 3D." and texts["outcome"] == "Turned on"
     assert texts["scope"] == "Every conversation" and texts["tools"].count("\n") == 29
     declined = offer.present(
-        {"connector": "x"}, None, {"error": offer.OFFER_DECLINED, "connector_name": "X"}
+        {"connector": "x"}, None, {"refusal": offer.OFFER_DECLINED, "connector_name": "X"}
     )
-    assert declined["status"] == "denied" and declined["blocks"][-1]["text"] == "Not now"
+    assert "status" not in declined and declined["blocks"][-1]["text"] == "Not now"
+    assert declined["subject"] == "connector" and declined["blocks"][0]["text"] == "X"
     cancelled = offer.present(
         {"connector": "x"},
         None,

@@ -272,6 +272,10 @@ KEY_NOTES: dict[str, str] = {
         "More folders of connector entries, separated like PATH, read after the shipped "
         "catalogs/connectors; a later folder cannot replace an entry. Set it for test fixtures."
     ),
+    "connectors.offer_listed": (
+        "How many connectors that are off for the agent the session facts name, so it can offer "
+        "one; the total is always given and offer_connector with no connector lists them all."
+    ),
     "plugins.default_marketplace": (
         "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "
         "marketplace, else the pinned default URL. Point it at a mirror or an offline copy."

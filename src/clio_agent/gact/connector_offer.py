@@ -20,7 +20,8 @@ timeout (plan rule 6); stopping the turn ends it.
   refresh takes it, so its tools are callable from the agent's next step in the
   same turn.
 * **Not now** (``decline``): the typed refusal ``connector_offer_declined`` naming
-  the connector. Nothing changes and nothing is retried.
+  the connector (``refusal``, not ``error``: the offer was answered, the tool did not
+  fail; its row reads declined). Nothing changes and nothing is retried.
 
 The row reads "Offer <connector>"; expansion shows the agent's reason, what the
 person chose and the tools that joined, or the typed refusal.
@@ -385,8 +386,10 @@ async def offer_connector(connector: str = "", reason: str = "") -> dict[str, An
             "message": f"The turn was stopped while the offer of {found.name} waited.",
         }
     if row["status"] != "submitted":
+        # The offer was made and answered: "Not now" is the person's refusal, not the
+        # tool failing, so it is a typed ``refusal`` the row shows as declined.
         return {
-            "error": OFFER_DECLINED,
+            "refusal": OFFER_DECLINED,
             "connector": found.id,
             "connector_name": found.name,
             "reason": reason,
@@ -409,12 +412,18 @@ def _scope_words(scope: Any) -> str:
 
 
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
-    """One row: Offer <connector>; the reason, then what the person chose."""
+    """One row: Offer <connector>; the reason, then what the person chose.
+
+    "Not now" is an answered offer, so the call keeps its success mark; the answer
+    block and the card's own line ("not now") say what the person chose."""
 
     row = structured if isinstance(structured, Mapping) else result
     row = row if isinstance(row, Mapping) else {}
     name = str(row.get("connector_name") or args.get("connector") or "")
-    blocks: list[dict[str, Any]] = []
+    # The row reads "Offer <connector>": the subject is the connector's own block.
+    blocks: list[dict[str, Any]] = [
+        {"id": "connector", "type": "text", "text": name or "connector"},
+    ]
     if reason := str(row.get("reason") or args.get("reason") or ""):
         blocks.append({"id": "reason", "type": "text", "label": "Why", "text": reason})
     if "offerable" in row and not row.get("error"):
@@ -430,19 +439,19 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
                 or "None",
             }
         )
+        blocks[0] = {"id": "listed", "type": "text", "text": "connectors to offer"}
         return {
             "action": "List",
-            "subject": "connectors to offer",
+            "subject": "listed",
             "summary": str(row.get("message") or ""),
             "blocks": blocks,
         }
     error = str(row.get("error") or "")
-    if error == OFFER_DECLINED:
+    if row.get("refusal") == OFFER_DECLINED:
         blocks.append({"id": "outcome", "type": "text", "label": "Answer", "text": "Not now"})
         return {
             "action": "Offer",
-            "subject": name or "connector",
-            "status": "denied",
+            "subject": "connector",
             "summary": str(row.get("message") or ""),
             "blocks": blocks,
         }
@@ -468,7 +477,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
             )
         return {
             "action": "Offer",
-            "subject": name or "connector",
+            "subject": "connector",
             "status": "cancelled" if row.get("outcome") == "cancelled" else "failed",
             "summary": str(row.get("message") or ""),
             "blocks": blocks,
@@ -507,10 +516,27 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         )
     return {
         "action": "Offer",
-        "subject": name or "connector",
+        "subject": "connector",
         "summary": str(row.get("message") or ""),
         "blocks": blocks,
     }
+
+
+def present_start(args: Mapping[str, Any]) -> dict[str, Any]:
+    """While the card waits: "Offer <connector>" with the agent's reason."""
+
+    name = str(args.get("connector") or "")
+    if not name:
+        return {
+            "action": "List",
+            "subject": "listed",
+            "summary": "",
+            "blocks": [{"id": "listed", "type": "text", "text": "connectors to offer"}],
+        }
+    blocks: list[dict[str, Any]] = [{"id": "connector", "type": "text", "text": name}]
+    if reason := str(args.get("reason") or ""):
+        blocks.append({"id": "reason", "type": "text", "label": "Why", "text": reason})
+    return {"action": "Offer", "subject": "connector", "summary": "", "blocks": blocks}
 
 
 def build_offer_connector_tool() -> Any:
@@ -535,4 +561,5 @@ def build_offer_connector_tool() -> Any:
             },
         },
         presentation=present,
+        presentation_start=present_start,
     )
