@@ -224,6 +224,11 @@ def _prepare_attempt(
     if not callable(lister) or not callable(merger):
         raise RuntimeError("live MCP executor cannot list over a namespace connection")
     bare = lister(namespace)
+    if connector := str(getattr(spec, "connector", "") or ""):
+        from clio_agent.connectors import listing  # noqa: PLC0415
+
+        listing.remember(connector, bare)  # what a call waiting for setup still sees (CN5)
+        bare = listing.offered(connector, list(bare))
     tools = prefixed_namespace_tools(namespace, bare)
     merger(namespace, tools)
     _store_live_listing(namespace, spec, bare)
@@ -243,7 +248,7 @@ def _connector_tools_kept(
         return None
     kept = {
         f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})
-        for tool in listing.last_listed(connector)
+        for tool in listing.offered(connector, listing.last_listed(connector))
     }
     if not kept:
         return None
