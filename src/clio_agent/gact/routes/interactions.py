@@ -641,7 +641,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
         if interaction_id.startswith(connector_setup.PREFIX):
             try:
                 answered = await connector_setup.respond(
-                    app, scope, interaction_id, request.action, request.values
+                    app, scope, interaction_id, request.action, request.values, request.metadata
                 )
             except connector_setup.SetupResponseError as exc:
                 raise _error(exc.status, exc.code, str(exc), **exc.details) from None

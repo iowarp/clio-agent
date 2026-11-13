@@ -74,13 +74,39 @@ def _denial(message: str, outcome: str = "") -> Any:
     return decision
 
 
+def wait_for_card(app: Any, row: dict[str, Any]) -> bool:
+    """Show ``row`` as a card and wait for the person; ``True`` when the turn was stopped.
+
+    No timeout (plan rule 6): only an answer or stopping the turn ends the wait. The
+    row's ``status`` says how it was answered.
+    """
+
+    from clio_agent.gact.code_task_context import question_cancel_token  # noqa: PLC0415
+    from clio_agent.runtime.commitment_activity import track  # noqa: PLC0415
+
+    event = threading.Event()
+    _events(app)[row["id"]] = event
+    _rows(app)[row["id"]] = row
+    _publish(app, "connector.setup.requested", row)
+    session_id = str(row["session_id"])
+    cancelled = question_cancel_token(app, session_id)
+    try:
+        with track(True, session_id=session_id):
+            while not event.wait(0.1):
+                if cancelled is not None and cancelled.is_set():
+                    row.update(status="cancelled", updated_at=_now())
+                    _publish(app, "connector.setup.resolved", row)
+                    return True
+    finally:
+        _events(app).pop(row["id"], None)
+    return False
+
+
 def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) -> Any:
     """Wait until the connector is ready; ``None`` to continue, else a refusal."""
 
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
-    from clio_agent.gact.code_task_context import question_cancel_token  # noqa: PLC0415
-    from clio_agent.runtime.commitment_activity import track  # noqa: PLC0415
     from clio_agent.tools.tool_observation import peek_call_identity  # noqa: PLC0415
 
     found = state.all_entries().get(connector_id)
@@ -104,22 +130,11 @@ def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) ->
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    event = threading.Event()
-    _events(app)[row["id"]] = event
-    _rows(app)[row["id"]] = row
-    _publish(app, "connector.setup.requested", row)
-    trace.event("TOOLS", "connector_setup_requested connector=%s tool=%s", found.id, tool_name)
-    cancelled = question_cancel_token(app, session_id)
-    with track(True, session_id=session_id):
-        while not event.wait(0.1):
-            if cancelled is not None and cancelled.is_set():
-                row.update(status="cancelled", updated_at=_now())
-                _publish(app, "connector.setup.resolved", row)
-                return _denial(
-                    f"The call to {tool_name!r} was cancelled while {found.name} waited for setup.",
-                    outcome="cancelled",
-                )
-    _events(app).pop(row["id"], None)
+    if wait_for_card(app, row):
+        return _denial(
+            f"The call to {tool_name!r} was cancelled while {found.name} waited for setup.",
+            outcome="cancelled",
+        )
     if row["status"] == "declined":
         return _denial(
             f"{DECLINED}: the person declined to set up the {found.name} connector "
@@ -203,6 +218,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
         if row["session_id"] not in owners:
             continue
         pending = row["status"] == "pending"
+        offer = row.get("intent") == "enable"
         out.append(
             PendingInteraction(
                 id=PREFIX + row["id"],
@@ -212,8 +228,12 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                 status={"pending": "pending", "submitted": "answered", "declined": "denied"}.get(
                     row["status"], "cancelled"
                 ),
-                title=f"Set up {row['connector_name']}",
-                prompt=f"{row['tool_name']} waits for {row['connector_name']} to be set up.",
+                title=f"Turn on {row['connector_name']}"
+                if offer
+                else f"Set up {row['connector_name']}",
+                prompt=f"The agent offers {row['connector_name']}: {row.get('reason') or ''}".strip()
+                if offer
+                else f"{row['tool_name']} waits for {row['connector_name']} to be set up.",
                 requires_human_response=pending,
                 source=PendingInteractionSource(
                     protocol="mcp",
@@ -229,6 +249,20 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                     "logo_url": _logo_url(row["connector_id"]),
                     "missing": row["missing"],
                     "tool_name": row["tool_name"],
+                    # Connector discovery (CD-1 to CD-6): the agent offers a connector
+                    # that is off; the card turns it on (``connector_offer``).
+                    **(
+                        {
+                            "intent": "enable",
+                            "description": row.get("description") or "",
+                            "reason": row.get("reason") or "",
+                            "agent_ref": row.get("agent_ref") or "",
+                            "agent_name": row.get("agent_name") or "",
+                            "asks_sign_in": bool(row.get("asks_sign_in")),
+                        }
+                        if offer
+                        else {}
+                    ),
                 },
                 actions=["submit", "decline"] if pending else [],
             )
@@ -250,9 +284,18 @@ class SetupResponseError(ValueError):
 
 
 async def respond(
-    app: Any, scope: set[str], interaction_id: str, action: str, values: Mapping[str, Any]
+    app: Any,
+    scope: set[str],
+    interaction_id: str,
+    action: str,
+    values: Mapping[str, Any],
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Answer a setup card; returns the updated row's interaction."""
+    """Answer a setup card; returns the updated row's interaction.
+
+    An offer card (``intent: enable``) is answered by :func:`.connector_offer.answer`:
+    ``submit`` turns the connector on with ``metadata.scope`` (``all`` or ``agent``).
+    """
 
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
@@ -262,7 +305,11 @@ async def respond(
         raise SetupResponseError(404, "not_found", f"interaction not found: {interaction_id}")
     if row["status"] != "pending":
         raise SetupResponseError(409, "interaction_resolved", "interaction is already resolved")
-    if action == "decline":
+    if row.get("intent") == "enable":
+        from clio_agent.gact.connector_offer import answer  # noqa: PLC0415
+
+        await answer(app, row, action, values, metadata or {})
+    elif action == "decline":
         row.update(status="declined", updated_at=_now())
     elif action == "submit":
         found = service.entry(row["connector_id"])

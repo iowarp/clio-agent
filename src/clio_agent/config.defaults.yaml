@@ -444,6 +444,12 @@ agents.react_extract.enabled: true
 # it for test fixtures.
 # connectors.catalog_dirs:  # default unset; resolved in code
 
+# CLIO_CONNECTORS_OFFER_LISTED  (int)  <- src/clio_agent/gact/connector_offer.py
+# How many connectors that are off for the agent the session facts name, so
+# it can offer one; the total is always given and offer_connector with no
+# connector lists them all.
+connectors.offer_listed: 20
+
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
 # asking. Unset accounts follow their billing: subscriptions and free

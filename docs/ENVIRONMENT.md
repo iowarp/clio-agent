@@ -128,6 +128,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_USER_CHARS` | `compaction.keep.user_chars` | int | `80000` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_WORKING_STATE` | `compaction.keep.working_state` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
+| `CLIO_CONNECTORS_OFFER_LISTED` | `connectors.offer_listed` | int | `20` | `src/clio_agent/gact/connector_offer.py` |
 | `CLIO_CONNECTOR_CATALOG_DIRS` | `connectors.catalog_dirs` | str | _(unset)_ | `src/clio_agent/connectors/entries.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS` | `gact.context_references.evidence_sessions` | int | `5000` | `src/clio_agent/gact/context_reference_evidence.py` |

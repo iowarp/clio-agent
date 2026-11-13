@@ -9,6 +9,10 @@ stopped and starts again with the new arguments and environment on its next use)
 and its tools are listed again, once for all fleets. What the plugin added (``PLUGIN_ROOT``,
 ``PLUGIN_DATA``) is kept. A namespace whose new listing fails keeps its last tools,
 with the typed trace ``connector_relist_failed``.
+
+A connector the person enables while a turn runs (connector discovery) is not in
+that turn's fleet at all: :func:`join_namespace` installs it there, so the turn can
+call its tools from its next step.
 """
 
 from __future__ import annotations
@@ -56,8 +60,9 @@ def rebound_spec(current: Any, declaration: Mapping[str, Any], namespace: str) -
     )
 
 
-def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> list[str]:
-    """Rebind ``namespace`` in every resident fleet; return the workspace roots touched."""
+def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
+    """Route ``namespace`` of ``executor`` to a fresh proxy of ``spec`` (its connection
+    is closed, so the next use starts it with ``spec``)."""
 
     from clio_agent.tools import mcp_prepare  # noqa: PLC0415
     from clio_agent.tools.gateway import (  # noqa: PLC0415
@@ -65,6 +70,31 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
         namespace_direct_factories,
         namespace_proxies,
     )
+
+    specs = executor._clio_namespace_specs
+    gateway = build_gateway({namespace: spec}, cwd=root or None)
+    proxy = namespace_proxies(gateway).get(namespace)
+    inner = getattr(executor, "_async_executor", None)
+    specs[namespace] = spec
+    if inner is not None:
+        inner_specs = getattr(inner, "_clio_namespace_specs", None)
+        if isinstance(inner_specs, dict):
+            inner_specs[namespace] = spec
+        if proxy is not None:
+            inner._namespace_servers[namespace] = proxy
+        factories = getattr(inner, "_clio_namespace_direct_factories", None)
+        factory = namespace_direct_factories(gateway).get(namespace)
+        if isinstance(factories, dict) and factory is not None:
+            factories[namespace] = factory
+    reset = getattr(executor, "reset_namespace", None)
+    if callable(reset):
+        reset(namespace)
+    mcp_prepare.forget(namespace)
+
+
+def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> list[str]:
+    """Rebind ``namespace`` in every resident fleet; return the workspace roots touched."""
+
     from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
 
     touched: list[str] = []
@@ -78,24 +108,7 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
         if getattr(executor, "closed", False) or getattr(executor, "_closed", False):
             continue
         spec = rebound_spec(specs[namespace], declaration, namespace)
-        gateway = build_gateway({namespace: spec}, cwd=root or None)
-        proxy = namespace_proxies(gateway).get(namespace)
-        inner = getattr(executor, "_async_executor", None)
-        specs[namespace] = spec
-        if inner is not None:
-            inner_specs = getattr(inner, "_clio_namespace_specs", None)
-            if isinstance(inner_specs, dict):
-                inner_specs[namespace] = spec
-            if proxy is not None:
-                inner._namespace_servers[namespace] = proxy
-            factories = getattr(inner, "_clio_namespace_direct_factories", None)
-            factory = namespace_direct_factories(gateway).get(namespace)
-            if isinstance(factories, dict) and factory is not None:
-                factories[namespace] = factory
-        reset = getattr(executor, "reset_namespace", None)
-        if callable(reset):
-            reset(namespace)
-        mcp_prepare.forget(namespace)
+        _install(executor, namespace, spec, root)
         touched.append(root)
         if not spec.usable:
             continue
@@ -118,3 +131,62 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
         "TOOLS", "connector_rebound namespace=%s roots=%s", namespace, ",".join(touched) or "-"
     )
     return touched
+
+
+class ConnectorJoinError(RuntimeError):
+    """A connector enabled during a turn could not join that turn's fleet (typed)."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+
+
+def join_namespace(
+    agent: Any, executor: Any, namespace: str, declaration: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Mount a connector the person enabled during a turn into that turn's fleet.
+
+    A running turn keeps the fleet it started with (#1244), so a connector enabled
+    while it runs (connector discovery) is not in it. Its namespace is installed in
+    ``executor`` from the saved connection and its tools merged into the executor's
+    table: the listing the enable just made (:mod:`clio_agent.connectors.listing`),
+    else a fresh one. Returns the prefixed tools; raises :class:`ConnectorJoinError`.
+    """
+
+    from clio_agent.connectors import listing  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import spec_from_declaration  # noqa: PLC0415
+    from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
+    from clio_agent.tools.mcp_tools_changed import prefixed_namespace_tools  # noqa: PLC0415
+
+    specs = getattr(executor, "_clio_namespace_specs", None)
+    merge = getattr(executor, "merge_namespace_tools", None)
+    if not isinstance(specs, dict) or not callable(merge):
+        raise ConnectorJoinError("connector_join_fleet_unavailable")
+    root = next((r for r, e in _executors(agent) if e is executor), "")
+    current = specs.get(namespace)
+    spec = (
+        rebound_spec(current, declaration, namespace)
+        if current is not None
+        else spec_from_declaration(namespace, dict(declaration), source="user")
+    )
+    if not spec.usable:
+        raise ConnectorJoinError("connector_join_unusable", "; ".join(spec.validation_errors))
+    _install(executor, namespace, spec, root)
+    connector = str(getattr(spec, "connector", "") or namespace)
+    kept = listing.offered(connector, listing.last_listed(connector))
+    try:
+        tools = (
+            prefixed_namespace_tools(namespace, kept) if kept else ensure_namespace(namespace, spec)
+        )
+    except Exception as exc:  # noqa: BLE001 - typed for the caller
+        raise ConnectorJoinError("connector_join_listing_failed", type(exc).__name__) from exc
+    merge(namespace, tools)
+    trace.event(
+        "TOOLS",
+        "connector_joined_turn namespace=%s root=%s tools=%d source=%s",
+        namespace,
+        root or "-",
+        len(tools),
+        "last_listing" if kept else "listed",
+    )
+    return dict(tools)
