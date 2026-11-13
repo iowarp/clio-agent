@@ -31,6 +31,7 @@ from clio_agent.gact.mcp_app_observer_reasons import (
 from clio_agent.gact.mcp_app_observer_reasons import (
     recorded_mcp_app_observer_skips as recorded_mcp_app_observer_skips,
 )
+from clio_agent.gact.mcp_app_reopen_declaration import split_reopen_declaration
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
     _csp_header,
@@ -271,6 +272,9 @@ class MCPAppRecord:
     csp: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
     service: ViewService | None = None  # MA23: taken off tool_result at admission
+    #: The arguments the server declared for reopening (MA19), and why one was refused.
+    reopen_arguments: dict[str, Any] | None = None
+    reopen_reason: str = ""
     #: ``inline`` (the card) or ``fullscreen`` (a workbench tab), MA1/MA4.
     display_mode: str = "inline"
     #: Mounted in a visible A2UI surface (MA5); set through ``PUT …/pin``.
@@ -329,6 +333,7 @@ class MCPAppRegistry:
 
         namespace = source_namespace.strip() if isinstance(source_namespace, str) else ""
         tool_result, service = split_service_declaration(tool_result)
+        tool_result, reopen_arguments, reopen_reason = split_reopen_declaration(tool_result)
         encoded = json.dumps(tool_result, sort_keys=True, default=str).encode("utf-8")
         record = MCPAppRecord(
             app_instance_id=secrets.token_urlsafe(18),
@@ -341,6 +346,8 @@ class MCPAppRegistry:
             tool_result=dict(tool_result),
             cleanup=_private_cleanup(tool_result),
             service=service,
+            reopen_arguments=reopen_arguments,
+            reopen_reason=reopen_reason,
             display_mode=display_mode if display_mode in DISPLAY_MODES else "inline",
         )
         with self._lock:

@@ -295,10 +295,14 @@ async def apply(app: Any, found: Entry) -> dict[str, Any]:
         saved = await asyncio.to_thread(save_connection, found, choice)
         await _refresh_agent_tool_gateway(app)
         agent = getattr(app.state, "agent", None)
+        steps = []
         if agent is not None:
-            await asyncio.to_thread(rebind_namespace, agent, found.id, saved)
+            steps.append(asyncio.to_thread(rebind_namespace, agent, found.id, saved))
         if not any(need.kind != "sign-in" for need in missing(found, choice)):
-            await probe(app, found, choice, force=True)
+            steps.append(probe(app, found, choice, force=True))
+        # The running servers' rebind and the probe are separate processes: run them
+        # together, so a value change costs one server start, not two in a row.
+        await asyncio.gather(*steps)
     sessions = await asyncio.to_thread(follow_in_open_sessions, app)
     publish_changed(app, found.id, sessions)
     return row(app, found, state.choice(found.id))

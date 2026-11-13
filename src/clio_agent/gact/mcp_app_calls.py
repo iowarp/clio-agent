@@ -191,7 +191,9 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
         capture.record = record
         return True
     bare = _bare_tool(record)
-    arguments, unsaved = _saved_arguments(record.tool_input)
+    # A server may declare what to replay instead of its call (mcp_app_reopen_declaration).
+    declared = record.reopen_arguments
+    arguments, unsaved = _saved_arguments(record.tool_input if declared is None else declared)
     entry: dict[str, Any] = {
         "server": record.source_namespace or "",
         "tool": bare,
@@ -204,6 +206,12 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
     if unsaved:
         entry["unsaved_reason"] = unsaved
         _audit("mcp_app_call_not_saved", sid, record.app_instance_id, unsaved, entry)
+    if declared is not None:
+        entry["arguments_from"] = "server_reopen_declaration"
+    elif record.reopen_reason:
+        _audit(
+            "mcp_app_reopen_declaration", sid, record.app_instance_id, record.reopen_reason, entry
+        )
     if capture is not None and capture.reopened_from:
         entry["reopened_from"] = capture.reopened_from
     _write(app, sid, record.app_instance_id, entry)
@@ -403,7 +411,10 @@ async def replay_call(
 
     def replay(executor: Any) -> Any:
         full_name = _resolve_opening_tool(executor, entry)
-        tools.extend(server_tools(executor.get_all_tool_definitions(), str(entry["server"])))
+        definitions = executor.get_all_tool_definitions()
+        tools.extend(server_tools(definitions, str(entry["server"])))
+        if not entry.get("label"):  # a given call names no title: the tool's, as a card's
+            entry["label"] = _label(definitions.get(full_name), str(entry["tool"]))
         token = _REPLAY.set(capture)
         try:
             return executor.call_tool_result(full_name, arguments)
