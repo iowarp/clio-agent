@@ -173,6 +173,28 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
     return result
 
 
+def _managed_node(environment: Path) -> Path | None:
+    """The managed Node.js executable in ``environment``, located without starting it.
+
+    The layouts ``inventory.py`` accepts, under the environment's ``site-packages``.
+    ``None`` (no such file, or a layout this does not know) leaves it to the probe.
+    """
+    base = str(environment)
+    try:
+        purelib = sysconfig.get_path("purelib", "venv", vars={"base": base, "platbase": base})
+    except KeyError:
+        return None
+    root = Path(purelib) / "nodejs_wheel"
+    return next(
+        (
+            candidate
+            for candidate in (root / "bin" / "node", root / "node.exe", root / "bin" / "node.exe")
+            if candidate.is_file()
+        ),
+        None,
+    )
+
+
 def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[str, str]]:
     """Check requested modules in the managed interpreter without installing anything."""
     names = list(dict.fromkeys(modules))
@@ -246,8 +268,14 @@ def _adopt_prelaid(name: str, target: Path) -> bool:
 
 
 def _python_runtime(
-    cache: Path, uv: str, *, discovery_only: bool = False
+    cache: Path, uv: str, *, discovery_only: bool = False, defer_probe: bool = False
 ) -> tuple[Path, dict[str, Any]]:
+    """The prepared document environment's Python and its probed inventory.
+
+    ``defer_probe`` is for a caller that runs the full import probe itself right after:
+    the inventory is then only the managed Node.js path, found without starting a process,
+    and the environment is probed here only when that path cannot be found.
+    """
     project = cache / "project"
     project.mkdir(parents=True, exist_ok=True)
     for name in ("pyproject.toml", "uv.lock"):
@@ -268,6 +296,8 @@ def _python_runtime(
             ) from error
 
     def probe() -> dict[str, Any]:
+        if defer_probe and (node := _managed_node(environment)) is not None:
+            return {"node": str(node)}
         return _probe(python, discovery_only=True) if discovery_only else _probe(python)
 
     if repair:
@@ -595,7 +625,12 @@ def prepare_document_runtime(
         if progress is not None:
             progress("Preparing and checking Python document packages...")
         started = time.monotonic()
-        python, inventory = _python_runtime(cache, uv, discovery_only=True)
+        # An install skips the lighter discovery probe: the full probe below checks
+        # everything it does, and starting both Python and Node.js cold before that
+        # held Node and the full probe back (16.5 s of an installer's 97 s prepare).
+        python, inventory = _python_runtime(
+            cache, uv, discovery_only=True, defer_probe=not discovery_only
+        )
         lap("python_environment", started)
         javascript: tuple[Path, Path] | DocumentRuntimeError
         if discovery_only:
@@ -628,8 +663,11 @@ def prepare_document_runtime(
                     inventory = {}
             if not inventory:
                 # A damaged environment gets the same locked repair as before, now that
-                # nothing runs from it.
+                # nothing runs from it. Node.js ran from that environment unchecked, so a
+                # failure there gets one more attempt from the repaired one.
                 python, inventory = _python_runtime(cache, uv)
+                if isinstance(javascript, DocumentRuntimeError):
+                    javascript = _javascript_or_error(cache, workspace, inventory, progress)
             if progress is not None:
                 progress("Python document packages are ready.")
         output = scratch / "output"

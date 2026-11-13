@@ -153,10 +153,12 @@ def test_node_prepares_while_full_python_probe_runs(
         "node": str(tmp_path / "node"),
         "native_tools": {"soffice": {"status": "available"}, "tesseract": {"status": "missing"}},
     }
-    calls: list[bool] = []
+    calls: list[tuple[bool, bool]] = []
 
-    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False) -> Any:
-        calls.append(discovery_only)
+    def python_runtime(
+        cache: Path, uv: str, *, discovery_only: bool = False, defer_probe: bool = False
+    ) -> Any:
+        calls.append((discovery_only, defer_probe))
         return cache / "python", dict(discovered)
 
     node_started = Event()
@@ -175,7 +177,7 @@ def test_node_prepares_while_full_python_probe_runs(
     monkeypatch.setattr(runtime, "_javascript_runtime", javascript)
     monkeypatch.setattr(runtime, "publish_environment", lambda *args: None)
     result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
-    assert calls == [True]
+    assert calls == [(True, True)]
     assert result["status"] == "ready" and result["javascript"]["status"] == "ready"
     assert result["capabilities"]["office_render_recalculate"] == "available"
 
@@ -192,7 +194,7 @@ def test_failed_full_probe_repairs_after_node_finishes(
     tools = {"soffice": {"status": "missing"}, "tesseract": {"status": "missing"}}
     order: list[str] = []
 
-    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False) -> Any:
+    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False, **kwargs: Any) -> Any:
         order.append("discover" if discovery_only else "repair")
         return cache / "python", {
             "node": "node",
@@ -214,6 +216,40 @@ def test_failed_full_probe_repairs_after_node_finishes(
     result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
     assert order == ["discover", "node", "repair"]
     assert result["repaired"] is True and result["javascript"]["status"] == "ready"
+
+
+def test_node_failed_on_a_damaged_environment_retries_after_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node.js starts before the environment is probed, so the repair gives it a second try."""
+    monkeypatch.setattr(
+        FileAccessPolicy, "from_env", classmethod(lambda cls: FileAccessPolicy((tmp_path,)))
+    )
+    monkeypatch.setattr(runtime, "_document_uv", lambda: "uv")
+    tools = {"soffice": {"status": "missing"}, "tesseract": {"status": "missing"}}
+    order: list[str] = []
+
+    def python_runtime(cache: Path, uv: str, *, discovery_only: bool = False, **kwargs: Any) -> Any:
+        order.append("discover" if discovery_only else "repair")
+        return cache / "python", {"node": "node", "native_tools": tools}
+
+    def probe(python: Path, **kwargs: Any) -> dict[str, Any]:
+        raise runtime.DocumentRuntimeError("nodejs_wheel failed to import")
+
+    def javascript(*args: Any, **kwargs: Any) -> Any:
+        order.append("node")
+        if order.count("node") == 1:
+            raise runtime.DocumentRuntimeError("node.exe is damaged")
+        return tmp_path / "work", tmp_path / "pnpm"
+
+    monkeypatch.setattr(runtime, "_python_runtime", python_runtime)
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_javascript_runtime", javascript)
+    monkeypatch.setattr(runtime, "publish_environment", lambda *args: None)
+    result = runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
+    assert order == ["discover", "node", "repair", "node"]
+    assert result["status"] == "ready" and result["javascript"]["status"] == "ready"
 
 
 def test_python_cache_reuse_still_probes_imports(
@@ -384,6 +420,49 @@ def test_execution_discovery_probes_current_files_each_time(
     _, second = runtime._python_runtime(tmp_path, "unused-uv", discovery_only=True)
     assert first["current_revision"] == 1
     assert second["current_revision"] == 2
+
+
+def test_install_locates_node_without_a_discovery_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The install's full probe follows, so finding Node.js starts no process."""
+    import os
+    import sysconfig
+
+    python = tmp_path / "python" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    base = str(tmp_path / "python")
+    purelib = sysconfig.get_path("purelib", "venv", vars={"base": base, "platbase": base})
+    node = Path(purelib) / "nodejs_wheel" / ("node.exe" if os.name == "nt" else "bin/node")
+    node.parent.mkdir(parents=True)
+    node.touch()
+    monkeypatch.setattr(runtime, "_built_for_this_interpreter", lambda environment: True)
+    monkeypatch.setattr(runtime, "_probe", lambda *args, **kwargs: pytest.fail("probed"))
+    result, inventory = runtime._python_runtime(
+        tmp_path, "unused-uv", discovery_only=True, defer_probe=True
+    )
+    assert result == python
+    assert inventory == {"node": str(node)}
+
+
+def test_install_probes_when_node_cannot_be_located(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unknown layout falls back to the discovery probe rather than guessing."""
+    import os
+
+    python = tmp_path / "python" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(runtime, "_built_for_this_interpreter", lambda environment: True)
+    monkeypatch.setattr(
+        runtime, "_probe", lambda path, *, discovery_only=False: {"discovered": discovery_only}
+    )
+    _, inventory = runtime._python_runtime(
+        tmp_path, "unused-uv", discovery_only=True, defer_probe=True
+    )
+    assert inventory == {"discovered": True}
 
 
 def test_execution_probe_requests_light_inventory_and_still_checks_lock(
