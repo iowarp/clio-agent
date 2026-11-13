@@ -6,7 +6,7 @@
 // Run on a fresh stack:
 //   node scripts/cloud/ui_check.mjs --agent http://127.0.0.1:$AGENT_PORT \
 //     --ui http://127.0.0.1:$UI_PORT/ --steps scripts/cloud/checks/apps/view_context_tools.mjs \
-//     --label view-tools [--width 390 --height 844]
+//     --label view-tools [--width 390 --height 844, with CHECK_PLACEMENT=inline]
 //
 // Every prompt is the person's plain request. CHECK_PHASES (comma list, default all)
 // picks the phases:
@@ -19,36 +19,20 @@
 //            "Highlight the inlet temperature on the board." (AQ21)
 // The session id and app instance are printed for the ledger.
 import { agentUrl, check, expectText, json, log, sessionIdFrom, viewIn } from "./_app_view.mjs";
+import { send, waitIdle } from "./_lib.mjs";
 
 const phases = new Set((process.env.CHECK_PHASES || "open,context,tool,changed,closed").split(","));
 const settleMs = Number(process.env.CHECK_SETTLE_MS || 300000);
 
-/** Type a plain request, approve the board's server tool when asked, wait for idle. */
+/** Type a plain request, allow the board's server tool for the session, wait for idle. */
 async function ask(page, text) {
-  const composer = page.locator('textarea, [contenteditable="true"]').first();
-  await composer.waitFor({ state: "visible", timeout: 180000 });
-  await composer.click({ timeout: 120000 });
-  await page.keyboard.type(text);
-  await page.keyboard.press("Enter");
+  const allowed = [];
+  await send(page, text);
   await page.waitForURL(/\/sessions\//, { timeout: 180000 });
   const sid = sessionIdFrom(page);
-  await page.waitForTimeout(3000);
-  const deadline = Date.now() + settleMs;
-  // On a loaded machine the turn can take a while to start: idle counts only after the
-  // session was seen busy (or after 90 s without ever seeing it busy).
-  const started = Date.now();
-  let seenBusy = false;
-  while (Date.now() < deadline) {
-    const allow = page.getByRole("button", { name: /This session/ }).first();
-    if (await allow.isVisible().catch(() => false)) await allow.click().catch(() => {});
-    const { body } = await json(`/v1/sessions/${sid}`);
-    const settled = body?.status === "idle" || body?.status === "error";
-    if (!settled) seenBusy = true;
-    if (settled && (seenBusy || Date.now() - started > 90000)) break;
-    await page.waitForTimeout(1500);
-  }
-  await page.waitForTimeout(2000);
-  log(`asked "${text}" in`, sid);
+  await page.waitForTimeout(5000);
+  const settled = await waitIdle(page, sid, allowed, settleMs / 60000);
+  log(`asked "${text}" in`, { sid, settled, allowed });
   return sid;
 }
 
@@ -60,13 +44,25 @@ async function boardPart(sid) {
 
 export default async function (page, shot) {
   let sid = "";
-  const tab = () => viewIn(page, "tab");
+  // CHECK_PLACEMENT=inline keeps the view in its card (at phone width the canvas covers
+  // the conversation, so the person works with the card there).
+  const placement = process.env.CHECK_PLACEMENT || "tab";
+  const tab = () => viewIn(page, placement);
+  const showTab = async () => {
+    if (placement === "inline") {
+      await page.locator("[data-mcp-app-iframe]").last().scrollIntoViewIfNeeded().catch(() => {});
+    }
+    await page.waitForTimeout(1500);
+  };
   if (phases.has("open")) {
     sid = await ask(page, "Open the cooling loop readings board.");
     const inline = viewIn(page, "inline");
     await inline.getByRole("button", { name: /Pump B vibration/ }).waitFor({ timeout: 60000 });
-    await page.getByRole("button", { name: "Open in tab" }).first().click();
-    await page.locator("[data-mcp-app-tab]").first().waitFor({ timeout: 30000 });
+    if (placement === "tab") {
+      await page.getByRole("button", { name: "Open in tab" }).first().click();
+      await page.locator("[data-mcp-app-tab]").first().waitFor({ timeout: 30000 });
+    }
+    await showTab();
     await tab().getByRole("button", { name: /Pump B vibration/ }).click({ timeout: 60000 });
     await expectText(tab().locator("#activity"), /Selected Pump B/);
     await page.waitForTimeout(2500); // the view's report reaches the session record
@@ -77,6 +73,17 @@ export default async function (page, shot) {
     log("stored context", stored?.context?.content?.[0]?.text);
     check(/selected: Pump B/.test(stored?.context?.content?.[0]?.text || ""), "context stored");
     await shot("board-in-tab-selected");
+    if (process.env.CHECK_DUMP_BUTTONS) {
+      log("url", page.url());
+      log(
+        "buttons",
+        await page.evaluate(() =>
+          [...document.querySelectorAll("button")]
+            .filter((b) => b.offsetParent)
+            .map((b) => (b.getAttribute("aria-label") || b.textContent || "").trim().slice(0, 40)),
+        ),
+      );
+    }
   }
   if (phases.has("context")) {
     sid = await ask(page, "What am I looking at?");
@@ -84,11 +91,13 @@ export default async function (page, shot) {
   }
   if (phases.has("tool")) {
     sid = await ask(page, "Highlight the outlet temperature on the board.");
+    await showTab();
     await expectText(tab().locator("#activity"), /Highlighted Outlet temperature/, 30000);
     await shot("board-highlighted");
   }
   if (phases.has("changed")) {
     sid = await ask(page, "Add a note on the board: check pump B bearings.");
+    await showTab();
     await expectText(tab().locator("#notes"), /bearings/i, 30000);
     await shot("board-note");
     sid = await ask(page, "Make the board's highlights orange.");
