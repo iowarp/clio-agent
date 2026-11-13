@@ -13,9 +13,11 @@ import tempfile
 import time
 import zipfile
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING
 
 import zstandard
@@ -466,6 +468,83 @@ def build_profile_starter(executable_path: Path, archive: Path) -> int:
         return len(members)
 
 
+#: Code a first start loads, the fonts it registers and the configuration it reads.
+_STARTUP_CODE_SUFFIXES = frozenset({".dll", ".exe", ".com", ".pyd"})
+_STARTUP_SUFFIXES = _STARTUP_CODE_SUFFIXES | {".ttf", ".otf", ".xcd", ".rdb", ".res", ".ini"}
+_SCAN_AHEAD_WORKERS = 8
+
+
+def _scan_order(install: Path) -> list[str]:
+    """The image's start-up files, its code first and each kind largest first."""
+    found: list[tuple[bool, int, str]] = []
+    pending = [str(install)]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(entry.path)
+                        continue
+                    suffix = os.path.splitext(entry.name)[1].lower()
+                    if suffix in _STARTUP_SUFFIXES:
+                        size = entry.stat(follow_symlinks=False).st_size
+                        found.append((suffix not in _STARTUP_CODE_SUFFIXES, -size, entry.path))
+        except OSError:
+            continue
+    return [path for *_, path in sorted(found)]
+
+
+def _open_once(path: str) -> None:
+    try:
+        with open(path, "rb") as handle:
+            handle.read(1)
+    except OSError:
+        pass
+
+
+@contextmanager
+def _scanning_ahead(install: Path) -> Iterator[None]:
+    """Open a fresh Office image's start-up files in parallel while its first start runs.
+
+    An on-access scanner (Windows Defender) scans a freshly written file the first time
+    anything opens it. A first start loads about 150 libraries and registers its fonts
+    one at a time, each waiting for its scan; opened here, they are scanned on several
+    cores ahead of it. Opens not yet started are dropped when the start ends.
+    """
+    if platform.system() != "Windows":
+        yield
+        return
+    stop = Event()
+    taking = Lock()
+    files: Iterator[str] | None = None
+
+    def take() -> None:
+        nonlocal files
+        while not stop.is_set():
+            with taking:
+                if files is None:
+                    files = iter(_scan_order(install))
+                path = next(files, None)
+            if path is None:
+                return
+            _open_once(path)
+
+    workers = [
+        Thread(target=take, name=f"office-scan-ahead-{index}", daemon=True)
+        for index in range(_SCAN_AHEAD_WORKERS)
+    ]
+    for worker in workers:
+        worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        # Only opens already under way finish: no handle outlives the start, so the
+        # image can be published (renamed) right after it.
+        for worker in workers:
+            worker.join()
+
+
 def _verify_office(
     executable_path: Path,
     *,
@@ -514,16 +593,19 @@ def _verify_office(
                 arguments += ["--outdir", str(work), str(work / "seed.docx")]
             else:
                 arguments = ["--norestore", "--version"]
-            run(
-                [
-                    str(executable_path),
-                    f"-env:UserInstallation={profile.as_uri()}",
-                    "--headless",
-                    "--nologo",
-                    *arguments,
-                ],
-                cwd=cwd,
-            )
+            # A seeding start is this build's first: its files may not have been scanned.
+            scanning = _scanning_ahead(executable_path.parent.parent) if seed else nullcontext()
+            with scanning:
+                run(
+                    [
+                        str(executable_path),
+                        f"-env:UserInstallation={profile.as_uri()}",
+                        "--headless",
+                        "--nologo",
+                        *arguments,
+                    ],
+                    cwd=cwd,
+                )
             if profile_templates is not None:
                 _publish_profile(work, profile_templates / key)
         finally:

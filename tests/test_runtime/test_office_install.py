@@ -675,3 +675,27 @@ def test_windows_only_prunes_leave_other_layouts_alone(
     monkeypatch.setattr(office.platform, "system", lambda: "Windows")
     assert all(office.unread(PurePath(name)) for name in names)
     assert office.prune_unread(image) == len(names)
+
+
+def test_first_start_scan_ahead_lists_startup_files_code_first(tmp_path: Path) -> None:
+    program = tmp_path / "program"
+    fonts = tmp_path / "share" / "fonts"
+    program.mkdir(parents=True)
+    fonts.mkdir(parents=True)
+    (program / "small.dll").write_bytes(b"x")
+    (program / "big.DLL").write_bytes(b"x" * 10)
+    (program / "soffice.com").write_bytes(b"x" * 5)
+    (program / "fundamental.ini").write_bytes(b"x" * 20)
+    (fonts / "font.ttf").write_bytes(b"x" * 30)
+    (program / "dialog.ui").write_bytes(b"x" * 40)
+    order = [Path(path).name for path in office._scan_order(tmp_path)]
+    assert order == ["big.DLL", "soffice.com", "small.dll", "font.ttf", "fundamental.ini"]
+
+
+def test_first_start_scan_ahead_stays_off_other_platforms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(office.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(office, "_scan_order", lambda _install: pytest.fail("scanned"))
+    with office._scanning_ahead(tmp_path):
+        pass
