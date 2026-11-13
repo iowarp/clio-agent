@@ -283,6 +283,9 @@ def apply_disclosure(
     object.__setattr__(program, "_clio_disclosed_tools", frozenset(tools))
     object.__setattr__(program, "_clio_loaded_listed", frozenset(loaded))
     object.__setattr__(program, "_clio_owner_servers", servers)
+    from clio_agent.gact.mcp_app_tools import attach_app_tools  # noqa: PLC0415
+
+    attach_app_tools(program)  # the session's view tools: deferred, owned by their server
     return disclosure.entry
 
 
@@ -301,11 +304,13 @@ def sync_deferred_catalog(program: Any) -> list[str]:
     which remain.
     """
     from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+    from clio_agent.gact.mcp_app_tools import APP_TOOL_PREFIX, place_app_tools  # noqa: PLC0415
 
+    app_added = place_app_tools(program)  # a view's tools follow its list (MA12)
     deferred_servers = frozenset(getattr(program, "_clio_deferred_servers", ()) or ())
     catalog: ToolCatalog | None = getattr(program, "_clio_deferred_catalog", None)
     if not deferred_servers or catalog is None:
-        return []
+        return app_added
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
     servers = deferred_servers | frozenset(getattr(program, "_clio_owner_servers", ()) or ())
     known: frozenset[str] | None = getattr(program, "_clio_disclosed_tools", None)
@@ -315,6 +320,8 @@ def sync_deferred_catalog(program: Any) -> list[str]:
     added = []
     for name, tool in tools.items():
         if name in catalog or name in code_only or (known is not None and name in known):
+            continue
+        if name.startswith(APP_TOOL_PREFIX):
             continue
         if name in loaded or name in never or name.startswith(never_prefixes):
             continue
@@ -329,4 +336,4 @@ def sync_deferred_catalog(program: Any) -> list[str]:
     if added:
         unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset()))
         object.__setattr__(program, "_clio_unlisted", unlisted | set(added))
-    return added
+    return [*app_added, *added]
