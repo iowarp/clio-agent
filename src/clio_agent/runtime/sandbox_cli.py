@@ -210,6 +210,28 @@ def _resolve_uv_tool_bin_dir() -> Optional[Path]:
     return Path.home() / ".local" / "bin"
 
 
+def _uv_tool_python_home(environment: Path) -> Optional[Path]:
+    """The base interpreter folder of a uv tool environment (its ``pyvenv.cfg`` ``home``)."""
+    try:
+        lines = (environment / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "home" and value.strip():
+            return Path(value.strip())
+    return None
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.abspath(path)).startswith(
+            os.path.normcase(os.path.abspath(root)) + os.sep
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     """Resolve the Windows fleet-runtime ``(label, path, inherit)`` specs the grant plan covers.
 
@@ -244,8 +266,14 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     bin_dir = _resolve_uv_tool_bin_dir()
     if bin_dir is not None:
         specs.append(("uv_tool_bin", str(bin_dir), True))
-    specs.append(("uv_tools", os.environ.get("UV_TOOL_DIR") or str(roaming / "uv" / "tools"), True))
-    specs.append(("uv_python", str(roaming / "uv" / "python"), True))
+    tools = os.environ.get("UV_TOOL_DIR") or str(roaming / "uv" / "tools")
+    specs.append(("uv_tools", tools, True))
+    uv_python = roaming / "uv" / "python"
+    specs.append(("uv_python", str(uv_python), True))
+    # install.ps1 keeps the Python of a clio-kit it owns inside the CLIO prefix.
+    kit_python = _uv_tool_python_home(Path(tools) / _CLIO_KIT_LAUNCHER)
+    if kit_python is not None and not _is_within(kit_python, uv_python):
+        specs.append(("clio_kit_python", str(kit_python), True))
     specs.append(("clio_kit_cache", str(home / ".cache" / "clio-kit"), True))
     specs.append(("user_temp", str(local / "Temp"), False))
     return specs
