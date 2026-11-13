@@ -25,6 +25,7 @@ from filelock import FileLock
 from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
 from clio_agent.runtime.document_stack.node_paths import node_path
+from clio_agent.runtime.document_stack.npm_package import managed_npm
 from clio_agent.runtime.document_stack.npm_package import unpack_package as _unpack_package
 from clio_agent.runtime.document_stack.process import (
     DocumentCancelled,
@@ -405,7 +406,10 @@ def _prepared_pnpm(
     node_root = Path(node).parent
     if node_root.name == "bin":
         node_root = node_root.parent
-    npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    try:
+        npm = managed_npm(node_root)
+    except (OSError, tarfile.TarError) as exc:
+        raise DocumentRuntimeError(f"Managed Node.js could not lay out npm: {exc}") from exc
     if not npm.is_file():
         raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
     if progress is not None:

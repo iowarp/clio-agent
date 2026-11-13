@@ -7,9 +7,10 @@ and ``lay_office.py``:
 * the document environment's test suites (``tests`` and ``test`` directories, about
   3,400 files, mostly pandas and numpy) and type stubs, which only pytest and type
   checkers read. ``testing`` modules stay: libraries import ``numpy.testing``;
-* npm's own documentation, man pages and tests inside ``nodejs_wheel``, and corepack,
-  which nothing runs. npm itself stays: the Obsidian client installs with ``npm ci``
-  (node-gyp included) and pnpm falls back to npm;
+* npm's own documentation, man pages, tests and test snapshots inside ``nodejs_wheel``,
+  and corepack, which nothing runs. npm itself stays, as one ``npm.tar`` beside where it
+  was: only the Obsidian client's ``npm ci`` (node-gyp included) and the pnpm fallback
+  run it, and they lay it out first (``document_stack/npm_package.managed_npm``);
 * C build inputs: headers, Cython sources and import libraries that only a compiler
   reads (``pymupdf/mupdf-devel``, lxml and numpy includes). cffi keeps its headers,
   which it reads when it compiles at run time;
@@ -27,10 +28,12 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 TEST_DIRECTORIES = frozenset({"tests", "test"})
-NPM_UNREAD = ("docs", "man", "test")
+NPM_UNREAD = ("docs", "man", "test", "tap-snapshots")
+NPM_ARCHIVE = "npm.tar"  # document_stack/npm_package.NPM_ARCHIVE
 BUILD_ONLY_SUFFIXES = frozenset({".h", ".hpp", ".c", ".cpp", ".pxd", ".pyx"})
 BUILD_ONLY_DIRECTORIES = ("pymupdf/mupdf-devel", "numpy/_core/include")
 RUNTIME_COMPILERS = frozenset({"cffi"})
@@ -69,6 +72,15 @@ def prune_node_packages(node_modules: Path) -> int:
     return removed
 
 
+def pack_npm(npm: Path) -> int:
+    """Replace npm's tree with one uncompressed tar; returns the files that leaves out."""
+    files = sum(1 for item in npm.rglob("*") if item.is_file())
+    with tarfile.open(npm.parent / NPM_ARCHIVE, "w", format=tarfile.PAX_FORMAT) as archive:
+        archive.add(npm, arcname="npm")
+    shutil.rmtree(npm)
+    return files - 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--runtime", type=Path, required=True)
@@ -93,9 +105,10 @@ def main() -> int:
     removed += _remove(npm.parent / "corepack")
     removed += prune_build_inputs(site)
     removed += prune_node_packages(npm.parent)
+    removed += pack_npm(npm)
     if (documents / "node_modules").is_dir():
         removed += prune_node_packages(documents / "node_modules")
-    print(f"[prune-documents] removed {removed} unread files", flush=True)
+    print(f"[prune-documents] removed {removed} files (npm packed as {NPM_ARCHIVE})", flush=True)
     return 0
 
 
