@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from clio_agent.errors import CancellationError
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_app_calls import REOPEN_REASONS, SESSION_KEY
 from clio_agent.gact.mcp_apps import MCPAppRegistry
@@ -131,7 +132,13 @@ def test_every_failure_is_a_typed_reason_with_the_saved_call(tmp_path: Path) -> 
         assert denied["error"]["reason"] == "permission_denied"
         assert "denied by permission gate" in denied["error"]["detail"]
 
-        for outcome in (missing, no_view, errored, denied):
+        # A view's call outside a turn whose request went away (view_call_cancel).
+        executor.fail = CancellationError("tool call cancelled by client")
+        cancelled = _open(client, sid, server="clock", tool="open_timeline")
+        assert cancelled["error"]["reason"] == "call_cancelled"
+        assert cancelled["saved_call"]["tool"] == "open_timeline"
+
+        for outcome in (missing, no_view, errored, denied, cancelled):
             assert outcome["error"]["reason"] in REOPEN_REASONS
 
 

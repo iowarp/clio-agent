@@ -406,6 +406,7 @@ class ExternalTasks:
                 stopped = True
                 if rpc.cancelled():
                     raise
+                await external_task_connections.abandon_view_call(self, host, handle, rpc, lazy)
             except Exception as error:
                 logger.exception(
                     "Task boundary reason=external_submission_failed error_type=%s",
@@ -448,7 +449,7 @@ class ExternalTasks:
                         "retry_safe": False,
                     }
                 )
-        accepted = any(call.submission.handle == handle for call in host.calls.values()) or (
+        accepted = external_task_connections.accepted_call(host, handle) or (
             lazy is None
             and (await self.history.io.run(self.history.task_snapshot, handle)).backend is not None
         )

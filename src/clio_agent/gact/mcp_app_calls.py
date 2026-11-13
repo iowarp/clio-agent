@@ -34,6 +34,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.errors import CancellationError
 from clio_agent.gact.mcp_apps import (
     DISPLAY_MODES,
     MCP_APP_MIME_TYPE,
@@ -67,6 +68,7 @@ REOPEN_REASONS: dict[str, str] = {
     "tool_has_no_view": "The saved tool no longer opens a view.",
     "permission_denied": "The call was not allowed by this conversation's permission rules.",
     "call_failed": "The call could not be completed.",
+    "call_cancelled": "The call was cancelled before the service answered.",
     "tool_error": "The service returned an error.",
     "view_not_opened": "The call succeeded but its result did not open a view.",
 }
@@ -296,7 +298,9 @@ def _part(record: MCPAppRecord, display_mode: str) -> dict[str, Any]:
     ).to_wire()
 
 
-async def reopen_saved_call(app: FastAPI, sid: str, app_instance_id: str) -> dict[str, Any]:
+async def reopen_saved_call(
+    app: FastAPI, sid: str, app_instance_id: str, *, request: Request | None = None
+) -> dict[str, Any]:
     """Replay one saved opening call (MA19).
 
     Returns ``{part, saved_call}`` with a fresh ``mcp_app`` part, or
@@ -304,7 +308,11 @@ async def reopen_saved_call(app: FastAPI, sid: str, app_instance_id: str) -> dic
     """
 
     return await replay_call(
-        app, sid, saved_call(app, sid, app_instance_id), reopened_from=app_instance_id
+        app,
+        sid,
+        saved_call(app, sid, app_instance_id),
+        reopened_from=app_instance_id,
+        request=request,
     )
 
 
@@ -354,6 +362,7 @@ async def replay_call(
     *,
     reopened_from: str,
     save: bool = True,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """Call one opening call through the gated executor path and admit its view.
 
@@ -364,6 +373,7 @@ async def replay_call(
     the surface keeps it, and saving it on every mount would grow the session.
     Every answer that opens a view lists ``server_tools``, the server's tools the
     view may call, so a surface can tell a server tool from one of the view's own.
+    The call is bound to ``request``: it is cancelled when the request goes away.
     """
 
     def failed(reason: str, detail: str = "") -> dict[str, Any]:
@@ -395,9 +405,11 @@ async def replay_call(
             _REPLAY.reset(token)
 
     try:
-        result = await _run_bound(app, sid, replay)
+        result = await _run_bound(app, sid, replay, request=request)
     except ReopenFailure as exc:
         return failed(exc.reason, exc.detail)
+    except CancellationError:
+        return failed("call_cancelled")
     except PermissionError as exc:
         return failed("permission_denied", str(exc) or REOPEN_REASONS["permission_denied"])
     except Exception as exc:  # noqa: BLE001 - forwards: the typed reason the card shows
@@ -472,11 +484,11 @@ def register_mcp_app_reopen_routes(app: FastAPI) -> None:
                 entry = call_entry(call)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            return await replay_call(app, sid, entry, reopened_from="", save=save)
+            return await replay_call(app, sid, entry, reopened_from="", save=save, request=request)
         app_instance_id = str(body.get("app_instance_id") or "").strip()
         if not app_instance_id:
             raise HTTPException(status_code=422, detail="app_instance_id or call is required")
-        return await reopen_saved_call(app, sid, app_instance_id)
+        return await reopen_saved_call(app, sid, app_instance_id, request=request)
 
 
 __all__ = [
