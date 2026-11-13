@@ -48,6 +48,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from clio_agent.gact.auth import has_valid_bearer
 from clio_agent.gact.cors import gact_allowed_hosts, gact_cors_origins
+from clio_agent.gact.mcp_app_service_declaration import is_service_path
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,10 @@ def trust_refusal(scope: Scope) -> TrustRefusal | None:
         return TrustRefusal("host_not_allowed", f"host={headers.get('host')!r}")
     method = "GET" if scope["type"] == "websocket" else str(scope.get("method") or "").upper()
     if method not in STATE_CHANGING_METHODS:
+        return None
+    if is_service_path(str(scope.get("path") or "")):
+        # An app's service route (MA23) is bound by the capability in its path, and
+        # its sandboxed view sends ``Origin: null``; the capability is the guard.
         return None
     origin = headers.get("origin")
     fetch_site = headers.get("sec-fetch-site", "").lower()

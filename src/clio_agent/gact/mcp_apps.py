@@ -37,6 +37,10 @@ from clio_agent.gact.mcp_app_sandbox import (
     _safe_sources,
     _sandbox_url,
 )
+from clio_agent.gact.mcp_app_service_declaration import (
+    ViewService,
+    split_service_declaration,
+)
 from clio_agent.gact.runtime.globals import (
     _gact_app_context,
     _resolve_tool_session,
@@ -222,6 +226,7 @@ class MCPAppRecord:
     model_context: dict[str, Any] = field(default_factory=dict)
     model_context_digest: str = ""
     model_context_bytes: int = 0
+    service: ViewService | None = None  # MA23: taken off tool_result at admission
 
 
 class MCPAppAdmissionError(RuntimeError):
@@ -254,6 +259,7 @@ class MCPAppRegistry:
         """Store one private result after enforcing size and count bounds."""
 
         namespace = source_namespace.strip() if isinstance(source_namespace, str) else ""
+        tool_result, service = split_service_declaration(tool_result)
         encoded = json.dumps(tool_result, sort_keys=True, default=str).encode("utf-8")
         record = MCPAppRecord(
             app_instance_id=secrets.token_urlsafe(18),
@@ -265,6 +271,7 @@ class MCPAppRegistry:
             tool_input=dict(tool_input),
             tool_result=dict(tool_result),
             cleanup=_private_cleanup(tool_result),
+            service=service,
         )
         with self._lock:
             self._expire_locked()
@@ -602,6 +609,8 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
     the operator can retry instead of silently leaking the remote attachment.
     """
 
+    from clio_agent.gact.mcp_app_service import close_app_service  # noqa: PLC0415
+
     registry = _registry(app)
     failures: list[str] = []
     for record in registry.records_for_session(session_id):
@@ -611,6 +620,7 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
             failures.append(f"{record.app_instance_id}: {exc}")
         else:
             registry.remove(record.app_instance_id)
+            await close_app_service(app, record.app_instance_id)
     if failures:
         raise RuntimeError("; ".join(failures))
 
