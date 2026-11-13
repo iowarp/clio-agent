@@ -5,8 +5,8 @@
   <meta name="color-scheme" content="light dark">
   <title>Timeline</title>
   <style>
-    :root { font: 14px/1.5 system-ui, sans-serif; }
-    body { margin: 0; color: CanvasText; background: Canvas; }
+    :root { font: 14px/1.5 var(--font-sans, system-ui, sans-serif); }
+    body { margin: 0; color: var(--color-text-primary, CanvasText); background: var(--color-background-primary, Canvas); }
     main { display: grid; gap: 10px; padding: 16px; }
     h1, p { margin: 0; }
     h1 { font-size: 16px; }
@@ -14,11 +14,30 @@
     input[type=range] { width: 100%; }
     .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     button {
-      border: 1px solid ButtonBorder; border-radius: 8px; padding: 6px 10px;
-      color: ButtonText; background: ButtonFace; font: inherit;
+      border: 1px solid var(--color-border-secondary, ButtonBorder); border-radius: var(--border-radius-md, 8px); padding: 6px 10px;
+      color: var(--color-text-primary, ButtonText); background: var(--color-background-secondary, ButtonFace); font: inherit;
     }
-    [role=status] { color: GrayText; min-height: 21px; }
+    [role=status] { color: var(--color-text-secondary, GrayText); min-height: 21px; }
   </style>
+  <script>
+  // Host theming (MCP Apps "Theming"): the host's theme and standardized CSS
+  // variables, applied on ui/initialize and on every host-context-changed.
+  (() => {
+    const apply = (context) => {
+      if (!context) return;
+      if (context.theme) document.documentElement.style.colorScheme = context.theme;
+      for (const [name, value] of Object.entries(context.styles?.variables ?? {})) {
+        if (name.startsWith('--')) document.documentElement.style.setProperty(name, String(value));
+      }
+    };
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || data.jsonrpc !== '2.0') return;
+      if (data.result && data.result.hostContext) apply(data.result.hostContext);
+      if (data.method === 'ui/notifications/host-context-changed') apply(data.params);
+    });
+  })();
+  </script>
 </head>
 <body>
   <main>
