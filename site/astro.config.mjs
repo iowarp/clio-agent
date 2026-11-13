@@ -104,6 +104,7 @@ export default defineConfig({
 						},
 						{ label: 'Answer a question', slug: 'docs/questions' },
 						{ label: 'Use the browser', slug: 'docs/browser' },
+						{ label: 'Apps', slug: 'docs/apps' },
 						{ label: 'Scripts and background work', slug: 'docs/scripts' },
 						{ label: 'Watch something live', slug: 'docs/live-sources' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
@@ -157,6 +158,7 @@ export default defineConfig({
 					label: 'Customize CLIO',
 					collapsed: true,
 					items: [
+						{ label: 'Connectors', slug: 'docs/connectors' },
 						{ label: 'Agents and plugins', slug: 'docs/agents-and-plugins' },
 						{ label: 'Extensions preview', slug: 'docs/extensions' },
 						{ label: 'Plugin marketplaces', slug: 'docs/marketplaces' },
@@ -175,6 +177,7 @@ export default defineConfig({
 						{ label: 'Workflows as data', slug: 'docs/sdk/workflows' },
 						{ label: "What's available", slug: 'docs/sdk/available' },
 						{ label: 'Plugin reference', slug: 'docs/sdk/plugins' },
+						{ label: 'Connectors and apps', slug: 'docs/sdk/connectors' },
 						{ label: 'Agent reference', slug: 'docs/sdk/agents' },
 						{ label: 'SDK reference', slug: 'docs/sdk/reference' },
 					],
