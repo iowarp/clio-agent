@@ -551,6 +551,7 @@ def _verify_office(
     cwd: Path,
     profile_templates: Path | None = None,
     profile_starter: Path | None = None,
+    scan_ahead: Path | None = None,
 ) -> None:
     """Probe without joining another Office instance or touching the user's profile.
 
@@ -560,6 +561,8 @@ def _verify_office(
     which every later conversion copies instead of rebuilding. A build that already
     has its seeded profile has converted successfully and is not probed again.
     ``profile_starter`` is the profile archive laid out with this Office image.
+    ``scan_ahead`` is the root of an Office image CLIO laid out itself, whose seeding
+    start opens its start-up files ahead (``_scanning_ahead``).
     """
     # A first launch can be slow: Windows checks thousands of freshly installed files and
     # macOS assesses the freshly copied app once. The probe waits for Office to answer, so
@@ -594,7 +597,9 @@ def _verify_office(
             else:
                 arguments = ["--norestore", "--version"]
             # A seeding start is this build's first: its files may not have been scanned.
-            scanning = _scanning_ahead(executable_path.parent.parent) if seed else nullcontext()
+            scanning = (
+                _scanning_ahead(scan_ahead) if seed and scan_ahead is not None else nullcontext()
+            )
             with scanning:
                 run(
                     [
@@ -698,7 +703,7 @@ def _finish_image(image: Path, root: Path, profile_templates: Path | None) -> No
         candidate = executable(image)
         if candidate is None:
             raise DocumentError("LibreOffice image contains no supported executable")
-        _verify_office(candidate, cwd=image, profile_templates=profile_templates)
+        _verify_office(candidate, cwd=image, profile_templates=profile_templates, scan_ahead=image)
         _publish_image(image, root)
     except (OSError, ValueError, tarfile.TarError) as exc:
         raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
@@ -787,6 +792,7 @@ def ensure_office(
                 cwd=root,
                 profile_templates=profile_templates,
                 profile_starter=profile_starter,
+                scan_ahead=root,
             )
             _lap(timings, "office_seed", started)
             return str(existing)
