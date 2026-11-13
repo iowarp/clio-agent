@@ -269,9 +269,11 @@ def register_connected_storage_routes(app: FastAPI) -> None:
         """Discover revisions without granting workspace access or writing a source."""
         return await run(lambda: github_revisions(service, body.url, body.kind, body.page))
 
+    from clio_agent.gact.routes.source_ranges import register_source_range_routes
     from clio_agent.gact.routes.storage_accounts import register_storage_account_routes
 
     register_storage_account_routes(app, service, run, change_access, start_browser_auth)
+    register_source_range_routes(app)
 
     @app.get("/v1/storage/globus-destination")
     async def globus_destination() -> dict[str, object]:

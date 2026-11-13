@@ -28,6 +28,7 @@ from clio_agent import conf
 DEFAULT_PORT = 17800
 PORT_KEY = "gact.port"
 PORT_ENV = "CLIO_PORT"
+_CLAIMED: int | None = None
 
 
 def configured_port() -> int:
@@ -47,9 +48,16 @@ def claim_api_port(port: int | None) -> int:
     RPC port, both in this process (the client) and in the daemon it spawns. Once the API
     port is resolved it must not leak there (the ``clio`` launcher unsets it likewise).
     """
+    global _CLAIMED
     resolved = configured_port() if port is None else port
     os.environ.pop(PORT_ENV, None)
+    _CLAIMED = resolved
     return resolved
+
+
+def claimed_port() -> int | None:
+    """The API port this process's server claimed, or ``None`` before one did."""
+    return _CLAIMED
 
 
 def main() -> None:

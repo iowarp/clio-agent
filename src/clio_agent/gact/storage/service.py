@@ -13,6 +13,7 @@ from typing import Callable, Iterator, Literal
 
 from clio_schemas.connected_resources import ConnectedSource, ResourceOwner, SourceCapabilities
 
+from clio_agent.gact.storage import s3_keys
 from clio_agent.gact.storage.adapters import LocalSource, SourceAdapter
 from clio_agent.gact.storage.auth import StorageAuth
 from clio_agent.gact.storage.drive import DriveSource, drive_folder_id
@@ -246,7 +247,7 @@ class StorageService:
         )
         if body.provider == "s3":
             if body.s3_credentials is not None:
-                self.auth.save_s3_credentials(record, body.s3_credentials)
+                s3_keys.save(self.auth, record, body.s3_credentials)
             self._check_s3(record)
         if body.provider == "sftp" and body.configuration.target_id:
             if self.target_source is None:
@@ -410,7 +411,7 @@ class StorageService:
             from clio_agent.gact.storage.s3_source import S3Folder, S3Location, s3_client
 
             adapter = S3Folder(
-                s3_client(record.configuration, self.auth.s3_keys(record)),
+                s3_client(record.configuration, s3_keys.keys(self.auth, record)),
                 S3Location.parse(source.root),
             )
         elif source.provider == "globus":
@@ -562,7 +563,7 @@ class StorageService:
         from clio_agent.gact.storage.s3_source import S3Location, s3_client
 
         location = S3Location.parse(record.source.root)
-        client = s3_client(record.configuration, self.auth.s3_keys(record))
+        client = s3_client(record.configuration, s3_keys.keys(self.auth, record))
         try:
             client.list_objects_v2(Bucket=location.bucket, Prefix=location.prefix + "/", MaxKeys=1)
         except Exception as exc:

@@ -426,16 +426,23 @@ def supplied_server_values(
     ``${CLIO_PROVENANCE_CONFIG}`` writes the provenance handoff for the
     session's workspace. An incomplete handoff is traced, not hidden; the
     server reads the problems from the file it was given.
+    ``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback prefix of the byte-range route.
     """
 
     from clio_agent.plugins.servers import (  # noqa: PLC0415
         PROVENANCE_CONFIG_VAR,
+        RANGE_ORIGIN_VAR,
         references_variable,
     )
 
     specs = {name: row.get("spec") for name, row in mcp_servers.items()}
+    values: dict[str, str] = {}
+    if references_variable(specs, RANGE_ORIGIN_VAR):
+        from clio_agent.gact.storage.range_handles import range_origin  # noqa: PLC0415
+
+        values[RANGE_ORIGIN_VAR] = range_origin(app)
     if not references_variable(specs, PROVENANCE_CONFIG_VAR):
-        return {}
+        return values
     from clio_agent.gact.provenance.handoff import write_provenance_handoff  # noqa: PLC0415
     from clio_agent.runtime import trace  # noqa: PLC0415
 
@@ -447,7 +454,8 @@ def supplied_server_values(
             path,
             ",".join(problem.code for problem in handoff.problems),
         )
-    return {PROVENANCE_CONFIG_VAR: str(path)}
+    values[PROVENANCE_CONFIG_VAR] = str(path)
+    return values
 
 
 def session_server_set(app: Any, session_id: str) -> str:

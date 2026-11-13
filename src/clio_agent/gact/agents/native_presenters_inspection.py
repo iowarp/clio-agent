@@ -446,6 +446,21 @@ def source_opened(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, 
         or "Connected folder"
     )
     blocks = [_text("source-path", path, path)]
+    if row.get("handle"):  # range=true: read where it lives, nothing fetched
+        size = row.get("size")
+        blocks.append(
+            _facts(
+                "range-handle",
+                "Byte-range access",
+                {
+                    "size": f"{size:,} bytes" if isinstance(size, int) else "unknown",
+                    "fetched": "nothing yet; reads move only the ranges they touch",
+                    "expires": f"in {int(row.get('expires_in_s') or 0) // 60} min",
+                },
+                {"size": "File size", "fetched": "Fetched", "expires": "Handle expires"},
+            )
+        )
+        return _view("Opened by byte range", blocks, row, subject="source")
     if row.get("resource_id"):
         name = str(row.get("name") or PureWindowsPath(path).name)
         blocks.append(_link("resource", "resource", row["resource_id"], name))

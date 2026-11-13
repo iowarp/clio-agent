@@ -16,6 +16,9 @@ CLIO also supplies values a server can only get from the running client:
 provenance configuration, for servers that query the stores CLIO writes. It is
 materialized only when a declaration references it; an unsupplied reference is
 left in place so the generic ``${VAR}`` expansion reports it as unset.
+``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback URL prefix under which CLIO serves
+byte ranges of linked-source files (``connected_data_open`` with ``range``), so a
+server accepts those URLs and no other remote address.
 """
 
 from __future__ import annotations
@@ -29,7 +32,8 @@ from pathlib import Path
 from typing import Any
 
 PROVENANCE_CONFIG_VAR = "CLIO_PROVENANCE_CONFIG"
-CLIO_SUPPLIED_VARIABLES = (PROVENANCE_CONFIG_VAR,)
+RANGE_ORIGIN_VAR = "CLIO_SOURCE_RANGE_ORIGIN"
+CLIO_SUPPLIED_VARIABLES = (PROVENANCE_CONFIG_VAR, RANGE_ORIGIN_VAR)
 _SUPPLIED = re.compile(r"\$\{(" + "|".join(CLIO_SUPPLIED_VARIABLES) + r")(?::-[^}]*)?\}")
 
 _LOCK = threading.Lock()

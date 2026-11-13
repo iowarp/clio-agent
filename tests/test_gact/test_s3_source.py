@@ -12,6 +12,7 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.stub import Stubber
 
+from clio_agent.gact.storage import s3_keys
 from clio_agent.gact.storage.models import CreateSource, FileEntry, SourceConfiguration
 from clio_agent.gact.storage.s3_source import (
     SOURCE_REVISION_CHANGED,
@@ -154,11 +155,11 @@ def test_keys_are_stored_host_side_bound_to_their_source(tmp_path: Path) -> None
     record = service.create("ws", body)
     assert checked == ["bucket/prefix"] and record.source.mode == "read_only"
     assert service.auth.connected(record)
-    assert service.auth.s3_keys(record) == ("AKIAEXAMPLE", "s3cr3t")
+    assert s3_keys.keys(service.auth, record) == ("AKIAEXAMPLE", "s3cr3t")
     assert "s3cr3t" not in record.model_dump_json()
     service.auth.disconnect(record.source.id)
     with pytest.raises(PermissionError):
-        service.auth.s3_keys(record)
+        s3_keys.keys(service.auth, record)
     with pytest.raises(ValueError, match="access key"):
         service.create(
             "ws",
