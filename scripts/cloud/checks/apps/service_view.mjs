@@ -34,6 +34,19 @@ async function sendMessage(page, text) {
   await page.keyboard.press("Enter");
 }
 
+// Wait for a new app frame, allowing the fixture's tool for this conversation when
+// CLIO asks (the session's permission rules apply to the call).
+async function waitForFrame(page, frame) {
+  const deadline = Date.now() + 240000;
+  while (Date.now() < deadline) {
+    if (await frame.count()) return;
+    const allow = page.getByRole("button", { name: /This session/ });
+    if (await allow.count()) await allow.first().click().catch(() => undefined);
+    await page.waitForTimeout(1000);
+  }
+  throw new Error("no app frame appeared");
+}
+
 async function viewFrames(page, appId) {
   const outer = page.frameLocator(`[data-mcp-app-iframe="${appId}"]`);
   const view = outer.frameLocator("iframe");
@@ -76,10 +89,15 @@ export default async function (page, shot) {
     socket.on("framereceived", (frame) => check(`frame received ${url}`, String(frame.payload)));
   });
 
-  // AQ30: open the view and use it.
+  // AQ30: open the view and use it, in a new conversation.
+  await page.getByText("Loading workspace").waitFor({ state: "hidden", timeout: 180000 });
+  const fresh = page.getByText("New conversation", { exact: true }).filter({ visible: true }).first();
+  await fresh.waitFor({ state: "visible", timeout: 180000 });
+  await fresh.click();
+  await page.waitForTimeout(1500);
   await sendMessage(page, prompt);
   const firstFrame = page.locator("[data-mcp-app-iframe]").first();
-  await firstFrame.waitFor({ timeout: 240000 });
+  await waitForFrame(page, firstFrame);
   const firstId = await firstFrame.getAttribute("data-mcp-app-iframe");
   const first = identity(await firstFrame.getAttribute("src"), firstId);
   const { view, servicePage } = await viewFrames(page, firstId);
@@ -118,7 +136,7 @@ export default async function (page, shot) {
 
   await sendMessage(page, again);
   const secondFrame = page.locator(`[data-mcp-app-iframe]:not([data-mcp-app-iframe="${firstId}"])`).first();
-  await secondFrame.waitFor({ timeout: 240000 });
+  await waitForFrame(page, secondFrame);
   const secondId = await secondFrame.getAttribute("data-mcp-app-iframe");
   const second = identity(await secondFrame.getAttribute("src"), secondId);
   const crossed = await fetch(`${base(first, second.dataRef)}/state`);
