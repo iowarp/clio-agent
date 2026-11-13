@@ -1,21 +1,240 @@
-"""Portable, bounded subprocess and native document-tool discovery."""
+"""Portable, cancellable subprocess and native document-tool discovery."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentError(RuntimeError):
     """A document operation failed without producing verified output."""
+
+
+class DocumentCancelled(DocumentError):
+    """The person or the turn stopped a document operation; its process tree was killed."""
+
+
+#: A document job runs until it exits or someone stops it. While it runs, the
+#: watcher is told how long it has been going: first after this many seconds,
+#: then every ``HEARTBEAT_EVERY_S``.
+HEARTBEAT_FIRST_S = 10.0
+HEARTBEAT_EVERY_S = 15.0
+#: A job whose process tree has used no CPU for this long is reported as stalled
+#: (still running, never killed for it): the person sees it and can stop it.
+STALL_IDLE_S = 30.0
+#: CPU seconds of the whole tree below which a sample counts as no work.
+_STALL_CPU_EPSILON_S = 0.05
+_STALL_SAMPLE_S = 2.0
+_POLL_S = 0.25
+
+#: ``heartbeat(elapsed_s, stalled_s)``: ``stalled_s`` is how long the job has done no
+#: work, or ``None`` while it is working (or its work cannot be measured).
+Heartbeat = Callable[[float, float | None], None]
+
+_WATCH: ContextVar[tuple[Callable[[], bool] | None, Heartbeat | None]] = ContextVar(
+    "clio_document_watch", default=(None, None)
+)
+
+
+def stall_message(name: str, stalled_s: float) -> str:
+    """Say plainly that a job is stuck, with the likely cause on this platform."""
+    hint = ""
+    if sys.platform == "darwin":
+        hint = (
+            " On macOS a sandbox denial can leave LibreOffice waiting on its pipe"
+            " without ever exiting."
+        )
+    return (
+        f"{name} has done no work for {stalled_s:.0f} s and may be stuck.{hint}"
+        " Stop the turn to cancel it."
+    )
+
+
+class _WorkMeter:
+    """Seconds since ``process``'s tree last used CPU; ``None`` when it cannot be measured.
+
+    A tree containing a process this user may not inspect (a sandbox account's worker)
+    is never called stalled on partial evidence.
+    """
+
+    def __init__(self, process: subprocess.Popen[Any]) -> None:
+        self._pid = process.pid
+        self._cpu: float | None = None
+        self._busy_at = time.monotonic()
+        self._sampled_at = 0.0
+        self._unknown = False
+
+    def stalled_s(self, now: float) -> float | None:
+        if self._unknown:
+            return None
+        if now - self._sampled_at >= _STALL_SAMPLE_S:
+            self._sampled_at = now
+            cpu = self._tree_cpu()
+            if cpu is None:
+                self._unknown = True
+                return None
+            if self._cpu is None or cpu - self._cpu > _STALL_CPU_EPSILON_S:
+                self._busy_at = now
+                self._cpu = cpu
+        idle = now - self._busy_at
+        return idle if idle >= STALL_IDLE_S else None
+
+    def _tree_cpu(self) -> float | None:
+        try:
+            import psutil
+        except ImportError:
+            return None
+        try:
+            root = psutil.Process(self._pid)
+            tree = [root, *root.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            return self._cpu
+        except psutil.Error:
+            return None
+        total = 0.0
+        for member in tree:
+            try:
+                times = member.cpu_times()
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.Error:
+                return None
+            total += times.user + times.system
+        return total
+
+
+@contextlib.contextmanager
+def watched(
+    cancelled: Callable[[], bool] | None = None,
+    heartbeat: Heartbeat | None = None,
+) -> Iterator[None]:
+    """Scope how document processes started below learn of a stop and report that they run.
+
+    ``cancelled`` is polled while a process runs; when it returns true the whole
+    process tree is killed and :class:`DocumentCancelled` is raised. ``heartbeat``
+    receives the elapsed seconds while a process is still running, and how long it
+    has done no work once it looks stalled (see :data:`Heartbeat`).
+    """
+    token = _WATCH.set((cancelled, heartbeat))
+    try:
+        yield
+    finally:
+        _WATCH.reset(token)
+
+
+def kill_tree(process: subprocess.Popen[Any]) -> None:
+    """Kill ``process`` and every descendant, then reap it."""
+    try:
+        import psutil
+
+        try:
+            children = psutil.Process(process.pid).children(recursive=True)
+        except psutil.Error:
+            children = []
+        for child in reversed(children):
+            try:
+                child.kill()
+            except psutil.Error:
+                pass
+    except ImportError:
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.communicate(timeout=30)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
+def wait_process(
+    process: subprocess.Popen[Any],
+    *,
+    name: str,
+    timeout: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    heartbeat: Heartbeat | None = None,
+) -> tuple[Any, Any]:
+    """Wait for ``process`` with no time limit unless ``timeout`` is given.
+
+    A stop from ``cancelled`` (or the :func:`watched` scope) kills the process
+    tree and raises :class:`DocumentCancelled`. ``timeout`` is for
+    infrastructure steps only; an agent's document job never sets it.
+
+    A job whose tree does no work for :data:`STALL_IDLE_S` (a sandboxed soffice
+    blocked on a denied pipe, say) is not killed: it is logged and reported to
+    ``heartbeat`` at once as stalled, and a stop then says it was stuck.
+    """
+    scoped_cancelled, scoped_heartbeat = _WATCH.get()
+    cancelled = cancelled or scoped_cancelled
+    heartbeat = heartbeat or scoped_heartbeat
+    started = time.monotonic()
+    next_beat = started + HEARTBEAT_FIRST_S
+    meter = _WorkMeter(process) if timeout is None else None
+    stalled: float | None = None
+    while True:
+        if cancelled is not None and cancelled():
+            kill_tree(process)
+            if stalled is not None:
+                raise DocumentCancelled(
+                    f"{name} was stopped after doing no work for {stalled:.0f} s (stuck); "
+                    "its processes were ended"
+                )
+            raise DocumentCancelled(f"{name} was stopped; its processes were ended")
+        now = time.monotonic()
+        if timeout is not None and now - started >= timeout:
+            kill_tree(process)
+            raise DocumentError(f"{name} exceeded {timeout:g} seconds")
+        wait = _POLL_S if timeout is None else max(0.0, min(_POLL_S, started + timeout - now))
+        try:
+            # Retrying communicate after TimeoutExpired loses no output.
+            return process.communicate(timeout=wait)
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.monotonic()
+        was_stalled = stalled is not None
+        stalled = meter.stalled_s(now) if meter is not None else None
+        if stalled is not None and not was_stalled:
+            logger.warning(
+                "reason=document_process_stalled name=%s pid=%s idle_s=%.0f elapsed_s=%.0f",
+                name,
+                process.pid,
+                stalled,
+                now - started,
+            )
+            next_beat = now
+        elif stalled is None and was_stalled:
+            logger.info("reason=document_process_resumed name=%s pid=%s", name, process.pid)
+            next_beat = now
+        if heartbeat is not None and now >= next_beat:
+            next_beat = now + HEARTBEAT_EVERY_S
+            try:
+                heartbeat(now - started, stalled)
+            except (RuntimeError, TimeoutError):
+                # The watcher's delivery failed (its loop is gone or busy); the job runs on.
+                logger.warning(
+                    "reason=document_heartbeat_failed name=%s pid=%s",
+                    name,
+                    process.pid,
+                    exc_info=True,
+                )
+            except BaseException:
+                kill_tree(process)
+                raise
 
 
 # LibreOffice reads user settings from <UserInstallation>/user, not the profile root.
@@ -120,16 +339,20 @@ def inherit_parent_access(path: Path) -> None:
 #: fs_search/fs_glob, and ``rg`` in a shell) honours ``.ignore`` files, so their
 #: contents stay out of searches for the user's files.
 SEARCH_IGNORE_MARKER = "# Written by CLIO: generated document machinery, not user files.\n# Keeps it out of searches.\n*\n"
+#: The same for git: the document toolchain leaves tens of MB of node_modules in
+#: the workspace, which ``git add -A`` in the person's project would otherwise stage.
+GIT_IGNORE_MARKER = "# Written by CLIO: generated document machinery, not user files.\n# Keeps it out of version control.\n*\n"
 
 
-def mark_search_ignored(directory: Path) -> None:
-    """Write a ``.ignore`` that hides ``directory``'s contents from ripgrep, if absent."""
-    marker = directory / ".ignore"
-    try:
-        if not marker.exists():
-            marker.write_text(SEARCH_IGNORE_MARKER, encoding="utf-8")
-    except OSError:
-        pass
+def mark_machinery_ignored(directory: Path) -> None:
+    """Hide ``directory``'s contents from ripgrep and git, writing each marker if absent."""
+    for name, text in ((".ignore", SEARCH_IGNORE_MARKER), (".gitignore", GIT_IGNORE_MARKER)):
+        marker = directory / name
+        try:
+            if not marker.exists():
+                marker.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def scratch_root(workspace: Path, *, create: bool = True) -> Path:
@@ -140,7 +363,7 @@ def scratch_root(workspace: Path, *, create: bool = True) -> Path:
         raise DocumentError("Document scratch storage escapes the active workspace")
     if create:
         root.mkdir(parents=True, exist_ok=True)
-        mark_search_ignored(root)
+        mark_machinery_ignored(root)
     return root
 
 
@@ -148,12 +371,16 @@ def run(
     command: list[str],
     *,
     cwd: Path,
-    timeout: float = 120.0,
+    timeout: float | None = None,
     env: dict[str, str] | None = None,
     windows_command_line: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    heartbeat: Heartbeat | None = None,
 ) -> str:
     """Run without a shell, allowing explicit Windows quoting for non-CRT parsers.
 
+    The command runs until it exits or is stopped (see :func:`wait_process`);
+    only infrastructure steps pass a ``timeout``.
     Children never write bytecode: LibreOffice's embedded Python would otherwise
     write ``.pyc`` into its application tree and break macOS's code-signature seal.
     """
@@ -179,23 +406,13 @@ def run(
         )
     except OSError as exc:
         raise DocumentError(f"Could not run {Path(command[0]).name}: {exc}") from exc
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        import psutil
-
-        try:
-            children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.NoSuchProcess:
-            children = []
-        for child in reversed(children):
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        process.kill()
-        process.communicate()
-        raise DocumentError(f"{Path(command[0]).name} exceeded {timeout:g} seconds") from exc
+    stdout, stderr = wait_process(
+        process,
+        name=Path(command[0]).name,
+        timeout=timeout,
+        cancelled=cancelled,
+        heartbeat=heartbeat,
+    )
     if process.returncode:
         detail = (stderr or stdout).strip()[-4000:]
         raise DocumentError(f"{Path(command[0]).name} exited {process.returncode}: {detail}")

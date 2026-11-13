@@ -404,13 +404,16 @@ class StepRecorder:
         thinking_source: str = "",
         thinking_complete: bool = True,
         refs: Mapping[str, str] | None = None,
+        media: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     ) -> None:
         """Write the step's segments and put ``react.step.completed`` on the highway.
 
         ``thinking_source`` labels the step's thinking (``provider_field`` /
         ``inline_tag``); an inline block the reply never closed is marked
         ``thinking_incomplete``. ``refs`` carries each call's ``call:`` reference,
-        which the observation keeps so the model sees it with the result.
+        which the observation keeps so the model sees it with the result. ``media``
+        is each call's viewed images/PDFs (a script's ``view_image`` calls,
+        :mod:`clio_agent.gact.model_media`), kept as descriptors the fold attaches.
         """
         from clio_agent.gact.agents.native_result_bound import recorded_observation  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _emit_react_step_event  # noqa: PLC0415
@@ -441,6 +444,11 @@ class StepRecorder:
                 "text": recorded_observation(call.name, value),
                 "is_error": is_error,
                 **({"call_ref": refs[call.id]} if refs and refs.get(call.id) else {}),
+                **(
+                    {"media": [dict(m) for m in media[call.id]]}
+                    if media and media.get(call.id)
+                    else {}
+                ),
                 **({"notification_ids": notification_ids} if notification_ids else {}),
                 **({"task_read_handles": read_handles} if read_handles else {}),
                 **({"task_observe_handles": observe_handles} if observe_handles else {}),

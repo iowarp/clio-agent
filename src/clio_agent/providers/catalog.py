@@ -178,6 +178,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="gemini",
+        fast_model_family="flash",
         label="Google Gemini",
         description="Gemini AI Studio models through LiteLLM.",
         provider_kind="openai",
@@ -300,6 +301,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="codex",
+        fast_model_family="codex-mini",
         billing="subscription",
         label="Codex",
         description=(
@@ -392,6 +394,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="copilot",
+        fast_model_family="haiku",
         billing="subscription",
         label="GitHub Copilot",
         description=(

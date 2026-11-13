@@ -1,7 +1,9 @@
 """The plugin tools page routes (``/v1/settings/tools``), TD54.
 
 ``GET /v1/settings/tools?ref=<marketplace>/<plugin>`` returns the plugin's tools with
-their flags, defaults, the person's saved rules and the outcome in each approval mode.
+their flags, defaults, the person's saved rules and the outcome in each approval mode;
+``GET /v1/settings/tools?server=<name>`` returns the same for one MCP server by name,
+for a server the person or a workspace configured rather than a plugin.
 ``PUT /v1/settings/tools`` saves the person's permission (a policy rule) and/or I/O
 (``tools.callers`` in the user ``config.yaml``) for one or more tools.
 ``POST /v1/settings/tools/rules/remove`` removes one saved rule.
@@ -25,7 +27,14 @@ def register_tool_settings_routes(app: FastAPI) -> None:
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415
 
     @app.get("/v1/settings/tools")
-    async def get_tool_settings(ref: str) -> dict[str, Any]:
+    async def get_tool_settings(ref: str = "", server: str = "") -> dict[str, Any]:
+        if bool(ref) == bool(server):
+            raise HTTPException(422, detail="Name either a plugin (ref) or an MCP server (server)")
+        if server:
+            try:
+                return await asyncio.to_thread(page.server_tools_view, app, server)
+            except ValueError as exc:
+                raise HTTPException(422, detail=str(exc)) from exc
         try:
             return await asyncio.to_thread(page.tools_view, app, ref)
         except StoreError as exc:

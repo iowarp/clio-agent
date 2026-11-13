@@ -6,13 +6,14 @@ import hashlib
 import io
 import logging
 import os
+import sys
 import tarfile
 import time
 from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 import zstandard
 
@@ -66,8 +67,12 @@ def expected_digest(candidate: Path) -> str:
     return digest if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest) else ""
 
 
-def _open_shared(path: Path) -> BinaryIO:
+def _open_shared(path: Path) -> io.FileIO:
     """Open ``path`` for reading without blocking the installer's rename or delete of it."""
+    if sys.platform != "win32":
+        # Unreachable (only the Windows unpack reads this way); narrows sys.platform so
+        # the type-checker admits the Windows-only ctypes/msvcrt API on other platforms.
+        raise OSError(f"shared-delete open is Windows-only: {path}")
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -106,10 +111,12 @@ class _GrowingDownload(io.RawIOBase):
         self._final = final
         self._partial = final.with_name(final.name + ".part")
         self._stall_s = stall_s
-        self._stream: BinaryIO | None = None
+        self._stream: io.FileIO | None = None
         self._read = 0
         self._changed = time.monotonic()
         self.hash = hashlib.sha256()
+        #: Seconds spent at the end of the bytes so far, waiting for the download.
+        self.waited = 0.0
 
     def readable(self) -> bool:
         return True
@@ -144,6 +151,7 @@ class _GrowingDownload(io.RawIOBase):
             if time.monotonic() - self._changed > self._stall_s:
                 raise OSError(f"the installer's download of {self._final.name} stalled")
             time.sleep(0.05)
+            self.waited += 0.05
 
     def close(self) -> None:
         if self._stream is not None:
@@ -197,26 +205,34 @@ def _unpack_parallel(contents: tarfile.TarFile, image: Path, max_unpacked: int) 
     return files
 
 
-def unpack_windows_tree(prepared: Path, image: Path, *, max_unpacked: int, stall_s: float) -> None:
-    """Unpack the Windows tree as it downloads; raise unless its bytes match the plan."""
+def unpack_windows_tree(prepared: Path, image: Path, *, max_unpacked: int, stall_s: float) -> float:
+    """Unpack the Windows tree as it downloads; raise unless its bytes match the plan.
+
+    Returns the seconds spent waiting for the download's next bytes.
+    """
     started = time.monotonic()
     expected = expected_digest(prepared)
     if not expected:
         raise DocumentError("Prepared Office tree has no SHA-256 from the install plan")
     with _GrowingDownload(prepared, stall_s) as raw:
         with (
-            zstandard.ZstdDecompressor().stream_reader(raw, closefd=False) as stream,
+            zstandard.ZstdDecompressor().stream_reader(
+                cast(BinaryIO, raw), closefd=False
+            ) as stream,
             tarfile.open(fileobj=stream, mode="r|") as contents,
         ):
             files = _unpack_parallel(contents, image, max_unpacked)
         while raw.read(1 << 20):
             pass
         actual = raw.hash.hexdigest()
+        waited = raw.waited
     if actual != expected:
         raise DocumentError(f"Prepared Office tree {prepared.name} does not match its SHA-256")
     logger.info(
-        "reason=office_prepared_tree_unpacked name=%s files=%d seconds=%.1f",
+        "reason=office_prepared_tree_unpacked name=%s files=%d seconds=%.1f waited=%.1f",
         prepared.name,
         files,
         time.monotonic() - started,
+        waited,
     )
+    return waited

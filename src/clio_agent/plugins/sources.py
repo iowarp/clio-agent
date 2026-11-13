@@ -18,11 +18,14 @@ import hashlib
 import logging
 import os
 import re
-import shutil
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from clio_agent.platform_paths import remove_tree, rename_extended
 from clio_agent.runtime.git_executable import GitUnavailableError, run_git
 
 
@@ -31,6 +34,9 @@ class SourceError(RuntimeError):
 
 
 logger = logging.getLogger(__name__)
+
+#: Seconds a fetch's staging folder is left alone, in case that fetch is still running.
+STAGING_GRACE_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,26 @@ def normalize_git_url(value: str) -> str:
 def is_local(value: str) -> bool:
     candidate = Path(value).expanduser()
     return candidate.exists()
+
+
+def cache_key(url: str, revision: str) -> str:
+    """The fetch cache folder name of ``url`` at ``revision`` (a commit or a ref)."""
+    return hashlib.sha256(f"{url}\0{revision}".encode()).hexdigest()[:20]
+
+
+def fetch_cache_names(entry: dict[str, Any]) -> set[str]:
+    """The fetch cache folders an installed marketplace ``entry``'s install filled (``fetch_cache``).
+
+    An entry installed before that was recorded names only its own checkout, derived
+    from its URL and revision the way :func:`fetch` keys it.
+    """
+    if "fetch_cache" in entry:
+        return {str(name) for name in entry.get("fetch_cache") or []}
+    url = str(entry.get("url") or "")
+    if not url:
+        return set()
+    revision = entry.get("commit", "") if entry.get("pinned") else entry.get("ref", "")
+    return {cache_key(url, str(revision or ""))}
 
 
 _COMMIT = re.compile(r"[0-9a-f]{7,64}")
@@ -159,25 +185,81 @@ def fetch(
     url = str(Path(source).expanduser().resolve()) if local else normalize_git_url(source)
     if url.startswith("-"):
         raise SourceError(f"{url!r} is not a git URL")
-    key = hashlib.sha256(f"{url}\0{commit or ref}".encode()).hexdigest()[:20]
+    key = cache_key(url, commit or ref)
     target = cache / key
     if commit and (target / ".git").exists():
         return FetchedSource(path=target, url=url, commit=commit, local=False)
-    staging = cache / f".{key}.partial"
-    shutil.rmtree(staging, ignore_errors=True)
+    _sweep_staging(cache, key, older_than=STAGING_GRACE_SECONDS)
+    # Each fetch stages in its own folder, so a leftover nothing could delete (an
+    # earlier crash, a file another process held) never blocks the next fetch.
+    staging = cache / f".{key}.partial-{uuid.uuid4().hex[:12]}"
     try:
         staging.mkdir(parents=True)
     except OSError as exc:
         raise SourceError(f"cannot create the fetch folder {staging}: {exc}") from exc
-    _git(["init", "-q"], cwd=staging, timeout=60)
-    _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
-    wanted = commit or ref or "HEAD"
-    protocols = [] if local else list(_PROTOCOLS)
-    _git([*protocols, "fetch", "-q", "--depth", "1", "--", "origin", wanted], cwd=staging)
-    _git(["checkout", "-q", "--detach", "FETCH_HEAD", "--"], cwd=staging, timeout=120)
-    head = _git(["rev-parse", "HEAD"], cwd=staging, timeout=30)
-    if commit and not head.startswith(commit[:12]):
-        raise SourceError(f"{url}: fetched {head} but the pin is {commit}")
-    shutil.rmtree(target, ignore_errors=True)
-    staging.rename(target)
+    try:
+        _git(["init", "-q"], cwd=staging, timeout=60)
+        _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
+        wanted = commit or ref or "HEAD"
+        protocols = [] if local else list(_PROTOCOLS)
+        _git([*protocols, "fetch", "-q", "--depth", "1", "--", "origin", wanted], cwd=staging)
+        _git(["checkout", "-q", "--detach", "FETCH_HEAD", "--"], cwd=staging, timeout=120)
+        head = _git(["rev-parse", "HEAD"], cwd=staging, timeout=30)
+        if commit and not head.startswith(commit[:12]):
+            raise SourceError(f"{url}: fetched {head} but the pin is {commit}")
+        try:
+            remove_tree(target)
+        except OSError as exc:
+            raise SourceError(f"{url}: cannot replace the previous checkout: {exc}") from exc
+        try:
+            rename_extended(staging, target)
+        except OSError as exc:
+            raise SourceError(f"{url}: cannot move the checkout into {target}: {exc}") from exc
+    except BaseException:
+        _discard(staging)
+        raise
     return FetchedSource(path=target, url=url, commit=head, local=False)
+
+
+def _discard(staging: Path) -> None:
+    try:
+        remove_tree(staging)
+    except OSError as exc:
+        # Uniquely named, so it blocks nothing; the next fetch or an uninstall retries.
+        logger.warning("plugin source staging left behind path=%s error=%s", staging, exc)
+
+
+def _sweep_staging(cache: Path, key: str, *, older_than: float) -> None:
+    """Delete ``key``'s staging folders left by a fetch that stopped (logged, never fatal).
+
+    The un-suffixed ``.<key>.partial`` of earlier releases is never in use; a suffixed
+    one younger than ``older_than`` seconds may be a fetch still running.
+    """
+    if not cache.is_dir():
+        return
+    now = time.time()
+    for folder in cache.glob(f".{key}.partial*"):
+        if folder.name != f".{key}.partial":
+            try:
+                if now - folder.stat().st_mtime < older_than:
+                    continue
+            except OSError:
+                continue
+        try:
+            remove_tree(folder)
+        except OSError as exc:
+            logger.warning("stale plugin source staging kept path=%s error=%s", folder, exc)
+
+
+def remove_cached(cache: Path, name: str) -> None:
+    """Delete the fetched checkout ``cache/name`` and every staging folder of it.
+
+    Raises:
+        TreeRemovalError: a folder could not be deleted (it names the folder).
+    """
+    if not name or name != Path(name).name or name.startswith("."):
+        return
+    remove_tree(cache / name)
+    if cache.is_dir():
+        for folder in cache.glob(f".{name}.partial*"):
+            remove_tree(folder)

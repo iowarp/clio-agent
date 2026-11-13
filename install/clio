@@ -14,7 +14,7 @@
 #                             installed binary (CLIO_DESKTOP_BIN); --dev runs the
 #                             Tauri dev shell from your working checkout.
 #   clio start           start the headless server
-#   clio stop            stop the server and the local services it started (e.g. web search)
+#   clio stop            stop the server and the local services it started (e.g. model servers)
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail server logs
@@ -113,6 +113,15 @@ if [[ -z "${CLIO_SESSIONS_PATH:-}" && -f "$CLIO_PREFIX/clio-agent/.clio/agent/se
   export CLIO_SESSIONS_PATH="$CLIO_PREFIX/clio-agent/.clio/agent/sessions.json"
 fi
 export PATH="$CLIO_BIN_DIR:$PATH"
+# A scoped installation keeps its clio-kit in its own uv tool folders (install.sh). It
+# comes before CLIO_BIN_DIR, which may hold the user's own clio-kit, and the agent
+# finds the launcher's interpreter through UV_TOOL_DIR (tools/mcp_prepare.py).
+CLIO_KIT_PATH=""
+if [[ -x "$CLIO_PREFIX/uv-tools/bin/clio-kit" ]]; then
+  export UV_TOOL_DIR="$CLIO_PREFIX/uv-tools" UV_TOOL_BIN_DIR="$CLIO_PREFIX/uv-tools/bin"
+  CLIO_KIT_PATH="$UV_TOOL_BIN_DIR:"
+  export PATH="$CLIO_KIT_PATH$PATH"
+fi
 # The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
 # detached server inherits that directory even when it was started through a
 # non-interactive SSH session whose login profile did not extend PATH.
@@ -316,7 +325,7 @@ os.execv(sys.argv[1], sys.argv[1:])')
     # Installed user tools such as clio-kit normally live beside this
     # launcher. Login shells add that directory, but detached GUI/SSH starts
     # often do not; make the managed server see the same tools explicitly.
-    export PATH="$CLIO_BIN_DIR:$PATH" &&
+    export PATH="$CLIO_KIT_PATH$CLIO_BIN_DIR:$PATH" &&
     # CLIO_PORT belongs to this launcher/API. clio-core also recognizes that
     # generic name for its native RPC listener, so leaking it would make the
     # runtime steal the HTTP API port. The agent already receives --port.
@@ -337,11 +346,11 @@ os.execv(sys.argv[1], sys.argv[1:])')
   return 1
 }
 
-# stop_local_services stops the supervised services (e.g. web search) this CLIO
+# stop_local_services stops the supervised services (e.g. model servers) this CLIO
 # started on this computer. Their workers deliberately leave the server's session
 # so they survive an SSH disconnect, which also means stopping the server leaves
 # them running. Called after the server is gone so it cannot restart them;
-# installations are kept and the next boot starts web search again. Failures warn.
+# installations are kept. Failures warn.
 stop_local_services() {
   [[ -x "$CLIO_VENV/bin/python" ]] || return 0
   local out rc=0 line

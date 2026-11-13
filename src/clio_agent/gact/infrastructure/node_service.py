@@ -25,7 +25,6 @@ from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
-ACCEPT_GUARD = "clio_accept_guard.py"
 #: Earlier runs' logs kept beside the current one; ``server.log.1`` is the previous run.
 LOG_GENERATIONS = 3
 #: Files a service definition may never write over.
@@ -36,15 +35,9 @@ PROTECTED_FILES = frozenset(
         "manifest.json",
         "controller.py",
         "clio_native_platform.py",
-        ACCEPT_GUARD,
         ".lock",
     }
 )
-#: Services whose Windows launcher serves HTTP from an asyncio proactor loop (uvicorn):
-#: each starts under the accept guard so a client aborting mid-accept cannot close its
-#: listener (python/cpython#93821). The guard is delivered beside the launcher, outside
-#: the manifest, so an existing installation gains it without a new revision.
-ACCEPT_GUARDED_SERVICES = frozenset({"web_search"})
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -144,7 +137,6 @@ def owner(root: Path, expected: str) -> None:
         "clio_reuse.py",
         "clio_process_group.py",
         "clio_native_platform.py",
-        ACCEPT_GUARD,
         "launch.py",
         ".lock",
         "environment",
@@ -448,8 +440,6 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         (root / "clio_process_group.py").write_text(request["process_group_helper"], "utf-8")
     if request.get("platform_helper"):
         (root / "clio_native_platform.py").write_text(request["platform_helper"], "utf-8")
-    if request.get("accept_guard_helper"):
-        (root / ACCEPT_GUARD).write_text(request["accept_guard_helper"], "utf-8")
     for name in ("logs", "evidence", "cache", "tmp"):
         (root / name).mkdir(exist_ok=True)
     # Per-launch, non-secret files (a router's model list): not part of the revision.
@@ -470,10 +460,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         else:
             env.pop(name, None)
     env["CLIO_SECRET_VARIABLES"] = ",".join(sorted(secrets))
-    if action == "install" and request.get("from_scratch"):
-        env["CLIO_FROM_SCRATCH"] = "1"
-    else:
-        env.pop("CLIO_FROM_SCRATCH", None)
+    platform_helper().operation_environment(env, request, identity)
     receipt = {
         **current,
         "phase": "installing" if action == "install" else "running",
@@ -546,8 +533,7 @@ rotate_log = platform_helper().rotate_log
 
 def _work(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
-    if os.name == "nt":
-        platform_helper().bind_worker(generation, root)
+    owner = platform_helper().bind_worker(generation, root, identity, process_group_helper)
     # Wait for the parent to commit the receipt under the same lifecycle lock.
     with locked(root):
         receipt = read_receipt(root)
@@ -596,18 +582,7 @@ def _work(root: Path, action: str, generation: str) -> None:
             *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     else:
-        guard = root / ACCEPT_GUARD
-        guarded = (
-            os.name == "nt"
-            and manifest.get("service") in ACCEPT_GUARDED_SERVICES
-            and guard.is_file()
-        )
-        command = [
-            str(environment_python(root)),
-            *([str(guard)] if guarded else []),
-            str(root / "launch.py"),
-            *manifest["arguments"],
-        ]
+        command = [str(environment_python(root)), str(root / "launch.py"), *manifest["arguments"]]
     if not reused:
         command = with_host_setup(str(manifest.get("host_python", {}).get("setup", "")), command)
     names = {"VLLM_API_KEY", *env.get("CLIO_SECRET_VARIABLES", "").split(",")}
@@ -675,7 +650,7 @@ def _work(root: Path, action: str, generation: str) -> None:
                         stderr=subprocess.STDOUT,
                         check=False,
                     ).returncode
-        if stopping:
+        if (owner is not None and owner.settle()) or stopping:  # settle: owner watch ended us
             return
         with locked(root):
             current = read_receipt(root)

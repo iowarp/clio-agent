@@ -195,6 +195,7 @@ class _StepFold:
             content.get("text", ""),
             bool(content.get("is_error")),
             call_ref=str(content.get("call_ref") or ""),
+            media=content.get("media") or (),
         )
 
     def messages(self, next_seg: Any) -> list[Message]:

@@ -284,3 +284,53 @@ def test_an_empty_result_says_ignored_and_hidden_files_were_skipped(tmp_path, mo
     found = search_files(str(workspace), "DRIFT_PPM", mode="files")
     assert found.structured_content["total_files"] == 1
     assert SKIPPED_NOTE not in found.content[0].text
+
+
+def test_a_search_has_no_clock_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default is 0: a search runs until it finishes or the turn is stopped."""
+    from clio_agent.tools import fs_search_rg
+
+    monkeypatch.delenv("CLIO_FS_SEARCH_TIMEOUT_S", raising=False)
+    assert fs_search_rg.search_timeout_s() is None
+    monkeypatch.setenv("CLIO_FS_SEARCH_TIMEOUT_S", "-1")
+    with pytest.raises(ValueError, match="no limit"):
+        fs_search_rg.search_timeout_s()
+
+
+def test_stopping_the_turn_ends_a_running_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop kills the search process and says so; it is not a partial or empty result.
+
+    A real child process stands in for a slow ripgrep. SABOTAGE: drop the cancellation
+    check -> the 30 s child runs on -> the elapsed bound fails -> red.
+    """
+    import sys
+
+    from clio_agent.runtime.cancellation import cancellation_checker
+    from clio_agent.tools import fs_search_rg
+
+    monkeypatch.delenv("CLIO_FS_SEARCH_TIMEOUT_S", raising=False)
+    monkeypatch.setattr(fs_search_rg, "ripgrep_executable", lambda: sys.executable)
+    stop_at = time.monotonic() + 0.5
+    started = time.monotonic()
+    with (
+        cancellation_checker(lambda: time.monotonic() > stop_at),
+        pytest.raises(ToolError, match="fs_search_cancelled"),
+    ):
+        fs_search_rg._run(["-c", "import time; time.sleep(30)"], tmp_path)
+    assert time.monotonic() - started < 15
+
+
+def test_an_operator_limit_returns_what_was_found_marked_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from clio_agent.tools import fs_search_rg
+
+    monkeypatch.setenv("CLIO_FS_SEARCH_TIMEOUT_S", "0.5")
+    monkeypatch.setattr(fs_search_rg, "ripgrep_executable", lambda: sys.executable)
+    script = "import time; print('a.py:1:hit', flush=True); time.sleep(30)"
+    lines, partial = fs_search_rg._run(["-c", script], tmp_path)
+    assert partial and lines == ["a.py:1:hit"]

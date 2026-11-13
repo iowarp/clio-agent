@@ -12,7 +12,11 @@ from clio_agent.gact.memory.presentation import memory_used_projection
 from clio_agent.gact.protocol.v3 import utcnow_iso
 from clio_agent.gact.protocol.v3.action_cards import action_cards
 from clio_agent.gact.protocol.v3.artifact_projection import artifact_entity
-from clio_agent.gact.protocol.v3.comment_presentation import comment_chip_label
+from clio_agent.gact.protocol.v3.comment_presentation import (
+    artifact_review_reference,
+    comment_chip_label,
+    merge_artifact_review,
+)
 from clio_agent.gact.protocol.v3.summon_presentation import summon_presentation
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
@@ -375,6 +379,8 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "status": str(part.get("status") or ""),
             **common,
         }
+    if part_type == "artifact_review":
+        return artifact_review_reference(part, metadata, common)
     if (chip := comment_chip_label(part_type, metadata)) is not None:
         return {"id": part_id, "type": "routing", "label": chip, **common}
     text = str(part.get("text") or "")
@@ -417,6 +423,8 @@ def message_to_v3(message: Any) -> dict[str, Any]:
             if artifact_id in artifact_blocks:
                 continue
             artifact_blocks.add(artifact_id)
+        if merge_artifact_review(blocks, block):
+            continue
         blocks.append(block)
     row: dict[str, Any] = {
         "id": str(wire.get("id") or ""),

@@ -27,6 +27,23 @@ def test_stderr_is_bounded_to_its_tail() -> None:
     assert len(run.stderr) == probe.STDERR_TAIL_CHARS + 3
 
 
+def test_probe_names_the_codex_home_clio_wrote_to(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    script = "import os, sys; sys.stderr.write(os.environ.get('CODEX_HOME', '')); sys.exit(1)"
+    run = probe.run_probe([sys.executable, "-I", "-c", script], timeout=30)
+    assert run.stderr == str(tmp_path / ".codex")
+    assert probe.codex_home_dir() == tmp_path / ".codex"
+
+
+def test_caller_codex_home_is_respected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "mine"))
+    assert probe.codex_home_env() == {}
+    assert probe.codex_home_dir() == tmp_path / "mine"
+
+
 @pytest.mark.timeout(60)  # A deliberate 2-second probe deadline plus tree teardown.
 def test_timeout_kills_the_whole_tree_and_reports_the_timeout(tmp_path: Path) -> None:
     pid_file = tmp_path / "grandchild.pid"

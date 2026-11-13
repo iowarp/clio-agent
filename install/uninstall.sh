@@ -349,6 +349,11 @@ same_file() {
 purge_core_seed() {
   [[ -d "$CORE_HOME" ]] || return 0
   local seed perf prefix
+  if [[ -f "$CORE_HOME/clio.yaml" && ${#CORE_SEEDS[@]} -eq 0 ]]; then
+    # The default it would be compared with ships inside a CLIO runtime, and none is
+    # installed any more (the CLIO Desktop package removed before this uninstaller ran).
+    warn "Kept $CORE_HOME/clio.yaml: no CLIO runtime is left to tell clio-core's unedited default from your own changes. If you did not edit it, remove it with: rm $CORE_HOME/clio.yaml"
+  fi
   if [[ -f "$CORE_HOME/clio.yaml" ]]; then
     for seed in ${CORE_SEEDS[@]+"${CORE_SEEDS[@]}"}; do
       if same_file "$seed" "$CORE_HOME/clio.yaml"; then
@@ -564,7 +569,8 @@ if [[ -e "$LAUNCHER" ]]; then
 fi
 if [[ -d "$CLIO_PREFIX" ]]; then
   say "Removing installed application payloads in $CLIO_PREFIX"
-  rm -rf -- "$CLIO_PREFIX/clio-agent/.venv" "$CLIO_PREFIX/clio-agent/web"
+  # uv-tools: a scoped installation's own clio-kit (install.sh).
+  rm -rf -- "$CLIO_PREFIX/clio-agent/.venv" "$CLIO_PREFIX/clio-agent/web" "$CLIO_PREFIX/uv-tools"
   rm -f -- "$CLIO_PREFIX/gact" "$CLIO_PREFIX/uninstall.sh" "$CLIO_PREFIX/libexec/clio"
   rmdir -- "$CLIO_PREFIX/libexec" "$CLIO_PREFIX/clio-agent" "$CLIO_PREFIX" 2>/dev/null || true
   if [[ -d "$CLIO_PREFIX" && ! ( "$PURGE_DATA" -eq 1 && "$CLIO_PREFIX" == "$agent_data"/* ) ]]; then

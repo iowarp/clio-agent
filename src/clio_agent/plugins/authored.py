@@ -16,11 +16,11 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from clio_agent.platform_paths import remove_tree
 from clio_agent.sdk.versions import valid_plugin_id
 
 #: What a module reaches when it imports one of these (top-level names).
@@ -87,12 +87,12 @@ def write(store_root: Path, name: str, files: dict[str, str], session_id: str) -
     root = authored_root(store_root)
     folder = root / name
     staging = root / f".{name}.writing"
-    shutil.rmtree(staging, ignore_errors=True)
+    remove_tree(staging)
     for relative, text in relatives.items():
         target = staging / Path(*relative.parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    shutil.rmtree(folder, ignore_errors=True)
+    remove_tree(folder)
     staging.rename(folder)
     record = {
         "name": name,

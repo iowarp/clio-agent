@@ -6,7 +6,7 @@ import json
 import socket
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -62,7 +62,8 @@ def ssh_peer(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
                 # before an immediately finishing server closes the channel.
                 channel.recv(1)
                 if text == "wait":
-                    stopped.wait(3)
+                    # Runs until teardown: a client that waited for it would hang.
+                    stopped.wait()
                 elif text == "large":
                     channel.sendall(b"science\n" * 10000)
                     channel.sendall_stderr(b"diagnostic\n" * 10000)
@@ -121,28 +122,6 @@ def ssh_peer(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
         assert not worker.is_alive()
 
 
-@pytest.fixture
-def ssh_command_elapsed(
-    ssh_peer: list[str], monkeypatch: pytest.MonkeyPatch
-) -> Callable[[], float]:
-    """Time real channel execution after the independently bounded SSH connection."""
-    connect_route = ssh_execution.connect_route
-    connected_at: float | None = None
-
-    def connect(route: SshRoute) -> paramiko.SSHClient:
-        nonlocal connected_at
-        client = connect_route(route)
-        connected_at = time.monotonic()
-        return client
-
-    def elapsed() -> float:
-        assert connected_at is not None, "The real SSH connection did not complete"
-        return time.monotonic() - connected_at
-
-    monkeypatch.setattr(ssh_execution, "connect_route", connect)
-    return elapsed
-
-
 @pytest.mark.parametrize("command,exit_code", [("inspect", 0), ("fail", 7)])
 def test_real_ssh_streams_and_exit_status(
     ssh_peer: list[str], tmp_path: Path, command: str, exit_code: int
@@ -189,8 +168,10 @@ def test_large_dual_streams_are_complete_on_disk(ssh_peer: list[str], tmp_path: 
 
 @pytest.mark.parametrize("cancel", [False, True])
 def test_timeout_or_cancel_does_not_claim_remote_kill(
-    ssh_peer: list[str], tmp_path: Path, cancel: bool, ssh_command_elapsed: Callable[[], float]
+    ssh_peer: list[str], tmp_path: Path, cancel: bool
 ) -> None:
+    """The remote command never ends, so returning at all proves the deadline or the
+    cancellation, not the remote exit, ended the request."""
     result = ssh_execution.execute_ssh_command(
         SshRoute(profile="science"),
         "wait",
@@ -203,7 +184,7 @@ def test_timeout_or_cancel_does_not_claim_remote_kill(
     assert result["stop_reason"] == ("cancelled" if cancel else "timeout")
     assert result["exit_code"] is None and result["status"] == "failed"
     assert "Unknown" in result["remote_process_state"]
-    assert ssh_command_elapsed() < 3
+    assert ssh_peer == ["wait"]
 
 
 def test_cancellation_checker_error_propagates_after_closing_channel(

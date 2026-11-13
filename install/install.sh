@@ -34,6 +34,8 @@
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
 #   CLIO_DESKTOP_DIR   macOS app folder     (default: $HOME/Applications)
 #   CLIO_INSTALL_PROGRESS  human | json     (default: human; as --progress)
+#   CLIO_INSTALL_PROVIDER_SUPPORT  provider SDKs to install now (default: claude_code;
+#                      empty: each installs on its first turn)
 #
 # NOTE: invoke via `bash` (not `sh`). On Debian/Ubuntu `sh` is dash,
 # which doesn't support `set -o pipefail`. The one-liner in the README
@@ -71,6 +73,9 @@ OPT_DESKTOP_PACKAGE="${CLIO_DESKTOP_PACKAGE:-}"
 OPT_DESKTOP_SHA256="${CLIO_DESKTOP_SHA256:-}"
 OPT_RESET_OLD_DATA=0
 OPT_PROGRESS="${CLIO_INSTALL_PROGRESS:-human}"
+# Provider SDKs installed with the managed packages (empty: none); claude_code's is
+# otherwise installed by the first Claude Code turn.
+PROVIDER_SUPPORT="${CLIO_INSTALL_PROVIDER_SUPPORT-claude_code}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --source|-Source) OPT_SOURCE=1 ;;
@@ -256,7 +261,8 @@ fetch_hashed() {
   local url="$1" file="$2" attempt status
   shift 2
   for attempt in 1 2; do
-    rm -f "$file" "$file.sha"
+    # tee empties FILE itself: it is never missing, so the app keeps waiting on a NAME.part.
+    rm -f "$file.sha"
     curl --proto '=https' --tlsv1.2 -fsSL --speed-limit 1 --speed-time 60 "$@" "$url" \
       | tee "$file" | sha_stream > "$file.sha" && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
     [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ] || [ "${status[2]}" != 0 ] || return 0
@@ -311,10 +317,11 @@ start_monitor() { download_monitor & DESKTOP_MONITOR=$!; }
 
 # The release's install plan lists what the first launch would fetch (LibreOffice, pnpm)
 # as "kind sha256 bytes name url"; only well-formed lines count. A "capability WORD" line
-# says what the plan's app can do with them.
+# says what the plan's app can do with them. plan_entries PLAN kind keeps the kind.
 plan_entries() {
-  awk 'NF == 5 && length($2) == 64 && $2 ~ /^[0-9a-f]+$/ && $3 ~ /^[0-9]+$/ \
-       && $4 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ && $5 ~ /^https:\/\// { print $2, $3, $4, $5 }' "$1"
+  awk -v kind="${2:-}" 'NF == 5 && length($2) == 64 && $2 ~ /^[0-9a-f]+$/ && $3 ~ /^[0-9]+$/ \
+       && $4 ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/ && $5 ~ /^https:\/\// {
+         if (kind != "") print $1, $2, $3, $4, $5; else print $2, $3, $4, $5 }' "$1"
 }
 plan_capable() { [ -n "$1" ] && awk -v want="$2" '$1 == "capability" && $2 == want { found=1 } END { exit !found }' "$1"; }
 
@@ -345,14 +352,40 @@ prefetch() {  # SHA NAME URL: a failure only means the app fetches it itself lat
   fi
 }
 
-start_prefetch() {  # PLAN
-  local sha bytes name url names=""
+prefetch_after() {  # PID SHA NAME URL: prefetch once job PID ends, or PREFETCH_WAIT_S at most
+  local ticks=0
+  while kill -0 "$1" 2>/dev/null && [ "$ticks" -lt $(( PREFETCH_WAIT_S * 5 )) ]; do
+    sleep 0.2
+    ticks=$(( ticks + 1 ))
+  done
+  shift
+  prefetch "$@"
+}
+
+# start_prefetch PLAN [office-first]: with office-first, LibreOffice takes the line before
+# the other large files. Every download shares one saturated line, so they all land at
+# about the same time, and Office has the longest work after it lands (mount, copy, a
+# first conversion), which then decides when the install ends. A file of another kind
+# over PREFETCH_WAIT_BYTES (Chromium, whose unpack takes ~1 s) starts once LibreOffice
+# has landed, or after PREFETCH_WAIT_S. It is an empty NAME.part until then, so the app
+# waits for it rather than fetching it a second time; the app gives up on a NAME.part
+# that has not grown in 60 s (office.py _INSTALLER_STALL_S), well beyond that wait.
+PREFETCH_WAIT_BYTES=$(( 64 * 1024 * 1024 ))
+PREFETCH_WAIT_S=40
+start_prefetch() {
+  local kind sha bytes name url names="" lead=""
   [ -n "$1" ] || return 0
-  while read -r sha bytes name url; do
+  while read -r kind sha bytes name url; do
     DESKTOP_PLAN_BYTES=$(( DESKTOP_PLAN_BYTES + bytes ))
     names="$names${names:+, }$name"
-    start_job prefetch "$sha" "$name" "$url"
-  done < <(plan_entries "$1")
+    if [ -n "$lead" ] && [ "$kind" != office ] && [ "$bytes" -ge "$PREFETCH_WAIT_BYTES" ]; then
+      : > "$DESKTOP_SCRATCH/downloads/$name.part"
+      start_job prefetch_after "$lead" "$sha" "$name" "$url"
+    else
+      start_job prefetch "$sha" "$name" "$url"
+      [ "${2:-}" != office-first ] || [ "$kind" != office ] || lead=$!
+    fi
+  done < <(plan_entries "$1" kind | awk '{ print ($1 == "office" ? 0 : 1), $0 }' | sort -s -n -k1,1 | cut -d' ' -f2-)
   [ -z "$names" ] || say "Fetching at the same time: $names"
 }
 
@@ -1316,7 +1349,7 @@ start_install_downloads() {
   local kinds="${2:-office npm}" part
   part="$DESKTOP_SCRATCH/plan.install.${kinds// /-}"
   awk -v kinds=" $kinds " '$1 == "capability" || index(kinds, " " $1 " ")' "$1" > "$part"
-  start_prefetch "$part"
+  start_prefetch "$part" office-first
   [ -n "$DESKTOP_JOBS" ] || return 0
   INSTALL_DOWNLOADS="$DESKTOP_SCRATCH/downloads"
   # A runtime that cannot wait for a download in progress would fetch it a second time.
@@ -1490,6 +1523,25 @@ EOF
 # never while the managed runtime step's cache collection looks for live clio-kit.
 CLIO_KIT_JOB=""
 clio_kit_spec=""
+# A CLIO with its own prefix, home, data or user folder keeps clio-kit in uv tool
+# folders inside its prefix, so it never replaces the user's own clio-kit; the launcher
+# puts them on the agent's PATH and uninstall.sh removes them with the payloads. A
+# caller that chose uv's tool folders itself (an SSH deployment) keeps its choice.
+KIT_SCOPED=""
+KIT_TOOL_DIR=""
+if [ -n "${CLIO_PREFIX:-}${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" ]; then
+  KIT_SCOPED=1
+  [ -n "${UV_TOOL_DIR:-}" ] || KIT_TOOL_DIR="$PREFIX/uv-tools"
+fi
+kit_uv() {  # uv with this installation's tool folders, for that command only
+  if [ -n "$KIT_TOOL_DIR" ]; then
+    # On PATH for uv only, which otherwise warns that it is not; the launcher adds it.
+    PATH="$KIT_TOOL_DIR/bin:$PATH" UV_TOOL_DIR="$KIT_TOOL_DIR" \
+      UV_TOOL_BIN_DIR="$KIT_TOOL_DIR/bin" uv "$@"
+  else
+    uv "$@"
+  fi
+}
 start_clio_kit() {
   need_uv
   if ! have uv; then
@@ -1507,13 +1559,20 @@ start_clio_kit() {
     say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec) at the same time"
   fi
   # Recorded for uninstall unless the user already had it: the tool's name is the spec
-  # without its version and extras (a path or URL spec has none to record).
+  # without its version and extras (a path or URL spec has none to record). A scoped
+  # installation's tool folders go with its payloads instead; one made before scoping
+  # keeps the record of the shared clio-kit its installer added.
   local tool="${clio_kit_spec%%[=\[<>~! ]*}"
-  if [[ "$tool" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-      && { [ "$UNRECORDED_INSTALL" = 1 ] || ! uv tool list 2>/dev/null | grep -q "^$tool "; }; then
+  mkdir -p "$PREFIX"
+  if [[ "$tool" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && { [ "$UNRECORDED_INSTALL" = 1 ] \
+      || { [ -z "$KIT_SCOPED" ] && ! uv tool list 2>/dev/null | grep -q "^$tool "; }; }; then
     record_installed uv-tool "$tool"
   fi
-  uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
+  # Even empty, the record tells uninstall.sh this installer said what it added, so it
+  # never takes the user's own clio-kit for one an older installer put there.
+  : >> "$INSTALLED_TOOLS"
+  [ -z "$KIT_TOOL_DIR" ] || say "clio-kit goes in this installation's own tool folder: $KIT_TOOL_DIR"
+  kit_uv tool install --python "$1" "$clio_kit_spec" > "$DESKTOP_SCRATCH/clio-kit.log" 2>&1 &
   CLIO_KIT_JOB=$!
 }
 finish_clio_kit() {
@@ -1522,8 +1581,10 @@ finish_clio_kit() {
   wait "$CLIO_KIT_JOB" || status=$?
   CLIO_KIT_JOB=""
   cat "$DESKTOP_SCRATCH/clio-kit.log" 2>/dev/null || true
+  local retry="uv tool install \"$clio_kit_spec\""
+  [ -z "$KIT_TOOL_DIR" ] || retry="UV_TOOL_DIR=\"$KIT_TOOL_DIR\" UV_TOOL_BIN_DIR=\"$KIT_TOOL_DIR/bin\" $retry"
   [ "$status" = 0 ] && say "clio-kit launcher ready ($clio_kit_spec)" \
-    || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
+    || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until '$retry' succeeds and '\$(uv tool dir --bin)' is on PATH"
 }
 
 # start_submodules SRC [ARGS]: update_submodules in the background; finish_submodules
@@ -1704,6 +1765,17 @@ install_runtime_archive() {
   fi
 }
 
+has_module() {  # MODULE [TEXT]: the installed clio-agent has MODULE (whose source has TEXT)
+  "$VENV/bin/python" -I -c 'import importlib.util, sys
+spec = importlib.util.find_spec(sys.argv[1])
+sys.exit(0 if spec and (len(sys.argv) < 3 or sys.argv[2] in open(spec.origin, encoding="utf-8").read()) else 3)' "$@" 2>/dev/null
+}
+# PROVIDER_SUPPORT names provider SDKs to lay down with the managed packages, so a first
+# turn never installs one; a clio-agent without the step installs them on first use.
+wants_provider_support() {
+  [ -n "$PROVIDER_SUPPORT" ] && has_module clio_agent.runtime.document_install --provider-support
+}
+
 # The managed packages and Office are the longest step and read nothing the data check
 # and the store migration write, so a runtime install starts them at once.
 start_document_install() {
@@ -1712,6 +1784,7 @@ start_document_install() {
     || return 0
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering (alongside the steps below)'
   flags=(--skip-store-migrations)
+  ! wants_provider_support || flags+=(--provider-support "$PROVIDER_SUPPORT")
   # A runtime that cannot wait for a download still arriving gets it once it has landed.
   [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
   env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
@@ -1974,11 +2047,6 @@ migrate_warning() {  # STATUS: the installer's note for a migrate exit status
     *) warn "clio-agent migrate failed (exit $1, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
   esac
 }
-has_module() {  # MODULE [TEXT]: the installed clio-agent has MODULE (whose source has TEXT)
-  "$VENV/bin/python" -I -c 'import importlib.util, sys
-spec = importlib.util.find_spec(sys.argv[1])
-sys.exit(0 if spec and (len(sys.argv) < 3 or sys.argv[2] in open(spec.origin, encoding="utf-8").read()) else 3)' "$@" 2>/dev/null
-}
 doc_flags=()
 # A document step that upgrades the store itself does so while the packages install
 # (gact-tui#739: a serial migrate cost 13 s of a cold install); older ones get migrate
@@ -2017,6 +2085,7 @@ elif has_module clio_agent.runtime.document_install; then
   # A runtime that cannot wait for a download still arriving gets it once it has landed.
   [ -z "$INSTALL_DOWNLOADS" ] || [ "$DESKTOP_PLAN_WAITS" = 1 ] || finish_downloads
   install_scratch
+  ! wants_provider_support || doc_flags+=(--provider-support "$PROVIDER_SUPPORT")
   env ${INSTALL_DOWNLOADS:+"CLIO_INSTALL_DOWNLOADS=$INSTALL_DOWNLOADS"} \
     "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} \
     | tee "$DESKTOP_SCRATCH/document_install.out" || docs_status=$?  # pipefail: its status

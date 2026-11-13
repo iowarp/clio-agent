@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,6 +38,16 @@ from clio_agent.runtime.ripgrep import ensure_ripgrep
 from clio_agent.runtime.tectonic import ensure_tectonic
 
 
+def _timed[T](timings: dict[str, float] | None, key: str, work: Callable[[], T]) -> T:
+    """Run ``work`` and record its seconds under ``key`` when timings are collected."""
+    started = time.monotonic()
+    try:
+        return work()
+    finally:
+        if timings is not None:
+            timings[key] = round(time.monotonic() - started, 1)
+
+
 def prepare_protected_execution(
     *, setup_protected_execution: bool = False, progress: Callable[[str], None] | None = None
 ) -> dict[str, Any]:
@@ -61,9 +72,13 @@ def prepare_managed_packages(
     *,
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Prepare package caches without qualifying protection or saving an install receipt."""
-    protect_bundled_runtime()
+    """Prepare package caches without qualifying protection or saving an install receipt.
+
+    ``timings``, when given, receives each sub-job's seconds (the install reports them).
+    """
+    _timed(timings, "protect_runtime", protect_bundled_runtime)
     workspace.mkdir(parents=True, exist_ok=True)
     # These installers own separate cache trees and locks. Overlap the native
     # downloads/extraction with Python/Node preparation, without changing the
@@ -77,7 +92,7 @@ def prepare_managed_packages(
 
     def prepare_office() -> str:
         report("Preparing and checking the Office renderer...")
-        office = prepare_office_runtime()
+        office = prepare_office_runtime(timings=timings)
         report("Office rendering is ready.")
         return office
 
@@ -101,11 +116,17 @@ def prepare_managed_packages(
 
     with package_preparation.preparing(cache_root):
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-install") as workers:
-            office_job = workers.submit(prepare_office)
-            github_job = workers.submit(prepare_github)
-            ripgrep_job = workers.submit(prepare_ripgrep)
-            tectonic_job = workers.submit(prepare_tectonic)
-            result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
+            office_job = workers.submit(_timed, timings, "office", prepare_office)
+            github_job = workers.submit(_timed, timings, "gh", prepare_github)
+            ripgrep_job = workers.submit(_timed, timings, "rg", prepare_ripgrep)
+            tectonic_job = workers.submit(_timed, timings, "tectonic", prepare_tectonic)
+            result = _timed(
+                timings,
+                "packages",
+                lambda: prepare_document_runtime(
+                    workspace, cache_root=cache_root, progress=report, timings=timings
+                ),
+            )
             if result["javascript"]["status"] != "ready":
                 raise DocumentRuntimeError(
                     f"Node/pnpm package installation failed: {result['javascript']}"
@@ -134,6 +155,7 @@ def install_document_runtime(
     setup_protected_execution: bool = False,
     reuse_installed: bool = False,
     reuse_prepared: bool = False,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Verify packages and protection before publishing a complete installation receipt."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -158,11 +180,17 @@ def install_document_runtime(
 
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-protection") as checking:
             protection_job = checking.submit(
-                prepare_protected_execution,
-                progress=report,
-                setup_protected_execution=setup_protected_execution,
+                _timed,
+                timings,
+                "protection",
+                lambda: prepare_protected_execution(
+                    progress=report,
+                    setup_protected_execution=setup_protected_execution,
+                ),
             )
-            result = prepare_managed_packages(workspace, cache_root=cache_root, progress=report)
+            result = prepare_managed_packages(
+                workspace, cache_root=cache_root, progress=report, timings=timings
+            )
             protection = protection_job.result()
     else:
         from clio_agent.runtime.document_stack.process import scratch_root
@@ -184,7 +212,11 @@ def install_document_runtime(
         )
     result["native_tools"].update(protection)
     if not reused:
-        save_install_receipt(workspace, result, cache_root=cache_root)
+        _timed(
+            timings,
+            "receipt",
+            lambda: save_install_receipt(workspace, result, cache_root=cache_root),
+        )
     if progress is not None:
         progress("All managed runtime packages are installed and verified.")
     return result
@@ -317,14 +349,27 @@ def _main() -> None:
         action="store_true",
         help="Only fetch the browser and the default agents (the Windows source installer).",
     )
+    parser.add_argument(
+        "--provider-support",
+        default="",
+        metavar="KINDS",
+        help="Comma-separated provider kinds (e.g. claude_code) whose SDK to install now.",
+    )
     args = parser.parse_args()
     if args.prefetch_only:
-        # The full step that follows finds both ready and only checks them.
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-prefetch") as fetching:
+        # The full step that follows finds all three ready and only checks them.
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="clio-prefetch") as fetching:
             browser = fetching.submit(_prepare_browser, args, print)
             marketplace = fetching.submit(_prepare_default_marketplace, args, print)
+            providers = fetching.submit(_prepare_provider_support, args, print)
             print(
-                json.dumps({"browser": browser.result(), "marketplace": marketplace.result()}),
+                json.dumps(
+                    {
+                        "browser": browser.result(),
+                        "marketplace": marketplace.result(),
+                        "provider_support": providers.result(),
+                    }
+                ),
                 flush=True,
             )
         return
@@ -358,36 +403,53 @@ def _main() -> None:
     # installed, so a first start that had to fetch it held the workspace for its length.
     # Opening the server's code once here moves the on-access scan of the files the
     # install just wrote out of the first start (see _prewarm_runtime_files).
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="clio-packages") as installing:
+    # A provider SDK the caller names is a download too; without it the first turn
+    # with that provider would install it.
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="clio-packages") as installing:
         browser = installing.submit(_prepare_browser, args, emit)
         marketplace = installing.submit(_prepare_default_marketplace, args, emit)
+        providers = installing.submit(_prepare_provider_support, args, emit)
         prewarm = installing.submit(_prewarm_runtime_files, args)
+        installation_timings: dict[str, float] = {}
         installation = installing.submit(
-            install_document_runtime,
-            args.workspace,
-            progress=emit,
-            setup_protected_execution=args.setup_protected_execution,
-            reuse_installed=args.reuse_installed,
-            reuse_prepared=args.reuse_prepared,
+            _timed,
+            installation_timings,
+            "seconds",
+            lambda: install_document_runtime(
+                args.workspace,
+                progress=emit,
+                setup_protected_execution=args.setup_protected_execution,
+                reuse_installed=args.reuse_installed,
+                reuse_prepared=args.reuse_prepared,
+                timings=installation_timings,
+            ),
         )
         migrations = _run_store_migrations(args, emit)
+        marketplace_result = marketplace.result()
+        providers_result = providers.result()
+        maintenance: dict[str, Any] = {}
+        if not args.reuse_installed:
+            # An install or upgrade, not a per-launch check: bound the MCP cache (B4) and
+            # collect superseded snapshots once the marketplace step has written its own,
+            # while the packages are still prepared (each scan of the process table took
+            # 0.4-1.4 s after them).
+            maintenance["mcp_cache"] = prune_after_install()
+            maintenance["marketplace_snapshots"] = collect_snapshots_after_install()
         result = installation.result()
         browser_result = browser.result()
-        marketplace_result = marketplace.result()
         prewarm_result = prewarm.result()
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
         "office": result["native_tools"]["soffice"],
+        "installation": installation_timings,
         "store_migrations": migrations,
         "browser": browser_result,
         "marketplace": marketplace_result,
+        "provider_support": providers_result,
         "prewarm": prewarm_result,
+        **maintenance,
     }
-    if not args.reuse_installed:
-        # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
-        summary["mcp_cache"] = prune_after_install()
-        summary["marketplace_snapshots"] = collect_snapshots_after_install()
     print(json.dumps(summary), flush=True)
 
 
@@ -445,18 +507,104 @@ def _prepare_default_marketplace(
 
 
 _PREWARM_SUFFIXES = (".pyd", ".dll", ".so", ".dylib", ".zip")
+# The files a server start opens, recorded by scripts/record_server_imports.py: one path
+# per line, relative to the import-path folder that holds it, with "/" separators.
+SERVER_IMPORTS = Path(__file__).with_name("server_imports.txt")
+
+
+def _server_import_files(import_path: list[str]) -> list[str] | None:
+    """The files of ``SERVER_IMPORTS`` found on ``import_path``, or ``None`` without it.
+
+    Each line is looked up in the most specific import-path folder first. A ``.py``
+    module brings its compiled ``.pyc`` (the checked-hash bytecode is read with its
+    source). Lines that match nothing here (another platform's native libraries, a
+    module this install lacks) are skipped.
+    """
+    try:
+        lines = SERVER_IMPORTS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    entries = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    if not entries:
+        return None
+    suffix = f".{sys.implementation.cache_tag}.pyc"
+    folders = sorted({p for p in import_path if os.path.isdir(p)}, key=len, reverse=True)
+    files: list[str] = []
+    for entry in entries:
+        parts = entry.split("/")
+        for folder in folders:
+            path = os.path.join(folder, *parts)
+            if not os.path.isfile(path):
+                continue
+            files.append(path)
+            if path.endswith(".py"):
+                stem = os.path.splitext(parts[-1])[0]
+                compiled = os.path.join(os.path.dirname(path), "__pycache__", stem + suffix)
+                if os.path.isfile(compiled):
+                    files.append(compiled)
+            break
+    return files
+
+
+def _prepare_provider_support(
+    args: argparse.Namespace, emit: Callable[[str], None]
+) -> dict[str, Any]:
+    """Install the SDK of each provider named by ``--provider-support``, reported typed.
+
+    The same installer the first turn with that provider would run, so the turn finds
+    the SDK ready. A per-launch check never downloads; a failure does not fail the
+    install, and the first turn with that provider retries it.
+    """
+    kinds = [kind.strip() for kind in args.provider_support.split(",") if kind.strip()]
+    if not kinds:
+        return {"status": "skipped", "reason": "none_requested"}
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    import time  # noqa: PLC0415
+
+    from clio_agent.providers.dependencies import (  # noqa: PLC0415
+        PROVIDER_SUPPORT,
+        ProviderDependencyInstallError,
+        ensure_provider_support,
+    )
+
+    outcomes: dict[str, Any] = {}
+    for kind in kinds:
+        support = PROVIDER_SUPPORT.get(kind)
+        name = support.display_name if support else kind
+        started = time.monotonic()
+        try:
+            installed = ensure_provider_support(kind)
+        except ProviderDependencyInstallError as exc:
+            seconds = round(time.monotonic() - started, 1)
+            emit(f"{name} support was not installed; its first use will retry: {exc}")
+            outcomes[kind] = {"status": "failed", "error": str(exc), "seconds": seconds}
+            continue
+        seconds = round(time.monotonic() - started, 1)
+        emit(f"{name} support is ready.")
+        outcomes[kind] = {"status": "ready", "installed": installed, "seconds": seconds}
+    failed = any(outcome["status"] == "failed" for outcome in outcomes.values())
+    return {"status": "failed" if failed else "ready", "providers": outcomes}
 
 
 def _runtime_code_files() -> list[str]:
-    """The runtime's shipped bytecode, each module's source, and its native libraries.
+    """The files a server start opens: ``SERVER_IMPORTS``, or else the whole runtime.
 
-    The shipped ``.pyc`` files are checked hash-based, so an import opens both the
-    bytecode and its source. The roots are this interpreter's import path, outermost
-    first, so a folder inside another (site-packages inside Lib) is walked once.
-    Only entries inside the interpreter's own prefixes count: ``python -m`` puts the
-    caller's working directory first on the path, and an installer run from a home
-    directory must not walk the whole home.
+    Opening every module of a fully compiled environment (about 31,000 files for a
+    source install laid from its prebuilt dependencies) takes far longer than the
+    server's own import set (about 5,000), so the recorded set is used when it ships.
+    Without it the runtime's shipped bytecode, each module's source and its native
+    libraries are opened. The shipped ``.pyc`` files are checked hash-based, so an
+    import opens both the bytecode and its source. The roots are this interpreter's
+    import path, outermost first, so a folder inside another (site-packages inside
+    Lib) is walked once. Only entries inside the interpreter's own prefixes count:
+    ``python -m`` puts the caller's working directory first on the path, and an
+    installer run from a home directory must not walk the whole home.
     """
+    import_path = [os.path.abspath(p) for p in sys.path if p]
+    listed = _server_import_files(import_path)
+    if listed is not None:
+        return [p for p in import_path if os.path.isfile(p)] + listed
     tag = sys.implementation.cache_tag
     suffix = f".{tag}.pyc"
     prefixes = {
@@ -543,5 +691,30 @@ def _run_store_migrations(
     return {key: payload[key] for key in ("status", "reason", "seconds") if key in payload}
 
 
+def _exit_released() -> None:
+    """Run :func:`main`, then exit without the interpreter's module teardown.
+
+    Every pool is joined and the store is released (``clio-agent migrate`` closes it)
+    before :func:`main` returns; the exit handlers still run. The teardown skipped here,
+    a garbage collection over everything imported, held the installer that waits for
+    this process for seconds after its result line.
+    """
+    import atexit  # noqa: PLC0415
+
+    code = 0
+    try:
+        main()
+    except SystemExit as stop:
+        if stop.code is None or isinstance(stop.code, int):
+            code = stop.code or 0
+        else:
+            print(stop.code, file=sys.stderr)
+            code = 1
+    atexit._run_exitfuncs()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    main()
+    _exit_released()

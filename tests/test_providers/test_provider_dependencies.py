@@ -279,6 +279,12 @@ class TestSealedRuntimeOverlay:
         command = seen["command"]
         assert command[:5] == ["uv", "pip", "install", "--python", "python"]
         assert command[command.index("--target") + 1] == str(overlay)
+        # A sealed runtime's support packages use CLIO's own cache (purged on uninstall),
+        # never the person's ~/.cache/uv (live: 336 MB of claude-agent-sdk left behind).
+        from clio_agent import paths  # noqa: PLC0415
+
+        cache = Path(command[command.index("--cache-dir") + 1])
+        assert cache.is_relative_to(paths.user_cache_dir())
         assert "--compile-bytecode" in command
         assert command[-1] == "globus-sdk>=3.0.0"
         assert overlay.is_dir()
@@ -294,6 +300,8 @@ class TestSealedRuntimeOverlay:
         command = dependencies._install_command(
             "python", ["x>=1"], target=overlay, constraints=constraints
         )
+        from clio_agent.runtime import package_overlay  # noqa: PLC0415
+
         assert command == [
             "python",
             "-m",
@@ -301,6 +309,8 @@ class TestSealedRuntimeOverlay:
             "install",
             "--target",
             str(overlay),
+            "--cache-dir",
+            str(package_overlay.overlay_install_cache()),
             "--constraint",
             str(constraints),
             "--upgrade",

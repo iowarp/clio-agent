@@ -55,7 +55,7 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key
-from clio_agent.lm.engines.invoke_calls import text_tool_protocol
+from clio_agent.lm.engines.invoke_calls import text_tool_protocol, writing_past_block
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
@@ -74,6 +74,11 @@ from clio_agent.providers.claude_code_clear import side_key
 from clio_agent.providers.claude_code_conversation import Send, plan, record_sent
 from clio_agent.providers.claude_code_conversation import reset as reset_conversation
 from clio_agent.providers.claude_code_cwd import session_cwd
+from clio_agent.providers.claude_code_expiry import (
+    ClaudeCodeIdleTimeout,
+    StreamSilence,
+    stall_first_wait_s,
+)
 from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
 from clio_agent.providers.claude_code_multimodal import native_blocks
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk, thinking_key
@@ -90,6 +95,7 @@ from clio_agent.providers.claude_code_sessions import (
     transient_transport_error_message,
     transient_transport_error_types,
 )
+from clio_agent.providers.claude_code_stall import _cancel_requested, _StallLadder
 from clio_agent.providers.claude_code_stream_events import (
     note_redacted_thinking,
     stream_event_text,
@@ -102,6 +108,9 @@ __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
 
 logger = logging.getLogger(__name__)
+
+#: How often (in characters) a reply with a call block is checked for text past it.
+_PAST_CALLS_STRIDE = 128
 #: A reply's opening lines that are each blank or one protocol word.
 _PROTOCOL_LINES = re.compile(r"(?:[ \t]*(?:_[a-z][a-z0-9_]*)?[ \t]*\r?\n)+")
 
@@ -127,17 +136,15 @@ class AsyncClaudeCodeEngine:
         self.idle_timeout_s = idle_timeout_s
 
     def idle_timeout(self) -> float:
-        """The longest gap between two streamed messages (#1577).
+        """The first stall wait: silence this long starts a visible retry (#1577).
 
-        The explicit bound when one was given, else ``limits.lm_inter_token_idle_s`` --
-        the same window the turn watchdog trusts a streaming call for. The connect has
-        its own progress-based bound (:mod:`.claude_code_expiry`).
+        The explicit bound when one was given, else ``limits.lm_stall_wait_s`` (30 s).
+        Each later stall waits longer (:func:`.claude_code_expiry.stall_waits`); none
+        fails the turn. The connect has its own progress-based bound.
         """
         if self.idle_timeout_s is not None:
             return self.idle_timeout_s
-        from clio_agent.runtime.lm_activity import inter_token_idle_seconds  # noqa: PLC0415
-
-        return inter_token_idle_seconds()
+        return stall_first_wait_s()
 
     async def complete(self, request: Request) -> Response:
         """Run one query and return the assembled response."""
@@ -177,55 +184,77 @@ class AsyncClaudeCodeEngine:
             transport="sdk",
             prompt=body,
         )
-        turn = _Turn(
-            self.model,
-            call_index,
-            session_id,
-            available_tools=callable_tools(
-                [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
-            ),
-            schemas=ToolSchemas(
-                {
-                    tool.name: tool.parameters
-                    for tool in request.tools
-                    if isinstance(tool, FunctionTool)
-                }
-            ),
+        available_tools = callable_tools(
+            [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
         )
+        schemas = ToolSchemas(
+            {tool.name: tool.parameters for tool in request.tools if isinstance(tool, FunctionTool)}
+        )
+
+        def new_turn(sid: str) -> _Turn:
+            return _Turn(
+                self.model, call_index, sid, available_tools=available_tools, schemas=schemas
+            )
+
+        turn = new_turn(session_id)
         yield StreamStartEvent(model=request.model)
         received = False
+        dead_entry_retried = False
+        stall = _StallLadder(self.idle_timeout())
         try:
-            for attempt in range(2):
+            while True:
                 try:
                     async with aclosing(
                         entry.stream(
                             payload=body,
                             native_blocks=blocks,
                             session_id=session_id,
-                            idle_timeout=self.idle_timeout(),
+                            idle_timeout=stall.wait_s,
                             on_construct=_STREAM_CLIENT_POOL.bump_construct,
                             model=self.model,
                             cwd=cwd,
                             thinking=self.thinking,
                             system_prompt=system,
                             fresh=send.handle is None,
+                            on_silence=stall.on_silence,
                         )
                     ) as messages:
                         async for message in messages:
+                            if isinstance(message, StreamSilence):
+                                stall.still_waiting(message)
+                                continue
                             received = True
                             for out in turn.handle(message):
+                                stall.observe(out)
                                 yield out
-                            if turn.protocol_error:
+                            if turn.protocol_error or turn.past_calls:
                                 break
                     break
+                except ClaudeCodeIdleTimeout as exc:
+                    # Nothing of the reply is on screen yet: resend on a fresh client
+                    # and wait longer. Never a fixed clock that fails the turn; the
+                    # person sees each retry and can stop it.
+                    if stall.shown or _cancel_requested():
+                        raise
+                    _reset(entry, send)
+                    stall.resend(exc)
+                    entry = _STREAM_CLIENT_POOL.entry_for(
+                        session_id=pool_key, gact_session_id=pool_key
+                    )
+                    send = plan(entry, request, system, identity, kept=kept)
+                    body, blocks = _payload(request, send)
+                    session_id = send.handle or uuid.uuid4().hex
+                    turn = new_turn(session_id)
+                    received = False
                 except RuntimeError as exc:
                     # The session's pooled entry was released (an abandoned stream, a
                     # turn-end release, the idle sweep) after this call took it and
                     # before anything was sent. Its typed error is retryable: take the
                     # session's fresh entry once and plan again against it (it holds
                     # no conversation, so the send is full). On the record, never silent.
-                    if received or attempt or DEAD_ENTRY_MARKER not in str(exc):
+                    if received or dead_entry_retried or DEAD_ENTRY_MARKER not in str(exc):
                         raise
+                    dead_entry_retried = True
                     logger.info(
                         "claude_code query reconnected reason=dead_entry_reconnect "
                         "model=%s session=%s",
@@ -345,6 +374,11 @@ class _Turn:
         self.overran = False
         invoke = text_tool_protocol() == "invoke"
         self._splitter = StreamSplitter(available_tools if invoke else ())
+        # The reply went on past its first call block: the stream stops there, since
+        # nothing past the block is ever the step's (``reply_past_calls``). Checked every
+        # :data:`_PAST_CALLS_STRIDE` characters once a call block has begun.
+        self.past_calls = False
+        self._past_check_at = 0
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
         self._held = ""  # streamed text held back while it could still be non-progress
@@ -413,6 +447,20 @@ class _Turn:
             self._held = ""  # never shown
             return
         self.reply += text
+        if (
+            self._splitter.stopped
+            and self.available_tools
+            and len(self.reply) >= self._past_check_at
+        ):
+            self._past_check_at = len(self.reply) + _PAST_CALLS_STRIDE
+            if writing_past_block(self.reply, self.available_tools):
+                self.past_calls = True
+                logger.info(
+                    "provider reply stopped past call block reason=reply_past_calls "
+                    "model=%s chars=%d",
+                    self.model,
+                    len(self.reply),
+                )
         if self._progress.undecided:
             self._held += text
             return

@@ -23,7 +23,6 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.service_observation import parse_observation
-from clio_agent.runtime import windows_accept_guard
 
 #: A service environment's Python on a remote or Windows host: a pinned, tested minor.
 PINNED_PYTHON = ">=3.12,<3.13"
@@ -93,12 +92,13 @@ def supervised_plan(
                 script=script,
                 reuse_helper=helper,
                 process_group_helper=process_group.source(),
-                accept_guard_helper=windows_accept_guard.source(),
             )
             if verb == "install" and fresh:
                 body["from_scratch"] = True
             if verb == "start" and api_key:
                 body["api_key"] = api_key
+            if verb == "start" and (owner := configuration.get(reuse.OWNER_PROCESS_KEY, "")):
+                body["owner_process"] = int(owner)
             extra = {
                 "api_key_variable": key_variable,
                 "secret_env": dict(secret_env or {}),

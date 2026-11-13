@@ -36,7 +36,7 @@ from clio_agent.runtime.document_stack.process import (
     DocumentError,
     find_native,
     inherit_parent_access,
-    mark_search_ignored,
+    mark_machinery_ignored,
     office_convert,
     scratch_root,
 )
@@ -110,15 +110,12 @@ def _find_executable(*names: str) -> str | None:
     return None
 
 
-def _run(
-    command: list[str], *, cwd: Path, timeout_seconds: float = 120.0, office: bool = False
-) -> None:
+def _run(command: list[str], *, cwd: Path, office: bool = False) -> None:
     try:
         run_confined(
             command,
             cwd=cwd,
             workspace_root=_RENDER_WORKSPACE.get(),
-            timeout_seconds=timeout_seconds,
             office=office,
         )
     except (DocumentError, SandboxCompositionError) as exc:
@@ -147,7 +144,7 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
             if not output.is_file():
                 raise RenditionError("pandoc completed without producing a PDF")
             return output, "pandoc+typst" if typst is not None else "pandoc"
-    from clio_agent.runtime.document_runtime import (
+    from clio_agent.runtime.document_office import (
         office_profile_templates,
         prepare_office_runtime,
     )
@@ -273,7 +270,7 @@ def _render_pdf(
     if not rendition_root.is_relative_to(workspace_root):
         raise RenditionError("PDF preview output escapes the active workspace")
     rendition_root.mkdir(parents=True, exist_ok=True)
-    mark_search_ignored(rendition_root.parent)
+    mark_machinery_ignored(rendition_root.parent)
     target = rendition_root / f"{Path(record.name).stem}.pdf"
     if not target.resolve().is_relative_to(workspace_root):
         raise RenditionError("PDF preview output escapes the active workspace")

@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import logging
-import lzma
 import os
 import platform
 import shutil
-import subprocess
 import sysconfig
 import tarfile
 import tempfile
@@ -19,21 +16,24 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING
 
 import zstandard
 from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
     from . import office_compat, office_fetch, office_tree
-    from .office_fetch import MAX_DOWNLOAD
+    from .office_deb import _deb_data, _extract_linux
     from .office_fetch import download as _download
     from .office_fetch import mirror_rate as _mirror_rate
     from .office_prune import (
+        KEPT_ICON_THEMES,
         UNREAD_DICTIONARY_SUFFIXES,
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_PROGRAM_FILES,
+        WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
     )
@@ -50,14 +50,17 @@ else:
     import office_compat
     import office_fetch
     import office_tree
-    from office_fetch import MAX_DOWNLOAD
+    from office_deb import _deb_data, _extract_linux
     from office_fetch import download as _download
     from office_fetch import mirror_rate as _mirror_rate
     from office_prune import (
+        KEPT_ICON_THEMES,
         UNREAD_DICTIONARY_SUFFIXES,
         UNREAD_EXTENSIONS,
         UNREAD_PYTHON_PACKAGES,
         UNREAD_TREES,
+        WINDOWS_UNREAD_PROGRAM_FILES,
+        WINDOWS_UNREAD_TREES,
         prune_unread,
         unread,
     )
@@ -280,6 +283,9 @@ def _windows_tree_name() -> str | None:
             sorted(UNREAD_DICTIONARY_SUFFIXES),
             sorted(UNREAD_TREES),
             sorted(UNREAD_PYTHON_PACKAGES),
+            sorted(WINDOWS_UNREAD_TREES),
+            sorted(WINDOWS_UNREAD_PROGRAM_FILES),
+            sorted(KEPT_ICON_THEMES),
         )
     )
     digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
@@ -332,75 +338,6 @@ def executable(root: Path) -> Path | None:
         root / "opt" / "libreoffice26.2" / "program" / "soffice",
     ]
     return next((path for path in candidates if path.is_file()), None)
-
-
-def _deb_data(stream: BinaryIO) -> bytes:
-    if stream.read(8) != b"!<arch>\n":
-        raise DocumentError("Invalid LibreOffice Debian archive")
-    while header := stream.read(60):
-        if len(header) != 60 or header[58:] != b"`\n":
-            raise DocumentError("Invalid Debian archive member header")
-        size = int(header[48:58])
-        if size < 0 or size > MAX_DOWNLOAD:
-            raise DocumentError("Debian member exceeds its size limit")
-        payload = stream.read(size)
-        if len(payload) != size:
-            raise DocumentError("Truncated Debian archive member")
-        if size % 2:
-            stream.read(1)
-        if header[:16].decode("ascii").strip().rstrip("/").startswith("data.tar."):
-            return payload
-    raise DocumentError("Debian archive contains no data payload")
-
-
-_XZ_MAGIC = b"\xfd7zXZ\x00"
-
-
-def _deb_tar(package: Path) -> bytes:
-    """A package's data tar, xz-decompressed (lzma releases the GIL, so threads overlap).
-
-    Other compressions are returned as they are; ``tarfile`` opens them itself.
-    """
-    with package.open("rb") as source:
-        payload = _deb_data(source)
-    return lzma.decompress(payload) if payload.startswith(_XZ_MAGIC) else payload
-
-
-def _extract_linux(archive: Path, root: Path) -> None:
-    """Unpack the /opt application of every package in the archive into ``root``.
-
-    Decompressing the ~40 packages' xz payloads is most of the time (about 16 of 22 s
-    on one core), so a few are decompressed ahead on worker threads while one thread
-    writes the files in package order. At most ``2 * workers`` decompressed payloads
-    are held at once.
-    """
-    with tempfile.TemporaryDirectory(dir=root.parent) as temporary:
-        packages_root = Path(temporary)
-        with tarfile.open(archive) as outer:
-            outer.extractall(packages_root, filter="data")
-        packages = iter(sorted(packages_root.rglob("*.deb")))
-        workers = max(1, min(4, os.cpu_count() or 1))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="office-unpack") as pool:
-            pending: deque[Future[bytes]] = deque()
-
-            def submit_next() -> None:
-                package = next(packages, None)
-                if package is not None:
-                    pending.append(pool.submit(_deb_tar, package))
-
-            for _ in range(2 * workers):
-                submit_next()
-            while pending:
-                payload = pending.popleft().result()
-                submit_next()
-                with tarfile.open(fileobj=io.BytesIO(payload)) as contents:
-                    # Only the self-contained /opt application, not distro integration.
-                    members = [
-                        member
-                        for member in contents
-                        if member.name.removeprefix("./").startswith("opt/")
-                    ]
-                    contents.extractall(root, members=members, filter="data")
 
 
 def _copy_app_bundle(source: Path, target: Path) -> None:
@@ -545,12 +482,9 @@ def _verify_office(
     has its seeded profile has converted successfully and is not probed again.
     ``profile_starter`` is the profile archive laid out with this Office image.
     """
-    # A real Windows first launch can exhaust the native probe deadline while
-    # the same binary verifies promptly after its timed-out process tree retires.
-    # A macOS first launch is likewise delayed by the one-time Gatekeeper/XProtect
-    # assessment of the freshly copied app. Recover once with a new profile; keep
-    # the deadline and fail closed when neither attempt verifies. Other failures
-    # and Linux are not retried.
+    # A first launch can be slow: Windows checks thousands of freshly installed files and
+    # macOS assesses the freshly copied app once. The probe waits for Office to answer, so
+    # a slow start is never reported as a missing or broken Office; stopping the turn ends it.
     if profile_templates is not None:
         profile_templates.mkdir(parents=True, exist_ok=True)
         key = office_profile_key(executable_path)
@@ -564,50 +498,36 @@ def _verify_office(
             # This exact build already converted a document when it was seeded.
             return
         seed = profile_templates is not None
-        attempts = 2 if platform.system() in {"Windows", "Darwin"} else 1
-        for attempt in range(attempts):
-            temporary = tempfile.TemporaryDirectory(
-                prefix="lo-seed-" if seed else "lo-version-",
-                dir=profile_templates if seed else None,
+        temporary = tempfile.TemporaryDirectory(
+            prefix="lo-seed-" if seed else "lo-version-",
+            dir=profile_templates if seed else None,
+        )
+        try:
+            work = Path(temporary.name).resolve()
+            profile = work / "profile"
+            if seed:
+                # The kept profile must stay readable to confined document workers.
+                inherit_parent_access(work)
+                _start_profile(profile, profile_starter)
+                _seed_document(work / "seed.docx")
+                arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
+                arguments += ["--outdir", str(work), str(work / "seed.docx")]
+            else:
+                arguments = ["--norestore", "--version"]
+            run(
+                [
+                    str(executable_path),
+                    f"-env:UserInstallation={profile.as_uri()}",
+                    "--headless",
+                    "--nologo",
+                    *arguments,
+                ],
+                cwd=cwd,
             )
-            try:
-                work = Path(temporary.name).resolve()
-                profile = work / "profile"
-                if seed:
-                    # The kept profile must stay readable to confined document workers.
-                    inherit_parent_access(work)
-                    _start_profile(profile, profile_starter)
-                    _seed_document(work / "seed.docx")
-                    arguments = ["--nodefault", "--nofirststartwizard", "--convert-to", "pdf"]
-                    arguments += ["--outdir", str(work), str(work / "seed.docx")]
-                else:
-                    arguments = ["--norestore", "--version"]
-                run(
-                    [
-                        str(executable_path),
-                        f"-env:UserInstallation={profile.as_uri()}",
-                        "--headless",
-                        "--nologo",
-                        *arguments,
-                    ],
-                    cwd=cwd,
-                    timeout=120 if seed else 30,
-                )
-                if profile_templates is not None:
-                    _publish_profile(work, profile_templates / key)
-                return
-            except DocumentError as error:
-                if attempt + 1 == attempts or not isinstance(
-                    error.__cause__, subprocess.TimeoutExpired
-                ):
-                    raise
-                logger.warning(
-                    "reason=office_probe_timeout_retry: %s; "
-                    "retrying once with a fresh private profile",
-                    error,
-                )
-            finally:
-                _cleanup_profile(temporary)
+            if profile_templates is not None:
+                _publish_profile(work, profile_templates / key)
+        finally:
+            _cleanup_profile(temporary)
     finally:
         if profile_templates is not None:
             lock.release()
@@ -702,7 +622,18 @@ def _finish_image(image: Path, root: Path, profile_templates: Path | None) -> No
         raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
 
 
-def _lay_prepared(prepared: Path, root: Path, profile_templates: Path | None) -> bool:
+def _lap(timings: dict[str, float] | None, key: str, started: float) -> None:
+    """Record ``key``'s seconds since ``started`` when timings are collected."""
+    if timings is not None:
+        timings[key] = round(time.monotonic() - started, 1)
+
+
+def _lay_prepared(
+    prepared: Path,
+    root: Path,
+    profile_templates: Path | None,
+    timings: dict[str, float] | None = None,
+) -> bool:
     """Publish the installer's prepared tree as ``root``; False if it cannot be used."""
     with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
         staging = Path(temporary)
@@ -710,17 +641,24 @@ def _lay_prepared(prepared: Path, root: Path, profile_templates: Path | None) ->
         image = staging / "image"
         image.mkdir()
         try:
+            started = time.monotonic()
             if platform.system() == "Windows":
-                office_tree.unpack_windows_tree(
+                waited = office_tree.unpack_windows_tree(
                     prepared, image, max_unpacked=MAX_PREPARED, stall_s=_INSTALLER_STALL_S
                 )
+                if timings is not None:
+                    # The tree is unpacked as it downloads: this share waited on the network.
+                    timings["office_download_wait"] = round(waited, 1)
                 if executable(image) is None:
                     raise DocumentError("Prepared Office tree holds no soffice executable")
             else:
                 office_tree.unpack_prepared_tree(prepared, image, MAX_PREPARED)
                 # Rewrites the launcher only: the tree's userland is this release's.
                 office_compat.prepare(image, download=_download, deb_data=_deb_data)
+            _lap(timings, "office_unpack", started)
+            started = time.monotonic()
             _finish_image(image, root, profile_templates)
+            _lap(timings, "office_seed", started)
         except (DocumentError, OSError, ValueError, tarfile.TarError, zstandard.ZstdError) as exc:
             if root.exists():
                 raise
@@ -738,6 +676,7 @@ def ensure_office(
     *,
     profile_templates: Path | None = None,
     profile_starter: Path | None = None,
+    timings: dict[str, float] | None = None,
 ) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
@@ -745,6 +684,7 @@ def ensure_office(
     own pinned userland (``office_compat``), so it needs nothing from the host. An
     installer that downloaded the release's prepared tree (``prepared_tree_name``)
     hands it over, and nothing is downloaded or unpacked from TDF's packages here.
+    ``timings``, when given, receives the ``office_unpack`` and ``office_seed`` seconds.
     """
     root = root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -759,15 +699,17 @@ def ensure_office(
                         "Private LibreOffice launcher disappeared during preparation"
                     )
             inherit_parent_access(root)
+            started = time.monotonic()
             _verify_office(
                 existing,
                 cwd=root,
                 profile_templates=profile_templates,
                 profile_starter=profile_starter,
             )
+            _lap(timings, "office_seed", started)
             return str(existing)
         prepared = installer_prepared_tree()
-        if prepared is not None and _lay_prepared(prepared, root, profile_templates):
+        if prepared is not None and _lay_prepared(prepared, root, profile_templates, timings):
             candidate = executable(root)
             if candidate is None:
                 raise DocumentError("LibreOffice renderer disappeared after provisioning")
@@ -781,8 +723,12 @@ def ensure_office(
             inherit_parent_access(staging)
             image = staging / "image"
             image.mkdir()
+            started = time.monotonic()
             _lay_image(image, staging, lambda: _office_archive(archive, name, checksum, url))
+            _lap(timings, "office_unpack", started)
+            started = time.monotonic()
             _finish_image(image, root, profile_templates)
+            _lap(timings, "office_seed", started)
         candidate = executable(root)
         if candidate is None:
             raise DocumentError("LibreOffice renderer disappeared after provisioning")

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
@@ -29,6 +30,7 @@ from clio_agent.gact.documents.models import (
 from clio_agent.gact.documents.profiles import document_format
 from clio_agent.gact.documents.renditions import (
     RenditionError,
+    RenditionResult,
     RenditionUnavailableError,
     find_pdf_rendition,
     render_pdf,
@@ -40,6 +42,7 @@ from clio_agent.gact.documents.store import (
     get_document_store,
 )
 from clio_agent.gact.session_input import accept_session_input
+from clio_agent.runtime.document_stack.process import watched
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -47,6 +50,32 @@ if TYPE_CHECKING:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _render_while_connected(
+    http: Request,
+    app: FastAPI,
+    session_id: str,
+    record: ArtifactRecord,
+    version: ArtifactVersion,
+) -> RenditionResult:
+    """Render with no time limit; the renderer is stopped if the person goes away."""
+    stop = threading.Event()
+
+    def render() -> RenditionResult:
+        with watched(stop.is_set):
+            return render_pdf(app, session_id, record, version)
+
+    task = asyncio.ensure_future(asyncio.to_thread(render))
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=1.0)
+            if not task.done() and await http.is_disconnected():
+                stop.set()
+    except asyncio.CancelledError:
+        stop.set()
+        raise
+    return task.result()
 
 
 def _error(status_code: int, code: str, message: str, **details: Any) -> HTTPException:
@@ -184,6 +213,7 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
         artifact_id: str,
         request: CreateRenditionRequest,
         session_id: str,
+        http: Request,
     ) -> dict[str, Any]:
         session = app.state.sessions.get(session_id)
         if session is None:
@@ -192,7 +222,7 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
         if record.workspace_id != session.workspace_id:
             raise _error(403, "artifact_workspace_mismatch", "artifact is outside this session")
         try:
-            result = await asyncio.to_thread(render_pdf, app, session_id, record, version)
+            result = await _render_while_connected(http, app, session_id, record, version)
         except RenditionUnavailableError as exc:
             raise _error(501, "rendition_unavailable", str(exc)) from exc
         except RenditionError as exc:

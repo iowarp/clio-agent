@@ -176,7 +176,7 @@ def test_installer_never_records_incomplete_helpers(
         "capabilities": {},
     }
     monkeypatch.setattr(document_install, "prepare_document_runtime", lambda *_a, **_kw: result)
-    monkeypatch.setattr(document_install, "prepare_office_runtime", lambda: "test office")
+    monkeypatch.setattr(document_install, "prepare_office_runtime", lambda **_: "test office")
     monkeypatch.setattr(document_install, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(document_install, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(document_install, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -235,7 +235,7 @@ def test_installer_recovers_existing_fence_only_after_proof(
     if enforced:
         assert codex_desktop_setup.prepare_existing_windows_fence()["status"] == "available"
     else:
-        with pytest.raises(document_install.DocumentRuntimeError, match="verification failed"):
+        with pytest.raises(document_install.DocumentRuntimeError, match="real fence probe verdict"):
             codex_desktop_setup.prepare_existing_windows_fence()
 
 

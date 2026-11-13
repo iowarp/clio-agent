@@ -13,7 +13,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from clio_agent.tools.builtin_annotations import FS_TOOL_ANNOTATIONS, SHELL_TOOL_ANNOTATIONS
+from clio_agent.tools.builtin_annotations import (
+    FS_TOOL_ANNOTATIONS,
+    SHELL_TOOL_ANNOTATIONS,
+    WEB_TOOL_ANNOTATIONS,
+)
 
 #: Standard MCP boolean hint keys. A non-boolean value for any of these makes the annotation
 #: block untrustworthy, so classification fails CLOSED (treated as effectful / not read-only).
@@ -161,7 +165,11 @@ def _entry(
 # read/write classification tags below are PROJECTED from this mapping (the SAME
 # dicts the fs/shell decorators declare), so the annotations are the single source
 # of truth and no hand-authored read/write tag competes (#1061).
-_BUILTIN_ANNOTATIONS: dict[str, dict[str, Any]] = {**FS_TOOL_ANNOTATIONS, **SHELL_TOOL_ANNOTATIONS}
+_BUILTIN_ANNOTATIONS: dict[str, dict[str, Any]] = {
+    **FS_TOOL_ANNOTATIONS,
+    **SHELL_TOOL_ANNOTATIONS,
+    **WEB_TOOL_ANNOTATIONS,
+}
 
 
 def _builtin_entry(
@@ -223,6 +231,15 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "fs_glob": _builtin_entry(
         "fs_glob", "workspace", {"workspace"}, domain="workspace", planner_visible=False
+    ),
+    # web_*/literature_* are open-world actions: no read/write tag (see _WEB_ANNOTATIONS).
+    "web_search": _builtin_entry("web_search", "web", {"web", "research"}, domain="web"),
+    "web_fetch": _builtin_entry("web_fetch", "web", {"web", "research"}, domain="web"),
+    "literature_search": _builtin_entry(
+        "literature_search", "literature", {"literature", "research"}, domain="web"
+    ),
+    "literature_lookup": _builtin_entry(
+        "literature_lookup", "literature", {"literature", "research"}, domain="web"
     ),
 }
 

@@ -6,6 +6,82 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.7] - 2026-11-13
+
+### Added
+
+- `GET /v1/settings/tools?server=<name>` returns the Tools settings page for one
+  MCP server by name, for a server the person or a workspace configured rather
+  than a plugin. Its rows have the same permission, I/O and per-mode outcomes as
+  a plugin's; until a conversation loads the server, its name is in
+  `servers_not_loaded`. Pass exactly one of `ref` and `server`.
+
+### Changed
+
+- Agent actions no longer have hard time limits. A long job runs until it
+  finishes or you stop the turn:
+  - Document conversions and renders (LibreOffice, the document helpers,
+    LaTeX builds) used to be stopped after 60 to 120 s. Now a running conversion
+    shows "Still running after …" on its tool row, and Stop ends it together
+    with all its processes. A PDF preview you requested stops when you leave.
+  - A conversion whose processes do no work for 30 s is reported on its tool
+    row as stalled, and the server logs `document_process_stalled`. It is not
+    killed. On macOS the notice names the likely cause, a sandbox denial that
+    leaves LibreOffice waiting on its pipe. If you stop it, the error says it
+    was stuck.
+  - The LibreOffice version check that gates a conversion is waited for, so a
+    slow cold start is never reported as a missing Office. This replaces the
+    60 s probe limit from #2221.
+  - File search and glob (`fs.search_timeout_s`) and browser actions
+    (`browser.action_timeout_s`) default to `0`, meaning no limit. A positive
+    value restores an operator's limit.
+- A Claude Code stream that goes silent no longer fails the turn after 2
+  minutes (#2211). After 30 s with no response (`limits.lm_stall_wait_s`), CLIO
+  resends the request, or keeps waiting once output has started, at growing
+  intervals: 30 s, 60 s, 120 s, 240 s, then every 300 s. Each wait shows as a
+  notice in the conversation, and you can stop the turn at any time. Stopping
+  ends the wait at once, even when the stalled stream never answers.
+- Web search no longer installs or runs a private SearXNG. `web_search` and
+  `web_fetch` are CLIO built-ins that send searches to hosted sources (Keenable,
+  Exa, Firecrawl, You.com, Parallel) in the person's order, asking once before
+  the first query to each source and once when a source's free allowance runs
+  out. New built-ins `literature_search` and `literature_lookup` search OpenAlex,
+  Crossref, arXiv, Europe PMC, OSTI.gov, OpenCitations and DataCite. Results are
+  compact; each source's full answer is saved to `payload_file`. New routes
+  `GET`/`PATCH /v1/search/providers`, `PUT`/`DELETE /v1/search/providers/{id}/key`,
+  `POST /v1/search/openalex-key`, and the search-service API `POST /v1/search`,
+  `POST /v1/fetch`, `GET /v1/limits`. See `docs/WEB_SEARCH.md`.
+
+### Removed
+
+- The managed `searxng` and `web_search` infrastructure services, the search
+  bootstrap at server start, `GET /v1/search/backend`, `POST /v1/search/query`,
+  `/v1/search/engine-keys/{engine}`, and the `search.backend`,
+  `search.searxng.*`, `search.local_searxng.*` and `search.clio_web_search.url`
+  keys (a leftover key is a typed `config_key_removed` error). The Desktop
+  bundle no longer installs clio-kit's Web Search adapter.
+
+### Fixed
+
+- The "Protected execution needs attention" notice says what failed in a plain
+  sentence instead of showing the raw per-folder grant records, which now go
+  to the log. An unexpected setup error no longer shows its exception text.
+- `PUT /v1/providers/lm` sent right after `/v1/health` answers now waits (up to
+  30 s) for the task runtime to finish starting instead of returning 503
+  `task_runtime_starting`. Other routes still refuse immediately while CLIO
+  starts.
+- Cancelling a model download on Windows stops it. Progress polling could make
+  the worker's receipt write fail, which silently ended its cancellation checks,
+  so cancel answered "worker has not stopped yet" while the download ran on.
+  Receipt writes now retry, verification checks for cancellation while hashing
+  large files, and a worker that still ignores a cancel is ended.
+- `DELETE` of a conversation that was stopped succeeds instead of returning
+  409 (#2250). Removing a workspace deletes its conversations, as the dialog
+  says (#2259).
+- Removing a marketplace deletes its fetched checkout, so adding it again
+  succeeds; on Windows the re-add used to fail with "Cannot create a file when
+  that file already exists" (#2271).
+
 ## [0.9.6.6] - 2026-11-12
 
 No GACT-contract change. A CLIO installed by `install.ps1` with its own home

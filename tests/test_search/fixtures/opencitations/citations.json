@@ -1,0 +1,60 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.opencitations.net/index/v2/citations/doi:10.1038/s41586-025-09482-1",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "oci": "06010740938-06011308268",
+      "citing": "omid:br/06010740938 doi:10.3390/toxics13100817 openalex:W4414531217",
+      "cited": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "creation": "2025-09-26",
+      "timespan": "P0Y0M16D",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06013026925-06011308268",
+      "citing": "omid:br/06013026925 doi:10.1007/s41748-026-01026-5",
+      "cited": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "creation": "2026-01-29",
+      "timespan": "P0Y4M19D",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06013053682-06011308268",
+      "citing": "omid:br/06013053682 doi:10.1088/1748-9326/ae10c9",
+      "cited": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "creation": "2025-10-17",
+      "timespan": "P0Y1M7D",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06013118965-06011308268",
+      "citing": "omid:br/06013118965 doi:10.1093/eurheartj/ehaf1003",
+      "cited": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "creation": "2026-01-27",
+      "timespan": "P0Y4M17D",
+      "journal_sc": "no",
+      "author_sc": "no"
+    },
+    {
+      "oci": "06013150478-06011308268",
+      "citing": "omid:br/06013150478 doi:10.3390/su172411014",
+      "cited": "omid:br/06011308268 doi:10.1038/s41586-025-09482-1 openalex:W4414090318",
+      "creation": "2025-12-09",
+      "timespan": "P0Y2M29D",
+      "journal_sc": "no",
+      "author_sc": "no"
+    }
+  ]
+}

@@ -136,8 +136,7 @@ async def close_request_owners(app: "FastAPI") -> None:
     """Close the owners that only serve requests, once the loop serves none any more.
 
     Pending MCP browser sign-ins are released before the document store closes. This
-    is the first shutdown step, so it also arms the shutdown budget (shutdown_budget),
-    and stops the private SearXNG the server's boot started (search_bootstrap).
+    is the first shutdown step, so it also arms the shutdown budget (shutdown_budget).
     """
     from clio_agent.gact import shutdown_budget  # noqa: PLC0415
 
@@ -152,11 +151,6 @@ async def close_request_owners(app: "FastAPI") -> None:
     from clio_agent.gact.routes.session_creation import close_creation_executor  # noqa: PLC0415
 
     close_creation_executor(app)
-    if getattr(app.state, "server_boot", False):
-        from clio_agent.gact import search_bootstrap  # noqa: PLC0415
-
-        # The SearXNG this server's boot started stops with it (bounded, typed reasons).
-        await search_bootstrap.stop_started(app)
     boot_doctor = getattr(app.state, "health_boot_task", None)
     if boot_doctor is not None:
         boot_doctor.cancel()  # its probe thread ends on its own 1 s timeouts
@@ -335,9 +329,6 @@ def start(app: "FastAPI") -> None:
     from clio_agent.gact import provider_support_boot  # noqa: PLC0415
 
     provider_support_boot.start(app)  # recorded provider support a runtime change removed
-    from clio_agent.gact import search_bootstrap  # noqa: PLC0415
-
-    search_bootstrap.start(app)  # first-run private SearXNG (search.backend=local_searxng)
     from clio_agent.gact.routes import health_boot  # noqa: PLC0415 - routes import this module
     from clio_agent.gact.routes.system import collect_boot_health_report  # noqa: PLC0415
 

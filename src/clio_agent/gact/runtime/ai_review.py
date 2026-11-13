@@ -134,7 +134,9 @@ def _resolve_reviewer_lm(app: "FastAPI") -> tuple[Any, Any]:
     ):
         return judge_route("permissions", caller, adapter)
     if not model:
-        return caller, adapter
+        from clio_agent.gact.fleet.fast_model import fast_route  # noqa: PLC0415
+
+        return fast_route(caller, adapter)
     from clio_agent.lm.secondary import (  # noqa: PLC0415
         SecondarySettings,
         resolve_secondary_lm,

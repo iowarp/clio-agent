@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from filelock import FileLock
 
 from clio_agent import paths
 from clio_agent.runtime.document_stack.node_paths import node_path
+from clio_agent.runtime.document_stack.npm_package import managed_npm
 
 CLIENT_VERSION = "0.0.14"
 CLIENT_FILES = Path(__file__).with_name("obsidian_client")
@@ -107,7 +109,10 @@ class ManagedObsidianClient:
             node_root = Path(node).parent
             if node_root.name == "bin":
                 node_root = node_root.parent
-            npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+            try:
+                npm = managed_npm(node_root)
+            except (OSError, tarfile.TarError) as exc:
+                raise ObsidianClientError("CLIO's Node.js environment needs repair.") from exc
             if not npm.is_file():
                 raise ObsidianClientError("CLIO's Node.js environment needs repair.")
             self.project.mkdir(parents=True, exist_ok=True)
@@ -118,6 +123,8 @@ class ManagedObsidianClient:
             environment = {
                 **os.environ,
                 "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", ""),
+                # npm's cache is ~/.npm unless named; CLIO's goes with --purge-caches.
+                "npm_config_cache": str(self.root / "npm-cache"),
             }
             flags = _hidden_process_options()
             try:

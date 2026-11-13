@@ -1,7 +1,7 @@
 """Independent, durable model choices for CLIO's judges, search assistant, the
 long-term memory background pass (``memory_extract``, ``memory_consolidate``), the
-fast ``explore`` subagent (``Prefers(role="explore")``) and the server-default SPOTTER
-watcher model (``spotter``)."""
+fast ``explore`` subagent (``Prefers(role="explore")``), the server-default SPOTTER
+watcher model (``spotter``) and the fast model (``fast``) every unset role runs on."""
 
 from __future__ import annotations
 
@@ -77,6 +77,9 @@ class FleetUpdate(BaseModel):
     #: The model a SPOTTER watcher runs on when its session names none
     #: (``metadata.spotter_model``); null inherits the watched session's model.
     spotter: JudgeModel | None = None
+    #: The fast model (:mod:`clio_agent.gact.fleet.fast_model`) every unset helper
+    #: role runs on; null uses the caller's account's fast family.
+    fast: JudgeModel | None = None
 
 
 def _json(value: Any) -> Any:
@@ -113,7 +116,10 @@ def fleet_settings(app: Any = None) -> dict[str, Any]:
     spotter = _model_choice(
         conf.resolve("fleet.spotter", env="CLIO_FLEET_SPOTTER", default=None, cast=_json)
     )
-    # An unset SPOTTER default leaves the revision every earlier client computed.
+    fast = _model_choice(
+        conf.resolve("fleet.fast", env="CLIO_FLEET_FAST", default=None, cast=_json)
+    )
+    # An unset SPOTTER or fast model leaves the revision every earlier client computed.
     revision = hashlib.sha256(
         json.dumps(
             {
@@ -121,6 +127,7 @@ def fleet_settings(app: Any = None) -> dict[str, Any]:
                 "search": search,
                 "explore_nudge": nudge,
                 **({"spotter": spotter} if spotter else {}),
+                **({"fast": fast} if fast else {}),
             },
             sort_keys=True,
         ).encode()
@@ -131,6 +138,7 @@ def fleet_settings(app: Any = None) -> dict[str, Any]:
         "search": search,
         "explore_nudge": nudge,
         "spotter": spotter,
+        "fast": fast,
     }
 
 
@@ -140,7 +148,7 @@ def save_fleet_settings(update: FleetUpdate, app: Any = None) -> dict[str, Any]:
         conf.reload()
         if update.revision != fleet_settings(app)["revision"]:
             raise ValueError("Fleet settings changed; reload before saving")
-        for choice in [*update.judges.values(), update.search, update.spotter]:
+        for choice in [*update.judges.values(), update.search, update.spotter, update.fast]:
             if choice and (not choice.model_id.strip() or not _known_account(choice.provider_id)):
                 raise ValueError("Choose a configured provider and a nonempty model")
         path = user_config_path()
@@ -158,6 +166,8 @@ def save_fleet_settings(update: FleetUpdate, app: Any = None) -> dict[str, Any]:
             fleet["search"] = update.search.model_dump() if update.search else None
         if "spotter" in update.model_fields_set:
             fleet["spotter"] = update.spotter.model_dump() if update.spotter else None
+        if "fast" in update.model_fields_set:
+            fleet["fast"] = update.fast.model_dump() if update.fast else None
         document["fleet"] = fleet
         write_document(path, document)
         if update.explore_nudge is not None:
@@ -169,10 +179,13 @@ def save_fleet_settings(update: FleetUpdate, app: Any = None) -> dict[str, Any]:
 
 
 def judge_route(role: JudgeRole, caller: Any, adapter: Any = None) -> tuple[Any, Any]:
-    """Resolve a judge using its own provider credentials; inherit the exact caller by default."""
+    """Resolve a judge using its own provider credentials; an unset role runs on the fast
+    model (:mod:`clio_agent.gact.fleet.fast_model`), else the exact caller."""
     raw = fleet_settings()["judges"][role]
     if raw is None:
-        return caller, adapter
+        from clio_agent.gact.fleet.fast_model import fast_route  # noqa: PLC0415
+
+        return fast_route(caller, adapter)
     choice = JudgeModel.model_validate(raw)
     return model_route(choice.provider_id, choice.model_id)
 

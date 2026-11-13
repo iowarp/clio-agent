@@ -551,7 +551,13 @@ async def _run_turn_in_background(
     except Exception as exc:  # noqa: BLE001
         # The envelope is short; the log keeps the whole failure, stack included.
         logger.exception("turn forward failed session=%s", state.sid)
-        state.error_info = forward_error_info(state, exc, state.transcript.raw_streamed_text())
+        try:
+            state.error_info = forward_error_info(state, exc, state.transcript.raw_streamed_text())
+        except Exception:  # noqa: BLE001 - a classifier fault must not strand the turn
+            logger.exception("turn error classification failed session=%s", state.sid)
+            state.error_info = ErrorInfo(
+                error="agent_error", message=f"agent.forward raised: {exc}", recoverable=True
+            )
 
     # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,
     # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived

@@ -152,8 +152,11 @@ def test_pdf_preview_is_persisted_reused_and_bound_to_immutable_source(
         assert second_preview.status_code == 200, second_preview.text
         assert second_preview.json()["artifact"]["artifact_id"] != pdf_id
     assert seen == [b"original document", b"new document"]
-    # Only the CLIO-written search-ignore marker remains in the document scratch.
-    assert [p.name for p in (root / ".tmp" / "clio-documents").iterdir()] == [".ignore"]
+    # Only the CLIO-written search and git ignore markers remain in the document scratch.
+    assert sorted(p.name for p in (root / ".tmp" / "clio-documents").iterdir()) == [
+        ".gitignore",
+        ".ignore",
+    ]
 
 
 def test_unavailable_workspace_scratch_keeps_the_accepted_source_artifact(tmp_path: Path) -> None:

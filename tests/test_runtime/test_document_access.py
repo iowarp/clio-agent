@@ -14,7 +14,7 @@ from urllib.request import url2pathname
 
 import pytest
 
-from clio_agent.runtime import document_runtime, sandbox
+from clio_agent.runtime import document_office, document_runtime, sandbox
 from clio_agent.runtime.document_stack import office, process
 
 
@@ -82,8 +82,11 @@ def test_host_created_office_profile_is_accessible_to_its_confined_executor(tmp_
     )
     assert pdf.read_bytes() == b"%PDF-1.7\npreview"
     assert source.read_bytes() == b"immutable deck"
-    # Only the CLIO-written search-ignore marker remains; the temporary profile is gone.
-    assert [entry.name for entry in process.scratch_root(tmp_path).iterdir()] == [".ignore"]
+    # Only the CLIO-written search and git ignore markers remain; the temporary profile is gone.
+    assert sorted(entry.name for entry in process.scratch_root(tmp_path).iterdir()) == [
+        ".gitignore",
+        ".ignore",
+    ]
 
 
 @pytest.mark.parametrize("managed", [False, True])
@@ -98,10 +101,10 @@ def test_discovered_managed_renderer_still_receives_host_access_repair(
         calls.append(path)
         return native
 
-    monkeypatch.setattr(document_runtime, "office_runtime_root", lambda: root)
+    monkeypatch.setattr(document_office, "office_runtime_root", lambda: root)
     monkeypatch.setattr(process, "find_native", lambda name: native)
     monkeypatch.setattr(office, "ensure_office", prepare)
-    assert document_runtime.prepare_office_runtime() == native
+    assert document_office.prepare_office_runtime() == native
     assert calls == ([root] if managed else [])
 
 

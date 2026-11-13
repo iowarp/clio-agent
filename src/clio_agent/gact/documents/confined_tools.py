@@ -15,17 +15,18 @@ def run_confined(
     *,
     cwd: Path,
     workspace_root: Path | None,
-    timeout_seconds: float = 120.0,
+    timeout_seconds: float | None = None,
     office: bool = False,
 ) -> str:
     """Run ``command`` confined to the workspace's write roots with the network denied.
 
     With no ``workspace_root`` the command runs unconfined, as the rendition pipeline does
     outside a workspace. ``office`` marks a LibreOffice command (see
-    :func:`sandbox.wrap_confined`). Returns the command's standard output.
+    :func:`sandbox.wrap_confined`). The command runs until it exits or is stopped through
+    :func:`clio_agent.runtime.document_stack.process.watched`. Returns its standard output.
 
     Raises:
-        DocumentError: the command failed or timed out.
+        DocumentError: the command failed (``DocumentCancelled`` when it was stopped).
         SandboxCompositionError: the write fence could not be composed.
     """
 

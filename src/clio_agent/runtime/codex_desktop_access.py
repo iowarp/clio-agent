@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,41 @@ from clio_agent.runtime.sandbox_cli import (
     build_fleet_runtime_grant_plan,
     grant_fleet_runtime_access,
 )
+
+#: Written beside a runtime root by the installer (install.ps1, CLIO Desktop) that
+#: granted the sandbox users access to the root while it was still empty.
+ACCESS_MARKER = "runtime-access.json"
+
+
+def _granted_before_unpack(grant: FleetGrant) -> bool:
+    """Whether the installer granted this runtime root before it wrote any file.
+
+    Every file then inherited the access as it was created, so applying the grant
+    again would only rewrite ~30,000 unchanged descriptors (7-9 s). An installer
+    pre-grants only when the runtime it replaces already had this access, and
+    writes the marker only after a complete unpack into the granted root, which
+    must still carry the access for every user.
+    """
+    if grant.label != "bundled_runtime" or not grant.inherit:
+        return False
+    root = Path(grant.path)
+    try:
+        marker = json.loads((root.parent / ACCESS_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if (
+        not isinstance(marker, dict)
+        or marker.get("schema") != 1
+        or marker.get("runtime") != root.name
+        or not isinstance(marker.get("users"), list)
+        or not set(grant.users) <= set(marker["users"])
+    ):
+        return False
+    code, acl = _run_icacls(["icacls", grant.path])
+    return code == 0 and all(
+        re.search(rf"\\{re.escape(user)}:(?:\(I\))?\(OI\)\(CI\)\(RX\)", acl, re.IGNORECASE)
+        for user in grant.users
+    )
 
 
 def _identity(grant: FleetGrant) -> dict[str, Any] | None:
@@ -92,9 +128,26 @@ def ensure_runtime_access(*, progress: Callable[[str], None] | None = None) -> l
                     if progress:
                         progress(f"Access to {label} is ready.")
                     continue
-            if progress:
-                progress(f"Preparing access to {label}...")
-            applied = grant_fleet_runtime_access(plan=[grant], platform="win32", combine_users=True)
+            if identity is not None and _granted_before_unpack(grant):
+                applied = [
+                    {
+                        "grant": key,
+                        "path": grant.path,
+                        "user": user,
+                        "status": "granted",
+                        "rc": 0,
+                        "inherited": True,
+                    }
+                    for user in grant.users
+                ]
+                if progress:
+                    progress(f"Access to {label} is ready.")
+            else:
+                if progress:
+                    progress(f"Preparing access to {label}...")
+                applied = grant_fleet_runtime_access(
+                    plan=[grant], platform="win32", combine_users=True
+                )
             reasons.extend(applied)
             identity = _identity(grant) if grant.exists else None
             if (

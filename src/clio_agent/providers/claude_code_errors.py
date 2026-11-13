@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.providers.terminal_signal import exception_tree
+
 CLAUDE_CODE_NOT_INSTALLED_MESSAGE = "Claude Code support is not installed on the connected agent."
 CLAUDE_CODE_INSTALL_FAILED_MESSAGE = (
     "CLIO could not install Claude Code support. Check the connected agent's "
@@ -43,16 +45,14 @@ def contains_claude_code_signed_out(value: Any) -> bool:
     """Whether an exception (or group, or message) carries a Claude sign-out.
 
     Matches CLIO's own :data:`CLAUDE_CODE_SIGNED_OUT_MESSAGE` constant, never
-    the provider's prose, walking exception groups and explicit causes.
+    the provider's prose, walking exception groups and explicit causes (each
+    node once, so a cause cycle cannot recurse forever).
     """
 
-    if isinstance(value, ClaudeCodeSignedOutError) or CLAUDE_CODE_SIGNED_OUT_MESSAGE in str(value):
-        return True
-    children = list(getattr(value, "exceptions", None) or ())
-    cause = getattr(value, "__cause__", None)
-    if cause is not None:
-        children.append(cause)
-    return any(contains_claude_code_signed_out(child) for child in children)
+    return any(
+        isinstance(node, ClaudeCodeSignedOutError) or CLAUDE_CODE_SIGNED_OUT_MESSAGE in str(node)
+        for node in exception_tree(value)
+    )
 
 
 def contains_claude_code_dependency_error(value: Any) -> bool:

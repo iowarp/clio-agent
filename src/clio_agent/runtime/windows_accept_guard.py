@@ -13,31 +13,21 @@ errors, so the server keeps accepting. It does nothing off Windows, nor on
 CPython releases that carry the upstream fix (python/cpython#161238, backported
 in #161309 and #161308).
 
-The module uses only the standard library and Python 3.10 syntax because it is
-also shipped beside native service launchers as :data:`SHIPPED_NAME`; run as
-``python clio_accept_guard.py launch.py ARGS...`` it installs the guard and then
-runs ``launch.py`` as ``__main__``.
+The Desktop GACT server installs it before uvicorn starts serving
+(:mod:`clio_agent.gact.desktop_lifecycle`).
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
 from typing import Any
-
-SHIPPED_NAME = "clio_accept_guard.py"
 
 # ERROR_NETNAME_DELETED, ERROR_CONNECTION_ABORTED, WSAECONNABORTED, WSAECONNRESET.
 _TRANSIENT_WINERRORS = frozenset({64, 1236, 10053, 10054})
 _GUARDED = "_clio_accept_guard"
 
 logger = logging.getLogger("clio_agent.windows_accept_guard")
-
-
-def source() -> str:
-    """This file's text, shipped to native services as :data:`SHIPPED_NAME`."""
-    return Path(__file__).read_text(encoding="utf-8")
 
 
 def upstream_fixed(version: tuple[Any, ...] | None = None) -> bool:
@@ -164,17 +154,3 @@ def _guarded_accept(windows_events: Any, overlapped: Any) -> Any:
         return outer
 
     return accept
-
-
-def _main(argv: list[str]) -> None:
-    import runpy
-
-    if not argv:
-        raise SystemExit(f"usage: {SHIPPED_NAME} SCRIPT [ARGS...]")
-    install()
-    sys.argv = list(argv)
-    runpy.run_path(argv[0], run_name="__main__")
-
-
-if __name__ == "__main__":
-    _main(sys.argv[1:])

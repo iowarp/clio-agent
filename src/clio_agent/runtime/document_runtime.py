@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
+import time
 import tomllib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -22,13 +24,25 @@ from filelock import FileLock
 
 from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
+from clio_agent.runtime.document_office import (
+    office_profile_templates,
+    office_runtime_root,
+    prepare_office_runtime,
+)
 from clio_agent.runtime.document_stack.node_paths import node_path
+from clio_agent.runtime.document_stack.npm_package import managed_npm
 from clio_agent.runtime.document_stack.npm_package import unpack_package as _unpack_package
-from clio_agent.runtime.document_stack.process import scratch_root
+from clio_agent.runtime.document_stack.process import (
+    DocumentCancelled,
+    DocumentError,
+    scratch_root,
+    wait_process,
+)
 from clio_agent.runtime.document_venv import (
     _built_for_this_interpreter,
+    _document_uv_cache,
+    _installer_wheel_root,
     _set_environment_home,
-    _uv_cache_dir,
 )
 from clio_agent.runtime.document_wheels import bundled_wheel_requirements
 from clio_agent.runtime.execution_environment import (
@@ -80,12 +94,17 @@ def _document_uv() -> str | None:
     return str(packaged) if packaged.is_file() else None
 
 
+#: Package installs and their verification commands are infrastructure steps with a
+#: bound. The probes and helpers that answer an agent's document action have none.
+INSTALL_STEP_TIMEOUT_S = 180.0
+
+
 def _run(
     command: list[str],
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
-    timeout: float = 180,
+    timeout: float | None = INSTALL_STEP_TIMEOUT_S,
     accepted_exit_codes: tuple[int, ...] = (0,),
 ) -> str:
     flags: dict[str, Any] = {}
@@ -107,22 +126,11 @@ def _run(
     except OSError as exc:
         raise DocumentRuntimeError(f"Could not launch {Path(command[0]).name}: {exc}") from exc
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        import psutil
-
-        try:
-            children = psutil.Process(process.pid).children(recursive=True)
-        except psutil.NoSuchProcess:
-            children = []
-        for child in reversed(children):
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-        process.kill()
-        process.communicate()
-        raise DocumentRuntimeError(f"{Path(command[0]).name} exceeded {timeout:g} seconds") from exc
+        stdout, stderr = wait_process(process, name=Path(command[0]).name, timeout=timeout)
+    except DocumentCancelled:
+        raise
+    except DocumentError as exc:
+        raise DocumentRuntimeError(str(exc)) from exc
     # A nonzero exit with no output is a launch failure (e.g. a sandbox wrapper that could not
     # start the child), not a reported result: surface its stderr instead of an empty parse.
     if process.returncode not in accepted_exit_codes or (process.returncode and not stdout.strip()):
@@ -156,6 +164,8 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
                 # ~/.config/matplotlib; it belongs to this environment, inside CLIO's cache.
                 "MPLCONFIGDIR": str(python.parents[1] / ".matplotlib"),
             },
+            # Inventory probes the converters, and a cold Office can take minutes to answer.
+            timeout=None,
         )
     )
     if not isinstance(result, dict):
@@ -168,6 +178,28 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
     return result
 
 
+def _managed_node(environment: Path) -> Path | None:
+    """The managed Node.js executable in ``environment``, located without starting it.
+
+    The layouts ``inventory.py`` accepts, under the environment's ``site-packages``.
+    ``None`` (no such file, or a layout this does not know) leaves it to the probe.
+    """
+    base = str(environment)
+    try:
+        purelib = sysconfig.get_path("purelib", "venv", vars={"base": base, "platbase": base})
+    except KeyError:
+        return None
+    root = Path(purelib) / "nodejs_wheel"
+    return next(
+        (
+            candidate
+            for candidate in (root / "bin" / "node", root / "node.exe", root / "bin" / "node.exe")
+            if candidate.is_file()
+        ),
+        None,
+    )
+
+
 def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[str, str]]:
     """Check requested modules in the managed interpreter without installing anything."""
     names = list(dict.fromkeys(modules))
@@ -177,7 +209,7 @@ def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[s
     ):
         raise ValueError("required_imports must contain at most 32 Python module names")
     script = str(STACK_ROOT / "import_check.py")
-    output = _run([str(python), "-B", script, json.dumps(names)], cwd=python.parent)
+    output = _run([str(python), "-B", script, json.dumps(names)], cwd=python.parent, timeout=None)
     checks = json.loads(output)
     if not isinstance(checks, dict) or set(checks) != set(names):
         raise DocumentRuntimeError("Import checks did not return the requested modules")
@@ -192,6 +224,7 @@ def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
             [sys.executable, "-B", str(STACK_ROOT / "inventory.py"), "--execution-host"],
             cwd=workspace,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=None,
         )
     )
     if not isinstance(inventory, dict) or inventory.get("inventory_scope") != "execution_host":
@@ -239,52 +272,15 @@ def _adopt_prelaid(name: str, target: Path) -> bool:
     return True
 
 
-def _installer_wheel_root() -> Path | None:
-    """The installer's downloads folder when it holds a runtime archive's document wheels.
-
-    ``install.sh`` installs a Linux release from its prebuilt runtime archive and hands the
-    archive's ``document-wheels`` over here, so this environment is laid out from the same
-    locked wheels the desktop uses instead of downloading them again.
-    ``bundled_wheel_requirements`` checks every wheel against this stack's lock.
-    """
-    from clio_agent.runtime.document_stack.office import INSTALLER_DOWNLOADS
-
-    folder = os.environ.get(INSTALLER_DOWNLOADS, "")
-    root = Path(folder) if folder else None
-    return root if root and (root / "document-wheels" / "manifest.json").is_file() else None
-
-
-def _filesystem(path: Path) -> int | None:
-    """The device holding ``path``'s nearest existing ancestor, if it is writable."""
-    for candidate in (path, *path.parents):
-        if os.path.exists(candidate):
-            return os.stat(candidate).st_dev if os.access(candidate, os.W_OK) else None
-    return None
-
-
-def _document_uv_cache(uv: str, home: Path, *, bundled: bool) -> Path:
-    """The uv cache for the document environment beside ``home``.
-
-    A release lays the environment out from the runtime's bundled wheels, so its cache is
-    CLIO's own: the ~500 MB it fills go with ``uninstall --purge-caches`` instead of
-    staying in ``~/.cache/uv`` after CLIO is gone. A source install reuses uv's own cache
-    when it is on the same filesystem: the agent's ``uv sync`` already downloaded numpy,
-    matplotlib, lxml and the rest there, so they are linked rather than downloaded again.
-    A cache on another drive would copy every file instead, so that keeps the private one.
-    """
-    private = home / "uv-document-cache"
-    if bundled:
-        return private
-    shared = _uv_cache_dir(uv)
-    if shared is None:
-        return private
-    device = _filesystem(shared)
-    return shared if device is not None and device == _filesystem(home) else private
-
-
 def _python_runtime(
-    cache: Path, uv: str, *, discovery_only: bool = False
+    cache: Path, uv: str, *, discovery_only: bool = False, defer_probe: bool = False
 ) -> tuple[Path, dict[str, Any]]:
+    """The prepared document environment's Python and its probed inventory.
+
+    ``defer_probe`` is for a caller that runs the full import probe itself right after:
+    the inventory is then only the managed Node.js path, found without starting a process,
+    and the environment is probed here only when that path cannot be found.
+    """
     project = cache / "project"
     project.mkdir(parents=True, exist_ok=True)
     for name in ("pyproject.toml", "uv.lock"):
@@ -305,6 +301,8 @@ def _python_runtime(
             ) from error
 
     def probe() -> dict[str, Any]:
+        if defer_probe and (node := _managed_node(environment)) is not None:
+            return {"node": str(node)}
         return _probe(python, discovery_only=True) if discovery_only else _probe(python)
 
     if repair:
@@ -443,7 +441,10 @@ def _prepared_pnpm(
     node_root = Path(node).parent
     if node_root.name == "bin":
         node_root = node_root.parent
-    npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    try:
+        npm = managed_npm(node_root)
+    except (OSError, tarfile.TarError) as exc:
+        raise DocumentRuntimeError(f"Managed Node.js could not lay out npm: {exc}") from exc
     if not npm.is_file():
         raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
     if progress is not None:
@@ -480,7 +481,9 @@ def _javascript_runtime(
     tools = Path(node_path(str(cache / "javascript-tools")))
     # Besides its store, pnpm keeps a metadata cache, its state and a global folder in the
     # user's XDG folders (~/.cache/pnpm, ~/.local/state/pnpm, ~/.local/share/pnpm). They are
-    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes.
+    # this pnpm's, so they go in CLIO's cache, which uninstall --purge-caches removes. npm,
+    # which installs pnpm itself, ignores XDG: its cache is ~/.npm unless named (live, Linux
+    # Desktop: 31 MB of pnpm tarballs left in ~/.npm after a full uninstall).
     pnpm_home = Path(node_path(str(cache / "pnpm-home")))
     env = {
         **os.environ,
@@ -488,6 +491,7 @@ def _javascript_runtime(
         "XDG_CACHE_HOME": str(pnpm_home / "cache"),
         "XDG_STATE_HOME": str(pnpm_home / "state"),
         "XDG_DATA_HOME": str(pnpm_home / "data"),
+        "npm_config_cache": str(pnpm_home / "npm-cache"),
     }
     work = Path(node_path(str(scratch_root(workspace) / "javascript")))
     store = node_path(str(cache / "pnpm-store"))
@@ -590,6 +594,7 @@ def prepare_document_runtime(
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
     discovery_only: bool = False,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Prepare and probe an isolated document runtime without changing Clio's interpreter.
 
@@ -599,7 +604,14 @@ def prepare_document_runtime(
     ``discovery_only`` freshly inspects executables and package metadata, without
     importing every package or probing document converters/fonts. Requested imports
     are independently checked by the execution tool; no prior answer is reused.
+    ``timings``, when given, receives the seconds of the Python environment, the
+    Node.js packages and the Python import probe.
     """
+
+    def lap(key: str, started: float) -> None:
+        if timings is not None:
+            timings[key] = round(time.monotonic() - started, 1)
+
     workspace = workspace.resolve(strict=True)
     from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -617,12 +629,21 @@ def prepare_document_runtime(
     with FileLock(str(cache / "prepare.lock"), timeout=240):
         if progress is not None:
             progress("Preparing and checking Python document packages...")
-        python, inventory = _python_runtime(cache, uv, discovery_only=True)
+        started = time.monotonic()
+        # An install skips the lighter discovery probe: the full probe below checks
+        # everything it does, and starting both Python and Node.js cold before that
+        # held Node and the full probe back (16.5 s of an installer's 97 s prepare).
+        python, inventory = _python_runtime(
+            cache, uv, discovery_only=True, defer_probe=not discovery_only
+        )
+        lap("python_environment", started)
         javascript: tuple[Path, Path] | DocumentRuntimeError
         if discovery_only:
             if progress is not None:
                 progress("Python document packages are ready. Preparing Node.js packages...")
+            started = time.monotonic()
             javascript = _javascript_or_error(cache, workspace, inventory, progress)
+            lap("node_packages", started)
         else:
             # Node needs only the installed environment, so it is prepared while the
             # full import probe runs. That probe is most of the Python step: the first
@@ -630,16 +651,28 @@ def prepare_document_runtime(
             if progress is not None:
                 progress("Python document packages are installed. Preparing Node.js packages...")
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-probe") as checking:
-                probed = checking.submit(_probe, python)
+                started = time.monotonic()
+
+                def probe() -> dict[str, Any]:
+                    try:
+                        return _probe(python)
+                    finally:
+                        lap("python_probe", started)
+
+                probed = checking.submit(contextvars.copy_context().run, probe)
                 javascript = _javascript_or_error(cache, workspace, inventory, progress)
+                lap("node_packages", started)
                 try:
                     inventory = probed.result()
                 except (DocumentRuntimeError, ValueError):
                     inventory = {}
             if not inventory:
                 # A damaged environment gets the same locked repair as before, now that
-                # nothing runs from it.
+                # nothing runs from it. Node.js ran from that environment unchecked, so a
+                # failure there gets one more attempt from the repaired one.
                 python, inventory = _python_runtime(cache, uv)
+                if isinstance(javascript, DocumentRuntimeError):
+                    javascript = _javascript_or_error(cache, workspace, inventory, progress)
             if progress is not None:
                 progress("Python document packages are ready.")
         output = scratch / "output"
@@ -693,54 +726,12 @@ def prepare_document_runtime(
                 ],
                 "packages": json.loads((STACK_ROOT / "package.json").read_text())["dependencies"],
             }
+        started = time.monotonic()
         publish_environment(workspace, inventory, cache)
+        lap("publish", started)
         if progress is not None and inventory["javascript"]["status"] == "ready":
             progress("Node.js document packages are ready.")
     return inventory
-
-
-def office_runtime_root() -> Path:
-    """Select the relocated bundled renderer or this user's private cache."""
-    from clio_agent.runtime.document_stack.office import VERSION, executable
-
-    bundled = bundled_root()
-    if bundled is not None and executable(bundled / "documents" / "office"):
-        return bundled / "documents" / "office"
-    return paths.user_cache_dir() / "document-office" / VERSION
-
-
-def office_profile_templates() -> Path:
-    """Hold each Office build's seeded first-start profile for this user."""
-    return paths.user_cache_dir() / "document-office-profiles"
-
-
-def office_profile_starter(office_root: Path) -> Path | None:
-    """Return the first-start profile laid out beside the bundled renderer, if any."""
-    from clio_agent.runtime.document_stack.office import PROFILE_STARTER
-
-    bundled = bundled_root()
-    if bundled is None or office_root != bundled / "documents" / "office":
-        return None
-    starter = office_root.parent / PROFILE_STARTER
-    return starter if starter.is_file() else None
-
-
-def prepare_office_runtime() -> str:
-    """Use an installed renderer or provision a private verified renderer automatically."""
-    from clio_agent.runtime.document_stack.office import ensure_office, seed_profile
-    from clio_agent.runtime.document_stack.process import find_native
-
-    managed_root = office_runtime_root()
-    native = find_native("soffice")
-    if native and not Path(native).resolve().is_relative_to(managed_root.resolve()):
-        seed_profile(Path(native), office_profile_templates())
-        return native
-    # A discovered managed executable still needs its host-side access repair.
-    return ensure_office(
-        managed_root,
-        profile_templates=office_profile_templates(),
-        profile_starter=office_profile_starter(managed_root),
-    )
 
 
 def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) -> dict[str, Any]:
@@ -782,6 +773,8 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
                     },
                 },
                 accepted_exit_codes=(0, 1),
+                # A conversion runs until it finishes or the person stops the turn.
+                timeout=None,
             )
         )
     except json.JSONDecodeError as exc:

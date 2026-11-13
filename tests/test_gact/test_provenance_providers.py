@@ -561,8 +561,7 @@ def test_normalization_keeps_bounded_research_tool_coordinates_and_failure() -> 
                 "id": "call_0_0",
                 "name": "web_fetch",
                 "args": {
-                    "target": "https://docs.example.test/research.pdf",
-                    "to_file": True,
+                    "url": "https://docs.example.test/research.pdf",
                     "authorization": "must-not-appear",
                 },
                 "observation": "Execution error in web_fetch: upstream refused the request",
@@ -575,10 +574,7 @@ def test_normalization_keeps_bounded_research_tool_coordinates_and_failure() -> 
 
     span = result["spans"][0]
     assert span["status"] == "failed"
-    assert span["attributes"]["tool_input"] == {
-        "target": "https://docs.example.test/research.pdf",
-        "to_file": True,
-    }
+    assert span["attributes"]["tool_input"] == {"url": "https://docs.example.test/research.pdf"}
     assert "authorization" not in str(span["attributes"])
     assert "upstream refused" not in str(span["attributes"])
 

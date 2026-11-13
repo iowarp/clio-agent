@@ -732,9 +732,9 @@ def _merge_index(store: Any, tag: str, prefix: str, rows: list[tuple[Any, bool]]
     from clio_agent.gact.session_records import bucket_of  # noqa: PLC0415
 
     grouped: dict[str, list[tuple[Any, bool]]] = {}
-    for columns, unfilled in rows:
+    for columns, row_unfilled in rows:
         row = RecordColumns(**columns)
-        grouped.setdefault(bucket_of(row.id), []).append((row, unfilled))
+        grouped.setdefault(bucket_of(row.id), []).append((row, row_unfilled))
     added = 0
     for bucket, imported in grouped.items():
         ext = extension_name(bucket)

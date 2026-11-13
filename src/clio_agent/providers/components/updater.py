@@ -310,7 +310,11 @@ def install_command(
 
     ``target`` installs into a package overlay instead of the runtime itself.
     """
-    placement = ["--target", str(target)] if target is not None else []
+    placement = (
+        ["--target", str(target), "--cache-dir", str(package_overlay.overlay_install_cache())]
+        if target is not None
+        else []
+    )
     uv = _uv_for(python)
     if uv:
         command = [uv, "pip", "install", "--python", python, *placement]

@@ -63,6 +63,7 @@ from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from typing import Any, cast, get_args
 
+from clio_agent.gact.agents.tool_progress import _running_tool
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.types import ToolDomain
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
@@ -609,14 +610,15 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
         from clio_agent.tools import execution as _execution  # noqa: PLC0415
 
         args = _call_arguments(func, call_args, call_kwargs)
-        _execution.notify_global_tool_observer(tool_name, args, "started")
+        handle = _execution.notify_global_tool_observer(tool_name, args, "started")
         # Belt-and-braces: THIS call hasn't run ``func`` yet, so nothing it
         # declares exists -- any value still sitting here belongs to an
         # earlier, unrelated call whose own cleanup was skipped. Discard it
         # now so it can never be misread as THIS call's declaration.
         pop_declared_structured_content()
         try:
-            result = func(*call_args, **call_kwargs)
+            with _running_tool(tool_name, args, handle):
+                result = func(*call_args, **call_kwargs)
         except Exception as exc:
             try:
                 with refusal_reported(exc):

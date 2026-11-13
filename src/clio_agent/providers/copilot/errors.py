@@ -12,6 +12,7 @@ from typing import Any
 
 from clio_agent.providers.terminal_signal import (
     TerminalProviderSignal,
+    exception_tree,
     find_terminal_signal,
     recover_message,
 )
@@ -159,15 +160,13 @@ def contains_copilot_auth_required(value: Any) -> bool:
     """Whether an exception (or group, or message) carries a Copilot sign-in refusal.
 
     Matches CLIO's own :data:`COPILOT_SIGNED_OUT_MESSAGE`, never provider prose,
-    walking exception groups and explicit causes.
+    walking exception groups and explicit causes (each node once, so a cause
+    cycle cannot recurse forever).
     """
-    if isinstance(value, CopilotAuthRequiredError) or COPILOT_SIGNED_OUT_MESSAGE in str(value):
-        return True
-    children = list(getattr(value, "exceptions", None) or ())
-    cause = getattr(value, "__cause__", None)
-    if cause is not None:
-        children.append(cause)
-    return any(contains_copilot_auth_required(child) for child in children)
+    return any(
+        isinstance(node, CopilotAuthRequiredError) or COPILOT_SIGNED_OUT_MESSAGE in str(node)
+        for node in exception_tree(value)
+    )
 
 
 def contains_copilot_dependency_error(value: Any) -> bool:

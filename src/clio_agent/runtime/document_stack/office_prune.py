@@ -36,6 +36,36 @@ UNREAD_TREES = frozenset(
         ("share", "tipoftheday"),
     }
 )
+# Windows only: the AutoText library (a first start seeds the profile's own from
+# presets), the Java classes (no conversion CLIO runs needs a JRE) and the embedded
+# Firebird database's character sets and messages (only Base opens databases). A
+# trace of conversions and of the first start that builds the profile starter read
+# none of their files (211).
+WINDOWS_UNREAD_TREES = frozenset(
+    {("share", "autotext"), ("program", "classes"), ("program", "intl"), ("share", "firebird")}
+)
+# Windows only: files in ``program`` that same trace never read: the embedded Firebird
+# engine and the bridges to Java and its databases (about 11 MB). The Java framework
+# itself (``jvmfwk*``, ``jvmaccess*``) and Firebird's client library load at start, so
+# they stay.
+WINDOWS_UNREAD_PROGRAM_FILES = frozenset(
+    {
+        "engine12.dll",
+        "hsqldb.dll",
+        "java_uno.dll",
+        "javaloaderlo.dll",
+        "javavmlo.dll",
+        "jdbclo.dll",
+        "jreproperties.class",
+        "juh.dll",
+        "juhx.dll",
+    }
+)
+# Windows only: the icon themes (``share/config/images_<theme>.zip``) a conversion may
+# load. LibreOffice picks its theme by dark mode and falls back to colibre when the one
+# it wants is missing, so the other 17 themes and the help images (about 66 MB) are
+# unread.
+KEPT_ICON_THEMES = frozenset({"colibre", "colibre_dark"})
 # Packages of LibreOffice's own Python (``program/python-core-*/lib``) for installing
 # and testing packages, which LibreOffice never imports (about 760 files).
 UNREAD_PYTHON_PACKAGES = frozenset(
@@ -54,6 +84,8 @@ def _unread_folder(parts: tuple[str, ...]) -> bool:
     for size in (2, 3):
         if len(parts) >= size and parts[-size:] in UNREAD_TREES:
             return True
+    if len(parts) >= 2 and parts[-2:] in WINDOWS_UNREAD_TREES and platform.system() == "Windows":
+        return True
     return (
         len(parts) >= 3
         and parts[-3].startswith("python-core")
@@ -71,6 +103,30 @@ def _unread_file(folder: str, name: str) -> bool:
     return folder == "lib" and lowered == "distutils-precedence.pth"
 
 
+def _unread_icon_theme(parts: tuple[str, ...]) -> bool:
+    """Whether ``parts`` (ending ``share/config/images_<theme>.zip``) is an icon theme a
+    Windows conversion never loads."""
+    if platform.system() != "Windows":
+        return False
+    if len(parts) < 3 or parts[-3:-1] != ("share", "config"):
+        return False
+    name = parts[-1].lower()
+    if not (name.startswith("images_") and name.endswith(".zip")):
+        return False
+    return name.removeprefix("images_").removesuffix(".zip") not in KEPT_ICON_THEMES
+
+
+def _unread_program_file(parts: tuple[str, ...]) -> bool:
+    """Whether ``parts`` (ending ``program/<name>``) is one of the
+    ``WINDOWS_UNREAD_PROGRAM_FILES``."""
+    return (
+        platform.system() == "Windows"
+        and len(parts) >= 2
+        and parts[-2] == "program"
+        and parts[-1].lower() in WINDOWS_UNREAD_PROGRAM_FILES
+    )
+
+
 def unread(relative: PurePath) -> bool:
     """Whether ``prune_unread`` would remove this file of an image (a path below it).
 
@@ -84,6 +140,8 @@ def unread(relative: PurePath) -> bool:
     if any(_unread_folder(parts[:end]) for end in range(2, len(parts))):
         return True
     if len(parts) > 1 and _unread_file(parts[-2], parts[-1]):
+        return True
+    if _unread_icon_theme(parts) or _unread_program_file(parts):
         return True
     for index, part in enumerate(parts[:-1]):
         parent = parts[index - 1] if index else ""
@@ -116,7 +174,10 @@ def prune_unread(image: Path) -> int:
     extensions, the non-English UI translations (``resource/<lang>``) and their
     configuration packs (``registry/res/*_<lang>.xcd``, which every start reads: about
     2 s per cold conversion), the desktop-only ``UNREAD_TREES``, the translated readmes
-    and the ``UNREAD_PYTHON_PACKAGES`` of LibreOffice's Python. The application, filters,
+    and the ``UNREAD_PYTHON_PACKAGES`` of LibreOffice's Python, and on Windows also the
+    ``WINDOWS_UNREAD_TREES``, the ``WINDOWS_UNREAD_PROGRAM_FILES`` and the icon themes
+    outside ``KEPT_ICON_THEMES``. The
+    application, filters,
     fonts, hyphenation patterns and English (``en*``) stay, so conversions are
     pixel-identical. Returns the number of files removed.
 
@@ -156,7 +217,12 @@ def prune_unread(image: Path) -> int:
             if (path / name).is_dir() and _unread_folder((*relative, name)):
                 removed += _remove_tree(path / name)
         for name in files:
-            if _unread_file(path.name, name):
+            entry = (*relative, name)
+            if (
+                _unread_file(path.name, name)
+                or _unread_icon_theme(entry)
+                or _unread_program_file(entry)
+            ):
                 (path / name).unlink()
                 removed += 1
         # Translations and extensions are near the top of every layout; skip the rest.

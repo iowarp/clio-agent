@@ -47,7 +47,7 @@ def request(plan: Any) -> dict[str, Any]:
     return json.loads(plan.commands[-1].stdin)
 
 
-@pytest.mark.parametrize("service", ["llama_cpp", "ollama", "web_search", "flowcept", "cmf"])
+@pytest.mark.parametrize("service", ["llama_cpp", "ollama", "flowcept", "cmf"])
 def test_native_catalog_and_driver_do_not_require_a_container_engine(service: str) -> None:
     facts = host()
     definition = next(row for row in service_definitions(facts) if row.id == service)

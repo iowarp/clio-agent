@@ -82,7 +82,18 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
         json.dump(value, writer)
         writer.flush()
         os.fsync(writer.fileno())
-    temporary.replace(path)
+    # Windows refuses to replace a receipt another process is reading (a status
+    # poll); retry briefly rather than lose the write.
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or time.monotonic() > deadline:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.02)
 
 
 def process_identity(pid: int) -> str:
@@ -178,6 +189,16 @@ def cancel_checkpoint(receipt: Path, job: dict[str, Any]) -> bool:
     job.update(state="cancelled", phase="Cancelled; cached bytes retained", updated_at=time.time())
     write_json(receipt, job)
     return True
+
+
+def checked_digest(path: Path, hasher: Any, receipt: Path, job: dict[str, Any]) -> str | None:
+    """Hash in chunks so cancelling stops even a multi-gigabyte verification promptly."""
+    with path.open("rb") as reader:
+        while chunk := reader.read(8 * 1024 * 1024):
+            if cancel_checkpoint(receipt, job):
+                return None
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def alive(job: dict[str, Any]) -> bool:
@@ -509,6 +530,18 @@ def _cancel_locked(root: Path, job_id: str) -> dict[str, Any]:
         deadline = time.monotonic() + 10
         while alive(job) and time.monotonic() < deadline:
             time.sleep(0.1)
+        if alive(job) and sys.platform == "win32":
+            # Windows has no process group signal: once the worker misses its
+            # cooperative stop, end the recorded (identity-checked) supervisor tree.
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(job["pid"])],
+                capture_output=True,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            deadline = time.monotonic() + 5
+            while alive(job) and time.monotonic() < deadline:
+                time.sleep(0.1)
         if alive(job):
             raise RuntimeError("Cancellation requested; worker has not stopped yet")
     job.update(state="cancelled", phase="Cancelled; cached bytes retained", updated_at=time.time())
@@ -680,21 +713,27 @@ def download(receipt: Path) -> None:
 
         def observe() -> None:
             while not stopped.wait(0.5):
-                if cancel_checkpoint(receipt, job):
-                    # This is the detached worker: stop all SDK download threads,
-                    # leaving cache files for retry. Never kill an unowned PID tree.
-                    os._exit(0)
-                paths = [destination / row.rfilename for row in siblings]
-                paths.extend((destination / ".cache/huggingface/download").rglob("*.incomplete"))
-                sizes = 0
-                for path in paths:
-                    try:
-                        if path.is_file() and not path.is_symlink():
-                            sizes += path.stat().st_size
-                    except FileNotFoundError:
-                        pass  # SDK atomically renamed a completed download.
-                job.update(bytes_done=min(total, sizes), updated_at=time.time())
-                write_json(receipt, job)
+                try:
+                    if cancel_checkpoint(receipt, job):
+                        # This is the detached worker: stop all SDK download threads,
+                        # leaving cache files for retry. Never kill an unowned PID tree.
+                        os._exit(0)
+                    paths = [destination / row.rfilename for row in siblings]
+                    paths.extend(
+                        (destination / ".cache/huggingface/download").rglob("*.incomplete")
+                    )
+                    sizes = 0
+                    for path in paths:
+                        try:
+                            if path.is_file() and not path.is_symlink():
+                                sizes += path.stat().st_size
+                        except FileNotFoundError:
+                            pass  # SDK atomically renamed a completed download.
+                    job.update(bytes_done=min(total, sizes), updated_at=time.time())
+                    write_json(receipt, job)
+                except OSError:
+                    # A missed progress write must never end the cancellation checks.
+                    continue
 
         observer = threading.Thread(target=observe, daemon=True)
         observer.start()
@@ -727,18 +766,19 @@ def download(receipt: Path) -> None:
                 raise AcquisitionError("Downloaded model file size differs from registry metadata")
             digest = getattr(row.lfs, "sha256", None) if row.lfs else None
             if digest:
-                with path.open("rb") as reader:
-                    actual = hashlib.file_digest(reader, "sha256").hexdigest()
+                actual = checked_digest(path, hashlib.sha256(), receipt, job)
+                if actual is None:
+                    return
                 if actual != digest:
                     raise AcquisitionError("Downloaded model file failed its registry hash check")
             elif row.blob_id:
                 hasher = hashlib.sha1(
                     f"blob {path.stat().st_size}\0".encode(), usedforsecurity=False
                 )
-                with path.open("rb") as reader:
-                    while chunk := reader.read(1024 * 1024):
-                        hasher.update(chunk)
-                if hasher.hexdigest() != row.blob_id:
+                actual = checked_digest(path, hasher, receipt, job)
+                if actual is None:
+                    return
+                if actual != row.blob_id:
                     raise AcquisitionError("Downloaded file failed its Git blob hash check")
             verified[row.rfilename] = [path.stat().st_size, path.stat().st_mtime_ns]
         job["verified_files"] = verified

@@ -3,6 +3,11 @@
 install/clio   text eol=lf
 *.sh           text eol=lf
 
+# The source-deps archive is named after uv.lock's SHA-256 (scripts/build_source_deps.py,
+# install.ps1 Install-ClioSourceDeps). Git for Windows defaults to core.autocrlf=true,
+# which would check it out as CRLF and change the digest, so keep its bytes fixed.
+uv.lock        text eol=lf
+
 # Batch files are Windows-only; keep CRLF.
 *.cmd          text eol=crlf
 

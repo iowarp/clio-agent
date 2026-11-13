@@ -26,7 +26,7 @@ def test_installer_records_only_complete_provisioning(
         "capabilities": {},
     }
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -91,7 +91,7 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
             "capabilities": {},
         }
 
-    def office() -> str:
+    def office(**_: object) -> str:
         started.wait()
         assert packages_done.wait(5)
         assert not receipt.exists()
@@ -121,6 +121,48 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
     assert receipt.exists()
 
 
+def test_installer_reports_each_sub_jobs_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "locked").mkdir()
+
+    def packages(*args: Any, timings: dict[str, float] | None = None, **kwargs: Any) -> Any:
+        assert timings is not None
+        timings["python_environment"] = 1.0
+        return {
+            "status": "ready",
+            "runtime_id": "locked",
+            "javascript": {"status": "ready"},
+            "native_tools": {},
+            "capabilities": {},
+        }
+
+    monkeypatch.setattr(installer, "prepare_document_runtime", packages)
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "soffice")
+    monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
+    monkeypatch.setattr(
+        installer,
+        "prepare_existing_windows_fence",
+        lambda **kwargs: {"status": "available", "implementation": "mxc"},
+    )
+    timings: dict[str, float] = {}
+    installer.install_document_runtime(tmp_path / "workspace", cache_root=tmp_path, timings=timings)
+    assert set(timings) == {
+        "protect_runtime",
+        "office",
+        "gh",
+        "rg",
+        "tectonic",
+        "packages",
+        "python_environment",
+        "protection",
+        "receipt",
+    }
+    assert all(isinstance(seconds, float) and seconds >= 0 for seconds in timings.values())
+
+
 @pytest.mark.parametrize("failed_step", ["office", "github", "python"])
 def test_installer_failure_waits_for_other_work_without_publishing_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_step: str
@@ -146,7 +188,7 @@ def test_installer_failure_waits_for_other_work_without_publishing_success(
             "capabilities": {},
         }
 
-    def office() -> str:
+    def office(**_: object) -> str:
         step("office")
         return "private soffice"
 
@@ -186,7 +228,7 @@ def test_installer_explicit_setup_is_forwarded_and_failed_setup_has_no_receipt(
             "capabilities": {},
         },
     )
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -245,7 +287,7 @@ def test_bootstrap_prepares_real_package_stage_without_fence_or_receipt(
         "capabilities": {},
     }
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
-    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda **_: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
@@ -338,6 +380,8 @@ def test_prewarm_opens_bytecode_sources_and_native_libraries_only_on_install(
         monkeypatch.setattr(sys, name, str(tmp_path))
     # ``python -m`` run from a home directory puts that directory first on the path.
     monkeypatch.setattr(sys, "path", [str(home), str(stdlib), str(lib), str(site)])
+    # Without a recorded server import list the whole runtime is walked.
+    monkeypatch.setattr(installer, "SERVER_IMPORTS", tmp_path / "no-server-imports.txt")
 
     files = sorted(
         Path(p).relative_to(tmp_path).as_posix() for p in installer._runtime_code_files()
@@ -353,6 +397,37 @@ def test_prewarm_opens_bytecode_sources_and_native_libraries_only_on_install(
     install = installer._prewarm_runtime_files(Namespace(reuse_installed=False))
     assert install["status"] == "done"
     assert (install["files"], install["unreadable"]) == (4, 0)
+
+
+def test_prewarm_opens_only_the_recorded_server_imports_when_they_ship(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded list opens just those files (and each module's bytecode), looked up in
+    the most specific import-path folder; lines this install lacks are skipped."""
+    import sys
+
+    lib = tmp_path / "Lib"
+    site = lib / "site-packages"
+    (site / "pkg" / "__pycache__").mkdir(parents=True)
+    tag = sys.implementation.cache_tag
+    (site / "pkg" / "mod.py").write_text("x = 1\n")
+    (site / "pkg" / "__pycache__" / f"mod.{tag}.pyc").write_bytes(b"\0")
+    (site / "pkg" / "unused.py").write_text("y = 2\n")
+    (lib / "os.py").write_text("")
+    stdlib = tmp_path / "python314.zip"
+    stdlib.write_bytes(b"PK")
+    listed = tmp_path / "server_imports.txt"
+    listed.write_text("# recorded\nos.py\npkg/mod.py\npkg/_absent.pyd\n", encoding="utf-8")
+    monkeypatch.setattr(installer, "SERVER_IMPORTS", listed)
+    monkeypatch.setattr(sys, "path", [str(stdlib), str(lib), str(site)])
+
+    files = [Path(p).relative_to(tmp_path).as_posix() for p in installer._runtime_code_files()]
+    assert files == [
+        "python314.zip",
+        "Lib/os.py",
+        "Lib/site-packages/pkg/mod.py",
+        "Lib/site-packages/pkg/__pycache__/" + f"mod.{tag}.pyc",
+    ]
 
 
 def test_default_marketplace_is_installed_by_an_install_but_never_by_a_launch_check(

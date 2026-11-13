@@ -7,7 +7,7 @@
 #   clio                 ensure server is up, then open Web
 #   clio web | --web     ensure server is up, then open the web UI in a browser
 #   clio start           start the headless server
-#   clio stop            stop the server and the local services it started (e.g. web search)
+#   clio stop            stop the server and the local services it started (e.g. model servers)
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
 #   clio logs [N]        tail server logs
@@ -57,10 +57,19 @@ if (Test-Path -LiteralPath (Join-Path $KitTools 'bin\clio-kit.exe')) {
 
 $AgentPython = Join-Path $Prefix 'clio-agent\.venv\Scripts\python.exe'
 $ClioState = $Prefix
+# The server's working directory seeds the default workspace on its first start, where
+# the agent writes its output: the user's workspace folder, as Desktop uses, never the
+# installed app, which an upgrade replaces. An installation that still keeps its ARC in
+# the app's working directory (before migrate-paths) keeps starting there.
+$ServerCwd = Join-Path $Prefix 'clio-agent'
 if (Test-Path -LiteralPath $AgentPython) {
-    $ClioState = (& $AgentPython -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())').Trim()
+    $Resolved = @(& $AgentPython -c 'from clio_agent.paths import user_state_dir, user_data_dir; print(user_state_dir()); print(user_data_dir())')
     if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Agent state directory' }
+    $ClioState = "$($Resolved[0])".Trim()
     New-Item -ItemType Directory -Path $ClioState -Force | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $ServerCwd '.clio\agent\arc'))) {
+        $ServerCwd = Join-Path "$($Resolved[1])".Trim() 'workspace'
+    }
     # gact.port in CLIO's config.yaml, else CLIO_PORT, else 17800. Releases from
     # before gact.port existed fail this lookup and keep the value above. Windows
     # PowerShell 5.1 turns any native stderr into a terminating error under 'Stop',
@@ -160,10 +169,11 @@ function Start-Server {
     # let the runtime inherit it; --port already carries the API value.
     $inheritedClioPort = $env:CLIO_PORT
     Remove-Item Env:CLIO_PORT -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $ServerCwd -Force | Out-Null
     try {
         $proc = Start-Process -FilePath $env:ComSpec `
             -ArgumentList '/c', $inner `
-            -WorkingDirectory (Join-Path $Prefix 'clio-agent') `
+            -WorkingDirectory $ServerCwd `
             -WindowStyle Hidden -PassThru
     } finally {
         if ($null -ne $inheritedClioPort) { $env:CLIO_PORT = $inheritedClioPort }
@@ -181,11 +191,11 @@ function Start-Server {
     return $false
 }
 
-# Stop-LocalServices stops the supervised services (e.g. web search) this CLIO
+# Stop-LocalServices stops the supervised services (e.g. model servers) this CLIO
 # started on this computer. Their workers deliberately leave the server's process
 # tree, so killing the server leaves them running and holding the Agent's Python
 # open. Runs after the server is gone so it cannot restart them; installations
-# are kept and the next boot starts web search again. Failures only warn.
+# are kept and start again when you start them. Failures only warn.
 function Stop-LocalServices {
     if (-not (Test-Path -LiteralPath $AgentPython)) { return }
     $SavedPreference = $ErrorActionPreference

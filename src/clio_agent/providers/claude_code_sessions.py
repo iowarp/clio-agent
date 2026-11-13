@@ -191,6 +191,7 @@ class _StreamClientEntry:
         self._loop: Any = None
         self._thread: threading.Thread | None = None
         self._client: Any = None
+        self._disconnecting: Any = None  # the in-flight disconnect (owner loop), joinable
         self._connect_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
         self._query_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
         self._connect_slots = connect_slots
@@ -423,11 +424,21 @@ class _StreamClientEntry:
             return self._client
 
     async def _areset_client(self) -> None:
-        """Disconnect + drop the client (owner loop) so the next call reconnects."""
+        """Disconnect + drop the client (owner loop) so the next call reconnects.
+
+        A reset that finds the client already dropped joins the disconnect in flight:
+        ``close_*`` stop the owner loop once their reset returns, and stopping it under
+        a running disconnect strands it, so its slot is never released and its CLI
+        child is never reaped (live: four such resets held every connect slot).
+        """
         client, self._client = self._client, None
-        if client is None:
-            return
-        self.forget_conversation()
+        if client is not None:
+            self.forget_conversation()
+            self._disconnecting = asyncio.ensure_future(self._disconnect(client))
+        if self._disconnecting is not None:
+            await asyncio.shield(self._disconnecting)
+
+    async def _disconnect(self, client: Any) -> None:
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
@@ -477,11 +488,14 @@ class _StreamClientEntry:
         thinking: dict[str, Any] | None = None,
         system_prompt: str | None = None,
         fresh: bool = False,
+        on_silence: Any = None,
     ) -> AsyncGenerator[Any, None]:
         """Yield SDK messages for one ``query`` on the pooled client (cross-loop).
 
         ``fresh``: the payload is a whole conversation, so a client already holding one
         is cleared first (:mod:`~clio_agent.providers.claude_code_clear`).
+        ``on_silence``: the stall decision (:func:`.claude_code_expiry.relay_with_idle_bound`);
+        it runs on the owner loop's thread.
         """
         if self._dead:
             from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
@@ -528,6 +542,8 @@ class _StreamClientEntry:
                         session_id=session_id,
                         idle_s=idle_timeout,
                         put=lambda msg: chunks.put(("msg", msg)),
+                        on_silence=on_silence,
+                        stop=abandon.is_set,
                     )
                 clean = True
             except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop
