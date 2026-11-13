@@ -1423,6 +1423,9 @@ KEY_NOTES: dict[str, str] = {
         "Tools never deferred behind search_tools whatever a plugin declares (the core loop); "
         "an entry ending in * names a prefix, such as fs_*."
     ),
+    "tools.script_media_max": (
+        "Most images or PDFs one script may attach to its result for the model to see."
+    ),
     "tools.result_share": (
         "Share of the model's context window (0-1] one tool result may use before it is saved "
         "to a file and the model gets its head; never more than the room left before "
