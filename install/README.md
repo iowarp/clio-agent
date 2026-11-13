@@ -61,8 +61,9 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
   An installation with its own `CLIO_PREFIX`, `CLIO_AGENT_HOME`, `CLIO_AGENT_DATA_DIR`
   or `CLIO_USER_DIR` puts clio-kit in `$CLIO_PREFIX/uv-tools` instead (unless the
   caller set `UV_TOOL_DIR`), so your own `uv tool` clio-kit is never replaced; the
-  `clio` launcher puts that folder first on the server's PATH and the uninstaller
-  removes it with the installation.
+  agent puts that folder first on its own PATH at start-up, however it was launched
+  (the `clio` launcher, Desktop or a service), and the uninstaller removes it with
+  the installation.
 
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, opens Web, and manages the server
