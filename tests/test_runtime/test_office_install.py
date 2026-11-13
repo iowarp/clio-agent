@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.runtime.document_stack import office, office_fetch
+from clio_agent.runtime.document_stack import office, office_deb, office_fetch
 from clio_agent.runtime.document_stack.process import DocumentError
 
 
@@ -236,9 +236,9 @@ def test_debian_archive_parser_reads_real_data_member() -> None:
         + str(len(payload)).encode().ljust(10)
         + b"`\n"
     )
-    assert office._deb_data(io.BytesIO(b"!<arch>\n" + header + payload)) == payload
+    assert office_deb._deb_data(io.BytesIO(b"!<arch>\n" + header + payload)) == payload
     with pytest.raises(DocumentError, match="Invalid"):
-        office._deb_data(io.BytesIO(b"bad header"))
+        office_deb._deb_data(io.BytesIO(b"bad header"))
 
 
 def test_linux_archive_cannot_escape_private_root(tmp_path: Path) -> None:
@@ -248,7 +248,7 @@ def test_linux_archive_cannot_escape_private_root(tmp_path: Path) -> None:
         member.size = 1
         output.addfile(member, io.BytesIO(b"x"))
     with pytest.raises(tarfile.TarError):
-        office._extract_linux(archive, tmp_path / "private")
+        office_deb._extract_linux(archive, tmp_path / "private")
     assert not (tmp_path / "outside").exists()
 
 

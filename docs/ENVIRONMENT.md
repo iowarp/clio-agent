@@ -403,6 +403,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
 | `CLIO_BIND_ADDR` | unmigrated | `src/clio_agent/arc/core_control_port.py` |
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
+| `CLIO_BOOTSTRAP_SYNC_SECONDS` | unmigrated | `src/clio_agent/runtime/office_bootstrap.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
 | `CLIO_CORE_ATTACH_ONLY` | unmigrated | `src/clio_agent/arc/home_runtime.py` |
