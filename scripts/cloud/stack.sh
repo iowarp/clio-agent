@@ -31,6 +31,10 @@ export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-sonnet-5-5}"
 # folders under .cloud-run/xdg, so several stacks (one per worktree, on their own
 # ports) can run side by side without sharing sessions or saved connections.
 # HOME is left alone, so the signed-in Claude CLI keeps working.
+if [ "$UI_PORT" != "5173" ] && [ -z "${CLIO_GACT_CORS_ORIGINS:-}" ]; then
+  # A UI on another port must be a trusted browser origin of this stack's agent.
+  export CLIO_GACT_CORS_ORIGINS="http://127.0.0.1:$UI_PORT,http://localhost:$UI_PORT"
+fi
 if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
   for role in CONFIG DATA STATE CACHE; do
     dir="$STATE/xdg/$(echo "$role" | tr '[:upper:]' '[:lower:]')"
