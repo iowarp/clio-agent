@@ -7,8 +7,12 @@ step runs :func:`_prepare_tool_servers` beside the other package downloads.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -20,6 +24,8 @@ from typing import Any
 KIT_READY_ENV = "CLIO_INSTALL_KIT_READY"
 _KIT_READY_MAX_WAIT_S = 600.0
 _KIT_READY_POLL_S = 0.25
+_SERVER_PYTHON_MAX_WAIT_S = 300.0
+_SERVER_PYTHON_PIN = ".python-version"
 
 
 def _wait_for_installer_kit() -> dict[str, Any] | None:
@@ -73,6 +79,111 @@ def _carried_kit_servers() -> dict[str, Any]:
         and _launcher_name(str(spec.command)) == "clio-kit"
         and [str(arg) for arg in spec.args][:1] == ["mcp-server"]
     }
+
+
+def _catalogue_python_request(catalogue: dict[str, Any]) -> str | None:
+    """The Python request every clio-kit Python server pins, if they all pin the same one.
+
+    The catalogue records each server's files by digest, not content, so the shared
+    ``.python-version`` is matched against the minor-version requests it can hold. A
+    server without one, differing pins or any other request returns ``None``.
+    """
+    pins: set[tuple[str, int]] = set()
+    for server in dict(catalogue.get("servers") or {}).values():
+        if server.get("runtime", "python") != "python":
+            continue
+        artifact = dict(catalogue.get("artifacts") or {}).get(server.get("artifact"))
+        pin = dict((artifact or {}).get("files") or {}).get(_SERVER_PYTHON_PIN)
+        if not pin:
+            return None
+        pins.add((str(pin.get("sha256", "")), int(pin.get("size", -1))))
+    if len(pins) != 1:
+        return None
+    ((digest, size),) = pins
+    for minor in range(100):
+        request = f"3.{minor}"
+        for content in (request, f"{request}\n", f"{request}\r\n"):
+            data = content.encode("ascii")
+            if len(data) == size and hashlib.sha256(data).hexdigest() == digest:
+                return request
+    return None
+
+
+def _prefetch_server_python(
+    args: argparse.Namespace, emit: Callable[[str], None]
+) -> dict[str, Any]:
+    """Install the Python the tool servers pin while the marketplace that declares them installs.
+
+    Each server's build (``uv venv`` in clio-kit) otherwise downloads and unpacks that
+    Python itself once the marketplace is ready: about 3,400 files on the critical path.
+    The same ``uv`` installs the same request into the same place, with the servers'
+    environment, so the builds find it. It never installs a launcher or a registry
+    entry, which a build's own download does not add either. Anything that could make
+    the builds choose differently skips it, and a failure leaves them as before.
+    """
+    if not args.prepare_tool_servers:
+        return {"status": "skipped", "reason": "not_requested"}
+    if args.reuse_installed:
+        return {"status": "skipped", "reason": "reuse_installed"}
+    started = time.monotonic()
+    from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher  # noqa: PLC0415
+
+    # Only the bundled clio-kit is known before the installer's launcher is ready.
+    launcher = bundled_module_launcher("clio-kit", ["mcp-server", "server"])
+    found = importlib.util.find_spec("clio_kit")
+    if launcher is None or found is None or not found.submodule_search_locations:
+        return {"status": "skipped", "reason": "no_bundled_kit"}
+    try:
+        index = Path(next(iter(found.submodule_search_locations))) / "_components.json"
+        request = _catalogue_python_request(json.loads(index.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError, AttributeError):
+        request = None
+    if request is None:
+        return {"status": "skipped", "reason": "no_shared_python_pin"}
+    from clio_agent.tools.mcp_environment import stdio_environment  # noqa: PLC0415
+
+    launcher_env = launcher[2]
+    # As ``mcp_prepare.provision`` builds a declared clio-kit server's environment.
+    env = stdio_environment({}, command="clio-kit", args=["mcp-server", "server"])
+    env.update(launcher_env)
+    # The builds' own uv settings (clio-kit's locked server runtime).
+    env["UV_CACHE_DIR"] = str(Path(env["CLIO_KIT_CACHE_DIR"]).expanduser().resolve() / "uv-cache")
+    env.pop("VIRTUAL_ENV", None)
+    if (
+        env.get("UV_MANAGED_PYTHON", "").lower() not in {"1", "true"}
+        or env.get("UV_PYTHON")
+        or env.get("UV_NO_MANAGED_PYTHON")
+        or env.get("UV_PYTHON_PREFERENCE")
+        or env.get("UV_PYTHON_DOWNLOADS", "automatic").lower() != "automatic"
+    ):
+        return {"status": "skipped", "reason": "python_choice_overridden"}
+    uv = shutil.which("uv", path=env.get("PATH"))
+    if not uv:
+        return {"status": "skipped", "reason": "uv_missing"}
+    emit(f"Installing Python {request} for the agents' data tools...")
+    command = [uv, "python", "install", "--no-bin", "--no-registry", request]
+    try:
+        completed = subprocess.run(
+            command,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_SERVER_PYTHON_MAX_WAIT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {
+            "status": "failed",
+            "request": request,
+            "error": str(error)[-300:],
+            "seconds": round(time.monotonic() - started, 1),
+        }
+    seconds = round(time.monotonic() - started, 1)
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        return {"status": "failed", "request": request, "error": detail[-300:], "seconds": seconds}
+    emit(f"Python {request} for the agents' data tools is ready.")
+    return {"status": "ready", "request": request, "seconds": seconds}
 
 
 def _prepare_tool_servers(
