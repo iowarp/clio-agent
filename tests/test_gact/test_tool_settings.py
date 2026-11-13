@@ -523,3 +523,22 @@ def test_the_tools_page_reads_one_mcp_server_by_name(
         both = client.get("/v1/settings/tools", params={"ref": "clio-builtin/core", "server": "x"})
         assert both.status_code == 422
         assert client.get("/v1/settings/tools", params={"server": " "}).status_code == 422
+
+
+def test_mcp_definitions_include_workspace_fleets() -> None:
+    import threading
+    from types import SimpleNamespace
+
+    from clio_agent.gact import tool_settings_page as page
+
+    def executor(definitions: dict) -> SimpleNamespace:
+        return SimpleNamespace(get_all_tool_definitions=lambda: definitions)
+
+    workspaces = {"D:/ws": executor({"docs_search": {"name": "docs_search"}})}
+    agent = SimpleNamespace(
+        tool_executor=executor({"fs_read": {"name": "fs_read"}}),
+        _workspace_state=lambda: (threading.Lock(), workspaces, {}),
+    )
+    definitions = page._mcp_definitions(SimpleNamespace(state=SimpleNamespace(agent=agent)))
+    assert set(definitions) == {"fs_read", "docs_search"}
+    assert page._mcp_definitions(SimpleNamespace(state=SimpleNamespace(agent=None))) == {}

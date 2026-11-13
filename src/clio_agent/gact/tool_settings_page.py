@@ -83,10 +83,27 @@ def _plugin(app: Any, ref: str) -> Any:
 
 
 def _mcp_definitions(app: Any) -> dict[str, Any]:
-    executor = getattr(getattr(app.state, "agent", None), "tool_executor", None)
-    get_definitions = getattr(executor, "get_all_tool_definitions", None)
-    definitions = get_definitions() if callable(get_definitions) else {}
-    return dict(definitions) if isinstance(definitions, Mapping) else {}
+    """Cached definitions from the default executor and every resident workspace fleet.
+
+    A conversation mounts its servers in its workspace's executor, not the default
+    one, so reading only ``agent.tool_executor`` misses every server a session loaded.
+    """
+
+    agent = getattr(app.state, "agent", None)
+    executors = [getattr(agent, "tool_executor", None)]
+    workspace_state = getattr(agent, "_workspace_state", None)
+    if callable(workspace_state):
+        lock, workspace_executors, _leases = workspace_state()
+        with lock:
+            executors.extend(workspace_executors.values())
+    merged: dict[str, Any] = {}
+    for executor in executors:
+        get_definitions = getattr(executor, "get_all_tool_definitions", None)
+        definitions = get_definitions() if callable(get_definitions) else {}
+        if isinstance(definitions, Mapping):
+            for key, definition in definitions.items():
+                merged.setdefault(key, definition)
+    return merged
 
 
 def _flags(annotations: Mapping[str, Any] | None) -> tuple[bool, bool]:
