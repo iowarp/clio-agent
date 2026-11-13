@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import turn as turn_module
 from clio_agent.gact.app import build_app
+from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
 from clio_agent.gact.mcp_apps import (
     MCP_APP_MIME_TYPE,
     MCPAppAdmissionError,
@@ -441,26 +442,44 @@ def test_capability_routes_stay_bound_and_session_delete_cleans_up(tmp_path: Pat
         assert payload.status_code == 200
         payload_body = payload.json()
         assert payload_body["tool_result"]["_meta"]["io.iowarp.vigil"]
-        assert urlparse(payload_body["sandbox_url"]).netloc == "localhost:8100"
-        assert urlparse(payload_body["sandbox_url"]).netloc != "127.0.0.1:8100"
+        sandbox_host = sandbox_host_for("vigil")
+        assert urlparse(payload_body["sandbox_url"]).netloc == f"{sandbox_host}:8100"
         desktop_payload = client.get(
             prefix,
             params=capability,
             headers={"origin": "tauri://localhost"},
         ).json()
-        assert urlparse(desktop_payload["sandbox_url"]).netloc == "127.0.0.1:8100"
+        assert desktop_payload["sandbox_url"] == payload_body["sandbox_url"]
         assert executor.reads == [("vigil", "ui://vigil/view")]
 
-        sandbox = client.get(
+        # The sandbox document is served only on the app's sandbox host.
+        on_api_host = client.get(
             f"{prefix}/sandbox",
             params=capability,
             headers={"referer": "http://127.0.0.1:5173/session"},
         )
+        assert on_api_host.status_code == 403
+        sandbox = client.get(
+            f"http://{sandbox_host}:8100{prefix}/sandbox",
+            params=capability,
+            headers={"referer": "http://127.0.0.1:5173/session"},
+        )
         assert sandbox.status_code == 200
-        assert "allow-scripts allow-forms" in sandbox.text
-        assert "allow-scripts allow-same-origin" not in sandbox.text
+        assert "allow-scripts allow-same-origin allow-forms" in sandbox.text
         assert "inner.srcdoc = html" in sandbox.text
-        assert "event.origin === 'null'" in sandbox.text
+        assert "event.origin === window.location.origin" in sandbox.text
+        # The sandbox host carries no API authority.
+        refused = client.get(f"http://{sandbox_host}:8100/v1/sessions")
+        assert refused.status_code == 403
+        assert refused.json()["error"]["error"] == "sandbox_origin_refused"
+        assert (
+            client.post(
+                f"http://{sandbox_host}:8100{prefix}/tools/call",
+                params=capability,
+                json={"name": "update", "arguments": {}},
+            ).status_code
+            == 403
+        )
         assert "frame-ancestors http://127.0.0.1:5173" in sandbox.headers["content-security-policy"]
         assert "frame-src 'self' data: blob:" in sandbox.headers["content-security-policy"]
 

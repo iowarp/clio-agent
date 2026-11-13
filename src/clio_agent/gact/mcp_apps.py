@@ -30,7 +30,6 @@ from clio_agent.gact.mcp_app_observer_reasons import (
 )
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
-    _alternate_loopback_origin,
     _csp_header,
     _host_origin,
     _request_origin,
@@ -753,7 +752,6 @@ __all__ = [
     "registry_limit",
     "registry_ttl_s",
     "_SANDBOX_DOCUMENT",
-    "_alternate_loopback_origin",
     "_csp_header",
     "_host_origin",
     "_request_origin",
