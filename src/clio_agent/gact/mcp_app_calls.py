@@ -73,6 +73,12 @@ REOPEN_REASONS: dict[str, str] = {
     "view_not_opened": "The call succeeded but its result did not open a view.",
 }
 
+#: The detail of a call whose connection ended before the service answered.
+UNCERTAIN_CALL_DETAIL = (
+    "The connection to the service ended before it answered, so whether it acted on the "
+    "call is not known."
+)
+
 _LOCK = threading.RLock()
 
 
@@ -414,6 +420,10 @@ async def replay_call(
         return failed("permission_denied", str(exc) or REOPEN_REASONS["permission_denied"])
     except Exception as exc:  # noqa: BLE001 - forwards: the typed reason the card shows
         return failed("call_failed", f"{type(exc).__name__}: {exc}")
+    receipt = getattr(result, "structured_content", None)
+    if isinstance(receipt, Mapping) and receipt.get("acceptance") == "uncertain":
+        # The connection ended before the service answered (it closed or was replaced).
+        return failed("call_failed", UNCERTAIN_CALL_DETAIL)
     wire = call_tool_result_to_wire(result)
     if wire.get("isError") is True:
         return failed("tool_error", _error_text(wire) or REOPEN_REASONS["tool_error"])

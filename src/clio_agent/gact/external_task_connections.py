@@ -218,6 +218,14 @@ async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -
         )
         if idle:
             await retire_connection(self, host, shutdown=True)
+        else:  # its calls end with their server, and their records name why
+            host.superseded = True
+
+
+def failure_reason(host: ExternalConnection, error: BaseException) -> str:
+    """The recorded reason of a failed submission; a superseded connection is typed."""
+    text = str(error) or type(error).__name__
+    return f"{EXTERNAL_MCP_CONNECTION_SUPERSEDED}: {text}" if host.superseded else text
 
 
 async def retire_connection(

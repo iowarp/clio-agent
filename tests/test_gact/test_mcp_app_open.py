@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 
 from clio_agent.errors import CancellationError
 from clio_agent.gact.app import build_app
-from clio_agent.gact.mcp_app_calls import REOPEN_REASONS, SESSION_KEY
+from clio_agent.gact.mcp_app_calls import REOPEN_REASONS, SESSION_KEY, UNCERTAIN_CALL_DETAIL
 from clio_agent.gact.mcp_apps import MCPAppRegistry
+from clio_agent.tools.task_receipt import accepted_result
 
 
 class _Executor:
@@ -138,7 +139,22 @@ def test_every_failure_is_a_typed_reason_with_the_saved_call(tmp_path: Path) -> 
         assert cancelled["error"]["reason"] == "call_cancelled"
         assert cancelled["saved_call"]["tool"] == "open_timeline"
 
-        for outcome in (missing, no_view, errored, denied, cancelled):
+        # The connection ended before the service answered: an uncertain receipt.
+        executor.fail = None
+        receipt = accepted_result(
+            {
+                "handle": "task_x",
+                "kind": "MCP",
+                "accepted": None,
+                "acceptance": "uncertain",
+                "retry_safe": False,
+            }
+        )
+        executor.call_tool_result = lambda name, args: receipt  # type: ignore[method-assign]
+        uncertain = _open(client, sid, server="clock", tool="open_timeline")
+        assert uncertain["error"] == {"reason": "call_failed", "detail": UNCERTAIN_CALL_DETAIL}
+
+        for outcome in (missing, no_view, errored, denied, cancelled, uncertain):
             assert outcome["error"]["reason"] in REOPEN_REASONS
 
 

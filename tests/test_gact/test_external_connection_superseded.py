@@ -92,3 +92,13 @@ async def test_a_busy_superseded_connection_is_kept_until_its_work_ends(
     await connections._retire_superseded(tasks, current)
 
     assert retired == [idle]
+    # The busy one is marked, so its calls' failures name why (typed).
+    assert getattr(busy, "superseded", False) is True
+    assert not hasattr(idle, "superseded")
+    error = RuntimeError("Connection closed")
+    assert connections.failure_reason(busy, error) == (
+        f"{connections.EXTERNAL_MCP_CONNECTION_SUPERSEDED}: Connection closed"
+    )
+    assert connections.failure_reason(SimpleNamespace(superseded=False), error) == (
+        "Connection closed"
+    )
