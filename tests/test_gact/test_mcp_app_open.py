@@ -80,7 +80,7 @@ def test_open_admits_the_view_without_adding_it_to_the_transcript(tmp_path: Path
         assert part["resource_uri"] == "ui://clock/view"
         assert part["source_server"] == "clock"
         assert part["tool_name"] == "clock_open_timeline"
-        assert part["metadata"]["display_mode"] == "inline"
+        assert part["display_mode"] == "inline"
         assert body["saved_call"] == {
             "server": "clock",
             "tool": "open_timeline",
