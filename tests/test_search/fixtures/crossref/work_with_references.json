@@ -1,0 +1,510 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.crossref.org/works/10.1038/s41586-025-09482-1?mailto=tests@example.org",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "mailto": "tests@example.org"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "x-rate-limit-limit": "10",
+    "x-rate-limit-interval": "1s",
+    "x-concurrency-limit": "3",
+    "x-api-pool": "polite-single"
+  },
+  "body": {
+    "status": "ok",
+    "message-type": "work",
+    "message-version": "1.0.0",
+    "message": {
+      "indexed": {
+        "date-parts": [
+          [
+            2026,
+            11,
+            11
+          ]
+        ],
+        "date-time": "2026-11-11T15:24:54Z",
+        "timestamp": 1794410694266,
+        "version": "4.9.0"
+      },
+      "reference-count": 128,
+      "publisher": "Springer Science and Business Media LLC",
+      "issue": "8081",
+      "license": [
+        {
+          "start": {
+            "date-parts": [
+              [
+                2025,
+                9,
+                10
+              ]
+            ],
+            "date-time": "2025-09-10T00:00:00Z",
+            "timestamp": 1757462400000
+          },
+          "content-version": "tdm",
+          "delay-in-days": 0,
+          "URL": "https://creativecommons.org/licenses/by-nc-nd/4.0"
+        },
+        {
+          "start": {
+            "date-parts": [
+              [
+                2025,
+                9,
+                10
+              ]
+            ],
+            "date-time": "2025-09-10T00:00:00Z",
+            "timestamp": 1757462400000
+          },
+          "content-version": "vor",
+          "delay-in-days": 0,
+          "URL": "https://creativecommons.org/licenses/by-nc-nd/4.0"
+        }
+      ],
+      "content-domain": {
+        "domain": [
+          "link.springer.com"
+        ],
+        "crossmark-restriction": false
+      },
+      "short-container-title": [
+        "Nature"
+      ],
+      "published-print": {
+        "date-parts": [
+          [
+            2025,
+            9,
+            18
+          ]
+        ]
+      },
+      "DOI": "10.1038/s41586-025-09482-1",
+      "type": "journal-article",
+      "created": {
+        "date-parts": [
+          [
+            2025,
+            9,
+            10
+          ]
+        ],
+        "date-time": "2025-09-10T15:03:55Z",
+        "timestamp": 1757516635000
+      },
+      "page": "672-678",
+      "update-policy": "https://doi.org/10.1007/springer_crossmark_policy",
+      "source": "Crossref",
+      "is-referenced-by-count": 110,
+      "title": [
+        "Long-range PM2.5 pollution and health impacts from the 2023 Canadian wildfires"
+      ],
+      "prefix": "10.1038",
+      "volume": "645",
+      "author": [
+        {
+          "ORCID": "https://orcid.org/0000-0002-8376-131X",
+          "authenticated-orcid": false,
+          "given": "Qiang",
+          "family": "Zhang",
+          "sequence": "first",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0009-0006-0174-3908",
+          "authenticated-orcid": false,
+          "given": "Yuexuanzi",
+          "family": "Wang",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Qingyang",
+          "family": "Xiao",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0000-0002-1605-8448",
+          "authenticated-orcid": false,
+          "given": "Guannan",
+          "family": "Geng",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0000-0002-9338-0844",
+          "authenticated-orcid": false,
+          "given": "Steven J.",
+          "family": "Davis",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Xiaodong",
+          "family": "Liu",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Jin",
+          "family": "Yang",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Jiajun",
+          "family": "Liu",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Wenyu",
+          "family": "Huang",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Changpei",
+          "family": "He",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Binhe",
+          "family": "Luo",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0000-0003-2632-8402",
+          "authenticated-orcid": false,
+          "given": "Randall V.",
+          "family": "Martin",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0000-0002-9103-9343",
+          "authenticated-orcid": false,
+          "given": "Michael",
+          "family": "Brauer",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0000-0001-6559-7387",
+          "authenticated-orcid": false,
+          "given": "James T.",
+          "family": "Randerson",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "ORCID": "https://orcid.org/0000-0001-6006-9323",
+          "authenticated-orcid": false,
+          "given": "Kebin",
+          "family": "He",
+          "sequence": "additional",
+          "affiliation": [],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        }
+      ],
+      "member": "297",
+      "published-online": {
+        "date-parts": [
+          [
+            2025,
+            9,
+            10
+          ]
+        ]
+      },
+      "reference": [
+        {
+          "key": "9482_CR1",
+          "unstructured": "Canadian wildfire smoke puts around 70 million US residents under air quality alerts. Cable News Network https://edition.cnn.com/2023/07/16/weather/canada-wildfires-us-air-quality-alerts-sunday/index.html (2023)."
+        },
+        {
+          "key": "9482_CR2",
+          "doi-asserted-by": "publisher",
+          "first-page": "565",
+          "DOI": "10.1007/s00376-023-3241-0",
+          "volume": "41",
+          "author": "Z Wang",
+          "year": "2024",
+          "unstructured": "Wang, Z. et al. Severe global environmental issues caused by Canada’s record-breaking wildfires in 2023. Adv. Atmos. Sci. 41, 565–571 (2024).",
+          "journal-title": "Adv. Atmos. Sci."
+        },
+        {
+          "key": "9482_CR3",
+          "doi-asserted-by": "publisher",
+          "first-page": "29",
+          "DOI": "10.1038/420029a",
+          "volume": "420",
+          "author": "D Schimel",
+          "year": "2002",
+          "unstructured": "Schimel, D. & Baker, D. The wildfire factor. Nature 420, 29–30 (2002).",
+          "journal-title": "Nature"
+        },
+        {
+          "key": "9482_CR4",
+          "doi-asserted-by": "publisher",
+          "first-page": "5301",
+          "DOI": "10.5194/essd-15-5301-2023",
+          "volume": "15",
+          "author": "P Friedlingstein",
+          "year": "2023",
+          "unstructured": "Friedlingstein, P. et al. Global Carbon Budget 2023. Earth Syst. Sci. Data 15, 5301–5369 (2023).",
+          "journal-title": "Earth Syst. Sci. Data"
+        },
+        {
+          "key": "9482_CR5",
+          "doi-asserted-by": "publisher",
+          "first-page": "525",
+          "DOI": "10.1111/j.1469-8137.2004.01252.x",
+          "volume": "165",
+          "author": "WJ Bond",
+          "year": "2005",
+          "unstructured": "Bond, W. J., Woodward, F. I. & Midgley, G. F. The global distribution of ecosystems in a world without fire. New Phytol. 165, 525–537 (2005).",
+          "journal-title": "New Phytol."
+        }
+      ],
+      "container-title": [
+        "Nature"
+      ],
+      "original-title": [],
+      "language": "en",
+      "link": [
+        {
+          "URL": "https://www.nature.com/articles/s41586-025-09482-1.pdf",
+          "content-type": "application/pdf",
+          "content-version": "vor",
+          "intended-application": "text-mining"
+        },
+        {
+          "URL": "https://www.nature.com/articles/s41586-025-09482-1",
+          "content-type": "text/html",
+          "content-version": "vor",
+          "intended-application": "text-mining"
+        },
+        {
+          "URL": "https://www.nature.com/articles/s41586-025-09482-1.pdf",
+          "content-type": "application/pdf",
+          "content-version": "vor",
+          "intended-application": "similarity-checking"
+        }
+      ],
+      "deposited": {
+        "date-parts": [
+          [
+            2025,
+            9,
+            17
+          ]
+        ],
+        "date-time": "2025-09-17T13:03:23Z",
+        "timestamp": 1758114203000
+      },
+      "score": 1,
+      "resource": {
+        "primary": {
+          "URL": "https://www.nature.com/articles/s41586-025-09482-1"
+        }
+      },
+      "subtitle": [],
+      "short-title": [],
+      "issued": {
+        "date-parts": [
+          [
+            2025,
+            9,
+            10
+          ]
+        ]
+      },
+      "references-count": 128,
+      "journal-issue": {
+        "issue": "8081",
+        "published-print": {
+          "date-parts": [
+            [
+              2025,
+              9,
+              18
+            ]
+          ]
+        }
+      },
+      "alternative-id": [
+        "9482"
+      ],
+      "URL": "https://doi.org/10.1038/s41586-025-09482-1",
+      "relation": {},
+      "ISSN": [
+        "0028-0836",
+        "1476-4687"
+      ],
+      "issn-type": [
+        {
+          "value": "0028-0836",
+          "type": "print"
+        },
+        {
+          "value": "1476-4687",
+          "type": "electronic"
+        }
+      ],
+      "subject": [],
+      "published": {
+        "date-parts": [
+          [
+            2025,
+            9,
+            10
+          ]
+        ]
+      },
+      "assertion": [
+        {
+          "value": "31 March 2024",
+          "order": 1,
+          "name": "received",
+          "label": "Received",
+          "group": {
+            "name": "ArticleHistory",
+            "label": "Article History"
+          }
+        },
+        {
+          "value": "31 July 2025",
+          "order": 2,
+          "name": "accepted",
+          "label": "Accepted",
+          "group": {
+            "name": "ArticleHistory",
+            "label": "Article History"
+          }
+        },
+        {
+          "value": "10 September 2025",
+          "order": 3,
+          "name": "first_online",
+          "label": "First Online",
+          "group": {
+            "name": "ArticleHistory",
+            "label": "Article History"
+          }
+        },
+        {
+          "value": "The authors declare no competing interests.",
+          "order": 1,
+          "name": "Ethics",
+          "group": {
+            "name": "EthicsHeading",
+            "label": "Competing interests"
+          }
+        }
+      ]
+    }
+  }
+}

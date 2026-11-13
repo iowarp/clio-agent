@@ -761,24 +761,6 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         # clio-core is the only store: every test runs ARC on this worker's private
         # daemon, in its own namespace (cleared at teardown by clio_core_namespace).
         "arc": {"store": "cte", "namespace": _test_arc_namespace(request)},
-        # A test server never installs CLIO's private SearXNG at boot (network + uv);
-        # tests/test_gact/test_searxng_service.py drives that path with a fake host.
-        "search": {
-            "local_searxng": {"auto_install": False},
-            # A normal unit app must not discover/warm the installed clio-kit
-            # Web MCP and download its pinned runtime. Search tests opt in with
-            # explicit settings; the search suite exercises shipped defaults
-            # directly. Real-service tests keep those defaults too.
-            **(
-                {"backend": "none"}
-                if request.node.path.parent.name != "test_search"
-                and not any(
-                    request.node.get_closest_marker(marker)
-                    for marker in ("live", "integration", "real_case", "relay")
-                )
-                else {}
-            ),
-        },
     }
     if request.node.get_closest_marker("live"):
         del layer["lm"]  # a live test runs the model the operator configured (CLIO_LM_*)

@@ -1,0 +1,336 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.crossref.org/works/10.26434/chemrxiv.15000484/v1?mailto=tests@example.org",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "mailto": "tests@example.org"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "x-rate-limit-limit": "10",
+    "x-rate-limit-interval": "1s",
+    "x-concurrency-limit": "3",
+    "x-api-pool": "polite-single"
+  },
+  "body": {
+    "status": "ok",
+    "message-type": "work",
+    "message-version": "1.0.0",
+    "message": {
+      "indexed": {
+        "date-parts": [
+          [
+            2026,
+            7,
+            6
+          ]
+        ],
+        "date-time": "2026-07-06T01:15:22Z",
+        "timestamp": 1783300522145,
+        "version": "3.54.6"
+      },
+      "posted": {
+        "date-parts": [
+          [
+            2026,
+            2,
+            27
+          ]
+        ]
+      },
+      "reference-count": 0,
+      "publisher": "American Chemical Society (ACS)",
+      "content-domain": {
+        "domain": [],
+        "crossmark-restriction": false
+      },
+      "short-container-title": [],
+      "abstract": "<jats:p>Herein, we present a new class of hybrid conjugated polymer that integrate [8]cycloparaphenylene ([8]CPP) directly into poly(para-phenylene vinylene) (PPV) frameworks, creating a π-extended poly(cyclo(para-phenylene vinylene)) ([8]CPPV). This architecture represents a polymeric segment of an armchair single-walled carbon nanotube (SWCNT). Comprehensive characterization confirmed its well-defined alternating structure. Photophysical analyses revealed curvature-driven electronic coupling between the radial CPP and linear PPV π-systems, resulting in broadened absorption, red-shifted emission, and high fluorescence quantum yield. Furthermore, [8]CPPV demonstrates excellent performance as a lithium-ion battery anode, combining high initial capacity with stable cycling enabled by mixed pseudocapacitive and diffusion-controlled Li + storage mechanisms. These results establish [8]CPPV as a versatile all-carbon polymeric framework that bridges molecular nanohoops and extended π-networks, offering a tunable platform for optoelectronic and energy storage applications.</jats:p>",
+      "DOI": "10.26434/chemrxiv.15000484/v1",
+      "type": "posted-content",
+      "created": {
+        "date-parts": [
+          [
+            2026,
+            2,
+            27
+          ]
+        ],
+        "date-time": "2026-02-27T12:40:01Z",
+        "timestamp": 1772196001000
+      },
+      "source": "Crossref",
+      "is-referenced-by-count": 0,
+      "title": [
+        "A Novel Radial-Linear π-Conjugated Polymer by Integrating Poly(para-phenylene vinylene) and Cycloparaphenylene for Enhanced Optoelectronic and Electrochemical Performance"
+      ],
+      "prefix": "10.26434",
+      "author": [
+        {
+          "given": "Rana Yasir",
+          "family": "Nadeem",
+          "sequence": "first",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Pengwei",
+          "family": "Fang",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Yifan",
+          "family": "Shi",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Jinyi",
+          "family": "Wang",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Bing",
+          "family": "Yuan",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Xinyu",
+          "family": "Zhang",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Xiangkun",
+          "family": "Kong",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Chengwei",
+          "family": "Wang",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        },
+        {
+          "given": "Pingwu",
+          "family": "Du",
+          "sequence": "additional",
+          "affiliation": [
+            {
+              "name": "Department of Materials Science and Engineering, University of Science and Technology of China, 96 Jinzhai Road, Hefei"
+            },
+            {
+              "name": "Anhui Province",
+              "place": [
+                "China"
+              ]
+            }
+          ],
+          "role": [
+            {
+              "vocabulary": "crossref",
+              "role": "author"
+            }
+          ]
+        }
+      ],
+      "member": "316",
+      "container-title": [],
+      "original-title": [],
+      "link": [
+        {
+          "URL": "https://chemrxiv.org/doi/pdf/10.26434/chemrxiv.15000484/v1",
+          "content-type": "unspecified",
+          "content-version": "vor",
+          "intended-application": "similarity-checking"
+        }
+      ],
+      "deposited": {
+        "date-parts": [
+          [
+            2026,
+            7,
+            6
+          ]
+        ],
+        "date-time": "2026-07-06T00:44:40Z",
+        "timestamp": 1783298680000
+      },
+      "score": 1,
+      "resource": {
+        "primary": {
+          "URL": "https://chemrxiv.org/doi/full/10.26434/chemrxiv.15000484/v1"
+        }
+      },
+      "subtitle": [],
+      "short-title": [],
+      "issued": {
+        "date-parts": [
+          [
+            2026,
+            2,
+            27
+          ]
+        ]
+      },
+      "references-count": 0,
+      "URL": "https://doi.org/10.26434/chemrxiv.15000484/v1",
+      "relation": {
+        "is-preprint-of": [
+          {
+            "id-type": "doi",
+            "id": "10.1002/anie.6921317",
+            "asserted-by": "subject"
+          }
+        ]
+      },
+      "subject": [],
+      "published": {
+        "date-parts": [
+          [
+            2026,
+            2,
+            27
+          ]
+        ]
+      },
+      "subtype": "preprint"
+    }
+  }
+}

@@ -206,7 +206,7 @@ def test_real_lock_export_covers_the_bundle_packages() -> None:
     pytz is pulled in by those deps (the package that drifted unlocked).
     """
     scope = cbl.load_bundle_scope(REPO_ROOT, cbl.BUNDLE_EXTRAS)
-    for name in ("clio-kit", "click", "iowarp-core", "globus-sdk", "trafilatura", "ddgs", "pytz"):
+    for name in ("clio-kit", "click", "iowarp-core", "globus-sdk", "trafilatura", "pytz"):
         assert name in scope, name
     assert "clio-agent" not in scope  # --no-emit-project
 
@@ -243,7 +243,6 @@ def test_find_drift_flags_mismatch_and_unlocked_but_skips_local_projects() -> No
         "pytz": "2026.4",
         "surprise": "1.0",
         "clio-agent": "0.9.4.17",
-        "web-mcp": "2.1.0",
         "pip": "26.1.2",
     }
     assert cbl.find_drift(locked, installed, scope) == [

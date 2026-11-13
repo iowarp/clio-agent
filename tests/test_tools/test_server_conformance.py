@@ -42,6 +42,10 @@ SHELL_ANNOTATIONS: dict[str, dict[str, bool]] = {
 GATEWAY_ANNOTATIONS: dict[str, dict[str, bool]] = {
     **{f"fs_{name}": hints for name, hints in FS_ANNOTATIONS.items()},
     **{f"shell_{name}": hints for name, hints in SHELL_ANNOTATIONS.items()},
+    **{
+        name: {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}
+        for name in ("web_search", "web_fetch", "literature_search", "literature_lookup")
+    },
 }
 
 

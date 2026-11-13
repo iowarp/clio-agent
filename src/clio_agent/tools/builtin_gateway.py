@@ -14,13 +14,29 @@ def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> N
     parent.mount(server, namespace=namespace)
 
 
-def _mount_builtins(gw: FastMCP) -> None:
-    """Mount the universal in-process built-in servers onto a gateway."""
-    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
-    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+def builtin_servers() -> tuple[tuple[str, FastMCP], ...]:
+    """The in-process built-in servers, ``(namespace, server)``: the ONE list.
 
-    _mount_with_namespace(gw, fs_server, "fs")
-    _mount_with_namespace(gw, shell_server, "shell")
+    ``fs``/``shell`` are universal; ``web``/``literature`` are CLIO's own search
+    servers, whose tools agents receive only when a plugin claims them.
+    """
+    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
+    from clio_agent.tools.servers.literature_server import literature_server  # noqa: PLC0415
+    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+    from clio_agent.tools.servers.web_server import web_server  # noqa: PLC0415
+
+    return (
+        ("fs", fs_server),
+        ("shell", shell_server),
+        ("web", web_server),
+        ("literature", literature_server),
+    )
+
+
+def _mount_builtins(gw: FastMCP) -> None:
+    """Mount the in-process built-in servers onto a gateway."""
+    for namespace, server in builtin_servers():
+        _mount_with_namespace(gw, server, namespace)
 
 
 def _new_base_gateway() -> FastMCP:

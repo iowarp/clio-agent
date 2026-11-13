@@ -44,7 +44,7 @@ PLAN_ACL_PLAN_FILE_PRIORITY = 70
 
 #: The effectful-but-plan-safe tools plan mode ALLOWS despite the @40 deny-everything default (P1.4
 #: #1066): ``plan_exit`` (the turn-ending approval yield), ``ask_user`` (clarify mid-plan), and
-#: ``web_fetch`` (read external context). Reads are already fast-allowed by
+#: ``web_*``/``literature_*`` (read external context). Reads are already fast-allowed by
 #: :func:`grant_resolver.is_read_only`. Only ``plan_exit`` gets the unconditional anti-lockout allow
 #: (F1 #1057 B5); a user ``deny`` on ``ask_user``/``web_fetch`` is honoured.
 _TASK_CONTROLS: tuple[str, ...] = (
@@ -64,6 +64,9 @@ PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
     "plan_exit",
     "ask_user",
     "web_fetch",
+    "web_search",
+    "literature_search",
+    "literature_lookup",
     "run_code",
     *_TASK_CONTROLS,
 )

@@ -67,6 +67,8 @@ dependencies = [
     # first-party code imports it directly.
     "websockets>=13.0",
     "clio-kit==2.12.3",  # Source-locked scientific MCP components and launcher.
+    # web_fetch turns HTML pages into Markdown (clio_agent.search.fetch).
+    "trafilatura>=1.12",
     "fastmcp==4.1.2",  # stable native Tasks integration; adapter contracts are acceptance gates
     "fastmcp-tasks==4.1.2",
     "mcp==2.2.0",  # reviewed native Tasks wire/client contract
@@ -195,20 +197,8 @@ desktop = [
     # deps. install/build-gact-runtime.sh|.ps1 install exactly
     # `clio-agent[argonne,desktop]` (their BUNDLE_EXTRAS list) against a
     # `uv export` of those same extras, so everything the bundle ships comes
-    # from ONE `uv lock` resolution. Before this extra, clio-kit was a
-    # hardcoded pin outside the lock and its click>=8.3.3 floor could never
-    # be reconciled with the locked click (resolver failure at release time).
-    # Runtime deps of clio-kit's bundled Web Search adapter (web-mcp 2.1.2,
-    # installed from clio-kit's data dir), mirrored from its pyproject so
-    # they are locked too. fastmcp, httpx, pydantic and platformdirs are
-    # already base deps. When bumping clio-kit, re-mirror this list:
-    # scripts/check_bundle_matches_lock.py fails on any installed package the
-    # lock export does not cover.
-    "trafilatura>=1.12",
-    "readability-lxml>=0.8",
-    "ddgs>=6.0",
-    "pydantic-settings>=2.6",
-    "python-dotenv>=1.0",
+    # from ONE `uv lock` resolution. Web search is built into clio-agent, so
+    # the Desktop runtime currently needs nothing beyond the base deps.
 ]
 
 claude-code = [

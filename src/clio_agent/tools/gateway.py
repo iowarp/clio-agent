@@ -358,7 +358,7 @@ def _mounted_namespaces(gw: FastMCP) -> set[str]:
 
 
 def list_builtin_tool_definitions() -> dict[str, Any]:
-    """List the in-process built-in servers' (fs/shell) tools — fast, no I/O.
+    """List the in-process built-in servers' tools — fast, no I/O.
 
     #1232 pt 2: the boot path (``ClioAgent.__init__``) calls this synchronously
     to seed SOME tool definitions immediately — built-ins never spawn a
@@ -367,11 +367,10 @@ def list_builtin_tool_definitions() -> dict[str, Any]:
     ready" never waits on any declared MCP server.
     """
 
-    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
-    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+    from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
 
     tools: dict[str, Any] = {}
-    for namespace, server in (("fs", fs_server), ("shell", shell_server)):
+    for namespace, server in builtin_servers():
         for tool in _list_tools_sync(server):
             prefixed = f"{namespace}_{tool.name}"
             tools[prefixed] = tool.model_copy(update={"name": prefixed})
@@ -417,10 +416,9 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
 
     specs = namespace_specs(gw)
     tools: dict[str, Any] = {}
-    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
-    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+    from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
 
-    builtins: list[tuple[str, Any]] = [("fs", fs_server), ("shell", shell_server)]
+    builtins: list[tuple[str, Any]] = list(builtin_servers())
     builtin_servers = {id(server) for _namespace, server in builtins}
     declared = list(namespace_proxies(gw).items())
     for namespace, server in (*builtins, *declared):

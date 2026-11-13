@@ -256,7 +256,11 @@ from clio_agent.gact.app import build_app
 # /v1/workspaces/{workspace_id}/folder-attachments (#2175) attaches a host folder in place
 # or as a full copy; GET /v1/folder-attachments/locality (#2177) tells a client whether it
 # runs on CLIO's computer.
-EXPECTED_ROUTE_METHOD_PAIRS = 443
+# 443 -> 447: built-in web search (routes/search.py) replaced GET /v1/search/backend, POST
+# /v1/search/query and PUT/DELETE /v1/search/engine-keys/{engine} with GET/PATCH
+# /v1/search/providers, PUT/DELETE /v1/search/providers/{source}/key, POST
+# /v1/search/openalex-key and the search-service POST /v1/search, POST /v1/fetch, GET /v1/limits.
+EXPECTED_ROUTE_METHOD_PAIRS = 447
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.infrastructure.drivers import WEB_SEARCH_IMAGE, build_driver_plan
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CreateTargetRequest,
@@ -20,7 +19,6 @@ from clio_agent.gact.infrastructure.models import (
     InfrastructureOperation,
     ServiceActionRequest,
     SshRoute,
-    TargetFacts,
 )
 from clio_agent.gact.infrastructure.probe import _resolve_command
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
@@ -95,115 +93,6 @@ def test_windows_command_resolution_prefers_real_executable_over_extensionless_s
     assert _resolve_command("docker") == r"C:\Program Files\Docker\docker.exe"
 
 
-def test_web_search_plan_is_pinned_and_allowlisted() -> None:
-    facts = TargetFacts(
-        target_id="homelab",
-        label="Homelab",
-        os="linux",
-        arch="x86_64",
-        docker_available=True,
-        docker_installed=True,
-        uv_available=True,
-        transport_state="connected",
-    )
-
-    plan = build_driver_plan(
-        service_id="web_search",
-        action="install",
-        variant_id="container",
-        configuration={
-            "contact_email": "alice@example.org",
-            "task_backend_port": "8090",
-            "documents": "on",
-        },
-        facts=facts,
-    )
-
-    assert plan.commands[0].program == "docker"
-    assert plan.commands[0].args == ["pull", WEB_SEARCH_IMAGE]
-    assert plan.commands[1].program == "docker"
-    # F001: an unauthenticated service is not published on every interface by default.
-    assert "127.0.0.1:8089:8080" in plan.commands[1].args
-    assert "127.0.0.1:8090:6379" in plan.commands[1].args
-    assert plan.connection_port == 8089
-
-    network_plan = build_driver_plan(
-        service_id="web_search",
-        action="install",
-        variant_id="container",
-        configuration={"listen_address": "0.0.0.0"},
-        facts=facts,
-    )
-    assert "0.0.0.0:8089:8080" in network_plan.commands[1].args
-    ipv6_plan = build_driver_plan(
-        service_id="web_search",
-        action="install",
-        variant_id="container",
-        configuration={"listen_address": "::1"},
-        facts=facts,
-    )
-    assert "[::1]:8089:8080" in ipv6_plan.commands[1].args
-    with pytest.raises(ValueError, match="listen_address"):
-        build_driver_plan(
-            service_id="web_search",
-            action="install",
-            variant_id="container",
-            configuration={"listen_address": "everywhere"},
-            facts=facts,
-        )
-
-    local_plan = build_driver_plan(
-        service_id="web_search",
-        action="install",
-        variant_id="container",
-        configuration={},
-        facts=facts.model_copy(update={"target_id": "local"}),
-    )
-    assert "127.0.0.1:8089:8080" in local_plan.commands[1].args
-
-    uninstall_plan = build_driver_plan(
-        service_id="web_search",
-        action="uninstall",
-        variant_id="container",
-        configuration={},
-        facts=facts,
-    )
-    assert uninstall_plan.commands[0].settle_seconds == 1.0
-
-
-def test_install_root_places_container_state_under_the_selected_location() -> None:
-    facts = TargetFacts(
-        target_id="homelab",
-        label="Homelab",
-        os="linux",
-        arch="x86_64",
-        docker_available=True,
-        docker_installed=True,
-        transport_state="connected",
-    )
-    target = InfrastructureStore(None).create_target(
-        CreateTargetRequest(
-            label="Homelab",
-            kind="ssh",
-            install_root="/srv/clio",
-            ssh=SshRoute(profile="homelab"),
-        )
-    )
-
-    plan = build_driver_plan(
-        service_id="web_search",
-        action="install",
-        variant_id="container",
-        configuration={},
-        facts=facts,
-        target=target,
-    )
-
-    assert plan.commands[1].program == "mkdir"
-    assert plan.commands[1].args == ["-p", "--", "/srv/clio/services/web-search"]
-    assert "/srv/clio/services/web-search:/var/lib/clio-web-search" in plan.commands[2].args
-
-
 class _FakeTransports:
     def __init__(self) -> None:
         self.forward_calls = 0
@@ -237,10 +126,11 @@ async def test_runtime_keeps_service_record_in_managing_clio(tmp_path: Path) -> 
     request = ServiceActionRequest(
         target_id=target.id,
         action="status",
-        variant_id="container",
+        variant_id="cpu",
+        configuration={"model": "test", "container_runtime": "docker"},
     )
 
-    operation = runtime.start_action("web_search", request)
+    operation = runtime.start_action("ollama", request)
     for _ in range(100):
         current = store.operation(operation.id)
         if current is not None and current.state in {"succeeded", "failed"}:
@@ -250,7 +140,7 @@ async def test_runtime_keeps_service_record_in_managing_clio(tmp_path: Path) -> 
     current = store.operation(operation.id)
     assert current is not None
     assert current.state == "succeeded"
-    service = store.service(target.id, "web_search")
+    service = store.service(target.id, "ollama")
     assert service is not None
     assert service.target_id == target.id
     assert service.state == "running"
@@ -443,17 +333,19 @@ class _SlowTransports(_FakeTransports):
 async def test_cancelled_install_is_not_recorded_or_replayed(tmp_path: Path) -> None:
     store = InfrastructureStore(tmp_path / "infrastructure.json")
     target = store.create_target(
-        CreateTargetRequest(label="Remote", kind="ssh", ssh=SshRoute(profile="remote"))
+        CreateTargetRequest(
+            label="Remote", kind="ssh", install_root="/srv/clio", ssh=SshRoute(profile="remote")
+        )
     )
     store.set_transport_state(target.id, "connected")
     runtime = InfrastructureRuntime(store, _SlowTransports())  # type: ignore[arg-type]
     operation = runtime.start_action(
-        "web_search",
+        "ollama",
         ServiceActionRequest(
             target_id=target.id,
             action="install",
-            variant_id="container",
-            configuration={},
+            variant_id="cpu",
+            configuration={"model": "test", "container_runtime": "docker"},
         ),
     )
     await asyncio.sleep(0.05)
@@ -461,10 +353,10 @@ async def test_cancelled_install_is_not_recorded_or_replayed(tmp_path: Path) -> 
     cancelled = await runtime.cancel(operation.id)
 
     assert cancelled.state == "cancelled"
-    assert store.service(target.id, "web_search") is None
+    assert store.service(target.id, "ollama") is None
     restored = InfrastructureStore(tmp_path / "infrastructure.json")
     assert restored.operation(operation.id).state == "cancelled"  # type: ignore[union-attr]
-    assert restored.service(target.id, "web_search") is None
+    assert restored.service(target.id, "ollama") is None
 
 
 def test_http_contract_exposes_context_local_target_and_external_connections(

@@ -1,0 +1,38 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.openalex.org/works?filter=title_and_abstract.search:lossy%20compression%20scientific%20data&per_page=5",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "filter": "title_and_abstract.search:lossy compression scientific data",
+      "per_page": "5"
+    }
+  },
+  "status": 429,
+  "headers": {
+    "content-type": "application/json",
+    "retry-after": "14314",
+    "x-ratelimit-cost-required-usd": "0.001",
+    "x-ratelimit-credits-required": "10",
+    "x-ratelimit-limit": "1000",
+    "x-ratelimit-limit-usd": "0.1",
+    "x-ratelimit-onetime-remaining": "0",
+    "x-ratelimit-prepaid-remaining-usd": "0",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-remaining-usd": "0",
+    "x-ratelimit-reset": "14314"
+  },
+  "body": {
+    "error": "Rate limit exceeded",
+    "message": "Insufficient budget. This request has no API key, so it counts against the free daily budget shared by everyone on your network's IP address, and that budget is used up ($0 remaining; resets at midnight UTC). Use your own key instead: add ?api_key=YOUR_KEY to the URL, or send it as an \"Authorization: Bearer YOUR_KEY\" header. Keys are free and have their own budget: https://help.openalex.org/api/authentication/ An AI agent can get one for its user in one call: POST https://api.openalex.org/api-keys with {\"email\": \"<your user's email>\"}; we email them a link, and the key works once they click it.",
+    "retryAfter": 14314,
+    "costUsd": 0.001,
+    "dailyRemainingUsd": 0,
+    "prepaidRemainingUsd": 0,
+    "creditsRequired": 10,
+    "creditsRemaining": 0,
+    "onetimeCreditsRemaining": 0
+  }
+}
