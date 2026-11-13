@@ -10,18 +10,18 @@ PNG and what it could and could not paint. Nothing is changed in the view, and t
 is not asked.
 
 What it paints, in order: element backgrounds, then every visible ``canvas``, ``img``,
-``video`` and ``svg`` (``svg`` with its computed presentation styles), then HTML text that
-sits on one line, each clipped to its frame and to every ancestor that clips its overflow;
-an element that is hidden, fully transparent or clipped away entirely is not painted, as
-the person does not see it. A WebGL canvas that keeps no drawing buffer
-(``preserveDrawingBuffer: false``, as vtk.js uses) reads blank after the browser shows it,
-so its context's draw calls are watched, the view is nudged to redraw (its frame shrinks
+``video`` and ``svg`` (``svg`` with its computed presentation styles), then HTML text (a
+wrapped run word by word, each at its line box), each clipped to its frame and to every
+ancestor that clips its overflow; an element that is hidden, fully transparent or clipped
+away entirely is not painted, as the person does not see it. A WebGL canvas that keeps
+no drawing buffer (``preserveDrawingBuffer: false``, as vtk.js uses) reads blank after the
+browser shows it, so its context's draw calls are watched, the view is nudged to redraw (its frame shrinks
 by one pixel for two frames), and the canvas is copied when the app's drawing task ends.
 
 Every gap is typed, never silent: ``skipped`` lists ``frame_cross_origin``,
 ``webgl_frame_not_redrawn``, ``webgl_canvas_idle`` (a blank canvas beside one that redrew),
-``cross_origin_pixels``, ``not_drawable`` and
-``wrapped_text_not_drawn``; a refused snapshot answers ``{error: {reason, message}}``
+``cross_origin_pixels``, ``not_drawable`` and ``wrapped_text_not_drawn`` (a word broken
+across lines); a refused snapshot answers ``{error: {reason, message}}``
 (``view_not_laid_out``, ``view_not_readable``, ``snapshot_tainted``, ``snapshot_failed``).
 """
 
@@ -246,21 +246,36 @@ const clioViewSnapshot = (() => {
         range.selectNodeContents(node);
         const rects = range.getClientRects();
         if (!rects.length) continue;
-        if (rects.length > 1) { missed += 1; continue; }
-        const box = rects[0];
-        if (box.width < 1 || box.height < 1) continue;
-        const seen = shown(parent, box, win);
-        if (!seen) continue;
-        context.save();
-        context.beginPath();
-        context.rect(x + seen.left, y + seen.top, seen.width, seen.height);
-        context.clip();
+        // A run that sits on one line is drawn whole; a wrapped run word by word, each word
+        // at its own line box (a word broken across lines is the one gap left).
+        let pieces = [{ text, box: rects[0] }];
+        if (rects.length > 1) {
+          pieces = [];
+          for (const match of node.nodeValue.matchAll(/\S+/g)) {
+            range.setStart(node, match.index);
+            range.setEnd(node, match.index + match[0].length);
+            const words = range.getClientRects();
+            if (words.length === 1) pieces.push({ text: match[0], box: words[0] });
+            else if (words.length > 1) missed += 1;
+          }
+        }
         context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
         context.fillStyle = style.color;
         context.textBaseline = 'middle';
-        context.fillText(text, x + box.left, y + box.top + box.height / 2, box.width + 2);
-        context.restore();
-        drawn += 1;
+        let painted = false;
+        for (const { text: piece, box } of pieces) {
+          if (box.width < 1 || box.height < 1) continue;
+          const seen = shown(parent, box, win);
+          if (!seen) continue;
+          context.save();
+          context.beginPath();
+          context.rect(x + seen.left, y + seen.top, seen.width, seen.height);
+          context.clip();
+          context.fillText(piece, x + box.left, y + box.top + box.height / 2, box.width + 2);
+          context.restore();
+          painted = true;
+        }
+        if (painted) drawn += 1;
       }
       context.restore();
     }

@@ -47,6 +47,7 @@ _PAGE = """<!doctype html><html><body style="margin:0;background:#fff">
     <span style="position:absolute;left:200px;top:-100px;white-space:nowrap;font:16px sans-serif">Escapes its clip</span>
   </div>
 </div>
+<div style="width:90px;font:16px sans-serif">wrapped words on lines</div>
 </body></html>"""
 
 
@@ -67,9 +68,11 @@ def test_hidden_clipped_and_transparent_html_is_not_painted() -> None:
                 "async () => { const r = await window.__snap(window, {}); "
                 "return {painted: r.painted, skipped: r.skipped}; }"
             )
-            # Shown, partly cut (clipped, still drawn) and the absolutely positioned label
-            # whose overflow-hidden ancestor is not its containing block: three of five.
-            assert result["painted"]["text"] == 3
+            # Shown, partly cut (clipped, still drawn), the absolutely positioned label
+            # whose overflow-hidden ancestor is not its containing block, and a wrapped run
+            # drawn word by word: four of six, and no wrapped-text gap.
+            assert result["painted"]["text"] == 4
+            assert not [row for row in result["skipped"] if row["what"] == "text"]
             # The collapsed panel's background is not painted either: the pixel where its
             # label would be is the page's white.
             pixel = page.evaluate(
