@@ -438,6 +438,12 @@ agents.react_extract.after_steps: 3
 # strict one-call-per-step contract.
 agents.react_extract.enabled: true
 
+# CLIO_CONNECTOR_CATALOG_DIRS  (str)  <- src/clio_agent/connectors/entries.py
+# More folders of connector entries, separated like PATH, read after the
+# shipped catalogs/connectors; a later folder cannot replace an entry. Set
+# it for test fixtures.
+# connectors.catalog_dirs:  # default unset; resolved in code
+
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
 # asking. Unset accounts follow their billing: subscriptions and free
@@ -1724,6 +1730,9 @@ tools.recall_result_chars: 16000
 # sizes file reads, searches, shell output, task pages, mail per step and
 # the offered plan.
 tools.result_share: 0.125
+
+# CLIO_TOOLS_SCRIPT_MEDIA_MAX  (int)  <- src/clio_agent/gact/model_media.py
+tools.script_media_max: 8
 
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
 # Tools a search_tools keyword search returns when the call names no limit.

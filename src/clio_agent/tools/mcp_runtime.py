@@ -84,21 +84,16 @@ def _oauth_provider_from_config(
     from mcp.shared.auth import OAuthClientMetadata  # noqa: PLC0415
     from pydantic import ValidationError  # noqa: PLC0415
 
-    from clio_agent.tools.mcp_config import MCPSignInNeeded, MCPTransportError  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import MCPTransportError  # noqa: PLC0415
     from clio_agent.tools.mcp_durable_oauth import DurableOAuthProvider  # noqa: PLC0415
     from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
 
     storage = config.storage or DurableFileTokenStorage(
         server_url, connection_id=config.connection_id
     )
-    if (
-        config.require_existing_tokens
-        and config.redirect_handler is None
-        and isinstance(storage, DurableFileTokenStorage)
-        and not storage.has_tokens()
-    ):
-        raise MCPSignInNeeded(config.connection_id or server_url)
-
+    # A connection with no saved sign-in still mounts: its first request raises the
+    # typed ``MCPSignInNeeded`` (``DurableOAuthProvider``), and a connector's call waits
+    # for its setup card before that (CN5).
     try:
         metadata = (
             config.client_metadata

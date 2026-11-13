@@ -128,6 +128,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_USER_CHARS` | `compaction.keep.user_chars` | int | `80000` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_WORKING_STATE` | `compaction.keep.working_state` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
+| `CLIO_CONNECTOR_CATALOG_DIRS` | `connectors.catalog_dirs` | str | _(unset)_ | `src/clio_agent/connectors/entries.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS` | `gact.context_references.evidence_sessions` | int | `5000` | `src/clio_agent/gact/context_reference_evidence.py` |
 | `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
@@ -372,6 +373,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_PERMISSIONS` | `tools.permissions` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_PER_SERVER_CONCURRENCY` | `tools.per_server_concurrency` | int | `8` | `src/clio_agent/gact/agents/tool_concurrency.py` |
 | `CLIO_TOOLS_RECALL_RESULT_CHARS` | `tools.recall_result_chars` | int | `16000` | `src/clio_agent/gact/recall_context_tool.py` |
+| `CLIO_TOOLS_SCRIPT_MEDIA_MAX` | `tools.script_media_max` | int | `8` | `src/clio_agent/gact/model_media.py` |
 | `CLIO_TOOLS_SEARCH_LIMIT` | `tools.search_limit` | int | `5` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MAX` | `tools.search_max` | int | `20` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MISS_NAMES` | `tools.search_miss_names` | int | `40` | `src/clio_agent/gact/search_tools.py` |

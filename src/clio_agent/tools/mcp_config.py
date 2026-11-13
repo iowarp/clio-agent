@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 
+from clio_agent.connectors.materialize import connector_spec
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.tools import desktop_mcp_runtime as dmr
 from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
@@ -66,15 +67,11 @@ __all__ = [
     "transport_for",
     "transport_from_spec",
     "MCPTransportError",
-    "MCPSignInNeeded",
     "unreadable_mcp_yaml_snapshot",
 ]
 
-# clio-agent's built-in universal defaults (always present, not declarations).
-# These MUST match what ``tools.gateway._mount_builtins`` actually mounts: a name
-# listed here but not mounted is silently un-mountable as a user server (the
-# gateway skips it as "builtin") — that phantom ``"web"`` bug is why this set is
-# kept in lockstep with the mounts, not aspirational.
+# Built-in defaults, in lockstep with ``tools.gateway._mount_builtins``: a name listed but not
+# mounted is silently un-mountable as a user server (the phantom ``"web"`` bug).
 BUILTIN_SERVER_NAMES = frozenset({"fs", "shell"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
@@ -116,20 +113,6 @@ class MCPTransportError(ValueError):
     sse}``. Callers map it to a client-actionable 4xx (e.g. ``mcp_spec_invalid``)
     rather than letting a divergent inline branch 500 or silently drop the server.
     """
-
-
-class MCPSignInNeeded(MCPTransportError):
-    """A connection needs the person's sign-in before CLIO can connect to it.
-
-    ``reason`` is the typed code ``mcp_sign_in_needed``. A tool call to a connector
-    never reaches this: it waits for the connector's setup card (CN5).
-    """
-
-    reason = "mcp_sign_in_needed"
-
-    def __init__(self, connection: str) -> None:
-        self.connection = connection
-        super().__init__(f"mcp_sign_in_needed: {connection or 'this connection'} needs a sign-in")
 
 
 class MCPSpawnError(RuntimeError):
@@ -191,8 +174,7 @@ class MCPServerSpec:
     #: (``command``/``args``/``url``); ``tools.mcp_redaction`` serves it in their
     #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
-    #: The connector this connection was saved for (``connector`` in the declaration).
-    connector: str = ""
+    connector: str = ""  # the connector this connection was saved for
 
     @property
     def usable(self) -> bool:
@@ -428,13 +410,8 @@ def spec_from_declaration(
                 f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",
             ),
         )
-    if isinstance(value, Mapping) and value.get("connector"):
-        # A connector's secrets are filled here, after ${VAR} expansion (CN8).
-        from clio_agent.connectors.materialize import fill_secrets  # noqa: PLC0415
-
-        connector = str(value["connector"])
-        filled = fill_secrets({"connector": connector, "env": spec.env, "headers": spec.headers})
-        spec = replace(spec, env=filled["env"], headers=filled["headers"], connector=connector)
+    if isinstance(value, Mapping) and value.get("connector"):  # its secrets (CN8)
+        spec = connector_spec(spec, str(value["connector"]))
     name_error = _validate_server_name(name)
     if name_error:
         spec = replace(spec, validation_errors=(name_error, *spec.validation_errors))

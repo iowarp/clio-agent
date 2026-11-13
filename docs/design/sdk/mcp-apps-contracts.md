@@ -22,13 +22,19 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
   - A decline returns the typed refusal `connector_declined` naming the connector.
 - **Events:** `connector.changed {connector_id}` triggers a UI refetch. `connector.setup.requested` and `connector.setup.resolved` carry `{session_id, interaction_id, connector_id}`.
 - The native tool is `set_connector_value(connector, key, value)`.
-- **As built (`conn-be` at `7f44754fb`, read by `conn-ui`):**
-  - A need row also carries `options: [str]`; the card shows a picker when it is not empty.
-  - `scope.agents` lists agent **refs** and is never empty.
-  - `DELETE /v1/connectors/{id}` removes a `custom` connector (only those). `GET /v1/connectors/{id}` reads one; `GET /v1/connectors` also returns `diagnostics` and takes `?refresh=true`.
-  - A saved MCP connection is not a connector. The UI's "Add by URL or command" calls `POST /v1/connectors` (`{url | command, args, name, scope: "all"}`) when the form holds only an address or a command; any advanced setting keeps it a raw MCP connection.
-  - The `connector_setup` interaction id is `connector:<hex>`, its payload also has `interaction_id`, `connector_name` and `logo_url`, and a declined card's status is `denied`.
-  - `connector.changed` carries an empty `session_id`, so every session stream receives it.
+- **Refinements by `conn-be`** (all additive):
+  - `GET /v1/connectors` also returns `diagnostics: [{code, message, file, entry}]` for entries that did not load, and takes `?refresh=true` to check each enabled server again. `GET /v1/connectors/{id}` returns one row. `DELETE /v1/connectors/{id}` removes a `custom` connector.
+  - A need row also has `options: [str]` (a `value` need offered as a picker; empty otherwise). `plugin` is the installed plugin that follows the connector, else the entry's `plugin`, else null.
+  - A disabled connector is never started: its `state` says only what is missing (`ready` when nothing is), and `tool_count` is null. `tool_count` is set only while `ready`.
+  - The setup card's payload also carries `connector_name` and `logo_url`. Its interaction id is `connector:<id>`; the respond body field is `values` (secrets included; applied, never stored on the interaction). A `submit` that leaves a required row empty answers 422 `connector_setup_incomplete` with `details.missing`, and the card stays pending. The interaction's status is `answered` after submit, `denied` after decline, `cancelled` when the turn stopped.
+  - `connector.changed` is broadcast to every open event stream (`session_id: ""`) with `{connector_id, sessions}`: `sessions` are the open conversations whose agent was pinned again, so the UI refetches their session agent (the plugin-change notice).
+  - A plugin row (`GET /v1/plugins`, `/v1/plugins/inspect`) and each plugin of a resolution carry `follows` (the connector id, or ""). A connector with no installed following plugin is carried by one CLIO builds, id `connector-<id>`, marketplace `clio-connectors`, which also carries `follows`.
+  - Errors are the usual envelope with typed codes: `connector_not_found` (404), `connection_name_taken` (409), `connector_scope_invalid`, `connector_need_unknown`, `connector_sign_in_not_a_value`, `connector_secret_not_agent_settable`, `connector_need_not_agent_settable`, `connector_value_invalid` (422).
+- **Entry field `tools`** (added by `grounds`): an optional allowlist of the server's tool names the connector offers, `{"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}`. Absent means every tool. A listed name the server does not have is a typed diagnostic, not a silent drop. The loader keeps only the listed tools in the connection's catalog, so neither the agent nor `search_tools` sees the others. The `burette` entry uses it to offer only the PDB-ID and Ketcher tools (plan, "Burette in detail").
+- **As read by `conn-ui`** (in addition to the refinements above):
+  - `scope.agents` lists agent **refs** and is never empty; the card sends refs.
+  - A saved MCP connection is not a connector. The UI's "Add by URL or command" calls `POST /v1/connectors` (`{url | command, args, name, scope: "all"}`) when the form holds only an address or a command; any advanced setting (headers, SSE, an authentication mode, environment, every conversation) keeps it a raw MCP connection.
+  - Every `connector.*` event refreshes the connectors, servers, tools, plugins, agents, agent resolutions and session agents, so the plugin-change notice follows `sessions`; `connector.setup.*` refreshes pending interactions.
 
 ## Display mode and the tab (owner: `host`)
 

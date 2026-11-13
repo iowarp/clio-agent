@@ -84,3 +84,14 @@ def fill_secrets(declared: Mapping[str, Any]) -> dict[str, Any]:
         ):
             filled[place] = secrets.fill(connector_id, mapping)
     return filled
+
+
+def connector_spec(spec: Any, connector_id: str) -> Any:
+    """A parsed spec of a connector's connection, its secrets filled after ${VAR} expansion."""
+
+    import dataclasses  # noqa: PLC0415
+
+    filled = fill_secrets({CONNECTOR_KEY: connector_id, "env": spec.env, "headers": spec.headers})
+    return dataclasses.replace(
+        spec, env=filled["env"], headers=filled["headers"], connector=connector_id
+    )

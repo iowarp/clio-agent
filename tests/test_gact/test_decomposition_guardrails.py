@@ -256,7 +256,10 @@ from clio_agent.gact.app import build_app
 # /v1/workspaces/{workspace_id}/folder-attachments (#2175) attaches a host folder in place
 # or as a full copy; GET /v1/folder-attachments/locality (#2177) tells a client whether it
 # runs on CLIO's computer.
-EXPECTED_ROUTE_METHOD_PAIRS = 443
+# 443 -> 451: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
+# /v1/connectors, POST /v1/connectors, GET and DELETE /v1/connectors/{id}, GET .../logo,
+# PUT .../values, POST .../enable and POST .../disable.
+EXPECTED_ROUTE_METHOD_PAIRS = 451
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

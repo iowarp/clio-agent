@@ -14,8 +14,9 @@ from mcp.client.auth.oauth2 import OAuthClientProvider
 from mcp.client.auth.utils import credentials_match_issuer
 from mcp.shared.auth import OAuthMetadata
 
-from clio_agent.tools.mcp_config import MCPSignInNeeded, MCPTransportError
+from clio_agent.tools.mcp_config import MCPTransportError
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
+from clio_agent.tools.mcp_sign_in import MCPSignInNeeded
 
 
 class DurableOAuthProvider(OAuthClientProvider):
