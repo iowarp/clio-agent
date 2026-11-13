@@ -111,3 +111,25 @@ export async function showLastApp(page, frames) {
   await page.waitForTimeout(3000);
   return frames.map(({ element, ...row }) => row);
 }
+
+/**
+ * A "hero" screenshot of a view at desktop size: the left navigation collapsed and, when the
+ * workbench shows a tab, the workbench maximized so the view fills the frame. Maximizing
+ * remounts an App's panel (it replays), so take it last in a step.
+ */
+export async function heroShot(page, shot, name, before) {
+  const sidebar = page.getByRole("button", { name: "Toggle Sidebar" }).first();
+  const navOpen = await page.getByRole("button", { name: "New conversation" }).first().isVisible().catch(() => false);
+  if (navOpen && (await sidebar.count())) await sidebar.click().catch(() => undefined);
+  const maximize = page.getByRole("button", { name: "Maximize canvas" }).first();
+  if (await page.locator("[data-mcp-app-tab]:visible").count()) {
+    if (await maximize.count()) await maximize.click().catch(() => undefined);
+  }
+  await page.waitForTimeout(6000);
+  if (before) await before();
+  await page.waitForTimeout(1000);
+  await shot(name);
+  // Put the canvas back beside the conversation for whatever the step does next.
+  const restore = page.getByRole("button", { name: "Restore canvas beside conversation" }).first();
+  if (await restore.count()) await restore.click().catch(() => undefined);
+}

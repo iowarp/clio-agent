@@ -12,6 +12,8 @@
 // AQ31: with a second view open, calls the first app's service route with the
 // second app's capability (refused), closes the first app (its WebSocket closes
 // with 4410 mcp_app_closed) and calls its route again (refused).
+import { allowPending } from "./_lib.mjs";
+
 const agent = new URL(process.env.AGENT_URL || `http://127.0.0.1:${process.env.AGENT_PORT || 8787}`);
 const servicePort = String(process.env.SERVICE_PORT || "19700");
 const token = process.env.SERVICE_TOKEN || "";
@@ -19,6 +21,10 @@ const prompt = process.env.SERVICE_PROMPT || "Show me the live counter.";
 const again = process.env.SERVICE_PROMPT_AGAIN || "Open another live counter view.";
 
 const agentHosts = new Set([`127.0.0.1:${agent.port}`, `localhost:${agent.port}`]);
+// A view runs on its own sandbox host, s<hash>.mcp-apps.localhost on CLIO's port: that is
+// CLIO's own address too (browsers resolve *.localhost to loopback).
+const isClio = (host) =>
+  agentHosts.has(host) || (host.endsWith(".mcp-apps.localhost:" + agent.port) && /^s[0-9a-f]+\./.test(host));
 
 function identity(src, appId) {
   const url = new URL(src);
@@ -42,6 +48,10 @@ async function waitForFrame(page, frame) {
     if (await frame.count()) return;
     const allow = page.getByRole("button", { name: /This session/ });
     if (await allow.count()) await allow.first().click().catch(() => undefined);
+    // The card's button can be out of reach (a turn still streaming); allow it as
+    // the person would, through the permissions route.
+    const sid = new URL(page.url()).pathname.match(/\/sessions\/([^/]+)/)?.[1];
+    if (sid) await allowPending(decodeURIComponent(sid), []).catch(() => undefined);
     await page.waitForTimeout(1000);
   }
   throw new Error("no app frame appeared");
@@ -67,7 +77,7 @@ export default async function (page, shot) {
     if (/^(data|blob|about):/.test(url)) return;
     const parsed = new URL(url);
     if (parsed.port === servicePort) report.servicePortSeen.push(url);
-    if (!agentHosts.has(parsed.host) && parsed.origin !== new URL(page.url()).origin) {
+    if (!isClio(parsed.host) && parsed.origin !== new URL(page.url()).origin) {
       report.foreign.push(url);
     }
   });
@@ -84,7 +94,7 @@ export default async function (page, shot) {
     check(`websocket url ${url}`, url);
     const parsed = new URL(url);
     if (parsed.port === servicePort) report.servicePortSeen.push(url);
-    if (!agentHosts.has(parsed.host)) report.foreign.push(url);
+    if (!isClio(parsed.host)) report.foreign.push(url);
     socket.on("framesent", (frame) => check(`frame sent ${url}`, String(frame.payload)));
     socket.on("framereceived", (frame) => check(`frame received ${url}`, String(frame.payload)));
   });
@@ -121,6 +131,14 @@ export default async function (page, shot) {
     bump: await view.locator("#bump").innerText(),
     servicePage: await servicePage.locator("body").innerText(),
   };
+
+  // AQ30 is about the view in a tab: the fixture's view asks for full screen when it loads.
+  report.placement = (await page.locator(`[data-mcp-app-tab] [data-mcp-app-iframe="${firstId}"]`).count())
+    ? "tab"
+    : "inline";
+  report.frames = await page.locator("[data-mcp-app-iframe]").count();
+  const { requests: _r, sockets: _s, ...aq30 } = report;
+  console.log(`AQ30 ${JSON.stringify({ ...aq30, requestCount: _r.length, sockets: _s })}`);
 
   // AQ31: a socket held on the first app's route, from outside the page.
   const base = (app, cap) =>

@@ -165,8 +165,16 @@ export default async function (page, shot) {
   await page.goto(sessionUrl);
   await page.waitForTimeout(6000);
   // The person opens the workspace canvas; its tabs come back from the browser's storage.
+  // The button keeps its name while the canvas is open, where a click would close it, and
+  // the canvas may open by itself a moment after the page: click only when it stays closed.
   const canvas = page.getByRole("button", { name: "Open workspace canvas" });
-  if (await canvas.count()) await canvas.first().click();
+  const tabsShown = () => page.locator("[data-tab-id]:visible").count();
+  for (let i = 0; i < 10 && !(await tabsShown()); i++) await page.waitForTimeout(1000);
+  if (!(await tabsShown()) && (await canvas.count())) {
+    await canvas.first().click();
+    await page.locator("[data-tab-id]:visible").first().waitFor({ timeout: 20000 }).catch(() => undefined);
+  }
+  log("canvas tabs", await page.locator("[data-tab-id]").evaluateAll((els) => els.map((e) => e.getAttribute("data-tab-id"))));
   const restored = page.locator('[data-tab-id^="mcp-app:"]').first();
   await restored.waitFor({ timeout: 120000 });
   await page.waitForTimeout(8000);
