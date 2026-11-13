@@ -26,6 +26,18 @@ _FIELD = "choice"
 _REQUEST = "search_decision"
 
 
+def request_key(topic: str) -> str:
+    """The input key for ``topic``'s question, distinct per decision.
+
+    One call can ask several questions in turn (decline Keenable, then Exa asks).
+    MCP refuses an input key reused with different content, so each decision's
+    question has its own key (2026-11-13: "Inline input identity was reused with
+    changed content" left the second source unasked).
+    """
+
+    return f"{_REQUEST}:{topic}"
+
+
 def input_required(decision: broker.Decision) -> mcp_types.InputRequiredResult:
     """The MCP round that asks the person ``decision``."""
 
@@ -42,7 +54,7 @@ def input_required(decision: broker.Decision) -> mcp_types.InputRequiredResult:
         params=mcp_types.ElicitRequestFormParams(message=decision.message, requested_schema=schema)
     )
     return mcp_types.InputRequiredResult(
-        input_requests={_REQUEST: request},
+        input_requests={request_key(decision.topic): request},
         request_state=json.dumps({"topic": decision.topic}),
         result_type="input_required",
     )
@@ -64,7 +76,7 @@ def apply_responses(ctx: Context) -> None:
         topic = ""
     if not topic:
         return
-    answer = responses.get(_REQUEST)
+    answer = responses.get(request_key(topic))
     action = getattr(answer, "action", "")
     content = getattr(answer, "content", None) or {}
     value = str(content.get(_FIELD) or "") if isinstance(content, dict) else ""

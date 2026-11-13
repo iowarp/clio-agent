@@ -12,7 +12,7 @@ from clio_agent.tools.servers.search_questions import input_required
 
 
 def _question_field(decision: broker.Decision) -> dict:
-    request = input_required(decision).input_requests["search_decision"]
+    (request,) = input_required(decision).input_requests.values()
     return translate_form_schema(request.params.requested_schema).fields[0]
 
 
@@ -56,3 +56,28 @@ def test_permission_subject_follows_the_tools_annotations() -> None:
     assert action_subject("literature_lookup") == "network tool"
     assert action_subject("fs_write_file") == "destructive tool"
     assert action_subject("some_unknown_tool") == "destructive tool"
+
+
+def test_each_decision_in_one_call_has_its_own_input_key() -> None:
+    import json as _json
+    from types import SimpleNamespace
+
+    from clio_agent.tools.servers import search_questions
+
+    first = input_required(broker.approval("keenable"))
+    second = input_required(broker.approval("exa"))
+    assert set(first.input_requests).isdisjoint(second.input_requests)
+
+    answered: list[tuple[str, str]] = []
+    original = broker.apply_answer
+    broker.apply_answer = lambda topic, value: answered.append((topic, value))
+    try:
+        (key,) = second.input_requests
+        reply = SimpleNamespace(action="accept", content={"choice": "decline"})
+        ctx = SimpleNamespace(
+            input_responses={key: reply}, request_state=_json.dumps({"topic": "approve:exa"})
+        )
+        search_questions.apply_responses(ctx)
+    finally:
+        broker.apply_answer = original
+    assert answered == [("approve:exa", "decline")]
