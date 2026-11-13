@@ -1096,7 +1096,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #2234 (+40, 816 -> 856): Windows download cancel (replace retry, chunked cancellable
     # verification, taskkill of the identity-checked supervisor) -- same one-script constraint.
     "src/clio_agent/gact/infrastructure/node_models.py": 856,
-    "src/clio_agent/gact/permission_gate.py": 837,
+    "src/clio_agent/gact/permission_gate.py": 834,
     # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,

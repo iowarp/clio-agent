@@ -39,13 +39,14 @@ async def search(
     kind: Literal["any", "article", "preprint", "review", "dataset"] = "any",
     limit: Annotated[int, Field(ge=1, le=50)] = 10,
 ) -> Any:
-    """Search scholarly literature across OpenAlex, Crossref, arXiv, Europe PMC, OSTI.gov
-    and DataCite together.
+    """Search scholarly literature across OpenAlex, Crossref, arXiv, ChemRxiv, Europe PMC,
+    OSTI.gov and DataCite together.
 
     Use keyword queries (the main terms of the topic, no filler words). With the
     default ``field="any"`` every broad source is asked; a ``field`` narrows the
-    search to the sources that cover it (physical/computing: arXiv; life: Europe
-    PMC; energy, engineering, earth, physical: OSTI.gov); ``kind=dataset`` asks
+    search to the sources that cover it (physical/computing: arXiv; chemistry:
+    ChemRxiv; life: Europe PMC; energy, engineering, earth, physical: OSTI.gov);
+    ``kind=preprint`` adds arXiv, ChemRxiv and Europe PMC; ``kind=dataset`` asks
     DataCite for datasets. A source that did not answer is named in ``notes``
     with what to do about it. Each work has ids (DOI, arXiv, PMID), authors, year, venue, a short
     abstract, ``readable_url`` (read it with web_fetch), ``found_in`` (which

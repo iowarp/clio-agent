@@ -208,6 +208,7 @@ def test_coverage_table_adds_field_and_kind_sources() -> None:
         "openalex",
         "crossref",
         "arxiv",
+        "chemrxiv",
         "europepmc",
         "osti",
         "datacite",
@@ -222,6 +223,12 @@ def test_coverage_table_adds_field_and_kind_sources() -> None:
         "crossref",
         "europepmc",
         "arxiv",
+        "chemrxiv",
+    ]
+    assert chosen_sources("chemistry", "article", settings, {}) == [
+        "openalex",
+        "crossref",
+        "chemrxiv",
     ]
     assert chosen_sources("energy", "dataset", settings, {}) == [
         "openalex",
@@ -288,3 +295,58 @@ def test_an_mcp_tool_error_keeps_its_text_and_invalid_arguments_are_refused() ->
     assert refused.kind == h.REFUSED and "bad domain" in refused.detail
     failed = h.tool_error("exa", {"isError": True, "content": [{"type": "text", "text": "boom"}]})
     assert failed.kind == h.FAILED and failed.detail == "boom"
+
+
+def test_chemrxiv_searches_crossref_for_its_prefix_and_shares_crossrefs_queue(
+    monkeypatch,
+) -> None:
+    import asyncio
+
+    import httpx
+
+    from clio_agent.search import http as search_http
+    from clio_agent.search import literature
+    from clio_agent.search import literature_sources as src
+    from clio_agent.search.scheduler import SCHEDULER
+
+    sent: dict = {}
+    body = {
+        "message": {
+            "items": [
+                {
+                    "DOI": "10.26434/chemrxiv-2025-abc12",
+                    "title": ["Lossless compression of molecular dynamics trajectories"],
+                    "type": "posted-content",
+                    "subtype": "preprint",
+                    "posted": {"date-parts": [[2025, 3, 2]]},
+                }
+            ]
+        }
+    }
+
+    async def fake_request(source, method, url, **kwargs):
+        sent.update(source=source, url=url, params=kwargs.get("params"))
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setattr(search_http, "request", fake_request)
+    records = asyncio.run(
+        src.chemrxiv_search("trajectory compression", 5, email="", after="2024-01-01", before="")
+    )
+    assert sent["source"] == "crossref"
+    assert "prefix:10.26434" in sent["params"]["filter"]
+    assert "from-posted-date:2024-01-01" in sent["params"]["filter"]
+    assert records[0].found_in == ["chemrxiv"] and records[0].ids["doi"].startswith("10.26434")
+
+    lanes: list = []
+
+    async def fake_call(lane, run, **kwargs):
+        lanes.append((lane, kwargs["terms"].tier))
+        return await run()
+
+    monkeypatch.setattr(SCHEDULER, "call", fake_call)
+
+    async def run() -> list:
+        return []
+
+    asyncio.run(literature._call("chemrxiv", run, []))
+    assert lanes == [("crossref", "keyless")]

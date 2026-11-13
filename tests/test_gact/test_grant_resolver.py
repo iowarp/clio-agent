@@ -986,6 +986,15 @@ def test_plan_acl_web_fetch_allowed_in_plan_with_empty_store() -> None:
     assert resolve("tool", "web_fetch", policies=[], session_id="s", mode="plan") == "allow"
 
 
+@pytest.mark.parametrize(
+    "tool", ["web_search", "web_fetch", "literature_search", "literature_lookup"]
+)
+def test_architect_mode_allows_the_search_tools(tool: str) -> None:
+    """Deep research runs as Architect; its researchers must be able to search and read."""
+    assert resolve("tool", tool, policies=[], session_id="s", mode="architect") == "allow"
+    assert resolve("tool", "fs_write_file", policies=[], session_id="s", mode="architect") == "deny"
+
+
 def test_plans_dir_uses_agent_workspace_state_in_vcs() -> None:
     """A VCS workspace keeps generated plans outside its checkout."""
     from clio_agent.paths import workspace_state_dir

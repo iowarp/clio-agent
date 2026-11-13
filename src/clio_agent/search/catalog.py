@@ -93,6 +93,11 @@ LITERATURE_INFO: dict[str, SourceInfo] = {
         "DOI metadata for journals, preprints and their links.",
         "No daily limit; paced",
     ),
+    "chemrxiv": SourceInfo(
+        "chemrxiv",
+        "Chemistry preprints, found through Crossref (ChemRxiv's DOI prefix).",
+        "No daily limit; shares Crossref's pace",
+    ),
     "arxiv": SourceInfo(
         "arxiv",
         "Preprints in physics, computing, mathematics and more.",

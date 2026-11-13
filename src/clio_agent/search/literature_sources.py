@@ -287,6 +287,42 @@ async def crossref_search(
     return [crossref_record(row) for row in items if isinstance(row, dict)]
 
 
+#: ChemRxiv's DOI prefix. Its own API refuses automated clients, so its preprints
+#: are found through Crossref, which registers every ChemRxiv DOI.
+CHEMRXIV_PREFIX = "10.26434"
+
+
+async def chemrxiv_search(
+    query: str, limit: int, *, email: str, after: str, before: str
+) -> list[PaperRecord]:
+    """ChemRxiv preprints matching ``query``, through Crossref's ChemRxiv prefix."""
+
+    filters = [f"prefix:{CHEMRXIV_PREFIX}"]
+    if after:
+        filters.append(f"from-posted-date:{after}")
+    if before:
+        filters.append(f"until-posted-date:{before}")
+    params: dict[str, Any] = {
+        "query": query,
+        "rows": min(limit, 50),
+        "filter": ",".join(filters),
+        **_crossref_params(email),
+    }
+    response = await http.request("crossref", "GET", f"{CROSSREF}/works", params=params)
+    data = http.json_body("crossref", response)
+    items = data.get("message", {}).get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise SourceError("chemrxiv", http.FAILED, "no items list")
+    records = []
+    for row in items:
+        if isinstance(row, dict):
+            record = crossref_record(row)
+            record.found_in = ["chemrxiv"]
+            record.kind = record.kind or "preprint"
+            records.append(record)
+    return records
+
+
 async def crossref_work(doi: str, *, email: str) -> dict[str, Any]:
     """The raw Crossref message for one DOI (references and relations included)."""
 

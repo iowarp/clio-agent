@@ -61,8 +61,7 @@ def approval(source: str) -> Decision:
 
     if source == LITERATURE_APPROVAL:
         what = (
-            "literature sources (OpenAlex, Crossref, arXiv, Europe PMC, OSTI.gov, "
-            "OpenCitations, DataCite)"
+            "OpenAlex, Crossref, arXiv, ChemRxiv, Europe PMC, OSTI.gov, OpenCitations and DataCite"
         )
         label = "the literature sources"
     else:
@@ -71,8 +70,8 @@ def approval(source: str) -> Decision:
     return Decision(
         topic=f"approve:{source}",
         message=(
-            f"CLIO wants to send search queries to {what}. The queries leave this "
-            "computer and the service sees them. Allow it?"
+            f"Allow searches through {label}?\n\nSearch queries leave this computer and "
+            f"{what} sees them. CLIO asks once for each source."
         ),
         options=((APPROVE, f"Allow searches through {label}"), (DECLINE, f"Don't use {label}")),
     )
@@ -89,8 +88,8 @@ def exhausted(source: str, epoch: int, until: float, next_source: str) -> Decisi
     return Decision(
         topic=f"exhausted:{source}:{epoch}",
         message=(
-            f"{_name(source)}'s free search allowance is used up (it resets around "
-            f"{_clock(until)}). What should CLIO do?"
+            f"{_name(source)}'s free search allowance is used up. What should CLIO do?"
+            f"\n\nIt resets around {_clock(until)}."
         ),
         options=(
             (SWITCH, f"Switch to {nxt} (free)"),
