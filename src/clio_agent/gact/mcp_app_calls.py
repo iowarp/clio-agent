@@ -411,7 +411,10 @@ async def replay_call(
 
     def replay(executor: Any) -> Any:
         full_name = _resolve_opening_tool(executor, entry)
-        tools.extend(server_tools(executor.get_all_tool_definitions(), str(entry["server"])))
+        definitions = executor.get_all_tool_definitions()
+        tools.extend(server_tools(definitions, str(entry["server"])))
+        if not entry.get("label"):  # a given call names no title: the tool's, as a card's
+            entry["label"] = _label(definitions.get(full_name), str(entry["tool"]))
         token = _REPLAY.set(capture)
         try:
             return executor.call_tool_result(full_name, arguments)

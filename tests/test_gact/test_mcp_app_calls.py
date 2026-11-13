@@ -336,6 +336,19 @@ def test_a_given_call_opens_a_view_and_is_saved(stack: Any) -> None:
     assert body["part"]["display_mode"] == "fullscreen"
     assert "reopened_from" not in body["saved_call"]
     assert body["saved_call"]["arguments"] == {"title": "From a surface"}
+    assert body["saved_call"]["label"] == "Open a board"
+
+
+def test_a_surface_call_is_answered_with_its_tools_title(stack: Any) -> None:
+    # The A2UI component's call is not saved; its answer still names the view by title.
+    body = stack.client.post(
+        f"/v1/sessions/{stack.sid}/mcp-apps/reopen",
+        json={
+            "call": {"server": "boards", "tool": "open_board", "arguments": {"title": "S"}},
+            "save": False,
+        },
+    ).json()
+    assert body["saved_call"]["label"] == "Open a board"
 
 
 @pytest.mark.parametrize(
