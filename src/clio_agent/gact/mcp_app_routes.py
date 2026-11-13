@@ -21,6 +21,14 @@ from clio_agent.gact.mcp_app_sandbox import (
     _host_origin,
     _sandbox_url,
 )
+from clio_agent.gact.mcp_app_service import (
+    close_app_service,
+    record_service_reason,
+    service_csp_sources,
+    service_descriptor_fields,
+)
+from clio_agent.gact.mcp_app_service_declaration import strip_service_declaration
+from clio_agent.gact.mcp_app_service_proxy import register_mcp_app_service_routes
 from clio_agent.gact.mcp_apps import (
     _MAX_MODEL_CONTEXT_BYTES,
     MCPAppRecord,
@@ -55,6 +63,8 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             return _registry(app).get(sid, app_id, data_ref)
         except KeyError as exc:
             raise _not_found() from exc
+
+    register_mcp_app_service_routes(app, resolve)
 
     async def ensure_resource(record: MCPAppRecord) -> None:
         if record.html is not None:
@@ -95,6 +105,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 "tool_input": record.tool_input,
                 "tool_result": record.tool_result,
                 "sandbox_url": _sandbox_url(request, sandbox_path),
+                **await service_descriptor_fields(app, request, record),
             },
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
@@ -109,7 +120,9 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         return HTMLResponse(
             _SANDBOX_DOCUMENT,
             headers={
-                "Content-Security-Policy": _csp_header(record.csp, origin),
+                "Content-Security-Policy": _csp_header(
+                    record.csp, origin, await service_csp_sources(app, request, record)
+                ),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
             },
@@ -134,7 +147,10 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             result = await _run_bound(app, sid, call)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-        return call_tool_result_to_wire(result)
+        wire, dropped = strip_service_declaration(call_tool_result_to_wire(result))
+        if dropped:  # a service is declared only by the result that opens the view
+            record_service_reason("service_declaration_ignored", app_instance_id=app_id)
+        return wire
 
     @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/resources/read")
     async def read_mcp_app_resource(
@@ -233,6 +249,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             record = _registry(app).claim_close(sid, app_id, data_ref)
         except KeyError as exc:
             raise _not_found() from exc
+        await close_app_service(app, app_id)  # the route is gone; end its connections
         try:
             await _cleanup_record(app, record)
         except PermissionError as exc:
