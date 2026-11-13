@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX installer
 _FAKE_UV = """#!/bin/sh
 # Records each call with the uv tool folders it saw.
 echo "$* | UV_TOOL_DIR=${UV_TOOL_DIR:-} UV_TOOL_BIN_DIR=${UV_TOOL_BIN_DIR:-}" >> "$UV_CALLS"
-[ "$1 $2" = "tool list" ] && [ -n "${USER_HAS_KIT:-}" ] && echo "clio-kit v2.12.3"
+[ "$1 $2" = "tool list" ] && [ -n "${USER_HAS_KIT:-}" ] && echo "clio-kit v2.12.5"
 exit 0
 """
 
@@ -83,7 +83,7 @@ def test_a_scoped_install_puts_clio_kit_in_its_own_tool_folders(tmp_path: Path, 
     tools = prefix / "uv-tools"
     install = [line for line in calls.splitlines() if line.startswith("tool install")]
     assert install == [
-        f"tool install --python 3.14 clio-kit==2.12.3 | UV_TOOL_DIR={tools} "
+        f"tool install --python 3.14 clio-kit==2.12.5 | UV_TOOL_DIR={tools} "
         f"UV_TOOL_BIN_DIR={tools}/bin"
     ]
     assert not any(line.startswith("tool list") for line in calls.splitlines()), (
@@ -97,7 +97,7 @@ def test_a_scoped_install_puts_clio_kit_in_its_own_tool_folders(tmp_path: Path, 
 def test_a_default_install_keeps_using_the_users_uv_tools(tmp_path: Path) -> None:
     prefix, calls = _run_kit(tmp_path)
 
-    assert "tool install --python 3.14 clio-kit==2.12.3 | UV_TOOL_DIR= UV_TOOL_BIN_DIR=" in calls
+    assert "tool install --python 3.14 clio-kit==2.12.5 | UV_TOOL_DIR= UV_TOOL_BIN_DIR=" in calls
     assert (prefix / "installed-tools").read_text() == "uv-tool clio-kit\n"
 
 
