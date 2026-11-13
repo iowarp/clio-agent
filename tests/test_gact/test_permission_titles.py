@@ -128,3 +128,25 @@ def test_an_external_tool_card_does_not_claim_the_workspace_host() -> None:
     # The connector's server decides where the call runs (another machine, a hosted service).
     assert "execution" not in _projected("external_mcp")
     assert set(_projected(None)["execution"]) == {"computer", "cwd"}
+
+
+def test_a_reopen_before_any_agent_listed_tools_reads_the_call_annotations(titled: None) -> None:
+    # After a restart a view's Reopen asks before any agent registered its tools' titles.
+    context = {
+        "kind": "external_mcp",
+        "annotations": {"title": "Open a view", "readOnlyHint": False},
+    }
+    assert permission_summary("viewer_reopened", context, EXTERNAL) == "Open a view"
+    row = {
+        "id": "perm_2",
+        "session_id": "sess_1",
+        "kind": "external_mcp",
+        "summary": "Open a view",
+        "status": "pending",
+        "tool_call": {"tool_name": "viewer_reopened", "input": {}, "call_id": "c2"},
+    }
+    from clio_agent.gact.permission_delivery import overlay_waiting_calls
+
+    app = SimpleNamespace(state=SimpleNamespace(permissions={"perm_2": row}))
+    (tool,) = overlay_waiting_calls(app, "sess_1", [])
+    assert tool["title"] == "Open a view"
