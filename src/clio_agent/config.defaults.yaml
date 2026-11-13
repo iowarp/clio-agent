@@ -733,6 +733,21 @@ gact.live_edge_streaming: false
 # results and human input are exempt, and delivered history is retained.
 gact.mailbox.max_pending_messages: 0
 
+# CLIO_MCP_APP_DOWNLOAD_MAX_BYTES  (int)  <- src/clio_agent/gact/mcp_app_downloads.py
+# Byte ceiling on one file download an interactive tool view saves into the
+# workspace.
+gact.mcp_apps.download_max_bytes: 67108864
+
+# CLIO_MCP_APP_REGISTRY_LIMIT  (int)  <- src/clio_agent/gact/mcp_apps.py
+# How many interactive tool views shown in the conversation stay open at
+# once; views in a tab or a dashboard are not counted.
+gact.mcp_apps.registry_limit: 64
+
+# CLIO_MCP_APP_REGISTRY_TTL_S  (float)  <- src/clio_agent/gact/mcp_apps.py
+# Seconds after which an unused interactive tool view in the conversation
+# closes; views in a tab or a dashboard never close on a timer.
+gact.mcp_apps.registry_ttl_s: 3600.0
+
 # CLIO_GACT_MEDIA_CACHE_BYTES  (int)  <- src/clio_agent/gact/agents/media_cache.py
 # Bytes of rehydrated tool media (viewed images, PDFs) kept for reuse across
 # context reads, least recently used first out; lower to bound memory.
@@ -1724,6 +1739,9 @@ tools.recall_result_chars: 16000
 # sizes file reads, searches, shell output, task pages, mail per step and
 # the offered plan.
 tools.result_share: 0.125
+
+# CLIO_TOOLS_SCRIPT_MEDIA_MAX  (int)  <- src/clio_agent/gact/model_media.py
+tools.script_media_max: 8
 
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
 # Tools a search_tools keyword search returns when the call names no limit.
