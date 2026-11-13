@@ -24,6 +24,7 @@ from mcp.shared.exceptions import MCPError
 
 from clio_agent import conf
 from clio_agent.arc.task_types import CoreReference, argument_digest
+from clio_agent.tools import call_origin
 from clio_agent.tools.task_receipt import AcceptedTaskResult
 
 
@@ -254,7 +255,7 @@ class TaskAwareClient(Client):
         submitted_arguments = copy.deepcopy(arguments)
         if argument_digest(submitted_arguments) != context.argument_digest:
             raise ValueError("Arguments differ from confirmed submission custody")
-        request_meta = copy.deepcopy(meta or {})
+        request_meta = call_origin.with_origin(copy.deepcopy(meta or {}))
         tool_meta = request_meta.get("fastmcp", {})
         if not isinstance(tool_meta, dict):
             raise ValueError("Malformed MCP tool-version metadata")

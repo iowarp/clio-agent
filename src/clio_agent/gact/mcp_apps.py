@@ -51,6 +51,7 @@ from clio_agent.gact.runtime.globals import (
     _tool_session_context,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+from clio_agent.tools import call_origin
 from clio_agent.tools.mcp_extension_registry import (
     MCP_APP_MIME_TYPE as MCP_APP_MIME_TYPE,
 )
@@ -653,6 +654,7 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = N
                 _gact_app_context(app),
                 _tool_session_context(sid),
                 view_call_transcript.collecting(app, sid),  # never inside an open turn
+                call_origin.scope("view"),  # the server sees the view's call (FP-D7)
             ):
                 return operation(_bound_executor(app, sid))
         finally:
