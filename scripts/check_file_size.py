@@ -1088,7 +1088,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed these with CI off during the RC1 UI freeze, so the guard went red unnoticed.
     # The code is frozen for the release; split or hoist and ratchet these back down after
     # RC1 instead of growing them further.
-    "src/clio_agent/gact/agents/clio_react.py": 804,
     "src/clio_agent/gact/compaction.py": 913,
     "src/clio_agent/gact/infrastructure/node_service.py": 845,
     # macOS worker identity (libproc start time, no /proc). This file ships to the host as one

@@ -1725,6 +1725,12 @@ tools.recall_result_chars: 16000
 # the offered plan.
 tools.result_share: 0.125
 
+# CLIO_TOOLS_SCRIPT_MEDIA_MAX  (int)  <- src/clio_agent/gact/model_media.py
+# Images or PDFs one run_code script may show the model with its result; a
+# view past it fails with view_image_script_limit and says the model did not
+# see it.
+tools.script_media_max: 8
+
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
 # Tools a search_tools keyword search returns when the call names no limit.
 tools.search_limit: 5

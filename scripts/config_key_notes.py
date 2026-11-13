@@ -1447,6 +1447,10 @@ KEY_NOTES: dict[str, str] = {
     "tools.search_max": (
         "The most tools one search_tools keyword search returns, whatever limit the call names."
     ),
+    "tools.script_media_max": (
+        "Images or PDFs one run_code script may show the model with its result; a view past "
+        "it fails with view_image_script_limit and says the model did not see it."
+    ),
     "tools.search_miss_names": (
         "Deferred tool names a search_tools miss lists so the agent can search again by name; "
         "the prompt entry names them all."
