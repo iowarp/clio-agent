@@ -70,7 +70,7 @@ class AgentSpec:
     bare: bool = False
 
     def body(self) -> dict[str, Any]:
-        body = {
+        body: dict[str, Any] = {
             "id": self.id,
             "version": self.version,
             "name": self.name,
