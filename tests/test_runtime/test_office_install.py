@@ -584,6 +584,18 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/tipoftheday/tipoftheday.png",
         "share/numbertext/en.sor",
         "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "share/config/soffice.cfg/modules/swriter/toolbar/singlemode-text.xml",
+        "share/config/soffice.cfg/modules/swriter/popupmenu/table.xml",
+        "share/config/soffice.cfg/modules/simpress/ui/tabviewbar.ui",
+        "share/config/soffice.cfg/modules/simpress/statusbar/statusbar.xml",
+        "share/config/soffice.cfg/modules/scalc/ui/sortdialog.ui",
+        "share/config/soffice.cfg/simpress/transitions.xml",
+        "share/config/soffice.cfg/svt/ui/scrollbars.ui",
+        "share/config/soffice.cfg/cui/ui/optionsdialog.ui",
+        "share/extensions/dict-en/dialog/en.xdl",
+        "share/extensions/dict-en/dialog/en_de.properties",
+        "share/extensions/dict-en/dialog/en_en_US.default",
+        "share/extensions/dict-en/dialog/OptionsDialog.xcu",
         "share/config/images_colibre.zip",
         "share/config/images_colibre_dark.zip",
         "share/config/images_breeze.zip",
@@ -632,16 +644,29 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/firebird/security3.fdb",
         "program/java_uno.dll",
         "program/JREProperties.class",
+        "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "share/config/soffice.cfg/modules/swriter/popupmenu/table.xml",
+        "share/config/soffice.cfg/modules/simpress/statusbar/statusbar.xml",
+        "share/config/soffice.cfg/modules/scalc/ui/sortdialog.ui",
+        "share/config/soffice.cfg/cui/ui/optionsdialog.ui",
+        "share/extensions/dict-en/dialog/en.xdl",
+        "share/extensions/dict-en/dialog/en_de.properties",
+        "share/extensions/dict-en/dialog/en_en_US.default",
     } <= skipped
     # What a conversion reads: the startup Python, layout configuration, fonts, the
     # NUMBERTEXT data, new-document templates, the fallback icon themes, the Java
-    # framework and Firebird client that load at start, and the English readme.
+    # framework and Firebird client that load at start, the UI configuration Writer's and
+    # Impress's views build, the grammar checker's option schema, and the English readme.
     assert not skipped & {
         "program/jvmfwklo.dll",
         "program/ifbclient.dll",
         "program/python-core-3.12.14/lib/encodings/utf_8.py",
         "program/python-core-3.12.14/lib/re/__init__.py",
-        "share/config/soffice.cfg/modules/swriter/ui/gallery.ui",
+        "share/config/soffice.cfg/modules/swriter/toolbar/singlemode-text.xml",
+        "share/config/soffice.cfg/modules/simpress/ui/tabviewbar.ui",
+        "share/config/soffice.cfg/simpress/transitions.xml",
+        "share/config/soffice.cfg/svt/ui/scrollbars.ui",
+        "share/extensions/dict-en/dialog/OptionsDialog.xcu",
         "share/config/images_colibre.zip",
         "share/config/images_colibre_dark.zip",
         "share/fonts/truetype/DejaVuSans.ttf",
@@ -649,6 +674,38 @@ def test_unread_names_exactly_what_prune_unread_removes(
         "share/template/shellnew/soffice.odt",
         "readmes/readme_en-US.txt",
     }
+
+
+def test_ui_configuration_prune_reaches_the_linux_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unread UI trees and dialogs sit deeper in the Linux layout; both are pruned."""
+    monkeypatch.setattr(office.platform, "system", lambda: "Linux")
+    base = "opt/libreoffice26.2/share/"
+    names = {
+        "config/soffice.cfg/modules/swriter/ui/gallery.ui": False,
+        "config/soffice.cfg/modules/swriter/menubar/menubar.xml": False,
+        "config/soffice.cfg/modules/sdraw/toolbar/toolbar.xml": False,
+        "config/soffice.cfg/vcl/ui/printdialog.ui": False,
+        "config/soffice.cfg/modules/swriter/toolbar/singlemode-text.xml": True,
+        "config/soffice.cfg/modules/simpress/ui/tabviewbar.ui": True,
+        "config/soffice.cfg/svt/ui/editcontrol.ui": True,
+        "extensions/dict-ru/dialog/ru_RU.xdl": False,
+        "extensions/dict-ru/dialog/ru_RU_de.properties": False,
+        "extensions/dict-ru/dialog/OptionsDialog.xcs": True,
+        "extensions/dict-ru/hyph_ru_RU.dic": True,
+    }
+    image = tmp_path / "office"
+    for name in names:
+        (image / base / name).parent.mkdir(parents=True, exist_ok=True)
+        (image / base / name).write_bytes(b"x")
+
+    assert {name for name in names if office.unread(PurePath(base + name))} == {
+        name for name, kept in names.items() if not kept
+    }
+    assert office.prune_unread(image) == 6
+    for name, kept in names.items():
+        assert (image / base / name).exists() is kept, name
 
 
 def test_windows_only_prunes_leave_other_layouts_alone(
