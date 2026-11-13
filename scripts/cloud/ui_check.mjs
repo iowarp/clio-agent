@@ -18,6 +18,10 @@
 // browser console errors and any failed requests so the agent can read the images
 // with its file reader and check the run for errors. --touch gives the page a touch
 // screen and mobile emulation (`hasTouch`, `isMobile`) so steps can use `locator.tap()`.
+//
+// The browser starts with --agent already remembered as the UI's service, so the UI never
+// tries the product default address first, and with software WebGL (SwiftShader) for
+// views such as Mol* and trame; checks/apps/webgl.mjs reports what it can draw.
 
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
@@ -65,17 +69,37 @@ function chromiumPath() {
 const shotsDir = path.join(root, ".cloud-run/shots");
 mkdirSync(shotsDir, { recursive: true });
 
+// Mol* and trame's local view draw with WebGL. Headless Chromium 153 here falls back to
+// SwiftShader (WebGL 1 and 2) on its own; Chrome is deprecating that automatic fallback,
+// so the software renderer is asked for explicitly (apps ledger, grounds).
+const launchArgs = ["--enable-unsafe-swiftshader"];
 let browser;
 try {
-  browser = await chromium.launch();
+  browser = await chromium.launch({ args: launchArgs });
 } catch {
-  browser = await chromium.launch({ executablePath: chromiumPath() });
+  browser = await chromium.launch({ args: launchArgs, executablePath: chromiumPath() });
 }
 const context = await browser.newContext({
   viewport: { width, height },
   ...(touch ? { hasTouch: true, isMobile: true } : {}),
   ...(video ? { recordVideo: { dir: path.join(root, ".cloud-run/video-tmp"), size: { width, height } } } : {}),
 });
+// Start the UI already pointed at this stack's agent: seed the remembered service before
+// the first load, so the UI never tries the product default address (127.0.0.1:17800)
+// first. Only the UI's own origin is touched, and a service a step file saved is kept.
+await context.addInitScript(
+  ([origin, endpoint]) => {
+    if (window.location.origin !== origin) return;
+    try {
+      if (!window.localStorage.getItem("clio.recent-connections")) {
+        window.localStorage.setItem("clio.recent-connections", JSON.stringify([{ endpoint, label: "cloud" }]));
+      }
+    } catch {
+      // Storage refused (opaque origin): the connect form below still handles it.
+    }
+  },
+  [new URL(uiUrl).origin, agentUrl],
+);
 const page = await context.newPage();
 const consoleErrors = [];
 const failedRequests = [];
