@@ -249,3 +249,12 @@ def test_a_low_budget_report_rests_the_provider_minutes_not_a_day(monkeypatch) -
         asyncio.run(SCHEDULER.call("openalex", _answer("again"), terms=terms, cost_usd=0.001))
         == "again"
     )
+
+
+def test_reset_times_are_read_as_seconds_epochs_or_dates() -> None:
+    now = 1_800_000_000.0
+    assert scheduler._reset_at("60", now) == now + 60
+    assert scheduler._reset_at("1800000300", now) == 1_800_000_300
+    stamp = scheduler._reset_at("2026-11-13T02:46:20.338Z", now)
+    assert abs(stamp - 1794537980.338) < 1
+    assert scheduler._reset_at("soon", now) == 0.0

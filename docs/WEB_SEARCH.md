@@ -93,7 +93,7 @@ provider, CLIO is one well-behaved client, however many researchers run.
   `Retry-After`, else a backoff from 2 s doubling to 60 s), lets one fewer request
   run at once until 20 answers in a row, and puts the request back at the head of
   its line (at most three times). A request that would wait past its patience
-  (web 10 s, literature 30 s) leaves with the typed reason: web search moves to
+  (web 20 s, literature 30 s) leaves with the typed reason: web search moves to
   the next source, literature search notes it. One outright failure (network, 404,
   5xx) is asked again after 1 s before the provider rests.
 - **Allowance.** CLIO counts what it used this hour/day (OpenAlex in dollars) and

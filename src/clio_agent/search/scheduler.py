@@ -35,6 +35,7 @@ threads and event loops); waiting happens outside the lock.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import itertools
 import threading
 import time
@@ -52,7 +53,7 @@ from clio_agent.tools.servers.web_limits import SEARCH_LIMITS, SearchLimits
 T = TypeVar("T")
 
 #: How long a web search waits in line before it moves to the next source.
-WEB_PATIENCE_S = 10.0
+WEB_PATIENCE_S = 20.0
 #: How long a literature request waits in line before the source is reported.
 LITERATURE_PATIENCE_S = 30.0
 #: Pause before asking a provider that failed outright once more.
@@ -237,13 +238,13 @@ class ProviderScheduler:
             now = time.time()
             if usd is not None:
                 lane.remaining_usd, lane.remaining_at = usd, now
-            reset_in = _number(lowered.get("x-ratelimit-reset"))
-            if reset_in:
-                lane.reset_at = reset_in if reset_in > 1e9 else now + reset_in
+            reset_at = _reset_at(lowered.get("x-ratelimit-reset"), now)
+            if reset_at:
+                lane.reset_at = reset_at
         remaining = _number(lowered.get("x-ratelimit-remaining"))
-        reset = _number(lowered.get("x-ratelimit-reset"))
-        if remaining is not None and remaining <= 0 and reset:
-            wait = reset - time.time() if reset > 1e9 else reset
+        reset_at = _reset_at(lowered.get("x-ratelimit-reset"), time.time())
+        if remaining is not None and remaining <= 0 and reset_at:
+            wait = reset_at - time.time()
             if wait > 0:
                 kind = (
                     http.ALLOWANCE_USED if wait > http.ALLOWANCE_THRESHOLD_S else http.RATE_LIMITED
@@ -483,6 +484,23 @@ def _number(value: str | None) -> float | None:
         return float(str(value).strip())
     except ValueError:
         return None
+
+
+def _reset_at(value: str | None, now: float) -> float:
+    """When a rate limit resets (epoch seconds), from seconds, an epoch or an ISO date."""
+
+    if not value:
+        return 0.0
+    number = _number(value)
+    if number is not None:
+        return number if number > 1e9 else now + number
+    try:
+        moment = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.UTC)
+    return moment.timestamp()
 
 
 def _seconds(value: str | None) -> float | None:

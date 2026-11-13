@@ -68,7 +68,8 @@ _PAID = Terms(PAID, per_second=None, concurrency=8)
 #: Declared terms: provider → tier → terms. A tier a provider does not offer is absent.
 TERMS: dict[str, dict[str, Terms]] = {
     "keenable": {
-        KEYLESS: Terms(KEYLESS, concurrency=4, per_hour=1000),
+        # One per deep-research researcher; push-back lowers it when Keenable objects.
+        KEYLESS: Terms(KEYLESS, concurrency=8, per_hour=1000),
         KEY: Terms(KEY, concurrency=6),
         PAID: _PAID,
     },
