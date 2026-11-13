@@ -383,6 +383,13 @@ def _refusal(reason: str, text: str, **extra: Any) -> dict[str, Any]:
     return row
 
 
+def _watched(app: Any, sid: str) -> bool:
+    """Whether a window shows this conversation now (one is subscribed to its events)."""
+    bus = getattr(app.state, "bus", None)
+    count = getattr(bus, "subscriber_count", None)
+    return bool(count(sid)) if callable(count) else True
+
+
 def _not_shown_text(view: ViewIdentity) -> str:
     return (
         f"The view {view.describe()} is not on screen, so it cannot be looked at. The person "
@@ -425,7 +432,6 @@ def _save(app: Any, sid: str, png: bytes, call_id: str) -> dict[str, Any]:
     )
     from clio_agent.gact.artifacts.records import ArtifactKind, Mechanism  # noqa: PLC0415
     from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
-    from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
 
     workspace_id = _session_workspace_id(app, sid)
     root = _workspace_root(app, workspace_id)
@@ -435,8 +441,8 @@ def _save(app: Any, sid: str, png: bytes, call_id: str) -> dict[str, Any]:
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{call_id}.png"
     target.write_bytes(png)
-    with tool_workspace_context(root):
-        snapshot, snapshot_hash = viewed_media.snapshot(png, ".png")
+    # Kept where the history reads it back: the call's own tool workspace (as view_image).
+    snapshot, snapshot_hash = viewed_media.snapshot(png, ".png")
     row: dict[str, Any] = {
         "path": str(target),
         "snapshot": snapshot,
@@ -495,19 +501,29 @@ def look_at_view(view: str = "") -> dict[str, Any]:
         )
         return _refusal(reason, text, views=[_identity_fields(item) for item in views])
     table = look_table(app)
-    if not chosen.shown:
+    if not chosen.shown or not _watched(app, sid):
         return _refusal(VIEW_NOT_SHOWN, _not_shown_text(chosen), view=_identity_fields(chosen))
     look = table.begin(sid, chosen.app_instance_id)
     publish_look(app, look)
+    unwatched = False
     try:
-        while not look.done.wait(0.25):  # no timeout (rule 6): only a cancel ends the wait
+        # No timeout (rule 6): the look ends when the surface answers, the app closes, the
+        # turn is cancelled, or no window shows the conversation any more (a browser closed
+        # without unloading its frames cannot answer).
+        while not look.done.wait(0.25):
             if _cancelled(app):
                 from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 
                 raise _turn_cancelled()
+            if not _watched(app, sid):
+                unwatched = True
+                break
     finally:
         table.forget(look)
     identity = _identity_fields(chosen)
+    if unwatched:
+        table.set_shown(sid, chosen.app_instance_id, "", False)
+        return _refusal(VIEW_NOT_SHOWN, _not_shown_text(chosen), view=identity)
     if look.closed:
         return _refusal(VIEW_CLOSED, _not_shown_text(chosen), view=identity)
     answer = look.answer or {}

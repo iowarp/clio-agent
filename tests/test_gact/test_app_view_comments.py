@@ -85,7 +85,7 @@ def test_entries_carry_identity_context_box_and_crop(tmp_path: Path) -> None:
     rendered = render_app_view_comments(_app(), "s", _attachment(), tmp_path, True)
     text = rendered.text
     assert text.startswith(
-        "Comment on the Wave scene view (scene view, opened by open_view, id app_1)."
+        "Comment on the view “Wave scene” (scene view, opened by open_view, id app_1)."
     )
     assert "Image 1 is the view with S1, S2 drawn on it." in text
     assert "S1 (region, attached as image 2)" in text

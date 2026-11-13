@@ -59,7 +59,7 @@ def _header(attachment: CommentAttachment) -> str:
         )
         if part
     )
-    return f"Comment on the {title} view{f' ({detail})' if detail else ''}."
+    return f"Comment on the view “{title}”{f' ({detail})' if detail else ''}."
 
 
 def _box(anchor: Any) -> str:

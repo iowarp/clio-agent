@@ -101,8 +101,9 @@ const clioViewSnapshot = (() => {
       for (const name of DRAWS) {
         const original = gl[name];
         if (typeof original !== 'function') continue;
+        // Bound to the context itself: an app may call a method it took off the context.
         gl[name] = function (...args) {
-          const value = original.apply(this, args);
+          const value = original.apply(gl, args);
           if (!queued) {
             queued = true;
             win.queueMicrotask(copy);

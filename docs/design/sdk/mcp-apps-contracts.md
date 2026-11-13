@@ -62,6 +62,14 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
 - The agent-facing name is `app__<server>__<tool>`, where `<server>` is the source namespace. A call when no surface holds the app returns at once, naming the opening tool.
 - `ui/initialize` answers with `hostCapabilities.updateModelContext = {text: {}, structuredContent: {}}` and `message = {text: {}}` (draft spec).
 
+## Looking at a view and comments on it (owner: `comments`)
+
+- `PUT …/shown` takes `{holder, shown: bool}` and returns `{shown}`. The surface holding a mounted view sends it once the view is initialized and again with `shown: false` when its frame unloads; an unload from a mount a newer one replaced is ignored. Showing re-sends every look still waiting on the app.
+- The session event `mcp_app_look` carries `{session_id, app_instance_id, call_id, max_side}`. It is transient. The surface asks CLIO's sandbox document for a snapshot with the request `clio/view-snapshot` `{scale, max_side, background}` (host ids, answered by the sandbox document, never forwarded to the view) and posts the answer to `POST …/looks/{call_id}`: `{image: <PNG data URL>, width, height, scale, painted: {canvas, image, svg, video, text}, skipped: [{what, reason, count?}]}` or `{error: {reason, message}}`. 404 when no look of this app waits; 422 when the image is not a PNG.
+- The native tool is `look_at_view(view)`. Its result is a `clio.workspace_image.v1` descriptor plus `view`, `pixels`, `context_lines`, `coverage`, `artifact_id` and `model_text`; the model reads the image, then `model_text`. Refusals are `{ok: false, reason, text}` with `mcp_app_view_none`, `mcp_app_view_ambiguous`, `mcp_app_view_not_shown`, `mcp_app_view_closed` or the snapshot's own reason.
+- A comment on a view is a `comment_session` part with `kind: "mcp-app"`. Each mark is a `region` anchor (`rect` normalized to the view, `natural_width`/`natural_height` the view's CSS size) whose `source` holds `app: {app_instance_id, server, tool, title, resource_uri}`, `context` (the `ui/update-model-context` params last reported, or null), `captured_at`, and optionally `point: [x, y]`, `snapshot_refused: {reason, message}` and `snapshot_skipped`. `images` are the overview (no label) and a crop per mark at twice its size.
+- `McpAppSurface` takes `comments` (the frame shows the Comments icon and the region layer).
+
 ## Saved call and reopening (owner: `reopen`)
 
 - Session state key `mcp_app_calls` (the session's own clio-core record, `Session.metadata`), keyed by `app_instance_id`: `{server, tool, arguments, display_mode, resource_uri, label, saved_at}`, plus `reopened_from` on a call saved by a reopen and `unsaved_reason: "arguments_not_saved"` (with `arguments: null`) when the arguments exceed 64 KiB. `tool` is the bare tool name; the executor name is `<server>_<tool>`. The private result and the HTML are not saved.

@@ -117,6 +117,7 @@ def test_a_look_gets_the_snapshot_and_the_context_as_model_media(
             original(event)
 
         monkeypatch.setattr(app.state.bus, "publish", publish)
+        monkeypatch.setattr(app.state.bus, "subscriber_count", lambda _sid: 1)
         rows: list[dict[str, Any]] = []
         worker = threading.Thread(target=lambda: rows.append(_look(app, sid, "scene")))
         worker.start()
@@ -180,6 +181,8 @@ def test_a_refused_snapshot_and_a_closed_view_are_typed(
             original(event)
 
         monkeypatch.setattr(app.state.bus, "publish", publish)
+        watching = [1]
+        monkeypatch.setattr(app.state.bus, "subscriber_count", lambda _sid: watching[0])
         rows: list[dict[str, Any]] = []
         worker = threading.Thread(target=lambda: rows.append(_look(app, sid)))
         worker.start()
@@ -196,6 +199,38 @@ def test_a_refused_snapshot_and_a_closed_view_are_typed(
         assert client.delete(prefix, params=cap).status_code == 204
         worker.join(30)
         assert rows[1]["reason"] == "mcp_app_view_closed"
+
+
+def test_a_look_ends_when_no_window_shows_the_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A browser that closed without unloading its frames cannot answer: the look ends."""
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid, record = _setup(client, app, tmp_path)
+        prefix, cap = _prefix(sid, record)
+        client.put(f"{prefix}/shown", params=cap, json={"holder": "tab", "shown": True})
+        assert _look(app, sid)["reason"] == "mcp_app_view_not_shown"  # nobody watches
+
+        seen = threading.Event()
+        original = app.state.bus.publish
+
+        def publish(event: Any) -> None:
+            if event.type == LOOK_EVENT:
+                seen.set()
+            original(event)
+
+        watching = [1]
+        monkeypatch.setattr(app.state.bus, "publish", publish)
+        monkeypatch.setattr(app.state.bus, "subscriber_count", lambda _sid: watching[0])
+        rows: list[dict[str, Any]] = []
+        worker = threading.Thread(target=lambda: rows.append(_look(app, sid)))
+        worker.start()
+        assert seen.wait(30)
+        watching[0] = 0
+        worker.join(30)
+        assert rows[0]["reason"] == "mcp_app_view_not_shown"
+        assert not look_table(app).shown(sid, record.app_instance_id)
 
 
 def test_an_older_mount_unloading_does_not_hide_a_newer_one() -> None:
