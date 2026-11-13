@@ -30,7 +30,7 @@
 #   CLIO_PREFIX        install root         (default: <agent data>/app)
 #   CLIO_BIN_DIR       launcher location    (default: $HOME/.local/bin)
 #   CLIO_INSTALLER_REF pin launcher scripts (default: the installed release's tag)
-#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.12.5)
+#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.12.7)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
 #   CLIO_DESKTOP_DIR   macOS app folder     (default: $HOME/Applications)
 #   CLIO_INSTALL_PROGRESS  human | json     (default: human; as --progress)
@@ -1573,7 +1573,7 @@ start_clio_kit() {
     return 0
   fi
   if [ -z "$CLIO_KIT_PACKAGE" ]; then
-    clio_kit_spec="clio-kit==2.12.5"
+    clio_kit_spec="clio-kit==2.12.7"
     say "Provisioning released clio-kit launcher ($clio_kit_spec) at the same time"
   elif [[ "$CLIO_KIT_PACKAGE" == *"=="* ]]; then
     clio_kit_spec="${CLIO_KIT_PACKAGE%%==*}[science]==${CLIO_KIT_PACKAGE#*==}"
