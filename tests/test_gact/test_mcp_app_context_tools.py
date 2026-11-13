@@ -310,3 +310,74 @@ def test_presentation_names_the_view_tool_and_its_outcome() -> None:
     assert closed["summary"] == "The view is not open"
     running = starting("board", "set_highlight")({"reading": "inlet"})
     assert running["summary"] == "Waiting for the view"
+
+
+def test_a_call_after_reopening_waits_for_the_new_view_to_list_its_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The view was closed and opened again: the call waits for the new view's first list
+    and runs there; a new view without the tool says it no longer offers it."""
+    app = _app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "board"}).json()["id"]
+        old = _record(app, sid)
+        prefix, cap = _prefix(sid, old)
+        client.put(f"{prefix}/app-tools", params=cap, json={"tools": [_HIGHLIGHT]})
+        assert client.delete(prefix, params=cap).status_code == 204
+        new = _record(app, sid)
+        new_prefix, new_cap = _prefix(sid, new)
+        tokens = _bound(app, sid)
+        try:
+            assert "still loading for: board" in __import__(
+                "clio_agent.gact.mcp_app_tools", fromlist=["loading_note"]
+            ).loading_note(app, sid)
+        finally:
+            _unbind(tokens)
+
+        calls: list[Any] = []
+        seen = threading.Event()
+        original = app.state.bus.publish
+
+        def publish(event: Any) -> None:
+            if event.type == APP_TOOL_CALL_EVENT:
+                calls.append(event)
+                seen.set()
+            original(event)
+
+        monkeypatch.setattr(app.state.bus, "publish", publish)
+        answers: list[str] = []
+
+        def agent_call() -> None:
+            tokens = _bound(app, sid)
+            try:
+                answers.append(call_app_tool("app__board__set_highlight", {"reading": "inlet"}))
+            finally:
+                _unbind(tokens)
+
+        worker = threading.Thread(target=agent_call)
+        worker.start()
+        worker.join(1.0)
+        assert worker.is_alive() and not calls  # waiting for the new view, not answered
+        client.put(f"{new_prefix}/app-tools", params=new_cap, json={"tools": [_HIGHLIGHT]})
+        assert seen.wait(30)
+        assert calls[0].payload["app_instance_id"] == new.app_instance_id
+        result = {"content": [{"type": "text", "text": "Highlighted Inlet temperature."}]}
+        client.post(
+            f"{new_prefix}/app-tool-results/{calls[0].payload['call_id']}",
+            params=new_cap,
+            json={"result": result},
+        )
+        worker.join(30)
+        assert answers == ["Highlighted Inlet temperature."]
+
+        # Closed again, reopened by a view that lists no such tool.
+        assert client.delete(new_prefix, params=new_cap).status_code == 204
+        third = _record(app, sid)
+        third_prefix, third_cap = _prefix(sid, third)
+        answers.clear()
+        worker = threading.Thread(target=agent_call)
+        worker.start()
+        worker.join(1.0)
+        client.put(f"{third_prefix}/app-tools", params=third_cap, json={"tools": [_NOTE]})
+        worker.join(30)
+        assert answers and "no longer offers set_highlight" in answers[0]

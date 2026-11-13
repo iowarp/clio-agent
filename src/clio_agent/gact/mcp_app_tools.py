@@ -29,7 +29,7 @@ import re
 import secrets
 import threading
 from collections.abc import Mapping, MutableMapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from clio_agent.runtime import trace
@@ -46,6 +46,8 @@ __all__ = [
     "app_tool_table",
     "attach_app_tools",
     "call_app_tool",
+    "loading_note",
+    "loading_view",
     "offered_names_by_app",
     "place_app_tools",
 ]
@@ -63,6 +65,8 @@ APP_TOOLS_OVER_LIMIT = "mcp_app_tools_over_limit"
 APP_TOOL_SCHEMA_TOO_LARGE = "mcp_app_tool_schema_too_large"
 APP_TOOL_NAME_INVALID = "mcp_app_tool_name_invalid"
 APP_TOOL_NOT_OPEN = "mcp_app_tool_not_open"
+#: A call to a closed view's tool waits for a newer view of the same server to list its tools.
+APP_TOOL_WAITING_FOR_VIEW = "mcp_app_tool_waiting_for_view"
 #: A tool name every model provider accepts.
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -167,6 +171,9 @@ class AppToolTable:
         self._seen: dict[str, dict[str, AppTool]] = {}
         self._calls: dict[str, PendingCall] = {}
         self._holders: dict[tuple[str, str], str] = {}
+        #: Views that posted their first list (possibly empty): ``(session, app instance)``.
+        self._listed: set[tuple[str, str]] = set()
+        self._changed = threading.Condition(self._lock)
         self.revision = 0
 
     def set_tools(
@@ -184,6 +191,8 @@ class AppToolTable:
         server = str(record.source_namespace or "")
         sid, app_id = record.session_id, record.app_instance_id
         with self._lock:
+            self._listed.add((sid, app_id))
+            self._changed.notify_all()
             current = self._holders.get((sid, app_id), "")
             if not tools and holder and current and current != holder:
                 return [], []
@@ -210,6 +219,7 @@ class AppToolTable:
                     seen[tool.agent_name] = tool
             if before or tools:
                 self.revision += 1
+            self._changed.notify_all()
 
     def offered(self, sid: str) -> dict[str, AppTool]:
         """The tools on offer now, by agent name (a later-registered view wins a name)."""
@@ -223,6 +233,21 @@ class AppToolTable:
         """Every app tool this session was offered, kept so a late call can be answered."""
         with self._lock:
             return dict(self._seen.get(sid, {}))
+
+    def listed(self, sid: str, app_id: str) -> bool:
+        """Whether the view of this app instance has posted its first tool list."""
+        with self._lock:
+            return (sid, app_id) in self._listed
+
+    def wait_listed(self, sid: str, app_id: str, cancelled: Any) -> bool:
+        """Wait, with no timeout (rule 6), until the view posts its first list or the
+        app closes. ``cancelled()`` true ends the wait; returns whether it was listed."""
+        with self._lock:
+            while (sid, app_id) not in self._listed:
+                if cancelled():
+                    return False
+                self._changed.wait(0.25)
+            return True
 
     def holds(self, sid: str, app_id: str) -> bool:
         with self._lock:
@@ -278,6 +303,7 @@ class AppToolTable:
         """The app closed: it offers nothing and every waiting call learns it is not open."""
         with self._lock:
             self._holders.pop((sid, app_id), None)
+            self._listed.add((sid, app_id))  # nothing will list it now: no one waits on it
         self.set_offered(sid, app_id, [])
         for call in self.pending_for_app(sid, app_id):
             self.settle(sid, app_id, call.call_id, error=APP_TOOL_NOT_OPEN)
@@ -292,6 +318,7 @@ class AppToolTable:
             self._seen.pop(sid, None)
             for key in [k for k in self._holders if k[0] == sid]:
                 self._holders.pop(key, None)
+            self._listed = {key for key in self._listed if key[0] != sid}
 
 
 def app_tool_table(app: Any) -> AppToolTable:
@@ -386,6 +413,14 @@ def call_app_tool(agent_name: str, arguments: Mapping[str, Any]) -> str:
         if known is None:
             raise RuntimeError(f"No open view offers {agent_name}")
         still_open = table.holds(sid, known.app_instance_id)
+        loading = None if still_open else loading_view(app, sid, known.server)
+        if loading is not None:
+            tool = _after_loading(app, sid, agent_name, loading)
+            if tool is None:  # the new view lacks it, or closed before it listed
+                known = replace(known, app_instance_id=loading)
+                still_open = _app_open(app, sid, loading)
+    if tool is None:
+        assert known is not None
         text = _not_open_text(known, still_open)
         outcome = "not_offered" if still_open else "not_open"
         trace.event("APPS", "%s tool=%s outcome=%s", APP_TOOL_NOT_OPEN, agent_name, outcome)
@@ -414,6 +449,76 @@ def call_app_tool(agent_name: str, arguments: Mapping[str, Any]) -> str:
             text = f"The {tool.server} view reported an error from {tool.name}: {text}"
     declare_structured_content({**base, **_identity(tool), "outcome": outcome, "text": text})
     return text
+
+
+def loading_view(app: Any, sid: str, server: str) -> str | None:
+    """The newest open app of ``server`` whose view has not listed its tools yet.
+
+    A view opened again (a new instance after the old one closed) offers its tools
+    only once its frame has mounted and listed them; until then this names it.
+    """
+    from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415
+
+    table = app_tool_table(app)
+    records = [
+        record
+        for record in _registry(app).records_for_session(sid)
+        if record.source_namespace == server
+        and (record.tool_input or record.tool_result)  # not a cleanup-only admission
+        and not table.listed(sid, record.app_instance_id)
+    ]
+    if not records:
+        return None
+    return max(records, key=lambda record: record.created_at).app_instance_id
+
+
+def _app_open(app: Any, sid: str, app_id: str) -> bool:
+    from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415
+
+    return any(r.app_instance_id == app_id for r in _registry(app).records_for_session(sid))
+
+
+def loading_servers(app: Any, sid: str) -> list[str]:
+    """Servers with an open view that has not listed its tools yet."""
+    from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415
+
+    table = app_tool_table(app)
+    return sorted(
+        {
+            str(record.source_namespace)
+            for record in _registry(app).records_for_session(sid)
+            if record.source_namespace
+            and (record.tool_input or record.tool_result)
+            and not table.listed(sid, record.app_instance_id)
+        }
+    )
+
+
+def loading_note(app: Any, sid: str, servers: Sequence[str] | None = None) -> str:
+    """What ``search_tools`` and ``@server`` say while a server's view is still loading."""
+    if app is None or not sid:
+        return ""
+    loading = [s for s in loading_servers(app, sid) if servers is None or s in servers]
+    if not loading:
+        return ""
+    names = ", ".join(f"{s} ({APP_TOOL_PREFIX}{s}__…)" for s in loading)
+    return (
+        f"A view is still loading for: {names}. Its own tools join the deferred tools once "
+        "it has listed them; search again then. A call to one of its tools you already "
+        "know waits for it."
+    )
+
+
+def _after_loading(app: Any, sid: str, agent_name: str, app_id: str) -> AppTool | None:
+    """Wait for the loading view's first list; its tool of this name, if it has one."""
+    table = app_tool_table(app)
+    trace.event("APPS", "%s tool=%s app=%s", APP_TOOL_WAITING_FOR_VIEW, agent_name, app_id)
+    if not table.wait_listed(sid, app_id, lambda: _cancelled(app)):
+        from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
+
+        raise _turn_cancelled()
+    tool = table.offered(sid).get(agent_name)
+    return tool if tool is not None and tool.app_instance_id == app_id else None
 
 
 def _identity(tool: AppTool) -> dict[str, Any]:
