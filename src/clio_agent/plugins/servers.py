@@ -111,6 +111,7 @@ def server_declarations(
                 else str(spec["command"]),
                 "args": [_expand(str(arg), root, data, values) for arg in spec.get("args") or []],
                 "env": env,
+                **({"connector": spec["connector"]} if spec.get("connector") else {}),
             }
         else:
             out.setdefault(str(row["plugin"]), {})[name] = {
@@ -118,6 +119,7 @@ def server_declarations(
                 "url": spec["url"],
                 "headers": dict(spec.get("headers") or {}),
                 **({"auth": spec["auth"]} if spec.get("auth") else {}),
+                **({"connector": spec["connector"]} if spec.get("connector") else {}),
             }
     return out
 

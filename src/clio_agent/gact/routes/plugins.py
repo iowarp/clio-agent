@@ -133,13 +133,37 @@ def plugin_row(record: PluginRecord, *, trusted: bool, pending: bool = False) ->
         "trusted": trusted,
         "pending_trust": pending,
         "diagnostics": [row.to_dict() for row in record.diagnostics],
+        # Follows a connector (CN9): it comes and goes with it; pickers do not offer it.
+        "follows": record.follows,
     }
 
 
 def resolution_view(resolution: Resolution) -> dict[str, Any]:
-    """A resolution with the composed prompt's sections attributed to their plugins."""
+    """A resolution with the composed prompt's sections attributed to their plugins.
 
-    return {**resolution.to_dict(), "tool_names": resolution.tool_names}
+    A plugin that follows a connector (CN9) is labelled with that connector, not as the
+    person's own addition.
+    """
+
+    view = {**resolution.to_dict(), "tool_names": resolution.tool_names}
+    if any(row.get("follows") for row in view["plugins"]):
+        from clio_agent.connectors.state import all_entries  # noqa: PLC0415
+
+        names = {key: entry.name for key, entry in all_entries().items()}
+        view["plugins"] = [
+            {
+                **row,
+                "provenance": {
+                    "source": "connector",
+                    "via": row["follows"],
+                    "label": f"From connector {names.get(row['follows'], row['follows'])}",
+                },
+            }
+            if row.get("follows")
+            else row
+            for row in view["plugins"]
+        ]
+    return view
 
 
 def _delta_from(body: Mapping[str, Any]) -> Delta:

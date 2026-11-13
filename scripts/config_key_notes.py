@@ -28,6 +28,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
             "agents",
             "agent_tasks",
             "plugins",
+            "connectors",
             "workflows",
             "goal",
             "plan",
@@ -250,6 +251,10 @@ KEY_NOTES: dict[str, str] = {
     "plugins.store_root": (
         "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
         "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
+    ),
+    "connectors.catalog_dirs": (
+        "More folders of connector entries, separated like PATH, read after the shipped "
+        "catalogs/connectors; a later folder cannot replace an entry. Set it for test fixtures."
     ),
     "plugins.default_marketplace": (
         "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "

@@ -352,11 +352,16 @@ class PluginService:
                 "description": entry.user_agent.description,
                 "parent": root.ref,
             }
+        # Plugins that follow the person's enabled connectors come first, so the
+        # person's own delta can still remove one (``connectors.follow``, CN9).
+        from clio_agent.connectors.follow import additions  # noqa: PLC0415
+
+        followed, carriers = additions(self.store.records(), (entry.ref, root.ref))
         resolution = resolve_agent(
-            self.catalog(extra),
+            self.catalog([*(extra or []), *carriers] or None),
             root.spec,
             marketplace=root.marketplace,
-            delta=user_delta.then(delta),
+            delta=Delta(tuple(followed)).then(user_delta).then(delta),
             identity=identity,
         )
         if entry.user_agent is not None:
