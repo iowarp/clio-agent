@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from clio_schemas.connected_resources import AccessMode, ConnectedSource
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -43,6 +44,31 @@ class SourceConfiguration(StorageModel):
     obsidian_connection: Literal["local_vault", "headless_sync"] = "local_vault"
     obsidian_excluded_folders: list[str] = Field(default_factory=list)
     obsidian_sync_mode: Literal["pull-only", "bidirectional"] = "pull-only"
+    s3_region: str = Field(default="", max_length=64)
+    s3_endpoint_url: str = Field(default="", max_length=512)
+    s3_access: Literal["anonymous", "keys", "profile"] = "anonymous"
+    s3_profile: str = Field(default="", max_length=128)
+
+    @field_validator("s3_endpoint_url")
+    @classmethod
+    def https_endpoint(cls, value: str) -> str:
+        """An S3-compatible endpoint is an http(s) origin with no credentials in it."""
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Enter the endpoint as https://host[:port]")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("The endpoint cannot carry credentials, a query or a fragment")
+        return value
+
+
+class S3Credentials(StorageModel):
+    """An S3 access key pair, excluded from public serialization and diagnostic repr."""
+
+    access_key_id: SecretStr = Field(exclude=True, repr=False)
+    secret_access_key: SecretStr = Field(exclude=True, repr=False)
 
 
 class SftpCredentials(StorageModel):
@@ -56,13 +82,14 @@ class SftpCredentials(StorageModel):
 class CreateSource(StorageModel):
     """Approve one source on the connected CLIO for one workspace."""
 
-    provider: Literal["local", "sftp", "google_drive", "globus", "github", "obsidian", "ndp"]
+    provider: Literal["local", "sftp", "google_drive", "globus", "github", "obsidian", "ndp", "s3"]
     root: str = Field(default="", max_length=4096)
     create_vault: bool = False
     label: str = Field(min_length=1, max_length=120)
     mode: AccessMode = "read_only"
     configuration: SourceConfiguration = Field(default_factory=SourceConfiguration)
     sftp_credentials: SftpCredentials | None = Field(default=None, exclude=True, repr=False)
+    s3_credentials: S3Credentials | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="after")
     def validate_vault_creation(self) -> CreateSource:

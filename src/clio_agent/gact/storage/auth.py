@@ -27,7 +27,7 @@ from clio_agent.gact.storage.accounts import (
     usable,
 )
 from clio_agent.gact.storage.globus_consent import TRANSFER_SCOPE, collection_scopes
-from clio_agent.gact.storage.models import SftpCredentials, SourceRecord
+from clio_agent.gact.storage.models import S3Credentials, SftpCredentials, SourceRecord
 from clio_agent.gact.storage.oauth_clients import (
     GITHUB_CLIENT_ID,
     GLOBUS_CLIENT_ID,
@@ -114,6 +114,10 @@ class PendingSignIn:
     write_access: bool = False
 
 
+#: Vault key prefix of an S3 source's stored key pair (never an OAuth account entry).
+_S3_PREFIX = "s3-keys:"
+
+
 class StorageAuth:
     """Browser-flow owner with sanitized status and a separate private credential store."""
 
@@ -136,6 +140,12 @@ class StorageAuth:
             with self._lock:
                 sftp_entry = self._sftp_credentials.get(record.source.id)
                 return bool(sftp_entry and self._matches(sftp_entry[0], record))
+        if record.source.provider == "s3":
+            if record.configuration.s3_access != "keys":
+                return record.connected
+            with self._lock:
+                stored = self._entries().get(_S3_PREFIX + record.source.id)
+                return bool(stored and self._matches(stored, record))
         with self._lock:
             entries = self._entries()
             account = self._account(entries, record)
@@ -264,6 +274,39 @@ class StorageAuth:
         }
         with self._lock:
             self._sftp_credentials[source.id] = (binding, credentials)
+
+    def save_s3_credentials(self, record: SourceRecord, credentials: S3Credentials) -> None:
+        """Keep an S3 key pair in the private credential file, bound to this one source."""
+        if record.source.provider != "s3" or record.configuration.s3_access != "keys":
+            raise ValueError("Access keys apply only to an S3 source that uses keys")
+        key_id = credentials.access_key_id.get_secret_value().strip()
+        secret = credentials.secret_access_key.get_secret_value().strip()
+        if not key_id or not secret:
+            raise ValueError("Enter both the access key ID and the secret access key")
+        source = record.source
+        with self._lock:
+            entries = self._entries()
+            entries[_S3_PREFIX + source.id] = {
+                "principal": record.principal,
+                "clio_id": source.owner.clio_id,
+                "host_id": source.owner.host_id,
+                "provider": source.provider,
+                "root": source.root,
+                "mode": source.mode,
+                "access_key_id": key_id,
+                "secret_access_key": secret,
+            }
+            self._vault.write_entries(entries)
+
+    def s3_keys(self, record: SourceRecord) -> tuple[str, str] | None:
+        """This source's key pair for the S3 client; None for anonymous or profile access."""
+        if record.configuration.s3_access != "keys":
+            return None
+        with self._lock:
+            stored = self._entries().get(_S3_PREFIX + record.source.id)
+        if not stored or not self._matches(stored, record):
+            raise PermissionError("Enter the access key for this S3 source again")
+        return str(stored["access_key_id"]), str(stored["secret_access_key"])
 
     def sftp_credentials(self, record: SourceRecord) -> SftpCredentials | None:
         """Resolve this source's live credentials; configured-key sources need none."""
@@ -759,6 +802,9 @@ class StorageAuth:
         """Stop this source and its pending flows, retaining reusable browser accounts."""
         with self._lock:
             self._sftp_credentials.pop(source_id, None)
+            stored = self._entries()
+            if stored.pop(_S3_PREFIX + source_id, None) is not None:
+                self._vault.write_entries(stored)
             for key, value in list(self._pending.items()):
                 if value.source_id == source_id:
                     self._remove_pending(key)

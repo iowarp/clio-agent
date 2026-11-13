@@ -37,6 +37,7 @@ def register_storage_account_routes(
             ("globus", "Globus", "globus"),
             ("github", "GitHub", "github"),
             ("ndp", "National Data Platform", "ndp"),
+            ("s3", "Amazon S3", "s3"),
         ]:
             browser = identifier in {"google_drive", "globus", "github", "ndp"}
             config = application(identifier) if browser and identifier != "ndp" else None

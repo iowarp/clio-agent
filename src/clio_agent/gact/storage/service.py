@@ -41,6 +41,10 @@ def provider_capabilities(provider: str) -> SourceCapabilities:
         from clio_agent.gact.storage.github_source import GitHubSource
 
         return GitHubSource.capabilities
+    if provider == "s3":
+        from clio_agent.gact.storage.s3_source import S3Folder
+
+        return S3Folder.capabilities
     if provider == "obsidian":
         return SourceCapabilities(
             link_folder=True,
@@ -95,8 +99,8 @@ class StorageService:
         self, record: SourceRecord, access: Literal["read_only", "publish_later", "write_through"]
     ) -> None:
         """Keep approved link access and advertised knowledge write capability in agreement."""
-        if record.source.provider == "ndp" and access != "read_only":
-            raise PermissionError("NDP sources are read-only")
+        if record.source.provider in {"ndp", "s3"} and access != "read_only":
+            raise PermissionError("NDP and S3 sources are read-only")
         record.link_access = access
         if record.source.source_kind == "knowledge":
             record.source = record.source.model_copy(
@@ -124,6 +128,10 @@ class StorageService:
     ) -> SourceRecord:
         if body.configuration.target_id and body.provider != "sftp":
             raise ValueError("An SSH target can only be used by an SSH source")
+        if body.s3_credentials is not None and (
+            body.provider != "s3" or body.configuration.s3_access != "keys"
+        ):
+            raise ValueError("Access keys apply only to an S3 source that uses keys")
         if body.sftp_credentials is not None and (
             body.provider != "sftp" or body.configuration.ssh_origin != "clio"
         ):
@@ -164,6 +172,14 @@ class StorageService:
             root = str(vault)
         if body.provider == "google_drive":
             root = drive_folder_id(root)
+        if body.provider == "s3":
+            from clio_agent.gact.storage.s3_source import S3Location
+
+            if body.configuration.s3_access == "keys" and body.s3_credentials is None:
+                raise ValueError("Enter the access key ID and secret access key")
+            if body.mode != "read_only":
+                raise ValueError("S3 sources are read-only")
+            root = S3Location.parse(root).root
         if body.provider == "github":
             from clio_agent.gact.storage.linked import github_location
 
@@ -228,6 +244,10 @@ class StorageService:
             principal=self.principal,
             workspace_root=str(workspace_root.resolve()) if workspace_root else "",
         )
+        if body.provider == "s3":
+            if body.s3_credentials is not None:
+                self.auth.save_s3_credentials(record, body.s3_credentials)
+            self._check_s3(record)
         if body.provider == "sftp" and body.configuration.target_id:
             if self.target_source is None:
                 raise ValueError("SSH target connections are unavailable on this CLIO")
@@ -386,6 +406,13 @@ class StorageService:
             if selected.dataset.endpoint.authenticated:
                 self.auth.token(record)
             adapter = NDPSource(selected.dataset, lambda: self.auth.token(record))
+        elif source.provider == "s3":
+            from clio_agent.gact.storage.s3_source import S3Folder, S3Location, s3_client
+
+            adapter = S3Folder(
+                s3_client(record.configuration, self.auth.s3_keys(record)),
+                S3Location.parse(source.root),
+            )
         elif source.provider == "globus":
             adapter = GlobusSource(record, self.auth.token(record))
         elif source.provider == "github":
@@ -529,6 +556,20 @@ class StorageService:
                     await asyncio.to_thread(
                         self.store.update_operation, operation.id, cancel_requested=True
                     )
+
+    def _check_s3(self, record: SourceRecord) -> None:
+        """Ask the bucket for one key under the prefix, so a wrong name or key fails now."""
+        from clio_agent.gact.storage.s3_source import S3Location, s3_client
+
+        location = S3Location.parse(record.source.root)
+        client = s3_client(record.configuration, self.auth.s3_keys(record))
+        try:
+            client.list_objects_v2(Bucket=location.bucket, Prefix=location.prefix + "/", MaxKeys=1)
+        except Exception as exc:
+            from clio_agent.gact.storage.s3_source import _denied
+
+            self.auth.disconnect(record.source.id)
+            raise ValueError(f"The bucket could not be listed: {_denied(exc)}") from None
 
     def download_available(self, record: SourceRecord) -> bool:
         """Offer copies only when the selected connector's transfer backend is ready."""

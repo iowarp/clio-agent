@@ -386,7 +386,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
                 rows = service.store.get("manifest", record.manifest_id, Manifest).entries
             elif record.linked_manifest_id:
                 rows = service.store.get("manifest", record.linked_manifest_id, Manifest).entries
-            elif record.source.provider in {"github", "google_drive"} and record.connected:
+            elif record.source.provider in {"github", "google_drive", "s3"} and record.connected:
                 from clio_agent.gact.storage.linked import linked_adapter
 
                 with linked_adapter(service, record) as adapter:
