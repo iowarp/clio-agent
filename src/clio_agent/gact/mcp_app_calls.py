@@ -73,6 +73,9 @@ class _ReplayCapture:
     reopened_from: str
     display_mode: str
     record: MCPAppRecord | None = None
+    #: ``False`` for a call whose definition lives elsewhere (an A2UI surface's
+    #: ``clio.mcp-app.v1`` component, MA20): it is not saved on the session.
+    save: bool = True
 
 
 _REPLAY: ContextVar[_ReplayCapture | None] = ContextVar("mcp_app_replay", default=None)
@@ -168,6 +171,9 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
     """
 
     capture = _REPLAY.get()
+    if capture is not None and not capture.save:
+        capture.record = record
+        return True
     bare = _bare_tool(record)
     arguments, unsaved = _saved_arguments(record.tool_input)
     entry: dict[str, Any] = {
@@ -283,29 +289,51 @@ async def reopen_saved_call(app: FastAPI, sid: str, app_instance_id: str) -> dic
     ``{error: {reason, detail}, saved_call}``.
     """
 
+    entry = saved_call(app, sid, app_instance_id)
+    if (
+        entry is None
+        or entry.get("unsaved_reason")
+        or not isinstance(entry.get("arguments"), Mapping)
+    ):
+        reason = "no_saved_call" if entry is None else "arguments_not_saved"
+        _audit("mcp_app_reopen_failed", sid, app_instance_id, reason, entry)
+        return {"error": {"reason": reason, "detail": REOPEN_REASONS[reason]}, "saved_call": entry}
+    capture = _ReplayCapture(
+        reopened_from=app_instance_id,
+        display_mode=str(entry.get("display_mode") or "inline"),
+    )
+    outcome = await replay_call(app, sid, entry, capture)
+    if "part" in outcome:
+        outcome["saved_call"] = saved_call(app, sid, outcome["part"]["app_instance_id"])
+    return outcome
+
+
+async def replay_call(
+    app: FastAPI, sid: str, entry: Mapping[str, Any], capture: _ReplayCapture
+) -> dict[str, Any]:
+    """Make the call ``entry`` names and mount the view it opens (MA19, MA20).
+
+    Returns ``{part, saved_call: entry}`` with a fresh ``mcp_app`` part, or
+    ``{error: {reason, detail}, saved_call: entry}``. ``capture.reopened_from``
+    names what is being reopened, for the audit; ``capture.save`` says whether
+    the new view's call is saved on the session.
+    """
+
     from clio_agent.gact.mcp_apps import (  # noqa: PLC0415 - cycle
         _run_bound,
         call_tool_result_to_wire,
     )
 
-    entry = saved_call(app, sid, app_instance_id)
+    app_instance_id = capture.reopened_from
 
     def failed(reason: str, detail: str = "") -> dict[str, Any]:
         _audit("mcp_app_reopen_failed", sid, app_instance_id, reason, entry)
         return {
             "error": {"reason": reason, "detail": detail or REOPEN_REASONS[reason]},
-            "saved_call": entry,
+            "saved_call": dict(entry),
         }
 
-    if entry is None:
-        return failed("no_saved_call")
-    if entry.get("unsaved_reason") or not isinstance(entry.get("arguments"), Mapping):
-        return failed("arguments_not_saved")
-    capture = _ReplayCapture(
-        reopened_from=app_instance_id,
-        display_mode=str(entry.get("display_mode") or "inline"),
-    )
-    arguments = dict(entry["arguments"])
+    arguments = dict(entry.get("arguments") or {})
 
     def replay(executor: Any) -> Any:
         full_name = _resolve_opening_tool(executor, entry)
@@ -336,10 +364,7 @@ async def reopen_saved_call(app: FastAPI, sid: str, app_instance_id: str) -> dic
         server=entry.get("server", ""),
         tool=entry.get("tool", ""),
     )
-    return {
-        "part": _part(capture.record, capture.display_mode),
-        "saved_call": saved_call(app, sid, capture.record.app_instance_id),
-    }
+    return {"part": _part(capture.record, capture.display_mode), "saved_call": dict(entry)}
 
 
 def _session_not_found() -> HTTPException:
@@ -374,6 +399,7 @@ __all__ = [
     "record_opening_call",
     "register_mcp_app_reopen_routes",
     "reopen_saved_call",
+    "replay_call",
     "saved_call",
     "saved_calls",
     "set_saved_display_mode",

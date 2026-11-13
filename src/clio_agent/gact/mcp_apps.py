@@ -644,6 +644,9 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
     from clio_agent.gact.mcp_app_calls import register_mcp_app_reopen_routes  # noqa: PLC0415
 
     register_mcp_app_reopen_routes(app)
+    from clio_agent.gact.mcp_app_open import register_mcp_app_open_route  # noqa: PLC0415
+
+    register_mcp_app_open_route(app, deps)
 
 
 __all__ = [
