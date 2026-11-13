@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -125,14 +126,24 @@ def _run_installer(
     if overlay is None:
         return _run_install_command(_install_command(executable, requirements))
     overlay.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="clio-agent-overlay-") as tmp:
-        constraints = _overlay_constraints(overlay, requirements, Path(tmp))
-        command = _install_command(
-            executable, requirements, target=overlay, constraints=constraints
-        )
-        result = _run_install_command(command)
+    staging = package_overlay.staging_dir(overlay)
+    try:
+        with tempfile.TemporaryDirectory(prefix="clio-agent-overlay-") as tmp:
+            constraints = _overlay_constraints(overlay, requirements, Path(tmp))
+            command = _install_command(
+                executable, requirements, target=staging, constraints=constraints
+            )
+            result = _run_install_command(command)
+        if result.returncode == 0:
+            try:
+                package_overlay.publish(staging, overlay)
+            except OSError as exc:
+                return subprocess.CompletedProcess(
+                    command, 1, result.stdout, f"could not publish {display_name}: {exc}"
+                )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     if result.returncode == 0:
-        package_overlay.prune_duplicates(overlay)
         package_overlay.prune_stale(overlay)
         package_overlay.prepend(overlay)
     return result
