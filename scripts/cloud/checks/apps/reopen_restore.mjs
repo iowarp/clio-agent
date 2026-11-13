@@ -25,10 +25,12 @@ function calls() {
   return readFileSync(callLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-async function allowOnce(page, timeout = 90000) {
+/** Answer the replay's permission ask; a session or workspace grant may already allow it. */
+async function allowOnce(page, timeout = 20000) {
   const button = page.getByRole("button", { name: /Allow once/ });
-  await button.waitFor({ timeout });
-  await button.click();
+  const asked = await button.first().waitFor({ timeout }).then(() => true, () => false);
+  if (asked) await button.first().click();
+  log("permission asked", asked);
 }
 
 /** The board view inside the frame at `placement` (inline or tab). */
@@ -59,7 +61,37 @@ async function waitHttp(url, timeout = 600000) {
   throw new Error(`${url} did not answer`);
 }
 
+/** REOPEN_SEND: ask for the boards first, answering each permission ask, until the turn ends. */
+async function sendAnswering(page, text, timeout = 600000) {
+  const composer = page.locator('textarea, [contenteditable="true"]').first();
+  await composer.click();
+  await page.keyboard.type(text);
+  await page.keyboard.press("Enter");
+  await page.waitForURL(/\/sessions\//, { timeout: 60000 });
+  const sid = sessionIdFrom(page);
+  const deadline = Date.now() + timeout;
+  await page.waitForTimeout(5000);
+  while (Date.now() < deadline) {
+    const allow = page.getByRole("button", { name: /Allow once/ });
+    if (await allow.count()) await allow.first().click().catch(() => undefined);
+    const state = await fetch(`${agentUrl()}/v1/sessions/${sid}`).then((r) => r.json());
+    if (state.status === "idle") break;
+    await page.waitForTimeout(2000);
+  }
+  await page.waitForTimeout(3000);
+}
+
 export default async function (page, shot) {
+  if (process.env.REOPEN_SEND) await sendAnswering(page, process.env.REOPEN_SEND);
+  if (process.env.REOPEN_SESSION) {
+    const ws = process.env.REOPEN_WORKSPACE || "ws_default";
+    await page.goto(new URL(`/workspaces/${ws}/sessions/${process.env.REOPEN_SESSION}`, page.url()).toString());
+    await page.waitForTimeout(6000);
+  }
+  // The older board's card sits in the turn's collapsed activity group.
+  for (const group of await page.getByRole("button", { name: /Called \d+ tools|used tools/i }).all())
+    await group.click().catch(() => undefined);
+  await page.waitForTimeout(1000);
   const sid = sessionIdFrom(page);
   const sessionUrl = page.url();
   log("session", sid);
@@ -71,24 +103,31 @@ export default async function (page, shot) {
   await lines.first().scrollIntoViewIfNeeded();
   await shot("older-card-closed");
 
-  // AQ25, part 1: reopen the older card; its saved mode is inline, so it mounts in the card.
+  // AQ25, part 1: reopen the older card. It opens where the view last was: in the card
+  // (saved inline) or in a tab (saved fullscreen). From the card, move it to a tab.
+  const start = calls().length;
   await lines.first().getByRole("button", { name: "Reopen" }).click();
   await allowOnce(page);
-  const inline = await boardText(page, "inline");
-  log("reopened inline", inline);
-  log("calls after inline reopen", calls().at(-1));
-  await page.locator('[data-mcp-app-placement="inline"]').first().scrollIntoViewIfNeeded();
-  await shot("reopened-inline");
+  const placed = page.locator('[data-mcp-app-placement="inline"], [data-mcp-app-tab]').first();
+  await placed.waitFor({ timeout: 90000 });
+  const where = (await page.locator("[data-mcp-app-tab]").count()) ? "tab" : "inline";
+  const first_view = await boardText(page, where);
+  log("reopened", { where, view: first_view, calls: calls().slice(start) });
+  check(calls().length === start + 1, "the saved call ran once");
+  await page.locator(where === "tab" ? "[data-mcp-app-tab]" : '[data-mcp-app-placement="inline"]')
+    .first().scrollIntoViewIfNeeded();
+  await shot(`reopened-${where}`);
+  if (where === "inline") {
+    await page.locator('[data-mcp-app-placement="inline"]').first()
+      .getByRole("button", { name: "Open in tab" }).click();
+    await page.locator("[data-mcp-app-tab]").first().waitFor({ timeout: 30000 });
+    await boardText(page, "tab");
+    await shot("in-tab");
+  }
 
-  // Move it to a tab, then close the tab: an App that is not the latest closes with its tab.
-  const card = page.locator('[data-mcp-app-placement="inline"]').first();
-  const reopenedId = await card.getAttribute("data-mcp-app").catch(() => null);
-  await card.getByRole("button", { name: "Open in tab" }).click();
-  await page.locator("[data-mcp-app-tab]").first().waitFor({ timeout: 30000 });
-  await boardText(page, "tab");
-  await shot("in-tab");
+  // Close the tab: an App that is not the conversation's latest closes with its tab (MA7).
   const tabId = await page.locator("[data-mcp-app-tab]").first().getAttribute("data-mcp-app-tab");
-  log("tab app", { tabId, reopenedId });
+  log("tab app", tabId);
   const chip = page.locator(`[data-tab-id="mcp-app:${tabId}"]`);
   await chip.hover();
   await chip.locator('[data-slot="frame-tab-close"]').click({ force: true });
@@ -115,11 +154,19 @@ export default async function (page, shot) {
   });
   if (failFile) writeFileSync(failFile, "fail\n");
   log("restart", "stack.sh restart");
+  // Leave the page while CLIO is down, so its polling does not count as failed requests.
+  await page.waitForTimeout(1500); // the workbench saves its tabs on change
+  await page.goto("about:blank");
   execSync("bash scripts/cloud/stack.sh restart", { stdio: "ignore" });
   await waitHttp(`${agentUrl()}/v1/health`);
+  await waitHttp(`${agentUrl()}/v1/workspaces`); // 503 while task services start
   await waitHttp(new URL("/", sessionUrl).toString());
   await page.waitForTimeout(5000);
   await page.goto(sessionUrl);
+  await page.waitForTimeout(6000);
+  // The person opens the workspace canvas; its tabs come back from the browser's storage.
+  const canvas = page.getByRole("button", { name: "Open workspace canvas" });
+  if (await canvas.count()) await canvas.first().click();
   const restored = page.locator('[data-tab-id^="mcp-app:"]').first();
   await restored.waitFor({ timeout: 120000 });
   await page.waitForTimeout(8000);

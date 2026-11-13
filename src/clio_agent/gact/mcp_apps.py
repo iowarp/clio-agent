@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact import context as gact_context
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
@@ -620,8 +621,14 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any) -> Any:
     """Run a blocking executor operation in the exact session context."""
 
     def invoke() -> Any:
-        with _gact_app_context(app), _tool_session_context(sid):
-            return operation(_bound_executor(app, sid))
+        # Outside a turn the call still belongs to the session: its owning assignment
+        # is looked up by the turn session id (gact/external_tasks.py).
+        token = gact_context.set_session_id(sid)
+        try:
+            with _gact_app_context(app), _tool_session_context(sid):
+                return operation(_bound_executor(app, sid))
+        finally:
+            gact_context.reset(token)
 
     return await asyncio.to_thread(invoke)
 

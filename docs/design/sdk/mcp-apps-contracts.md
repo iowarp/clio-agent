@@ -49,8 +49,10 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
 
 ## Saved call and reopening (owner: `reopen`)
 
-- Session state key `mcp_app_calls`, keyed by `app_instance_id`: `{server, tool, arguments, display_mode, resource_uri, label}`. The private result and the HTML are not saved.
-- `POST /v1/sessions/{sid}/mcp-apps/reopen` takes `{app_instance_id}` and replays the call. It returns `{part}` with a fresh `mcp_app` part (new `app_instance_id` and `data_ref`), or `{error: {reason, detail}, saved_call}`.
+- Session state key `mcp_app_calls` (the session's own clio-core record, `Session.metadata`), keyed by `app_instance_id`: `{server, tool, arguments, display_mode, resource_uri, label, saved_at}`, plus `reopened_from` on a call saved by a reopen and `unsaved_reason: "arguments_not_saved"` (with `arguments: null`) when the arguments exceed 64 KiB. `tool` is the bare tool name; the executor name is `<server>_<tool>`. The private result and the HTML are not saved.
+- Every admitted view saves its call (`gact/mcp_app_calls.py::record_opening_call`, called by the MCP App observer). `PUT …/display-mode` also sets `display_mode` on the saved call and on the calls it was reopened from.
+- `POST /v1/sessions/{sid}/mcp-apps/reopen` takes `{app_instance_id}` and replays the call through the gated executor path (the session's permission rules apply). It answers 200 with `{part, saved_call}`: a fresh `mcp_app` part (new `app_instance_id` and `data_ref`, `display_mode` from the saved call, `metadata.stream_source: "reopen"`) and the new view's own saved call. A failed replay answers 200 with `{error: {reason, detail}, saved_call}`; `reason` is one of `no_saved_call`, `arguments_not_saved`, `tool_unavailable`, `tool_has_no_view`, `permission_denied`, `call_failed`, `tool_error`, `view_not_opened`. An unknown session is 404; a missing `app_instance_id` is 422. The replay does not append a card to the transcript: the caller mounts the returned part. A caller that opens an app with no earlier card (the A2UI component) first needs a saved call; it reopens any `app_instance_id` that has one.
+- `GET /v1/sessions/{sid}/mcp-apps/{app_id}/live?data_ref=` answers `{live: bool}` (404 only for an unknown session) without touching the record's idle time, so a card can tell a closed view from a live one without a failed descriptor request.
 
 ## A2UI component (owner: `a2ui`)
 
