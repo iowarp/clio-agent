@@ -511,15 +511,13 @@ class ClioAgent(dspy.Module):
                 # workspace's first resolve on every cold server. Only a
                 # zero-I/O cache read happens here; a cold namespace remains
                 # absent until the builder or dispatch path mounts it on demand.
-                from clio_agent.tools import listing_cache  # noqa: PLC0415
+                from clio_agent.connectors.listing import cached_offered  # noqa: PLC0415
 
                 cached_tools: dict[str, Any] = {}
                 for namespace, spec in declared_specs.items():
                     if spec.transport != "stdio" or not spec.command:
                         continue
-                    listed = listing_cache.load_listing(
-                        namespace, spec.command, tuple(spec.args), spec.env
-                    )
+                    listed = cached_offered(namespace, spec)  # a connector's own tools only
                     if listed:
                         cached_tools.update(
                             {

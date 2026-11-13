@@ -114,3 +114,17 @@ def _name(tool: Any) -> str:
     """A tool's name, from an MCP ``Tool`` or a listed row."""
 
     return str(tool.get("name") or "") if isinstance(tool, dict) else str(getattr(tool, "name", ""))
+
+
+def cached_offered(namespace: str, spec: Any) -> list[Any] | None:
+    """A stdio server's cached listing, narrowed to its connector's ``tools`` (if any).
+
+    The fleet preloads cached listings before any server starts; a connector's entry
+    may offer only some of its server's tools, and the preload must not offer more.
+    """
+
+    from clio_agent.tools import listing_cache  # noqa: PLC0415
+
+    listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
+    connector = str(getattr(spec, "connector", "") or "")
+    return offered(connector, list(listed)) if listed and connector else listed

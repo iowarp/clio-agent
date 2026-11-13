@@ -167,3 +167,66 @@ def test_the_tool_row_shows_the_value_or_the_refusal() -> None:
     )
     assert refused["status"] == "failed"
     assert refused["blocks"][0]["detail"] == "connector_secret_not_agent_settable"
+
+
+def test_a_refused_sign_in_waits_for_the_card_then_runs_again(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextvars
+
+    from clio_agent.tools.mcp_sign_in import MCPSignInNeeded
+
+    app = _app()
+    spec = SimpleNamespace(connector="fixture-signin")
+    seen: list[str] = []
+
+    def answered(_app: Any, sid: str, connector: str, tool: str) -> Any:
+        seen.append(connector)
+        return None
+
+    monkeypatch.setattr(connector_setup, "await_setup", answered)
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.globals._resolve_tool_session", lambda _app: ("sess_a", None)
+    )
+    failed = RuntimeError("Client failed to connect")
+    failed.__cause__ = MCPSignInNeeded("fixture-signin")
+    context = contextvars.copy_context()
+    assert asyncio.run(connector_setup.retry_after_setup(app, context, spec, "t", failed))
+    assert seen == ["fixture-signin"]
+    assert not asyncio.run(
+        connector_setup.retry_after_setup(app, context, spec, "t", RuntimeError("other"))
+    )
+    plain = SimpleNamespace(connector="")
+    assert not asyncio.run(connector_setup.retry_after_setup(app, context, plain, "t", failed))
+
+    monkeypatch.setattr(
+        connector_setup,
+        "await_setup",
+        lambda *_: SimpleNamespace(deny_message="connector_declined: x"),
+    )
+    with pytest.raises(PermissionError, match="connector_declined"):
+        asyncio.run(connector_setup.retry_after_setup(app, context, spec, "t", failed))
+
+
+def test_the_stdio_preload_offers_only_the_entrys_tools(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mcp.types import Tool
+
+    from clio_agent.connectors import listing
+    from clio_agent.tools import listing_cache
+
+    tools = [Tool(name=n, inputSchema={"type": "object"}) for n in ("fixture_ping", "other")]
+    monkeypatch.setattr(listing_cache, "load_listing", lambda *_a, **_k: tools)
+    entry = entries.load_catalog().entries["fixture-plain"]
+    monkeypatch.setattr(
+        state,
+        "all_entries",
+        lambda: {
+            "fixture-plain": entry.__class__(**{**entry.__dict__, "tools": ("fixture_ping",)})
+        },
+    )
+    spec = SimpleNamespace(command="py", args=(), env={}, connector="fixture-plain")
+    assert [t.name for t in listing.cached_offered("fixture-plain", spec)] == ["fixture_ping"]
+    unbound = SimpleNamespace(command="py", args=(), env={}, connector="")
+    assert len(listing.cached_offered("fixture-plain", unbound)) == 2
