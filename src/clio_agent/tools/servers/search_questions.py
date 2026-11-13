@@ -42,9 +42,9 @@ def input_required(decision: broker.Decision) -> mcp_types.InputRequiredResult:
         params=mcp_types.ElicitRequestFormParams(message=decision.message, requested_schema=schema)
     )
     return mcp_types.InputRequiredResult(
-        inputRequests={_REQUEST: request},
-        requestState=json.dumps({"topic": decision.topic}),
-        resultType="input_required",
+        input_requests={_REQUEST: request},
+        request_state=json.dumps({"topic": decision.topic}),
+        result_type="input_required",
     )
 
 

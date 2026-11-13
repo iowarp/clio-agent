@@ -152,7 +152,7 @@ def _web_fetch(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str,
 def _citation(work: Mapping[str, Any]) -> str:
     authors = work.get("authors") or []
     lead = f"{authors[0]}{' et al.' if len(authors) > 1 else ''}" if authors else ""
-    ids = work.get("ids") if isinstance(work.get("ids"), Mapping) else {}
+    ids = ids_value if isinstance(ids_value := work.get("ids"), Mapping) else {}
     ident = (
         f"doi:{ids['doi']}"
         if ids.get("doi")
@@ -170,7 +170,7 @@ def _work_blocks(prefix: str, works: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(work, Mapping):
             continue
         uri = str(work.get("readable_url") or "")
-        ids = work.get("ids") if isinstance(work.get("ids"), Mapping) else {}
+        ids = ids_value if isinstance(ids_value := work.get("ids"), Mapping) else {}
         label = str(work.get("title") or ids.get("doi") or ids.get("openalex") or "Untitled work")
         if uri:
             blocks.append(
@@ -216,7 +216,7 @@ def _literature_lookup(args: Mapping[str, Any], result: Any, snapshot: Any) -> d
     if structured_tool_result_error(result) is not None:
         return standard_mcp_presentation(result)
     row = _structured(result)
-    work = row.get("work") if isinstance(row.get("work"), Mapping) else {}
+    work = work_value if isinstance(work_value := row.get("work"), Mapping) else {}
     blocks = _work_blocks("work", [work])
     if blocks:
         blocks[0]["id"] = "subject"

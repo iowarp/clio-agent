@@ -419,7 +419,7 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
     from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
 
     builtins: list[tuple[str, Any]] = list(builtin_servers())
-    builtin_servers = {id(server) for _namespace, server in builtins}
+    builtin_ids = {id(server) for _namespace, server in builtins}
     declared = list(namespace_proxies(gw).items())
     for namespace, server in (*builtins, *declared):
         spec = specs.get(namespace)
@@ -432,7 +432,7 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
         # The wait's descendant snapshots scan the whole process table, and a server's
         # concurrent children (other routes' probes, a turn's tools) would read as
         # this listing's chain for up to its 10 s timeout.
-        spawns = not (spec is None and id(server) in builtin_servers)
+        spawns = not (spec is None and id(server) in builtin_ids)
         if live:
             before = _descendant_pids() if spawns else frozenset()
             try:

@@ -55,10 +55,8 @@ _OPENALEX_KEYS = "https://api.openalex.org/api-keys"
 
 
 def _has_key(source: str) -> bool:
-    try:
-        return bool(ProviderApiKeyStore().load(key_ref(source)))
-    except Exception:  # noqa: BLE001 - an unreadable store shows as "no key"
-        return False
+    # load() reads an unreadable or mismatched store as "no key"; it does not raise.
+    return bool(ProviderApiKeyStore().load(key_ref(source)))
 
 
 def _row(
@@ -137,10 +135,12 @@ def _source(name: str) -> str:
 
 def _apply_patch(body: dict[str, Any]) -> SearchSettings:
     def change(section: dict[str, Any]) -> None:
-        web = section.get("web") if isinstance(section.get("web"), dict) else {}
+        web = web_value if isinstance(web_value := section.get("web"), dict) else {}
         section["web"] = web
         literature = (
-            section.get("literature") if isinstance(section.get("literature"), dict) else {}
+            literature_value
+            if isinstance(literature_value := section.get("literature"), dict)
+            else {}
         )
         section["literature"] = literature
         if "enabled" in body:
