@@ -599,7 +599,12 @@ def _prepare_tool_servers(
     if marketplace.result().get("status") != "ready":
         return {"status": "skipped", "reason": "tool_servers_marketplace_unavailable"}
     started = time.monotonic()
-    waited = _wait_for_installer_kit()
+    from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher  # noqa: PLC0415
+
+    # A bundled runtime launches its own clio-kit with its own uv, as the server does,
+    # so only an install without one waits for the installer's launcher.
+    bundled = bundled_module_launcher("clio-kit", []) is not None
+    waited = None if bundled else _wait_for_installer_kit()
     if waited is not None:
         return {**waited, "seconds": round(time.monotonic() - started, 1)}
     from clio_agent.tools import mcp_prepare  # noqa: PLC0415
@@ -628,6 +633,7 @@ def _prepare_tool_servers(
         emit("The agents' data tools are ready.")
     return {
         "status": "failed" if failed else "ready",
+        "kit": "bundled" if bundled else "installer",
         "kit_wait_seconds": kit_seconds,
         "seconds": round(time.monotonic() - started, 1),
         "servers": results,
