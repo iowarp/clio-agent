@@ -54,6 +54,7 @@ from clio_agent.client import (
     ClioSDKError,
     Health,
 )
+from clio_agent.runtime.installation_tools import adopt_installation_tools
 from clio_agent.ui.cli_commands import handle_local_command
 from clio_agent.ui.doctor import run_doctor, run_doctor_gc
 
@@ -876,20 +877,15 @@ def run_query(
 def main() -> None:
     """Console-script entry point (``clio-agent``): parse argv and dispatch.
 
-    Backs the ``clio-agent`` console script so the *installed* binary honors
-    ``doctor`` / ``--query`` / ``--tune`` and the flags — not only the
-    interactive REPL. ``doctor`` and ``--tune`` run in-process (no server
-    needed); ``--query`` and the default interactive mode connect-or-spawn a
-    server. (``run_cli`` alone never parses argv, so pointing the console script
-    at it made ``clio-agent doctor`` boot a server instead of diagnosing one.)
+    Backs the ``clio-agent`` console script, so the *installed* binary honors ``doctor``,
+    ``--query``, ``--tune`` and the flags, not only the REPL: ``doctor`` and ``--tune`` run
+    in-process, ``--query`` and the interactive mode connect-or-spawn a server. (``run_cli``
+    alone never parses argv: as the console script, ``clio-agent doctor`` booted a server.)
     """
     import argparse
     import sys
 
-    from clio_agent.runtime.installation_tools import adopt_installation_tools
-
-    # Local verbs (doctor, mcp, plugin) resolve and spawn MCP launchers in-process.
-    adopt_installation_tools()
+    adopt_installation_tools()  # local verbs (doctor, mcp, plugin) spawn MCP launchers in-process
     if handle_local_command(sys.argv[1:]):
         return
 
