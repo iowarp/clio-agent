@@ -86,6 +86,24 @@ def needs_setup(error: BaseException) -> bool:
     return False
 
 
+def held_for_setup(connector_id: str, error: BaseException) -> bool:
+    """Whether a failed listing of ``connector_id`` is the connector waiting on the person.
+
+    Either ``error`` wraps the typed sign-in error, or CLIO's own record of the
+    connector says a required value, secret or sign-in is missing. The second matters
+    when the listing went through a proxy, which hands the error back as a protocol
+    error and so drops its type (AQ6).
+    """
+
+    if needs_setup(error):
+        return True
+    from clio_agent.connectors import state  # noqa: PLC0415
+    from clio_agent.gact.connectors_service import missing  # noqa: PLC0415
+
+    entry = state.all_entries().get(connector_id)
+    return entry is not None and bool(missing(entry, state.choice(connector_id)))
+
+
 def offered(connector_id: str, tools: list[Any]) -> list[Any]:
     """The listed tools (MCP ``Tool`` objects or rows) the connector's entry offers.
 
