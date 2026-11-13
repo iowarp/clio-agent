@@ -417,6 +417,20 @@ The plan gave the agent a view's context (MA8) and its tools (MA13), but not its
 
 **CM4. Out of scope, still.** Comments stay on what the screen shows. A comment is not bound to a camera pose or a time step beyond the report it carries, and the view is not driven back to that state.
 
+## Addendum: connector discovery
+
+A request can need a connector the person has but has not turned on ("show me this VTK file in 3D" while ParaView is off). The agent can discover it and offer it; the person turns it on through the same in-conversation card (CN5, rule 2), and the request continues in the same turn. The agent never turns a connector on by itself. Decisions use the prefix `CD-D`, scenarios `CD-Q`; the rows are in the [ledger](mcp-apps-ledger.md), "Connector discovery".
+
+**CD-D1. What the agent knows.** The session facts name the connectors that do not reach this conversation's agent (off, or on for other agents only), one line each with the entry's name, id and description, and say that `offer_connector` offers one and the person chooses. It is grounding, not a rule about when to offer; nothing matches the request's words.
+
+**CD-D2. The offer.** A native tool, `offer_connector(connector, reason)`, deferred in the core plugin, raises the connector card with `intent: "enable"`: the logo, the description, the agent's reason, the needs (optional ones behind one disclosure; a sign-in is asked by the first call, CN5), and "Available in every conversation". The call waits with no timeout (rule 6); stopping the turn ends it.
+
+**CD-D3. Where it applies.** CN10 scopes are every conversation or chosen agents, so the card offers every conversation or this conversation's agent only.
+
+**CD-D4. Turn on.** CLIO saves the values, enables the connector (CN7, CN9), mounts it in the running turn's tool fleet and has the turn's per-step tool refresh take it, so its tools are callable from the agent's next step. A following plugin's skills arrive with the plugin-change note at the next message.
+
+**CD-D5. Not now.** The result is the typed refusal `connector_offer_declined` naming the connector. Nothing changes and nothing is retried; the offer was answered, so the call is not a failure.
+
 ## Defaults for the open questions
 
 Take these and record each in the ledger.

@@ -189,6 +189,15 @@ class PluginService:
                         result["marketplace"],
                         result.get("message", ""),
                     )
+                else:
+                    # An upgrade whose reader reads its snapshot differently (``follows``).
+                    logger.info(
+                        "installed marketplace re-read reason=reader_changed marketplace=%s "
+                        "plugins=%d diagnostics=%d",
+                        result["marketplace"],
+                        len(result.get("plugins") or []),
+                        len(result.get("diagnostics") or []),
+                    )
             if not self._install_default:
                 self._ready = True
                 return

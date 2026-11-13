@@ -695,6 +695,15 @@ class AppToolRefresher:
         """The build already applied ``revision``."""
         self._revision = revision
 
+    @property
+    def inner(self) -> Any:
+        """The namespace refresher this wraps (``None`` when the agent took none whole)."""
+        return self._inner
+
+    @inner.setter
+    def inner(self, refresher: Any) -> None:
+        self._inner = refresher
+
     def __call__(self, tools: MutableMapping[str, Any]) -> bool:
         changed = bool(self._inner(tools)) if self._inner is not None else False
         app, sid = _session()

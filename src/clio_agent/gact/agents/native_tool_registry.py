@@ -102,6 +102,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool  # noqa: PLC0415
     from clio_agent.gact.browser.tools import BUILDERS as BROWSER_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import build_run_code_tool  # noqa: PLC0415
+    from clio_agent.gact.connector_offer import build_offer_connector_tool  # noqa: PLC0415
     from clio_agent.gact.connector_tool import build_set_connector_value_tool  # noqa: PLC0415
     from clio_agent.gact.document_tools import (  # noqa: PLC0415
         build_prepare_document_runtime_tool,
@@ -230,6 +231,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "run_workflow": build_run_workflow_tool,
         "make_plugin": build_make_plugin_tool,
         "set_connector_value": build_set_connector_value_tool,
+        "offer_connector": build_offer_connector_tool,
         "look_at_view": build_look_at_view_tool,
     }
 
@@ -287,6 +289,7 @@ _SINGLE_NAMES = frozenset(
         "run_workflow",
         "make_plugin",
         "set_connector_value",
+        "offer_connector",
         "look_at_view",
         *_A2UI_PRODUCERS,
         *SCIENCE_LOG_TOOLS,

@@ -167,10 +167,16 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
     )
     tool_input = tool_call.get("input")
     tool_input = tool_input if isinstance(tool_input, Mapping) else {}
-    execution = {
-        "computer": platform.node(),
-        "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
-    }
+    # An external MCP tool runs in its own server, often on another machine (a connector
+    # reaching a cluster node), so the workspace's host and folder would name the wrong place.
+    execution = (
+        {}
+        if row.get("kind") == "external_mcp"
+        else {
+            "computer": platform.node(),
+            "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
+        }
+    )
     status: Literal["pending", "answered", "denied", "cancelled", "expired"] = "pending"
     if row.get("status") == "timeout":
         status = "expired"
@@ -209,7 +215,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         payload={
             "permission_id": str(row.get("id") or ""),
             "tool_call": dict(tool_call),
-            "execution": execution,
+            **({"execution": execution} if execution else {}),
             **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
             **({"script": row["script"]} if isinstance(row.get("script"), Mapping) else {}),
         },
@@ -641,7 +647,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
         if interaction_id.startswith(connector_setup.PREFIX):
             try:
                 answered = await connector_setup.respond(
-                    app, scope, interaction_id, request.action, request.values
+                    app, scope, interaction_id, request.action, request.values, request.metadata
                 )
             except connector_setup.SetupResponseError as exc:
                 raise _error(exc.status, exc.code, str(exc), **exc.details) from None

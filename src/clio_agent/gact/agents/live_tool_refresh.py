@@ -85,6 +85,19 @@ class LiveToolRefresher:
 
         return copy.copy(self)
 
+    @property
+    def executor(self) -> Any:
+        return self._executor
+
+    def take(self, namespace: str) -> None:
+        """Take ``namespace`` whole from now on (a connector enabled during the turn);
+        the next call applies its tools even if the executor's revision did not move."""
+
+        prefix = f"{namespace}_"
+        if prefix not in self._prefixes:
+            self._prefixes = (*self._prefixes, prefix)
+        self._revision = -1
+
     def __call__(self, tools: MutableMapping[str, Any]) -> bool:
         """Update ``tools`` in place; return whether its names changed."""
 
