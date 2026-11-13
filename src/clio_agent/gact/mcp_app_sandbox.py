@@ -163,9 +163,13 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
         const id = event.data.id;
         const reply = (result) => window.parent.postMessage({jsonrpc: '2.0', id, result}, parentTarget);
         const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+        // The view frame is a flex item: max-width narrows it (width alone does not), and a
+        // view with a minimum height may overflow, so both sides move by one pixel.
         const nudge = async () => {
+          inner.style.maxWidth = 'calc(100% - 1px)';
           inner.style.height = 'calc(100% - 1px)';
           await frame(); await frame();
+          inner.style.maxWidth = '';
           inner.style.height = '';
         };
         let view = null;

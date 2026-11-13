@@ -68,6 +68,7 @@ CONTEXT_CHARS = 4000
 _SKIP_WORDS = {
     "frame_cross_origin": "a frame from another origin",
     "webgl_frame_not_redrawn": "a WebGL canvas that did not redraw when asked",
+    "webgl_canvas_idle": "a blank WebGL canvas that drew nothing while the view redrew",
     "cross_origin_pixels": "pixels from another origin",
     "not_drawable": "an element the browser could not draw",
     "wrapped_text_not_drawn": "text that wraps over several lines",
