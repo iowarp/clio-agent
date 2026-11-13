@@ -265,7 +265,9 @@ from clio_agent.gact.app import build_app
 # {app_id}/app-tool-results/{call_id} (mcp_app_tool_routes.py); the service proxy
 # {app_id}/service/{data_ref} GET and HEAD, and .../{path:path} GET, HEAD, POST, PUT, PATCH,
 # DELETE and OPTIONS (mcp_app_service_proxy.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 467
+# 467 -> 469: looking at a view (gact/mcp_app_look_routes.py, CM1): PUT
+# {app_id}/shown and POST {app_id}/looks/{call_id}.
+EXPECTED_ROUTE_METHOD_PAIRS = 469
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

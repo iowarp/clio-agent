@@ -105,10 +105,12 @@ def forget_app_context(app: Any, sid: str, app_instance_id: str) -> None:
 
 
 def forget_closed_app(app: Any, sid: str, app_instance_id: str) -> None:
-    """A closed app leaves the agent's view: its report and its tools go."""
+    """A closed app leaves the agent's view: its report, its tools and its looks go."""
+    from clio_agent.gact.mcp_app_look import look_table  # noqa: PLC0415
     from clio_agent.gact.mcp_app_tools import app_tool_table  # noqa: PLC0415
 
     app_tool_table(app).drop_app(sid, app_instance_id)
+    look_table(app).drop_app(sid, app_instance_id)
     if app.state.sessions.get(sid) is not None:
         forget_app_context(app, sid, app_instance_id)
 
@@ -131,8 +133,12 @@ def app_context_block(
     tool: str,
     context: Any = None,
     tools: list[str] | None = None,
+    shown: bool = False,
 ) -> str:
-    """The one block a live app adds to model text (``clio.reminder.mcp_app_context``)."""
+    """The one block a live app adds to model text (``clio.reminder.mcp_app_context``).
+
+    ``shown``: a surface holds the view, so ``look_at_view`` can see it (CM1).
+    """
     from clio_agent import injections  # noqa: PLC0415
 
     text = injections.render(
@@ -142,6 +148,7 @@ def app_context_block(
             "tool": tool or "a tool",
             "context": json.dumps(context, sort_keys=True, default=str) if context else "",
             "tools": ", ".join(tools or ()),
+            "shown": "yes" if shown else "",
         },
         app=app,
         session_id=sid,
@@ -150,7 +157,9 @@ def app_context_block(
 
 
 def app_context_injection(app: Any, sid: str) -> str:
-    """The turn's block for every live app that reported context or offers tools."""
+    """The turn's block for every live app on screen, or that reported context or offers
+    tools."""
+    from clio_agent.gact.mcp_app_look import look_table  # noqa: PLC0415
     from clio_agent.gact.mcp_app_tools import offered_names_by_app  # noqa: PLC0415
     from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415
 
@@ -163,7 +172,8 @@ def app_context_injection(app: Any, sid: str) -> str:
     for record in sorted(records, key=lambda r: r.created_at):
         entry = rows.get(record.app_instance_id) or {}
         names = tools.get(record.app_instance_id, [])
-        if not entry.get("context") and not names:
+        shown = look_table(app).shown(sid, record.app_instance_id)
+        if not entry.get("context") and not names and not shown:
             continue
         block = app_context_block(
             app,
@@ -172,6 +182,7 @@ def app_context_injection(app: Any, sid: str) -> str:
             tool=record.tool_name,
             context=entry.get("context"),
             tools=names,
+            shown=shown,
         )
         if block:
             blocks.append(block)

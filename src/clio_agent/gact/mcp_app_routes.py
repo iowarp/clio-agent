@@ -23,6 +23,7 @@ from clio_agent.gact.mcp_app_context import (
     stored_app_context,
 )
 from clio_agent.gact.mcp_app_downloads import DownloadRefused, save_app_download
+from clio_agent.gact.mcp_app_look_routes import register_app_look_routes
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
     _csp_header,
@@ -196,6 +197,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         return read_resource_result_to_wire(result)
 
     register_app_context_and_tool_routes(app, resolve)
+    register_app_look_routes(app, resolve)
 
     @app.put("/v1/sessions/{sid}/mcp-apps/{app_id}/display-mode")
     async def put_mcp_app_display_mode(

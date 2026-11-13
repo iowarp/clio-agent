@@ -42,11 +42,12 @@ __all__ = [
     "CommentAttachment",
     "CommentAttachmentError",
     "RenderedAttachment",
+    "attachment_images",
     "expand_comment_sessions",
     "register_surface",
 ]
 
-SurfaceKind = Literal["agent-answer", "a2ui-surface", "browser-page"]
+SurfaceKind = Literal["agent-answer", "a2ui-surface", "browser-page", "mcp-app"]
 _MAX_IMAGE_BASE64 = 12 * 1024 * 1024
 
 
@@ -167,13 +168,14 @@ def _surface_header(attachment: CommentAttachment) -> list[str]:
     return lines
 
 
-def _a2ui(attachment: CommentAttachment, folder: Path, images: bool) -> RenderedAttachment:
-    """Regions on an A2UI surface: the browser's overview and crops, and the data under each
-    box as readable lines (rows, features, nodes, visible text)."""
+def attachment_images(
+    attachment: CommentAttachment, folder: Path, labels: Sequence[str]
+) -> tuple[list[tuple[str, bytes]], dict[str, int]]:
+    """The browser-made images of a session, saved in ``folder``: the overview first, then
+    each mark's crop. Returns the (caption, PNG) pictures and each mark's image number."""
 
     pictures: list[tuple[str, bytes]] = []
     overview = [image for image in attachment.images if not image.label]
-    labels = [mark.label for mark in attachment.marks]
     for image in overview[:1]:
         png = _png(image.data)
         (folder / "overview.png").write_bytes(png)
@@ -185,6 +187,16 @@ def _a2ui(attachment: CommentAttachment, folder: Path, images: bool) -> Rendered
             (folder / f"{label}.png").write_bytes(crops[label])
             pictures.append((f"{label} at twice its size", crops[label]))
             numbers[label] = len(pictures)
+    return pictures, numbers
+
+
+def _a2ui(attachment: CommentAttachment, folder: Path, images: bool) -> RenderedAttachment:
+    """Regions on an A2UI surface: the browser's overview and crops, and the data under each
+    box as readable lines (rows, features, nodes, visible text)."""
+
+    overview = [image for image in attachment.images if not image.label]
+    labels = [mark.label for mark in attachment.marks]
+    pictures, numbers = attachment_images(attachment, folder, labels)
     lines = _surface_header(attachment)
     if pictures:
         if images:
@@ -251,6 +263,12 @@ def render_attachment(
         from clio_agent.gact.browser.comments import render_page_comments  # noqa: PLC0415
 
         register_surface("browser-page", render_page_comments)
+    if attachment.kind == "mcp-app" and attachment.kind not in _SURFACES:
+        from clio_agent.gact.documents.app_view_comments import (  # noqa: PLC0415
+            render_app_view_comments,
+        )
+
+        register_surface("mcp-app", render_app_view_comments)
     handler = _SURFACES.get(attachment.kind)
     if handler is None:
         text = (
@@ -265,6 +283,7 @@ _KIND_WORDS = {
     "agent-answer": "your earlier answer",
     "a2ui-surface": "a view",
     "browser-page": "a page",
+    "mcp-app": "an app view",
 }
 
 
