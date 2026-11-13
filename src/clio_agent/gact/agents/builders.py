@@ -666,6 +666,11 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 "_clio_unlisted",
                 unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
             )
+            if agent_def.metadata.get("bare"):
+                # A bare agent's request carries no system prompt and lists no tools at
+                # all, not even ``submit``: a reply without tool calls is the answer.
+                object.__setattr__(self.program, "_clio_bare", True)
+                object.__setattr__(self.program, "_clio_unlisted", frozenset({"submit"}))
             with _build_phase("build.deferred"):
                 deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
             # A spawn-requested BestOfN / Refine strategy wraps the program.
