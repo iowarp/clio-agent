@@ -68,7 +68,9 @@ export default async function (page, shot) {
   } else {
     const { session } = await openConversation(page, "a2ui-channel");
     sessionId = session.id;
-    await send(page, PROMPT);
+    // CHECK_PROMPT_SUFFIX keeps the turn streaming after the surface is made, so the
+    // component's opening call lands while the agent is still writing.
+    await send(page, PROMPT + (process.env.CHECK_PROMPT_SUFFIX ? ` ${process.env.CHECK_PROMPT_SUFFIX}` : ""));
     await waitIdle(page, sessionId, result.log);
   }
   result.session = sessionId;
