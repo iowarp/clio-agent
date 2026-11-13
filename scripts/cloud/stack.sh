@@ -26,7 +26,18 @@ UI_PORT="${UI_PORT:-5173}"
 FIXTURE_PORT="${FIXTURE_PORT:-8790}"
 FIXTURE_TLS_PORT="${FIXTURE_TLS_PORT:-8791}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
-export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-haiku-5-5}"
+export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-sonnet-5-5}"
+# CLIO_CLOUD_ISOLATE=1 gives this stack its own CLIO config, data, state and cache
+# folders under .cloud-run/xdg, so several stacks (one per worktree, on their own
+# ports) can run side by side without sharing sessions or saved connections.
+# HOME is left alone, so the signed-in Claude CLI keeps working.
+if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
+  for role in CONFIG DATA STATE CACHE; do
+    dir="$STATE/xdg/$(echo "$role" | tr '[:upper:]' '[:lower:]')"
+    mkdir -p "$dir"
+    export "XDG_${role}_HOME=$dir"
+  done
+fi
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
 export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"
 
