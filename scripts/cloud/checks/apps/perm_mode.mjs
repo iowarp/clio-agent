@@ -13,6 +13,7 @@
 //            question), host panel open + the view's own tools/call (This session; a
 //            second click asks nothing), set_connector_value (This session), the A2UI
 //            channel's open and set_time (This session)
+//   ask-a2ui the A2UI channel alone (its opening call and set_time: This session)
 //   ask-b    a new session asks again: board open, highlight, set_connector_value
 //            (This workspace each)
 //   ask-c    a third session in the workspace: board open, highlight, set_connector_value
@@ -109,11 +110,19 @@ async function turn(page, shot, sid, name, text, answers = {}, expect = undefine
   await send(page, text);
   await page.waitForTimeout(4000);
   step.settled = await settle(page, shot, sid, step, answers, () => idle(sid));
+  await latest(page);
   await shot(`after-${name}`);
   step.tools = await calls(sid);
   if (expect !== undefined && step.asked.length !== expect) step.unexpected = `asked ${step.asked.length}, expected ${expect}`;
   result.steps.push(step);
   return step;
+}
+
+/** Follow the conversation to its end (a view mounts, and asks, once it is on screen). */
+async function latest(page) {
+  const jump = page.getByRole("button", { name: "Jump to latest" }).first();
+  if (await jump.isVisible().catch(() => false)) await jump.click().catch(() => {});
+  await page.waitForTimeout(1500);
 }
 
 async function calls(sid) {
@@ -175,6 +184,14 @@ async function reopen(page, shot, sid, name, answers, expect) {
 /** The A2UI component's opening call, then set_time from the chart's selection menu. */
 async function a2ui(page, shot, sid, answers) {
   await turn(page, shot, sid, "a2ui-surface", A2UI, answers);
+  const opened = { name: "a2ui-open", text: "the component's opening call", asked: [] };
+  const channel = page.locator("[data-mcp-app-channel]").first();
+  opened.settled = await settle(page, shot, sid, opened, answers, async () => {
+    await latest(page);
+    return channel.isVisible();
+  });
+  await shot("after-a2ui-open");
+  result.steps.push(opened);
   const step = { name: "a2ui-set-time", text: "chart: select time 9", asked: [] };
   const chart = page.locator('[data-slot="a2ui-chart"]').first();
   await chart.scrollIntoViewIfNeeded();
@@ -218,6 +235,8 @@ export default async function (page, shot) {
       await viewCall(page, shot, sid, "view-call-again", {}, 0);
       await turn(page, shot, sid, "connector-value", WHERE(NODE), { "*": session }, 1);
       await turn(page, shot, sid, "connector-value-again", WHERE(`${NODE}b`), {}, 0);
+      await a2ui(page, shot, sid, { "*": session });
+    } else if (RUN === "ask-a2ui") {
       await a2ui(page, shot, sid, { "*": session });
     } else if (RUN === "ask-b") {
       await turn(page, shot, sid, "board", BOARD, { "*": workspace }, 1);
