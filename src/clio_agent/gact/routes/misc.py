@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.events import Event, heartbeat_event
+from clio_agent.gact.mcp_app_tools import republish_pending_calls
 from clio_agent.gact.protocol_v3 import format_sse_v3, project_for_request
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
@@ -521,7 +522,9 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                         app.state.bus.publish(heartbeat_event(sid))
 
                 heartbeat_task = asyncio.create_task(_heartbeat())
-
+                # App-tool calls are live-only: resend the waiting ones once this stream's
+                # queue exists (it is made by the first step of the loop below).
+                asyncio.get_running_loop().call_soon(republish_pending_calls, app, sid)
                 async for event in sub:
                     _frame = _format_event(event, app.state.sessions.get(sid))
                     _sse_wire_tap(sid, _frame, event)

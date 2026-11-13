@@ -50,6 +50,7 @@ __all__ = [
     "loading_view",
     "offered_names_by_app",
     "place_app_tools",
+    "republish_pending_calls",
 ]
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,10 @@ class AppToolTable:
                 if c.session_id == sid and c.app_instance_id == app_id and not c.done.is_set()
             ]
 
+    def pending_for_session(self, sid: str) -> list[PendingCall]:
+        with self._lock:
+            return [c for c in self._calls.values() if c.session_id == sid and not c.done.is_set()]
+
     def settle(
         self,
         sid: str,
@@ -355,6 +360,20 @@ def publish_call(app: Any, call: PendingCall) -> None:
                 transient=True,
             )
         )
+
+
+def republish_pending_calls(app: Any, sid: str) -> int:
+    """Resend every app-tool call still waiting in ``sid`` (an events stream connected).
+
+    The call event is live-only, so one published while the UI's stream was
+    reconnecting is lost; a surface handles a repeated call id once.
+    """
+    waiting = app_tool_table(app).pending_for_session(sid)
+    for call in waiting:
+        publish_call(app, call)
+    if waiting:
+        trace.event("APPS", "mcp_app_tool_calls_republished session=%s count=%d", sid, len(waiting))
+    return len(waiting)
 
 
 # ---- the agent-facing tool -------------------------------------------------------

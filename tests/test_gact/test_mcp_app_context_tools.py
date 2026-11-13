@@ -381,3 +381,33 @@ def test_a_call_after_reopening_waits_for_the_new_view_to_list_its_tools(
         client.put(f"{third_prefix}/app-tools", params=third_cap, json={"tools": [_NOTE]})
         worker.join(30)
         assert answers and "no longer offers set_highlight" in answers[0]
+
+
+async def test_a_call_published_while_no_stream_was_connected_reaches_the_next_stream(
+    tmp_path: Path,
+) -> None:
+    """The call event is live-only: a stream that connects later is sent every waiting call."""
+    import asyncio
+
+    from tests.test_gact.test_sse_resume import _make_app_with_session, _SSEConnection
+
+    app, sid = await asyncio.to_thread(_make_app_with_session, tmp_path)
+    record = _record(app, sid)
+    table = app_tool_table(app)
+    table.set_tools(record, [_HIGHLIGHT])
+    tool = table.offered(sid)["app__board__set_highlight"]
+    call = table.begin(tool, sid, {"reading": "flow"})  # published to nobody: lost
+
+    async with _SSEConnection(app, sid, last_event_id=None) as conn:
+        frames: list[dict[str, Any]] = []
+        for _ in range(10):
+            lines = (await conn.read_raw_frame()).decode("utf-8").splitlines()
+            kind = next(line[7:] for line in lines if line.startswith("event: "))
+            data = json.loads(next(line[6:] for line in lines if line.startswith("data: ")))
+            frames.append({"type": kind, "data": data})
+            if kind == APP_TOOL_CALL_EVENT:
+                break
+    delivered = [f for f in frames if f["type"] == APP_TOOL_CALL_EVENT]
+    assert delivered, [f["type"] for f in frames]
+    assert delivered[0]["data"]["payload"]["call_id"] == call.call_id
+    assert delivered[0]["data"]["payload"]["arguments"] == {"reading": "flow"}
