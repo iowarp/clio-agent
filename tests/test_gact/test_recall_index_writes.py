@@ -274,8 +274,15 @@ def test_digests_are_built_and_found_across_conversations(tmp_path: Path) -> Non
     ws = "ws_default"
     first = app.state.sessions.create(workspace_id=ws, title="first").id
     second = app.state.sessions.create(workspace_id=ws, title="second").id
+    # Hold the rebuilds until each message's count (the session's stamp) is written: a
+    # slow runner that rebuilt between the atoms and the count would stamp the digest
+    # with the old stamp, and it would read as moved.
+    index._delay_s = 3600.0
     _converse(app, first, "m1", "the bathymetry survey of the shelf")
     _converse(app, second, "m2", "a second bathymetry pass, deeper")
+    index._delay_s = 0.01
+    index.schedule(first)
+    index.schedule(second)
     assert index.flush(10.0)
     got = _search(app, "bathymetry", ws)
     assert {hit.session_id for hit in got.hits} == {first, second}
