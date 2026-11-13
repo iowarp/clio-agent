@@ -1,0 +1,11 @@
+# Circuit simulation with ngspice or LTspice: cognitohazard/ltspice-mcp, GPL-3.0-or-later.
+# CLIO starts it as its own process through uvx and never bundles or imports it.
+# The version is pinned to the release qualified here (0.8.0, the 9455f38 merge).
+# The server finds ngspice or LTspice on this machine itself; it has no needs.
+- id: spice
+  name: SPICE circuit simulation
+  description: Simulate circuits with ngspice or LTspice and plot their waveforms
+  server:
+    command: uvx
+    args: [ltspice-mcp==0.8.0]
+  needs: []

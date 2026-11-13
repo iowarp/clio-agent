@@ -124,7 +124,7 @@ class PendingInteraction(BaseModel):
     """Normalized pending human interaction projected from authoritative stores."""
 
     id: str
-    kind: Literal["question", "permission", "a2ui", "mcp_task_input"]
+    kind: Literal["question", "permission", "a2ui", "mcp_task_input", "connector_setup"]
     owner_session_id: str
     attended_session_id: str
     task_id: str = ""
@@ -159,6 +159,8 @@ class RespondInteractionRequest(BaseModel):
     selected_options: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     message: dict[str, Any] = Field(default_factory=dict)
+    #: A connector setup card's values (CN5), secrets included; applied, never stored.
+    values: dict[str, Any] = Field(default_factory=dict, repr=False)
 
 
 __all__ = [
