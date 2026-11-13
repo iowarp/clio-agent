@@ -1,0 +1,209 @@
+---
+title: "Connectors"
+description: Turn on a service such as ParaView or Burette, give it what it needs once, and let the agent use it in any conversation.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import list from '../../../assets/captures/connectors/extensions-connectors-first.png';
+import card from '../../../assets/captures/connectors/setup-card-in-conversation.png';
+import values from '../../../assets/captures/connectors/agent-sets-paraview-values.png';
+
+<Aside type="note" title="Development build">
+Connectors are in the development build. v0.9.6.6 does not have them. See
+[Features and versions](/docs/versions/).
+</Aside>
+
+A connector is a service you turn on for the agent: a molecule viewer, ParaView, a
+circuit simulator. It has a logo, it says what it needs from you, such as an address
+or a sign-in, and you give it those things on one card. Once it is ready, the agent
+can use its tools in your conversations. Many connectors also show their results as
+a live [app](/docs/apps/) in the conversation or in a tab.
+
+## Turn on a connector
+
+<Steps>
+
+1. Open **Settings → Extensions**. Connectors are listed first, each with its logo
+   and its state in words. Choose **Connectors** above the list to see only them.
+
+2. Choose a connector. Its card opens beside the list.
+
+3. Fill in any rows under **Setup**, then choose **Save**. CLIO connects, lists the
+   connector's tools and updates its state.
+
+4. Under **Where it applies**, leave **Available in every conversation** on, or turn
+   it off and choose the agents that should have it. Then choose **Enable**.
+
+</Steps>
+
+<Capture client:visible image={await captureImage(list)}
+  alt="Settings, Extensions: Burette, ParaView and SPICE circuit simulation listed first as connectors, above the plugins, with Burette's card open showing Ready, 4 tools, It needs nothing from you, and Enabled for every conversation"
+  caption="Connectors come first. Burette needs nothing, so it is ready as soon as it is enabled. SPICE has no logo, so it shows its initials."
+/>
+
+A connector's state reads the same everywhere it appears:
+
+| State | Meaning |
+|---|---|
+| **Ready, 4 tools** | It answered and its tools are available. |
+| **Needs** followed by what, such as **Needs a sign-in** | A required row is empty. Optional rows never hold a connector back. |
+| **Can’t be reached** | CLIO started or called it and it did not answer. The card gives the reason, for example that nothing answered at the address. |
+| **Not enabled** | It is turned off. |
+
+To change where it applies, change the switch or the agents and choose **Apply**.
+**Turn off** removes it from your agents. Its values and secrets are kept, so turning
+it on again needs nothing more.
+
+## The setup card
+
+Each row of the card is one thing the connector needs:
+
+- **Address** or **value**: a text field, or a list to pick from. Some rows say
+  **The agent can set this**.
+- **Secret**: a masked field, for a token or a key. After you save it, the field
+  stays empty and says **Saved. Type a new one to replace it**. Leaving it empty
+  keeps the saved secret.
+- **Sign-in**: a **Sign in** button that opens the service's own sign-in page. The
+  row then reads **Signed in** or **Not signed in**.
+
+Rows marked **Required** must be filled before the connector is ready.
+
+When you change a value, CLIO reconnects to the service, or restarts it if it runs on
+your machine, and lists its tools again.
+
+A secret goes to the service only. It is kept in CLIO's credential file in your
+configuration folder, readable only by you, and never appears in the conversation,
+in what the model reads, or in the logs.
+
+## When the agent needs a connector that is not ready
+
+If the agent calls a tool of a connector that still needs something, the call waits
+and a setup card appears in the conversation. It names the tool that is waiting and
+shows only the missing rows.
+
+- Fill them in, or sign in, and choose **Continue**. The same call then runs and
+  returns its result. You do not need to ask again. A card that needs only a sign-in
+  continues by itself once you have signed in.
+- Choose **Decline**, or press Esc, to refuse. The call returns a refusal that names
+  the connector, and the agent tells you it could not use it.
+- Stopping the reply also ends the waiting call.
+
+<Capture client:visible image={await captureImage(card)}
+  alt="A setup card in the conversation titled Set up Fixture Sign-in, saying the agent's call waits until this is set up, with a Sign in button, Not signed in, Continue and Decline"
+  caption="The agent's call waits for the card. This is a test connector with a synthetic account, used to check sign-in."
+/>
+
+The same card appears when a service stops accepting a sign-in it accepted before.
+
+## What the agent can change
+
+Some values are things you might say in passing: "the ParaView I want is on node08".
+A row marked **The agent can set this** can be changed by the agent with its
+`set_connector_value` tool. It can set several values of one connector in one call,
+and the card shows the new values. The call follows your
+[permissions](/docs/permissions/) like any other tool.
+
+The agent can never set a secret or sign in for you. It cannot change a row that is
+not marked, and it cannot turn a connector on or off.
+
+<Capture client:visible image={await captureImage(values)}
+  alt="The person says the ParaView they want is on node08, reached through login, and needs module load paraview first; the agent answers that the connector now points at node08 with jump host login and that command run first, and that it is ready with 13 tools"
+  caption="The agent set three ParaView values in one call. node08 and login are hosts of a test cluster."
+/>
+
+## Plugins that come with a connector
+
+A connector can bring a plugin, such as instructions for working with its tools. The
+card names it under **Brings plugin**. You do not install it yourself: it joins your
+agents when you turn the connector on and leaves when you turn it off. It is not
+offered in the plugin pickers, because it is no use without its connector. In an
+agent's plugin list it reads **From connector** and the connector's name.
+
+Turning a connector on or off during a conversation reaches the agent at once. The
+conversation shows the usual notice that its plugins changed.
+
+## Add a service by URL or command
+
+For a service that has no connector, choose **Add → Add by URL or command** in
+Extensions. Give it a name and either the address of a remote MCP server or a local
+command with its arguments.
+
+CLIO adds it as a connector with a monogram. Its card shows the address, and a
+**Sign in** row when the service asks for one. **Remove** deletes a connector you
+added this way.
+
+Anything under the form's advanced settings, such as request headers, an
+authentication mode or environment variables, makes it a plain MCP connection
+instead. See [Connect tools and services](/docs/mcp-servers/).
+
+## Connectors CLIO includes
+
+### Burette
+
+[Burette](https://github.com/SergeiNikolenko/Burette) shows molecular structures from
+the Protein Data Bank in Mol*, and draws or edits molecules in Ketcher. It is a hosted
+service and needs nothing from you. Ask, for example, "Show PDB 1CRN". CLIO offers its
+PDB-ID and Ketcher tools; its file tools need another host's file attachments and are
+left out.
+
+Burette's viewer draws nothing in a frame 600 pixels wide or narrower, which includes
+a phone and a narrow side panel. Widen or maximize the panel. See
+[Apps](/docs/apps/#known-limits).
+
+### SPICE circuit simulation
+
+Runs [ltspice-mcp](https://github.com/cognitohazard/ltspice-mcp) 0.8.0 on your machine
+through `uvx`, and plots waveforms in the conversation. Install ngspice, or LTspice on
+Windows, first. It does not support macOS. Ask, for example, "Simulate rc_lowpass.cir
+with ngspice and show me V(out)".
+
+### ParaView
+
+Opens scientific data in ParaView and shows it in a live view the agent can drive. It
+needs ParaView 6.0 or later where ParaView runs. All three rows are optional, and the
+agent can set each:
+
+| Row | What to enter |
+|---|---|
+| **Where ParaView runs** | Empty for this machine. Otherwise an SSH host name, including an alias from your `~/.ssh/config`. |
+| **Jump host** | A host to go through, when your SSH configuration does not already give one. |
+| **Command to run first** | A line that puts `pvpython` on the path, for example `module load paraview`. |
+
+On this machine, CLIO looks for `pvpython` after running the first command. If there
+is none, the first scene request says so and tells the agent how to point the
+connector at another machine.
+
+#### ParaView on another machine
+
+Two hops such as `ssh login` then `ssh node08` are one setting: **Where ParaView runs**
+`node08`, **Jump host** `login`. You can also just tell the agent: "Connect to the
+ParaView on node08, through login. It needs `module load paraview` first."
+
+- CLIO uses your own `ssh`, keys, agent and `~/.ssh/config`, over one connection.
+  Nothing listens on the network on either side.
+- The first time on a machine takes a minute or two. CLIO prepares a folder,
+  `~/.clio/paraview/<version>/`, with what the view needs. If that machine cannot
+  reach the Python package index, it builds the folder from the jump host, which
+  shares your home folder on most clusters. Later connections reuse it and take
+  seconds.
+- If a ParaView server (`pvserver`) is already running on that machine on port 11111,
+  the view joins it and shows that session's data.
+- File paths are paths on the machine where ParaView runs.
+- If the connection drops, the scene is kept there and the next request reconnects.
+  With no connection for 30 minutes, ParaView on that machine saves the scene and
+  stops.
+
+<Aside type="caution" title="Key-based SSH only">
+A host that asks for a password or a one-time code on every connection does not work.
+The first request fails at once with a message that interactive sign-in is needed.
+Use an SSH key or agent that the host accepts.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Apps" href="/docs/apps/" description="Use a connector's view in the conversation or in a tab." />
+  <LinkCard title="Write a connector entry" href="/docs/sdk/connectors/" description="Add a connector and a plugin that follows it." />
+</CardGrid>

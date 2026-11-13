@@ -278,3 +278,22 @@ its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`)
 | `papers/wtfp-plan-and-check.png` | `/wtfp:plan-and-check background` as a two-step workflow run. |
 | `papers/wtfp-comment-applied.png` | A comment on the paper and the edit to `introduction.tex`. |
 
+
+## Connectors and apps
+
+Untouched screenshots of real development sessions on the cloud stack (`claude_code`
+provider), 13 November 2026, 1440 x 900, dark mode, copied from the qualification
+gallery. The full record is in `docs/design/sdk/mcp-apps-ledger.d/` (stream named
+below). `node08` and `login` are containers of the ParaView cluster test fixture, and
+`wave.pvd`, `pulse_series.pvd` and `rc_lowpass.cir` are synthetic test data.
+
+| File | What it shows | Source |
+| --- | --- | --- |
+| `connectors/extensions-connectors-first.png` | Extensions with the three shipped connectors first and Burette's card, ready with 4 tools. | `q-grounds` |
+| `connectors/setup-card-in-conversation.png` | The setup card raised by a waiting call, on the sign-in test connector with a synthetic account. | `conn-be`, AQ6 |
+| `connectors/agent-sets-paraview-values.png` | The agent setting three ParaView values in one call from a plain request. | `q-pv`, H6 |
+| `apps/spice-chart-inline.png` | The SPICE waveform app in its card, from plain requests. | `q-grounds`, AQ32 |
+| `apps/paraview-card-and-tab.png` | ParaView reopened after a restart: the card's in-tab row and the view in a tab. | `q-pv`, AQ47 |
+| `apps/paraview-look-at-view.png` | The agent's answer after looking at the ParaView view, from a plain request. | `comments`, CM-Q1 |
+| `apps/paraview-region-comment.png` | A region comment being written on the ParaView view, canvas maximized. | `comments`, CM-Q2 |
+| `apps/paraview-dashboard-time-linked.png` | ParaView and a chart in one dashboard, linked by time. The dashboard came from a request that named the tool. | `q-pv`, AQ48 |

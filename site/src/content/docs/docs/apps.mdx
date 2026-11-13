@@ -1,0 +1,195 @@
+---
+title: "Apps"
+description: Use a connector's live view in the conversation or in a tab, show it to the agent, comment on it, and put it in a dashboard.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import inline from '../../../assets/captures/apps/spice-chart-inline.png';
+import tab from '../../../assets/captures/apps/paraview-card-and-tab.png';
+import look from '../../../assets/captures/apps/paraview-look-at-view.png';
+import comment from '../../../assets/captures/apps/paraview-region-comment.png';
+import linked from '../../../assets/captures/apps/paraview-dashboard-time-linked.png';
+
+<Aside type="note" title="Development build">
+Apps in tabs, comments on apps and apps in dashboards are in the development build.
+v0.9.6.6 does not have them. See [Features and versions](/docs/versions/).
+</Aside>
+
+Some tools answer with a live view instead of text: a waveform you can zoom, a
+molecule you can turn, a ParaView scene you can rotate. CLIO calls these apps. An app
+comes from a [connector](/docs/connectors/) or another MCP server, and it follows
+the open MCP Apps standard, so the same app works in other hosts too.
+
+The agent opens an app by calling one of its tools. You use the view directly, and
+the agent sees what the view reports and can act on it.
+
+<Capture client:visible image={await captureImage(inline)}
+  alt="A conversation where the SPICE connector plotted v(out) and v(in) of an RC low-pass circuit as an interactive chart inside the conversation"
+  caption="An app in its card. The SPICE connector's waveform chart, drawn in the conversation from a plain request."
+/>
+
+## In the conversation or in a tab
+
+An app first appears in a card in the conversation. To give it more room:
+
+- Choose **Open in tab** on the card. The view moves to a tab in the side panel, and
+  the card says **Open in a tab** with **Show tab**.
+- Choose **Return to conversation** in the tab, or close the tab, to bring the view
+  back to its card.
+- Some apps ask for a tab themselves when they open. ParaView does.
+
+The view is in one place at a time. Moving it reloads it, and CLIO hands it the same
+input and result again, so it shows the same thing. Maximizing the side panel does
+not reload it.
+
+On a phone, an app tab sits between the conversation's header and the message box,
+so you can keep typing while it is open.
+
+<Capture client:visible image={await captureImage(tab)}
+  alt="A conversation about a ParaView scene on node08, with the card reading Open in a tab and Show tab, and the ParaView view open in a tab with Ready, Return to conversation, a time slider at step 6 of 12, Follow latest and 6 newer steps available"
+  caption="ParaView in a tab. The card in the conversation points to it."
+/>
+
+## What stays live
+
+An app keeps running while you can reach it:
+
+- every app in a tab, until you close the tab,
+- every app in a dashboard that is on screen,
+- the newest app card in the conversation.
+
+When a newer app opens in the conversation, the previous card's view closes and the
+card reads **View closed**, with **Reopen**. Apps in tabs are never closed this way,
+and nothing closes a view you have open because time passed. A card nobody has used
+for an hour closes too.
+
+## What the agent sees
+
+- **What the view reports.** Many apps report what they show: the selected residues,
+  the time step, the camera. That report goes to the agent with the next message you
+  send. Ask "what did I select?" or "what am I looking at?" and it answers from it.
+- **The view itself.** The agent can look at an open view and see it as you do, with
+  its `look_at_view` tool. The view must be on screen in a window that has the
+  conversation open. The agent uses it when you ask it to look, or when it needs to
+  check what a view shows.
+- **The view's own tools.** An app can offer tools of its own, such as "highlight"
+  or "add a note". The agent can call them, and the change appears in the view you
+  have open. If the view is closed, the call returns at once and names the tool that
+  opens it again.
+
+Calls the agent makes to an app follow your [permissions](/docs/permissions/), like
+any other tool.
+
+<Capture client:visible image={await captureImage(look)}
+  alt="The person asks the agent to look at the view and say what it sees; the agent describes the ParaView view: a faceted isosurface sphere shaded by temperature, fragments near the cube corners, two white frames and a grey background"
+  caption="Asked to look, the agent described the ParaView view in the tab from what is on screen."
+/>
+
+## Comment on a view
+
+Every app view has the Comments icon in its header, in a card, in a tab and in a
+dashboard. Comments on an app work by region, as on a figure:
+
+<Steps>
+
+1. Choose the Comments icon. Drag a box over the part you mean, or click a point.
+
+2. Write your comment and choose **Done**. Each mark is labelled S1, S2 and so on.
+
+3. Choose **Add 1 mark to message** (or the number you made) and send the message.
+
+</Steps>
+
+The agent receives a picture of the view with your marks drawn on it, a close-up of
+each mark, and what the view reported when you made it, such as the time step and
+camera. Marks are of what the screen showed. They do not move the view back to that
+state later. See [Comment on results](/docs/comments/) for comments on documents and
+figures.
+
+<Capture client:visible image={await captureImage(comment)}
+  alt="The ParaView view maximized, with a region S1 drawn over the isosurface and the comment editor open with the text what is going on in this area?"
+  caption="A region comment on a ParaView view. The agent answered with measured field values for the area."
+/>
+
+## Reopen a view
+
+CLIO keeps the call that opened each view, but not a copy of the view.
+
+- To bring back a closed view, choose **Reopen** on its card. CLIO calls the same tool
+  with the same arguments and shows the new view.
+- After CLIO restarts, your app tabs come back in the same browser. Each one reopens
+  when you first show it.
+- If a reopen fails, the card or tab gives the reason and the call it tried, with
+  **Retry**.
+
+Reopening calls the tool again, so it may ask for your permission. What the view shows
+afterwards is what the service returns. ParaView brings back the scene with its
+filters, colouring and time step.
+
+## Links and downloads
+
+- A link in a view opens in CLIO's [browser](/docs/browser/) as a new page. Only
+  `http` and `https` links open.
+- A file a view offers for download is saved in the conversation's workspace folder
+  and listed in **Artifacts**. A notice says where it went, with **Open**. An existing
+  file is never overwritten: the new one gets a number. A file over 64 MB is refused.
+
+## Put an app in a dashboard
+
+An app can sit in a [dashboard](/docs/dashboards/) beside charts and tables, linked to
+them. Ask for it in plain words, for example "Put the ParaView view and a chart of
+mean temperature over time in one dashboard, linked by time step."
+
+Linked parts share a value, such as a time step or a selection:
+
+- Change the time in the view, and the chart follows.
+- Pick a time on the chart, and the view moves to it.
+
+The dashboard shows which values are linked, for example **time linked both ways**.
+Only settled values cross between them, at most ten times a second, so a drag does not
+flood the chart. An app in a dashboard stays in the dashboard; it does not open a tab.
+See [App view](/docs/widgets/mcp-app/) for the component.
+
+<Capture client:visible image={await captureImage(linked)}
+  alt="A dashboard in the conversation with the ParaView view above a line chart of mean temperature by time, labelled time linked both ways"
+  caption="A ParaView view and a chart linked by time. The dashboard was built from a request that named the dashboard tool."
+/>
+
+## Apps with a live service
+
+Some views, such as ParaView's, need a service running behind them. CLIO carries that
+service through its own address, adds the service's key on the way, and never shows
+the key to your browser or the agent. The view therefore works wherever your browser
+is, including on another computer that reaches CLIO over your network.
+
+If you reach CLIO by a network name rather than `localhost`, set
+`gact.mcp_apps.sandbox_host` (or `CLIO_MCP_APP_SANDBOX_HOST`) to a name for app views,
+such as `*.apps.example.lan` with wildcard DNS. Until it is set, an app card says
+which setting it needs. See [Configuration](/docs/configuration/).
+
+## Theme
+
+Apps receive CLIO's colours, fonts and corner radii through the standard MCP Apps
+theme variables, and again whenever you switch between light and dark. An app that
+reads them matches CLIO. One that does not keeps its own look.
+
+## Known limits
+
+- **Burette in a narrow frame.** Burette's own viewer draws nothing when its frame is
+  600 pixels wide or narrower, which includes a phone and a side panel at its usual
+  width on a laptop screen. Maximize the side panel, or widen it. Burette's card in
+  the conversation is small; open it in a tab.
+- **A view that only the app understands.** CLIO shows what the app draws. When a
+  view looks wrong, the cause is usually in the app. Reopening it is a quick check.
+- **A conversation nobody is viewing.** CLIO stops a conversation's local services
+  after it has been left alone for a while. Its views then read **View closed**;
+  choose **Reopen**.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Connectors" href="/docs/connectors/" description="Turn on the services that provide apps." />
+  <LinkCard title="Write a connector entry" href="/docs/sdk/connectors/" description="For app authors: the CLIO-specific keys and host features." />
+</CardGrid>

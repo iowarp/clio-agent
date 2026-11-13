@@ -58,6 +58,7 @@ The manifest accepts only the format's ten fields: `$schema`, `name`, `version`,
 | `model` | Model requirements: `tool_calling`, `vision`, `context_tokens`, `output_tokens`. |
 | `prefers` | Model preferences: `model`, `provider`, `effort`. They guide the choice and never block. |
 | `connections` | Saved MCP connections the plugin uses, mapping a tool namespace to a connection name on the CLIO host: `{"home": "home-assistant"}`. See [Extensions preview](/docs/extensions/). |
+| `follows` | A [connector](/docs/connectors/) id. The plugin joins the person's agents while that connector is enabled and is never offered in plugin pickers. It must also bind the connector in `connections`: `{"paraview": "paraview"}`. See [Connectors and apps](/docs/sdk/connectors/#a-plugin-that-follows-a-connector). |
 | `catalogs` | Ids of built-in interactive catalogs the plugin brings. |
 | `workflow_state` | The typed `workflow_state` vocabulary the plugin's agents and subagents return. At most one resolved plugin may declare one. |
 | `defer` | `true` or `false`: the default for every tool and server of the plugin that does not say otherwise. `true` lists them by name only until the agent loads them with `search_tools`. See [Tools loaded when needed](/docs/scripts/#tools-loaded-when-needed). |

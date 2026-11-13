@@ -32,6 +32,7 @@ does not release product functionality.
 | Compaction and recall | `docs/memory#when-the-context-fills`; `docs/injections` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). What `recall_context` returns is described from the code at the branch head (2026-11-05). No site captures yet. Not released. |
 | Session plan | `docs/following-work#follow-the-session-plan`; `docs/injections` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). No site captures yet. Not released. |
 | Reminders | `docs/injections#reminders` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). Settings > Prompts and commands > Reminders, checked in gact-tui source. No site captures yet. Not released. |
+| Connectors and apps | `docs/connectors`; `docs/apps`; `docs/sdk/connectors`; `docs/sdk/plugins` (`follows`); pointers in `docs/mcp-servers` and `docs/extensions` | Development branch, evidence in `docs/design/sdk/mcp-apps-ledger.d/` (AQ1 to AQ53, live on the cloud stack, plus the `comments` stream's CM rows for looking at and commenting on a view). Captures are real development sessions; see `src/assets/captures/README.md`. The ParaView connector runs CLIO's own `clio-kit`; it needs a clio-kit release carrying the ParaView server 3.0.0, which clio-agent's pin (2.12.3) does not yet (pv-server PV-N1). The SPICE connector pins ltspice-mcp 0.8.0. Burette's narrow viewer (600 px or less) draws nothing (upstream). Not released. |
 
 When one of these changes ships:
 
