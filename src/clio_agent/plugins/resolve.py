@@ -4,8 +4,7 @@ Given an agent's frozen spec and the installed plugin records:
 
 1. expand packs to the full plugin set;
 2. apply the user's delta (additions, then removals);
-3. pull in hard requirements, and cascade the removal of a required plugin to
-   every plugin that requires it;
+3. pull in hard requirements; cascade a required plugin's removal to every plugin needing it;
 4. check trust, validity, version ranges, collisions and the model
    requirement union;
 5. order hooks child to parent, then by ``before``/``after``; a cycle fails;
@@ -613,6 +612,7 @@ def _finish(
                 "removable": entry.record.id != CORE_PLUGIN,
                 "executable_digest": entry.record.executable_digest,
                 "text_digest": entry.record.text_digest,
+                "follows": entry.record.follows,
             }
             for entry in entries
         ],

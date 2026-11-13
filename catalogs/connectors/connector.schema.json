@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iowarp.ai/schemas/clio/connector-entries.v1.json",
+  "title": "CLIO connector entries",
+  "description": "One catalogs/connectors/*.yaml file: a list of connectors a person can enable. Placement rules that need more than one field (a secret only in headers or env, every ${need.<key>} declared) are checked by clio_agent.connectors.entries.",
+  "type": "array",
+  "items": {"$ref": "#/$defs/connector"},
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+    "connector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "server"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id", "description": "Also the name of its saved connection and its tool namespace"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 80},
+        "logo": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.svg$", "description": "An SVG beside this file"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 300},
+        "server": {"oneOf": [{"$ref": "#/$defs/url_server"}, {"$ref": "#/$defs/command_server"}]},
+        "needs": {"type": "array", "items": {"$ref": "#/$defs/need"}, "default": []},
+        "plugin": {"$ref": "#/$defs/id", "description": "The plugin that follows this connector"}
+      }
+    },
+    "url_server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {"type": "string", "minLength": 1},
+        "headers": {"type": "object", "additionalProperties": {"type": "string"}, "maxProperties": 16}
+      }
+    },
+    "command_server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1},
+        "args": {"type": "array", "items": {"type": "string"}},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "need": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "kind", "label"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$"},
+        "kind": {"enum": ["address", "sign-in", "secret", "value"]},
+        "label": {"type": "string", "minLength": 1, "maxLength": 80},
+        "help": {"type": "string", "maxLength": 300},
+        "required": {"type": "boolean", "default": true},
+        "default": {"type": "string"},
+        "agent_settable": {"type": "boolean", "default": false},
+        "options": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "A value need offered as a picker"}
+      }
+    }
+  }
+}

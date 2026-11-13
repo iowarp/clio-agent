@@ -375,6 +375,9 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
     from clio_agent.gact.routes.mcp_prepare_routes import register_mcp_prepare_routes
 
     register_mcp_prepare_routes(app)  # plugin-server reconnect (B3)
+    from clio_agent.gact.routes.connectors import register_connector_routes
+
+    register_connector_routes(app)  # connectors (CN1 to CN12)
 
     @app.get("/v1/mcp/configuration")
     async def list_mcp_configuration() -> dict[str, Any]:

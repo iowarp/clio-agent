@@ -133,6 +133,8 @@ def plugin_row(record: PluginRecord, *, trusted: bool, pending: bool = False) ->
         "trusted": trusted,
         "pending_trust": pending,
         "diagnostics": [row.to_dict() for row in record.diagnostics],
+        # Follows a connector (CN9): it comes and goes with it; pickers do not offer it.
+        "follows": record.follows,
     }
 
 

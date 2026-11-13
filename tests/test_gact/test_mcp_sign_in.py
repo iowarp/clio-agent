@@ -13,7 +13,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from clio_agent.gact import mcp_auth
 from clio_agent.gact.routes.mcp_auth import _redirect_uri
-from clio_agent.tools.mcp_config import MCPAuthConfig, MCPTransportError
+from clio_agent.tools.mcp_config import MCPAuthConfig, MCPSignInNeeded
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
 from clio_agent.tools.mcp_runtime import _oauth_provider_from_config
 
@@ -99,7 +99,7 @@ async def test_sign_out_blocks_an_existing_sdk_provider(tmp_path: Path) -> None:
     await fresh.set_tokens(OAuthToken(access_token="new-consent", token_type="Bearer"))
     assert fresh.has_tokens()
     assert not storage.has_tokens()
-    with pytest.raises(MCPTransportError, match="sign-in required"):
+    with pytest.raises(MCPSignInNeeded, match="mcp_sign_in_needed"):
         await anext(provider.async_auth_flow(httpx2.Request("POST", "https://example.test/mcp")))
 
 
