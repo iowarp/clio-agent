@@ -29,11 +29,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from clio_agent.runtime.acl_parallel import apply_grant, grant_inherited_read_execute
 
 logger = logging.getLogger(__name__)
 
@@ -83,17 +84,14 @@ class CodexProvisionResult:
 # --------------------------------------------------------------------------- #
 
 # The real elevation is defined ONLY on win32 (``ctypes.wintypes`` is Windows-only; the
-# ``SHELLEXECUTEINFOW`` struct lives in runtime/win_shell_execute.py); the non-win32 branch
+# ``SHELLEXECUTEINFOW`` struct and its launcher live in runtime/win_shell_execute.py); the
+# non-win32 branch
 # defines a raising stub of the SAME name so the module-scope caller resolves it on every
 # platform (mypy analyses the Linux branch) while the win32 names are never referenced off it.
 if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs on Linux)
-    import ctypes as _ctypes
-    from ctypes import wintypes as _wintypes
-
     from clio_agent.runtime.win_shell_execute import (
-        SEE_MASK_NOCLOSEPROCESS as _SEE_MASK_NOCLOSEPROCESS,
+        launch_elevated_codex_setup as _launch_elevated_codex_setup,
     )
-    from clio_agent.runtime.win_shell_execute import ShellExecuteInfoW as _ShellExecuteInfoW
 
     def _elevated_codex_setup(binary: str) -> tuple[bool, str]:
         """Fire codex's one-time elevated Windows sandbox setup under a SINGLE UAC. win32 only.
@@ -122,34 +120,6 @@ if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs 
             # The approved command uses this allow directory. Keep it alive
             # until the elevated helper finishes, including time spent in UAC.
             return _launch_elevated_codex_setup(argv)
-
-    def _launch_elevated_codex_setup(argv: list[str]) -> tuple[bool, str]:
-        """Wait for the explicitly approved Windows setup helper to finish."""
-        from clio_agent.runtime.sandbox_codex_probe import codex_home_env  # noqa: PLC0415
-
-        # cmd.exe running the codex shim so a .cmd launcher resolves under elevation.
-        params = " ".join(f'"{a}"' if " " in a else a for a in argv)
-        # An elevated process does not inherit this environment; name the layer's home.
-        if home := codex_home_env().get("CODEX_HOME"):
-            params = f'set "CODEX_HOME={home}" && {params}'
-        info = _ShellExecuteInfoW()
-        info.cbSize = _ctypes.sizeof(info)
-        info.fMask = _SEE_MASK_NOCLOSEPROCESS
-        info.lpVerb = "runas"
-        info.lpFile = "cmd.exe"
-        info.lpParameters = f"/c {params}"
-        info.nShow = 0  # SW_HIDE
-        if not _ctypes.windll.shell32.ShellExecuteExW(_ctypes.byref(info)):
-            return False, (
-                f"self-elevation refused or failed (GetLastError={_ctypes.get_last_error()})"
-            )
-        _ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 0xFFFFFFFF)
-        code = _wintypes.DWORD()
-        _ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, _ctypes.byref(code))
-        _ctypes.windll.kernel32.CloseHandle(info.hProcess)
-        if code.value != 0:
-            return False, f"elevated codex sandbox setup exited {code.value}"
-        return True, "codex Windows sandbox setup completed under elevation"
 
 else:
 
@@ -325,38 +295,6 @@ def _run_icacls(argv: list[str]) -> tuple[int, str]:  # pragma: no cover - live 
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def _apply_grant(
-    grant: FleetGrant,
-    argv: list[str],
-    run: Callable[[list[str]], tuple[int, str]],
-    parallel: Optional[Callable[[str, Sequence[str]], Any]],
-) -> tuple[int, str]:
-    """Apply one grant, preferring the parallel inherited grant; ``icacls`` repairs any failure.
-
-    ``icacls`` rewrites the whole tree, so a parallel pass that stopped partway never persists.
-    """
-    if parallel is not None and grant.inherit:
-        started = time.monotonic()
-        try:
-            stats = parallel(grant.path, grant.users)
-        except Exception as exc:  # noqa: BLE001 - any failure falls back to icacls
-            logger.info(
-                "fleet-runtime parallel grant unavailable label=%s, using icacls: %s: %s",
-                grant.label,
-                type(exc).__name__,
-                exc,
-            )
-        else:
-            logger.info(
-                "fleet-runtime parallel grant label=%s seconds=%.2f %s",
-                grant.label,
-                time.monotonic() - started,
-                stats,
-            )
-            return 0, ""
-    return run(argv)
-
-
 def grant_fleet_runtime_access(
     *,
     runner: Optional[Callable[[list[str]], tuple[int, str]]] = None,
@@ -389,9 +327,7 @@ def grant_fleet_runtime_access(
     grants = list(plan) if plan is not None else build_fleet_runtime_grant_plan()
     run = runner if runner is not None else _run_icacls
     if parallel is None and runner is None and os.name == "nt":
-        from clio_agent.runtime.acl_parallel import (  # noqa: PLC0415 - win32 only
-            grant_inherited_read_execute as parallel,
-        )
+        parallel = grant_inherited_read_execute
     for grant in grants:
         if not grant.exists:
             logger.info(
@@ -403,7 +339,7 @@ def grant_fleet_runtime_access(
             continue
         for argv in grant.icacls_argv(combine_users=combine_users):
             users = grant.users if combine_users else (argv[3].split(":", 1)[0],)
-            rc, out = _apply_grant(grant, argv, run, parallel if combine_users else None)
+            rc, out = apply_grant(grant, argv, run, parallel if combine_users else None)
             for user in users:
                 record: dict[str, Any] = {
                     "grant": grant.label,

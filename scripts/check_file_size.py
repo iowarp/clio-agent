@@ -1103,7 +1103,10 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/sessions.py": 844,
     "src/clio_agent/gact/turn_finalize.py": 803,
     "src/clio_agent/gact/types.py": 802,
-    "src/clio_agent/runtime/sandbox_cli.py": 833,
+    # #2321 (parallel runtime grant) grew this to 874; its grant-apply fallback moved to
+    # runtime/acl_parallel.py and the ShellExecuteExW launcher to win_shell_execute.py
+    # (payback 833 -> 810).
+    "src/clio_agent/runtime/sandbox_cli.py": 810,
     "src/clio_agent/runtime/sandbox_codex.py": 862,
     "src/clio_agent/tools/gateway.py": 805,
     "src/clio_agent/tools/mcp_prepare.py": 1226,

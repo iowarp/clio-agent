@@ -26,11 +26,19 @@ the whole tree serially, so a partial parallel pass never persists.
 
 from __future__ import annotations
 
+import ctypes
+import logging
 import os
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from clio_agent.runtime.sandbox_cli import FleetGrant
+
+logger = logging.getLogger(__name__)
 
 #: ``(RX)`` as icacls writes it: read, execute, read attributes/EA, synchronize.
 READ_EXECUTE = 0x001200A9
@@ -57,6 +65,43 @@ _SEF_FLAGS = 0x19
 
 class ParallelGrantUnavailable(RuntimeError):
     """The tree has a shape this module does not handle; use icacls instead."""
+
+
+#: What the Windows path raises: a refused shape, a Win32 or filesystem error, or a ctypes
+#: argument conversion. Any of them sends the grant to ``icacls``.
+FALLBACK_ERRORS = (ParallelGrantUnavailable, OSError, ValueError, ctypes.ArgumentError)
+
+
+def apply_grant(
+    grant: FleetGrant,
+    argv: list[str],
+    run: Callable[[list[str]], tuple[int, str]],
+    parallel: Callable[[str, Sequence[str]], Any] | None,
+) -> tuple[int, str]:
+    """Apply one grant, preferring the parallel inherited grant; ``icacls`` repairs any failure.
+
+    ``icacls`` rewrites the whole tree, so a parallel pass that stopped partway never persists.
+    """
+    if parallel is not None and grant.inherit:
+        started = time.monotonic()
+        try:
+            stats = parallel(grant.path, grant.users)
+        except FALLBACK_ERRORS as exc:
+            logger.info(
+                "fleet-runtime parallel grant unavailable label=%s, using icacls: %s: %s",
+                grant.label,
+                type(exc).__name__,
+                exc,
+            )
+        else:
+            logger.info(
+                "fleet-runtime parallel grant label=%s seconds=%.2f %s",
+                grant.label,
+                time.monotonic() - started,
+                stats,
+            )
+            return 0, ""
+    return run(argv)
 
 
 def grant_inherited_read_execute(
@@ -154,11 +199,43 @@ def plan_split(root: str, workers: int) -> tuple[list[list[tuple[str, str]]], li
     return levels, frontier
 
 
+if sys.platform == "win32":  # pragma: no cover - live win32 only
+    from ctypes import wintypes as _wt
+
+    class _Trustee(ctypes.Structure):
+        _fields_ = [
+            ("multiple", ctypes.c_void_p),
+            ("operation", ctypes.c_int),
+            ("form", ctypes.c_int),
+            ("type", ctypes.c_int),
+            ("name", _wt.LPWSTR),
+        ]
+
+    class _ExplicitAccess(ctypes.Structure):
+        _fields_ = [
+            ("permissions", _wt.DWORD),
+            ("mode", ctypes.c_int),
+            ("inheritance", _wt.DWORD),
+            ("trustee", _Trustee),
+        ]
+
+    class _GenericMapping(ctypes.Structure):
+        _fields_ = [(name, _wt.DWORD) for name in ("read", "write", "execute", "all")]
+
+
 class _Api:  # pragma: no cover - live win32 only
     """The advapi32 calls the parallel grant needs, with 64-bit-safe signatures."""
 
+    ct: Any
+    wt: Any
+    adv: Any
+    k32: Any
+    ExplicitAccess: Any
+    file_mapping: Any
+
     def __init__(self) -> None:
-        import ctypes  # noqa: PLC0415
+        if sys.platform != "win32":
+            raise ParallelGrantUnavailable("not Windows")
         import ctypes.wintypes as wt  # noqa: PLC0415
 
         self.ct, self.wt = ctypes, wt
@@ -193,29 +270,9 @@ class _Api:  # pragma: no cover - live win32 only
         adv.CreatePrivateObjectSecurityEx.argtypes = [v, v, v, v, wt.BOOL, wt.ULONG, v, v]
         adv.DestroyPrivateObjectSecurity.argtypes = [v]
         self.adv, self.k32 = adv, k32
-
-        class Trustee(ctypes.Structure):
-            _fields_ = [
-                ("multiple", v),
-                ("operation", ctypes.c_int),
-                ("form", ctypes.c_int),
-                ("type", ctypes.c_int),
-                ("name", wt.LPWSTR),
-            ]
-
-        class ExplicitAccess(ctypes.Structure):
-            _fields_ = [
-                ("permissions", wt.DWORD),
-                ("mode", ctypes.c_int),
-                ("inheritance", wt.DWORD),
-                ("trustee", Trustee),
-            ]
-
-        class GenericMapping(ctypes.Structure):
-            _fields_ = [(name, wt.DWORD) for name in ("read", "write", "execute", "all")]
-
-        self.ExplicitAccess = ExplicitAccess
-        self.file_mapping = GenericMapping(0x00120089, 0x00120116, 0x001200A0, 0x001F01FF)
+        if sys.platform == "win32":  # always true here; lets mypy skip the win32-only structs
+            self.ExplicitAccess = _ExplicitAccess
+            self.file_mapping = _GenericMapping(0x00120089, 0x00120116, 0x001200A0, 0x001F01FF)
 
     def _fail(self) -> OSError:
         return self.ct.WinError(self.ct.get_last_error())
