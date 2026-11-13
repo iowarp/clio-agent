@@ -87,9 +87,27 @@ export async function toolCalls(sessionId) {
   );
 }
 
-/** The MCP App frames on the page, by their accessible titles. */
+/**
+ * The MCP App frames on the page: every frame loaded from an app's sandbox route, with
+ * its element's title and height. Found through the frame tree, so a frame inside a
+ * shadow root counts too.
+ */
 export async function appFrames(page) {
-  return page.locator("iframe[data-mcp-app-iframe]").evaluateAll((frames) =>
-    frames.map((f) => ({ id: f.getAttribute("data-mcp-app-iframe"), title: f.title, height: f.clientHeight })),
-  );
+  const rows = [];
+  for (const frame of page.frames()) {
+    if (!/\/mcp-apps\/[^/]+\/sandbox/.test(frame.url())) continue;
+    const element = await frame.frameElement().catch(() => null);
+    const box = element ? await element.boundingBox().catch(() => null) : null;
+    const title = element ? await element.getAttribute("title").catch(() => "") : "";
+    rows.push({ app: frame.url().split("/mcp-apps/")[1].split("/")[0], title, height: box?.height ?? 0, element });
+  }
+  return rows;
+}
+
+/** Scroll the last app frame into view and drop the element handles for printing. */
+export async function showLastApp(page, frames) {
+  const last = frames.at(-1);
+  if (last?.element) await last.element.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(3000);
+  return frames.map(({ element, ...row }) => row);
 }

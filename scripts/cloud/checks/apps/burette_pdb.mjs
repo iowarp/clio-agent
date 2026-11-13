@@ -4,7 +4,7 @@
 // is plain. The step waits for the view, then reports every frame on the page and, for
 // each, whether it holds a drawn WebGL canvas, so a blank view is told apart from a
 // view that never loaded.
-import { appFrames, openConversation, send, toolCalls, waitIdle } from "./_lib.mjs";
+import { appFrames, openConversation, showLastApp, send, toolCalls, waitIdle } from "./_lib.mjs";
 
 async function canvases(page) {
   const rows = [];
@@ -28,11 +28,8 @@ export default async function (page, shot) {
   const { session } = await openConversation(page, "burette");
   await send(page, process.env.BURETTE_TEXT || "Show PDB 1CRN.");
   log.push(`settled: ${await waitIdle(page, session.id, log, 8)}`);
-  const frames = await appFrames(page);
-  if (frames.length) {
-    await page.locator("iframe[data-mcp-app-iframe]").last().scrollIntoViewIfNeeded();
-  }
   await page.waitForTimeout(20000); // Mol* fetches the structure and draws
+  const frames = await showLastApp(page, await appFrames(page));
   await shot("structure");
   const drawn = await canvases(page);
   console.log(JSON.stringify({ session: session.id, calls: await toolCalls(session.id), frames, drawn, log }, null, 2));
