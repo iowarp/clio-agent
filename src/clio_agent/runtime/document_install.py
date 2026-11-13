@@ -29,6 +29,7 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     prepare_office_runtime,
 )
+from clio_agent.runtime.document_stack.process import end_on_termination
 from clio_agent.runtime.execution_environment import (
     protect_bundled_runtime,
     publish_environment,
@@ -308,6 +309,7 @@ def _report_warnings() -> None:
 
 def main() -> None:
     """Run the installer step; a failed step exits 1 with its message, not a traceback."""
+    end_on_termination()
     _report_warnings()
     try:
         _main()

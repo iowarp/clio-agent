@@ -26,6 +26,12 @@ if TYPE_CHECKING or __package__:
     from .office_deb import _deb_data, _extract_linux
     from .office_fetch import download as _download
     from .office_fetch import mirror_rate as _mirror_rate
+    from .office_mounts import (
+        ATTACHED,
+        clear_stale_staging,
+        staging_prefix,
+        track_attached,
+    )
     from .office_prune import (
         KEPT_ICON_THEMES,
         UNREAD_DICTIONARY_SUFFIXES,
@@ -53,6 +59,12 @@ else:
     from office_deb import _deb_data, _extract_linux
     from office_fetch import download as _download
     from office_fetch import mirror_rate as _mirror_rate
+    from office_mounts import (
+        ATTACHED,
+        clear_stale_staging,
+        staging_prefix,
+        track_attached,
+    )
     from office_prune import (
         KEPT_ICON_THEMES,
         UNREAD_DICTIONARY_SUFFIXES,
@@ -378,10 +390,12 @@ def _extract(archive: Path, root: Path) -> None:
                 cwd=root,
                 timeout=120,
             )
+            track_attached(mount)
             try:
                 _copy_app_bundle(mount / "LibreOffice.app", root / "LibreOffice.app")
             finally:
                 run(["/usr/bin/hdiutil", "detach", str(mount)], cwd=root, timeout=30)
+                ATTACHED.discard(str(mount))
     else:
         _extract_linux(archive, root)
 
@@ -635,7 +649,9 @@ def _lay_prepared(
     timings: dict[str, float] | None = None,
 ) -> bool:
     """Publish the installer's prepared tree as ``root``; False if it cannot be used."""
-    with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix=staging_prefix(root.name), dir=root.parent
+    ) as temporary:
         staging = Path(temporary)
         inherit_parent_access(staging)
         image = staging / "image"
@@ -689,6 +705,7 @@ def ensure_office(
     root = root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(root.parent / f"{root.name}.lock"), timeout=600):
+        clear_stale_staging(root.parent, root.name)
         existing = executable(root)
         if existing:
             if office_compat.supported():
@@ -718,7 +735,9 @@ def ensure_office(
         downloads = root.parent / "downloads"
         downloads.mkdir(exist_ok=True)
         archive = downloads / name
-        with tempfile.TemporaryDirectory(prefix="office-extract-", dir=root.parent) as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix=staging_prefix(root.name), dir=root.parent
+        ) as temporary:
             staging = Path(temporary)
             inherit_parent_access(staging)
             image = staging / "image"
