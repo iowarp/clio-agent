@@ -1,4 +1,4 @@
-"""A view's own answer to "how do I reopen this?" (MA19, ParaView PV11).
+"""A view's own answer to "how do I reopen this?" (MA19, PV11).
 
 CLIO saves the call that opened a view and replays it to reopen the view. The
 call is not always the right thing to replay: ``open_view(path, new=true)``
