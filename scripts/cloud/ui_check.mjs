@@ -65,11 +65,15 @@ function chromiumPath() {
 const shotsDir = path.join(root, ".cloud-run/shots");
 mkdirSync(shotsDir, { recursive: true });
 
+// Extra Chromium flags, comma separated: views that draw with WebGL need
+// software rendering on a machine with no GPU, e.g.
+// UI_CHECK_CHROMIUM_ARGS=--use-angle=swiftshader,--enable-unsafe-swiftshader
+const launchArgs = (process.env.UI_CHECK_CHROMIUM_ARGS || "").split(",").filter(Boolean);
 let browser;
 try {
-  browser = await chromium.launch();
+  browser = await chromium.launch({ args: launchArgs });
 } catch {
-  browser = await chromium.launch({ executablePath: chromiumPath() });
+  browser = await chromium.launch({ args: launchArgs, executablePath: chromiumPath() });
 }
 const context = await browser.newContext({
   viewport: { width, height },
