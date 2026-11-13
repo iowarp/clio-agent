@@ -208,6 +208,17 @@ KEY_NOTES: dict[str, str] = {
         "Read from the user config.yaml only (a workspace file cannot move it). Precedence: "
         "--port > gact.port > CLIO_PORT > 17800."
     ),
+    "gact.mcp_apps.registry_limit": (
+        "How many interactive tool views shown in the conversation stay open at once; views "
+        "in a tab or a dashboard are not counted."
+    ),
+    "gact.mcp_apps.registry_ttl_s": (
+        "Seconds after which an unused interactive tool view in the conversation closes; "
+        "views in a tab or a dashboard never close on a timer."
+    ),
+    "gact.mcp_apps.download_max_bytes": (
+        "Byte ceiling on one file download an interactive tool view saves into the workspace."
+    ),
     "gact.mailbox.max_pending_messages": (
         "Undelivered peer-message ceiling per session; 0 means unlimited. Task results and human "
         "input are exempt, and delivered history is retained."

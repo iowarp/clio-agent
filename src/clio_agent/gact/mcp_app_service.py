@@ -183,7 +183,9 @@ async def service_descriptor_fields(
         fields["service_refusal"] = denied.to_wire()
         return fields
     prefix = service_prefix(record.session_id, record.app_instance_id, record.data_ref)
-    fields["service_url"] = _sandbox_url(request, f"{prefix}/")
+    fields["service_url"] = _sandbox_url(
+        request, f"{prefix}/", namespace=record.source_namespace
+    )
     return fields
 
 

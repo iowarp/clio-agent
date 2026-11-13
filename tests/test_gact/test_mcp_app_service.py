@@ -24,6 +24,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_app_sandbox import _csp_header
+from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
 from clio_agent.gact.mcp_app_service import recorded_service_reasons
 from clio_agent.gact.mcp_app_service_declaration import (
     SERVICE_META_KEY,
@@ -257,7 +258,8 @@ def test_descriptor_gives_the_service_url_and_never_the_token(
         assert str(upstream.port) not in json.dumps(body["tool_result"])
         assert SERVICE_META_KEY not in json.dumps(body["tool_result"])
         url = urlparse(body["service_url"])
-        assert url.netloc == urlparse(body["sandbox_url"]).netloc == "localhost:8100"
+        sandbox_netloc = f"{sandbox_host_for('svc')}:8100"
+        assert url.netloc == urlparse(body["sandbox_url"]).netloc == sandbox_netloc
         assert url.path == f"{prefix}/service/{record.data_ref}/"
         assert body["service_refusal"] is None
         assert body["csp_refused"] == [
@@ -268,12 +270,12 @@ def test_descriptor_gives_the_service_url_and_never_the_token(
             }
         ]
         sandbox = client.get(
-            f"{prefix}/sandbox",
+            f"http://{sandbox_netloc}{prefix}/sandbox",
             params={"data_ref": record.data_ref},
             headers={"referer": "http://127.0.0.1:5173/session"},
         )
         csp = sandbox.headers["content-security-policy"]
-        assert f"ws://127.0.0.1:8100{prefix}/service/{record.data_ref}/" in csp
+        assert f"ws://{sandbox_netloc}{prefix}/service/{record.data_ref}/" in csp
         assert "http://127.0.0.1:*" not in csp
         assert TOKEN not in json.dumps(call_tool_result_to_observer(record.tool_result))
 

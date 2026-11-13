@@ -233,6 +233,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_MAX_FORKS_PER_TASK` | `agent_tasks.max_forks_per_task` | int | `0` | `src/clio_agent/gact/agent_task_limits.py` |
 | `CLIO_MAX_LM_CALL_S` | `limits.lm_call_s` | float | `1800.0` | `src/clio_agent/runtime/lm_activity.py` |
+| `CLIO_MCP_APP_DOWNLOAD_MAX_BYTES` | `gact.mcp_apps.download_max_bytes` | int | `67108864` | `src/clio_agent/gact/mcp_app_downloads.py` |
+| `CLIO_MCP_APP_REGISTRY_LIMIT` | `gact.mcp_apps.registry_limit` | int | `64` | `src/clio_agent/gact/mcp_apps.py` |
+| `CLIO_MCP_APP_REGISTRY_TTL_S` | `gact.mcp_apps.registry_ttl_s` | float | `3600.0` | `src/clio_agent/gact/mcp_apps.py` |
 | `CLIO_MCP_CACHE_MAX_AGE_DAYS` | `tools.mcp_cache.max_age_days` | float | `14.0` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_MAX_BYTES` | `tools.mcp_cache.max_bytes` | int | `2147483648` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |

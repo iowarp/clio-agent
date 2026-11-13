@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>Host feature panel</title>
+  <style>
+    :root { font: 14px/1.45 system-ui, sans-serif; }
+    body { margin: 0; color: CanvasText; background: Canvas; }
+    main { display: grid; gap: 10px; padding: 16px; }
+    h1 { font-size: 17px; margin: 0; }
+    p { margin: 0; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      border: 1px solid ButtonBorder; border-radius: 8px; padding: 6px 10px;
+      color: ButtonText; background: ButtonFace; font: inherit;
+    }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+    dt { color: GrayText; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <!--
+    A self-contained MCP Apps view, written after ext-apps
+    examples/basic-server-vanillajs, that exercises host features:
+    display modes, model context, open-link, download and a server tool call.
+  -->
+  <main>
+    <h1 id="title">Host feature panel</h1>
+    <dl>
+      <dt>Display mode</dt><dd id="mode">starting</dd>
+      <dt>Offered modes</dt><dd id="modes">-</dd>
+      <dt>Host features</dt><dd id="caps">-</dd>
+      <dt>Topic</dt><dd id="topic">-</dd>
+      <dt>Result</dt><dd id="result">-</dd>
+      <dt>Loaded</dt><dd id="loaded">-</dd>
+      <dt>View origin</dt><dd id="origin">-</dd>
+      <dt>Storage</dt><dd id="storage">-</dd>
+      <dt>API from view</dt><dd id="api">-</dd>
+      <dt>Last action</dt><dd id="status" role="status">-</dd>
+    </dl>
+    <div class="row">
+      <button id="fullscreen" type="button">Full screen</button>
+      <button id="inline" type="button">Back inline</button>
+      <button id="context" type="button">Report context</button>
+      <button id="ping" type="button">Call server tool</button>
+    </div>
+    <div class="row">
+      <button id="link-https" type="button">Open https link</button>
+      <button id="link-file" type="button">Open file link</button>
+      <button id="download" type="button">Download CSV</button>
+      <button id="probe" type="button">Probe CLIO API</button>
+    </div>
+  </main>
+  <script>
+  (() => {
+    const target = window.parent;
+    const pending = new Map();
+    let nextId = 0;
+    let webLink = 'https://example.org/';
+    const $ = (id) => document.getElementById(id);
+    const send = (message) => target.postMessage(message, '*');
+    const request = (method, params) => new Promise((resolve, reject) => {
+      const id = `view:${(nextId += 1)}`;
+      pending.set(id, { resolve, reject });
+      send({ jsonrpc: '2.0', id, method, params });
+    });
+    const show = (text) => { $('status').textContent = text; reportSize(); };
+    const failure = (error) => {
+      const reason = error && error.data && error.data.reason ? ` [${error.data.reason}]` : '';
+      return `refused: ${error.message}${reason}`;
+    };
+    const reportSize = () => requestAnimationFrame(() => send({
+      jsonrpc: '2.0',
+      method: 'ui/notifications/size-changed',
+      params: { height: Math.ceil(document.querySelector('main').getBoundingClientRect().bottom) + 8 },
+    }));
+    const applyContext = (context) => {
+      if (!context) return;
+      if (context.displayMode) $('mode').textContent = context.displayMode;
+      if (Array.isArray(context.availableDisplayModes)) {
+        $('modes').textContent = context.availableDisplayModes.join(', ');
+      }
+    };
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || message.jsonrpc !== '2.0') return;
+      if (!message.method && pending.has(message.id)) {
+        const entry = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.error) entry.reject(message.error); else entry.resolve(message.result);
+        return;
+      }
+      if (message.method === 'ui/notifications/tool-input') {
+        $('topic').textContent = String(message.params?.arguments?.topic ?? '-');
+        if (typeof message.params?.arguments?.link === 'string') webLink = message.params.arguments.link;
+      } else if (message.method === 'ui/notifications/tool-result') {
+        const structured = message.params?.structuredContent ?? {};
+        $('result').textContent = String(structured.opened_at ?? 'received');
+      } else if (message.method === 'ui/notifications/host-context-changed') {
+        applyContext(message.params);
+      } else if (message.method === 'ui/resource-teardown' && message.id !== undefined) {
+        send({ jsonrpc: '2.0', id: message.id, result: {} });
+      }
+      reportSize();
+    });
+    $('fullscreen').addEventListener('click', async () => {
+      const result = await request('ui/request-display-mode', { mode: 'fullscreen' });
+      show(`display mode answer: ${result.mode}`);
+    });
+    $('inline').addEventListener('click', async () => {
+      const result = await request('ui/request-display-mode', { mode: 'inline' });
+      show(`display mode answer: ${result.mode}`);
+    });
+    $('context').addEventListener('click', async () => {
+      try {
+        await request('ui/update-model-context', {
+          content: [{ type: 'text', text: `Selected sample: alpha-7 (topic ${$('topic').textContent})` }],
+          structuredContent: { selection: ['alpha-7'], topic: $('topic').textContent },
+        });
+        show('context reported');
+      } catch (error) { show(failure(error)); }
+    });
+    $('ping').addEventListener('click', async () => {
+      try {
+        const result = await request('tools/call', { name: 'ping', arguments: { note: 'from-view' } });
+        show(`server tool: ${result.content?.[0]?.text ?? 'ok'}`);
+      } catch (error) { show(failure(error)); }
+    });
+    $('link-https').addEventListener('click', async () => {
+      try {
+        await request('ui/open-link', { url: webLink });
+        show('link opened');
+      } catch (error) { show(failure(error)); }
+    });
+    $('link-file').addEventListener('click', async () => {
+      try {
+        await request('ui/open-link', { url: 'file:///etc/hostname' });
+        show('file link opened');
+      } catch (error) { show(failure(error)); }
+    });
+    $('download').addEventListener('click', async () => {
+      try {
+        const result = await request('ui/download-file', {
+          contents: [{
+            type: 'resource',
+            resource: {
+              uri: 'file:///exports/panel-samples.csv',
+              mimeType: 'text/csv',
+              text: 'sample,value\nalpha-7,0.42\nbeta-2,0.17\n',
+            },
+          }],
+        });
+        const files = Array.isArray(result.files) ? result.files.map((file) => file.path) : [];
+        show(`saved: ${files.join(', ') || 'yes'}`);
+      } catch (error) { show(failure(error)); }
+    });
+    // The view's own origin, storage, and what CLIO's API answers it (the sandbox
+    // host serves only the view and its service).
+    $('origin').textContent = window.origin;
+    try {
+      window.localStorage.setItem('host-panel-probe', '1');
+      $('storage').textContent = window.localStorage.getItem('host-panel-probe') === '1' ? 'available' : 'unreadable';
+    } catch (error) { $('storage').textContent = `blocked: ${error.name}`; }
+    $('probe').addEventListener('click', () => fetch('/v1/sessions').then(
+      async (response) => {
+        const body = await response.json().catch(() => ({}));
+        $('api').textContent = `HTTP ${response.status} ${body?.error?.error ?? ''}`.trim();
+      },
+      (error) => { $('api').textContent = `blocked: ${error.name}`; },
+    ));
+    request('ui/initialize', {
+      protocolVersion: '2026-01-26',
+      appInfo: { name: 'host feature panel', version: '1.0.0' },
+      appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] },
+    }).then((result) => {
+      applyContext(result.hostContext);
+      $('caps').textContent = Object.keys(result.hostCapabilities || {}).sort().join(', ');
+      $('loaded').textContent = new Date().toISOString().slice(11, 19);
+      send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+      reportSize();
+    }, (error) => show(failure(error)));
+  })();
+  </script>
+</body>
+</html>

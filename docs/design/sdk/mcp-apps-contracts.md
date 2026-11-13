@@ -38,15 +38,20 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
 
 ## Display mode and the tab (owner: `host`)
 
-- The `mcp_app` part and the descriptor gain `display_mode: "inline" | "fullscreen"`.
-- `PUT …/display-mode` takes `{mode}` and returns `{display_mode}`. It also pins or unpins the registry record (MA6).
-- The workbench tab kind is `mcp-app`, with fields `appInstanceId`, `dataRef`, `sessionId`, `resourceUri`, `sourceServer`, `toolName` and `label`. Tab id: `mcp-app:<appInstanceId>`.
-- Live set: the session-level store `useMcpAppLiveSet` replaces `use-active-mcp-app.ts`.
-- `McpAppSurface` props:
-  - `placement: "inline" | "tab" | "surface"`.
-  - `onModelContext?(context)`: called after a successful `ui/update-model-context`, used by MA21.
-  - An imperative handle `{callAppTool(name, args) → result, sendToolInput?}`, used by MA13 and MA21.
-- A surface placement pins the record through `PUT …/display-mode` with `mode: "fullscreen"`, or through `PUT …/pin {pinned}` if the owner chooses that. The choice is recorded in this file.
+- The `mcp_app` part and the descriptor gain `display_mode: "inline" | "fullscreen"`. The part carries the mode it was made in; the descriptor carries the record's current mode and `pinned` (true in a tab or a surface).
+- `PUT …/display-mode` takes `{mode}` and returns `{display_mode, pinned}`. `fullscreen` pins the registry record (MA6); any other mode is a 422.
+- **Surface placement (decided):** an A2UI surface pins its record through `PUT …/pin {pinned: bool}`, which returns `{display_mode, pinned}`. It does not use `display-mode`, so a reloaded UI never opens a tab for an app that lives in a surface. In the UI, call `registerMcpAppSurface(target, repository)` on mount and `releaseMcpAppSurface(appInstanceId)` on unmount (`mcp-app-live-set.ts`); release closes the app (MA7).
+- `POST …/downloads` takes the `ui/download-file` params `{contents: [...]}` and returns `{files: [{name, path, artifact_id, artifact_skipped?}]}` (workspace-relative `path`). Refusals are 422 error envelopes whose `error.error` is the typed reason: `invalid_content`, `download_too_large`, `download_link_unsupported`, `no_workspace`, `download_name_taken`.
+- **Sandbox origin (decided):** `sandbox_url` (and so `service_url`) is on `s<sha256(server namespace)[:16]>.mcp-apps.localhost:<CLIO port>`, one host per originating server. That host serves only the app's sandbox document and its service route; every other route answers `403 sandbox_origin_refused`. The view frame has `allow-scripts allow-same-origin allow-forms`.
+- The workbench tab kind is `mcp-app`, with fields `appInstanceId`, `dataRef`, `sessionId`, `resourceUri`, `sourceServer`, `toolName` and `label` (`McpAppTabTarget` in `workbench-shared.ts`). Tab id: `mcp-app:<appInstanceId>`. Open one with the window event `OPEN_MCP_APP_TAB_EVENT` (detail: `McpAppTabTarget`) or `openMcpAppInTab(target, repository)`.
+- Live set: the zustand store `useMcpAppLiveSetStore` in `web/src/components/clio/mcp-app-live-set.ts` replaces `use-active-mcp-app.ts`. `useMcpAppLiveSet(sessionId, messages, repository)` keeps a conversation's part; `useMcpAppPresence(appInstanceId, sessionId)` gives `{placement: inline|tab|surface|ended, latest}`.
+- `McpAppSurface` props (`mcp-app-surface.tsx`):
+  - `placement: "inline" | "tab" | "surface"`. A surface answers every display-mode request with `inline` and advertises only `inline`.
+  - `onModelContext?(context)`: called after a successful `ui/update-model-context`, with the params the view sent. Used by MA21.
+  - `onAppInitialized?(appCapabilities)`: after `ui/notifications/initialized`, with the view's declared capabilities (MA11 reads `tools`).
+  - `onViewNotification?(method, params)`: a view notification the host does not consume itself (`notifications/tools/list_changed`, MA11).
+  - `onDisplayModeChange?(mode)`, `onRecordedDisplayMode?(mode) → boolean`, `onEnded?()`, `onBrowserPage?`, `onDownloaded?`, `actions` (header controls).
+  - An imperative handle (`forwardRef`, `McpAppSurfaceHandle`): `{callAppTool(name, args) → Promise<result>, sendToolInput(args), request(method, params) → Promise<result>}`. Requests wait for the view's initialization and have no timeout (rule 6); they reject when the frame unloads. Used by MA11, MA13 and MA21.
 
 ## App context and app tools (owner: `ctx-tools`)
 
