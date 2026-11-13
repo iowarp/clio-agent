@@ -7,8 +7,10 @@ and lists its tools again, so three separate calls cost three restarts. It is re
 secret and for a sign-in (only the person types or signs in, in the setup card)
 and for a need not marked ``agent_settable``. Like any built-in it passes the
 session's tool permission rules (``tool_permission_layers.native_gate``). The value
-is applied as the setup card applies it (CN7): the server reconnects or restarts and
-lists its tools again, and the card shows the new value.
+is THIS conversation's (CV-D4): it goes into the conversation's own connector values,
+never the person's defaults, so another conversation's server is not touched. The
+conversation gets its own server with the value; the running turn calls that server
+from its next step, and its tools are listed again. The card shows the new value.
 
 Its row reads "Set <need> of <connector>"; expansion shows the value set and the
 connector's state after it, or the typed reason it was refused.
@@ -57,6 +59,7 @@ async def set_connector_value(
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
     from clio_agent.gact import context  # noqa: PLC0415
+    from clio_agent.gact.connector_values import set_session_values  # noqa: PLC0415
 
     app = context.active_app()
     found_all = state.all_entries()
@@ -96,8 +99,15 @@ async def set_connector_value(
         needs.append((need, asked[asked_key]))
     by_key = {need.key: "" if raw is None else str(raw) for need, raw in needs}
     labels = [need.label for need, _raw in needs]
+    session_id = str(context.active_tool_session_id() or context.active_session_id() or "")
     try:
-        updated = await service.set_values(app, found.id, by_key, by_agent=True)
+        if not session_id:
+            raise service.ConnectorError(
+                "connector_no_conversation", "A value is set for a conversation; none is active."
+            )
+        updated = await set_session_values(
+            app, session_id, found.id, by_key, by_agent=True, move_turn=True
+        )
     except service.ConnectorError as exc:
         return {
             "error": exc.code,
@@ -120,7 +130,9 @@ async def set_connector_value(
         "values": {label: by_key[n.key] for (n, _r), label in zip(needs, labels, strict=True)},
         "state": status,
         "tool_count": updated.get("tool_count"),
-        "message": f"{found.name}: {said}; the connector is " + _state_words(status),
+        "message": f"{found.name}: {said} in this conversation; the connector is "
+        + _state_words(status),
+        "scope": "conversation",
     }
 
 
@@ -175,6 +187,10 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     else:
         value = row.get("value") if row.get("value") is not None else args.get("value")
         blocks.append({"id": "value", "type": "text", "label": need, "text": str(value)})
+    if row.get("scope") == "conversation":
+        blocks.append(
+            {"id": "scope", "type": "text", "label": "Applies to", "text": "This conversation"}
+        )
     status = row.get("state") if isinstance(row.get("state"), Mapping) else {}
     blocks.append(
         {
@@ -203,7 +219,8 @@ def build_set_connector_value_tool() -> Any:
         desc=(
             "Set values one of the person's connectors needs, such as where its server "
             "runs, when the person gives them in the conversation or a tool just produced "
-            "them. Only needs the connector marks as settable by the agent; never a secret "
+            "them. The values apply to this conversation only; other conversations keep "
+            "theirs. Only needs the connector marks as settable by the agent; never a secret "
             "or a sign-in, which the person enters in the setup card. The connector "
             "restarts with the values and lists its tools again, once per call: set "
             "several values of one connector together with `values`."

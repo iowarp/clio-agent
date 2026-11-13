@@ -12,6 +12,11 @@ refresh_changed_namespaces`); this module carries the result to the agent:
   program before every model request, so a tool unlocked by this step's call is
   offered at the next step.
 
+A conversation that gets connector values of its own during a turn (CV-D4) moves
+that connector's namespace to its own fleet: :meth:`LiveToolRefresher.move` makes
+the next step take the namespace's tools from that fleet, while every other
+namespace stays on the fleet the turn started with.
+
 Only namespaces the agent takes whole (its plugins' MCP servers and, for a root
 agent, the always-load services) are refreshed: a namespace it was granted one tool of
 never grows into the rest. Every change and failure is a typed trace reason.
@@ -79,6 +84,8 @@ class LiveToolRefresher:
         self._prefixes = tuple(f"{namespace}_" for namespace in sorted(namespaces))
         self._wrap = wrap
         self._revision = int(getattr(executor, "tools_revision", 0))
+        #: ``{prefix: [executor, revision applied (-1: not yet)]}`` for moved namespaces.
+        self._moved: dict[str, list[Any]] = {}
 
     def __deepcopy__(self, memo: dict[int, Any]) -> "LiveToolRefresher":
         """A per-rollout copy (DSPy deep-copies modules) shares the executor, never clones it."""
@@ -98,21 +105,49 @@ class LiveToolRefresher:
             self._prefixes = (*self._prefixes, prefix)
         self._revision = -1
 
+    def move(self, namespace: str, executor: Any) -> None:
+        """Take ``namespace``'s tools from ``executor`` from the next step on (CV-D4)."""
+
+        self.take(namespace)
+        self._moved[f"{namespace}_"] = [executor, -1]
+        trace.event("TOOLS", "connector_namespace_moved_in_turn namespace=%s", namespace)
+
+    def _apply_moved(self, tools: MutableMapping[str, Any]) -> bool:
+        changed = False
+        for prefix, slot in self._moved.items():
+            executor, applied = slot
+            refresh_executor_tools(executor)
+            revision = int(getattr(executor, "tools_revision", 0))
+            if revision == applied:
+                continue
+            slot[1] = revision
+            for name in [name for name in tools if name.startswith(prefix)]:
+                del tools[name]
+            current = [t for t in executor.to_dspy_tools() if str(t.name).startswith(prefix)]
+            for tool in self._wrap(current):
+                tools[tool.name] = tool
+            changed = True
+        if changed and "submit" in tools:
+            tools["submit"] = tools.pop("submit")  # the final-output tool stays last
+        return changed
+
     def __call__(self, tools: MutableMapping[str, Any]) -> bool:
         """Update ``tools`` in place; return whether its names changed."""
 
+        moved = self._apply_moved(tools) if self._moved else False
         refresh_executor_tools(self._executor)
         revision = int(getattr(self._executor, "tools_revision", 0))
         if revision == self._revision:
-            return False
+            return moved
         self._revision = revision
+        prefixes = tuple(p for p in self._prefixes if p not in self._moved)
         current = [
             tool
             for tool in self._executor.to_dspy_tools()
-            if str(getattr(tool, "name", "") or "").startswith(self._prefixes)
+            if prefixes and str(getattr(tool, "name", "") or "").startswith(prefixes)
         ]
         names = {str(tool.name) for tool in current}
-        removed = sorted(n for n in tools if n.startswith(self._prefixes) and n not in names)
+        removed = sorted(n for n in tools if prefixes and n.startswith(prefixes) and n not in names)
         new = [tool for tool in current if tool.name not in tools]
         for name in removed:
             del tools[name]
@@ -122,7 +157,7 @@ class LiveToolRefresher:
             tools["submit"] = tools.pop("submit")  # the final-output tool stays last
         added = sorted(str(tool.name) for tool in new if tool.name in tools)
         if not added and not removed:
-            return False
+            return moved
         trace.event(
             "TOOLS",
             "%s added=%s removed=%s",

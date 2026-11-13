@@ -207,7 +207,8 @@ async def answer(
     metadata: Mapping[str, Any],
 ) -> None:
     """Answer an offer card: ``submit`` adds the connector to this conversation (turning
-    it on first when it is off), ``decline`` refuses. ``metadata`` is not read."""
+    it on first when it is off), ``decline`` refuses. ``metadata.save_as_default`` names
+    the values that become the person's defaults; the others are this conversation's."""
 
     from clio_agent.connectors import secrets, state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
@@ -227,13 +228,27 @@ async def answer(
         plain, secret = service.check_values(found, values or {}, by_agent=False)
     except service.ConnectorError as exc:
         raise SetupResponseError(exc.status, exc.code, str(exc)) from None
+    from clio_agent.gact.connector_values import (  # noqa: PLC0415
+        default_keys,
+        session_choice,
+        write_overlay,
+    )
+
+    try:
+        defaults = default_keys(metadata, plain)  # CV-D5: the rest is this conversation's
+    except service.ConnectorError as exc:
+        raise SetupResponseError(exc.status, exc.code, str(exc)) from None
+    sid = str(row["session_id"])
     if secret:
         await asyncio.to_thread(secrets.save, found.id, secret)
-    if plain:
-        await asyncio.to_thread(state.update, found.id, values=plain)
+    if defaults:
+        await asyncio.to_thread(state.update, found.id, values=defaults)
+    own = {key: value for key, value in plain.items() if key not in defaults}
+    if own:
+        await asyncio.to_thread(write_overlay, app, sid, found.id, own)
     absent = [
         need
-        for need in await asyncio.to_thread(service.missing, found, state.choice(found.id))
+        for need in await asyncio.to_thread(service.missing, found, session_choice(app, sid, found))
         if need.kind != "sign-in"
     ]
     if absent:
@@ -247,7 +262,7 @@ async def answer(
     try:
         if enabled_now:
             await service.enable(app, found.id)
-        elif plain or secret:
+        elif defaults or secret:  # a conversation's own values reach only its fleet (CV-D5)
             await service.apply(app, found)
     except service.ConnectorError as exc:
         raise SetupResponseError(exc.status, exc.code, str(exc)) from None
@@ -302,15 +317,22 @@ def join_running_turn(app: Any, connector_id: str) -> tuple[list[str], str]:
     saved = service.saved_connection(connector_id)
     if saved is None:
         return [], "connector_join_no_connection"
-    try:
-        tools = join_namespace(agent, executor, connector_id, saved)
+    from clio_agent.gact.connector_values import session_fleet, session_overlay  # noqa: PLC0415
+
+    sid = _session_id()
+    own = session_fleet(app, sid) if connector_id in session_overlay(app, sid) else None
+    try:  # CV-D5: values of this conversation's own join its own fleet
+        tools = join_namespace(agent, own or executor, connector_id, saved)
     except ConnectorJoinError as exc:
         trace.event("TOOLS", "%s connector=%s", exc.reason, connector_id)
         return [], exc.reason
     if inner is None:
         inner = LiveToolRefresher(executor, set())
         refresher.inner = inner
-    inner.take(connector_id)
+    if own is not None and own is not inner.executor:
+        inner.move(connector_id, own)
+    else:
+        inner.take(connector_id)
     return sorted(tools), ""
 
 
