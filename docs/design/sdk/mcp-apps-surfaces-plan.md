@@ -134,7 +134,7 @@ Three connectors, each with a view. Each third-party one was read from source or
 
 - Tools: `preview_pdb_structure` (by PDB ID), `render_molecular_scene`, `open_ketcher`, `control_ketcher`, `preview_molecular_file`.
 - `preview_molecular_file` and the file form of `render_molecular_scene` take a ChatGPT file parameter. CLIO offers the PDB-ID and Ketcher tools only.
-- The view uses app tools, `requestDisplayMode` with `fullscreen`, `updateModelContext` (a selection of up to 96 atoms), `ui/message`, `openLink` and `callServerTool`. CLIO answers its fullscreen request with `inline` today.
+- *Amended (ledger F10, AQ34):* at `b1ac8ae` the view declares no app capabilities. It registers no app tools and never asks for `fullscreen`, and it does not call `ui/message` or `openLink`. It uses `ui/initialize`, size changes, `updateModelContext` (a selection of up to 96 atoms, sent only when the host advertises `updateModelContext`) and `callServerTool`. So moving it into a tab is the person's "Open in tab", a scene change arrives through `render_molecular_scene` as a new view, and app tools are proved by the app-tool fixture (AQ20 to AQ22).
 - If the hosted address cannot be reached from the session, the session runs Burette from its source at the pinned commit as a local server, qualifies against that, and records which one it used.
 
 **ltspice-mcp in detail.** One author, marked work in progress. Python 3.11 or later, stdio. It does not support macOS.
@@ -235,6 +235,8 @@ A need is required or optional, can have a default, and can be marked `agent_set
 
 **MA7. Closing.** Closing the tab while the app has no card left in view, unmounting its surface, ending the session, or shutting down the server closes the app through the existing `claim_close` and cleanup path.
 
+*Amended (ledger FX-D9, FX-D10):* a record whose server's fleet was closed (reaped after nobody viewed the conversation for the idle time, restarted, or evicted for a configuration change) is not live. It is dropped with the typed reason `mcp_app_server_stopped`, the UI is told with the `mcp_app_closed` event, and its card offers Reopen (MA19). The fleet is not kept alive for an open view: a conversation someone is viewing already holds its fleet, so no visible view is lost.
+
 ## Design: the app's context reaches the agent
 
 **MA8.** When the person sends a message, the turn's model text includes one block per live app that has reported context: the server name, the tool that opened it, and the context the view last reported. The block is added the same way `post_mcp_app_message` adds it today, moved into one function both paths call.
@@ -249,10 +251,10 @@ Follows "App-Provided Tools" in the draft specification.
 
 **MA11. Discovery.** When a view's `ui/initialize` declares the `tools` capability, the surface sends `tools/list` to the view and posts the result to `PUT .../mcp-apps/{app_id}/app-tools`. It repeats on `notifications/tools/list_changed`. When the frame unloads, it posts an empty list.
 
-**MA12. Offering them to the agent.** Each app tool becomes a deferred tool of the session named `app__<server>__<tool>`, with the view's description and input schema, in the catalog `search_tools` reads. `@<server>` loads them with the server's other tools. They leave the catalog when the list empties. They join the tool list at the next compaction like any loaded tool.
+**MA12. Offering them to the agent.** Each app tool becomes a deferred tool of the session named `app__<server>__<tool>`, with the view's description and input schema, in the catalog `search_tools` reads. `@<server>` loads them with the server's other tools. They leave the catalog when the list empties. They join the tool list at the next compaction like any loaded tool. *Amended (ledger MA12; summoning ledger DS6):* a loaded tool joins the tool list when the prompt is next rebuilt, not at a compaction; until then the app-context block (MA8) names the view's tools.
 
 **MA13. Calling one.** The agent's call goes to GACT, which emits a session event `mcp_app_tool_call` with the app instance, a call id, the tool name and arguments. The surface holding that app forwards it to the view as `tools/call` and posts the view's result to `POST .../mcp-apps/{app_id}/app-tool-results/{call_id}`. The agent receives the result's text blocks.
-- If no surface holds the app, the call returns at once with a result that says the app is not open and names the tool that opens it.
+- If no surface holds the app, the call returns at once with a result that says the app is not open and names the tool that opens it. *Amended (ledger MA13-D3):* when the session has a newer open view of the same server that has not yet listed its tools (it was just reopened), the call waits for that first list, with no timeout, and runs there.
 - There is no timeout on an open view (rule 6).
 - Permission follows the session's tool permission rules, keyed by the `app__` name.
 
@@ -266,13 +268,15 @@ Follows "App-Provided Tools" in the draft specification.
 
 **MA17.** The surface advertises the matching host capabilities, so views enable their controls.
 
+*Amended (ledger MA-theme):* `ui/initialize` and every host-context change also carry `theme` and `styles.variables`, the specification's theming variables, resolved from CLIO's own tokens for the theme in use, so a view can take CLIO's look.
+
 ## Design: reopening
 
 **MA18. The opening call is saved.** When a tool result opens a view, CLIO saves the server, the tool, its arguments and the display mode with the session's context in clio-core. The private result and the view's HTML are not saved.
 
 **MA19. Reopening replays the call.** Reopening a closed tab, or opening a session after CLIO restarted, calls the saved tool again with the saved arguments and mounts the new result. If the server is not running, CLIO starts it as it does for any call. The replay follows the session's tool permission rules.
 
-- A server that wants exact restoration makes its opening tool restore from its arguments. The ParaView connector does (PV11).
+- A server that wants exact restoration makes its opening tool restore from its arguments. The ParaView connector does (PV11). *Amended (ledger H2):* the opening result's private `_meta["ai.iowarp.clio/reopen"] = {arguments}` may name the arguments a replay uses instead of the call's. ParaView declares its scene id there, so a call made with `new=true` restores the scene rather than wiping it.
 - A replay that fails leaves the card with the reason and the saved call, so the person can retry.
 - CLIO keeps no copy of the view's state. What the view shows after a reopen is whatever the server returns.
 
@@ -308,6 +312,8 @@ This is the view contract of `plans/scientific-visualization-plan.md` applied to
 - Only a loopback port is accepted, and only from a server CLIO launched. Closing the app closes the route.
 
 This replaces any rule that lets a view reach `127.0.0.1` directly. A view never does.
+
+*Amended (ledger MA-sandbox, MA23-remote):* the views of each originating server get a sandbox host of their own, `s<digest>.mcp-apps.localhost:<CLIO port>`, which serves only the sandbox document and the service route. The view frame has `allow-scripts allow-same-origin allow-forms`, as the specification asks, so views that use storage work. A browser that reaches CLIO by a network name needs `gact.mcp_apps.sandbox_host`; without it the view does not mount and its card says what to set.
 
 ## Design: the ParaView connector
 
@@ -349,8 +355,9 @@ When ParaView is on the person's own machine, the right-hand box is on that mach
 - When the machine cannot reach the package index, the front builds the environment from the jump host, which shares the home folder on a cluster. When neither can, the message says exactly what is missing.
 - ParaView 6.0 or later is required. Its Python is 3.12.
 - Later attaches reuse the folder and take seconds.
+- *Amended (ledger PV4-D1, PV4-D2):* the environment is a `pip --target` folder built for pvpython's version and platform, so it can be built from any host that shares the home. On the person's own machine the folder is clio-kit's data folder, because CLIO's write fence keeps the servers it launches out of `~/.clio`.
 
-**PV5. A ParaView that is already running.** If a `pvserver` is listening on the node, on port 11111 or the port given, the node half connects to it as its one client, and what it shows is that session's data. If none is listening, the node half is the ParaView session itself.
+**PV5. A ParaView that is already running.** If a `pvserver` is listening on the node, on port 11111 or the port given, the node half connects to it as its one client, and what it shows is that session's data. *Amended (ledger PV5-F1):* it connects as one more client, since a ParaView 6.2.1 `pvserver` that holds a session already has the client that loaded it. If none is listening, the node half is the ParaView session itself.
 
 **PV6. Staying alive.** The node half does not die with the connection.
 
@@ -396,7 +403,7 @@ When ParaView is on the person's own machine, the right-hand box is on that mach
 
 ## Addendum: the agent looks at an app; comments on app views
 
-The plan gave the agent a view's context (MA8) and its tools (MA13), but not its pixels, and the comment system ([comments plan](comments-and-visual-feedback-plan.md)) did not cover app views. Both now rest on one snapshot. Decisions use the prefix `CM`; the ledger rows are in `mcp-apps-ledger.d/comments.md`.
+The plan gave the agent a view's context (MA8) and its tools (MA13), but not its pixels, and the comment system ([comments plan](comments-and-visual-feedback-plan.md)) did not cover app views. Both now rest on one snapshot. Decisions use the prefix `CM`; the ledger rows are in the [ledger](mcp-apps-ledger.md), "Looking at views and comments".
 
 **CM1. The agent looks.** A native tool, `look_at_view(view)`, deferred in the core plugin and withheld from a model without image input, names one of the session's live views (by title, server, tool or instance id; the only one when there is one) and returns an image of what the view shows now, as the person sees it, with the context it last reported (MA9) and its identity. It works as an app tool call does: the session event `mcp_app_look` goes to the surface holding the view, the surface posts the snapshot to `POST …/looks/{call_id}`, and the call waits with no timeout (rule 6); cancelling the turn ends it. Each mount of a view says it holds the view with `PUT …/shown` (a card and a tab overlap while a frame moves). A look at a view no mount holds, or in a conversation no window is watching, is answered at once (`mcp_app_view_not_shown`), naming how to show it; a look also ends that way when the last window goes while it waits, since nothing can answer it. The image reaches the model as the call's native image part (the `view_image` descriptor path), followed by the identity, the context and the snapshot's gaps in words; the image is also kept as an artifact the transcript links. The app-context block (MA8) tells the agent which open views are on screen and that it can look at them.
 
@@ -462,7 +469,7 @@ The remote case is tested as far as a single machine allows, with containers sta
 
 - `login` and `node08` share one home folder, as a cluster does.
 - One user, one key pair. The session's `~/.ssh/config` has `login`, and `node08` with `ProxyJump login`.
-- A second form of `node08` starts with a `pvserver` already running and a dataset loaded in it.
+- A second form of `node08` starts with a `pvserver` already running and a dataset loaded in it. *Amended (ledger PVC8, QPV-D1):* a ParaView 6.2.1 `pvserver` keeps its pipeline only while a client is connected and exits when its first client disconnects. This form therefore runs `pvserver --multi-clients` with a holder client that keeps the dataset loaded, and the node half joins as one more client. Only the fixture uses `--multi-clients`; the server never does (PV2, AQ52). The fixture is in clio-kit `tests/fixtures/paraview-cluster/`.
 - If containers cannot run in the session, the same three roles are separate SSH servers on loopback ports with separate users and homes. The ledger says which form was used and what it could not model.
 
 What a container cannot stand for is left to the local phase: a real scheduler, a real two-factor site, a GPU node, and network distance.
@@ -475,7 +482,7 @@ These are facts the work depends on. Each is recorded with its source before the
 - Every place the "MCP sign-in required" failure is raised or shown, for CN5.
 - How the resolver takes a person's additions, for CN9.
 - The source and terms of each logo shipped.
-- The output of `plans/mcp-app-probe.py` against ltspice-mcp and Burette: server info, the tools that carry a UI resource, each resource's MIME type, CSP and size, and which host features the view's code uses.
+- The output of `plans/mcp-app-probe.py` (*amended:* `scripts/mcp_app_probe.py`, ledger GR7) against ltspice-mcp and Burette: server info, the tools that carry a UI resource, each resource's MIME type, CSP and size, and which host features the view's code uses.
 - From the draft specification at `ea3e9d0`: the exact messages and capability names for app tools, downloads and open-link.
 - The clio-core path for MA9 and MA18.
 - Every use of `useActiveMcpAppId`, `McpAppHistoryLine` and `closeMcpApp`.
@@ -518,7 +525,7 @@ Fixtures the session builds besides the cluster: three fixture connector entries
 | AQ18 | The fixture reports context, then the person types "what am I looking at?" | The turn's model text contains the reported context, and the answer uses it |
 | AQ19 | The context record for a live session | Read from clio-core in a unit test. Nothing reads `record.model_context` |
 | AQ20 | The app-tool fixture in a tab. Ask the agent for the change its tool makes | `search_tools` finds `app__<server>__<tool>`. The call reaches the view. The view changes on screen. The agent reports the result |
-| AQ21 | The same request after closing the tab | The call returns at once saying the app is not open and naming the tool that opens it |
+| AQ21 | The same request after closing the tab | The call returns at once saying the app is not open and naming the tool that opens it. *Amended (ledger Q-O3):* closing the tab of the conversation's latest app returns it to its card (MA2), so the app is closed another way: its tab when it is not the latest, or the close route |
 | AQ22 | The fixture changes its tool list after the first call | The new tool is offered without a restart, and the removed one is gone |
 | AQ23 | The fixture's view calls `ui/open-link` with an `https` URL, then with `file:` | The first opens a browser page. The second is refused with a typed reason |
 | AQ24 | The fixture's view requests a download | The file is in the workspace and listed as an artifact |
@@ -536,7 +543,7 @@ Fixtures the session builds besides the cluster: three fixture connector entries
 | --- | --- | --- |
 | AQ32 | spice: enable it, simulate the netlist with ngspice and "show me V(out)" | `plot_waveform` renders the chart in the conversation, not in an external browser |
 | AQ33 | burette: enable it, "show PDB 1CRN", open in tab, select residues, ask "what did I select?" | The structure renders in Mol*. The answer names the selected residues from the reported context |
-| AQ34 | burette: with the structure in a tab, "focus the ligand and hide water" | The agent acts through the view's app tools or `render_molecular_scene`, and the view changes without reloading |
+| AQ34 | burette: with the structure in a tab, "focus the ligand and hide water" | The agent acts through the view's app tools or `render_molecular_scene`, and the view changes without reloading. *Amended:* Burette at `b1ac8ae` has no app tools, so the change arrives as a new view; "without reloading" waits on Burette registering app tools ([ledger](mcp-apps-ledger.md), Open) |
 | AQ35 | paraview: enable it on a machine with no ParaView and start a conversation | The connector is ready and its tools are listed. The first scene call says no ParaView was found here and how to point the connector at one |
 | AQ36 | paraview, this machine: "open <dataset> and show an isosurface of <field>" | A tab opens with the trame view. Rotating it is drawn in the browser, and no image is requested during the drag |
 | AQ37 | paraview: "what is the field's range, and what did I pick?" after a pick | The answer comes from `measure_field` and `inspect_selection`. `capture` returns a PNG at the camera on screen |

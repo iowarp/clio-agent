@@ -1,7 +1,7 @@
 // Hero screenshots (q-apps) of each kind of view at 1440x900: the left navigation collapsed and
 // the workbench maximized, so the view fills the frame. One fresh conversation per view.
 //
-// Needs the fixtures saved as in docs/design/sdk/mcp-apps-ledger.d/q-apps.md (hostpanel,
+// Needs the fixtures saved as in docs/design/sdk/mcp-apps-ledger.md, Stack fixtures (hostpanel,
 // board, livecounter, timeline). CHECK_HEROES (comma list, default all) picks the views:
 //   panel    the host panel in a tab (AQ13)
 //   board    the readings board in a tab with a highlight the agent set (AQ20)
