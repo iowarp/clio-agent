@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -324,12 +325,45 @@ def _run_icacls(argv: list[str]) -> tuple[int, str]:  # pragma: no cover - live 
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def _apply_grant(
+    grant: FleetGrant,
+    argv: list[str],
+    run: Callable[[list[str]], tuple[int, str]],
+    parallel: Optional[Callable[[str, Sequence[str]], Any]],
+) -> tuple[int, str]:
+    """Apply one grant, preferring the parallel inherited grant; ``icacls`` repairs any failure.
+
+    ``icacls`` rewrites the whole tree, so a parallel pass that stopped partway never persists.
+    """
+    if parallel is not None and grant.inherit:
+        started = time.monotonic()
+        try:
+            stats = parallel(grant.path, grant.users)
+        except Exception as exc:  # noqa: BLE001 - any failure falls back to icacls
+            logger.info(
+                "fleet-runtime parallel grant unavailable label=%s, using icacls: %s: %s",
+                grant.label,
+                type(exc).__name__,
+                exc,
+            )
+        else:
+            logger.info(
+                "fleet-runtime parallel grant label=%s seconds=%.2f %s",
+                grant.label,
+                time.monotonic() - started,
+                stats,
+            )
+            return 0, ""
+    return run(argv)
+
+
 def grant_fleet_runtime_access(
     *,
     runner: Optional[Callable[[list[str]], tuple[int, str]]] = None,
     plan: Optional[Sequence[FleetGrant]] = None,
     platform: str = sys.platform,
     combine_users: bool = False,
+    parallel: Optional[Callable[[str, Sequence[str]], Any]] = None,
 ) -> list[dict[str, Any]]:
     """Grant the codex restricted sandbox users read+exec on the fleet runtime (Windows only).
 
@@ -342,6 +376,9 @@ def grant_fleet_runtime_access(
     logged and returned for setup to reject. ``runner`` / ``plan`` are injected by
     tests so no real ``icacls`` runs. ``combine_users`` grants all users in one operation;
     any failure marks every user unsuccessful so a partial operation cannot be cached.
+    A combined inherited grant first tries ``parallel`` (by default the identical
+    subtree-parallel grant in :mod:`clio_agent.runtime.acl_parallel`, live Windows only)
+    and falls back to ``icacls`` on any error.
     Returns the per-grant reason records (for the caller/trace).
     """
     reasons: list[dict[str, Any]] = []
@@ -351,6 +388,10 @@ def grant_fleet_runtime_access(
         return reasons
     grants = list(plan) if plan is not None else build_fleet_runtime_grant_plan()
     run = runner if runner is not None else _run_icacls
+    if parallel is None and runner is None and os.name == "nt":
+        from clio_agent.runtime.acl_parallel import (  # noqa: PLC0415 - win32 only
+            grant_inherited_read_execute as parallel,
+        )
     for grant in grants:
         if not grant.exists:
             logger.info(
@@ -362,7 +403,7 @@ def grant_fleet_runtime_access(
             continue
         for argv in grant.icacls_argv(combine_users=combine_users):
             users = grant.users if combine_users else (argv[3].split(":", 1)[0],)
-            rc, out = run(argv)
+            rc, out = _apply_grant(grant, argv, run, parallel if combine_users else None)
             for user in users:
                 record: dict[str, Any] = {
                     "grant": grant.label,
