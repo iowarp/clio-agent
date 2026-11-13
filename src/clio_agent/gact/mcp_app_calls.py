@@ -41,6 +41,7 @@ from clio_agent.gact.mcp_apps import (
     _registry,
     _resource_uri,
     _run_bound,
+    _tool_visible_to_app,
     call_tool_result_to_wire,
 )
 from clio_agent.gact.routes._body import json_body
@@ -80,6 +81,9 @@ class _ReplayCapture:
     reopened_from: str
     display_mode: str
     record: MCPAppRecord | None = None
+    #: ``False`` for a call whose definition lives elsewhere (an A2UI surface's
+    #: ``clio.mcp-app.v1`` component, MA20): it is not saved on the session.
+    save: bool = True
 
 
 _REPLAY: ContextVar[_ReplayCapture | None] = ContextVar("mcp_app_replay", default=None)
@@ -175,6 +179,9 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
     """
 
     capture = _REPLAY.get()
+    if capture is not None and not capture.save:
+        capture.record = record
+        return True
     bare = _bare_tool(record)
     arguments, unsaved = _saved_arguments(record.tool_input)
     entry: dict[str, Any] = {
@@ -301,6 +308,17 @@ async def reopen_saved_call(app: FastAPI, sid: str, app_instance_id: str) -> dic
     )
 
 
+def server_tools(definitions: Mapping[str, Any], server: str) -> list[str]:
+    """The tools of ``server`` its views may call, without the server's prefix."""
+
+    prefix = f"{server}_"
+    return sorted(
+        name[len(prefix) :]
+        for name, tool in definitions.items()
+        if name.startswith(prefix) and _tool_visible_to_app(tool)
+    )
+
+
 def call_entry(call: Mapping[str, Any]) -> dict[str, Any]:
     """A saved-call entry from a caller-given call (an A2UI component's props, MA20)."""
 
@@ -330,13 +348,22 @@ def call_entry(call: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def replay_call(
-    app: FastAPI, sid: str, entry: dict[str, Any] | None, *, reopened_from: str
+    app: FastAPI,
+    sid: str,
+    entry: dict[str, Any] | None,
+    *,
+    reopened_from: str,
+    save: bool = True,
 ) -> dict[str, Any]:
     """Call one opening call through the gated executor path and admit its view.
 
     ``reopened_from`` names the view the call was saved for; it is empty for a call
     a caller gives directly (the A2UI component's), which opens a view for the
-    first time and is saved like any opening call.
+    first time. ``save`` says whether the new view's call is saved on the session
+    and answered as ``saved_call``; a call held by an A2UI surface is not (MA20):
+    the surface keeps it, and saving it on every mount would grow the session.
+    Every answer that opens a view lists ``server_tools``, the server's tools the
+    view may call, so a surface can tell a server tool from one of the view's own.
     """
 
     def failed(reason: str, detail: str = "") -> dict[str, Any]:
@@ -353,11 +380,14 @@ async def replay_call(
     capture = _ReplayCapture(
         reopened_from=reopened_from,
         display_mode=str(entry.get("display_mode") or "inline"),
+        save=save,
     )
     arguments = dict(entry["arguments"])
+    tools: list[str] = []
 
     def replay(executor: Any) -> Any:
         full_name = _resolve_opening_tool(executor, entry)
+        tools.extend(server_tools(executor.get_all_tool_definitions(), str(entry["server"])))
         token = _REPLAY.set(capture)
         try:
             return executor.call_tool_result(full_name, arguments)
@@ -387,7 +417,8 @@ async def replay_call(
     )
     return {
         "part": _part(capture.record, capture.display_mode),
-        "saved_call": saved_call(app, sid, capture.record.app_instance_id),
+        "saved_call": saved_call(app, sid, capture.record.app_instance_id) if save else entry,
+        "server_tools": tools,
     }
 
 
@@ -414,8 +445,9 @@ def register_mcp_app_reopen_routes(app: FastAPI) -> None:
     """Register the reopen route and the card's liveness check.
 
     ``POST …/mcp-apps/reopen`` takes ``{app_instance_id}`` (replay a saved call) or
-    ``{call: {server, tool, arguments, display_mode?}}`` (open a view from a call the
-    caller holds, as the A2UI component does). Both answer as :func:`replay_call`.
+    ``{call: {server, tool, arguments, display_mode?}, save?}`` (open a view from a
+    call the caller holds). The A2UI component sends ``save: false``: it holds the
+    call itself. Both answer as :func:`replay_call`.
     """
 
     @app.get("/v1/sessions/{sid}/mcp-apps/{app_id}/live")
@@ -433,11 +465,14 @@ def register_mcp_app_reopen_routes(app: FastAPI) -> None:
         body = await json_body(request, route="POST MCP App reopen")
         call = body.get("call")
         if isinstance(call, Mapping):
+            save = body.get("save", True)
+            if not isinstance(save, bool):
+                raise HTTPException(status_code=422, detail="save must be a boolean")
             try:
                 entry = call_entry(call)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            return await replay_call(app, sid, entry, reopened_from="")
+            return await replay_call(app, sid, entry, reopened_from="", save=save)
         app_instance_id = str(body.get("app_instance_id") or "").strip()
         if not app_instance_id:
             raise HTTPException(status_code=422, detail="app_instance_id or call is required")
@@ -458,5 +493,6 @@ __all__ = [
     "reopen_saved_call",
     "saved_call",
     "saved_calls",
+    "server_tools",
     "set_saved_display_mode",
 ]

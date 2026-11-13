@@ -23,6 +23,7 @@ from clio_agent.gact.a2ui_producer import (
     _common,
     _data_reference,
     _export,
+    _mcp_app_reference,
 )
 from clio_agent.gact.artifacts.minting import _contained, _session_workspace_id, _workspace_root
 from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE
@@ -103,6 +104,9 @@ def compile_dashboard_surface(
     chart_error = _chart_spec.validate_chart_components(components)
     if chart_error:
         raise ValueError(json.dumps(chart_error))
+    app_error = _mcp_app_reference.validate_mcp_app_components(app, components)
+    if app_error:
+        raise ValueError(json.dumps(app_error))
     selection = select_catalog(app, sid, preferred=document.catalog_id or None)
     if not selection.ok:
         raise ValueError(f"The dashboard catalog could not be selected: {selection}")
