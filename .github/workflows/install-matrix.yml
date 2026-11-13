@@ -14,6 +14,7 @@ on:
     branches: [develop, main, 'claude/**']
     paths:
       - 'install/**'
+      - 'src/clio_agent/runtime/document_office.py'
       - 'src/clio_agent/runtime/document_runtime.py'
       - 'src/clio_agent/runtime/document_venv.py'
       - 'src/clio_agent/runtime/document_stack/office.py'
