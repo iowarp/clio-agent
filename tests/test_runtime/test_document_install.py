@@ -126,15 +126,22 @@ def test_installer_reports_each_sub_jobs_seconds(
 ) -> None:
     (tmp_path / "locked").mkdir()
 
-    def packages(*args: Any, timings: dict[str, float] | None = None, **kwargs: Any) -> Any:
+    def packages(
+        *args: Any,
+        timings: dict[str, float] | None = None,
+        office_checked: bool = False,
+        **kwargs: Any,
+    ) -> Any:
         assert timings is not None
+        # The installer's conversion check owns Office; the probe must not start it again.
+        assert office_checked
         timings["python_environment"] = 1.0
         return {
             "status": "ready",
             "runtime_id": "locked",
             "javascript": {"status": "ready"},
-            "native_tools": {},
-            "capabilities": {},
+            "native_tools": {"soffice": {"status": "not_checked"}},
+            "capabilities": {"office_render_recalculate": "not_checked"},
         }
 
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
@@ -148,7 +155,11 @@ def test_installer_reports_each_sub_jobs_seconds(
         lambda **kwargs: {"status": "available", "implementation": "mxc"},
     )
     timings: dict[str, float] = {}
-    installer.install_document_runtime(tmp_path / "workspace", cache_root=tmp_path, timings=timings)
+    result = installer.install_document_runtime(
+        tmp_path / "workspace", cache_root=tmp_path, timings=timings
+    )
+    assert result["native_tools"]["soffice"] == {"status": "available", "path": "soffice"}
+    assert result["capabilities"]["office_render_recalculate"] == "available"
     assert set(timings) == {
         "protect_runtime",
         "office",

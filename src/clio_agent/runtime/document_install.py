@@ -125,7 +125,11 @@ def prepare_managed_packages(
                 timings,
                 "packages",
                 lambda: prepare_document_runtime(
-                    workspace, cache_root=cache_root, progress=report, timings=timings
+                    workspace,
+                    cache_root=cache_root,
+                    progress=report,
+                    office_checked=True,
+                    timings=timings,
                 ),
             )
             if result["javascript"]["status"] != "ready":

@@ -93,13 +93,17 @@ def _native_tool(name: str, cwd: Path) -> dict[str, Any]:
         return {"status": "failed", "error": str(exc)}
 
 
-def native_inventory(cwd: Path) -> dict[str, dict[str, Any]]:
-    """Probe the independent converters concurrently."""
+def native_inventory(cwd: Path, *, skip: frozenset[str] = frozenset()) -> dict[str, dict[str, Any]]:
+    """Probe the independent converters concurrently; ``skip`` names ones checked elsewhere."""
+    probed = [name for name in NATIVE_TOOLS if name not in skip]
     with ThreadPoolExecutor(
-        max_workers=len(NATIVE_TOOLS), thread_name_prefix="document-native-probe"
+        max_workers=max(1, len(probed)), thread_name_prefix="document-native-probe"
     ) as pool:
-        futures = {name: pool.submit(_native_tool, name, cwd) for name in NATIVE_TOOLS}
-        return {name: future.result() for name, future in futures.items()}
+        futures = {name: pool.submit(_native_tool, name, cwd) for name in probed}
+        return {
+            name: futures[name].result() if name in futures else {"status": "not_checked"}
+            for name in NATIVE_TOOLS
+        }
 
 
 def _import_packages() -> None:
@@ -167,8 +171,13 @@ def _node_version(node_root: Path, node: Path) -> str:
     return run([str(node), "--version"], cwd=node_root).strip()
 
 
-def inventory(*, execution_only: bool = False) -> dict[str, Any]:
-    """Inspect current packages and tools, with optional lightweight module discovery."""
+def inventory(*, execution_only: bool = False, office_checked: bool = False) -> dict[str, Any]:
+    """Inspect current packages and tools, with optional lightweight module discovery.
+
+    ``office_checked`` is for an installer that verifies Office with a real conversion at
+    the same time: a second cold LibreOffice start here would compete with that check for
+    the first scan of the same freshly written files, and its answer would be replaced.
+    """
     nodejs_spec = importlib.util.find_spec("nodejs_wheel")
     node_root, node = _node(nodejs_spec.origin if nodejs_spec else None)
     if execution_only:
@@ -185,7 +194,11 @@ def inventory(*, execution_only: bool = False) -> dict[str, Any]:
         # import: each is mostly waiting on a process start or a first file check.
         with ThreadPoolExecutor(max_workers=3, thread_name_prefix="document-probe") as pool:
             version_future = pool.submit(_node_version, node_root, node)
-            native_future = pool.submit(native_inventory, node_root)
+            native_future = pool.submit(
+                native_inventory,
+                node_root,
+                skip=frozenset({"soffice"}) if office_checked else frozenset(),
+            )
             fonts_future = pool.submit(_font_inventory)
             _import_packages()
             node_version = version_future.result()
@@ -221,10 +234,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execution-only", action="store_true")
     parser.add_argument("--execution-host", action="store_true")
+    parser.add_argument("--office-checked", action="store_true")
     arguments = parser.parse_args()
     result = (
         execution_host_inventory()
         if arguments.execution_host
-        else inventory(execution_only=arguments.execution_only)
+        else inventory(
+            execution_only=arguments.execution_only, office_checked=arguments.office_checked
+        )
     )
     print(json.dumps(result, ensure_ascii=False))
