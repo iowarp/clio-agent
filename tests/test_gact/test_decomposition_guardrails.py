@@ -259,7 +259,11 @@ from clio_agent.gact.app import build_app
 # 443 -> 451: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
 # /v1/connectors, POST /v1/connectors, GET and DELETE /v1/connectors/{id}, GET .../logo,
 # PUT .../values, POST .../enable and POST .../disable.
-EXPECTED_ROUTE_METHOD_PAIRS = 451
+# 451 -> 469: the integration head registered 467 (the apps streams' MCP App routes:
+# display mode, pin, downloads, app tools, reopen, live, the service route) and the
+# look routes add PUT /v1/sessions/{sid}/mcp-apps/{app_id}/shown and POST
+# .../looks/{call_id} (gact/mcp_app_look_routes.py, CM1).
+EXPECTED_ROUTE_METHOD_PAIRS = 469
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

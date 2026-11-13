@@ -15,6 +15,7 @@ from fastapi import HTTPException, Request
 
 from clio_agent.gact.mcp_app_sandbox_origin import sandbox_host_for
 from clio_agent.gact.mcp_app_service_declaration import is_loopback_source
+from clio_agent.gact.mcp_app_snapshot_script import SNAPSHOT_METHOD, SNAPSHOT_SCRIPT
 
 
 def _host_origin(request: Request) -> str:
@@ -110,12 +111,12 @@ def _csp_header(
     )
 
 
-_SANDBOX_DOCUMENT = r"""<!doctype html>
+_SANDBOX_TEMPLATE = r"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
 <title>MCP App sandbox</title><style>
 html,body{margin:0;width:100%;height:100%;background:transparent}body{display:flex}
 iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
-</style></head><body><script>
+</style></head><body><script>@@SNAPSHOT_SCRIPT@@</script><script>
 (() => {
   if (window.self === window.top || !document.referrer) throw new Error('invalid sandbox embed');
   const expected = new URL(document.referrer).origin;
@@ -147,6 +148,24 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
         if (allow.length) inner.setAttribute('allow', allow.join('; '));
         if (typeof html !== 'string') return;
         inner.srcdoc = html;
+      } else if (event.data?.method === '@@SNAPSHOT_METHOD@@' && event.data.id !== undefined) {
+        // The host asks for a snapshot of the view: answered here, never sent to the view.
+        const id = event.data.id;
+        const reply = (result) => window.parent.postMessage({jsonrpc: '2.0', id, result}, parentTarget);
+        const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+        const nudge = async () => {
+          inner.style.height = 'calc(100% - 1px)';
+          await frame(); await frame();
+          inner.style.height = '';
+        };
+        let view = null;
+        try { view = inner.contentWindow; void view.document.documentElement; } catch { view = null; }
+        if (!view) {
+          reply({error: {reason: 'view_not_readable', message: 'The view runs on another origin, so CLIO cannot read its pixels.'}});
+          return;
+        }
+        clioViewSnapshot(view, {...(event.data.params || {}), nudge}).then(reply, (error) =>
+          reply({error: {reason: 'snapshot_failed', message: String(error && error.message || error)}}));
       } else {
         inner.contentWindow?.postMessage(event.data, '*');
       }
@@ -158,6 +177,11 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
   window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/sandbox-proxy-ready',params:{}}, parentTarget);
 })();
 </script></body></html>"""
+
+#: The outer sandbox document: the frame proxy plus the view snapshot (CM1).
+_SANDBOX_DOCUMENT = _SANDBOX_TEMPLATE.replace("@@SNAPSHOT_SCRIPT@@", SNAPSHOT_SCRIPT).replace(
+    "@@SNAPSHOT_METHOD@@", SNAPSHOT_METHOD
+)
 
 
 __all__ = [

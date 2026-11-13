@@ -28,6 +28,8 @@ load_skill = native_tool("load_skill")
 search_tools = native_tool("search_tools")
 # A value one of the person's connectors needs, given in the conversation (CN6).
 set_connector_value = native_tool("set_connector_value")
+# The pixels and the last report of an app view open in the conversation (CM1).
+look_at_view = native_tool("look_at_view", defer=True)
 run_code = native_tool("run_code")
 
 # Goals, loops and schedules.

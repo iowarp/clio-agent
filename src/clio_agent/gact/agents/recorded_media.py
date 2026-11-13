@@ -90,6 +90,19 @@ def _result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolRes
     if (
         media is not None
         and isinstance(value, Mapping)
+        and isinstance(value.get("model_text"), str)
+    ):
+        # A look at an app view: the image, then what it shows in words (identity,
+        # the view's last report, what the snapshot could not paint).
+        return ToolResultPart(
+            id=call_id,
+            content=(*content, TextPart(text=value["model_text"])),
+            name=name,
+            is_error=is_error,
+        )
+    if (
+        media is not None
+        and isinstance(value, Mapping)
         and (value.get("capture") or isinstance(media, DocumentPart))
     ):
         # Provider media remain ephemeral; their compact, exact provenance
