@@ -200,6 +200,7 @@ def build_set_connector_value_tool() -> Any:
         name=TOOL_NAME,
         domain="tasks",
         title="Set connector value",
+        outside=True,  # restarts the connector's server: follows the approval mode
         desc=(
             "Set values one of the person's connectors needs, such as where its server "
             "runs, when the person gives them in the conversation or a tool just produced "
