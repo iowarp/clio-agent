@@ -225,13 +225,18 @@ async def respond(
     if action == "decline":
         row.update(status="declined", updated_at=_now())
     elif action == "submit":
+        found = service.entry(row["connector_id"])
+        absent = await asyncio.to_thread(service.missing, found, state.choice(found.id))
         if values:
             try:
                 await service.set_values(app, row["connector_id"], values)
             except service.ConnectorError as exc:
                 raise SetupResponseError(exc.status, exc.code, str(exc)) from None
-        found = service.entry(row["connector_id"])
-        absent = await asyncio.to_thread(service.missing, found, state.choice(found.id))
+            absent = await asyncio.to_thread(service.missing, found, state.choice(found.id))
+        elif not absent:
+            # Signed in through the sign-in flow: the waiting call's fleet reconnects to it
+            # (a connection that failed for want of a sign-in is not reused).
+            await service.apply(app, found)
         if absent:
             raise SetupResponseError(
                 422,

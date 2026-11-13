@@ -7,15 +7,20 @@
 // this). The request is plain: it names no tool.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { AGENT, ROOT, api, openConversation, send, toolCalls, waitIdle } from "./_lib.mjs";
+import { AGENT, ROOT, allowPending, api, openConversation, send, toolCalls, waitIdle } from "./_lib.mjs";
 
 export default async function (page, shot) {
   const log = [];
   await api("DELETE", "/v1/mcp/configuration/fixture-signin/authorization");
   const { session } = await openConversation(page, "connector-card");
-  await send(page, "What does the synthetic test account say about its status?");
+  await send(page, "What does the Fixture Sign-in test account say about its status?");
   const card = page.locator('[data-interaction-kind="connector_setup"]').last();
-  await card.waitFor({ state: "visible", timeout: 300000 });
+  const until = Date.now() + 300000;
+  while (!(await card.isVisible())) {
+    if (Date.now() > until) throw new Error("no setup card appeared");
+    await allowPending(session.id, log); // a person allowing the session's tool calls
+    await page.waitForTimeout(2000);
+  }
   await card.scrollIntoViewIfNeeded();
   await shot("card-waiting");
   const status = (await api("GET", `/v1/sessions/${session.id}`)).status;

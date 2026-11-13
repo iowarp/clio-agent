@@ -52,6 +52,20 @@ def last_listed(connector_id: str) -> list[Any]:
     return [Tool.model_validate(row) for row in rows if isinstance(row, dict)]
 
 
+def chain_names(error: BaseException) -> str:
+    """The exception types ``error`` wraps, for a typed trace."""
+
+    names: list[str] = []
+    pending: list[BaseException] = [error]
+    while pending and len(names) < 16:
+        current = pending.pop()
+        names.append(type(current).__name__)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        pending.extend(item for item in (current.__cause__, current.__context__) if item)
+    return ">".join(names)
+
+
 def needs_setup(error: BaseException) -> bool:
     """Whether ``error`` (or anything it wraps) says the connection needs a sign-in."""
 

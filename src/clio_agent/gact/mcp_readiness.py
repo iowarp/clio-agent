@@ -244,7 +244,15 @@ def _connector_tools_kept(
     from clio_agent.connectors import listing  # noqa: PLC0415
 
     connector = str(getattr(spec, "connector", "") or "")
-    if not connector or not listing.needs_setup(exc):
+    if not connector:
+        return None
+    if not listing.needs_setup(exc):
+        logger.warning(
+            "reason=connector_listing_failed namespace=%s error=%s chain=%s",
+            namespace,
+            type(exc).__name__,
+            listing.chain_names(exc),
+        )
         return None
     kept = {
         f"{namespace}_{tool.name}": tool.model_copy(update={"name": f"{namespace}_{tool.name}"})

@@ -61,3 +61,25 @@ def test_choices_and_scope(fixture_catalog: Path) -> None:
     assert state.all_entries()["custom-one"].source == "custom"
     state.forget("custom-one")
     assert "custom-one" not in state.all_entries()
+
+
+def test_a_rebound_spec_takes_the_new_values_and_keeps_the_plugin_folders(
+    fixture_catalog: Path,
+) -> None:
+    from clio_agent.gact.connector_rebind import rebound_spec
+
+    found = entries.load_catalog().entries["fixture-secret"]
+    before = spec_from_declaration(
+        "fixture-secret",
+        {
+            **materialize.declaration(found, {"where": "here"}),
+            "env": {"FIXTURE_WHERE": "here", "PLUGIN_ROOT": "/p", "PLUGIN_DATA": "/d"},
+        },
+        source="plugin:fixture-secret-skills",
+    )
+    after = rebound_spec(
+        before, materialize.declaration(found, {"where": "node08"}), "fixture-secret"
+    )
+    assert after.env["FIXTURE_WHERE"] == "node08"
+    assert after.env["PLUGIN_ROOT"] == "/p" and after.env["PLUGIN_DATA"] == "/d"
+    assert after.source == "plugin:fixture-secret-skills" and after.connector == "fixture-secret"

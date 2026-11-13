@@ -35,7 +35,9 @@ def test_agent_and_person_refusals(fixture_catalog: Path) -> None:
     with pytest.raises(service.ConnectorError) as line:
         service.check_values(found, {"where": "a\nb"}, by_agent=True)
     assert line.value.code == "connector_value_invalid"
-    plain, secret_values = service.check_values(found, {"where": " h ", "token": "t"}, by_agent=False)
+    plain, secret_values = service.check_values(
+        found, {"where": " h ", "token": "t"}, by_agent=False
+    )
     assert plain == {"where": "h"} and secret_values == {"token": "t"}
 
 
