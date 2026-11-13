@@ -74,7 +74,9 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         )
     context = row.get("context_lines")
     if isinstance(context, list) and context:
-        blocks.append(_text("context", "Last reported", "\n".join(str(x) for x in context)))
+        # The view's own report, line for line (it is data: keep its line breaks).
+        report = "\n".join(str(x) for x in context)
+        blocks.append({"id": "context", "type": "code", "label": "Last reported", "text": report})
     coverage = row.get("coverage") if isinstance(row.get("coverage"), Mapping) else {}
     gaps = [line for line in coverage_lines(coverage) if line.startswith("Not in the image")]
     if gaps:

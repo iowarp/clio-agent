@@ -152,6 +152,16 @@ const clioViewSnapshot = (() => {
 
   const clear = (color) => !color || color === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(color);
 
+  // The background a page shows: its body's, else its root's (a theme sets either).
+  function pageBackground(win) {
+    for (const node of [win.document.body, win.document.documentElement]) {
+      if (!node) continue;
+      const color = win.getComputedStyle(node).backgroundColor;
+      if (!clear(color)) return color;
+    }
+    return '';
+  }
+
   // HTML is drawn approximately: boxes with a background, and text that sits on one line.
   function paintBackgrounds(context, frames, media) {
     let count = 0;
@@ -161,6 +171,12 @@ const clioViewSnapshot = (() => {
       context.beginPath();
       context.rect(x, y, win.innerWidth, win.innerHeight);
       context.clip();
+      // The frame's own page background first (a themed view sets it on html or body).
+      const page = pageBackground(win);
+      if (page) {
+        context.fillStyle = page;
+        context.fillRect(x, y, win.innerWidth, win.innerHeight);
+      }
       for (let i = 0; i < all.length && count < 6000; i += 1) {
         const element = all[i];
         if (media.has(element) || element.closest('svg')) continue;
@@ -246,9 +262,8 @@ const clioViewSnapshot = (() => {
     out.width = Math.round(width * scale);
     out.height = Math.round(height * scale);
     const context = out.getContext('2d');
+    // Under a view with no background of its own: the host's themed background.
     context.fillStyle = params.background || '#ffffff';
-    const own = view.getComputedStyle(view.document.body || view.document.documentElement).backgroundColor;
-    if (own && !/rgba\(0, 0, 0, 0\)|transparent/.test(own)) context.fillStyle = own;
     context.fillRect(0, 0, out.width, out.height);
     context.scale(scale, scale);
     const painted = new Set();

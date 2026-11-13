@@ -160,6 +160,7 @@ def test_a_look_gets_the_snapshot_and_the_context_as_model_media(
         view = present({"view": "scene"}, row, row)
         assert view["action"] == "Look at view" and "status" not in view
         assert [block["id"] for block in view["blocks"]] == ["image", "view", "context", "gaps"]
+        assert view["blocks"][2]["type"] == "code"
 
 
 def test_a_refused_snapshot_and_a_closed_view_are_typed(
