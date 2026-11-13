@@ -12,7 +12,9 @@ when the URL is public an approved hosted reader also returns its text.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -27,6 +29,13 @@ from clio_agent.search.web import hosted_read
 MAX_BYTES = 15 * 1024 * 1024
 #: Characters of page text a fetch returns at most.
 MAX_CHARS = 400_000
+#: HTML characters handed to the extractor at most (a larger page is cut first).
+MAX_EXTRACT_CHARS = 2_000_000
+#: Seconds the local extraction may take before the hosted reader is asked instead.
+EXTRACT_TIMEOUT_S = 30.0
+#: HTML-to-Markdown runs here, never on the server's event loop: a large page takes
+#: seconds of CPU, and the in-process web server shares the API's loop.
+_EXTRACTORS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-fetch-extract")
 #: Below this much extracted text an HTML page counts as script-only or empty.
 MIN_TEXT_CHARS = 200
 #: Local answers a hosted reader may fix (blocked, rate-limited, unavailable).
@@ -62,6 +71,17 @@ def html_to_markdown(document: str, url: str) -> tuple[str, str]:
         match = _TITLE.search(document)
         title = re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
     return text or "", title
+
+
+async def extract_page(document: str, url: str) -> tuple[str, str] | None:
+    """:func:`html_to_markdown` off the event loop; ``None`` when it takes too long."""
+
+    loop = asyncio.get_running_loop()
+    work = loop.run_in_executor(_EXTRACTORS, html_to_markdown, document[:MAX_EXTRACT_CHARS], url)
+    try:
+        return await asyncio.wait_for(work, EXTRACT_TIMEOUT_S)
+    except TimeoutError:
+        return None
 
 
 def _save_pdf(body: bytes, url: str) -> str:
@@ -128,11 +148,15 @@ async def web_fetch(url: str, max_chars: int = MAX_CHARS) -> dict[str, Any]:
             )
         else:
             encoding = response.encoding if response is not None else None
-            content, title = html_to_markdown(
+            extracted = await extract_page(
                 body.decode(encoding or "utf-8", errors="replace"), final_url
             )
-            if len(content.strip()) < MIN_TEXT_CHARS:
-                why = "page has no readable text (script-only or empty)"
+            if extracted is None:
+                why = f"page too large to read locally (over {EXTRACT_TIMEOUT_S:.0f} s)"
+            else:
+                content, title = extracted
+                if len(content.strip()) < MIN_TEXT_CHARS:
+                    why = "page has no readable text (script-only or empty)"
     if why:
         hosted = await hosted_read(final_url, settings, why)
         if hosted is not None and "text" in hosted:

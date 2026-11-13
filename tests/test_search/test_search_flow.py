@@ -382,3 +382,22 @@ def test_a_422_is_classified_as_a_refused_request() -> None:
     error = http.classify("keenable", response, keyed=False)
     assert error.kind == http.REFUSED and error.detail == "HTTP 422: query too long"
     assert http.classify("keenable", httpx.Response(404), keyed=False).kind == http.FAILED
+
+
+def test_page_extraction_runs_off_the_event_loop_and_gives_up_when_slow(monkeypatch) -> None:
+    import threading
+
+    seen: dict[str, str] = {}
+
+    def slow(document: str, url: str) -> tuple[str, str]:
+        seen["thread"] = threading.current_thread().name
+        import time as _time
+
+        _time.sleep(0.3)
+        return "text", "title"
+
+    monkeypatch.setattr(fetch, "html_to_markdown", slow)
+    assert asyncio.run(fetch.extract_page("<html/>", "https://a.org")) == ("text", "title")
+    assert seen["thread"].startswith("clio-fetch-extract")
+    monkeypatch.setattr(fetch, "EXTRACT_TIMEOUT_S", 0.05)
+    assert asyncio.run(fetch.extract_page("<html/>", "https://a.org")) is None
