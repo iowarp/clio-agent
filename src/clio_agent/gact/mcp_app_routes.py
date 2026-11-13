@@ -6,8 +6,7 @@ only adapts those domain operations to the GACT wire surface.
 
 from __future__ import annotations
 
-import hashlib
-import json
+import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
@@ -15,14 +14,20 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from clio_agent.gact.mcp_app_context import (
+    app_context_block,
+    forget_closed_app,
+    provenance,
+    stored_app_context,
+)
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
     _csp_header,
     _host_origin,
     _sandbox_url,
 )
+from clio_agent.gact.mcp_app_tool_routes import register_app_context_and_tool_routes
 from clio_agent.gact.mcp_apps import (
-    _MAX_MODEL_CONTEXT_BYTES,
     MCPAppRecord,
     _cleanup_record,
     _not_found,
@@ -152,19 +157,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         )
         return read_resource_result_to_wire(result)
 
-    @app.put("/v1/sessions/{sid}/mcp-apps/{app_id}/model-context")
-    async def update_mcp_app_context(
-        sid: str, app_id: str, data_ref: str, request: Request
-    ) -> dict[str, Any]:
-        record = resolve(sid, app_id, data_ref)
-        body = await json_body(request, route="PUT MCP App model context")
-        encoded = json.dumps(body, sort_keys=True, default=str).encode("utf-8")
-        if len(encoded) > _MAX_MODEL_CONTEXT_BYTES:
-            raise HTTPException(status_code=413, detail="MCP App model context is too large")
-        record.model_context = dict(body)
-        record.model_context_digest = hashlib.sha256(encoded).hexdigest()
-        record.model_context_bytes = len(encoded)
-        return {}
+    register_app_context_and_tool_routes(app, resolve)
 
     @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/messages")
     async def post_mcp_app_message(
@@ -182,6 +175,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         ).strip()
         if not text:
             raise HTTPException(status_code=422, detail="ui/message requires text content")
+        reported = stored_app_context(app, sid, record.app_instance_id)
         client_message_id = str(body.get("message_id") or "").strip()
         request_id = str(body.get("request_id") or client_message_id).strip()
         submission = PostMessageRequest(
@@ -196,20 +190,20 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                     "app_instance_id": record.app_instance_id,
                     "source_server": record.source_namespace or "",
                     "resource_uri": record.resource_uri,
-                    "model_context": {
-                        "present": bool(record.model_context),
-                        "sha256": record.model_context_digest,
-                        "bytes": record.model_context_bytes,
-                    },
+                    "model_context": provenance(reported),
                 }
             },
         )
         model_text = text
-        if record.model_context:
-            model_text = (
-                f"{text}\n\nMCP App context from {record.source_namespace or 'server'}:\n"
-                f"{json.dumps(record.model_context, sort_keys=True, default=str)}"
+        if reported and reported.get("context"):
+            block = app_context_block(
+                app,
+                sid,
+                server=record.source_namespace or "",
+                tool=record.tool_name,
+                context=reported["context"],
             )
+            model_text = f"{text}\n\n{block}" if block else text
         acknowledgement, status_code = await accept_message_async(
             app,
             deps,
@@ -245,4 +239,5 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             _registry(app).restore_close(record)
             raise
         _registry(app).finish_close(app_id)
+        await asyncio.to_thread(forget_closed_app, app, sid, app_id)
         return None

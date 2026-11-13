@@ -37,6 +37,7 @@ from clio_agent.gact.mcp_app_sandbox import (
     _safe_sources,
     _sandbox_url,
 )
+from clio_agent.gact.mcp_app_tools import app_tool_table
 from clio_agent.gact.runtime.globals import (
     _gact_app_context,
     _resolve_tool_session,
@@ -59,7 +60,6 @@ if TYPE_CHECKING:
 _REGISTRY_LIMIT = 64
 _REGISTRY_TTL_S = 60 * 60
 _MAX_PRIVATE_RESULT_BYTES = 1024 * 1024
-_MAX_MODEL_CONTEXT_BYTES = 128 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +219,6 @@ class MCPAppRecord:
     html: str | None = None
     csp: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
-    model_context: dict[str, Any] = field(default_factory=dict)
-    model_context_digest: str = ""
-    model_context_bytes: int = 0
 
 
 class MCPAppAdmissionError(RuntimeError):
@@ -604,6 +601,7 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
 
     registry = _registry(app)
     failures: list[str] = []
+    app_tool_table(app).drop_session(session_id)
     for record in registry.records_for_session(session_id):
         try:
             await _cleanup_record(app, record)
