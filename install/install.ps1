@@ -1191,11 +1191,27 @@ function Complete-BytecodePrepare {
 $ClioRuntimeTriple = 'x86_64-pc-windows-msvc'
 $ClioUnpackers = @()
 $ClioUnpacked = [int64]0
+$ClioTarZstd = $null
+# Test-ClioTarZstd: whether Windows' tar.exe reads the .tar.zst archives below. Older
+# builds lack zstd (Server 2022: bsdtar 3.5.2, whose --version lists no libzstd) and
+# reject them as "Unrecognized archive format".
+function Test-ClioTarZstd {
+    if ($null -eq $script:ClioTarZstd) {
+        $script:ClioTarZstd = $false
+        $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+        if (Test-Path -LiteralPath $tar) {
+            try { $script:ClioTarZstd = (& $tar --version 2>$null | Out-String) -match '\blibzstd/' } catch { }
+        }
+    }
+    return $script:ClioTarZstd
+}
 function Get-ClioRuntimePlan([string]$Tag, [string]$Scratch) {
     if ($env:CLIO_INSTALL_FROM -eq 'pypi') { return $null }
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return $null }
-    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
-    if (-not (Test-Path -LiteralPath $tar)) { return $null }
+    if (-not (Test-ClioTarZstd)) {
+        Say "This Windows' tar.exe cannot unpack zstd archives; installing from PyPI"
+        return $null
+    }
     $plan = @(Get-ClioReleasePlan $Tag $Scratch 'installing from PyPI')
     if (@($plan | Where-Object { $_.Kind -eq 'runtime' -and $_.Name -like 'gact-runtime-*.tar.zst' }).Count -ne 1) { return $null }
     return $plan
@@ -1340,9 +1356,8 @@ function Stop-ClioUnpackers([int64]$Length) {
 # (a build's own, before a release publishes it).
 function Install-ClioSourceDeps([string]$Python) {
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { return }
-    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
     $lock = Join-Path $Src 'uv.lock'
-    if ((Test-Path -LiteralPath $Venv) -or -not (Test-Path -LiteralPath $tar) -or -not (Test-Path -LiteralPath $lock)) { return }
+    if ((Test-Path -LiteralPath $Venv) -or -not (Test-ClioTarZstd) -or -not (Test-Path -LiteralPath $lock)) { return }
     if ($Python -notmatch '^3\.(\d+)') { return }
     $minor = $Matches[1]
     $name = "clio-deps-$((Get-ClioSha256 $lock).Substring(0, 16))-py3$minor-windows-x64.tar.zst"
@@ -1763,17 +1778,31 @@ if (-not $OptSource -and $RuntimePlan) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch $Previous | Select-Object -Last 1
     if ($failure) {
+        # The previous environment is put back, and the same release installs from PyPI.
         Stop-ClioSideFetches
-        if ($DocJob) { try { $DocJob.Process.Kill(); $DocJob.Process.WaitForExit() } catch { } }
+        if ($DocJob) {
+            try { & taskkill.exe /T /F /PID $DocJob.Process.Id 2>&1 | Out-Null; $DocJob.Process.WaitForExit() } catch { }
+            $DocJob = $null
+            $DocsMigrate = $false
+        }
+        if ($KitReadyFile) {
+            Remove-Item -LiteralPath $KitReadyFile, "$KitReadyFile.partial" -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:CLIO_INSTALL_KIT_READY -ErrorAction SilentlyContinue
+            $KitReadyFile = $null
+        }
+        Remove-Item Env:CLIO_INSTALL_DOWNLOADS -ErrorAction SilentlyContinue
         RemoveTree $Venv
         Remove-Item -LiteralPath (Join-Path $Prefix 'clio-agent\runtime-access.json') -Force -ErrorAction SilentlyContinue
         if ($Previous) { [IO.Directory]::Move($Previous, $Venv) }
-        Die "could not install CLIO $PackageVersion from release $tag's runtime: $failure$(if ($Previous) { '; the previous installation is unchanged' })"
+        Warn "could not install CLIO $PackageVersion from release $tag's runtime: $failure; installing it from PyPI instead"
+        $RuntimePlan = $null
+    } else {
+        if ($Previous) { Remove-ClioTreeLater $Previous }
+        $py = (& (Join-Path $Venv 'python\python.exe') -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
+        $ClioVersion = $PackageVersion
     }
-    if ($Previous) { Remove-ClioTreeLater $Previous }
-    $py = (& (Join-Path $Venv 'python\python.exe') -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
-    $ClioVersion = $PackageVersion
-} elseif (-not $OptSource) {
+}
+if (-not $OptSource -and -not $RuntimePlan) {
     if ($RuntimeScratch) { RemoveTree $RuntimeScratch; $RuntimeScratch = $null }
     Initialize-ClioUv
     $LockDir = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-lock-" + [guid]::NewGuid())
