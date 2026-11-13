@@ -16,6 +16,14 @@ CLIO also supplies values a server can only get from the running client:
 provenance configuration, for servers that query the stores CLIO writes. It is
 materialized only when a declaration references it; an unsupplied reference is
 left in place so the generic ``${VAR}`` expansion reports it as unset.
+
+A saved connector connection (a ``clio-connection`` row whose connection has a
+``connector``) is filled per conversation: ``connector_values`` is that
+conversation's checked overlay (:mod:`clio_agent.connectors.overlay`), laid over
+the person's defaults. The set's key then carries a variant
+(:data:`VARIANT_MARK` plus the overlay's digest), so the workspace fleet keys a
+conversation with its own values apart (``tools.fleet_key``), while every
+conversation with none shares the plain fleet (CV-D3).
 """
 
 from __future__ import annotations
@@ -34,6 +42,10 @@ _SUPPLIED = re.compile(r"\$\{(" + "|".join(CLIO_SUPPLIED_VARIABLES) + r")(?::-[^
 
 _LOCK = threading.Lock()
 _SETS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+#: The marker between a server set's hash and its connector-values variant.
+VARIANT_MARK = "~cv-"
+#: ``{variant: {connector id: {need: value}}}``: the overlay each variant was minted from.
+_VARIANTS: dict[str, dict[str, dict[str, str]]] = {}
 
 
 class ConnectionUnavailable(ValueError):
@@ -78,10 +90,12 @@ def server_declarations(
     supplied: Mapping[str, str] | None = None,
     *,
     connections: Mapping[str, Mapping[str, Any]] | None = None,
+    connector_values: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Gateway declarations for a resolution's ``mcp_servers``, grouped by plugin.
 
-    ``supplied`` carries the CLIO-supplied values the declarations reference.
+    ``supplied`` carries the CLIO-supplied values the declarations reference;
+    ``connector_values`` one conversation's own connector values (checked).
     """
 
     values = dict(supplied or {})
@@ -94,6 +108,11 @@ def server_declarations(
             if saved is None:
                 raise ConnectionUnavailable(connection)
             spec = dict(saved)
+            if spec.get("connector"):
+                from clio_agent.connectors.materialize import fill_declaration  # noqa: PLC0415
+
+                overlay = (connector_values or {}).get(str(spec["connector"]))
+                spec = fill_declaration(spec, overlay, from_entry=True)
         root = str(row["root"])
         data = str(plugin_data_dir(str(row["plugin"])))
         if spec.get("type") == "stdio" or spec.get("command"):
@@ -129,17 +148,43 @@ def register_server_set(
     supplied: Mapping[str, str] | None = None,
     *,
     connections: Mapping[str, Mapping[str, Any]] | None = None,
+    connector_values: Mapping[str, Mapping[str, str]] | None = None,
 ) -> str:
     """Register a resolution's servers; return the set key ("" for none)."""
 
+    from clio_agent.connectors.overlay import digest  # noqa: PLC0415
+
     if not mcp_servers:
         return ""
-    declarations = server_declarations(mcp_servers, supplied, connections=connections)
+    declarations = server_declarations(
+        mcp_servers, supplied, connections=connections, connector_values=connector_values
+    )
     blob = json.dumps(declarations, sort_keys=True, separators=(",", ":"))
     key = "servers-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    # Every connector the conversation set values for, mounted here or not: a connector
+    # turned on during a turn joins this fleet with them (connector discovery).
+    overlay = {cid: dict(v) for cid, v in (connector_values or {}).items() if v}
+    variant = digest(overlay)
+    if variant:
+        key += VARIANT_MARK + variant
     with _LOCK:
         _SETS[key] = declarations
+        if variant:
+            _VARIANTS[variant] = overlay
     return key
+
+
+def server_set_variant(key: str) -> str:
+    """The connector-values variant a server-set key carries ("" for the plain fleet)."""
+
+    return key.partition(VARIANT_MARK)[2] if key else ""
+
+
+def variant_overlay(variant: str) -> dict[str, dict[str, str]]:
+    """The conversation values a variant was minted from ({} for the plain fleet)."""
+
+    with _LOCK:
+        return {cid: dict(values) for cid, values in _VARIANTS.get(variant, {}).items()}
 
 
 def server_set_declarations(key: str) -> dict[str, dict[str, dict[str, Any]]]:

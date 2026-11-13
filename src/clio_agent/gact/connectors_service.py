@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 from clio_agent.connectors import entries as entries_mod
 from clio_agent.connectors import listing, materialize, secrets, state
 from clio_agent.connectors.entries import Entry, Need
+from clio_agent.connectors.overlay import value_problem
 from clio_agent.gact.events import Event
 from clio_agent.runtime import trace
 
@@ -59,7 +60,7 @@ def entry(connector_id: str) -> Entry:
 def _sign_in_storage(found: Entry, values: Mapping[str, str]) -> Any:
     from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
 
-    url = materialize.declaration(found, values).get("url") or ""
+    url = materialize.resolved(found, values).get("url") or ""
     return DurableFileTokenStorage(str(url), connection_id=found.id)
 
 
@@ -106,14 +107,18 @@ def saved_connection(connector_id: str) -> dict[str, Any] | None:
 
 
 def save_connection(found: Entry, choice: state.Choice) -> dict[str, Any]:
-    """Write the connector's saved connection (a sign-in's own auth block is kept)."""
+    """Write the connector's saved connection (a sign-in's own auth block is kept).
+
+    It is the template (every need a placeholder, CV-D2): each conversation fills it
+    with its own values over the defaults when its servers are resolved.
+    """
 
     from clio_agent.gact.mcp_user_configuration import (  # noqa: PLC0415
         get_user_mcp_server,
         set_user_mcp_server,
     )
 
-    declared = materialize.declaration(found, choice.values)
+    declared = materialize.declaration(found)
     previous = get_user_mcp_server(found.id) or {}
     if previous and previous.get(materialize.CONNECTOR_KEY) != found.id:
         raise ConnectorError(
@@ -137,7 +142,7 @@ def _probes(app: Any) -> dict[str, dict[str, Any]]:
 
 
 def _probe_key(found: Entry, choice: state.Choice) -> str:
-    declared = materialize.declaration(found, choice.values)
+    declared = materialize.resolved(found, choice.values)
     stored = secrets.values(found.id)
     material = {
         "declaration": declared,
@@ -178,7 +183,7 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     cached = _probes(app).get(found.id)
     if cached and cached["key"] == key and not force:
         return cached
-    declared = materialize.declaration(found, choice.values)
+    declared = materialize.resolved(found, choice.values)
     try:
         tools, error = await asyncio.wait_for(
             _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
@@ -335,12 +340,9 @@ def check_values(
                 f"{need.label} of {found.name} is set by the person, not the agent.",
             )
         value = None if raw is None else str(raw).strip()
-        if value and ("\n" in value or "\r" in value or "${" in value or len(value) > 4096):
-            raise ConnectorError("connector_value_invalid", f"{need.label}: one plain line")
-        if value and need.options and value not in need.options:
-            raise ConnectorError(
-                "connector_value_invalid", f"{need.label}: one of {', '.join(need.options)}"
-            )
+        problem = value_problem(need, value) if value else None
+        if problem:
+            raise ConnectorError("connector_value_invalid", f"{need.label}: {problem}")
         (secret if need.kind == "secret" else plain)[need.key] = value or None
     return plain, secret
 

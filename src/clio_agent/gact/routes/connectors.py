@@ -4,6 +4,8 @@
   (``?refresh=true`` checks each enabled server again), plus the entries that did
   not load (``diagnostics``).
 * ``GET /v1/connectors/{id}`` one row; ``GET /v1/connectors/{id}/logo`` its SVG.
+  ``?session_id=`` reads the row as that conversation sees it: its own values over
+  the defaults, with ``default_value`` and ``conversation`` per need (CV-D5).
 * ``PUT /v1/connectors/{id}/values`` ``{values: {key: str | null}}`` sets needs,
   secrets included, and returns the row once CLIO has reconnected (CN7).
 * ``POST /v1/connectors/{id}/enable`` ``{scope: "all" | {agents: [...]}}`` and
@@ -53,11 +55,19 @@ def register_connector_routes(app: FastAPI) -> None:
         }
 
     @app.get("/v1/connectors/{connector_id}")
-    async def get_connector(connector_id: str, refresh: bool = False) -> dict[str, Any]:
+    async def get_connector(
+        connector_id: str, refresh: bool = False, session_id: str = ""
+    ) -> dict[str, Any]:
         try:
             found = service.entry(connector_id)
         except service.ConnectorError as exc:
             raise _error(exc) from None
+        if session_id:
+            from clio_agent.gact.connector_values import session_row  # noqa: PLC0415
+
+            if app.state.sessions.get(session_id) is None:
+                raise HTTPException(404, "No such conversation")
+            return await asyncio.to_thread(session_row, app, session_id, found)
         choice = service.state.choice(connector_id)
         if choice.enabled and not any(
             need.kind != "sign-in" for need in service.missing(found, choice)

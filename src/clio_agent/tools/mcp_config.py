@@ -12,16 +12,14 @@ a simple ``name: <command-or-url>`` map — no JSON, no nested objects required:
       notion: https://mcp.notion.com/mcp
 
 The value is either a **command string** (split into command + args, by Windows
-rules on Windows and POSIX shell rules elsewhere; stdio)
-or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
+rules on Windows and POSIX shell rules elsewhere; stdio) or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
 For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
 Scopes: workspace ``mcp.yaml`` > user config > the session's plugin servers > built-ins.
 
-This module is parsing only; ``transport_for`` is the single FastMCP glue that
-turns a spec into a transport the existing ``execution.py`` machinery accepts.
+Parsing only; ``transport_for`` turns a spec into a transport ``execution.py`` accepts.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 
-from clio_agent.connectors.materialize import connector_spec
+from clio_agent.connectors.materialize import connector_spec, fill_declaration
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.tools import desktop_mcp_runtime as dmr
 from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
@@ -397,6 +395,8 @@ def spec_from_declaration(
     env: Mapping[str, str] | None = None,
 ) -> MCPServerSpec:
     """Normalize one ``mcp_servers`` value (string command/url, or mapping)."""
+    if isinstance(value, Mapping) and value.get("connector"):  # needs left unfilled (CV-D2)
+        value = fill_declaration(value)
     if isinstance(value, str):
         spec = _spec_from_string(name, value, source=source, env=env)
     elif isinstance(value, Mapping):

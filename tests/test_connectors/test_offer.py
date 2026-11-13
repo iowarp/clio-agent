@@ -19,7 +19,9 @@ REFS = ("clio/standard",)
 
 
 def _app() -> Any:
-    return SimpleNamespace(state=SimpleNamespace(bus=None, sessions=None, agent=None))
+    from tests.test_connectors.conftest import FakeSessions
+
+    return SimpleNamespace(state=SimpleNamespace(bus=None, sessions=FakeSessions(), agent=None))
 
 
 @pytest.fixture
@@ -146,6 +148,11 @@ def test_turn_on_enables_for_this_agent_and_the_tools_join_the_turn(
     assert answered.status == "answered"
     assert enabled == [("fixture-secret", {"agents": ["clio/standard"]})]
     assert secrets.values("fixture-secret")["token"] == "zz-typed-zz"
+    # CV-D5: a value typed in the card is this conversation's, not the default.
+    assert state.choice("fixture-secret").values == {}
+    assert conversation.state.sessions.get("sess_a").metadata["connector_values"] == {
+        "fixture-secret": {"where": "node08"}
+    }
     result = outcome["value"]
     assert result["enabled"] is True and result["already_on"] is False
     assert result["tools"] == ["fixture-secret_one", "fixture-secret_two"]

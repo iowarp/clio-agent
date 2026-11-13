@@ -10,6 +10,12 @@ and its tools are listed again, once for all fleets. What the plugin added (``PL
 ``PLUGIN_DATA``) is kept. A namespace whose new listing fails keeps its last tools,
 with the typed trace ``connector_relist_failed``.
 
+Each fleet takes the declaration with its own values: a fleet a conversation's own
+connector values keyed apart (CV-D3) keeps those values and only follows the
+defaults it does not override, and a fleet whose connection does not change is left
+alone (typed ``connector_rebind_unchanged``), so a default saved from one
+conversation never restarts another conversation's server.
+
 A connector the person enables while a turn runs (connector discovery) is not in
 that turn's fleet at all: :func:`join_namespace` installs it there, so the turn can
 call its tools from its next step.
@@ -22,6 +28,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.runtime import trace
+from clio_agent.tools.fleet_key import fleet_root
 
 _PLUGIN_ENV = ("PLUGIN_ROOT", "PLUGIN_DATA")
 
@@ -60,6 +67,21 @@ def rebound_spec(current: Any, declaration: Mapping[str, Any], namespace: str) -
     )
 
 
+def fleet_declaration(executor: Any, declaration: Mapping[str, Any]) -> dict[str, Any]:
+    """``declaration`` (a saved connector template) with the fleet's own values filled."""
+
+    from clio_agent.connectors.materialize import fill_declaration  # noqa: PLC0415
+
+    values = getattr(executor, "_clio_connector_values", None) or {}
+    overlay = values.get(str(declaration.get("connector") or "")) if declaration else None
+    return fill_declaration(declaration, overlay, from_entry=True)
+
+
+def _same_connection(a: Any, b: Any) -> bool:
+    fields = ("transport", "command", "args", "env", "url", "headers")
+    return all(getattr(a, name, None) == getattr(b, name, None) for name in fields)
+
+
 def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
     """Route ``namespace`` of ``executor`` to a fresh proxy of ``spec`` (its connection
     is closed, so the next use starts it with ``spec``)."""
@@ -72,7 +94,7 @@ def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
     )
 
     specs = executor._clio_namespace_specs
-    gateway = build_gateway({namespace: spec}, cwd=root or None)
+    gateway = build_gateway({namespace: spec}, cwd=fleet_root(root) or None)
     proxy = namespace_proxies(gateway).get(namespace)
     inner = getattr(executor, "_async_executor", None)
     specs[namespace] = spec
@@ -107,7 +129,10 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
             continue
         if getattr(executor, "closed", False) or getattr(executor, "_closed", False):
             continue
-        spec = rebound_spec(specs[namespace], declaration, namespace)
+        spec = rebound_spec(specs[namespace], fleet_declaration(executor, declaration), namespace)
+        if _same_connection(spec, specs[namespace]):
+            trace.event("TOOLS", "connector_rebind_unchanged namespace=%s root=%s", namespace, root)
+            continue
         _install(executor, namespace, spec, root)
         touched.append(root)
         if not spec.usable:
@@ -163,6 +188,7 @@ def join_namespace(
     if not isinstance(specs, dict) or not callable(merge):
         raise ConnectorJoinError("connector_join_fleet_unavailable")
     root = next((r for r, e in _executors(agent) if e is executor), "")
+    declaration = fleet_declaration(executor, declaration)
     current = specs.get(namespace)
     spec = (
         rebound_spec(current, declaration, namespace)

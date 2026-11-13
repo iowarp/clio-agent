@@ -253,9 +253,10 @@ def test_agent_request_fleet_restart_evicts_then_rebuilds(monkeypatch) -> None:
 
     monkeypatch.setattr(agent, "_build_tool_gateway", fake_build)
     monkeypatch.setattr(
-        "clio_agent.agent.create_sync_tool_executor", lambda gw, **k: RebuiltExecutor(gw)
+        "clio_agent.tools.workspace_fleet.create_sync_tool_executor",
+        lambda gw, **k: RebuiltExecutor(gw),
     )
-    monkeypatch.setattr("clio_agent.agent.namespace_proxies", lambda gw: {})
+    monkeypatch.setattr("clio_agent.tools.workspace_fleet.namespace_proxies", lambda gw: {})
 
     with tool_workspace_context("/ws/r"):
         first = agent._active_tool_executor()  # builds + caches the fleet

@@ -475,10 +475,16 @@ def session_server_set(app: Any, session_id: str) -> str:
     supplied = supplied_server_values(
         app, servers, workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id)
     )
+    from clio_agent.gact.connector_values import session_overlay  # noqa: PLC0415
     from clio_agent.gact.mcp_user_configuration import list_user_mcp_servers  # noqa: PLC0415
 
     try:
-        return register_server_set(servers, supplied, connections=list_user_mcp_servers())
+        return register_server_set(
+            servers,
+            supplied,
+            connections=list_user_mcp_servers(),
+            connector_values=session_overlay(app, session_id),
+        )
     except ConnectionUnavailable as exc:
         raise SessionAgentUnavailable(
             "",
