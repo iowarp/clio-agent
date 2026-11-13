@@ -1747,6 +1747,9 @@ tools.recall_result_chars: 16000
 tools.result_share: 0.125
 
 # CLIO_TOOLS_SCRIPT_MEDIA_MAX  (int)  <- src/clio_agent/gact/model_media.py
+# Images or PDFs one run_code script may attach to its result by viewing
+# them (view_image, view_pdf); they reach the model's next step. Views past
+# this count are refused with a typed reason. At least 1.
 tools.script_media_max: 8
 
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py

@@ -9,6 +9,8 @@ host calls it with ``{"time": value}`` when the time changes elsewhere.
 
 Every ``set_time`` call is appended as one JSON line to the file named by
 ``CHANNEL_APP_LOG`` (when set), so a live check can count calls exactly.
+``CHANNEL_APP_OPEN_DELAY_S`` (when set) makes ``open_timeline`` take that many
+seconds after logging its start, so a check can act while an open is in flight.
 
 Run: ``python tests/fixtures/mcp_apps/channel_app_server.py`` (stdio).
 """
@@ -18,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import time as pytime
 from pathlib import Path
 
 import mcp_types
@@ -57,6 +60,10 @@ def build_server() -> FastMCP:
         _state["steps"] = max(1, min(int(steps), 1000))
         _state["time"] = max(0, int(time))
         _log({"tool": "open_timeline", "time": _state["time"], "steps": _state["steps"]})
+        delay = float(os.environ.get("CHANNEL_APP_OPEN_DELAY_S") or 0)
+        if delay > 0:
+            pytime.sleep(delay)
+            _log({"tool": "open_timeline", "finished": True})
         return _state_result(f"Timeline open at step {_state['time']} of {_state['steps']}.")
 
     @server.tool(app=AppConfig(visibility=["model", "app"]))

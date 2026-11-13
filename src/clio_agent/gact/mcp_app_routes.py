@@ -159,7 +159,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             return executor.call_tool_result(full_name, dict(arguments))
 
         try:
-            result = await _run_bound(app, sid, call)
+            result = await _run_bound(app, sid, call, request=request)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         wire, dropped = strip_service_declaration(call_tool_result_to_wire(result))
@@ -180,6 +180,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             app,
             sid,
             lambda executor: executor.read_resource(record.source_namespace, uri),
+            request=request,
         )
         return read_resource_result_to_wire(result)
 
