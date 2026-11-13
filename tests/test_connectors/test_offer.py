@@ -1,4 +1,5 @@
-"""Connector discovery: the agent offers a connector that is off (CD-1 to CD-6)."""
+"""Connector discovery: the agent offers to add a connector to this conversation (CD-D1 to
+CD-D8, CN10 *Amended*)."""
 
 from __future__ import annotations
 
@@ -11,27 +12,43 @@ from typing import Any
 import pytest
 
 from clio_agent.connectors import secrets, state
+from clio_agent.gact import connector_follow, connector_setup
 from clio_agent.gact import connector_offer as offer
-from clio_agent.gact import connector_setup
 from clio_agent.gact import connectors_service as service
 
 REFS = ("clio/standard",)
 
 
 def _app() -> Any:
-    return SimpleNamespace(state=SimpleNamespace(bus=None, sessions=None, agent=None))
+    from tests.test_connectors.conftest import FakeSessions
+
+    return SimpleNamespace(state=SimpleNamespace(bus=None, sessions=FakeSessions(), agent=None))
 
 
 @pytest.fixture
 def conversation(fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """A conversation whose agent is ``clio/standard``, with no window answering cards."""
+    """A conversation whose agent is ``clio/standard``, with no window answering cards.
+
+    ``app.state.here`` holds the connectors whose plugin the conversation has; adding one
+    to the conversation records it there.
+    """
 
     app = _app()
+    app.state.here = {}
+    app.state.added = []
     shipped = state.all_entries
     monkeypatch.setattr(  # the fixture catalog only, not the connectors CLIO ships
         state, "all_entries", lambda: {k: v for k, v in shipped().items() if k.startswith("fix")}
     )
     monkeypatch.setattr(offer, "session_agent", lambda _a, _s: (REFS, REFS[0], "Standard"))
+    monkeypatch.setattr(offer, "conversation_connectors", lambda a, _s: dict(a.state.here))
+
+    def add(a: Any, sid: str, cid: str) -> list[str]:
+        a.state.added.append((sid, cid))
+        a.state.here[cid] = [f"connector-{cid}"]
+        return [f"connector-{cid}"]
+
+    monkeypatch.setattr(connector_follow, "add_to_conversation", add)
     monkeypatch.setattr(
         "clio_agent.gact.permission_delivery.attended_session_id", lambda _app, sid: sid
     )
@@ -63,20 +80,56 @@ def _pending_card(app: Any, worker: threading.Thread) -> Any:
     return next(c for c in connector_setup.projected(app, {"sess_a"}) if c.status == "pending")
 
 
-def test_offerable_names_the_connectors_that_do_not_reach_the_agent(conversation: Any) -> None:
+def _enable_spy(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    enabled: list[str] = []
+
+    async def enable(_app: Any, connector_id: str) -> dict:
+        enabled.append(connector_id)
+        state.update(connector_id, enabled=True)
+        return {}
+
+    monkeypatch.setattr(service, "enable", enable)
+    return enabled
+
+
+def test_offerable_names_every_connector_not_in_this_conversation(conversation: Any) -> None:
     names = [found.id for found in offer.offerable(conversation, "sess_a")]
     assert names == ["fixture-plain", "fixture-secret", "fixture-signin"]
-    state.update("fixture-plain", enabled=True, scope="all")
-    state.update("fixture-secret", enabled=True, scope={"agents": ["someone/else"]})
+    state.update("fixture-plain", enabled=True)
+    state.update("fixture-secret", enabled=True)
+    conversation.state.here = {"fixture-plain": ["connector-fixture-plain"]}
     names = [found.id for found in offer.offerable(conversation, "sess_a")]
-    assert names == ["fixture-secret", "fixture-signin"]  # scoped elsewhere: still offerable
+    assert names == ["fixture-secret", "fixture-signin"]  # on but not here: still offerable
     facts, total = offer.offerable_facts(conversation, "sess_a")
     assert total == 2 and facts[0] == {
         "id": "fixture-secret",
         "name": "Fixture Secret",
         "description": "A test connector that needs an access token and brings a plugin",
+        "enabled": True,
     }
+    assert facts[1]["enabled"] is False
     assert offer.offerable_facts(conversation, "") == ([], 0)
+
+
+def test_offerable_is_empty_when_the_conversation_cannot_resolve(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.agents.resolution import SessionAgentUnavailable
+
+    app = _app()
+    assert offer.conversation_connectors(app, "sess_a") is None
+    app.state.sessions = {"sess_a": SimpleNamespace(metadata={})}
+
+    def broken(_app: Any, _sid: str) -> Any:
+        raise SessionAgentUnavailable("x", "agent_not_installed", [])
+
+    monkeypatch.setattr("clio_agent.gact.agents.resolution.session_resolution", broken)
+    assert offer.offerable(app, "sess_a") == []
+    pin = SimpleNamespace(
+        plugins=[{"id": "p", "follows": "fixture-plain"}, {"id": "q", "follows": ""}]
+    )
+    monkeypatch.setattr("clio_agent.gact.agents.resolution.session_resolution", lambda _a, _s: pin)
+    assert offer.conversation_connectors(app, "sess_a") == {"fixture-plain": ["p"]}
 
 
 def test_the_facts_are_capped_and_say_so(
@@ -90,7 +143,8 @@ def test_the_facts_are_capped_and_say_so(
     text = injections.render(
         "session_facts_connectors", {"connectors": facts, "total": total}, app=None, session_id=""
     )
-    assert "Fixture Plain (fixture-plain): A test connector with nothing to set up" in text
+    assert "Fixture Plain (fixture-plain, off): A test connector with nothing to set up" in text
+    assert "not in this conversation" in text
     assert "(3, 1 shown)" in text and "with no connector lists them all" in text
     assert "offer_connector" in text and "search_tools" in text
     monkeypatch.setenv("CLIO_CONNECTORS_OFFER_LISTED", "-1")
@@ -98,17 +152,10 @@ def test_the_facts_are_capped_and_say_so(
         offer.offer_listed()
 
 
-def test_turn_on_enables_for_this_agent_and_the_tools_join_the_turn(
+def test_add_turns_it_on_adds_it_here_and_the_tools_join_the_turn(
     conversation: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    enabled: list[tuple[str, Any]] = []
-
-    async def enable(_app: Any, connector_id: str, scope: Any) -> dict:
-        enabled.append((connector_id, scope))
-        state.update(connector_id, enabled=True, scope=scope)
-        return {}
-
-    monkeypatch.setattr(service, "enable", enable)
+    enabled = _enable_spy(monkeypatch)
     monkeypatch.setattr(
         offer, "join_running_turn", lambda _app, cid: ([f"{cid}_one", f"{cid}_two"], "")
     )
@@ -116,22 +163,16 @@ def test_turn_on_enables_for_this_agent_and_the_tools_join_the_turn(
         connector="Fixture Secret", reason="It checks the token for this request."
     )
     card = _pending_card(conversation, worker)
-    assert card.kind == "connector_setup" and card.title == "Turn on Fixture Secret"
+    assert card.kind == "connector_setup"
+    assert card.title == "Add Fixture Secret to this conversation"
     payload = card.payload
     assert payload["intent"] == "enable" and payload["tool_name"] == "offer_connector"
     assert payload["reason"] == "It checks the token for this request."
-    assert payload["agent_ref"] == "clio/standard" and payload["agent_name"] == "Standard"
+    assert payload["connector_enabled"] is False
     assert [row["key"] for row in payload["missing"]] == ["token", "where"]
     with pytest.raises(connector_setup.SetupResponseError) as incomplete:
         asyncio.run(connector_setup.respond(conversation, {"sess_a"}, card.id, "submit", {}, {}))
     assert incomplete.value.code == "connector_setup_incomplete" and not enabled
-    with pytest.raises(connector_setup.SetupResponseError) as bad_scope:
-        asyncio.run(
-            connector_setup.respond(
-                conversation, {"sess_a"}, card.id, "submit", {}, {"scope": "everywhere"}
-            )
-        )
-    assert bad_scope.value.code == "connector_scope_invalid"
     answered = asyncio.run(
         connector_setup.respond(
             conversation,
@@ -139,19 +180,62 @@ def test_turn_on_enables_for_this_agent_and_the_tools_join_the_turn(
             card.id,
             "submit",
             {"token": "zz-typed-zz", "where": "node08"},
-            {"scope": "agent"},
+            {},
         )
     )
     worker.join(5)
     assert answered.status == "answered"
-    assert enabled == [("fixture-secret", {"agents": ["clio/standard"]})]
+    assert enabled == ["fixture-secret"]
+    assert conversation.state.added == [("sess_a", "fixture-secret")]
     assert secrets.values("fixture-secret")["token"] == "zz-typed-zz"
+    # CV-D5: a value typed in the card is this conversation's, not the default.
+    assert state.choice("fixture-secret").values == {}
+    assert conversation.state.sessions.get("sess_a").metadata["connector_values"] == {
+        "fixture-secret": {"where": "node08"}
+    }
     result = outcome["value"]
-    assert result["enabled"] is True and result["already_on"] is False
+    assert result["enabled"] is True and result["enabled_now"] is True
+    assert result["already_on"] is False and "scope" not in result
     assert result["tools"] == ["fixture-secret_one", "fixture-secret_two"]
-    assert result["scope"] == {"agents": ["clio/standard"]}
-    assert "turned on Fixture Secret for this conversation's agent" in result["message"]
+    assert result["plugins"] == ["connector-fixture-secret"]
+    assert "turned on Fixture Secret and added it to this conversation" in result["message"]
+    assert "joined this conversation only" in result["message"]
     assert "zz-typed-zz" not in repr(result) + repr(conversation.state.connector_setups)
+
+
+def test_a_connector_that_is_on_is_only_added_here(
+    conversation: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enabled = _enable_spy(monkeypatch)
+    state.update("fixture-plain", enabled=True)
+    monkeypatch.setattr(offer, "join_running_turn", lambda _app, cid: ([f"{cid}_one"], ""))
+    worker, outcome = _offer_in_thread(connector="fixture-plain", reason="View it.")
+    card = _pending_card(conversation, worker)
+    assert card.payload["connector_enabled"] is True
+    asyncio.run(connector_setup.respond(conversation, {"sess_a"}, card.id, "submit", {}, {}))
+    worker.join(5)
+    result = outcome["value"]
+    assert enabled == [] and result["enabled_now"] is False
+    assert result["message"].startswith("The person added Fixture Plain to this conversation")
+    assert conversation.state.added == [("sess_a", "fixture-plain")]
+
+
+def test_a_conversation_that_cannot_take_the_plugin_is_a_typed_answer(
+    conversation: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state.update("fixture-plain", enabled=True)
+
+    def refuse(_a: Any, _sid: str, _cid: str) -> list[str]:
+        raise connector_follow.ConnectorAddError("subagent_plugins_fixed", "fixed")
+
+    monkeypatch.setattr(connector_follow, "add_to_conversation", refuse)
+    worker, _outcome = _offer_in_thread(connector="fixture-plain")
+    card = _pending_card(conversation, worker)
+    with pytest.raises(connector_setup.SetupResponseError) as refused:
+        asyncio.run(connector_setup.respond(conversation, {"sess_a"}, card.id, "submit", {}, {}))
+    assert refused.value.code == "subagent_plugins_fixed"
+    asyncio.run(connector_setup.respond(conversation, {"sess_a"}, card.id, "decline", {}, {}))
+    worker.join(5)
 
 
 def test_not_now_is_a_typed_refusal_and_changes_nothing(conversation: Any) -> None:
@@ -165,17 +249,13 @@ def test_not_now_is_a_typed_refusal_and_changes_nothing(conversation: Any) -> No
     assert answered.status == "denied"
     assert outcome["value"]["refusal"] == offer.OFFER_DECLINED and "error" not in outcome["value"]
     assert "Fixture Plain" in outcome["value"]["message"]
-    assert not state.choice("fixture-plain").enabled
+    assert not state.choice("fixture-plain").enabled and conversation.state.added == []
 
 
 def test_a_sign_in_is_asked_by_the_first_call_not_the_offer(
     conversation: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def enable(_app: Any, connector_id: str, scope: Any) -> dict:
-        state.update(connector_id, enabled=True, scope=scope)
-        return {}
-
-    monkeypatch.setattr(service, "enable", enable)
+    _enable_spy(monkeypatch)
     monkeypatch.setattr(offer, "join_running_turn", lambda _app, cid: ([], "connector_join_x"))
     worker, outcome = _offer_in_thread(connector="fixture-signin")
     card = _pending_card(conversation, worker)
@@ -188,7 +268,7 @@ def test_a_sign_in_is_asked_by_the_first_call_not_the_offer(
             card.id,
             "submit",
             {"address": "http://127.0.0.1:9/mcp"},
-            {"scope": "all"},
+            {},
         )
     )
     worker.join(5)
@@ -209,19 +289,24 @@ def test_stopping_the_turn_ends_the_offer(
     assert result["error"] == offer.OFFER_CANCELLED and result["outcome"] == "cancelled"
 
 
-def test_listing_unknown_and_already_on(conversation: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_listing_unknown_and_already_here(
+    conversation: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     listed = asyncio.run(offer.offer_connector())
     assert [row["id"] for row in listed["offerable"]] == [
         "fixture-plain",
         "fixture-secret",
         "fixture-signin",
     ]
+    assert "can add to this conversation" in listed["message"]
     missing = asyncio.run(offer.offer_connector(connector="nope"))
     assert missing["error"] == "connector_not_found" and len(missing["offerable"]) == 3
-    state.update("fixture-plain", enabled=True, scope="all")
+    state.update("fixture-plain", enabled=True)
+    conversation.state.here = {"fixture-plain": ["connector-fixture-plain"]}
     monkeypatch.setattr(offer, "join_running_turn", lambda _app, cid: ([f"{cid}_one"], ""))
     on = asyncio.run(offer.offer_connector(connector="fixture-plain"))
     assert on["already_on"] is True and on["tools"] == ["fixture-plain_one"]
+    assert on["message"].startswith("Fixture Plain is already in this conversation")
     assert not getattr(conversation.state, "connector_setups", None)
     monkeypatch.setattr(offer, "_session_id", lambda: "")
     assert asyncio.run(offer.offer_connector(connector="x"))["error"] == (
@@ -312,7 +397,7 @@ def test_the_row_reads_offer_and_says_what_the_person_chose() -> None:
         {
             "connector_name": "A Very Long Connector Name For Scientific Data Views",
             "reason": "Show it in 3D.",
-            "scope": "all",
+            "enabled_now": True,
             "state": {"status": "ready"},
             "tools": [f"viewer_tool_{n}" for n in range(30)],
             "message": "The person turned it on.",
@@ -328,8 +413,8 @@ def test_the_row_reads_offer_and_says_what_the_person_chose() -> None:
     assert started["subject"] == "connector" and started["blocks"][1]["text"] == "Show it in 3D."
     assert offer.present_start({})["action"] == "List"
     texts = {block["id"]: block["text"] for block in turned_on["blocks"]}
-    assert texts["reason"] == "Show it in 3D." and texts["outcome"] == "Turned on"
-    assert texts["scope"] == "Every conversation" and texts["tools"].count("\n") == 29
+    assert texts["reason"] == "Show it in 3D." and texts["outcome"] == "Turned on and added"
+    assert texts["scope"] == "This conversation" and texts["tools"].count("\n") == 29
     declined = offer.present(
         {"connector": "x"}, None, {"refusal": offer.OFFER_DECLINED, "connector_name": "X"}
     )
@@ -354,7 +439,6 @@ def test_the_row_reads_offer_and_says_what_the_person_chose() -> None:
         None,
         {
             "connector_name": "X",
-            "scope": {"agents": ["clio/standard"]},
             "state": {"status": "unreachable", "reason": "Nothing answered"},
             "tools": [],
             "join_reason": "connector_join_listing_failed",
@@ -362,5 +446,7 @@ def test_the_row_reads_offer_and_says_what_the_person_chose() -> None:
         },
     )
     texts = {block["id"]: block["text"] for block in scoped["blocks"]}
-    assert texts["outcome"] == "Already on" and texts["scope"] == "Only clio/standard"
+    assert texts["outcome"] == "Already here" and texts["scope"] == "This conversation"
+    added = offer.present({"connector": "x"}, None, {"connector_name": "X", "tools": ["a"]})
+    assert {b["id"]: b["text"] for b in added["blocks"]}["outcome"] == "Added"
     assert texts["tools"] == "connector_join_listing_failed" and texts["state"]

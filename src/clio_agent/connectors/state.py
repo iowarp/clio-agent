@@ -1,8 +1,8 @@
-"""A person's connector choices: ``<user config>/connectors.yaml`` (CN3, CN4, CN10).
+"""A person's connector choices: ``<user config>/connectors.yaml`` (CN3, CN4).
 
-For each connector: whether it is enabled, for which agents (``all`` or
-``{agents: [refs]}``), and the values the person gave for its needs, except
-secrets (:mod:`.secrets`). Custom connectors (AQ11, "Add by URL or command") are
+For each connector: whether it is enabled (installed and ready; it reaches a
+conversation only through its plugin, CN10 *Amended*) and the values the person gave
+for its needs, except secrets (:mod:`.secrets`). Custom connectors (AQ11, "Add by URL or command") are
 stored here too, as entries. The file is written atomically, owner-only.
 """
 
@@ -21,7 +21,6 @@ from clio_agent.platform_paths import atomic_write_text
 
 _LOCK = threading.RLock()
 FILE_NAME = "connectors.yaml"
-Scope = str | dict[str, list[str]]
 
 
 class ConnectorStateError(ValueError):
@@ -33,39 +32,11 @@ class Choice:
     """One connector's saved choices."""
 
     enabled: bool = False
-    scope: Scope = "all"
     values: Mapping[str, str] = field(default_factory=dict)
-
-    def applies_to(self, agent_refs: tuple[str, ...]) -> bool:
-        """Whether this enabled connector reaches an agent known by any of ``agent_refs``."""
-        if not self.enabled:
-            return False
-        if self.scope == "all":
-            return True
-        wanted = (
-            set((self.scope or {}).get("agents") or ()) if isinstance(self.scope, dict) else set()
-        )
-
-        def bare(refs: set[str]) -> set[str]:
-            return refs | {ref.split("/", 1)[-1].split("@", 1)[0] for ref in refs}
-
-        return bool(bare(wanted) & bare(set(agent_refs)))
 
 
 def state_path() -> Path:
     return paths.user_config_dir() / FILE_NAME
-
-
-def normalize_scope(value: Any) -> Scope:
-    """``"all"`` or ``{"agents": [ref, ...]}``; anything else is refused."""
-
-    if value in (None, "all"):
-        return "all"
-    if isinstance(value, Mapping) and set(value) == {"agents"}:
-        agents = value["agents"]
-        if isinstance(agents, list) and agents and all(isinstance(a, str) and a for a in agents):
-            return {"agents": sorted(set(agents))}
-    raise ConnectorStateError('scope must be "all" or {"agents": [agent refs]}')
 
 
 def _read() -> dict[str, Any]:
@@ -101,7 +72,6 @@ def _choice(raw: Any) -> Choice:
     values = raw.get("values") or {}
     return Choice(
         enabled=bool(raw.get("enabled")),
-        scope=raw.get("scope") or "all",
         values={str(k): str(v) for k, v in values.items() if v is not None}
         if isinstance(values, Mapping)
         else {},
@@ -132,7 +102,6 @@ def update(
     connector_id: str,
     *,
     enabled: bool | None = None,
-    scope: Scope | None = None,
     values: Mapping[str, str | None] | None = None,
 ) -> Choice:
     """Change one connector's choices; a ``None`` value clears that need."""
@@ -140,10 +109,10 @@ def update(
     with _LOCK:
         document = _read()
         current = dict(document["connectors"].get(connector_id) or {})
+        # A scope an older CLIO wrote is not read any more (CN10 *Amended*).
+        current.pop("scope", None)
         if enabled is not None:
             current["enabled"] = enabled
-        if scope is not None:
-            current["scope"] = scope
         if values is not None:
             merged = dict(current.get("values") or {})
             for key, value in values.items():

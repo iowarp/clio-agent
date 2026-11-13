@@ -123,8 +123,8 @@ def _restart_idle_window(agent: Any, root: str) -> None:
     if reaper is None or not callable(state):
         return
     lock, _executors, _leases = state()
-    with lock:
-        reaper.note_resolved(canonical_workspace_root(root))
+    with lock:  # every fleet of the workspace (conversation values, CV-D3)
+        reaper.note_resolved_root(canonical_workspace_root(root))
 
 
 def _run_logged(step: Any, *args: Any) -> None:

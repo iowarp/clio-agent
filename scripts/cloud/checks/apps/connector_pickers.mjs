@@ -1,10 +1,13 @@
-// Check (AQ10): a plugin that follows a connector is in no plugin picker. It looks for
-// CHECK_PLUGIN (default fixture-secret-skills) in each place a person picks a plugin:
-//   - the Extensions list, searched for the plugin (All and Plugins);
-//   - "Compose a plugin", its "Skills & plugins" choice, searched;
-//   - the Agent tab's "Add plugin" menu of CHECK_SESSION (in CHECK_WORKSPACE), searched.
-// The connector's card names it as "Brings plugin" instead. Prints one JSON line with
-// whether each place offers it (all false to pass) and the card's text.
+// Check (AQ10, CN9/CN10 *Amended*): where a connector's plugin is offered. It looks for
+// CHECK_PLUGIN (default fixture-secret-skills) and the connector CHECK_CONNECTOR:
+//   - the Extensions list, searched for the plugin (All and Plugins): never on its own,
+//     the connector row stands for it;
+//   - "Compose a plugin", its "Skills & plugins" choice: never (a plugin bundle does not
+//     take a connector's plugin);
+//   - the Agent tab's "Add plugin" menu of CHECK_SESSION (in CHECK_WORKSPACE): offered,
+//     under Connectors by the connector's name, while the connector is enabled; left out
+//     while it is off.
+// The connector's card names it as "Brings plugin". Prints one JSON line.
 const settle = (page, ms = 1500) => page.waitForTimeout(ms);
 const text = async (locator) =>
   ((await locator.count()) ? await locator.first().innerText() : "").replace(/\s+/gu, " ");
@@ -82,12 +85,10 @@ export default async function (page, shot) {
     await settle(page, 2500);
     await page.getByRole("button", { name: /Add (package|plugin)/u }).first().click();
     await settle(page, 1500);
-    await page.keyboard.type(word);
-    await settle(page, 1500);
     await shot("agent-add-plugin");
-    const menu = page.locator('[role="menu"], [role="listbox"], [role="dialog"]').last();
-    report.agentAddPlugin = (await text(menu)).includes(plugin);
-    report.agentAddPluginText = (await text(menu)).slice(0, 200);
+    const group = page.getByRole("group", { name: "Connectors" });
+    report.agentAddPlugin = (await text(group)).includes(connector);
+    report.agentAddPluginText = (await text(group)).slice(0, 200);
     await page.keyboard.press("Escape");
   }
   console.error(JSON.stringify(report));

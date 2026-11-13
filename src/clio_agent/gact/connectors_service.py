@@ -11,11 +11,16 @@ A connector's state for the person is one of (CN3):
 
 A disabled connector is not started: its state says only what is missing.
 
+Enabling a connector installs and readies it and nothing more (CN10 *Amended*): it
+reaches a conversation only when the person adds its plugin there (``plugin_ref``,
+:mod:`.connector_follow`).
+
 Changing anything (enable, disable, a value, a secret) is applied at once (CN7):
 the saved connection is rewritten, configuration-dependent fleets rebuild for new
 turns, the connector's namespace is rebound in the fleets running now
-(:mod:`.connector_rebind`), its server is checked again, the open conversations
-follow (:mod:`.connector_follow`), and ``connector.changed`` is published.
+(:mod:`.connector_rebind`), its server is checked again, the open conversations that
+have its plugin follow (:mod:`.connector_follow`), and ``connector.changed`` is
+published.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from urllib.parse import urlsplit
 from clio_agent.connectors import entries as entries_mod
 from clio_agent.connectors import listing, materialize, secrets, state
 from clio_agent.connectors.entries import Entry, Need
+from clio_agent.connectors.overlay import value_problem
 from clio_agent.gact.events import Event
 from clio_agent.runtime import trace
 
@@ -59,7 +65,7 @@ def entry(connector_id: str) -> Entry:
 def _sign_in_storage(found: Entry, values: Mapping[str, str]) -> Any:
     from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
 
-    url = materialize.declaration(found, values).get("url") or ""
+    url = materialize.resolved(found, values).get("url") or ""
     return DurableFileTokenStorage(str(url), connection_id=found.id)
 
 
@@ -106,14 +112,18 @@ def saved_connection(connector_id: str) -> dict[str, Any] | None:
 
 
 def save_connection(found: Entry, choice: state.Choice) -> dict[str, Any]:
-    """Write the connector's saved connection (a sign-in's own auth block is kept)."""
+    """Write the connector's saved connection (a sign-in's own auth block is kept).
+
+    It is the template (every need a placeholder, CV-D2): each conversation fills it
+    with its own values over the defaults when its servers are resolved.
+    """
 
     from clio_agent.gact.mcp_user_configuration import (  # noqa: PLC0415
         get_user_mcp_server,
         set_user_mcp_server,
     )
 
-    declared = materialize.declaration(found, choice.values)
+    declared = materialize.declaration(found)
     previous = get_user_mcp_server(found.id) or {}
     if previous and previous.get(materialize.CONNECTOR_KEY) != found.id:
         raise ConnectorError(
@@ -137,7 +147,7 @@ def _probes(app: Any) -> dict[str, dict[str, Any]]:
 
 
 def _probe_key(found: Entry, choice: state.Choice) -> str:
-    declared = materialize.declaration(found, choice.values)
+    declared = materialize.resolved(found, choice.values)
     stored = secrets.values(found.id)
     material = {
         "declaration": declared,
@@ -178,7 +188,7 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     cached = _probes(app).get(found.id)
     if cached and cached["key"] == key and not force:
         return cached
-    declared = materialize.declaration(found, choice.values)
+    declared = materialize.resolved(found, choice.values)
     try:
         tools, error = await asyncio.wait_for(
             _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
@@ -202,16 +212,20 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
 # --------------------------------------------------------------------- rows
 
 
-def _plugin(app: Any, found: Entry) -> str | None:
+def _records(app: Any) -> list[Any]:
     service = getattr(app.state, "plugin_service", None)
-    if service is not None:
-        try:
-            following = sorted(r.id for r in service.store.records() if r.follows == found.id)
-        except Exception:  # noqa: BLE001 - the row still shows the entry's own plugin
-            following = []
-        if following:
-            return following[0]
-    return found.plugin or None
+    if service is None:
+        return []
+    try:
+        return list(service.store.records())
+    except Exception as exc:  # noqa: BLE001 - the row still shows the entry's own plugin
+        trace.event("PLUGINS", "connector_row_records_unavailable (%s)", type(exc).__name__)
+        return []
+
+
+def _plugin(records: list[Any], found: Entry) -> str | None:
+    following = sorted(r.id for r in records if r.follows == found.id)
+    return following[0] if following else (found.plugin or None)
 
 
 def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str, Any]:
@@ -235,6 +249,9 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
             status, needs = "needs", sign_in
         else:
             status, reason = "unreachable", "The server asks for a sign-in."
+    from clio_agent.connectors.follow import plugin_refs  # noqa: PLC0415
+
+    records = _records(app)
     return {
         "id": found.id,
         "name": found.name,
@@ -242,8 +259,9 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         "logo_url": f"/v1/connectors/{found.id}/logo" if found.logo else None,
         "source": found.source,
         "enabled": choice.enabled,
-        "scope": choice.scope,
-        "plugin": _plugin(app, found),
+        "plugin": _plugin(records, found),
+        # What a conversation's plugin picker adds for this connector (CN9 *Amended*).
+        "plugin_ref": plugin_refs(found.id, records)[0],
         "tool_count": cached.get("tool_count") if cached and status == "ready" else None,
         "state": {"status": status, "needs": needs if status == "needs" else [], "reason": reason},
         "needs": [need_row(found, choice, need) for need in found.needs],
@@ -335,12 +353,9 @@ def check_values(
                 f"{need.label} of {found.name} is set by the person, not the agent.",
             )
         value = None if raw is None else str(raw).strip()
-        if value and ("\n" in value or "\r" in value or "${" in value or len(value) > 4096):
-            raise ConnectorError("connector_value_invalid", f"{need.label}: one plain line")
-        if value and need.options and value not in need.options:
-            raise ConnectorError(
-                "connector_value_invalid", f"{need.label}: one of {', '.join(need.options)}"
-            )
+        problem = value_problem(need, value) if value else None
+        if problem:
+            raise ConnectorError("connector_value_invalid", f"{need.label}: {problem}")
         (secret if need.kind == "secret" else plain)[need.key] = value or None
     return plain, secret
 
@@ -357,12 +372,10 @@ async def set_values(
     return await apply(app, found)
 
 
-async def enable(app: Any, connector_id: str, scope: Any) -> dict[str, Any]:
+async def enable(app: Any, connector_id: str) -> dict[str, Any]:
+    """Install and ready the connector; it joins no conversation by itself (CN10)."""
+
     found = entry(connector_id)
-    try:
-        normalized = state.normalize_scope(scope)
-    except state.ConnectorStateError as exc:
-        raise ConnectorError("connector_scope_invalid", str(exc)) from exc
     if saved_connection(found.id) is None:
         from clio_agent.gact.mcp_user_configuration import get_user_mcp_server  # noqa: PLC0415
 
@@ -372,13 +385,13 @@ async def enable(app: Any, connector_id: str, scope: Any) -> dict[str, Any]:
                 f"A saved connection named {found.id!r} already exists. Remove it first.",
                 409,
             )
-    await asyncio.to_thread(state.update, found.id, enabled=True, scope=normalized)
+    await asyncio.to_thread(state.update, found.id, enabled=True)
     return await apply(app, found)
 
 
 async def disable(app: Any, connector_id: str) -> dict[str, Any]:
-    """Stop offering the connector. Its saved connection stays, reached by nothing but a
-    conversation whose cached prompt still has its plugin until compaction."""
+    """Turn the connector off. Its saved connection stays; a conversation that has its
+    plugin drops it with the typed reason ``connector_off`` (``connectors.follow``)."""
 
     found = entry(connector_id)
     await asyncio.to_thread(state.update, found.id, enabled=False)
@@ -472,4 +485,4 @@ async def create_custom(app: Any, body: Mapping[str, Any]) -> dict[str, Any]:
     await asyncio.to_thread(state.save_custom, raw)
     if values:
         await asyncio.to_thread(state.update, connector_id, values=values)
-    return await enable(app, connector_id, body.get("scope") or "all")
+    return await enable(app, connector_id)

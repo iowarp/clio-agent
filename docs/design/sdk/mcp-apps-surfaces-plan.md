@@ -4,7 +4,7 @@ This plan makes a connector the thing a person enables in CLIO, and lets a conne
 
 The plan has eleven workstreams. They are not ordered. The work is one goal that runs until every item under Done holds, and the human reviews the finished branches.
 
-1. **Connectors.** A connector has a logo, says what it needs, and is set up through one card, in Extensions and in the conversation. It can bring a plugin that follows it.
+1. **Connectors.** A connector has a logo, says what it needs, and is set up through one card, in Extensions and in the conversation. It can bring a plugin that follows it. *Amended (ledger CS-D1):* enabling a connector installs and readies it; a conversation takes its tools only when the person adds the connector's plugin to that conversation, so one conversation never carries another's tools.
 2. **Display modes.** `fullscreen` is a workbench tab, and `inline` is the card.
 3. **Lifetime.** An app in a tab stays live until its tab closes.
 4. **The app's context reaches the agent.** What a view reports is in the next turn the person sends.
@@ -195,9 +195,25 @@ A need is required or optional, can have a default, and can be marked `agent_set
 
 **CN5. The same card in the conversation.** When the agent calls a tool on a connector that is not ready, the call does not fail. It waits, the card appears in the conversation with the rows that are missing, and when they are filled the same call continues and returns its result. If the person declines, the call returns a typed refusal that names the connector. This replaces the "MCP sign-in required" failure.
 
-**CN6. The agent can set a value.** A native tool, `set_connector_value`, sets a need that is marked `agent_settable`, when the person gives the value in the conversation or another tool has just produced it. It follows the session's tool permission rules. It is refused for a secret and for a sign-in. The card shows the new value.
+**CN6. The agent can set a value.** A native tool, `set_connector_value`, sets a need that is marked `agent_settable`, when the person gives the value in the conversation or another tool has just produced it. It follows the session's tool permission rules. It is refused for a secret and for a sign-in. The card shows the new value. *Amended (ledger CV-D4):* the value is set for the conversation the agent runs in, never as the person's default (CN7, amended).
 
 **CN7. Applying a change.** When a value changes, CLIO reconnects to a URL server or restarts a command server with the new values, and lists its tools again. A view that was open reconnects through its saved call (MA19).
+
+*Amended (ledger CV-D1 to CV-D7): connector values are per conversation.* A value the agent sets with `set_connector_value`, or the person types in a setup card inside a conversation, belongs to that conversation: "connect to the ParaView on node08" in one conversation must not re-point another conversation's view, nor carry its "Command to run first" there (first-run journey JR-P2, JR7). Where each part of a connector lives:
+
+| Part | Where it lives | Who changes it | Reaches |
+| --- | --- | --- | --- |
+| Enabled and where it applies (CN10) | `connectors.yaml` | The person, in Extensions or an offer card | Every conversation in scope |
+| Defaults of `address` and `value` needs | `connectors.yaml` | The person, in Extensions, or "Save as default" on a conversation's card | Every conversation that did not set its own |
+| A conversation's own `address` and `value` needs | The session's metadata, `connector_values` | `set_connector_value` in that conversation; the conversation's setup or offer card | That conversation only |
+| Secrets (CN8) | The connection credential store | The person, on any card | Every conversation |
+| Sign-ins | The existing MCP sign-in for the connection | The person | Every conversation |
+
+- The saved connection is a template: every need stays `${need.<key>}`. When a conversation's servers are resolved, its own values are filled in over the defaults; secrets are filled when the server starts. Session metadata reaches the client and can be patched by it, so a conversation's values are checked again whenever they are read (the CN6 refusals, plus one plain line, no `${`, an address that does not start with `-`), and a refused value is dropped with a typed reason before it can reach a command, an argument, the environment or an address.
+- A conversation with values of its own is served by its own server: workspace fleets are keyed by the workspace root and the digest of those values. Conversations with none share one fleet, as before; two with the same values share theirs. Server names inside a fleet stay the connector ids, so tool names, permission grants and listings do not change.
+- Applying a conversation's value (CN7) builds that conversation's server and lists its tools; a turn of that conversation that is running takes the connector's tools from the new server from its next step. A default change reconnects or restarts only the servers whose connection changes, so a conversation that set its own value keeps its server and its open views.
+- In a conversation the setup card (CN5) and the offer card (CD-D2) show the value in use there, and each `address` or `value` row has "Save as default": ticked, the value becomes the person's default (and the conversation follows it); unticked, it is this conversation's. Extensions keeps editing the defaults. A call waiting on a setup card runs on the server its turn started with, so when the card gives the conversation values of its own the call returns the typed `connector_values_set_for_conversation` and the agent calls it again, now on the conversation's server.
+- Reopening a view (MA19) replays its saved call with the conversation's values in use at the time of the reopen.
 
 **CN8. Secrets.** A secret is stored in the same store CLIO uses for connection credentials today, and the ledger records which. It is never returned to the UI after saving, and it is in no model text, transcript, question record or log.
 
@@ -208,7 +224,11 @@ A need is required or optional, can have a default, and can be marked `agent_set
 - It binds its server name to the connector's connection with the existing `connections`.
 - Such plugins ship in the `clio` product marketplace. The person enables ParaView. They do not install its plugin.
 
+*Amended (ledger CS-D1 to CS-D5):* enabling a connector no longer adds its plugin to anyone's additions. The connector's plugin (an installed plugin that `follows` it, else the carrier CLIO builds, `connector-<id>`) is listed in the plugin catalog for every enabled connector and offered, with the connector's logo, name and state, in the conversation's "Add plugin" picker and in the agent editor; a person adds it to one conversation (the session delta) or to an agent definition. A connector that is off is left out of the pickers. A conversation whose delta names the plugin of a connector that is then turned off drops it with the typed `removed` reason `connector_off`, never a resolution failure, and gets it back when the connector is on again.
+
 **CN10. Where it applies.** A connector is enabled for every conversation or for chosen agents, with the controls CLIO has today. In a running conversation the change reaches the agent through the existing plugin-change injection, and its tools are usable at once.
+
+*Amended (ledger CS-D1, CS-D2):* there is no scope. Enabling is global and means installed and ready: connected, signed in, its tools listed, its state in words. Where it applies is per conversation: the person adds the connector's plugin to a conversation through the existing session delta (`PATCH /v1/sessions/{sid}/agent`, its apply modes and the `plugin_change` note), or to an agent definition through the existing agent editing, as a default. A conversation without it carries none of its tools or prompt.
 
 **CN11. Logos.** A logo is an SVG. Each is the vendor's own mark, taken from that vendor's brand kit, and the ledger records the source and its terms for each one shipped. An entry with no logo shows a monogram.
 
@@ -421,13 +441,13 @@ The plan gave the agent a view's context (MA8) and its tools (MA13), but not its
 
 A request can need a connector the person has but has not turned on ("show me this VTK file in 3D" while ParaView is off). The agent can discover it and offer it; the person turns it on through the same in-conversation card (CN5, rule 2), and the request continues in the same turn. The agent never turns a connector on by itself. Decisions use the prefix `CD-D`, scenarios `CD-Q`; the rows are in the [ledger](mcp-apps-ledger.md), "Connector discovery".
 
-**CD-D1. What the agent knows.** The session facts name the connectors that do not reach this conversation's agent (off, or on for other agents only), one line each with the entry's name, id and description, and say that `offer_connector` offers one and the person chooses. It is grounding, not a rule about when to offer; nothing matches the request's words.
+**CD-D1. What the agent knows.** The session facts name the connectors that do not reach this conversation's agent (off, or on for other agents only), one line each with the entry's name, id and description, and say that `offer_connector` offers one and the person chooses. It is grounding, not a rule about when to offer; nothing matches the request's words. *Amended (ledger CS-D6):* the facts name every connector this conversation does not have, on or off, each marked on or off.
 
-**CD-D2. The offer.** A native tool, `offer_connector(connector, reason)`, deferred in the core plugin, raises the connector card with `intent: "enable"`: the logo, the description, the agent's reason, the needs (optional ones behind one disclosure; a sign-in is asked by the first call, CN5), and "Available in every conversation". The call waits with no timeout (rule 6); stopping the turn ends it.
+**CD-D2. The offer.** A native tool, `offer_connector(connector, reason)`, deferred in the core plugin, raises the connector card with `intent: "enable"`: the logo, the description, the agent's reason, the needs (optional ones behind one disclosure; a sign-in is asked by the first call, CN5), and "Available in every conversation". The call waits with no timeout (rule 6); stopping the turn ends it. *Amended (ledger CS-D6):* the card reads "Add <connector> to this conversation?", says whether the connector is on, and has no "Available in every conversation" switch.
 
-**CD-D3. Where it applies.** CN10 scopes are every conversation or chosen agents, so the card offers every conversation or this conversation's agent only.
+**CD-D3. Where it applies.** CN10 scopes are every conversation or chosen agents, so the card offers every conversation or this conversation's agent only. *Amended (ledger CS-D6):* the card adds the connector to this conversation only.
 
-**CD-D4. Turn on.** CLIO saves the values, enables the connector (CN7, CN9), mounts it in the running turn's tool fleet and has the turn's per-step tool refresh take it, so its tools are callable from the agent's next step. A following plugin's skills arrive with the plugin-change note at the next message.
+**CD-D4. Turn on.** CLIO saves the values, enables the connector (CN7, CN9), mounts it in the running turn's tool fleet and has the turn's per-step tool refresh take it, so its tools are callable from the agent's next step. A following plugin's skills arrive with the plugin-change note at the next message. *Amended (ledger CS-D6):* "Add" enables the connector only if it is off, adds its plugin to this conversation's delta (the `note` apply mode), and joins the running turn as before; no other conversation changes.
 
 **CD-D5. Not now.** The result is the typed refusal `connector_offer_declined` naming the connector. Nothing changes and nothing is retried; the offer was answered, so the call is not a failure.
 
@@ -439,6 +459,8 @@ Take these and record each in the ledger.
 | --- | --- |
 | Where connector entries live | `catalogs/connectors/*.yaml` in clio-agent, shipped with the release |
 | A connector's state after enabling with an empty optional need | Ready |
+| Where an enabled connector applies (*Amended*, ledger CS-D1) | Nowhere until a conversation (or an agent definition) adds its plugin |
+| A connector that is off, in a conversation's plugin picker (*Amended*, ledger CS-D4) | Left out; Extensions or the agent's offer turns it on |
 | A declined card in the conversation | The call returns a typed refusal. Nothing is retried |
 | Who may call `set_connector_value` | The agent, for needs marked `agent_settable`, under the session's permission rules |
 | Display modes offered | `inline`, `fullscreen` |
@@ -523,7 +545,7 @@ Fixtures the session builds besides the cluster: three fixture connector entries
 | AQ7 | The same, and decline the card | The call returns a typed refusal that names the connector |
 | AQ8 | Tell the agent a new address for a need marked `agent_settable` | The agent calls `set_connector_value`, the card shows the value, the server restarts with it |
 | AQ9 | Ask the agent to set the secret, and to sign in for you | Both are refused |
-| AQ10 | Enable the fixture with a following plugin in a running conversation, then disable it | The plugin joins and leaves with the connector, shown by the plugin-change notice. It never appears in a plugin picker |
+| AQ10 | Enable the fixture with a following plugin in a running conversation, then disable it | The plugin joins and leaves with the connector, shown by the plugin-change notice. It never appears in a plugin picker. *Amended (ledger CS-Q1):* enabling adds nothing to the conversation; the conversation's "Add plugin" picker offers the connector by name while it is on; adding it there joins it to that conversation only (plugin-change notice); turning the connector off drops it from that conversation with the typed reason `connector_off` |
 | AQ11 | Add a server by URL that has no entry and asks for a sign-in | It appears as a connector with a monogram, and the card shows the address and a sign-in row |
 | AQ12 | The Extensions list, the setup card and the card in the conversation at 390 by 844 | They fit |
 

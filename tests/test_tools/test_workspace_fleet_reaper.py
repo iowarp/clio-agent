@@ -174,8 +174,8 @@ def test_agent_getter_rebuilds_reaped_executor(monkeypatch) -> None:
         return ClosedThenOpen(gateway)
 
     monkeypatch.setattr(agent, "_build_tool_gateway", fake_build)
-    monkeypatch.setattr("clio_agent.agent.create_sync_tool_executor", fake_create)
-    monkeypatch.setattr("clio_agent.agent.namespace_proxies", lambda gw: {})
+    monkeypatch.setattr("clio_agent.tools.workspace_fleet.create_sync_tool_executor", fake_create)
+    monkeypatch.setattr("clio_agent.tools.workspace_fleet.namespace_proxies", lambda gw: {})
 
     with tool_workspace_context("/ws/reap"):
         first = agent._active_tool_executor()

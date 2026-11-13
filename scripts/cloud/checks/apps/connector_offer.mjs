@@ -1,15 +1,15 @@
-// Connector discovery (CD rows): a plain request needs a connector that is off. The agent
-// offers it, the offer card appears in the conversation (the connector card, intent
-// "enable"), the person turns it on or says Not now, and the same turn continues.
+// Connector discovery (CD rows, CN10 *Amended*): a plain request needs a connector this
+// conversation does not have (off, or enabled but not added here). The agent offers it,
+// the card "Add <connector> to this conversation?" appears (the connector card, intent
+// "enable"), the person chooses Add or Not now, and the same turn continues.
 //
 //   OFFER_REQUEST  the plain request; "{root}" is replaced by the conversation's folder
 //   OFFER_COPY     files or folders copied into that folder first (":"-separated, optional)
-//   OFFER_ANSWER   "turn-on" (default) or "not-now"
-//   OFFER_VALUES   JSON {"<row label>": "<value>"} typed into the card before Turn on
-//   OFFER_ONLY_AGENT  "1": switch "Available in every conversation" off
+//   OFFER_ANSWER   "add" (default) or "not-now"
+//   OFFER_VALUES   JSON {"<row label>": "<value>"} typed into the card before Add
 //   OFFER_NAME     the workspace folder name (default "connector-offer")
 //
-// Needs a fresh config with the connector off. Nothing in the request names a tool.
+// Nothing in the request names a tool.
 import { cpSync } from "node:fs";
 import path from "node:path";
 import { allowPending, api, appFrames, heroShot, openConversation, send, showLastApp, toolCalls, waitIdle } from "./_lib.mjs";
@@ -50,10 +50,9 @@ export default async function (page, shot) {
   const more = card.getByRole("button", { name: /Optional settings/ });
   if (Object.keys(values).length && (await more.count())) await more.click();
   for (const [label, value] of Object.entries(values)) await card.getByLabel(label).fill(value);
-  if (process.env.OFFER_ONLY_AGENT === "1") await card.getByRole("switch").click();
-  if (Object.keys(values).length || process.env.OFFER_ONLY_AGENT === "1") await shot("offer-card-filled");
-  const answer = process.env.OFFER_ANSWER || "turn-on";
-  await card.getByRole("button", { name: answer === "not-now" ? /Not now/ : /Turn on/ }).click();
+  if (Object.keys(values).length) await shot("offer-card-filled");
+  const answer = process.env.OFFER_ANSWER || "add";
+  await card.getByRole("button", { name: answer === "not-now" ? /Not now/ : /^1?\s*Add$/ }).click();
   log.push(`answered: ${answer}`);
   log.push(`settled: ${await waitIdle(page, session.id, log, 12)}`);
   await page.waitForTimeout(4000);
@@ -64,9 +63,11 @@ export default async function (page, shot) {
   const rows = messages.messages || [];
   const people = rows.filter((m) => m.role === "user").length;
   const connectors = (await api("GET", "/v1/connectors")).connectors.map(
-    (c) => `${c.id}:${c.enabled ? JSON.stringify(c.scope) : "off"}:${c.state.status}`,
+    (c) => `${c.id}:${c.enabled ? "on" : "off"}:${c.state.status}`,
   );
-  console.log(JSON.stringify({ session: session.id, calls: await toolCalls(session.id), frames, people, connectors, log }, null, 2));
+  const agent = await api("GET", `/v1/sessions/${session.id}/agent`);
+  const here = agent.resolution.plugins.filter((p) => p.follows).map((p) => p.id);
+  console.log(JSON.stringify({ session: session.id, calls: await toolCalls(session.id), frames, people, connectors, here, log }, null, 2));
   if (people !== 1) throw new Error(`expected one message from the person, found ${people}`);
   if (frames.length) await heroShot(page, shot, "view-hero");
 }
