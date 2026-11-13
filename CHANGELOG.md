@@ -6,12 +6,22 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.7] - 2026-11-13
+
+### Added
+
+- `GET /v1/settings/tools?server=<name>` returns the Tools settings page for one
+  MCP server by name, for a server the person or a workspace configured rather
+  than a plugin. Its rows have the same permission, I/O and per-mode outcomes as
+  a plugin's; until a conversation loads the server, its name is in
+  `servers_not_loaded`. Pass exactly one of `ref` and `server`.
+
 ### Changed
 
 - Agent actions no longer have hard time limits. A long job runs until it
   finishes or you stop the turn:
   - Document conversions and renders (LibreOffice, the document helpers,
-    LaTeX builds) used to be stopped after 60–120 s. Now a running conversion
+    LaTeX builds) used to be stopped after 60 to 120 s. Now a running conversion
     shows "Still running after …" on its tool row, and Stop ends it together
     with all its processes. A PDF preview you requested stops when you leave.
   - A conversion whose processes do no work for 30 s is reported on its tool
@@ -65,6 +75,12 @@ TUI/HTTP surface aren't tracked here.
   so cancel answered "worker has not stopped yet" while the download ran on.
   Receipt writes now retry, verification checks for cancellation while hashing
   large files, and a worker that still ignores a cancel is ended.
+- `DELETE` of a conversation that was stopped succeeds instead of returning
+  409 (#2250). Removing a workspace deletes its conversations, as the dialog
+  says (#2259).
+- Removing a marketplace deletes its fetched checkout, so adding it again
+  succeeds; on Windows the re-add used to fail with "Cannot create a file when
+  that file already exists" (#2271).
 
 ## [0.9.6.6] - 2026-11-12
 
@@ -91,11 +107,6 @@ marketplace pin (v0.8.0-beta.1) are unchanged.
 
 ### Added
 
-- `GET /v1/settings/tools?server=<name>` returns the Tools settings page for one
-  MCP server by name, for a server the person or a workspace configured rather
-  than a plugin. Its rows have the same permission, I/O and per-mode outcomes as
-  a plugin's; until a conversation loads the server, its name is in
-  `servers_not_loaded`. Pass exactly one of `ref` and `server`.
 - `POST /v1/workspaces/{workspace_id}/folder-attachments` attaches a folder on
   CLIO's computer in place or as a full copy. `resources.max_bytes` now
   defaults to `0` (no limit), so large folders and files no longer fail with
