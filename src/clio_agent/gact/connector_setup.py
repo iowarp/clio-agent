@@ -246,7 +246,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                 status={"pending": "pending", "submitted": "answered", "declined": "denied"}.get(
                     row["status"], "cancelled"
                 ),
-                title=f"Turn on {row['connector_name']}"
+                title=f"Add {row['connector_name']} to this conversation"
                 if offer
                 else f"Set up {row['connector_name']}",
                 prompt=f"The agent offers {row['connector_name']}: {row.get('reason') or ''}".strip()
@@ -267,8 +267,9 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                     "logo_url": _logo_url(row["connector_id"]),
                     "missing": row["missing"],
                     "tool_name": row["tool_name"],
-                    # Connector discovery (CD-1 to CD-6): the agent offers a connector
-                    # that is off; the card turns it on (``connector_offer``).
+                    # Connector discovery (CD-1 to CD-8): the agent offers to add a
+                    # connector to this conversation; the card adds it, turning it on
+                    # first when it is off (``connector_offer``).
                     **(
                         {
                             "intent": "enable",
@@ -277,6 +278,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                             "agent_ref": row.get("agent_ref") or "",
                             "agent_name": row.get("agent_name") or "",
                             "asks_sign_in": bool(row.get("asks_sign_in")),
+                            "connector_enabled": bool(row.get("connector_enabled")),
                         }
                         if offer
                         else {}
@@ -312,7 +314,7 @@ async def respond(
     """Answer a setup card; returns the updated row's interaction.
 
     An offer card (``intent: enable``) is answered by :func:`.connector_offer.answer`:
-    ``submit`` turns the connector on with ``metadata.scope`` (``all`` or ``agent``).
+    ``submit`` adds the connector to this conversation, turning it on if it is off.
     """
 
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415

@@ -2,7 +2,7 @@
 
 The connection has the connector's id as its name, ``connector: <id>`` as its
 marker and ``connection_only: true``: it is never mounted on its own, only through
-the plugin that follows the connector (:mod:`.follow`), so its scope is one rule.
+the connector's plugin (:mod:`.follow`), which a person adds to a conversation.
 The saved declaration is a template: every need stays a ``${need.<key>}``
 placeholder (CV-D2). Address and value needs are filled per conversation, the
 conversation's own values over the person's defaults (:func:`fill_declaration`,

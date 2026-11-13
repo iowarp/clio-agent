@@ -1,26 +1,27 @@
-"""Connector discovery: the agent offers a connector the person has not turned on.
+"""Connector discovery: the agent offers to add a connector to this conversation.
 
-A request can need a connector the person has but has not enabled ("show me this VTK
-file in 3D" while the 3D viewer's connector is off). The agent learns which
-connectors it could offer from the ``session_facts_connectors`` piece of the session
-facts (:func:`offerable_facts`), and offers one with the native tool
-``offer_connector(connector, reason)``. CLIO never turns a connector on by itself.
+A request can need a connector this conversation does not have ("show me this VTK file
+in 3D" while the 3D viewer's connector is off, or on but not added here). The agent
+learns which connectors it could offer from the ``session_facts_connectors`` piece of
+the session facts (:func:`offerable_facts`): every connector whose plugin this
+conversation does not have, on or off. It offers one with the native tool
+``offer_connector(connector, reason)``. CLIO never adds a connector by itself.
 
 The offer is the in-conversation setup card (CN5, one way to ask): a pending
-interaction of kind ``connector_setup`` with ``intent: enable`` with the connector's logo,
-description, the agent's reason and its needs (sign-in rows excepted: the first call
-asks for those through the same card). The call waits on its tool thread with no
-timeout (plan rule 6); stopping the turn ends it.
+interaction of kind ``connector_setup`` with ``intent: enable`` with the connector's
+logo, description, the agent's reason, whether the connector is on, and its needs
+(sign-in rows excepted: the first call asks for those through the same card). The
+call waits on its tool thread with no timeout (plan rule 6); stopping the turn ends it.
 
-* **Turn on** (``submit``): the values typed are saved, the connector is enabled for
-  every conversation (``scope: all``) or for this conversation's agent only (CN10),
-  CLIO connects and lists its tools, and its plugin joins (CN9). The connector's
-  namespace is then mounted in the running turn's fleet
-  (:func:`clio_agent.gact.connector_rebind.join_namespace`) and the turn's tool
-  refresh takes it, so its tools are callable from the agent's next step in the
-  same turn.
-* **Not now** (``decline``): the typed refusal ``connector_offer_declined`` naming
-  the connector (``refusal``, not ``error``: the offer was answered, the tool did not
+* **Add** (``submit``): the values typed are saved, the connector is turned on if it
+  was off (installed and readied: CLIO connects and lists its tools), and its plugin
+  joins *this* conversation's delta (:func:`.connector_follow.add_to_conversation`,
+  the plugin-change ``note`` mode). The connector's namespace is then mounted in the
+  running turn's fleet (:func:`clio_agent.gact.connector_rebind.join_namespace`) and
+  the turn's tool refresh takes it, so its tools are callable from the agent's next
+  step in the same turn. No other conversation changes (CN10 *Amended*).
+* **Not now** (``decline``): the typed refusal ``connector_offer_declined`` naming the
+  connector (``refusal``, not ``error``: the offer was answered, the tool did not
   fail; its row reads declined). Nothing changes and nothing is retried.
 
 The row reads "Offer <connector>"; expansion shows the agent's reason, what the
@@ -65,7 +66,7 @@ def _session(app: Any, session_id: str) -> Any:
 
 
 def session_agent(app: Any, session_id: str) -> tuple[tuple[str, ...], str, str]:
-    """``(refs, ref, name)`` of the session's agent: the refs a connector scope matches."""
+    """``(refs, ref, name)`` of the session's agent, as the card names it."""
 
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         AGENT_REF_KEY,
@@ -88,25 +89,53 @@ def session_agent(app: Any, session_id: str) -> tuple[tuple[str, ...], str, str]
     return refs, ref or str(agent.get("ref") or ""), str(agent.get("name") or ref)
 
 
+def conversation_connectors(app: Any, session_id: str) -> dict[str, list[str]] | None:
+    """The connectors this conversation has, with their plugin ids; None when its agent
+    cannot be resolved (typed in the trace)."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+
+    if _session(app, session_id) is None:
+        trace.event("TOOLS", "connector_offer_no_session session=%s", session_id)
+        return None
+    try:
+        resolution = session_resolution(app, session_id)
+    except (SessionAgentUnavailable, RuntimeError) as exc:
+        trace.event("TOOLS", "connector_offer_agent_unresolved session=%s (%s)", session_id, exc)
+        return None
+    out: dict[str, list[str]] = {}
+    for row in resolution.plugins:
+        if row.get("follows"):
+            out.setdefault(str(row["follows"]), []).append(str(row["id"]))
+    return out
+
+
 def offerable(app: Any, session_id: str) -> list[Any]:
-    """The connectors that do not reach this conversation's agent, by name."""
+    """The connectors whose plugin this conversation does not have, on or off, by name."""
 
     from clio_agent.connectors import state  # noqa: PLC0415
-    from clio_agent.connectors.follow import applicable  # noqa: PLC0415
 
-    refs, _ref, _name = session_agent(app, session_id)
-    if not refs:  # no agent to turn one on for (a scope names agents)
-        trace.event("TOOLS", "connector_offer_no_agent session=%s", session_id)
+    here = conversation_connectors(app, session_id)
+    if here is None:
         return []
-    on = set(applicable(refs))
     return sorted(
-        (found for cid, found in state.all_entries().items() if cid not in on),
+        (found for cid, found in state.all_entries().items() if cid not in here),
         key=lambda found: found.name.casefold(),
     )
 
 
-def _brief(found: Any) -> dict[str, str]:
-    return {"id": found.id, "name": found.name, "description": found.description}
+def _brief(found: Any) -> dict[str, Any]:
+    from clio_agent.connectors import state  # noqa: PLC0415
+
+    return {
+        "id": found.id,
+        "name": found.name,
+        "description": found.description,
+        "enabled": state.choice(found.id).enabled,
+    }
 
 
 def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, str]], int]:
@@ -155,6 +184,8 @@ def _card_row(app: Any, session_id: str, found: Any, reason: str) -> dict[str, A
         "reason": reason.strip(),
         "agent_ref": ref,
         "agent_name": name,
+        # On already: the card only adds it to this conversation.
+        "connector_enabled": choice.enabled,
         "tool_name": TOOL_NAME,
         "invocation_id": peek_call_identity(),
         # Every need but a sign-in, which only exists once its connection does: the
@@ -168,27 +199,6 @@ def _card_row(app: Any, session_id: str, found: Any, reason: str) -> dict[str, A
     }
 
 
-def _scope(found: Any, row: Mapping[str, Any], metadata: Mapping[str, Any]) -> Any:
-    from clio_agent.connectors import state  # noqa: PLC0415
-    from clio_agent.gact.connector_setup import SetupResponseError  # noqa: PLC0415
-
-    where = str(metadata.get("scope") or "all")
-    if where == "all":
-        return "all"
-    if where != "agent":
-        raise SetupResponseError(422, "connector_scope_invalid", 'scope must be "all" or "agent"')
-    ref = str(row.get("agent_ref") or "")
-    if not ref:
-        raise SetupResponseError(
-            422, "connector_scope_invalid", "This conversation's agent has no reference"
-        )
-    current = state.choice(found.id)
-    agents = set(current.scope.get("agents") or ()) if isinstance(current.scope, dict) else set()
-    if current.enabled and current.scope == "all":
-        return "all"  # already everywhere: turning it on for one agent narrows nothing
-    return {"agents": sorted(agents | {ref})}
-
-
 async def answer(
     app: Any,
     row: dict[str, Any],
@@ -196,10 +206,16 @@ async def answer(
     values: Mapping[str, Any],
     metadata: Mapping[str, Any],
 ) -> None:
-    """Answer an offer card: ``submit`` turns the connector on, ``decline`` refuses."""
+    """Answer an offer card: ``submit`` adds the connector to this conversation (turning
+    it on first when it is off), ``decline`` refuses. ``metadata.save_as_default`` names
+    the values that become the person's defaults; the others are this conversation's."""
 
     from clio_agent.connectors import secrets, state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
+    from clio_agent.gact.connector_follow import (  # noqa: PLC0415
+        ConnectorAddError,
+        add_to_conversation,
+    )
     from clio_agent.gact.connector_setup import SetupResponseError  # noqa: PLC0415
 
     if action == "decline":
@@ -218,7 +234,6 @@ async def answer(
         write_overlay,
     )
 
-    scope = _scope(found, row, metadata)
     try:
         defaults = default_keys(metadata, plain)  # CV-D5: the rest is this conversation's
     except service.ConnectorError as exc:
@@ -243,12 +258,28 @@ async def answer(
             f"{found.name} still needs: {', '.join(need.label for need in absent)}",
             missing=[need.key for need in absent],
         )
+    enabled_now = not state.choice(found.id).enabled
     try:
-        await service.enable(app, found.id, scope)
+        if enabled_now:
+            await service.enable(app, found.id)
+        elif defaults or secret:  # a conversation's own values reach only its fleet (CV-D5)
+            await service.apply(app, found)
     except service.ConnectorError as exc:
         raise SetupResponseError(exc.status, exc.code, str(exc)) from None
-    row.update(status="submitted", scope=scope, updated_at=_now())
-    trace.event("TOOLS", "connector_offer_accepted connector=%s scope=%s", found.id, scope)
+    try:
+        plugins = await asyncio.to_thread(
+            add_to_conversation, app, str(row["session_id"]), found.id
+        )
+    except ConnectorAddError as exc:
+        raise SetupResponseError(422, exc.reason, str(exc)) from None
+    row.update(status="submitted", enabled_now=enabled_now, plugins=plugins, updated_at=_now())
+    trace.event(
+        "TOOLS",
+        "connector_offer_accepted connector=%s enabled_now=%s plugins=%s",
+        found.id,
+        enabled_now,
+        ",".join(plugins),
+    )
 
 
 # ------------------------------------------------------- joining the running turn
@@ -314,7 +345,9 @@ def _session_id() -> str:
     return str(context.active_tool_session_id() or context.active_session_id() or "")
 
 
-def _turned_on(app: Any, found: Any, scope: Any, already: bool) -> dict[str, Any]:
+def _turned_on(
+    app: Any, found: Any, *, enabled_now: bool, already: bool, plugins: list[str]
+) -> dict[str, Any]:
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
     from clio_agent.tools.mcp_server_instructions import instructions_for  # noqa: PLC0415
@@ -327,12 +360,12 @@ def _turned_on(app: Any, found: Any, scope: Any, already: bool) -> dict[str, Any
         "needs": f"waiting for: {', '.join(status.get('needs') or ())}",
         "unreachable": f"not reachable: {status.get('reason') or 'no reason given'}",
     }.get(status.get("status"), str(status.get("status")))
-    where = "every conversation" if scope == "all" else "this conversation's agent"
-    said = (
-        f"{found.name} is already on for this agent"
-        if already
-        else f"The person turned on {found.name} for {where}"
-    )
+    if already:
+        said = f"{found.name} is already in this conversation"
+    elif enabled_now:
+        said = f"The person turned on {found.name} and added it to this conversation"
+    else:
+        said = f"The person added {found.name} to this conversation"
     if tools:
         said += f"; its {len(tools)} tools are in your tool list from your next step"
     elif reason:
@@ -341,20 +374,20 @@ def _turned_on(app: Any, found: Any, scope: Any, already: bool) -> dict[str, Any
         "connector": found.id,
         "connector_name": found.name,
         "enabled": True,
+        "enabled_now": enabled_now,
         "already_on": already,
-        "scope": scope,
         "state": status,
         "tool_count": row.get("tool_count"),
         "tools": tools,
-        "plugin": row.get("plugin"),
+        "plugins": plugins,
         "message": f"{said}. The connector is {words}.",
     }
     if reason:
         result["join_reason"] = reason
-    if row.get("plugin"):
+    if plugins and not already:
         result["message"] += (
-            f" Its plugin {row['plugin']} joins this conversation; its skills are offered "
-            "from the next message."
+            f" Its plugin {', '.join(plugins)} joined this conversation only; its skills are "
+            "offered from the next message."
         )
     if text := instructions_for(found.id):
         result["instructions"] = text
@@ -362,10 +395,9 @@ def _turned_on(app: Any, found: Any, scope: Any, already: bool) -> dict[str, Any
 
 
 async def offer_connector(connector: str = "", reason: str = "") -> dict[str, Any]:
-    """Offer the person a connector that is off; wait for Turn on or Not now."""
+    """Offer to add a connector to this conversation; wait for Add or Not now."""
 
     from clio_agent.connectors import state  # noqa: PLC0415
-    from clio_agent.connectors.follow import applicable  # noqa: PLC0415
     from clio_agent.gact import context  # noqa: PLC0415
     from clio_agent.gact.connector_setup import wait_for_card  # noqa: PLC0415
 
@@ -382,7 +414,7 @@ async def offer_connector(connector: str = "", reason: str = "") -> dict[str, An
         return {
             "offerable": briefs,
             "message": f"{len(briefs)} connector{'s' if len(briefs) != 1 else ''} "
-            "the person can turn on.",
+            "the person can add to this conversation.",
         }
     entries = state.all_entries()
     found = _match(entries, connector)
@@ -392,9 +424,12 @@ async def offer_connector(connector: str = "", reason: str = "") -> dict[str, An
             "message": f"No connector {connector!r}.",
             "offerable": briefs,
         }
-    refs, _ref, _name = session_agent(app, session_id)
-    if found.id in applicable(refs):
-        return await asyncio.to_thread(_turned_on, app, found, state.choice(found.id).scope, True)
+    here = await asyncio.to_thread(conversation_connectors, app, session_id)
+    present = (here or {}).get(found.id) or []
+    if present and state.choice(found.id).enabled:
+        return await asyncio.to_thread(
+            _turned_on, app, found, enabled_now=False, already=True, plugins=present
+        )
     row = await asyncio.to_thread(_card_row, app, session_id, found, reason)
     trace.event("TOOLS", "connector_offered connector=%s session=%s", found.id, session_id)
     if await asyncio.to_thread(wait_for_card, app, row):
@@ -414,22 +449,21 @@ async def offer_connector(connector: str = "", reason: str = "") -> dict[str, An
             "connector": found.id,
             "connector_name": found.name,
             "reason": reason,
-            "message": f"The person chose not to turn on {found.name} ({found.id}) now. "
+            "message": f"The person chose not to add {found.name} ({found.id}) now. "
             "Nothing changed.",
         }
-    result = await asyncio.to_thread(_turned_on, app, found, row.get("scope", "all"), False)
+    result = await asyncio.to_thread(
+        _turned_on,
+        app,
+        found,
+        enabled_now=bool(row.get("enabled_now")),
+        already=False,
+        plugins=list(row.get("plugins") or ()),
+    )
     return {**result, "reason": reason}
 
 
 # --------------------------------------------------------------- presentation
-
-
-def _scope_words(scope: Any) -> str:
-    if scope == "all":
-        return "Every conversation"
-    if isinstance(scope, Mapping):
-        return "Only " + ", ".join(str(ref) for ref in scope.get("agents") or ())
-    return str(scope or "")
 
 
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
@@ -453,9 +487,11 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
             {
                 "id": "offerable",
                 "type": "text",
-                "label": "Can be turned on",
+                "label": "Can be added",
                 "text": "\n".join(
-                    f"{item.get('name')}: {item.get('description')}" for item in listed
+                    f"{item.get('name')} ({'on' if item.get('enabled') else 'off'}): "
+                    f"{item.get('description')}"
+                    for item in listed
                 )
                 or "None",
             }
@@ -492,7 +528,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
                 {
                     "id": "offerable",
                     "type": "text",
-                    "label": "Can be turned on",
+                    "label": "Can be added",
                     "text": "\n".join(str(item.get("name")) for item in row["offerable"]),
                 }
             )
@@ -508,12 +544,12 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
             "id": "outcome",
             "type": "text",
             "label": "Answer",
-            "text": "Already on" if row.get("already_on") else "Turned on",
+            "text": "Already here"
+            if row.get("already_on")
+            else ("Turned on and added" if row.get("enabled_now") else "Added"),
         }
     )
-    blocks.append(
-        {"id": "scope", "type": "text", "label": "Where", "text": _scope_words(row.get("scope"))}
-    )
+    blocks.append({"id": "scope", "type": "text", "label": "Where", "text": "This conversation"})
     status = row.get("state") if isinstance(row.get("state"), Mapping) else {}
     tools = [str(name) for name in row.get("tools") or []]
     blocks.append(
@@ -567,12 +603,13 @@ def build_offer_connector_tool() -> Any:
         domain="tasks",
         title="Offer connector",
         desc=(
-            "Offer the person a connector they have not turned on, when their request "
+            "Offer to add a connector to this conversation, when the person's request "
             "needs what it does and none of your tools can. The person sees its logo, "
-            "description and your reason, and chooses Turn on or Not now; you never turn "
-            "it on yourself. On Turn on its tools are in your tool list from your next "
-            "step and you continue the request; on Not now you get a refusal and nothing "
-            "changed. With no connector it lists the connectors the person can turn on."
+            "description and your reason, and chooses Add or Not now (adding one that is "
+            "off turns it on); you never add it yourself. On Add its tools are in your tool "
+            "list from your next step and you continue the request; on Not now you get a "
+            "refusal and nothing changed. With no connector it lists the connectors the "
+            "person can add."
         ),
         args={
             "connector": {"type": "string", "description": "The connector's id or name."},

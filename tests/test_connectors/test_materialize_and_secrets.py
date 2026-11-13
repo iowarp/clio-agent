@@ -37,18 +37,13 @@ def test_a_sign_in_need_adds_managed_oauth_for_the_connection(fixture_catalog: P
     assert declared["auth"]["require_existing_tokens"] is True
 
 
-def test_choices_and_scope(fixture_catalog: Path) -> None:
+def test_choices(fixture_catalog: Path) -> None:
     assert state.choice("fixture-plain") == state.Choice()
-    state.update("fixture-plain", enabled=True, scope=state.normalize_scope("all"))
-    state.update("fixture-secret", enabled=True, scope={"agents": ["clio/standard"]})
+    state.update("fixture-plain", enabled=True)
+    state.update("fixture-secret", enabled=True)
     state.update("fixture-secret", values={"where": "h", "other": None})
     assert state.choice("fixture-secret").values == {"where": "h"}
-    assert state.choice("fixture-plain").applies_to(("user/mine",))
-    assert state.choice("fixture-secret").applies_to(("clio/standard",))
-    assert state.choice("fixture-secret").applies_to(("standard",))
-    assert not state.choice("fixture-secret").applies_to(("clio/other",))
-    with pytest.raises(state.ConnectorStateError):
-        state.normalize_scope({"agents": []})
+    assert state.choice("fixture-plain").enabled
     state.save_custom(
         {
             "id": "custom-one",

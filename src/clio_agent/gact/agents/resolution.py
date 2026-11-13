@@ -38,8 +38,6 @@ AGENT_REF_KEY = "agent_ref"
 AGENT_DELTA_KEY = "agent_delta"
 AGENT_RESOLUTION_KEY = "agent_resolution"
 SUBAGENT_KEY = "agent_subagent"
-#: The enabled connectors whose following plugins this pin includes (CN9, CN10).
-CONNECTOR_FOLLOW_KEY = "agent_connectors"
 
 
 class SessionAgentUnavailable(RuntimeError):
@@ -108,17 +106,7 @@ def resolution_metadata(resolution: Resolution, *, ref: str, delta: Delta) -> di
         AGENT_REF_KEY: ref,
         AGENT_DELTA_KEY: delta.to_dict(),
         AGENT_RESOLUTION_KEY: resolution.digest,
-        CONNECTOR_FOLLOW_KEY: connector_stamp(ref, resolution),
     }
-
-
-def connector_stamp(ref: str, resolution: Resolution) -> list[str]:
-    """The enabled connectors that reach this agent (what its pin was resolved with)."""
-
-    from clio_agent.connectors.follow import applicable  # noqa: PLC0415
-
-    agent = resolution.agent
-    return applicable((ref, str(agent.get("ref") or ""), str(agent.get("extends") or "")))
 
 
 def prepare_session_agent(app: Any, metadata: dict[str, Any], ref: str = "") -> Resolution:
@@ -201,10 +189,10 @@ def session_resolution(app: Any, session_id: str) -> Resolution:
         return pin_session_agent(app, session_id)
     ref = str(metadata.get(AGENT_REF_KEY) or "")
     resolution = pinned_resolution(app, digest, ref)
-    if not metadata.get(SUBAGENT_KEY) and list(
-        metadata.get(CONNECTOR_FOLLOW_KEY) or ()
-    ) != connector_stamp(ref, resolution):
-        # The person enabled or disabled a connector since this pin (CN10).
+    from clio_agent.connectors.follow import drifted  # noqa: PLC0415
+
+    if not metadata.get(SUBAGENT_KEY) and drifted(resolution):
+        # A connector whose plugin this conversation has was turned off, or on again.
         from clio_agent.gact.connector_follow import follow_connectors  # noqa: PLC0415
 
         return follow_connectors(app, session_id)

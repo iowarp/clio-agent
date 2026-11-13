@@ -11,11 +11,16 @@ A connector's state for the person is one of (CN3):
 
 A disabled connector is not started: its state says only what is missing.
 
+Enabling a connector installs and readies it and nothing more (CN10 *Amended*): it
+reaches a conversation only when the person adds its plugin there (``plugin_ref``,
+:mod:`.connector_follow`).
+
 Changing anything (enable, disable, a value, a secret) is applied at once (CN7):
 the saved connection is rewritten, configuration-dependent fleets rebuild for new
 turns, the connector's namespace is rebound in the fleets running now
-(:mod:`.connector_rebind`), its server is checked again, the open conversations
-follow (:mod:`.connector_follow`), and ``connector.changed`` is published.
+(:mod:`.connector_rebind`), its server is checked again, the open conversations that
+have its plugin follow (:mod:`.connector_follow`), and ``connector.changed`` is
+published.
 """
 
 from __future__ import annotations
@@ -207,16 +212,20 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
 # --------------------------------------------------------------------- rows
 
 
-def _plugin(app: Any, found: Entry) -> str | None:
+def _records(app: Any) -> list[Any]:
     service = getattr(app.state, "plugin_service", None)
-    if service is not None:
-        try:
-            following = sorted(r.id for r in service.store.records() if r.follows == found.id)
-        except Exception:  # noqa: BLE001 - the row still shows the entry's own plugin
-            following = []
-        if following:
-            return following[0]
-    return found.plugin or None
+    if service is None:
+        return []
+    try:
+        return list(service.store.records())
+    except Exception as exc:  # noqa: BLE001 - the row still shows the entry's own plugin
+        trace.event("PLUGINS", "connector_row_records_unavailable (%s)", type(exc).__name__)
+        return []
+
+
+def _plugin(records: list[Any], found: Entry) -> str | None:
+    following = sorted(r.id for r in records if r.follows == found.id)
+    return following[0] if following else (found.plugin or None)
 
 
 def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str, Any]:
@@ -240,6 +249,9 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
             status, needs = "needs", sign_in
         else:
             status, reason = "unreachable", "The server asks for a sign-in."
+    from clio_agent.connectors.follow import plugin_refs  # noqa: PLC0415
+
+    records = _records(app)
     return {
         "id": found.id,
         "name": found.name,
@@ -247,8 +259,9 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         "logo_url": f"/v1/connectors/{found.id}/logo" if found.logo else None,
         "source": found.source,
         "enabled": choice.enabled,
-        "scope": choice.scope,
-        "plugin": _plugin(app, found),
+        "plugin": _plugin(records, found),
+        # What a conversation's plugin picker adds for this connector (CN9 *Amended*).
+        "plugin_ref": plugin_refs(found.id, records)[0],
         "tool_count": cached.get("tool_count") if cached and status == "ready" else None,
         "state": {"status": status, "needs": needs if status == "needs" else [], "reason": reason},
         "needs": [need_row(found, choice, need) for need in found.needs],
@@ -359,12 +372,10 @@ async def set_values(
     return await apply(app, found)
 
 
-async def enable(app: Any, connector_id: str, scope: Any) -> dict[str, Any]:
+async def enable(app: Any, connector_id: str) -> dict[str, Any]:
+    """Install and ready the connector; it joins no conversation by itself (CN10)."""
+
     found = entry(connector_id)
-    try:
-        normalized = state.normalize_scope(scope)
-    except state.ConnectorStateError as exc:
-        raise ConnectorError("connector_scope_invalid", str(exc)) from exc
     if saved_connection(found.id) is None:
         from clio_agent.gact.mcp_user_configuration import get_user_mcp_server  # noqa: PLC0415
 
@@ -374,13 +385,13 @@ async def enable(app: Any, connector_id: str, scope: Any) -> dict[str, Any]:
                 f"A saved connection named {found.id!r} already exists. Remove it first.",
                 409,
             )
-    await asyncio.to_thread(state.update, found.id, enabled=True, scope=normalized)
+    await asyncio.to_thread(state.update, found.id, enabled=True)
     return await apply(app, found)
 
 
 async def disable(app: Any, connector_id: str) -> dict[str, Any]:
-    """Stop offering the connector. Its saved connection stays, reached by nothing but a
-    conversation whose cached prompt still has its plugin until compaction."""
+    """Turn the connector off. Its saved connection stays; a conversation that has its
+    plugin drops it with the typed reason ``connector_off`` (``connectors.follow``)."""
 
     found = entry(connector_id)
     await asyncio.to_thread(state.update, found.id, enabled=False)
@@ -474,4 +485,4 @@ async def create_custom(app: Any, body: Mapping[str, Any]) -> dict[str, Any]:
     await asyncio.to_thread(state.save_custom, raw)
     if values:
         await asyncio.to_thread(state.update, connector_id, values=values)
-    return await enable(app, connector_id, body.get("scope") or "all")
+    return await enable(app, connector_id)

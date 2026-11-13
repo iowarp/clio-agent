@@ -8,7 +8,8 @@
   the defaults, with ``default_value`` and ``conversation`` per need (CV-D5).
 * ``PUT /v1/connectors/{id}/values`` ``{values: {key: str | null}}`` sets needs,
   secrets included, and returns the row once CLIO has reconnected (CN7).
-* ``POST /v1/connectors/{id}/enable`` ``{scope: "all" | {agents: [...]}}`` and
+* ``POST /v1/connectors/{id}/enable`` installs and readies a connector (no body: it
+  joins no conversation by itself; a conversation adds its plugin, CN10 *Amended*) and
   ``POST /v1/connectors/{id}/disable``.
 * ``POST /v1/connectors`` ``{url}`` or ``{command, args}`` (and an optional
   ``name``) adds a custom connector (AQ11); ``DELETE /v1/connectors/{id}`` removes
@@ -107,10 +108,9 @@ def register_connector_routes(app: FastAPI) -> None:
             raise _error(exc) from None
 
     @app.post("/v1/connectors/{connector_id}/enable")
-    async def enable(connector_id: str, request: Request) -> dict[str, Any]:
-        body = await json_body(request, route="POST /v1/connectors/{id}/enable")
+    async def enable(connector_id: str) -> dict[str, Any]:
         try:
-            return await service.enable(app, connector_id, body.get("scope") or "all")
+            return await service.enable(app, connector_id)
         except service.ConnectorError as exc:
             raise _error(exc) from None
 
