@@ -9,7 +9,9 @@ app reports the failure only once someone looks at it.
 
 A channel's ``tool`` is not checked here. It may be one of the view's own app
 tools, which exist only once the view is open; the surface reports a channel
-tool that neither the server nor the view has.
+tool that neither the server nor the view has. A channel's ``key`` is checked
+against the keys the opening tool declares it reports (FP-D11,
+:mod:`clio_agent.gact.mcp_app_state_keys`); a tool that declares none is not checked.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.a2ui_producer._refusal import refusal
+from clio_agent.gact.mcp_app_state_keys import declared_state_keys, describe, state_keys
 from clio_agent.gact.mcp_apps import _resource_uri
 
 if TYPE_CHECKING:
@@ -33,8 +36,21 @@ def _tool_definitions(app: FastAPI) -> dict[str, Any] | None:
     return definitions() if callable(definitions) else None
 
 
+def _unknown_channel(component: dict[str, Any], definition: Any, name: str) -> str:
+    """The first channel key the opening tool does not declare (``""`` when all are)."""
+
+    declared = {item.key for item in declared_state_keys(definition, name)}
+    if not declared:
+        return ""
+    for channel in component.get("state") or []:
+        key = channel.get("key") if isinstance(channel, dict) else None
+        if isinstance(key, str) and key not in declared:
+            return key
+    return ""
+
+
 def validate_mcp_app_components(
-    app: FastAPI, components: list[dict[str, Any]]
+    app: FastAPI, components: list[dict[str, Any]], *, session_id: str | None = None
 ) -> dict[str, Any] | None:
     """Refuse a ``clio.mcp-app.v1`` whose server has no such view-opening tool.
 
@@ -59,9 +75,19 @@ def validate_mcp_app_components(
         tool = str(component.get("tool") or "")
         definition = definitions.get(f"{server}_{tool}")
         if definition is not None and _resource_uri(definition):
-            continue
+            unknown = _unknown_channel(component, definition, f"{server}_{tool}")
+            if not unknown:
+                continue
+            keys = describe(state_keys(app, session_id, server, tool, definition))
+            return refusal(
+                "a2ui_mcp_app_state_key_unknown",
+                detail=(
+                    f"component {component.get('id')!r}: the {tool!r} view of {server!r} "
+                    f"does not report {unknown!r}; it reports: {keys}"
+                ),
+            )
         view_tools = sorted(
-            name[len(server) + 1 :]
+            _with_keys(app, session_id, server, name[len(server) + 1 :], candidate)
             for name, candidate in definitions.items()
             if name.startswith(f"{server}_") and _resource_uri(candidate)
         )
@@ -74,6 +100,13 @@ def validate_mcp_app_components(
             ),
         )
     return None
+
+
+def _with_keys(app: Any, sid: str | None, server: str, tool: str, definition: Any) -> str:
+    """``open_view (state keys: time (set with set_timestep))``, or the bare name."""
+
+    keys = describe(state_keys(app, sid, server, tool, definition))
+    return f"{tool} (state keys: {keys})" if keys else tool
 
 
 __all__ = ["validate_mcp_app_components"]

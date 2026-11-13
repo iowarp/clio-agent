@@ -79,7 +79,9 @@ def build_update_a2ui_components_tool() -> Any:
         chart_spec_error = _chart_spec.validate_chart_components(components)
         if chart_spec_error is not None:
             return chart_spec_error
-        app_error = _mcp_app_reference.validate_mcp_app_components(app, components)
+        app_error = _mcp_app_reference.validate_mcp_app_components(
+            app, components, session_id=session_id
+        )
         if app_error is not None:
             return app_error
 

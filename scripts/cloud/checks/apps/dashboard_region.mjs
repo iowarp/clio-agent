@@ -35,10 +35,10 @@ export default async function (page, shot) {
   if (await maximize.isVisible().catch(() => false)) await maximize.click();
   await page.waitForTimeout(25000); // the view starts and draws
   await shot("dashboard");
-  // The whole dashboard's "Capture labelled regions" is in its viewer's file actions (each
+  // The whole dashboard's "Mark regions across the dashboard" is in its viewer's file actions (each
   // chart's own toolbar has one for that chart alone).
   await page.getByRole("button", { name: "File actions" }).filter({ visible: true }).last().click();
-  await page.getByRole("menuitem", { name: /Capture labelled regions/ }).click();
+  await page.getByRole("menuitem", { name: /Mark regions across the dashboard|Capture labelled regions/ }).click();
   await page.waitForTimeout(1500);
   const add = page.getByRole("button", { name: "Add region" }).filter({ visible: true });
   if (await add.count()) await add.first().click();

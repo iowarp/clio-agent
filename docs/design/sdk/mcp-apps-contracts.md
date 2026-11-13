@@ -161,3 +161,34 @@ A server declares which arguments of a tool are paths, and on which machine they
 
 The sandbox note for a confined stdio server's failed call never reads the error's text: it needs a confined child that served the call and a local write target outside the territory, from the declared `local` `write` arguments or the designated output arguments (`output_path`, `out`, …).
 
+
+## A view's state keys (owner: `polish`, FP-D11)
+
+A view-opening tool may declare what its view reports with `ui/update-model-context`, in the private `_meta` of the tool definition:
+
+```json
+"_meta": {
+  "ai.iowarp.clio/state": [
+    {"key": "time", "tool": "set_timestep", "description": "The shown time value."},
+    {"key": "scene"}
+  ]
+}
+```
+
+- `key` is a `structuredContent` key the view reports (`^[A-Za-z0-9_.-]{1,64}$`, at most 64 entries). `tool` (optional) is the server's own name of the tool that moves the view to a value, called with `{[key]: value}` (the channel call of MA21), so its input schema has that key. `description` is at most 200 characters, one line.
+- A malformed declaration or entry is ignored with the log reason `state_declaration_invalid`.
+- CLIO also knows the keys a live view of the same server and tool last reported in the session (`mcp_app_context`). They follow the declared keys, marked `declared: false`.
+- **Where the agent reads them** (`gact/mcp_app_state_keys.py`): the open view's context block (`clio.reminder.mcp_app_context`, variable `state_keys`: "time (set with set_timestep), scene"); the producer's `a2ui_mcp_app_tool_not_found`, which lists each view tool with its keys; and `a2ui_mcp_app_state_key_unknown`, which refuses a `clio.mcp-app.v1` channel `key` that a declaring tool does not list. A tool that declares nothing is never refused on its keys.
+- ParaView's `open_view` declares `time` (set by `set_timestep`), `time_index`, `time_steps`, `latest_time`, `follow_latest`, `selection`, `scene`, `dataset`, `active_object` and `view_mode`.
+
+## Call origin (owner: `polish`, FP-D7)
+
+- A call a view makes (`POST …/tools/call`, a surface's channel call, a surface's own opening and a reopen; everything `mcp_apps._run_bound` runs) carries `_meta["ai.iowarp.clio/origin"] = "view"` in its `tools/call` request. The agent's own calls carry no mark. Set by `clio_agent.tools.call_origin.scope`, added by the product client (`TaskAwareClient.call_tool_mcp`).
+- A server that keeps a change log attributes a marked call to the person. ParaView's front reads it and sends `by: "person"` to its node half (`/clio/command`), which records the change as the person's.
+
+## A view's label (owner: `polish`, FP-D2)
+
+- An `mcp_app` part's `title` (the tab, the card, the reopen notice and the frame's accessible name read it) is `"<connector>: <subject>"`, from `gact/mcp_app_label.py::view_label`.
+- `<connector>`: the saved connection's label (`mcp_service_labels`; a catalog connector saves its entry name), else the catalog entry named by the server namespace, else the tool's title, else the namespace.
+- `<subject>`: from the opening call's arguments, in the tool's declared order: the first value that names a file or URL, reduced to its last path segment; else the first single-line string of at most 80 characters. Code, long text and non-strings are never a subject. Without a subject the label is the connector alone.
+- A reopened part carries the label computed from its saved call; the client keeps the original card's label for a reopened view.
