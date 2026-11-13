@@ -463,6 +463,10 @@ def _make_mcp_app_observer(app: FastAPI):
         except MCPAppAdmissionError as exc:
             _schedule_rejected_cleanup(app, exc.record)
             raise
+        from clio_agent.gact.mcp_app_calls import record_opening_call  # noqa: PLC0415
+
+        if record_opening_call(app, sid, record, tool):
+            return  # a person's reopen mounts its own part (MA19)
 
         # Import lazily to preserve the tools <- runtime <- gact direction and
         # avoid a module cycle during gact startup.
@@ -637,6 +641,9 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
     )
 
     register_routes(app, deps)
+    from clio_agent.gact.mcp_app_calls import register_mcp_app_reopen_routes  # noqa: PLC0415
+
+    register_mcp_app_reopen_routes(app)
 
 
 __all__ = [
