@@ -179,7 +179,7 @@ def _judge_route(app: Any) -> tuple[Any, Any]:
     """Resolve the judge from the effective caller or explicit model override.
 
     ``goal.judge_model`` / ``CLIO_GOAL_JUDGE_MODEL`` names a small/cheap model for the
-    first-pass judge. When unset, a bound expert/main LM wins. Calls outside a
+    first-pass judge. When unset, the fast model runs, else a bound expert/main LM. Calls outside a
     DSPy context use the app's accepted main identity explicitly; they never read
     the process boot default."""
 
@@ -203,7 +203,9 @@ def _judge_route(app: Any) -> tuple[Any, Any]:
     if fleet_role_configured("goals") or fleet_settings()["judges"]["goals"] is not None:
         return judge_route("goals", caller, adapter)
     if not model:
-        return caller, adapter
+        from clio_agent.gact.fleet.fast_model import fast_route  # noqa: PLC0415
+
+        return fast_route(caller, adapter)
     from clio_agent.lm.secondary import (  # noqa: PLC0415
         SecondarySettings,
         resolve_secondary_lm,

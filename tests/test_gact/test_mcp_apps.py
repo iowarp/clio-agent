@@ -21,6 +21,7 @@ import hashlib
 import json
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -123,6 +124,14 @@ def _open_result() -> dict[str, Any]:
             }
         },
     }
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    """Wait for a background turn's state change; the bound only catches a hang, not speed."""
+    deadline = time.monotonic() + 60
+    while not condition():
+        assert time.monotonic() < deadline, "the background turn never reached the state"
+        time.sleep(0.01)
 
 
 def test_call_tool_result_wire_preserves_private_bridge_fields() -> None:
@@ -556,9 +565,7 @@ def test_app_message_records_context_provenance_without_exposing_private_data(
             },
         )
         assert sent.status_code == 202
-        deadline = time.monotonic() + 2
-        while not model_prompts and time.monotonic() < deadline:
-            time.sleep(0.01)
+        _wait_until(lambda: bool(model_prompts))
         assert "private-model-context" in model_prompts[0]
 
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
@@ -601,9 +608,7 @@ def test_busy_app_message_uses_existing_pending_steer_queue_without_private_data
             json={"parts": [{"type": "text", "text": "keep working"}]},
         )
         assert first.status_code == 202
-        deadline = time.monotonic() + 2
-        while not app.state.turn_runner.busy(sid) and time.monotonic() < deadline:
-            time.sleep(0.01)
+        _wait_until(lambda: app.state.turn_runner.busy(sid))
         assert app.state.turn_runner.busy(sid)
 
         queued = client.post(
@@ -630,9 +635,7 @@ def test_busy_app_message_uses_existing_pending_steer_queue_without_private_data
             message["id"] == queued_message_id for message in messages
         )
         release.set()
-        deadline = time.monotonic() + 2
-        while app.state.turn_runner.busy(sid) and time.monotonic() < deadline:
-            time.sleep(0.01)
+        _wait_until(lambda: not app.state.turn_runner.busy(sid))
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert [message["id"] for message in messages].count(queued_message_id) == 1
         serialized = json.dumps(messages, sort_keys=True)

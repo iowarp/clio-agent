@@ -1,7 +1,10 @@
 """The plugin tools page: each tool's permission and I/O, and saving the person's choices.
 
-Reads (``GET /v1/settings/tools``), for one installed plugin:
+Reads (``GET /v1/settings/tools``), for one installed plugin (``?ref=``) or one MCP
+server by name (``?server=``, for a server no plugin brings):
 
+- each MCP tool's declared ``input_schema`` from the loaded definition, so its
+  details can show its inputs (built-in schemas come from the tool catalog);
 - its tools, grouped into read-only and write tools by their flags: MCP
   ``readOnlyHint`` / ``destructiveHint`` annotations (from the agent runtime's loaded
   MCP definitions), CLIO's built-in annotations (the tool catalog), a built-in's
@@ -23,6 +26,7 @@ exists for it. No new store.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from types import SimpleNamespace
 from typing import Any, get_args
 
 from clio_agent import conf
@@ -44,7 +48,13 @@ from clio_agent.user_config_document import (
     write_document,
 )
 
-__all__ = ["approval_modes", "remove_rule", "save_tool_settings", "tools_view"]
+__all__ = [
+    "approval_modes",
+    "remove_rule",
+    "save_tool_settings",
+    "server_tools_view",
+    "tools_view",
+]
 
 #: Outcome words the page shows (with the mode's name beside them).
 RUNS = "runs"
@@ -75,10 +85,27 @@ def _plugin(app: Any, ref: str) -> Any:
 
 
 def _mcp_definitions(app: Any) -> dict[str, Any]:
-    executor = getattr(getattr(app.state, "agent", None), "tool_executor", None)
-    get_definitions = getattr(executor, "get_all_tool_definitions", None)
-    definitions = get_definitions() if callable(get_definitions) else {}
-    return dict(definitions) if isinstance(definitions, Mapping) else {}
+    """Cached definitions from the default executor and every resident workspace fleet.
+
+    A conversation mounts its servers in its workspace's executor, not the default
+    one, so reading only ``agent.tool_executor`` misses every server a session loaded.
+    """
+
+    agent = getattr(app.state, "agent", None)
+    executors = [getattr(agent, "tool_executor", None)]
+    workspace_state = getattr(agent, "_workspace_state", None)
+    if callable(workspace_state):
+        lock, workspace_executors, _leases = workspace_state()
+        with lock:
+            executors.extend(workspace_executors.values())
+    merged: dict[str, Any] = {}
+    for executor in executors:
+        get_definitions = getattr(executor, "get_all_tool_definitions", None)
+        definitions = get_definitions() if callable(get_definitions) else {}
+        if isinstance(definitions, Mapping):
+            for key, definition in definitions.items():
+                merged.setdefault(key, definition)
+    return merged
 
 
 def _flags(annotations: Mapping[str, Any] | None) -> tuple[bool, bool]:
@@ -128,12 +155,14 @@ def _tool_rows(app: Any, record: Any) -> list[dict[str, Any]]:
                 continue
             found = True
             read_only, destructive = _flags(normalize_mcp_annotations(definition))
+            schema = runtime_tool_value(definition, "input_schema", "inputSchema")
             rows.append(
                 {
                     "name": name,
                     "kind": "mcp",
                     "server": server,
                     "description": str(runtime_tool_value(definition, "description") or ""),
+                    "input_schema": dict(schema) if isinstance(schema, Mapping) else {},
                     "read_only": read_only,
                     "destructive": destructive,
                     "flags_known": True,
@@ -203,7 +232,24 @@ def _outcome(row: Mapping[str, Any], rule: str, default: str, mode: str, script:
 
 def tools_view(app: Any, ref: str) -> dict[str, Any]:
     """The tools page for the installed plugin ``ref`` (``marketplace/plugin``)."""
-    record = _plugin(app, ref)
+    return _view(app, ref, _plugin(app, ref))
+
+
+def server_tools_view(app: Any, server: str) -> dict[str, Any]:
+    """The same page for one MCP server by name, whoever configured it.
+
+    A server the person or a workspace configured belongs to no plugin, so it has no
+    plugin defaults: its tools' permission and I/O come from their MCP annotations, the
+    deployment and the person's own choices. Until a conversation has loaded the server
+    its name is in ``servers_not_loaded``.
+    """
+    if not server.strip():
+        raise ValueError("server must name an MCP server")
+    record = SimpleNamespace(tools=(), mcp_servers=(server,), disclosure={})
+    return _view(app, server, record)
+
+
+def _view(app: Any, label: str, record: Any) -> dict[str, Any]:
     disclosure = record.disclosure.get("servers") or {}
     deployment_permissions = configured_permissions()
     deployment_callers = configured_callers()
@@ -260,7 +306,7 @@ def tools_view(app: Any, ref: str) -> dict[str, Any]:
         }
         tools.append(row)
     return {
-        "plugin": ref,
+        "plugin": label,
         "approval_modes": list(approval_modes()),
         "covering_modes": sorted(covering_postures() & set(approval_modes())),
         "tools": tools,

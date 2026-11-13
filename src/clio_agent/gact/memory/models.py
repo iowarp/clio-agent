@@ -2,8 +2,9 @@
 ``memory_consolidate``.
 
 The operator picks them once for the whole fleet (Settings → Fleet). There is no
-caller to inherit from in a background pass, so an unset role uses the server's
-default model (the configured ``lm`` provider and model), never a session's.
+caller to inherit from in a background pass, so an unset role uses the fast model
+(:mod:`clio_agent.gact.fleet.fast_model`), else the server's default model (the
+configured ``lm`` provider and model), never a session's.
 """
 
 from __future__ import annotations
@@ -25,7 +26,10 @@ def unconfigured_roles() -> tuple[MemoryRole, ...]:
 
     if explicit_lm_provider() or _host_agent_config() is not None:
         return ()
-    judges = fleet_settings()["judges"]
+    settings = fleet_settings()
+    if settings.get("fast"):
+        return ()
+    judges = settings["judges"]
     return tuple(role for role in ROLES if not judges.get(role))
 
 
@@ -63,7 +67,10 @@ def _server_default_config() -> Any:
 
 
 def memory_model_identity(role: MemoryRole) -> dict[str, str]:
-    """``{"provider_id", "model_id", "source"}`` for ``role`` (``source``: fleet or default).
+    """``{"provider_id", "model_id", "source"}`` for ``role``.
+
+    ``source``: ``fleet`` (the role's own model), ``fast`` / ``account_fast`` (the fast
+    model, :mod:`clio_agent.gact.fleet.fast_model`) or ``server_default``.
 
     Raises:
         MemoryModelUnconfigured: No fleet choice and no server default model.
@@ -72,6 +79,14 @@ def memory_model_identity(role: MemoryRole) -> dict[str, str]:
     if raw:
         choice = JudgeModel.model_validate(raw)
         return {"provider_id": choice.provider_id, "model_id": choice.model_id, "source": "fleet"}
+    from clio_agent.gact.fleet.fast_model import fast_identity  # noqa: PLC0415
+
+    try:
+        fast = fast_identity()
+    except (ValueError, OSError):
+        fast = None
+    if fast is not None:
+        return fast
     config = _server_default_config()
     provider = str(
         getattr(config, "server_id", "")

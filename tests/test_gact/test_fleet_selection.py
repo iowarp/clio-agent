@@ -169,8 +169,32 @@ def test_a_fleet_role_preference_runs_the_role_model_and_says_so(
 
     monkeypatch.setattr(fleet_settings, "fleet_settings", lambda: settings(None))
     unset = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
-    assert unset.source == "inherited" and unset.ran["model_id"] == "claude-opus-5-5"
-    assert "fleet role explore is not set; the caller's model runs" in unset.reasons
+    assert unset.source == "prefers" and unset.ran["model_id"] == "claude-haiku-5-5"
+    assert (
+        "fleet role explore is not set; the account's fast model "
+        "claude_code/claude-haiku-5-5 runs" in unset.reasons
+    )
+
+    no_family = _choose(
+        prefers_chain=[{"source": "subagent:explore", "role": "explore"}],
+        inherited={"provider_id": "vllm", "model_id": "qwen-text"},
+    )
+    assert no_family.source == "inherited" and no_family.ran["model_id"] == "qwen-text"
+    assert "fleet role explore is not set; the caller's model runs" in no_family.reasons
+
+
+def test_an_unset_role_runs_the_persons_fast_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.gact import fleet_settings
+
+    fast = {"provider_id": "vllm", "model_id": "qwen-text"}
+    monkeypatch.setattr(
+        fleet_settings,
+        "fleet_settings",
+        lambda: {"revision": "r", "judges": {"explore": None}, "search": None, "fast": fast},
+    )
+    choice = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
+    assert choice.ran == {"provider_id": "vllm", "model_id": "qwen-text"}
+    assert "fleet role explore is not set; the fast model vllm/qwen-text runs" in choice.reasons
 
 
 def test_a_role_is_a_known_preference_field() -> None:
@@ -179,14 +203,24 @@ def test_a_role_is_a_known_preference_field() -> None:
     assert Prefers.from_dict({"role": "explore"}).to_dict() == {"role": "explore"}
 
 
-def test_list_models_marks_the_providers_fast_family_and_selection_ignores_it() -> None:
-    """A fast model is a fact the agent weighs; CLIO never picks a child's model by it.
+def test_list_models_marks_the_providers_fast_family_and_unset_roles_run_on_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fast family list_models marks is the one an unset helper role runs on.
     SABOTAGE: make _is_fast return False and the first assertion fails."""
+    from clio_agent.gact import fleet_settings
     from clio_agent.gact.fleet import tools as fleet_tools
 
     assert fleet_tools._is_fast(HAIKU) and not fleet_tools._is_fast(OPUS)
+    monkeypatch.setattr(
+        fleet_settings,
+        "fleet_settings",
+        lambda: {"revision": "r", "judges": {"explore": None}, "search": None, "fast": None},
+    )
     unset = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
-    assert unset.source == "inherited" and unset.ran["model_id"] == "claude-opus-5-5"
+    assert unset.source == "prefers" and unset.ran["model_id"] == "claude-haiku-5-5"
+    asked = _choose(explicit="opus", prefers_chain=[{"role": "explore"}])
+    assert asked.ran["model_id"] == "claude-opus-5-5"
 
 
 def test_a_model_the_person_picked_is_recorded_as_theirs() -> None:

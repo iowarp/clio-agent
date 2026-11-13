@@ -111,6 +111,55 @@ def test_explicit_role_uses_selected_provider_identity(monkeypatch: pytest.Monke
     assert judge_route("goals", caller, adapter) == (chosen, chosen_adapter)
 
 
+def test_an_unset_role_runs_the_fast_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.gact import fleet_settings as fleet
+
+    caller, adapter, fast, fast_adapter = object(), object(), object(), object()
+    monkeypatch.setattr(
+        fleet,
+        "fleet_settings",
+        lambda: {
+            "judges": {"goals": None},
+            "fast": {"provider_id": "fast-provider", "model_id": "fast-model"},
+        },
+    )
+
+    def route(provider_id: str, model_id: str) -> tuple[Any, Any]:
+        assert (provider_id, model_id) == ("fast-provider", "fast-model")
+        return fast, fast_adapter
+
+    monkeypatch.setattr(fleet, "model_route", route)
+    assert judge_route("goals", caller, adapter) == (fast, fast_adapter)
+
+    def unreachable(provider_id: str, model_id: str) -> tuple[Any, Any]:
+        raise fleet.ModelRouteUnavailable("gone")
+
+    monkeypatch.setattr(fleet, "model_route", unreachable)
+    assert judge_route("goals", caller, adapter) == (caller, adapter)
+
+
+def test_the_fast_model_persists_and_leaves_older_revisions_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    current = fleet_settings()
+    assert current["fast"] is None
+    saved = save_fleet_settings(
+        FleetUpdate(
+            revision=current["revision"],
+            judges={},
+            fast={"provider_id": "codex", "model_id": "gpt-6-luna"},
+        )
+    )
+    assert saved["fast"] == {"provider_id": "codex", "model_id": "gpt-6-luna"}
+    assert saved["revision"] != current["revision"]
+    conf.reload()
+    assert fleet_settings()["fast"] == saved["fast"]
+    cleared = save_fleet_settings(FleetUpdate(revision=saved["revision"], judges={}, fast=None))
+    assert cleared["fast"] is None and cleared["revision"] == current["revision"]
+
+
 def test_search_model_is_separate_and_survives_legacy_judge_updates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

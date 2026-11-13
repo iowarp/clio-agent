@@ -231,7 +231,9 @@ def choose_model(
         )
         return _choice(explicit, entry, candidate, reasons)
     for preference in prefers_chain:
-        ref = str(preference.get("model") or "") or _role_model(preference, reasons)
+        ref = str(preference.get("model") or "") or _role_model(
+            preference, reasons, entries, caller_account
+        )
         if not ref:
             continue
         provider = str(preference.get("provider") or "")
@@ -285,22 +287,34 @@ def choose_model(
     return _choice("", entry, candidate, reasons)
 
 
-def _role_model(preference: dict[str, Any], reasons: list[str]) -> str:
+def _role_model(
+    preference: dict[str, Any],
+    reasons: list[str],
+    entries: list[FleetEntry],
+    caller_account: str,
+) -> str:
     """The ``account/model`` a preference's fleet role names, or "" when it names none.
 
-    An unset role is recorded and the selection goes on to the next preference, and
-    finally to the caller's model.
+    An unset role runs on the fast model (:mod:`clio_agent.gact.fleet.fast_model`),
+    still checked against the target's requirements. With no fast model the unset
+    role is recorded and the selection goes on to the next preference, and finally to
+    the caller's model.
     """
     role = str(preference.get("role") or "")
     if not role:
         return ""
+    from clio_agent.gact.fleet.fast_model import fast_ref  # noqa: PLC0415
     from clio_agent.gact.fleet_settings import ROLES, fleet_settings  # noqa: PLC0415
 
     choice = fleet_settings()["judges"].get(role) if role in ROLES else None
-    if not choice:
-        reasons.append(f"fleet role {role} is not set; the caller's model runs")
-        return ""
-    return f"{choice['provider_id']}/{choice['model_id']}"
+    if choice:
+        return f"{choice['provider_id']}/{choice['model_id']}"
+    fast, why = fast_ref(entries, caller_account) if role in ROLES else ("", "")
+    if fast:
+        reasons.append(f"fleet role {role} is not set; {why} {fast} runs")
+        return fast
+    reasons.append(f"fleet role {role} is not set; the caller's model runs")
+    return ""
 
 
 def _choice(asked: str, entry: FleetEntry, candidate: Candidate, reasons: list[str]) -> ModelChoice:

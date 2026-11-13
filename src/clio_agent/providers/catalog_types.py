@@ -76,8 +76,9 @@ class Provider:
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
     #: The model family this provider offers for fast, cheap work (Claude Code runs its
-    #: Explore agent on Haiku). A fact the agent reads: ``list_models`` marks this
-    #: family's models ``fast``; CLIO never picks a model by it. ``""``: none declared.
+    #: Explore agent on Haiku). ``list_models`` marks this family's models ``fast``, and
+    #: a helper role the person left unset runs on it when ``fleet.fast`` is unset
+    #: (:mod:`clio_agent.gact.fleet.fast_model`). ``""``: none declared.
     fast_model_family: str = ""
     configuration_fields: tuple[ProviderConfigurationField, ...] = ()
     supports_runtime_sizing: bool = False

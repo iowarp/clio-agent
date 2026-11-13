@@ -709,31 +709,40 @@ KEY_NOTES: dict[str, str] = {
     ),
     "goal.judge_model": (
         "Legacy goal judge model override on the caller provider; Fleet goals selection takes "
-        "precedence, including an explicit null to inherit the conversation model."
+        "precedence, including an explicit null for the fast model; unset, the fast model runs."
     ),
     "fleet.judges": (
         "Independent judge choices keyed by goals, variants and permissions. Each value is "
-        "null to inherit the conversation model, or a provider_id/model_id mapping; the "
-        "CLIO_FLEET_JUDGES environment value uses JSON. Settings Fleet writes this mapping."
+        "null to run on the fast model (fleet.fast), else the conversation model, or a "
+        "provider_id/model_id mapping; the CLIO_FLEET_JUDGES environment value uses JSON. "
+        "Settings Models writes this mapping."
     ),
     "fleet.search": (
         "Provider and model for the read-only CLIO Search assistant, as a provider_id/model_id "
-        "mapping. Null inherits the current conversation model, then service defaults. "
-        "CLIO_FLEET_SEARCH accepts JSON. Settings Fleet writes this choice independently of judges."
+        "mapping. Null runs on the fast model (fleet.fast), else the current conversation "
+        "model, then service defaults. CLIO_FLEET_SEARCH accepts JSON. Settings Models writes "
+        "this choice independently of judges."
     ),
     "fleet.spotter": (
         "Provider and model a SPOTTER watcher runs on when its session names none "
-        "(metadata.spotter_model), as a provider_id/model_id mapping. Null inherits the watched "
-        "session's model. CLIO_FLEET_SPOTTER accepts JSON. Settings Fleet writes this choice."
+        "(metadata.spotter_model), as a provider_id/model_id mapping. Null runs on the fast "
+        "model (fleet.fast), else the watched session's model. CLIO_FLEET_SPOTTER accepts JSON. "
+        "Settings Models writes this choice."
     ),
     "fleet.usage_poll_seconds": (
         "How old an account's usage reading may be before reading the fleet asks the provider "
         "again (OpenRouter's key endpoint). Subscriptions report usage on every call instead."
     ),
+    "fleet.fast": (
+        "The fast model every helper role left unset runs on (judges, the explore subagent, "
+        "CLIO Search, SPOTTER, the memory pass), as a provider_id/model_id mapping. Null uses "
+        "the caller's account's fast family (Haiku on Claude accounts), else the caller's "
+        "model. CLIO_FLEET_FAST accepts JSON. Settings Models writes this choice."
+    ),
     "fleet.delegation": (
         "Per account id, whether the agent may run delegated work on it without asking. Unset "
         "accounts follow their billing: subscriptions and free accounts yes, metered and credit "
-        "accounts ask once per conversation. CLIO_FLEET_DELEGATION accepts JSON. Settings Usage "
+        "accounts ask once per conversation. CLIO_FLEET_DELEGATION accepts JSON. Settings Models "
         "writes this mapping."
     ),
     "hooks.allow_managed_only": (
@@ -783,6 +792,10 @@ KEY_NOTES: dict[str, str] = {
     "limits.lm_request_queue_s": (
         "Maximum seconds waiting for local model admission or a provider concurrency cooldown. "
         "Cancellation removes queued work without sending a request."
+    ),
+    "limits.lm_stall_wait_s": (
+        "Seconds a Claude Code reply may go silent before it counts as a stall (each later wait "
+        "doubles); the person sees the stall and can stop the turn, nothing fails on silence."
     ),
     "limits.mcp_content_block_max_bytes": (
         "Byte cap on one MCP content block's decoded binary payload (image/audio/resource) before "

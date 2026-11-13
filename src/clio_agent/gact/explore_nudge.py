@@ -54,12 +54,17 @@ def _read_only(name: str) -> bool:
 
 
 def _explore_model() -> str:
-    """The model the fleet runs ``explore`` on, or ``your model`` when it inherits."""
+    """The model the fleet runs ``explore`` on: its own, else the fast model, else
+    ``your model`` when it inherits."""
     from clio_agent.gact.fleet_settings import fleet_settings  # noqa: PLC0415
 
     try:
         choice = (fleet_settings().get("judges") or {}).get("explore")
-    except ValueError:  # an invalid fleet setting is reported where it is edited
+        if not choice:
+            from clio_agent.gact.fleet.fast_model import fast_identity  # noqa: PLC0415
+
+            choice = fast_identity()
+    except (ValueError, OSError):  # an invalid fleet setting is reported where it is edited
         return "your model"
     return str(choice.get("model_id") or "your model") if choice else "your model"
 

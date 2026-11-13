@@ -14,7 +14,7 @@ from urllib.request import url2pathname
 
 import pytest
 
-from clio_agent.runtime import document_runtime, sandbox
+from clio_agent.runtime import document_office, document_runtime, sandbox
 from clio_agent.runtime.document_stack import office, process
 
 
@@ -101,10 +101,10 @@ def test_discovered_managed_renderer_still_receives_host_access_repair(
         calls.append(path)
         return native
 
-    monkeypatch.setattr(document_runtime, "office_runtime_root", lambda: root)
+    monkeypatch.setattr(document_office, "office_runtime_root", lambda: root)
     monkeypatch.setattr(process, "find_native", lambda name: native)
     monkeypatch.setattr(office, "ensure_office", prepare)
-    assert document_runtime.prepare_office_runtime() == native
+    assert document_office.prepare_office_runtime() == native
     assert calls == ([root] if managed else [])
 
 

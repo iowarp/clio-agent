@@ -77,8 +77,8 @@ def _row(entry: FleetEntry, fleet: Fleet) -> dict[str, Any]:
 
 
 def _is_fast(entry: Any) -> bool:
-    """Whether the entry belongs to its provider's declared fast, cheap family (a fact
-    for the agent to weigh; nothing is chosen by it)."""
+    """Whether the entry belongs to its provider's declared fast, cheap family (the
+    family unset helper roles run on, :mod:`clio_agent.gact.fleet.fast_model`)."""
     from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
     provider = get_provider(entry.account)

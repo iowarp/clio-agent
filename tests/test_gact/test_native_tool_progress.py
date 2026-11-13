@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.agents import tool_instrumentation
+from clio_agent.gact.agents import tool_progress
 from clio_agent.runtime.cancellation import cancellation_checker
 from clio_agent.runtime.document_stack import process as document_process
 from clio_agent.tools import execution
@@ -29,13 +29,13 @@ def rows(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, Any]
 
 
 def test_progress_outside_a_tool_is_not_shown(rows: list[Any]) -> None:
-    assert tool_instrumentation.report_tool_progress("hello") is False
+    assert tool_progress.report_tool_progress("hello") is False
     assert rows == []
 
 
 def test_a_long_job_reports_on_its_row_and_finishes(rows: list[Any]) -> None:
     """SABOTAGE: drop the heartbeat from ``_running_tool`` -> no progress rows -> red."""
-    with tool_instrumentation._running_tool("document_convert", {}, "handle-1"):
+    with tool_progress._running_tool("document_convert", {}, "handle-1"):
         out = document_process.run(
             [sys.executable, "-c", "import time; time.sleep(0.8); print('ok')"], cwd=Path.cwd()
         )
@@ -54,7 +54,7 @@ def test_stopping_the_turn_ends_the_job(rows: list[Any]) -> None:
     threading.Timer(0.4, stop.set).start()
     with (
         cancellation_checker(stop.is_set),
-        tool_instrumentation._running_tool("document_convert", {}, "h"),
+        tool_progress._running_tool("document_convert", {}, "h"),
         pytest.raises(document_process.DocumentCancelled),
     ):
         document_process.run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=Path.cwd())

@@ -104,6 +104,19 @@ def test_a_failing_heartbeat_never_stops_the_job(monkeypatch: pytest.MonkeyPatch
     assert stdout.strip() == "done"
 
 
+def test_a_heartbeat_bug_ends_the_job_with_its_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the watcher's delivery failures are survived; a bug surfaces, never orphaning."""
+    monkeypatch.setattr(document_process, "HEARTBEAT_FIRST_S", 0.1)
+
+    def buggy(_elapsed: float, _stalled: float | None) -> None:
+        raise ValueError("bad heartbeat")
+
+    process = _sleeper(30)
+    with pytest.raises(ValueError, match="bad heartbeat"):
+        wait_process(process, name="job", heartbeat=buggy)
+    assert process.wait(timeout=10) is not None
+
+
 def _fast_stall(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(document_process, "STALL_IDLE_S", 0.6)
     monkeypatch.setattr(document_process, "_STALL_SAMPLE_S", 0.1)

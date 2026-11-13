@@ -143,7 +143,9 @@ default, the deployment value, the person's saved rules and their scope, and wha
 happens in each approval mode for a direct call and for a call from a script. The
 person's permission is saved as a policy rule in `/v1/policies`; the I/O choice
 (`callers`: `direct`, `code` or `both`) is saved as `tools.callers` in the user
-`config.yaml`.
+`config.yaml`. `?server=<name>` gives the same page for one MCP server that no plugin
+brings (a person's or workspace's own); its tools have no plugin default, so their
+default comes from the server's MCP annotations.
 
 ## TUI surface
 
