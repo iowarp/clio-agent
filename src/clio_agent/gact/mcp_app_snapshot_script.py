@@ -11,7 +11,9 @@ is not asked.
 
 What it paints, in order: element backgrounds, then every visible ``canvas``, ``img``,
 ``video`` and ``svg`` (``svg`` with its computed presentation styles), then HTML text that
-sits on one line, each clipped to its frame. A WebGL canvas that keeps no drawing buffer
+sits on one line, each clipped to its frame and to every ancestor that clips its overflow;
+an element that is hidden, fully transparent or clipped away entirely is not painted, as
+the person does not see it. A WebGL canvas that keeps no drawing buffer
 (``preserveDrawingBuffer: false``, as vtk.js uses) reads blank after the browser shows it,
 so its context's draw calls are watched, the view is nudged to redraw (its frame shrinks
 by one pixel for two frames), and the canvas is copied when the app's drawing task ends.
@@ -172,6 +174,27 @@ const clioViewSnapshot = (() => {
   }
 
   // HTML is drawn approximately: boxes with a background, and text that sits on one line.
+  // What of an element's box the person sees: nothing when it or an ancestor is hidden or
+  // fully transparent, else the box cut by every ancestor that clips its overflow and
+  // contains it (a collapsed panel with its content still laid out inside shows nothing).
+  function shown(element, box, win) {
+    if (element.checkVisibility &&
+      !element.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return null;
+    let left = box.left, top = box.top, right = box.right, bottom = box.bottom;
+    let mode = win.getComputedStyle(element).position;
+    for (let el = element.parentElement; el && mode !== 'fixed'; el = el.parentElement) {
+      const style = win.getComputedStyle(el);
+      const contains = mode !== 'absolute' || style.position !== 'static' || style.transform !== 'none';
+      if (!contains || style.display === 'contents') continue;
+      const clip = el.getBoundingClientRect();
+      if (style.overflowX !== 'visible') { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+      if (style.overflowY !== 'visible') { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+      if (right - left < 1 || bottom - top < 1) return null;
+      mode = style.position;
+    }
+    return { left, top, width: right - left, height: bottom - top };
+  }
+
   function paintBackgrounds(context, frames, media) {
     let count = 0;
     for (const { win, x, y } of frames) {
@@ -193,8 +216,10 @@ const clioViewSnapshot = (() => {
         if (style.visibility === 'hidden' || clear(style.backgroundColor)) continue;
         const box = element.getBoundingClientRect();
         if (box.width < 1 || box.height < 1) continue;
+        const seen = shown(element, box, win);
+        if (!seen) continue;
         context.fillStyle = style.backgroundColor;
-        context.fillRect(x + box.left, y + box.top, box.width, box.height);
+        context.fillRect(x + seen.left, y + seen.top, seen.width, seen.height);
         count += 1;
       }
       context.restore();
@@ -224,10 +249,17 @@ const clioViewSnapshot = (() => {
         if (rects.length > 1) { missed += 1; continue; }
         const box = rects[0];
         if (box.width < 1 || box.height < 1) continue;
+        const seen = shown(parent, box, win);
+        if (!seen) continue;
+        context.save();
+        context.beginPath();
+        context.rect(x + seen.left, y + seen.top, seen.width, seen.height);
+        context.clip();
         context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
         context.fillStyle = style.color;
         context.textBaseline = 'middle';
         context.fillText(text, x + box.left, y + box.top + box.height / 2, box.width + 2);
+        context.restore();
         drawn += 1;
       }
       context.restore();
@@ -252,7 +284,13 @@ const clioViewSnapshot = (() => {
         if (box.right <= 0 || box.bottom <= 0 || box.left >= win.innerWidth || box.top >= win.innerHeight) continue;
         const style = win.getComputedStyle(element);
         if (style.visibility === 'hidden' || Number(style.opacity) === 0) continue;
-        const item = { element, win, x, y, box, kind: element.tagName.toLowerCase(), clip: { x, y, w: win.innerWidth, h: win.innerHeight } };
+        const seen = shown(element, box, win);
+        if (!seen) continue;
+        const clip = { x: x + Math.max(0, seen.left), y: y + Math.max(0, seen.top) };
+        clip.w = Math.min(x + win.innerWidth, x + seen.left + seen.width) - clip.x;
+        clip.h = Math.min(y + win.innerHeight, y + seen.top + seen.height) - clip.y;
+        if (clip.w < 1 || clip.h < 1) continue;
+        const item = { element, win, x, y, box, kind: element.tagName.toLowerCase(), clip };
         items.push(item);
         if (item.kind === 'canvas' && element.width && element.height) {
           let empty = false;
