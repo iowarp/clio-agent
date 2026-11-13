@@ -32,7 +32,9 @@ export default async function (page, shot) {
   await inline.locator("#probe").click();
   const api = await expectText(inline.locator("#api"), /HTTP|blocked/);
   log("view origin, storage, API", { origin, storage, api });
-  check(/\.mcp-apps\.localhost:/.test(origin), "the view runs on its sandbox host");
+  // CHECK_SANDBOX_SUFFIX: a CLIO reached by a LAN name serves views from its configured host.
+  const suffix = process.env.CHECK_SANDBOX_SUFFIX || ".mcp-apps.localhost";
+  check(new URL(origin).hostname.endsWith(suffix), "the view runs on its sandbox host");
   check(storage === "available", "the view can use its storage");
   check(/HTTP 403 sandbox_origin_refused/.test(api), "the sandbox host refuses the API");
   await shot("inline");
