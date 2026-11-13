@@ -22,7 +22,7 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import harness_notes, task_descriptions, tool_presentation
+from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,
@@ -742,8 +742,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             raise
         finally:
             task_calls.TASK_CALL.reset(task_call_token)
-        # Bound output on the caller's thread so spills retain workspace custody.
-        result = bounded_model_tool_result(outcome.model_text)
+        result = bounded_model_tool_result(outcome.model_text)  # caller's thread: workspace custody
+        mcp_result_media.show_to_model(outcome.raw_result, name)  # its images reach the model
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
         )
