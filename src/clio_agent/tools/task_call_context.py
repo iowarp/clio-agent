@@ -186,6 +186,41 @@ def application_loop() -> Any:
     return getattr(getattr(active_app(), "state", None), "mcp_app_loop", None)
 
 
+#: A sync MCP executor built in a GACT server process that cannot run on the server loop.
+MCP_EXECUTOR_PRIVATE_LOOP = "mcp_executor_private_loop"
+
+
+def executor_loop() -> Any:
+    """The loop a new sync MCP executor runs its server sessions on.
+
+    In a GACT server every MCP session lives on the application loop: product calls run
+    there (``AsyncMCPToolExecutor.call_tool_result``), through the same server sessions the
+    executor opens when it connects or lists a namespace. An executor on a private loop
+    would own those sessions there, and a call from the application loop would write to a
+    session whose reader runs on another, idle or stopped, loop: the call never reaches the
+    server, or its reply never reaches the caller, and it waits forever. So the bound app's
+    loop is used, and a builder with no app bound (task recovery after a restart, the
+    commands listing) gets the server's one serving loop. Outside a server (the CLI) the
+    executor owns a private loop. On the serving loop's own thread, or with several
+    serving loops in the process, it does too, with a typed reason: blocking on the loop
+    from its own thread would deadlock the server.
+    """
+    loop = application_loop()
+    if loop is not None:
+        return loop
+    from clio_agent.arc import loop_guard  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    serving = loop_guard.server_loops()
+    if not serving:
+        return None
+    if len(serving) > 1 or loop_guard._running_loop_here() is serving[0]:
+        reason = "several_server_loops" if len(serving) > 1 else "built_on_server_loop_thread"
+        trace.event("TOOLS", "%s reason=%s", MCP_EXECUTOR_PRIVATE_LOOP, reason)
+        return None
+    return serving[0]
+
+
 def task_arguments(properties: Any) -> dict[str, Any]:
     """Add CLIO-only optional description metadata to an ordinary tool's declared arguments."""
     return {

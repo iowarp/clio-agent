@@ -43,9 +43,14 @@ export default async function (page, shot) {
   let allowed = 0;
   const action = process.env.CHECK_ACTION || "decline";
   const agent = process.env.CHECK_AGENT || "http://127.0.0.1:8802";
-  const idle = async () =>
-    (await fetch(`${agent}/v1/sessions/${sid}`).then((r) => r.json()).catch(() => ({}))).status ===
-    "idle";
+  // The session reads idle until the posted turn starts: the turn has ended only once it
+  // was seen busy, so a slow start is not taken for the end.
+  let busy = false;
+  const idle = async () => {
+    const state = await fetch(`${agent}/v1/sessions/${sid}`).then((r) => r.json()).catch(() => ({}));
+    if (state.status && state.status !== "idle") busy = true;
+    return busy && state.status === "idle";
+  };
   while (Date.now() < deadline && !(await card.count())) {
     if (action === "none" && (await idle())) break;
     if (await permission.count()) {

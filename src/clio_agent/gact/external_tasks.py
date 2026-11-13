@@ -67,6 +67,7 @@ class ExternalConnection:
     invocation: SubmissionContext | None = None
     rpcs: set[asyncio.Task[Any]] = field(default_factory=set)
     closing: bool = False
+    superseded: bool = False  # replaced while busy (EXTERNAL_MCP_CONNECTION_SUPERSEDED)
     #: This connection's tool listing, read once per connected client (reset on reconnect).
     tools: dict[str, Any] | None = None
 
@@ -406,12 +407,13 @@ class ExternalTasks:
                 stopped = True
                 if rpc.cancelled():
                     raise
+                await external_task_connections.abandon_view_call(self, host, handle, rpc, lazy)
             except Exception as error:
                 logger.exception(
                     "Task boundary reason=external_submission_failed error_type=%s",
                     type(error).__name__,
                 )
-                reason = str(error)
+                reason = external_task_connections.failure_reason(host, error)
                 failure = submission_failure(error)
                 if failure == "rejected":
                     await self._record_or_defer(
@@ -448,7 +450,7 @@ class ExternalTasks:
                         "retry_safe": False,
                     }
                 )
-        accepted = any(call.submission.handle == handle for call in host.calls.values()) or (
+        accepted = external_task_connections.accepted_call(host, handle) or (
             lazy is None
             and (await self.history.io.run(self.history.task_snapshot, handle)).backend is not None
         )

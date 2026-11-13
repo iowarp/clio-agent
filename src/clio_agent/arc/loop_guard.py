@@ -147,6 +147,13 @@ def unregister_server_loop(loop: asyncio.AbstractEventLoop) -> None:
         _DRAINING_LOOPS.discard(loop)
 
 
+def server_loops() -> list[asyncio.AbstractEventLoop]:
+    """The running loops the GACT server currently serves on (none outside a server)."""
+
+    with _LOOPS_LOCK:
+        return [loop for loop in _SERVER_LOOPS if loop.is_running() and not loop.is_closed()]
+
+
 def _running_loop_here() -> asyncio.AbstractEventLoop | None:
     try:
         return asyncio.get_running_loop()
@@ -263,5 +270,6 @@ __all__ = [
     "on_server_loop",
     "register_server_loop",
     "reset_guard_hits",
+    "server_loops",
     "unregister_server_loop",
 ]

@@ -1447,6 +1447,11 @@ KEY_NOTES: dict[str, str] = {
         "Tokens of one tool result the model is shown when its context window is unknown (no "
         "handshake or catalog entry); a longer result is saved to a file with its head."
     ),
+    "tools.script_media_max": (
+        "Images or PDFs one run_code script may attach to its result by viewing them "
+        "(view_image, view_pdf); they reach the model's next step. Views past this count are "
+        "refused with a typed reason. At least 1."
+    ),
     "tools.recall_result_chars": (
         "Characters of a recall_context result shown inline (default 16000, about 4,000 "
         "tokens); past it the whole result is saved to the session's tool-output folder and "

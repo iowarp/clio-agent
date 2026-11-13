@@ -484,7 +484,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         self._inflight = 0
         self._inflight_lock = threading.Lock()
 
-        app_loop = task_calls.application_loop()
+        app_loop = task_calls.executor_loop()  # sessions on the app loop
         self._owns_loop = app_loop is None
         self._loop = app_loop or asyncio.new_event_loop()
         self._thread = threading.Thread(

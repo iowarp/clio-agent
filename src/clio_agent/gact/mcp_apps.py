@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact import context as gact_context
+from clio_agent.gact import view_call_cancel, view_call_transcript
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
@@ -613,23 +614,28 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
     return executor
 
 
-async def _run_bound(app: FastAPI, sid: str, operation: Any) -> Any:
+async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = None) -> Any:
     """Run a blocking executor operation in the exact session context.
 
     A view's call arrives outside any turn, so the session is bound as the turn
     session too: an external server's call is then owned by the session's latest
-    assignment, as the call that opened the view was.
+    assignment, as the call that opened the view was. With no turn there is no
+    Cancel, so the call is bound to ``request`` instead (:mod:`.view_call_cancel`).
     """
 
     def invoke() -> Any:
         token = gact_context.set_session_id(sid)
         try:
-            with _gact_app_context(app), _tool_session_context(sid):
+            with (
+                _gact_app_context(app),
+                _tool_session_context(sid),
+                view_call_transcript.collecting(app, sid),  # never inside an open turn
+            ):
                 return operation(_bound_executor(app, sid))
         finally:
             gact_context.reset(token)
 
-    return await asyncio.to_thread(invoke)
+    return await view_call_cancel.run(app, invoke, request=request)
 
 
 def _resolve_app_tool(executor: Any, record: MCPAppRecord, requested: str) -> str:
@@ -727,6 +733,7 @@ async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
 async def cleanup_all_mcp_apps(app: FastAPI) -> None:
     """Close every retained App before the host tears down MCP transports."""
 
+    view_call_cancel.cancel_all(app)  # in-flight view calls end now, not with the process
     registry = _registry(app)
     failures: list[str] = []
     for session_id in registry.session_ids():
