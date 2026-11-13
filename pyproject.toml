@@ -66,7 +66,7 @@ dependencies = [
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
     "websockets>=13.0",
-    "clio-kit==2.12.5",  # Source-locked scientific MCP components and launcher.
+    "clio-kit==2.12.7",  # Source-locked scientific MCP components and launcher.
     # web_fetch turns HTML pages into Markdown (clio_agent.search.fetch).
     "trafilatura>=1.12",
     "fastmcp==4.1.2",  # stable native Tasks integration; adapter contracts are acceptance gates
