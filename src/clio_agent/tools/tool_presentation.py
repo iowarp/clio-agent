@@ -466,4 +466,5 @@ register_presentation_adapter(
 # The file-inspection presenters (read, search, glob, list) live in their own module;
 # importing it registers them.
 from clio_agent.tools import fs_presentation as _fs_presentation  # noqa: E402,F401
+from clio_agent.tools import git_presentation as _git_presentation  # noqa: E402,F401
 from clio_agent.tools import search_presentation as _search_presentation  # noqa: E402,F401

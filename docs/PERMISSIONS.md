@@ -188,6 +188,30 @@ tag:
   `replace_all`). A hook deny blocks the write, and its reason is what the agent
   reads and what the `hook_deny` audit row carries.
 
+### Git repositories
+
+Neither the agent's commands nor its file tools can change a repository's
+`.git`. Under the OS fence, codex mounts `.git` read-only in every writable
+folder (and an empty placeholder where none exists). The file tools run in
+CLIO's own process, outside the fence, so their policy refuses any path with a
+`.git` component, including a `.git` file, with the typed code
+`git_metadata_protected`. Both rules exist because hooks and config in `.git`
+run later, unsandboxed, whenever the person uses git.
+
+Recording changes goes through `fs_git_commit` instead. CLIO runs git itself.
+The tool is a closed-world write: it asks in `ask` mode and is allowed in
+`auto-edits` mode, like an edit. It stages and commits the changes under the
+folder, or exactly the named files, and creates the repository only when called
+with `init`. Every git step runs with `core.hooksPath` set to an empty folder,
+fsmonitor and automatic maintenance off, and no editor or terminal prompt, so
+nothing in the repository executes. An enclosing repository is used only when
+it lies inside the conversation's workspace. With `init`, a folder inside
+someone else's repository gets a repository of its own; without `init`, the
+call is refused with `repository_outside_workspace`. The commit uses the
+person's git identity. If git has none, the call is refused with
+`identity_unknown`, and `author` supplies one only from a name and email the
+person gave.
+
 ## The record of changes, and Undo
 
 Each successful write is recorded as an applied `file_diff`: a part in the turn's

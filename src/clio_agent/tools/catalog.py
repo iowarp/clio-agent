@@ -220,6 +220,9 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "fs_edit_file": _builtin_entry(
         "fs_edit_file", "workspace", {"workspace", "edit"}, domain="workspace"
     ),
+    "fs_git_commit": _builtin_entry(
+        "fs_git_commit", "workspace", {"workspace", "edit"}, domain="workspace"
+    ),
     "fs_read_file": _builtin_entry(
         "fs_read_file", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
