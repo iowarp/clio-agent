@@ -138,9 +138,11 @@ def test_a_confined_mcp_servers_denial_reaches_the_models_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A stdio MCP server cannot attach the field. Through the REAL execution boundary
-    (``SyncMCPToolExecutor`` + the real tool observer) the server's refusal is diagnosed
-    against the recomputed fleet roots, hedged to ``possible``, and the message reaches the
-    model: as a note on the raised error (FastMCP's default client raises a server's error
+    (``SyncMCPToolExecutor`` + the real tool observer) a failed call whose server declared
+    its ``path`` a local write is diagnosed against the recomputed fleet roots, hedged to
+    ``possible``, and the message reaches the model. A remote host's "Permission denied"
+    (a declared remote path) and an undeclared tool's denial prose get no note (H5). It
+    reaches the model: as a note on the raised error (FastMCP's default client raises a server's error
     result; the agent loop renders the error with its notes), and appended to the text of an
     error result a task client returns.
     SABOTAGE: drop the ``boundary_error_note`` lines in ``execution.py`` (first assertion
@@ -165,9 +167,19 @@ def test_a_confined_mcp_servers_denial_reaches_the_models_text(
     denied = tmp_path / "outside" / "export.csv"
     server = FastMCP("exporter")
 
-    @server.tool()
+    @server.tool(meta={"ai.iowarp.clio/paths": {"path": {"machine": "local", "access": "write"}}})
     def export(path: str) -> str:
         """Write an export (the fence refuses it)."""
+        raise PermissionError(13, "Permission denied", path)
+
+    @server.tool(meta={"ai.iowarp.clio/paths": {"path": {"machine": "remote", "host": "node08"}}})
+    def open_remote(path: str) -> str:
+        """Open a file on another machine over SSH (the remote host refuses the sign-in)."""
+        raise RuntimeError(f"ssh said: researcher@node08: Permission denied (password). {path}")
+
+    @server.tool()
+    def undeclared(path: str) -> str:
+        """A tool that declares nothing, failing with a denial in its prose."""
         raise PermissionError(13, "Permission denied", path)
 
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
@@ -194,10 +206,10 @@ def test_a_confined_mcp_servers_denial_reaches_the_models_text(
 
         monkeypatch.setattr(violations, "_active_app", lambda: app)  # the turn's app
 
-        def call(**client_kwargs: Any) -> Any:
+        def call(tool: str = "export", **client_kwargs: Any) -> Any:
             executor = SyncMCPToolExecutor(server, timeout=10.0, **client_kwargs)
             try:
-                return executor.call_tool("export", {"path": str(denied)})
+                return executor.call_tool(tool, {"path": str(denied)})
             except Exception as exc:  # noqa: BLE001 - the raised error is the observation
                 return exc
             finally:
@@ -206,6 +218,9 @@ def test_a_confined_mcp_servers_denial_reaches_the_models_text(
         try:
             raised = call()  # the production client: a server's error result raises
             returned = call(client_factory=_ReturningClient)  # a task client returns it
+            remote = call("open_remote")  # H5: a remote host's denial is not the fence's
+            remote_returned = call("open_remote", client_factory=_ReturningClient)
+            undeclared = call("undeclared")  # no structure says the call wrote locally
         finally:
             set_tool_runtime_fallback(ToolRuntimeHooks())
 
@@ -216,6 +231,14 @@ def test_a_confined_mcp_servers_denial_reaches_the_models_text(
     assert isinstance(returned, str)
     assert "Permission denied" in returned  # the server's own error, unchanged
     assert hedged in returned and access in returned
+
+    for denial in (remote, remote_returned, undeclared):
+        text = (
+            "".join(traceback.format_exception(denial))
+            if isinstance(denial, BaseException)
+            else str(denial)
+        )
+        assert "Permission denied" in text and "sandbox" not in text
 
 
 class _ReturningClient(Client):

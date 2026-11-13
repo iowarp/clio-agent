@@ -146,19 +146,21 @@ def merge_boundary_message(observation: Any) -> Any:
     return f"{observation}\n\n{diagnosis.message}"
 
 
-def boundary_error_note(error_text: str) -> str:
+def boundary_error_note(tool_name: str, args: Mapping[str, Any]) -> str:
     """The sandbox-boundary message for a call that RAISED, as a note on its error (#1905).
 
     FastMCP raises a server's error result, so a confined stdio MCP server's refusal never
     reaches :func:`assemble_model_observation`: the boundary adds this message to the
-    exception, which every engine renders with its notes. Empty when the call was not served
-    by a confined child, or its error is no sandbox denial
-    (:func:`clio_agent.gact.artifacts.violations.raised_call_boundary`).
+    exception, which every engine renders with its notes. Empty unless a confined child
+    served the call and the call was asked to write a local path outside the fence's
+    territory (:func:`clio_agent.gact.artifacts.violations.raised_call_boundary`). The
+    error's text is never read: a server's "Permission denied" may come from anywhere,
+    such as a remote host it reached.
     """
 
     from clio_agent.gact.artifacts.violations import raised_call_boundary  # noqa: PLC0415
 
-    diagnosis = raised_call_boundary(error_text)
+    diagnosis = raised_call_boundary(tool_name, args)
     return diagnosis.message if diagnosis is not None else ""
 
 

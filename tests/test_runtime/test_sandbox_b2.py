@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -384,53 +385,100 @@ def test_an_unfenced_tools_denial_text_is_not_a_violation(
     assert out == []
 
 
-def test_a_confined_mcp_servers_denial_is_diagnosed_and_reaches_its_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A stdio MCP server cannot attach the field: the observer diagnoses its failed call
-    against the recomputed fleet roots, hedged to ``possible``, mints the violation and
-    publishes the diagnosis for that call's model observation.
-    SABOTAGE: drop ``publish_call_boundary`` in ``_served_call_boundary`` -> red."""
+def _served_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    args: dict[str, Any],
+    declaration: dict[str, Any] | None,
+    text: str,
+) -> tuple[list[Any], Any]:
+    """A confined stdio MCP server's failed ``files_write`` call, observed; returns the
+    violations and the diagnosis published for the call's model observation."""
     from fastapi import FastAPI
 
     from clio_agent.gact.artifacts import violations as v
-    from clio_agent.runtime.sandbox_diagnosis import POSSIBLE, take_call_boundary
+    from clio_agent.runtime.sandbox_diagnosis import take_call_boundary
+    from clio_agent.tools import tool_path_contract
 
     workspace = tmp_path / "ws"
-    workspace.mkdir()
-    denied = tmp_path / "outside" / "x.txt"
+    workspace.mkdir(exist_ok=True)
     monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: (workspace,))
     monkeypatch.setattr(
         "clio_agent.gact.artifacts.minting._workspace_root", lambda _app, _ws: workspace
     )
+    meta = {"ai.iowarp.clio/paths": declaration} if declaration is not None else {}
+    tool_path_contract.bind_call("files_write", {"name": "files_write", "_meta": meta})
     app = FastAPI()
     app.state.net_serving_child_by_call = {"c9": "child-1"}
     out = v.observe_policy_violations(
         app,
         "sess",
         tool_name="files_write",
-        args={},
+        args=args,
         call_id="c9",
-        result={
-            "isError": True,
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"Error executing tool write: [Errno 13] Permission denied: '{denied}'"
-                    ),
-                }
-            ],
-        },
+        result={"isError": True, "content": [{"type": "text", "text": text}]},
         workspace_id="ws1",
         state=_active_fence(),
         started_at=1000.0,
     )
-    assert [viol.path for viol in out] == [str(denied)]
-    published = take_call_boundary("c9")
+    return out, take_call_boundary("c9")
+
+
+def test_a_confined_mcp_servers_declared_write_outside_is_diagnosed_and_reaches_its_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stdio MCP server cannot attach the field: for its failed call whose arguments name a
+    local write outside the recomputed fleet roots (here declared in the tool's ``_meta``),
+    the observer mints the violation and publishes a ``possible`` diagnosis for that call's
+    model observation. SABOTAGE: drop ``publish_call_boundary`` in ``_served_call_boundary``,
+    or the declared args in ``local_write_targets`` -> red."""
+    from clio_agent.gact.artifacts import violations as v
+    from clio_agent.runtime.sandbox_diagnosis import POSSIBLE
+
+    denied = tmp_path / "outside" / "x.txt"
+    out, published = _served_failure(
+        tmp_path,
+        monkeypatch,
+        args={"target": str(denied)},
+        declaration={"target": {"machine": "local", "access": "write"}},
+        text="the export failed",  # its wording is never read
+    )
+    assert [(viol.path, viol.signal) for viol in out] == [(str(denied), "designated_path_absent")]
+    assert out[0].kind == v.VIOLATION_PREVENTED
     assert published is not None and published.confidence == POSSIBLE
+    assert published.paths == (str(denied),)
     assert published.request_roots == (str(tmp_path),)
-    assert out[0].next_action == published.message
+    assert "may have been caused by CLIO's sandbox" in published.message
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        None,  # no declaration: the path is not known to be a local write
+        {"target": {"machine": "remote", "access": "write", "host": "node08"}},
+        {"target": {"machine": "local", "access": "read"}},
+    ],
+)
+def test_a_servers_permission_denied_text_alone_gets_no_sandbox_diagnosis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declaration: dict[str, Any] | None
+) -> None:
+    """H5: a server's "Permission denied" may come from a remote host (an SSH refusal) or an
+    ordinary read; matching that text to blame CLIO's fence misled the agent. With no local
+    write outside the territory among the call's arguments, nothing is published and no
+    violation minted, whatever the text says. SABOTAGE: diagnose from ``result_text`` -> red."""
+    out, published = _served_failure(
+        tmp_path,
+        monkeypatch,
+        args={"target": "/home/researcher/data/x.vti"},
+        declaration=declaration,
+        text=(
+            "ssh said: researcher@127.0.0.1: Permission denied (password). "
+            f"[Errno 13] Permission denied: '{tmp_path}/outside/x.txt'"
+        ),
+    )
+    assert out == []
+    assert published is None
 
 
 def test_policy_violation_event_is_trace_only() -> None:
