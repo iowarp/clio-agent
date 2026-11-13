@@ -612,11 +612,22 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
 
 
 async def _run_bound(app: FastAPI, sid: str, operation: Any) -> Any:
-    """Run a blocking executor operation in the exact session context."""
+    """Run a blocking executor operation in the exact session context.
+
+    A view's call arrives outside any turn, so the session is bound as the turn
+    session too: an external server's call is then owned by the session's latest
+    assignment, as the call that opened the view was.
+    """
+
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
     def invoke() -> Any:
-        with _gact_app_context(app), _tool_session_context(sid):
-            return operation(_bound_executor(app, sid))
+        token = _ctx.set_session_id(sid)
+        try:
+            with _gact_app_context(app), _tool_session_context(sid):
+                return operation(_bound_executor(app, sid))
+        finally:
+            _ctx.reset(token)
 
     return await asyncio.to_thread(invoke)
 

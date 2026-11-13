@@ -11,6 +11,7 @@ import {
   sessionIdFrom,
   viewIn,
 } from "./_app_view.mjs";
+import { allowPending } from "./_lib.mjs";
 
 export async function appsOf(sid) {
   const { body } = await json(`/v1/sessions/${sid}/messages?limit=200`);
@@ -25,6 +26,14 @@ export async function appsOf(sid) {
 }
 
 export async function alive(sid, block, page) {
+  // The call goes through the session's permission rules: allow it as a person would.
+  let done = false;
+  const allowing = (async () => {
+    while (!done) {
+      await allowPending(sid, []).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  })();
   const { status } = await json(
     `/v1/sessions/${sid}/mcp-apps/${block.app_instance_id}/tools/call?data_ref=${encodeURIComponent(block.data_ref)}`,
     {
@@ -32,7 +41,10 @@ export async function alive(sid, block, page) {
       headers: { "Content-Type": "application/json", Referer: page.url() },
       body: JSON.stringify({ name: "ping", arguments: { note: "probe" } }),
     },
-  );
+  ).finally(() => {
+    done = true;
+  });
+  await allowing;
   return status;
 }
 

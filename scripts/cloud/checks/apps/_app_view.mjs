@@ -1,5 +1,8 @@
 // Shared helpers for the app host checks (MA1-MA7, MA15-MA17).
 // The view sits two frames deep: CLIO's sandbox frame, then the view's own frame.
+import { openConversation, send, waitIdle } from "./_lib.mjs";
+
+export { openConversation };
 
 export const agentUrl = () =>
   process.env.CHECK_AGENT || `http://127.0.0.1:${process.env.AGENT_PORT || 8787}`;
@@ -41,20 +44,15 @@ export async function json(path, init) {
   return { status: response.status, body: await response.json().catch(() => null) };
 }
 
-/** Type a message into the composer and wait for the session to settle. */
-export async function sendAndSettle(page, text, settleMs = 180000) {
-  const composer = page.locator('textarea, [contenteditable="true"]').first();
-  await composer.click();
-  await page.keyboard.type(text);
-  await page.keyboard.press("Enter");
+/** Send a plain request through the composer and wait for the turn to settle. */
+export async function sendAndSettle(page, text) {
   const sid = sessionIdFrom(page);
+  const log = [];
+  await send(page, text);
   await page.waitForTimeout(3000);
-  const deadline = Date.now() + settleMs;
-  while (Date.now() < deadline) {
-    const { body } = await json(`/v1/sessions/${sid}`);
-    if (body?.status === "idle") break;
-    await page.waitForTimeout(1500);
-  }
+  const settled = await waitIdle(page, sid, log, 6);
+  for (const line of log) console.error(`[check] ${line}`);
+  if (!settled) throw new Error(`the turn for ${JSON.stringify(text)} did not settle`);
   await page.waitForTimeout(1500);
 }
 

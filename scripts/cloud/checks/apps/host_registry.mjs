@@ -2,7 +2,15 @@
 // (gact.mcp_apps.registry_ttl_s and gact.mcp_apps.registry_limit, see the ledger).
 // CHECK_SCENARIO=ttl: one app in a tab and one inline, left untouched past the expiry.
 // CHECK_SCENARIO=limit: more apps pinned in tabs than the limit, then one inline.
-import { check, expectText, log, sendAndSettle, sessionIdFrom, viewIn } from "./_app_view.mjs";
+import {
+  check,
+  expectText,
+  log,
+  openConversation,
+  sendAndSettle,
+  sessionIdFrom,
+  viewIn,
+} from "./_app_view.mjs";
 import { alive, appsOf } from "./host_live_set.mjs";
 
 async function openInTab(page, topic) {
@@ -20,12 +28,14 @@ async function openInTab(page, topic) {
 
 export default async function (page, shot) {
   const scenario = process.env.CHECK_SCENARIO || "ttl";
+  await openConversation(page, `host-registry-${scenario}`);
   const idleMs = Number(process.env.CHECK_IDLE_MS || 75000);
   if (scenario === "ttl") {
     await openInTab(page, "kappa");
     await sendAndSettle(page, "Open the host panel for the topic lambda.");
     await expectText(viewIn(page, "inline").locator("#topic"), /lambda/, 60000);
     const sid = sessionIdFrom(page);
+    log("session", sid);
     const [tabApp, inlineApp] = (await appsOf(sid)).slice(-2);
     await shot("before-idle");
     log("idle for ms", idleMs);
@@ -42,6 +52,7 @@ export default async function (page, shot) {
   await sendAndSettle(page, "Open the host panel for the topic loose.");
   await expectText(viewIn(page, "inline").locator("#topic"), /loose/, 60000);
   const sid = sessionIdFrom(page);
+  log("session", sid);
   const apps = (await appsOf(sid)).slice(-(count + 1));
   const statuses = [];
   for (const app of apps) statuses.push(await alive(sid, app, page));
