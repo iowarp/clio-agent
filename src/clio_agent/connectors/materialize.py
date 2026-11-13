@@ -2,7 +2,7 @@
 
 The connection has the connector's id as its name, ``connector: <id>`` as its
 marker and ``connection_only: true``: it is never mounted on its own, only through
-the plugin that follows the connector (:mod:`.follow`), so its scope is one rule.
+the connector's plugin (:mod:`.follow`), which a person adds to a conversation.
 Address and value needs are written into the declaration; a secret stays a
 ``${need.<key>}`` placeholder there and is filled only when the server starts
 (:func:`fill_secrets`, called from ``tools.mcp_config.spec_from_declaration``).
