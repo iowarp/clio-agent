@@ -1216,7 +1216,7 @@ def test_plan_mode_deny_message_architect_is_not_plan_text() -> None:
     message = plan_mode_deny_message("architect", _WRITE_TOOL)
     assert "Plan Mode" not in message
     assert "exit plan mode" not in message.lower()
-    assert "Architect Mode" in message
+    assert "Deep research mode" in message and "Architect" not in message
     assert _WRITE_TOOL in message
 
 
@@ -1228,7 +1228,7 @@ def test_resolve_detail_architect_deny_is_not_plan_text() -> None:
     assert action == "deny"
     assert "Plan Mode" not in deny_message
     assert "exit plan mode" not in deny_message.lower()
-    assert "Architect Mode" in deny_message
+    assert "Deep research mode" in deny_message and "Architect" not in deny_message
 
 
 def test_resolve_detail_user_deny_plan_safe_tool_has_no_plan_message() -> None:

@@ -55,7 +55,12 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key
-from clio_agent.lm.engines.invoke_calls import text_tool_protocol, writing_past_block
+from clio_agent.lm.engines.invoke_calls import (
+    plain_call_tags,
+    repeated_call_end,
+    text_tool_protocol,
+    writing_past_block,
+)
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
@@ -460,6 +465,15 @@ class _Turn:
                     "model=%s chars=%d",
                     self.model,
                     len(self.reply),
+                )
+            elif (end := repeated_call_end(self.reply, self.available_tools)) is not None:
+                # One identical call written over and over: stop at the last whole one.
+                self.reply, self.past_calls = plain_call_tags(self.reply)[:end], True
+                logger.info(
+                    "provider reply stopped repeating one call reason=tool_calls_collapsed "
+                    "model=%s chars=%d",
+                    self.model,
+                    end,
                 )
         if self._progress.undecided:
             self._held += text

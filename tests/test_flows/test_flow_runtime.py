@@ -55,6 +55,9 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
     assert run["max_concurrency"] == 0 and response.json()["max_concurrency"] == 0
     assert {(c["together"], c["gather_limit"]) for c in calls} == {(calls[0]["together"], 2)}
     assert {c["gather_limit"] for c in response.json()["calls"]} == {2}
+    # Each child's name travels from ctx.call(label=...) to the checkpoint and the view.
+    assert sorted(c["label"] for c in calls) == ["Part 0", "Part 1", "Part 2"]
+    assert sorted(c["label"] for c in response.json()["calls"]) == ["Part 0", "Part 1", "Part 2"]
     timings = response.json()["timings"]
     assert set(timings) == {owner.handle, *(row["handle"] for row in calls)}
     for handle, timing in timings.items():

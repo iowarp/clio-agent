@@ -202,6 +202,10 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
         if index:
             notes.append(note("search_rotated", source, f"after {', '.join(sources[:index])}"))
         return _result(query, source, answer_, notes, settings)
+    if all(n.code == "search_not_approved" for n in notes):
+        # Nothing failed: the person declined every source. Searching again won't help.
+        detail = "the person declined every web source; one can be allowed in Settings → Web search"
+        raise SearchFailure("search_not_approved", detail, notes)
     raise SearchFailure("search_all_sources_unavailable", "", notes)
 
 

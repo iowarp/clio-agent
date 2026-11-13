@@ -66,13 +66,15 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
         invocation = str(call.get("invocation") or "")
         site = invocation.split(":", 2)[-1].rsplit(":", 2)[0]
         direction = planned.get(site) if call.get("target") == "researcher" else None
-        label = (
+        # The name the flow gave this child (a research direction's name) comes first.
+        label = str(call.get("label") or "") or (
             f"researcher {direction[0]}"
             if direction
             else "additional researcher"
             if research and planned and call.get("target") == "researcher"
             else str(call.get("target") or "Agent")
         )
+        question = str(direction[1].get("question") or "") if direction else ""
         if direction:
             recorded_directions.add(site)
         if call.get("recovered"):
@@ -120,6 +122,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             target=call.get("target", ""),
             invocation=call.get("invocation", ""),
             kind=call.get("kind", "agent"),
+            **({"question": question} if question else {}),
             detail=(
                 "The child returned, but the flow rejected its audit and requested a repair:\n"
                 + "\n".join(str(problem) for problem in rejection)
@@ -139,7 +142,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             ):
                 add(
                     f"planned:{site}",
-                    f"Planned research {number}",
+                    str(planned_direction.get("name") or f"Planned research {number}"),
                     "unknown",
                     ["run:plan"] if "run:plan" in {row["id"] for row in rows} else ["run:start"],
                     detail=f"Planned question: {planned_direction.get('question', '')}\nNo accepted child for this direction is recorded in this assignment. Whether it started is unconfirmed.",
