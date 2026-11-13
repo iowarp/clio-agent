@@ -374,6 +374,18 @@ def test_unreachable_service_and_clio_port_are_typed(tmp_path: Path) -> None:
         down = client.get(f"{base}/state")
         assert down.status_code == 502
         assert down.json()["error"]["error"] == "service_unreachable"
+        # A page load (the view's frame navigating) gets a readable page, not JSON.
+        page = client.get(f"{base}/", headers={"sec-fetch-mode": "navigate"})
+        assert page.status_code == 502
+        assert page.headers["content-type"].startswith("text/html")
+        assert "Service unavailable" in page.text and "reopen the view" in page.text
+        # The descriptor says so too, so the tab does not read "Ready" (fix stream).
+        descriptor = client.get(
+            f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}",
+            params={"data_ref": record.data_ref},
+        ).json()
+        assert descriptor["service_url"] is None
+        assert descriptor["service_refusal"]["reason"] == "service_unreachable"
         own = _open(app, sid, 8100)
         own_base = f"/v1/sessions/{sid}/mcp-apps/{own.app_instance_id}/service/{own.data_ref}"
         refused = client.get(f"{own_base}/state")

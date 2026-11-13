@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from clio_agent.gact.mcp_app_calls import set_saved_display_mode
+from clio_agent.gact.mcp_app_cleanup import _cleanup_record
 from clio_agent.gact.mcp_app_context import (
     app_context_block,
     forget_closed_app,
@@ -43,7 +44,6 @@ from clio_agent.gact.mcp_app_service_proxy import register_mcp_app_service_route
 from clio_agent.gact.mcp_app_tool_routes import register_app_context_and_tool_routes
 from clio_agent.gact.mcp_apps import (
     MCPAppRecord,
-    _cleanup_record,
     _not_found,
     _registry,
     _resolve_app_tool,

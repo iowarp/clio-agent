@@ -20,6 +20,9 @@ does and is allowed by the sandbox CSP's explicit service sources.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import html
 import logging
 import threading
 from collections import deque
@@ -71,6 +74,48 @@ _MESSAGES: dict[str, str] = {
     ),
     "service_not_declared": "This view has no live service.",
 }
+
+#: What a person reads when the view's service does not answer (the proxy and the tab).
+SERVICE_DOWN_MESSAGE = (
+    "This view's live service is not answering. Its server may have stopped; "
+    "reopen the view to start it again."
+)
+_MESSAGES["service_unreachable"] = SERVICE_DOWN_MESSAGE
+
+
+def service_error_page(message: str, reason: str) -> str:
+    """A small readable page for a document load the proxy cannot serve."""
+    text, code = html.escape(message), html.escape(reason)
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Service unavailable</title><style>"
+        ":root{color-scheme:light dark;font:15px/1.5 system-ui,sans-serif}"
+        "body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px}"
+        "main{max-width:32rem}h1{font-size:1.1rem;margin:0 0 .5rem}"
+        "p{margin:0 0 .5rem;opacity:.85}code{font-size:.8rem;opacity:.6}"
+        f"</style></head><body><main><h1>Service unavailable</h1><p>{text}</p>"
+        f"<code>{code}</code></main></body></html>"
+    )
+
+
+async def service_answers(record: Any) -> bool:
+    """Whether something accepts a connection on the service's loopback port now."""
+    service = getattr(record, "service", None)
+    if service is None:
+        return False
+    try:
+        # The proxy's own connect bound (mcp_app_service_proxy); loopback answers at once.
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", service.port), timeout=10.0
+        )
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return True
+
 
 _RECORDED: deque[dict[str, Any]] = deque(maxlen=256)
 _RECORDED_LOCK = threading.Lock()
@@ -179,6 +224,9 @@ async def service_descriptor_fields(
     if getattr(record, "service", None) is None:
         return fields
     denied = await service_refusal(app, record, _listener_port(request))
+    if denied is None and not await service_answers(record):
+        record_service_reason("service_unreachable", app_instance_id=record.app_instance_id)
+        denied = refusal("service_unreachable")  # the tab says so instead of "Ready"
     if denied is not None:
         fields["service_refusal"] = denied.to_wire()
         return fields
