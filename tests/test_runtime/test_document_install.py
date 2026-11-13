@@ -520,6 +520,48 @@ def test_tool_servers_wait_for_the_installer_kit_then_build_in_parallel(
     assert lines[-1].endswith("adios")
 
 
+def test_carried_kit_servers_read_only_installed_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery gets the installed records and never loads the built-ins."""
+    from types import SimpleNamespace
+
+    from clio_agent.plugins import service as service_module
+    from clio_agent.runtime import mcp_launcher
+
+    kit = SimpleNamespace(command="clio-kit", args=["mcp-server", "hdf5"])
+    installed = [
+        SimpleNamespace(id="hdf5", mcp_servers={"hdf5": {}, "hdf5-other": {}}),
+        SimpleNamespace(id="loose", mcp_servers={"loose": {}}),
+    ]
+
+    class Store:
+        def installed_records(self) -> list[Any]:
+            return installed
+
+        def records(self) -> list[Any]:
+            pytest.fail("built-ins loaded")
+
+    class Service:
+        store = Store()
+
+        def agents(self) -> list[Any]:
+            selection = SimpleNamespace(ref=SimpleNamespace(id="hdf5"))
+            return [SimpleNamespace(spec=SimpleNamespace(plugins=[selection]))]
+
+    seen: list[Any] = []
+
+    def discover(*, records: Any) -> dict[str, Any]:
+        seen.append(records)
+        other = SimpleNamespace(command="python", args=["-m", "x"])
+        return {"hdf5": kit, "hdf5-other": other, "loose": kit}
+
+    monkeypatch.setattr(service_module, "PluginService", Service)
+    monkeypatch.setattr(mcp_launcher, "discover_declared_mcp_servers", discover)
+    assert tool_servers._carried_kit_servers() == {"hdf5": kit}
+    assert seen == [installed]
+
+
 def test_tool_servers_are_skipped_without_the_flag_kit_or_marketplace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
