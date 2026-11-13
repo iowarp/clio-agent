@@ -39,6 +39,10 @@ OVERLAY_ENV = "CLIO_AGENT_PACKAGE_OVERLAY"
 ZIPPED_SITE_PACKAGES = "clio-pure.zip"
 
 _OVERLAY_PARENT = "runtime-packages"
+#: Name prefix of an install's staging directory beside the overlay (see :func:`staging_dir`).
+_STAGING_PREFIX = ".staging-"
+#: A staging directory older than this belongs to a killed install and is pruned.
+_STAGING_MAX_AGE_SECONDS = 6 * 3600
 _activated: list[str] = []
 
 
@@ -188,6 +192,86 @@ def _within(path: Path, directory: Path) -> bool:
     return True
 
 
+def _runtime_versions(*excluded: Path) -> dict[str, str]:
+    """Normalized name -> version for this interpreter's distributions outside ``excluded``."""
+    import importlib.metadata as metadata  # noqa: PLC0415
+
+    base = [
+        path
+        for path in sys.path
+        if path and not any(_within(Path(path), directory) for directory in excluded)
+    ]
+    return {
+        normalized_name(dist.metadata["Name"]): dist.version
+        for dist in metadata.distributions(path=base)
+        if dist.metadata["Name"]
+    }
+
+
+def staging_dir(directory: Path) -> Path:
+    """A fresh, empty sibling of the overlay ``directory`` for an installer to ``--target``.
+
+    Installing straight into the live overlay exposes it half-written: ``--target`` lays
+    down every dependency (pydantic included) before the duplicates are pruned, and any
+    CLIO process importing meanwhile (``clio-agent migrate`` during an install, a tool
+    server, a second backend) picks up the partial copy ahead of the runtime's own.
+    Installs land here instead, and :func:`publish` moves only the finished result in.
+    """
+    import tempfile  # noqa: PLC0415 - this module stays cheap to import
+
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    return Path(
+        tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}{directory.name}-", dir=directory.parent)
+    )
+
+
+def publish(
+    staging: Path, directory: Path, runtime_versions: Mapping[str, str] | None = None
+) -> list[str]:
+    """Move a finished install from ``staging`` into the overlay ``directory``.
+
+    Duplicates of the runtime are pruned in staging first, so they never appear in the
+    overlay. A distribution the overlay already holds is replaced by the staged one. Each
+    entry moves with a rename on the same filesystem, so readers see either the old or
+    the new package, never a partial one. ``staging`` is removed in every case. Returns
+    the distribution names published.
+    """
+    import importlib.metadata as metadata  # noqa: PLC0415
+
+    try:
+        versions = (
+            runtime_versions
+            if runtime_versions is not None
+            else _runtime_versions(directory, staging)
+        )
+        installed = {
+            normalized_name(dist.metadata["Name"])
+            for dist in metadata.distributions(path=[str(staging)])
+            if dist.metadata["Name"]
+        }
+        # A staged copy equal to the runtime's is dropped, but it still supersedes the
+        # overlay's own copy (a rollback): the runtime's version then shows through.
+        duplicates = set(prune_duplicates(staging, versions))
+        directory.mkdir(parents=True, exist_ok=True)
+        for dist in list(metadata.distributions(path=[str(directory)])):
+            if normalized_name(dist.metadata["Name"] or "") in installed:
+                _remove_distribution(dist, directory)
+        _merge_tree(staging, directory)
+        return sorted(installed - duplicates)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _merge_tree(source: Path, destination: Path) -> None:
+    """Rename every entry of ``source`` into ``destination``, merging shared directories."""
+    for entry in source.iterdir():
+        target = destination / entry.name
+        if entry.is_dir() and target.is_dir():
+            _merge_tree(entry, target)
+        else:
+            os.replace(entry, target)
+
+
 def prune_duplicates(
     directory: Path, runtime_versions: Mapping[str, str] | None = None
 ) -> list[str]:
@@ -203,12 +287,7 @@ def prune_duplicates(
     import importlib.metadata as metadata  # noqa: PLC0415
 
     if runtime_versions is None:
-        base = [path for path in sys.path if path and not _within(Path(path), directory)]
-        runtime_versions = {
-            normalized_name(dist.metadata["Name"]): dist.version
-            for dist in metadata.distributions(path=base)
-            if dist.metadata["Name"]
-        }
+        runtime_versions = _runtime_versions(directory)
     else:
         runtime_versions = {normalized_name(k): v for k, v in runtime_versions.items()}
     removed: list[str] = []
@@ -261,12 +340,31 @@ def _drop_orphan_bytecode(package: Path) -> None:
         pass
 
 
+def _abandoned(staging: Path) -> bool:
+    import time  # noqa: PLC0415 - this module stays cheap to import
+
+    try:
+        return time.time() - staging.stat().st_mtime > _STAGING_MAX_AGE_SECONDS
+    except OSError:
+        return False  # already published or removed by its own install
+
+
 def prune_stale(directory: Path) -> list[Path]:
-    """Remove overlays of runtimes that are no longer this one (an updated app)."""
+    """Remove overlays of runtimes that are no longer this one (an updated app).
+
+    A staging directory is another install in progress and is left alone, unless it is
+    older than :data:`_STAGING_MAX_AGE_SECONDS` (an install that was killed).
+    """
     parent = directory.parent
     if parent.name != _OVERLAY_PARENT or not parent.is_dir():
         return []
-    stale = [entry for entry in parent.iterdir() if entry.is_dir() and entry != directory]
+    stale = [
+        entry
+        for entry in parent.iterdir()
+        if entry.is_dir()
+        and entry != directory
+        and (not entry.name.startswith(_STAGING_PREFIX) or _abandoned(entry))
+    ]
     for entry in stale:
         shutil.rmtree(entry, ignore_errors=True)
     return stale
@@ -297,5 +395,7 @@ __all__ = [
     "prepend",
     "prune_duplicates",
     "prune_stale",
+    "publish",
     "runtime_constraints",
+    "staging_dir",
 ]

@@ -266,6 +266,15 @@ class TestSealedRuntimeOverlay:
             seen["command"] = command
             constraints = Path(command[command.index("--constraint") + 1])
             seen["pins"] = constraints.read_text(encoding="utf-8").split()
+            target = Path(command[command.index("--target") + 1])
+            seen["overlay_during_install"] = sorted(p.name for p in overlay.iterdir())
+            (target / "globus_sdk").mkdir()
+            (target / "globus_sdk" / "__init__.py").write_text("", encoding="utf-8")
+            info = target / "globus_sdk-3.0.0.dist-info"
+            info.mkdir()
+            (info / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: globus-sdk\nVersion: 3.0.0\n", encoding="utf-8"
+            )
             return subprocess.CompletedProcess(command, 0, "installed", "")
 
         monkeypatch.setattr(dependencies, "_run_install_command", _fake_runner)
@@ -278,7 +287,15 @@ class TestSealedRuntimeOverlay:
         )
         command = seen["command"]
         assert command[:5] == ["uv", "pip", "install", "--python", "python"]
-        assert command[command.index("--target") + 1] == str(overlay)
+        # The installer writes beside the live overlay; a concurrent import (migrate during
+        # an install) never sees a half-written dependency such as pydantic.
+        staging = Path(command[command.index("--target") + 1])
+        assert staging.parent == overlay.parent
+        assert staging.name.startswith(".staging-key-")
+        assert seen["overlay_during_install"] == []
+        assert not staging.exists()
+        assert (overlay / "globus_sdk" / "__init__.py").is_file()
+        assert (overlay / "globus_sdk-3.0.0.dist-info" / "METADATA").is_file()
         # A sealed runtime's support packages use CLIO's own cache (purged on uninstall),
         # never the person's ~/.cache/uv (live: 336 MB of claude-agent-sdk left behind).
         from clio_agent import paths  # noqa: PLC0415
