@@ -41,11 +41,12 @@ All app routes are under `/v1/sessions/{sid}/mcp-apps/{app_id}` and are bound to
 
 ## App context and app tools (owner: `ctx-tools`)
 
-- `PUT …/model-context` keeps its shape. Storage moves to clio-core, and `record.model_context` is deleted.
-- `PUT …/app-tools` takes `{tools: [{name, description, inputSchema}]}`. An empty list removes them.
-- The session event `mcp_app_tool_call` carries `{session_id, app_instance_id, call_id, name, arguments}`.
-- `POST …/app-tool-results/{call_id}` takes `{result: CallToolResult}` or `{error: {message}}`.
-- The agent-facing name is `app__<server>__<tool>`, where `<server>` is the source namespace.
+- `PUT …/model-context` keeps its shape. Storage moves to clio-core: `session.metadata["mcp_app_context"][app_instance_id] = {server, tool, resource_uri, context, sha256, bytes, reported_at}`. `record.model_context` is deleted. Over 128 KiB is a 413.
+- `PUT …/app-tools` takes `{tools: [{name, description, inputSchema, annotations?}], holder?}` and returns `{offered: [agent names], skipped: [{name, reason}]}`, or `{offered: [], reason, message}` when the list is over a limit (64 tools, 64 KiB per schema). An empty list removes them. `holder` names the mount of the view that posted; an empty list from a mount other than the one that last registered tools is ignored. Registering re-publishes the app's waiting calls.
+- The session event `mcp_app_tool_call` carries `{session_id, app_instance_id, call_id, name, arguments}`. It is transient (live only, never replayed); `name` is the view's own tool name.
+- `POST …/app-tool-results/{call_id}` takes `{result: CallToolResult}` or `{error: {message}}`. 404 when no call of this app waits under that id.
+- The agent-facing name is `app__<server>__<tool>`, where `<server>` is the source namespace. A call when no surface holds the app returns at once, naming the opening tool.
+- `ui/initialize` answers with `hostCapabilities.updateModelContext = {text: {}, structuredContent: {}}` and `message = {text: {}}` (draft spec).
 
 ## Saved call and reopening (owner: `reopen`)
 
