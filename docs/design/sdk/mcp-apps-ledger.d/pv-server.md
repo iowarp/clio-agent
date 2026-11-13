@@ -1,6 +1,6 @@
 # Ledger fragment: `pv-server` stream (PV1 to PV13)
 
-Rows use the main ledger's tables. Branches `ws/pv-server` in clio-kit (the server), clio-agent-marketplace (the plugin) and clio-agent (this fragment, the step file and the `ui_check` flag). State and evidence files are under `/home/user/wt/pv-server/.state/` (outside every repository).
+Rows use the main ledger's tables. Branches `ws/pv-server` in clio-kit (the server), clio-agent-marketplace (the plugin) and clio-agent (this fragment and the step files). State and evidence files are under `/home/user/wt/pv-server/.state/` (outside every repository).
 
 ## Decisions
 
@@ -32,7 +32,7 @@ Rows use the main ledger's tables. Branches `ws/pv-server` in clio-kit (the serv
 | ID | Fact | Evidence | Status |
 | --- | --- | --- | --- |
 | PV-F1 | ParaView 6.2.1 (`/opt/pv6`, conda-forge via micromamba; Python 3.12.16; VTK 9.7.2; ships wslink 2.6.0 and aiohttp 3.14.5; OSMesa with `VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow`). Node half started with `pvpython --dr --force-offscreen-rendering`. Qualified with trame 4.0.0 (trame-client 4.1.4, trame-server 4.1.1) and trame-vtk 2.11.17. On the cluster: ParaView 6.2.1 at `/opt/apps/paraview/6.2.1` behind `module load paraview`. | `pvpython --version`; `env.json` | done |
-| PV-F2 | Headless Chromium needs `--use-angle=swiftshader --enable-unsafe-swiftshader` for trame's local (WebGL) view; with them `getContext('webgl2')` succeeds. `scripts/cloud/ui_check.mjs` takes them from `UI_CHECK_CHROMIUM_ARGS`. | stand-in `report.webgl: true` | done |
+| PV-F2 | Headless Chromium needs `--use-angle=swiftshader --enable-unsafe-swiftshader` for trame's local (WebGL) view; with them `getContext('webgl2')` succeeds. The integrated `scripts/cloud/ui_check.mjs` launches with `--enable-unsafe-swiftshader` (grounds stream); this stream's own `UI_CHECK_CHROMIUM_ARGS` option was dropped in favour of it at the merge. | stand-in `report.webgl: true` | done |
 | PV-F3 | Cluster fixture form: containers (`ws/pv-cluster`, `cluster/cluster.sh`), login and node08 sharing one home volume, node08 reachable only through login, no package index on node08, `locked` password-only. | AQ38 to AQ50 runs | done |
 
 ## Qualification

@@ -1,9 +1,8 @@
 // The ParaView connector's live view through CLIO (AQ36, AQ37, AQ45, AQ49).
 //
 // Needs the paraview server reachable as a CLIO connection or connector (the
-// `clio-kit mcp-server paraview` command) and Chromium with WebGL (run ui_check
-// (ui_check asks for software WebGL itself)
-// where the machine has no GPU). Environment:
+// `clio-kit mcp-server paraview` command) and Chromium with WebGL (ui_check asks
+// for software WebGL itself on a machine with no GPU). Environment:
 //   PV_PROMPT     the opening request (default: a plain request naming no tool)
 //   PV_DATASET    dataset path on the machine where ParaView runs
 //   PV_FIELD      the field for the isosurface
