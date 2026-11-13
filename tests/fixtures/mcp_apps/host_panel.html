@@ -35,6 +35,9 @@
       <dt>Topic</dt><dd id="topic">-</dd>
       <dt>Result</dt><dd id="result">-</dd>
       <dt>Loaded</dt><dd id="loaded">-</dd>
+      <dt>View origin</dt><dd id="origin">-</dd>
+      <dt>Storage</dt><dd id="storage">-</dd>
+      <dt>API from view</dt><dd id="api">-</dd>
       <dt>Last action</dt><dd id="status" role="status">-</dd>
     </dl>
     <div class="row">
@@ -47,6 +50,7 @@
       <button id="link-https" type="button">Open https link</button>
       <button id="link-file" type="button">Open file link</button>
       <button id="download" type="button">Download CSV</button>
+      <button id="probe" type="button">Probe CLIO API</button>
     </div>
   </main>
   <script>
@@ -152,6 +156,20 @@
         show(`saved: ${files.join(', ') || 'yes'}`);
       } catch (error) { show(failure(error)); }
     });
+    // The view's own origin, storage, and what CLIO's API answers it (the sandbox
+    // host serves only the view and its service).
+    $('origin').textContent = window.origin;
+    try {
+      window.localStorage.setItem('host-panel-probe', '1');
+      $('storage').textContent = window.localStorage.getItem('host-panel-probe') === '1' ? 'available' : 'unreadable';
+    } catch (error) { $('storage').textContent = `blocked: ${error.name}`; }
+    $('probe').addEventListener('click', () => fetch('/v1/sessions').then(
+      async (response) => {
+        const body = await response.json().catch(() => ({}));
+        $('api').textContent = `HTTP ${response.status} ${body?.error?.error ?? ''}`.trim();
+      },
+      (error) => { $('api').textContent = `blocked: ${error.name}`; },
+    ));
     request('ui/initialize', {
       protocolVersion: '2026-01-26',
       appInfo: { name: 'host feature panel', version: '1.0.0' },
