@@ -215,13 +215,18 @@ def prepare_script(agent: Any, code: str) -> PreparedScript:
         bind_grant,
         reset_grant,
     )
+    from clio_agent.gact.model_media import CALL_MEDIA, DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
     grant = ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
     grant_token, parent_token = bind_grant(grant), PARENT_CALL_ID.set(grant.call_id)
+    # The script's views ride the calling run_code call's result (model_media).
+    call_media = CALL_MEDIA.get()
+    media_token = SCRIPT_MEDIA.set(call_media if call_media is not None else DETACHED)
     try:
         context = contextvars.copy_context()
     finally:
+        SCRIPT_MEDIA.reset(media_token)
         PARENT_CALL_ID.reset(parent_token)
         reset_grant(grant_token)
     direct_only, code_only = _callers(agent)
@@ -372,9 +377,12 @@ def launch_background(
     """Hand an approved script to the code root; the task's acceptance receipt (CT2)."""
     import asyncio  # noqa: PLC0415
 
+    from clio_agent.gact.model_media import DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.native_code import CodeLaunch, stage_launch, take_launch  # noqa: PLC0415
 
     prepared = prepare_script(agent, code)
+    # It outlives this model step: an image it views has no result to ride (model_media).
+    prepared.context.run(SCRIPT_MEDIA.set, DETACHED)
     key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only))
     name = label.strip() or next((ln.strip() for ln in code.splitlines() if ln.strip()), "")
     arguments = {
@@ -412,6 +420,12 @@ _NEW_KERNEL_WORDS = {
 }
 
 
+def _attached_row(descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    """One image/PDF a script attached to its result, as the transcript row shows it."""
+    keys = ("path", "media_type", "sha256", "pages", "page_count", "artifact_id")
+    return {k: descriptor[k] for k in keys if descriptor.get(k) not in (None, "")}
+
+
 def model_text(outcome: Mapping[str, Any]) -> str:
     """What the model reads: output, error (and why the sandbox refused it), final value,
     then the call count; first that a new kernel replaced the earlier one, and in plan mode
@@ -436,6 +450,14 @@ def model_text(outcome: Mapping[str, Any]) -> str:
     if "write_roots" in outcome:
         roots = " and ".join(f"`{root}`" for root in outcome["write_roots"]) or "nowhere"
         parts.append(f"(Plan mode: this script may write only in {roots}.)")
+    if attached := outcome.get("attached_media"):
+        count = len(attached)
+        what = "1 image/PDF" if count == 1 else f"{count} images/PDFs"
+        parts.append(
+            f"(Attached below: the {what} this script viewed. Look at "
+            f"{'it' if count == 1 else 'them'} before describing what "
+            f"{'it shows' if count == 1 else 'they show'}.)"
+        )
     if not outcome.get("output") and outcome.get("value") is None and not outcome.get("error"):
         parts.insert(0, "The script printed nothing.")
     if new := str(outcome.get("new_kernel") or ""):
@@ -453,6 +475,7 @@ def build_run_code_tool() -> Any:
         native_tool,
     )
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
+    from clio_agent.gact.model_media import CALL_MEDIA  # noqa: PLC0415
     from clio_agent.tools.tool_settings import self_gated  # noqa: PLC0415
 
     def run_code(code: str, background: bool = False, label: str = "") -> str:
@@ -475,6 +498,8 @@ def build_run_code_tool() -> Any:
         outcome = run_script(
             loop.agent, code, session_id=session_id, scope=scope, read_only=read_only
         )
+        if viewed := CALL_MEDIA.get():
+            outcome["attached_media"] = [_attached_row(item) for item in viewed]
         declare_structured_content(outcome)
         return model_text(outcome)
 
