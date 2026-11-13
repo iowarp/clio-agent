@@ -13,6 +13,7 @@
 //   {"hero": NAME}             screenshot with the navigation sidebar collapsed and the
 //                              workbench maximized, then put both back
 //   {"maximize": true}         collapse the sidebar and maximize the workbench, and stay so
+//   {"restore": true}          undo "maximize": restore the workbench and open the sidebar
 //   {"wait": MS}
 //   {"shell": CMD, "label": L} run a command on this machine and log its output
 //   {"drag": true}             rotate the scene, counting the view's WebSocket frames
@@ -27,6 +28,19 @@
 //   {"showTab": true}          press "Show tab" (live view) or "Reopen" (closed) on the last card
 //   {"restart": true}          restart the stack, open the conversation again, open the
 //                              workspace canvas and focus the restored app tab
+// The view's ParaView panel (the person's controls):
+//   {"panel": LABEL}           press a tool rail icon (Pipeline, Add filter, Display,
+//                              Camera, Information); pressing the open one closes it
+//   {"visible": NAME, "on": BOOL}   show or hide a pipeline object with its eye
+//   {"closePanel": true}       close the open panel; the rail stays
+//   {"row": TEXT}              select the pipeline row whose name contains TEXT
+//   {"filter": NAME, "axis": "X|Y|Z", "values": {LABEL: VALUE}}   Add filter: choose the
+//                              filter for the selected object, set the normal and fields, Apply
+//   {"choose": LABEL, "item": TEXT}   pick TEXT in the panel's LABEL select
+//   {"press": LABEL}           press a button of the ParaView page by its accessible name
+//   {"panelText": LABEL}       log the open panel's text and the pipeline rows
+//   {"theme": "dark"|"light"}  switch CLIO's theme as its own switch does
+//   {"play": NAME}             press Play, sample the step four times, shoot NAME, press Pause
 // Every request and WebSocket the page opens is recorded. PV_OUT (a file) receives the
 // log, the requests, the sockets and the turns' answers as JSON, for the token search (AQ49).
 import { execSync } from "node:child_process";
@@ -153,6 +167,20 @@ async function waitView(page) {
   note("view", await viewText(page));
 }
 
+async function panelText(page) {
+  const { trame } = frames(page);
+  const panel = await trame.locator(".clio-panel").innerText({ timeout: 3000 }).catch(() => "");
+  const rows = await trame.locator(".clio-row").evaluateAll((all) =>
+    all.map((r) => ({
+      name: r.innerText.trim(),
+      current: r.querySelector("[aria-current]")?.getAttribute("aria-current"),
+      eye: r.querySelector("button")?.getAttribute("aria-label"),
+    })),
+  ).catch(() => []);
+  const error = await trame.locator('.clio-panel [role="alert"]').innerText({ timeout: 500 }).catch(() => "");
+  return { panel: panel.replace(/\s+/g, " ").trim().slice(0, 600), rows, error };
+}
+
 const run = {
   async open(page, name) {
     const { session, workspace } = await openConversation(page, name);
@@ -190,6 +218,14 @@ const run = {
     await waitFor(page, async () => Boolean(frames(page).trame), 120, "the view after maximizing");
     await page.waitForTimeout(8000);
     note("maximized", await viewText(page));
+  },
+  async restore(page) {
+    const restore = page.getByRole("button", { name: /Restore canvas|Exit maximized|Minimize canvas/ }).first();
+    if (await restore.isVisible().catch(() => false)) await restore.click();
+    const toggle = page.locator('[data-slot="sidebar-trigger"]').first();
+    if (await toggle.isVisible().catch(() => false)) await toggle.click();
+    await page.waitForTimeout(3000);
+    note("restored", await viewText(page));
   },
   async hero(page, name, action, shot) {
     const toggle = page.locator('[data-slot="sidebar-trigger"]').first();
@@ -297,6 +333,98 @@ const run = {
     await button.click();
     await allowOnce(page, 5000);
     note("card", `pressed ${label}`);
+  },
+  async panel(page, label) {
+    const open = await frames(page).trame.locator(".clio-panel header").innerText({ timeout: 500 }).catch(() => "");
+    // Open the panel; when it is already open, leave it (closePanel closes it).
+    if (open.trim() !== label) await frames(page).trame.locator(`.clio-rail button[aria-label="${label}"]`).click();
+    await page.mouse.move(page.viewportSize().width - 60, page.viewportSize().height - 30); // no tooltip in the shots
+    await page.waitForTimeout(1200);
+    note(`panel ${label}`, await panelText(page));
+  },
+  async visible(page, name, action) {
+    // Show or hide a pipeline object with its eye, only when it is not already so.
+    const { trame } = frames(page);
+    const eye = trame.locator(`.clio-row button[aria-label="${action.on ? "Show" : "Hide"} ${name}"]`);
+    if (await eye.count()) await eye.first().click();
+    await page.waitForTimeout(2000);
+    note(`visible ${name} ${action.on}`, await panelText(page));
+  },
+  async closePanel(page) {
+    await frames(page).trame.locator('.clio-panel button[aria-label="Close panel"]').click();
+    await page.waitForTimeout(1500);
+    note("panel closed", await panelText(page));
+  },
+  async row(page, text) {
+    const { trame } = frames(page);
+    if (!(await trame.locator(".clio-row").count()))
+      await trame.locator('.clio-rail button[aria-label="Pipeline"]').click();
+    await trame.locator(".clio-row .clio-name", { hasText: text }).first().click();
+    await page.waitForTimeout(1500);
+    note(`row ${text}`, await panelText(page));
+  },
+  async filter(page, name, action) {
+    const { trame } = frames(page);
+    if (!(await trame.locator('.clio-panel [aria-label="Filters"]').count()))
+      await trame.locator('.clio-rail button[aria-label="Add filter"]').click();
+    await trame.locator(`[aria-label="Filters"] button[aria-label^="${name}"]`).click();
+    await page.waitForTimeout(1200);
+    if (action.axis) await trame.locator(`button[aria-label="Normal along ${action.axis}"]`).click();
+    for (const [label, value] of Object.entries(action.values || {})) {
+      const field = trame.locator(".clio-form .v-text-field", { hasText: label }).locator("input").first();
+      await field.fill(String(value));
+    }
+    await trame.getByRole("button", { name: "Apply" }).click();
+    await page.waitForTimeout(5000);
+    note(`filter ${name}`, await panelText(page));
+  },
+  async choose(page, label, action) {
+    const { trame } = frames(page);
+    if (!(await trame.locator(".clio-panel .v-select", { hasText: label }).count()))
+      await trame.locator('.clio-rail button[aria-label="Display"]').click();
+    await trame.locator(".clio-panel .v-select", { hasText: label }).first().click();
+    await page.waitForTimeout(700);
+    await trame.locator(".v-overlay .v-list-item", { hasText: action.item }).first().click();
+    await page.waitForTimeout(4000);
+    note(`choose ${label}`, { item: action.item, ...(await panelText(page)) });
+  },
+  async press(page, label) {
+    await frames(page).trame.locator(`button[aria-label="${label}"]`).first().click();
+    await page.mouse.move(page.viewportSize().width - 60, page.viewportSize().height - 30);
+    await page.waitForTimeout(3000);
+    note(`press ${label}`, await panelText(page));
+  },
+  async play(page, name, action, shot) {
+    const { trame } = frames(page);
+    await trame.locator('button[aria-label="Play"]').click();
+    const samples = [];
+    for (let i = 0; i < 4; i++) {
+      await page.waitForTimeout(400);
+      samples.push(await trame.evaluate(() => [window.trame.state.get("clio_index"), window.trame.state.get("clio_playing")]));
+    }
+    await shot(name);
+    const pause = trame.locator('button[aria-label="Pause"]');
+    const paused = (await pause.count()) ? (await pause.click(), true) : false;
+    await page.waitForTimeout(1500);
+    note("play", { samples, paused, ...(await viewText(page)) });
+  },
+  async panelText(page, label) {
+    note(`panel text ${label}`, await panelText(page));
+  },
+  async theme(page, name) {
+    // What CLIO's own theme switch does to <html> (theme/preference.ts switchTheme).
+    await page.evaluate((dark) => {
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+      document.documentElement.classList.toggle("dark", dark);
+    }, name === "dark");
+    await page.waitForTimeout(4000);
+    const { trame } = frames(page);
+    const look = await trame.evaluate(() => {
+      const app = document.querySelector(".v-application");
+      const style = app ? getComputedStyle(app) : null;
+      return { background: style?.backgroundColor, color: style?.color, view: window.trame.state.get("clio_view_colors") };
+    }).catch(() => null);
+    note(`theme ${name}`, look);
   },
   async restart(page) {
     const sessionUrl = page.url();

@@ -1,0 +1,116 @@
+[
+ {
+  "open": "pvui2"
+ },
+ {
+  "send": "Open /home/user/wt/pv-ui/clio-agent/.cloud-run/apps-work/pvui2/pulse_series.pvd in ParaView and show it to me."
+ },
+ {
+  "view": true
+ },
+ {
+  "maximize": true
+ },
+ {
+  "shot": "panel-0-opened"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "row": "pulse_series.pvd"
+ },
+ {
+  "filter": "Slice",
+  "axis": "Z"
+ },
+ {
+  "shot": "panel-1-slice"
+ },
+ {
+  "row": "pulse_series.pvd"
+ },
+ {
+  "filter": "Contour"
+ },
+ {
+  "panel": "Display"
+ },
+ {
+  "choose": "Color by",
+  "item": "temperature"
+ },
+ {
+  "choose": "Representation",
+  "item": "Wireframe"
+ },
+ {
+  "press": "Color legend"
+ },
+ {
+  "shot": "panel-2-display"
+ },
+ {
+  "panel": "Camera"
+ },
+ {
+  "press": "Look along +Y"
+ },
+ {
+  "press": "Parallel projection"
+ },
+ {
+  "shot": "panel-3-camera"
+ },
+ {
+  "panel": "Information"
+ },
+ {
+  "shot": "panel-4-info"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "shot": "panel-5-pipeline"
+ },
+ {
+  "restore": true
+ },
+ {
+  "send": "What did I just change in the view?"
+ },
+ {
+  "send": "Now add arrows showing the velocity field."
+ },
+ {
+  "maximize": true
+ },
+ {
+  "wait": 4000
+ },
+ {
+  "panelText": "after the agent's filter"
+ },
+ {
+  "shot": "panel-6-agent-filter"
+ },
+ {
+  "theme": "light"
+ },
+ {
+  "shot": "panel-7-light"
+ },
+ {
+  "panel": "Display"
+ },
+ {
+  "shot": "panel-8-light-display"
+ },
+ {
+  "theme": "dark"
+ },
+ {
+  "shot": "panel-9-dark-display"
+ }
+]
