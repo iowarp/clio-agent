@@ -3,24 +3,28 @@
 //   WS=<workspace> SID=<session> node scripts/cloud/ui_check.mjs \
 //     --steps scripts/cloud/checks/apps/helene_hdf5.mjs --label helene --width 1600 --height 1000
 //
-// The workspace holds era5/msl_2024-09.nc and has the ERA5 pressure-level bucket linked
-// (bench/live/setup_ws.py). Turns: what is in the file (@ from the composer), a look in
-// Files, track the storm (/MSL chosen in the viewer and added), how it deepened, the clouds
-// in 3D, then a dashboard to share. A run with a turn naming tools would prove the
-// mechanism only; these do not.
+// The workspace holds era5/msl_2024-09.nc and era5/sst_2024-09.nc and has the ERA5
+// pressure-level bucket linked (bench/live/setup_ws.py). The person asks what is in the
+// pressure file (the file @-referenced from the composer), opens the field from the answer,
+// reads its attributes and looks at it, adds /MSL from the viewer and asks to track the
+// storm; then asks how it deepened with /SSTK @-referenced from the composer (Tab into the
+// file); then the clouds in 3D; then a dashboard to share. No turn names a tool.
 import { send, waitIdle } from "./_lib.mjs";
 
-const FILE = "msl_2024-09.nc";
+const MSL = "msl_2024-09.nc";
+const SST = "sst_2024-09.nc";
 const TURNS = {
-  contents: "What's in this file?",
+  contents: "What's in here?",
   track:
     "Hurricane Helene crossed the Gulf in late September 2024. Can you track its centre and " +
     "central pressure in this from the 24th to the 27th?",
-  deepen: "How fast did it deepen, and does ERA5 get its strength right?",
+  deepen: "How fast did it deepen, and was the water under it warm enough to explain that?",
   clouds:
     "What did the clouds around it look like on the 26th, as it came ashore? The linked ERA5 " +
     "bucket has cloud water; those files are big. Show me in 3D.",
   share: "Put all of this on a dashboard so I can share it with colleagues.",
+  follow: "Can I step through the days on this and have everything follow, the 3D clouds too?",
+  go: "3-hourly, go ahead.",
 };
 
 async function settle(page, sid, log, shot, name, minutes = 25) {
@@ -34,13 +38,65 @@ async function settle(page, sid, log, shot, name, minutes = 25) {
   return false;
 }
 
-async function openFile(page) {
-  if (await page.getByText(FILE).count()) return;
-  await page.getByRole("button", { name: "Open workspace canvas" }).click().catch(() => {});
-  await page.getByRole("tab", { name: "Files" }).first().click().catch(() => {});
-  await page.getByText("era5", { exact: true }).first().click().catch(() => {});
-  await page.getByText(FILE).first().click();
-  await page.waitForTimeout(10000);
+/** Reference a file from the composer's @ menu; with `dataset`, Tab into it and pick one. */
+async function atReference(page, file, dataset) {
+  await page.keyboard.type(` @${file.slice(0, 3)}`, { delay: 70 });
+  const option = page.getByRole("option").filter({ hasText: file }).first();
+  await option.waitFor();
+  if (!dataset) return option.click();
+  await page.keyboard.press("Tab");
+  const inner = page.getByRole("option").filter({ hasText: new RegExp(`^/${dataset}`) }).first();
+  await inner.waitFor();
+  await page.waitForTimeout(800);
+  await inner.click();
+}
+
+/** The person opens the field from the answer: a dataset link, else the file and its tree. */
+async function openFieldFromAnswer(page, shot) {
+  const turn = page.locator("main").last();
+  const field = turn.getByRole("link", { name: /^MSL$/ }).last();
+  if (await field.count()) {
+    await field.click();
+    console.log("FIELD_OPENED_BY", "dataset link");
+  }
+  else {
+    // No dataset link in the answer: the file link, else the file chip on the person's message.
+    const file = turn.getByRole("link", { name: new RegExp(MSL.replace(".", "\\.")) }).last();
+    if (await file.count()) await file.click();
+    else await turn.getByRole("button", { name: new RegExp(MSL.replace(".", "\\.")) }).first().click();
+    console.log("FIELD_OPENED_BY", (await file.count()) ? "file link" : "message chip");
+    await page.waitForTimeout(6000);
+    const viewer = page.frameLocator('iframe[title^="HDF5 viewer"]');
+    await viewer.getByRole("button", { name: "Explorer" }).click()
+      .catch(() => page.getByRole("button", { name: "Explorer" }).click());
+    await viewer.getByText("MSL", { exact: true }).first().click();
+  }
+  await page.waitForTimeout(8000);
+  await shot("field-open");
+  // Reads what the field is, then looks at it.
+  await page.getByRole("button", { name: "Attributes" }).click().catch(() => {});
+  await page.waitForTimeout(4000);
+  await shot("field-attributes");
+  await page.getByRole("button", { name: "Image" }).click().catch(() => {});
+  await page.waitForTimeout(6000);
+  const viewer = page.frameLocator('iframe[title^="HDF5 viewer"]');
+  // ERA5 stores latitude north to south, so the raw array draws south up: flip it.
+  await viewer.getByRole("button", { name: "More controls" }).click().catch(() => {});
+  await viewer.getByRole("button", { name: "Flip Y" }).click().catch(() => {});
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(1500);
+  // Scrubs time to the storm in the Gulf (26 Sep 12Z is step 612 of 720).
+  const slider = viewer.getByRole("slider").last();
+  const box = await slider.boundingBox().catch(() => null);
+  if (box) {
+    await page.mouse.move(box.x + 2, box.y + box.height / 2);
+    await page.mouse.down();
+    // Measured: the track is not the box; 0.75 of it is step ~612 (26 Sep 12Z).
+    await page.mouse.move(box.x + 2 + (box.width - 2) * 0.7516, box.y + box.height / 2, { steps: 25 });
+    await page.mouse.up();
+    await page.waitForTimeout(4000);
+  }
+  await shot("field-image");
 }
 
 export default async function (page, shot) {
@@ -55,29 +111,21 @@ export default async function (page, shot) {
   const composer = page.locator('textarea, [contenteditable="true"]').last();
   await composer.waitFor({ state: "visible", timeout: 180000 });
   await page.waitForTimeout(2000);
+  const chips = () => page.locator('[data-slot="composer-toolbar"]').locator("xpath=..").innerText();
 
   if (only.includes("contents")) {
-    // The whole file, referenced from the composer's @ menu.
     await composer.click();
-    await page.keyboard.type(`@${FILE.slice(0, 3)}`, { delay: 80 });
-    await page.getByRole("option", { name: new RegExp(`^${FILE}era5`) }).waitFor();
-    await page.keyboard.press("Enter");
+    await atReference(page, MSL);
     await page.keyboard.type(" " + TURNS.contents);
     await shot("contents-request");
     await page.keyboard.press("Enter");
     await settle(page, sid, log, shot, "contents");
   }
   if (only.includes("track")) {
-    // A look at the field in Files, then the dataset chosen there and added to the message.
-    await openFile(page);
-    await shot("files-field");
-    const viewer = page.frameLocator('iframe[title^="HDF5 viewer"]');
-    await viewer.getByRole("button", { name: "Explorer" }).click()
-      .catch(() => page.getByRole("button", { name: "Explorer" }).click());
-    await viewer.getByText("MSL", { exact: true }).first().click();
+    await openFieldFromAnswer(page, shot);
     await page.getByRole("button", { name: "Add to message" }).click();
-    const chip = page.locator('[data-slot="composer-toolbar"]').locator("xpath=..");
-    if (!(await chip.innerText()).includes("/MSL")) throw new Error("the /MSL reference was not added");
+    await page.waitForTimeout(800);
+    if (!(await chips()).includes("/MSL")) throw new Error("the /MSL reference was not added");
     await composer.click();
     await page.keyboard.press("End");
     await page.keyboard.type(" " + TURNS.track);
@@ -85,10 +133,20 @@ export default async function (page, shot) {
     await page.keyboard.press("Enter");
     await settle(page, sid, log, shot, "track");
   }
-  for (const name of ["deepen", "clouds", "share"]) {
+  if (only.includes("deepen")) {
+    await composer.click();
+    await page.keyboard.type(TURNS.deepen);
+    await atReference(page, SST, "SSTK");
+    await page.waitForTimeout(800);
+    if (!(await chips()).includes("/SSTK")) throw new Error("the /SSTK reference was not added");
+    await shot("deepen-request");
+    await page.keyboard.press("Enter");
+    await settle(page, sid, log, shot, "deepen", 20);
+  }
+  for (const name of ["clouds", "share", "follow", "go"]) {
     if (!only.includes(name)) continue;
     await send(page, TURNS[name]);
-    await settle(page, sid, log, shot, name, name === "deepen" ? 15 : 35);
+    await settle(page, sid, log, shot, name, 35);
   }
   await shot("final");
   console.log("LOG", JSON.stringify(log));
