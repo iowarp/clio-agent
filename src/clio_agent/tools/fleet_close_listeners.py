@@ -60,7 +60,7 @@ def proxies_dropped(root: str, proxies: Iterable[Any], reason: str) -> None:
     for listener in listeners:
         try:
             listener(root, dropped, reason)
-        except Exception as exc:  # noqa: BLE001 - a listener never breaks a fleet's close
+        except RuntimeError as exc:  # its loop closed while scheduling: never breaks a close
             trace.event(
                 "TOOLS",
                 "fleet_close_listener_failed root=%s reason=%s error=%s",

@@ -173,9 +173,12 @@ def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], in
 
     if not session_id:
         return [], 0
+    from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
+    from clio_agent.plugins.store import StoreError  # noqa: PLC0415
+
     try:
         rows = offerable(app, session_id)
-    except Exception as exc:  # noqa: BLE001 - facts never break a prompt; typed
+    except (StoreError, ConnectorStateError) as exc:  # unreadable stores: no facts this step
         trace.event("TOOLS", "plugin_offer_facts_unavailable (%s)", type(exc).__name__)
         return [], 0
     return rows[: offer_listed()], len(rows)
