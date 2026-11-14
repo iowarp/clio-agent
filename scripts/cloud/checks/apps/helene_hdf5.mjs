@@ -9,7 +9,7 @@
 // reads its attributes and looks at it, adds /MSL from the viewer and asks to track the
 // storm; then asks how it deepened with /SSTK @-referenced from the composer (Tab into the
 // file); then the clouds in 3D; then a dashboard to share. No turn names a tool.
-import { send, waitIdle } from "./_lib.mjs";
+import { api, send, waitIdle } from "./_lib.mjs";
 
 const MSL = "msl_2024-09.nc";
 const SST = "sst_2024-09.nc";
@@ -46,6 +46,7 @@ async function settle(page, sid, log, shot, name, minutes = 25) {
     const done = await waitIdle(page, sid, log, 4);
     await shot(`${name}-${String(++n).padStart(2, "0")}`);
     if (done) {
+      await toLatest(page);
       mark(`${name}-answered`);
       return true;
     }
@@ -167,6 +168,28 @@ async function finalBeat(page, shot, sid, log) {
   await settle(page, sid, log, shot, "beat", 15);
 }
 
+/** Whether the agent's latest reply ends by asking the person something. */
+async function lastAnswerAsks(sid) {
+  const exported = await api("GET", `/v1/sessions/${sid}/export`);
+  const replies = (exported.messages || []).filter((m) => m.role === "assistant");
+  const parts = replies.at(-1)?.parts || [];
+  const text = parts.filter((p) => p.type === "text").map((p) => p.text || "").join(" ").trim();
+  return /\?\s*$/.test(text);
+}
+
+/** Back to the newest message after a long answer, as a person reading along would. */
+async function toLatest(page) {
+  const box = await page.getByRole("log", { name: "Conversation" }).first().boundingBox()
+    .catch(() => null) ?? await page.locator('[aria-label="Conversation"]').first().boundingBox()
+    .catch(() => null);
+  if (!box) return;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  for (let k = 0; k < 6; k += 1) {
+    await page.mouse.wheel(0, 4000);
+    await page.waitForTimeout(150);
+  }
+}
+
 async function stepOf(app) {
   return (await app.getByText(/^\s*\d+\s*\/\s*32\s*$/).first().textContent().catch(() => "0/32")).trim();
 }
@@ -225,6 +248,12 @@ export default async function (page, shot) {
   }
   for (const name of ["clouds", "share", "follow", "go"]) {
     if (!only.includes(name)) continue;
+    // The person answers only a question: when the agent built the time series without
+    // asking how often to step, there is nothing to say yes to.
+    if (name === "go" && !(await lastAnswerAsks(sid))) {
+      mark("go-skipped");
+      continue;
+    }
     mark(`${name}-typing`);
     await send(page, TURNS[name]);
     await settle(page, sid, log, shot, name, 35);
