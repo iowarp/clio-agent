@@ -130,7 +130,7 @@ in example_stations_rainier.csv on a globe, coloured by station kind." The
 conversation did not have Geo, so the agent read the file and offered it:
 
 <Capture client:visible image={await captureImage(offerGeo)}
-  alt="A conversation in the cascadia workspace. The agent read example_stations_rainier.csv and offered Geo; the card reads Add Geo to this conversation?, Enabled, Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name, Why: Needed to plot the GNSS stations from the CSV on an interactive 3D globe coloured by station kind, then Add, Not now, Brings 1 MCP server (12 tools) to this conversation, and View connector"
+  alt="A conversation in the cascadia workspace. The agent looked for globe tools, read example_stations_rainier.csv and offered Geo; the card reads Add Geo to this conversation?, Enabled, Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name, Why: Showing the 10 Rainier GNSS stations on an interactive 3D globe, coloured by station kind, then Add, Not now, Brings 1 MCP server (12 tools) to this conversation, and View connector"
   caption="The offer card for a connector, with View connector. After Add, the globe appeared in the same reply."
 />
 
@@ -145,8 +145,8 @@ the temperature at home right now, and how has the outside temperature changed o
 last day?"
 
 <Capture client:visible image={await captureImage(offerPlugin)}
-  alt="The offer card in the lab-sensors conversation: Add Home Assistant to this conversation?, Enabled, its description, the agent's reason, the two required rows already filled (the demo instance's address, and the token saved), Add, Not now, Brings 2 skills and 1 MCP server (27 tools) to this conversation, and View plugin"
-  caption="The offer card for a plugin. Its required rows show already filled."
+  alt="The offer card in the lab-sensors conversation: Add Home Assistant to this conversation?, Enabled, its description, the agent's reason, then Add, Not now, Brings 2 skills and 1 MCP server (27 tools) to this conversation, View plugin and Settings (2)"
+  caption="The offer card for a plugin. Its address and token are already saved, so the card keeps its four rows and they wait under Settings (2), where Save as default is too. A required row still missing would show on the card."
 />
 
 <Capture client:visible image={await captureImage(viewPlugin)}

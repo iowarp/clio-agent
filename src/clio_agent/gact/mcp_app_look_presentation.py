@@ -18,6 +18,9 @@ _FAILED = {
     "mcp_app_view_ambiguous": "Several views are open",
     "mcp_app_view_not_shown": "The view is not on screen",
     "mcp_app_view_closed": "The view closed",
+    # Answered by the surface after 30 s: off screen, or a frame that never replied.
+    "view_not_visible": "The view is not on screen",
+    "snapshot_unanswered": "The view did not answer",
 }
 
 
