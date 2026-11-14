@@ -76,7 +76,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     outcome = str(row.get("outcome") or "returned")
     text = str(row.get("text") or (result if isinstance(result, str) else ""))
     blocks = _head(server)
-    sent = _sent(row.get("arguments") if isinstance(row.get("arguments"), Mapping) else args)
+    sent = _sent(sent_args if isinstance(sent_args := row.get("arguments"), Mapping) else args)
     if sent:
         blocks.append(sent)
     if outcome == "returned":

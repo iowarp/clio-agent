@@ -31,7 +31,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
 
     row = structured if isinstance(structured, Mapping) else result
     row = row if isinstance(row, Mapping) else {}
-    view = row.get("view") if isinstance(row.get("view"), Mapping) else {}
+    view = found if isinstance(found := row.get("view"), Mapping) else {}
     title = str(view.get("title") or args.get("view") or "view")
     blocks: list[dict[str, Any]] = []
     if row.get("ok") is False or not row.get("sha256"):
@@ -77,7 +77,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         # The view's own report, line for line (it is data: keep its line breaks).
         report = "\n".join(str(x) for x in context)
         blocks.append({"id": "context", "type": "code", "label": "Last reported", "text": report})
-    coverage = row.get("coverage") if isinstance(row.get("coverage"), Mapping) else {}
+    coverage = told if isinstance(told := row.get("coverage"), Mapping) else {}
     gaps = [line for line in coverage_lines(coverage) if line.startswith("Not in the image")]
     if gaps:
         blocks.append(_text("gaps", "Snapshot gaps", "\n".join(gaps), severity="warning"))

@@ -150,7 +150,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     row = structured if isinstance(structured, Mapping) else result
     row = row if isinstance(row, Mapping) else {}
     connector = str(row.get("connector_name") or args.get("connector") or "connector")
-    asked = args.get("values") if isinstance(args.get("values"), Mapping) else {}
+    asked = given if isinstance(given := args.get("values"), Mapping) else {}
     need = str(row.get("label") or args.get("key") or ", ".join(asked) or "value")
     blocks: list[dict[str, Any]] = []
     if row.get("error"):
@@ -191,7 +191,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         blocks.append(
             {"id": "scope", "type": "text", "label": "Applies to", "text": "This conversation"}
         )
-    status = row.get("state") if isinstance(row.get("state"), Mapping) else {}
+    status = told if isinstance(told := row.get("state"), Mapping) else {}
     blocks.append(
         {
             "id": "state",

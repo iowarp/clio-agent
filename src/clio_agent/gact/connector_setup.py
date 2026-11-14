@@ -34,14 +34,23 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact.events import Event
 from clio_agent.runtime import trace
 
+if TYPE_CHECKING:
+    from clio_agent.gact.interaction_types import PendingInteraction
+
 DECLINED = "connector_declined"
 VALUES_SET_FOR_CONVERSATION = "connector_values_set_for_conversation"
 PREFIX = "connector:"
+#: A setup row's status as its pending interaction reads it.
+_INTERACTION_STATUS: dict[str, Literal["pending", "answered", "denied"]] = {
+    "pending": "pending",
+    "submitted": "answered",
+    "declined": "denied",
+}
 
 
 def _rows(app: Any) -> dict[str, dict[str, Any]]:
@@ -243,9 +252,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                 kind="connector_setup",
                 owner_session_id=row["session_id"],
                 attended_session_id=attended_session_id(app, row["session_id"]),
-                status={"pending": "pending", "submitted": "answered", "declined": "denied"}.get(
-                    row["status"], "cancelled"
-                ),
+                status=_INTERACTION_STATUS.get(row["status"], "cancelled"),
                 title=f"Add {row['connector_name']} to this conversation"
                 if offer
                 else f"Set up {row['connector_name']}",
@@ -310,7 +317,7 @@ async def respond(
     action: str,
     values: Mapping[str, Any],
     metadata: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> PendingInteraction:
     """Answer a setup card; returns the updated row's interaction.
 
     An offer card (``intent: enable``) is answered by :func:`.connector_offer.answer`:

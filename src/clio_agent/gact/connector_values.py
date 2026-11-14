@@ -84,7 +84,7 @@ def write_overlay(
 ) -> dict[str, str]:
     """Apply ``changes`` (checked values; ``None`` clears) to the conversation's overlay."""
 
-    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    sessions: Any = getattr(getattr(app, "state", None), "sessions", None)
     with _LOCK:
         current = session_overlay(app, sid)
         mine = overlay.merged(current.get(connector_id, {}), changes)

@@ -240,6 +240,7 @@ def register_mcp_app_service_routes(
         if denied is not None:
             return _refused(denied, request)
         service = record.service
+        assert service is not None  # admitted: service_refusal refuses a record without one
         target = f"http://127.0.0.1:{service.port}{_upstream_target(request.scope, data_ref)}"
         body = None if request.method in {"GET", "HEAD"} else await request.body()
         client = httpx.AsyncClient(
@@ -312,6 +313,7 @@ def register_mcp_app_service_routes(
             await websocket.close(code=4403, reason=denied.reason)
             return
         service = record.service
+        assert service is not None  # admitted: service_refusal refuses a record without one
         offered = [
             item.strip()
             for item in websocket.headers.get("sec-websocket-protocol", "").split(",")
