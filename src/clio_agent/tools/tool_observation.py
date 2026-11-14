@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
+from clio_agent.tools import recorded_results, view_only_results
+
 logger = logging.getLogger(__name__)
 
 #: The structured-value lane: when a caller binds a list here (a ``run_code`` script's
@@ -125,6 +127,11 @@ def notify_tool_observer(
         sink.append((error, result))
     if observer is None:
         return None
+    # The record keeps a bounded copy: no content of a view-only call (MC-F3), and a
+    # large result as its head and a file (GG-F3). The caller keeps the whole result.
+    args = view_only_results.recorded_arguments(args)
+    if phase == "completed":
+        result = recorded_results.observed(result)
     group = OBSERVATION_GROUP.get()
     if group is not None:  # a background script's nested call: recorded grouped (CT5)
         return group.observe(observer, name, args, phase, error, result)

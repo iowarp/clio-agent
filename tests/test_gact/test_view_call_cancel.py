@@ -125,10 +125,19 @@ def _owner() -> Any:
 
 
 @pytest.mark.asyncio
-async def test_an_abandoned_plain_call_is_cancelled_on_the_wire_and_recorded() -> None:
+async def test_an_abandoned_plain_call_is_cancelled_on_the_wire_and_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It ends terminal without an attention episode (MC-F2): no agent is woken."""
     owner, recorded = _owner()
-    attention: list[tuple[str, str, bool]] = []
-    owner._attention = lambda handle, text, lost=True: attention.append((handle, text, lost))
+    owner.history = object()
+    owner._attention = lambda *_args, **_kwargs: pytest.fail("a view's call woke the agent")
+    settled: list[tuple[Any, str, str]] = []
+    monkeypatch.setattr(
+        connections.view_call_ledger,
+        "settle_cut_off",
+        lambda history, handle, text: settled.append((history, handle, text)),
+    )
     rpc = asyncio.ensure_future(asyncio.sleep(60))
     event = threading.Event()
     event.set()
@@ -138,8 +147,8 @@ async def test_an_abandoned_plain_call_is_cancelled_on_the_wire_and_recorded() -
     assert rpc.cancelled()
     assert [identity for identity, _ in recorded] == ["external-call:task_a"]
     recorded[0][1]()
-    assert attention == [("task_a", view_call_cancel.VIEW_CALL_CANCELLED_TEXT, False)]
-    assert view_call_cancel.VIEW_CALL_CANCELLED in attention[0][1]
+    assert settled == [(owner.history, "task_a", view_call_cancel.VIEW_CALL_CANCELLED_TEXT)]
+    assert settled[0][2].startswith(view_call_cancel.VIEW_CALL_CANCELLED)
 
 
 @pytest.mark.asyncio

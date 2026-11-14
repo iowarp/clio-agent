@@ -28,6 +28,7 @@ from clio_agent.arc.task_types import (
     argument_digest,
 )
 from clio_agent.gact import context, external_task_connections, external_task_inputs
+from clio_agent.gact import view_call_ledger as view_calls
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
 from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
@@ -35,6 +36,7 @@ from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
 from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.tools import recorded_results, view_only_results
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
@@ -118,6 +120,9 @@ class ExternalTasks:
                 await self.history.io.run(self.history.read_content, current.submission)
             )
             if submission.backend.owner != "external_mcp":
+                continue
+            if view_calls.is_view_call(submission):  # the view's, not the agent's (MC-F2)
+                await view_calls.restored_cut_off(self, handle)
                 continue
             if current.backend is None or not current.backend.task_id:
                 await self._record_or_defer(
@@ -303,13 +308,13 @@ class ExternalTasks:
             invocation_id=invocation,
             tool=name,
             argument_digest=argument_digest(public),
-            arguments=public,
+            arguments=dict(view_only_results.recorded_arguments(public)),  # MC-F3
             output_schema=component.output_schema,
             tool_version=getattr(component, "version", None),
             workspace=workspace.root_path,
             permissions=permission_snapshot(self.app, sid),
             confinement={},
-            attribution={"agent": context.active_react_scope()},
+            attribution={"agent": context.active_react_scope(), **view_calls.attribution()},
             execution_limits={},
             backend=host.backend,
         )
@@ -441,7 +446,8 @@ class ExternalTasks:
                         is_error=True,
                     )
                 await self._record_or_defer(
-                    "external-call:" + handle, admitted(partial(self._attention, handle, reason))
+                    "external-call:" + handle,
+                    admitted(view_calls.uncertain(self, submission, handle, reason)),
                 )
                 return accepted_result(
                     {
@@ -452,6 +458,7 @@ class ExternalTasks:
                         "retry_safe": False,
                     }
                 )
+        kept = recorded_results.ledger_reply(reply)  # a bounded record; the reply goes back whole
         accepted = external_task_connections.accepted_call(host, handle) or (
             lazy is None
             and (await self.history.io.run(self.history.task_snapshot, handle)).backend is not None
@@ -463,11 +470,11 @@ class ExternalTasks:
             # already settled, is its one record, written behind it (read_only_outcomes).
             self.outcomes.record(
                 "external-inline:" + handle,
-                partial(confirm, partial(self._inline_updates, reply=reply, at=now()), uuid4().hex),
+                partial(confirm, partial(self._inline_updates, reply=kept, at=now()), uuid4().hex),
                 minted=minted_names(handle, reference),
                 creates=lambda: (
                     (sid, content_reference(sid, description).scope),
-                    (sid, content_reference(sid, self._inline_value(reply)).scope),
+                    (sid, content_reference(sid, self._inline_value(kept)).scope),
                 ),
                 minted_scopes=((sid, content.scope),),  # it embeds the minted reference
                 recorded=partial(self._recorded_behind, host),
@@ -475,7 +482,7 @@ class ExternalTasks:
         elif not accepted:
             await self._record_or_defer(
                 "external-inline:" + handle,
-                partial(self._inline_result, handle, reply),
+                partial(self._inline_result, handle, kept),
                 retire=lambda: self._retire_connection(host),
             )
         if stopped:

@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.runtime import trace
+from clio_agent.tools import spawn_diet_transport
 from clio_agent.tools.mcp_environment_repair import LOCKS_DIRNAME as _ENVIRONMENT_LOCKS_DIRNAME
 
 logger = logging.getLogger(__name__)
@@ -1006,14 +1007,8 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
         return PROVISION_UNSUPPORTED_LAUNCHER
     _write_marker(plan)
     if result is not None:
-        trace.event(
-            "TOOLS",
-            "mcp_prepare_kit_result namespace=%s status=%s environment=%s kit_seconds=%s",
-            namespace,
-            result.get("status"),
-            result.get("environment", ""),
-            result.get("seconds", ""),
-        )
+        # Traced, and a learned spawn plan for another environment is dropped (VF-D9).
+        spawn_diet_transport.record_prepared(namespace, result)
         if result.get("status") == "not_applicable":
             return PROVISION_NOT_APPLICABLE
     trace.event(

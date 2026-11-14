@@ -1,0 +1,11 @@
+station,place,lat,lon,elevation_m,kind,source
+PARD,Paradise,46.786,-121.735,1650,continuous,example
+LGMR,Longmire,46.750,-121.812,840,continuous,example
+SNRS,Sunrise,46.915,-121.643,1950,continuous,example
+CRBR,Carbon River,46.995,-121.917,540,campaign,example
+OHNP,Ohanapecosh,46.733,-121.570,590,campaign,example
+ASHF,Ashford,46.759,-122.032,540,continuous,example
+ENMC,Enumclaw,47.204,-121.991,230,continuous,example
+PKWD,Packwood,46.608,-121.678,320,campaign,example
+GRNW,Greenwater,47.155,-121.637,520,campaign,example
+ELBE,Elbe,46.766,-122.191,370,continuous,example
