@@ -185,6 +185,35 @@ def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], in
     return rows[: offer_listed()], len(rows)
 
 
+def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, Any]]:
+    """The plugins and connectors this conversation could add whose id or name a tool
+    search names: a search only reaches this conversation's own tools, so a miss on
+    "paraview" would otherwise read as "there is no ParaView"."""
+
+    if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
+        return []
+    from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
+    from clio_agent.plugins.store import StoreError  # noqa: PLC0415
+
+    try:
+        rows = offerable(app, session_id)
+    except (StoreError, ConnectorStateError) as exc:  # unreadable stores: no note this search
+        trace.event("TOOLS", "plugin_offer_search_unavailable (%s)", type(exc).__name__)
+        return []
+    asked = query.casefold()
+    return [row for row in rows if row["id"].casefold() in asked or row["name"].casefold() in asked]
+
+
+def search_note(rows: list[dict[str, Any]]) -> str:
+    """What a tool search found to add rather than to call."""
+
+    named = "; ".join(f'{row["name"]} ({row["kind"]}, id "{row["id"]}")' for row in rows)
+    return (
+        f"Not in this conversation, but it can be added: {named}. offer_plugin asks the "
+        "person to add it; its tools join this conversation once they accept."
+    )
+
+
 def _match(app: Any, wanted: str) -> tuple[str, Any]:
     """``("connector", entry)``, ``("plugin", record)`` or ``("", None)`` for ``wanted``."""
 
