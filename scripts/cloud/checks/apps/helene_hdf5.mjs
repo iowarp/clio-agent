@@ -201,7 +201,9 @@ async function lastAnswerAsks(sid) {
   const replies = (exported.messages || []).filter((m) => m.role === "assistant");
   const parts = replies.at(-1)?.parts || [];
   const text = parts.filter((p) => p.type === "text").map((p) => p.text || "").join(" ").trim();
-  return /\?\s*$/.test(text);
+  // A question in the closing paragraph counts, even when a cost note follows it.
+  const closing = text.split(/\n\s*\n/).filter((p) => p.trim()).at(-1) || "";
+  return /\?/.test(closing);
 }
 
 /** Back to the newest message after a long answer, as a person reading along would. */
