@@ -148,6 +148,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         # more than the small spend saved on duplicate questions.
         cache=False,
         **connection,
+        **_engine_kwargs(config),
         **extras,
     )
     # Only the Anthropic Messages API takes images/documents inside a tool result;
@@ -349,10 +350,11 @@ def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
     (iowarp/clio-agent#1413) -- sent every turn to ``/chat/completions`` at
     the host root, a 404. A base saved either way is normalized here.
 
-    The ``anthropic`` engine appends ``/v1/messages`` itself, so it takes the
-    host root: the catalog's ``https://api.anthropic.com/v1`` sent every turn
-    to ``/v1/v1/messages``, a 404 (2026-11-14). The catalog keeps its ``/v1``
-    base for model discovery.
+    The ``anthropic`` provider runs on DSPy's native Messages engine (see
+    :func:`_engine_kwargs`), which POSTs ``<api_base>/messages``: its base is
+    the versioned ``<host>/v1``. A host root saved without ``/v1`` is
+    normalized to it. (LiteLLM's Anthropic route appends ``/v1/messages``
+    itself; it is not used for this provider.)
     """
     if not config.api_base:
         return {}
@@ -361,10 +363,26 @@ def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
     if prefix in {"ollama_chat", "anthropic"}:
         from clio_agent.providers.api_base import native_root  # noqa: PLC0415
 
-        api_base = native_root(api_base)
-        if prefix == "ollama_chat":
-            api_base += "/v1"
+        api_base = native_root(api_base) + "/v1"
     return {"api_base": api_base}
+
+
+def _engine_kwargs(config: LMProviderConfig) -> dict[str, str]:
+    """Pin the engine where DSPy's automatic choice would depend on the environment.
+
+    The ``anthropic`` provider always runs on DSPy's native Messages engine,
+    which streams extended thinking with the signatures Anthropic needs back
+    across tool turns. Left on ``auto``, DSPy moves an ``anthropic/`` model to
+    its LiteLLM engine whenever ``ANTHROPIC_BASE_URL`` or ``ANTHROPIC_API_BASE``
+    is set in the process environment (a Claude Code gateway, for one). CLIO
+    passes its own address, so that variable never chose the endpoint, only the
+    engine; and the LiteLLM engine refuses streamed ``thinking_blocks``, which
+    failed every thinking turn (2026-11-14). Pinned, a setting the native engine
+    cannot carry is refused with a typed error instead of changing engines.
+    """
+    if _resolved_litellm_prefix(config) == "anthropic":
+        return {"engine": "lm15"}
+    return {}
 
 
 def _resolve_model_name(config: LMProviderConfig) -> str:
