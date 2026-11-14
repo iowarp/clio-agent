@@ -494,6 +494,29 @@ def _fallback_skill_keywords(skill_id: str) -> list[str]:
     ] or [skill_id]
 
 
+def _block_scalar(style: str, rows: list[str]) -> str:
+    """A YAML block scalar's text: ``|`` keeps line breaks, ``>`` folds lines into
+    spaces (a blank line stays a break). Indentation and trailing blank lines are
+    dropped; this is format-only reading, no value is changed."""
+
+    lines = [row.strip() for row in rows]
+    while lines and not lines[-1]:
+        lines.pop()
+    if style == "|":
+        return "\n".join(lines)
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line:
+            current.append(line)
+        elif current:
+            paragraphs.append(" ".join(current))
+            current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    return "\n".join(paragraphs)
+
+
 def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Return (frontmatter_dict, body) for a SKILL.md.
 
@@ -501,7 +524,9 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     file. Falls back to ({}, text) when no frontmatter is present.
     Uses a tiny line-by-line parser instead of pulling PyYAML in as a
     dependency: frontmatter shapes we care about are flat key:value plus
-    optional ``- item`` lists, well within hand-rolling distance.
+    optional ``- item`` lists, well within hand-rolling distance, and YAML block
+    scalars (``description: >`` with indented lines), which upstream skills use for a
+    long description (PL-F1: read as ">" before, so the agent saw no description).
     """
 
     lines = text.splitlines()
@@ -516,7 +541,22 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         return {}, text
     meta: dict[str, Any] = {}
     cur_key: Optional[str] = None
+    block: Optional[tuple[str, str, list[str]]] = None  # (key, style, lines)
+
+    def close_block() -> None:
+        if block is not None:
+            key, style, rows = block
+            meta[key] = _block_scalar(style, rows)
+
     for raw in lines[1:end]:
+        if block is not None:
+            # A block scalar (``key: >`` or ``key: |``) runs while lines are indented
+            # or blank; the first line back at column 0 ends it.
+            if not raw.strip() or raw[:1] in (" ", "\t"):
+                block[2].append(raw)
+                continue
+            close_block()
+            block = None
         if raw.startswith("- "):
             if cur_key and isinstance(meta.get(cur_key), list):
                 meta[cur_key].append(raw[2:].strip())
@@ -528,11 +568,15 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         value = value.strip()
         if not key:
             continue
-        if not value:
+        if value[:1] in (">", "|") and value.rstrip("+-0123456789") in (">", "|"):
+            block = (key, value[0], [])
+            cur_key = None
+        elif not value:
             meta[key] = []
             cur_key = key
         else:
             meta[key] = value.strip("\"'")
             cur_key = None
+    close_block()
     body = "\n".join(lines[end + 1 :]).strip()
     return meta, body

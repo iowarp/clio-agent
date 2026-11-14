@@ -76,7 +76,9 @@ export default async function (page, shot) {
   console.error("[check] opening Add plugin");
   await add.click();
   await settle(page, 1500);
-  const group = page.getByRole("group", { name: "Connectors" });
+  // A connector is under Connectors; a plugin that bundles one (ParaView, Home Assistant)
+  // under Plugins (PL-D1): CHECK_GROUP=Plugins.
+  const group = page.getByRole("group", { name: process.env.CHECK_GROUP || "Connectors" });
   report.pickerConnectors = await words(group);
   report.pickerOffers = report.pickerConnectors.includes(name);
   await shot("plugin-picker");

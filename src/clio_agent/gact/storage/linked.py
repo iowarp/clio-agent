@@ -359,6 +359,9 @@ def linked_adapter(
             service.store.put("ndp-selection", selection.id, selection)
         with service.adapter(record) as adapter:
             yield adapter
+    elif provider == "s3":
+        with service.adapter(record) as adapter:
+            yield adapter
     elif provider == "local":
         yield FsspecFolder(
             LocalFileSystem(auto_mkdir=False),
