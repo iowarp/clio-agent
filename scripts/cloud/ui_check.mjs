@@ -8,6 +8,7 @@
 //   node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/runs_view.mjs
 //   node scripts/cloud/ui_check.mjs --label plugins --width 390 --height 844   # phone width
 //   node scripts/cloud/ui_check.mjs --width 390 --height 844 --touch --steps FILE  # touch device
+//   node scripts/cloud/ui_check.mjs --scale 2 --width 1440 --height 1000 --steps FILE  # docs capture
 //
 // --video records the whole session to .cloud-run/shots/<label>.webm (live updates,
 // not just stills).
@@ -39,6 +40,8 @@ const agentUrl = opt("agent", `http://127.0.0.1:${process.env.AGENT_PORT || 8787
 const label = opt("label", "ui");
 const width = Number(opt("width", 1440));
 const height = Number(opt("height", 900));
+// --scale: device pixels per CSS pixel; 2 for screenshots people will read (docs), 1 otherwise.
+const scale = Number(opt("scale", 1));
 const send = opt("send", null);
 const stepsFile = opt("steps", null);
 const settleMs = Number(opt("settle", 60000));
@@ -73,6 +76,7 @@ try {
 }
 const context = await browser.newContext({
   viewport: { width, height },
+  deviceScaleFactor: scale,
   ...(touch ? { hasTouch: true, isMobile: true } : {}),
   ...(video ? { recordVideo: { dir: path.join(root, ".cloud-run/video-tmp"), size: { width, height } } } : {}),
 });

@@ -354,6 +354,7 @@ class FlowContext:
         limit: int | None = None,
         return_when: str = "all",
         return_exceptions: bool = False,
+        merge_state: bool = True,
     ) -> list[Any]:
         """Run calls concurrently (at most ``limit`` at once) and return their results.
 
@@ -364,6 +365,10 @@ class FlowContext:
         member's outcome once all have settled. Successful results' typed
         ``workflow_state`` merges into ``ctx.workflow_state`` in call order, and a
         key two members set differently is recorded in ``ctx.conflicts``.
+        ``merge_state=False`` skips that merge, for a flow that reads each
+        member's ``workflow_state`` from its own result: members that each
+        return the same key (one researcher's ``packet`` per call) are separate
+        answers, not conflicting writes.
         """
 
         if return_when not in {"all", "any"}:
@@ -396,7 +401,8 @@ class FlowContext:
 
             await quiesce_gather(self, items, tasks)
             raise
-        await self.merge_results(results)
+        if merge_state:
+            await self.merge_results(results)
         if not return_exceptions and any(isinstance(r, FlowOutcome) for r in results):
             raise GatherFailed(
                 f"{sum(isinstance(r, FlowOutcome) for r in results)} of {len(results)} gathered "

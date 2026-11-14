@@ -153,7 +153,9 @@ A call returns a `CallResult`:
 ### `ctx.gather`
 
 ```python
-results = await ctx.gather(calls, limit=4, return_when="all", return_exceptions=False)
+results = await ctx.gather(
+    calls, limit=4, return_when="all", return_exceptions=False, merge_state=True
+)
 ```
 
 Runs the calls at once, at most `limit` at a time, and returns their results in call order.
@@ -161,6 +163,7 @@ Runs the calls at once, at most `limit` at a time, and returns their results in 
 - One call failing never cancels the others. With `return_exceptions=False`, once every call has settled the gather raises `GatherFailed`, whose `results` holds each call's result or error.
 - With `return_exceptions=True`, each failed call's place holds its error instead, and you decide.
 - With `return_when="any"`, the gather returns as soon as one call settles, with `None` for the others, which keep running.
+- Each successful result's `workflow_state` merges into `ctx.workflow_state` in call order. When two calls set the same key differently, the later one wins and a `workflow_state_conflict` run event records both. Pass `merge_state=False` when you read each call's `workflow_state` from its own result, for example when every researcher returns its own `packet`.
 
 ### `ctx.as_completed`
 

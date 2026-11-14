@@ -8,7 +8,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
 import modeMenu from '../../../assets/captures/search/deep-mode-menu.png';
-import running from '../../../assets/captures/search/deep-running.png';
+import runGraph from '../../../assets/captures/search/deep-run-graph.png';
 import delivered from '../../../assets/captures/search/deep-delivered.png';
 import report from '../../../assets/captures/search/deep-report.png';
 
@@ -55,27 +55,36 @@ reads while CLIO saves its report. See
 
 ## How a run works
 
-1. **Plan.** A planner splits the question into research directions, up to six by
-   default.
+1. **Plan.** A planner splits the question into research directions and names
+   each one. It sizes the plan to the question: one direction for a simple
+   question, about three for a typical one, more only for genuinely separate
+   parts.
 2. **Research.** One researcher per direction searches the web and the
    literature, reads the sources and reports claims, each with the page it read
    and the exact passage that supports it.
-3. **Verify.** An independent critic checks each claim against the passage it
-   quotes, judges whether the source is authoritative and current, and looks for
-   evidence against it. It returns verified claims, rejected claims and the gaps
-   that remain.
-4. **Close gaps.** Researchers investigate the gaps, and the critic checks the
-   new claims. This repeats up to two more rounds by default.
-5. **Write and review.** A writer drafts the report from verified claims only. A
-   separate reviewer checks the report against its evidence and can send it back
-   once for a correction.
+3. **Check the quotes.** CLIO confirms that each quoted passage is on the page
+   the researcher read. A claim that fails this check is rejected with the
+   reason, unless the critic reads the page and verifies the claim itself.
+4. **Verify.** One critic per researcher, all at once, judges whether each
+   passage supports its claim as stated, whether the source is authoritative
+   and current, and looks for evidence against it. It returns verified and
+   rejected claims, and the questions the direction leaves open.
+5. **Coordinate.** A coordinator reads every verified claim together. It notes
+   where sources agree, where they contradict each other and what follows from
+   several of them, then decides whether the answer needs follow-up research.
+   By default it can send one round of follow-ups, each on a question no
+   researcher has asked yet.
+6. **Write and review.** A writer drafts the report from verified claims only,
+   using the coordinator's findings for the disagreements and the conclusion. A
+   separate reviewer checks the report against its evidence and can send it
+   back once for a correction.
 
 You can follow the researchers and the critic while they work in **Work**; see
 [Follow work in progress](/docs/following-work/).
 
-<Capture client:visible image={await captureImage(running)}
-  alt="A deep research run in progress, with researcher subagents working on separate directions"
-  caption="Each researcher works on one direction. Open one to see its searches and the pages it read." />
+<Capture client:visible image={await captureImage(runGraph)}
+  alt="A finished deep research run in full screen: three named researchers, a check for each, a Coordinate step, then three follow-up researchers, with the report below"
+  caption="Each researcher and its check is named after its direction. Coordinate is where the run chose its follow-ups. Select a step to see it." />
 
 ## Read the report
 
@@ -119,12 +128,23 @@ review notes.
 
 Say what you need in the request, and CLIO sets the run's limits from it:
 
-- **Broader:** ask for more directions for a wide question, up to 12.
-- **Deeper or faster:** ask for more or fewer gap-closing rounds, from none to
-  five.
+- **Narrower:** ask for at most a few directions. Without a limit the planner
+  sizes the run, up to 20 directions.
+- **Deeper or faster:** ask for more or fewer follow-up rounds, from none to
+  five. The default is one, which the coordinator uses only when the evidence
+  needs it.
 - **Lighter on the services:** ask for fewer researchers at a time.
 - **Other models:** name a model for the researchers or for the critic. The
   planner, writer and reviewer use the conversation's model.
+
+## When a run is blocked
+
+The researchers need to search. If you decline a search source, CLIO moves on to
+the next source you allowed. If no search can run at all (every source was
+declined or is off, or the search tools were refused), the run stops with
+**Research was blocked** and says why, instead of researching again. Turn a
+source on in **Settings > Web search**, or allow the search tools for the
+conversation, then ask again.
 
 ## Related
 

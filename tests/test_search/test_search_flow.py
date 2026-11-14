@@ -413,3 +413,33 @@ def test_page_extraction_runs_off_the_event_loop_and_gives_up_when_slow(monkeypa
     assert seen["thread"].startswith("clio-fetch-extract")
     monkeypatch.setattr(fetch, "EXTRACT_TIMEOUT_S", 0.05)
     assert asyncio.run(fetch.extract_page("<html/>", "https://a.org")) is None
+
+
+def test_page_extraction_never_runs_twice_at_once(monkeypatch) -> None:
+    """trafilatura's lxml extraction crashed the server when two pages were extracted at
+    the same time (2026-11-14, segfault with both extractor threads inside it)."""
+    import threading
+    import time
+
+    state = {"now": 0, "most": 0}
+    lock = threading.Lock()
+
+    def extractor(document: str, url: str) -> tuple[str, str]:
+        with lock:
+            state["now"] += 1
+            state["most"] = max(state["most"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return document, url
+
+    monkeypatch.setattr(fetch, "html_to_markdown", extractor)
+
+    async def many() -> list[tuple[str, str] | None]:
+        return await asyncio.gather(
+            *(fetch.extract_page(f"page {n}", "https://e.org") for n in range(6))
+        )
+
+    results = asyncio.run(many())
+    assert [row[0] for row in results if row] == [f"page {n}" for n in range(6)]
+    assert state["most"] == 1

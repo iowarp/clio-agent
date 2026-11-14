@@ -115,6 +115,58 @@ def test_ollama_connection_uses_the_openai_compatible_v1_base(saved: str) -> Non
     assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:11434/v1"}
 
 
+@pytest.mark.parametrize("saved", ["https://api.anthropic.com/v1", "https://api.anthropic.com/"])
+def test_anthropic_connection_uses_the_versioned_base(saved: str) -> None:
+    """The native Messages engine POSTs ``<base>/messages``: the host root was a 404."""
+    config = LMProviderConfig(
+        provider="anthropic",  # type: ignore[arg-type]
+        provider_id="anthropic",
+        model="claude-sonnet-5-5",
+        api_base=saved,
+        api_key="sk-ant-test",
+    )
+    assert _connection_kwargs(config) == {"api_base": "https://api.anthropic.com/v1"}
+
+
+@pytest.mark.parametrize("variable", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_BASE"])
+def test_anthropic_runs_on_the_native_engine_whatever_the_environment(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    """A gateway variable once moved Anthropic to LiteLLM, which refuses streamed thinking."""
+    from dspy.clients.backend_selection import select_backend  # noqa: PLC0415
+
+    from clio_agent.lm.factory import create_lm  # noqa: PLC0415
+
+    monkeypatch.setenv(variable, "http://gateway.invalid")
+    config = LMProviderConfig(
+        provider="anthropic",  # type: ignore[arg-type]
+        provider_id="anthropic",
+        model="claude-sonnet-5-5",
+        api_base="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
+        thinking_level="medium",
+    )
+    lm = create_lm(config)
+    selection = select_backend(lm, {})
+    assert lm._engine_spec == "lm15"
+    assert selection.native
+    assert selection.resolution.provider == "anthropic"
+    assert lm.kwargs["api_base"] == "https://api.anthropic.com/v1"
+
+
+def test_other_providers_keep_the_automatic_engine() -> None:
+    from clio_agent.lm.factory import _engine_kwargs  # noqa: PLC0415
+
+    config = LMProviderConfig(
+        provider="openai",  # type: ignore[arg-type]
+        provider_id="openai",
+        model="gpt-5",
+        api_base="https://api.openai.com/v1",
+        api_key="sk-test",
+    )
+    assert _engine_kwargs(config) == {}
+
+
 def test_ollama_connection_leaves_v1_suffix_for_non_ollama_dialects() -> None:
     """Only the resolved ``ollama_chat`` prefix gets the /v1 strip."""
     config = LMProviderConfig(
