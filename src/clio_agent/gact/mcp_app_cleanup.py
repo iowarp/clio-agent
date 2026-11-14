@@ -118,7 +118,7 @@ async def cleanup_session_mcp_apps(app: "FastAPI", session_id: str) -> None:
     for record in registry.records_for_session(session_id):
         try:
             await _cleanup_record(app, record)
-        except Exception as exc:  # noqa: BLE001 - attempt every owned App cleanup
+        except Exception as exc:  # noqa: BLE001 - forwards: into the raised RuntimeError
             failures.append(f"{record.app_instance_id}: {exc}")
         else:
             registry.remove(record.app_instance_id)

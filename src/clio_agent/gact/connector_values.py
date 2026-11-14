@@ -154,7 +154,7 @@ def move_session_fleet(app: Any, sid: str, found: Entry, *, move_turn: bool) -> 
         return {"status": "not_mounted", "tool_count": None, "reason": None}
     try:
         tools = ensure_namespace(found.id, spec)
-    except Exception as exc:  # noqa: BLE001 - typed: the conversation's state says why
+    except Exception as exc:  # noqa: BLE001 - forwards: the unreachable state's reason
         declared = {"command": spec.command, "url": spec.url}
         reason = service.unreachable_reason(found, declared, f"{type(exc).__name__}: {exc}")
         trace.event("TOOLS", "connector_unreachable connector=%s session=%s", found.id, sid)
