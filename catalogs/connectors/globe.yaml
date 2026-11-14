@@ -7,6 +7,7 @@
 # ships no mark of its own, so the entry has no logo (apps ledger, "More connectors").
 - id: globe
   name: 3D globe
+  group: Earth science
   description: Show regions, places and data footprints on an interactive 3D globe with OpenStreetMap, and find places by name
   server:
     command: npx

@@ -277,6 +277,10 @@ KEY_NOTES: dict[str, str] = {
         "More folders of connector entries, separated like PATH, read after the shipped "
         "catalogs/connectors; a later folder cannot replace an entry. Set it for test fixtures."
     ),
+    "connectors.derive_kit": (
+        "Every MCP server of the clio-kit CLIO pins is a connector in Discover, derived from "
+        "that clio-kit's catalogue. Set false to list only the hand-written catalog entries."
+    ),
     "plugins.default_marketplace": (
         "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "
         "marketplace, else the pinned default URL. Point it at a mirror or an offline copy."
@@ -857,6 +861,10 @@ KEY_NOTES: dict[str, str] = {
         "Byte bound on a tool result's structured content in the transcript and trace (a "
         "script still receives the whole value); larger payloads are recorded as an envelope "
         "with reason structured_content_over_wire_cap."
+    ),
+    "limits.tool_result_record_bytes": (
+        "Largest tool result, in JSON bytes, a call's record keeps inline (at least 1024); "
+        "past it the record keeps the result's head and the whole result in a file."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "

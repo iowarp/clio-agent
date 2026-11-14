@@ -370,8 +370,10 @@ def _main() -> None:
         "--prepare-tool-servers",
         action="store_true",
         help=(
-            "Build the environments of the clio-kit tool servers the installed agents carry. "
-            f"Waits for the installer's clio-kit when {KIT_READY_ENV} names its signal file."
+            "Opt-in, for offline or air-gapped installs: also build the environments of the "
+            "clio-kit tool servers the installed agents carry. Off by default: CLIO asks on "
+            "agent load and downloads each when the person enables it. Waits for the "
+            f"installer's clio-kit when {KIT_READY_ENV} names its signal file."
         ),
     )
     args = parser.parse_args()

@@ -121,8 +121,11 @@ def offerable(app: Any, session_id: str) -> list[Any]:
     here = conversation_connectors(app, session_id)
     if here is None:
         return []
+    on = {cid for cid, choice in state.choices().items() if choice.enabled}
+    # A plugin of the agent that declares a connector's clio-kit server keeps its skills
+    # while the connector is off, but not the server (LZ-D8): still offerable to enable.
     return sorted(
-        (found for cid, found in state.all_entries().items() if cid not in here),
+        (found for cid, found in state.all_entries().items() if cid not in here or cid not in on),
         key=lambda found: found.name.casefold(),
     )
 

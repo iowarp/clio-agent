@@ -154,6 +154,10 @@ def pin_session_agent(
     app.state.sessions.update(
         session_id, metadata_patch=patch, agent={"id": resolution.agent["id"]}
     )
+    # A new or switched agent whose plugins need what is not ready asks once (LZ-D2).
+    from clio_agent.gact.agent_needs import ensure_card_safely  # noqa: PLC0415
+
+    ensure_card_safely(app, session_id, resolution)
     return resolution
 
 

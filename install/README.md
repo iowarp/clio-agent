@@ -72,6 +72,17 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
   only for that recorded one and removes `uv-python` with the prefix. Pythons uv
   installs for CLIO are never registered with the Python launcher (`HKCU\Software\Python`)
   or given a `python3.x.exe` on PATH.
+- **No tool server is built during the install.** The launcher is installed, and the
+  marketplace (text only) is installed with the managed packages, but no clio-kit
+  server environment is downloaded: that used to take minutes and thousands of files
+  on a cold cache. Instead, when you start a conversation with an agent whose plugins
+  need a connector or server that is not enabled, CLIO asks once, in the conversation,
+  whether to enable them; enabling downloads each one then, with its progress shown in
+  words. **Prepare servers now for offline use:** for an offline or air-gapped
+  machine, pass `--prepare-tool-servers` to `install.sh` (`-PrepareToolServers` to
+  `install.ps1`) to also build the servers the installed agents carry, as before.
+  `python -m clio_agent.runtime.install_tool_servers` does the same later, from the
+  installed environment.
 
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, opens Web, and manages the server

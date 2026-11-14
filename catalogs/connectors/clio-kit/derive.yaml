@@ -1,0 +1,34 @@
+# Connectors derived from the clio-kit CLIO pins (apps ledger, "Lazy install, ask on
+# agent load (LZ)", LZ-D7). Every MCP server of the pinned clio-kit's shipped catalogue
+# (clio_kit/_components.json) becomes a connector: its id is the server name, its
+# description the server package's own, its command `clio-kit mcp-server <name>`. A
+# hand-written entry in the folder above with the same id wins (ParaView, Geo), taking
+# only the group from here. This file holds what the catalogue cannot say: a readable
+# name where the id read as words is wrong, and a group label for each clio-kit
+# workflow package, whose dependencies place every server in a domain.
+names:
+  adios: ADIOS2
+  arxiv: arXiv
+  chronolog: ChronoLog
+  darshan: Darshan
+  hdf5: HDF5
+  jarvis: Jarvis
+  lmod: Lmod
+  ndp: National Data Platform
+  node-hardware: Node hardware
+  pandas: pandas
+  parallel-sort: Log sort
+  paraview: ParaView
+  parquet: Parquet
+  scientific-catalog: Scientific catalog
+  slurm: Slurm
+  spack: Spack
+  web: Web fetch
+# In this order: a server in two workflows takes the first group listed.
+groups:
+  clio-scientific-io: Data formats
+  clio-analysis: Analysis and plots
+  clio-geoscience: Earth science
+  clio-hpc: HPC
+  clio-performance: Performance
+  clio-research: Research

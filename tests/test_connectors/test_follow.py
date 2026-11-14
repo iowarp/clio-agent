@@ -75,21 +75,34 @@ def test_a_delta_drops_the_plugin_of_a_connector_that_is_off_with_a_typed_reason
 
 def test_drifted_says_when_a_pin_no_longer_matches_the_connectors(fixture_catalog: Path) -> None:
     class Pin:
-        def __init__(self, plugins: list[dict], removed: list[dict]) -> None:
-            self.plugins, self.removed = plugins, removed
+        def __init__(
+            self, servers: dict, removed: list[dict], diagnostics: list[dict] | None = None
+        ) -> None:
+            self.mcp_servers, self.removed = servers, removed
+            self.plugins: list[dict] = []
+            self.diagnostics = diagnostics or []
 
-    plain = {"id": "connector-fixture-plain", "follows": "fixture-plain"}
+    plain = {
+        "fixture-plain": {
+            "plugin": "connector-fixture-plain",
+            "spec": {"type": "clio-connection", "connection": "fixture-plain"},
+        }
+    }
     dropped = {
         "id": "connector-fixture-plain",
         "reason": "connector_off",
         "because": "fixture-plain",
     }
-    assert not follow.drifted(Pin([{"id": "other", "follows": ""}], []))
-    assert follow.drifted(Pin([plain], []))  # its connector is off now
-    assert not follow.drifted(Pin([], [dropped]))
+    left_out = {"code": "connector_off", "server": "fixture-plain", "because": "fixture-plain"}
+    other = {"other": {"plugin": "other", "spec": {"command": "x"}}}
+    assert not follow.drifted(Pin(other, []))
+    assert follow.drifted(Pin(plain, []))  # its connector is off now
+    assert not follow.drifted(Pin({}, [dropped]))
+    assert not follow.drifted(Pin({}, [], [left_out]))
     state.update("fixture-plain", enabled=True)
-    assert not follow.drifted(Pin([plain], []))
-    assert follow.drifted(Pin([], [dropped]))  # it can come back
+    assert not follow.drifted(Pin(plain, []))
+    assert follow.drifted(Pin({}, [dropped]))  # it can come back
+    assert follow.drifted(Pin({}, [], [left_out]))  # its server can come back (LZ-D8)
 
 
 def test_enabling_keeps_no_scope_and_drops_an_older_one(fixture_catalog: Path) -> None:

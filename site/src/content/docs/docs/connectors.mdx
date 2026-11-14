@@ -17,6 +17,7 @@ import pluginAnswered from '../../../assets/captures/connectors/offer-plugin-ans
 import addByCommand from '../../../assets/captures/connectors/add-by-command.png';
 import marketplaces from '../../../assets/captures/connectors/marketplaces.png';
 import earthdata from '../../../assets/captures/connectors/earthdata-results.png';
+import agentLoad from '../../../assets/captures/connectors/agent-load-card.png';
 
 <Aside type="note" title="Development build">
 Connectors are in the development build. v0.9.6.6 does not have them. See
@@ -49,20 +50,26 @@ does not use ParaView never carries ParaView's tools.
 
 1. **Browse.** Open **Settings → Extensions and connectors**, then **Discover**.
    **Plugins and connectors to enable** lists what CLIO's catalog offers and you have
-   not enabled yet, each with a line about what it is and what it still needs from
-   you. **Plugins** or **Connectors** above the list narrows it to one kind. Below,
-   **Suggested** lets you bring your own plugin, skills or marketplace, and the public
-   MCP Registry lists more MCP servers you can install.
+   not enabled yet, grouped by domain (**Data formats**, **HPC**, **Earth science** and
+   so on), each with a line about what it is and what it still needs from you. Every
+   scientific server of the clio-kit CLIO ships is in it: one that a plugin brings with
+   skills is listed once, as that plugin, and every other one as a connector. Those read
+   **Downloads its tools when you enable it**: nothing of theirs is installed until
+   then. **Plugins** or **Connectors** above the list narrows it to one kind, and the
+   search box finds one by name. Below, **Suggested** lets you bring your own plugin,
+   skills or marketplace, and the public MCP Registry lists more MCP servers you can
+   install.
 
    <Capture client:visible image={await captureImage(discover)}
-     alt="Settings, Extensions and connectors, Discover: under Plugins and connectors to enable, Burette, NASA Earthdata, Geo, 3D globe, PDF viewer and SPICE circuit simulation as connectors with 1 MCP server, and Home Assistant and ParaView as plugins with their skills, each with its description and Not enabled; Home Assistant also says it needs your Home Assistant address and long-lived access token"
-     caption="The catalog in Discover. Nothing in it is enabled until you enable it."
+     alt="Settings, Extensions and connectors, Discover: under Plugins and connectors to enable, grouped by domain: Analysis and plots with ParaView (Plugin, 1 skill, 1 MCP server), pandas and Plot (Connector, 1 MCP server); Chemistry and biology with Burette; Data formats with ADIOS2 (Plugin), Compression (Connector) and the start of Earth science; the clio-kit entries say Downloads its tools when you enable it, and each says Not enabled"
+     caption="The catalog in Discover, grouped by domain. Nothing in it is enabled until you enable it."
    />
 
 2. **Enable it once.** Choose one. Its card opens beside the list. Fill in any rows
    under **Setup**, then under **In conversations** choose **Enable**. CLIO installs
-   it, starts it and lists its tools; the card reads **Ready** with the number of
-   tools. Enabling puts it in no conversation.
+   it (for a clio-kit server, it downloads the server's tools first), starts it and
+   lists its tools; the card reads **Starting…** meanwhile, then **Ready** with the
+   number of tools. Enabling puts it in no conversation.
 
    <Capture client:visible image={await captureImage(connectorCard)}
      alt="The Geo connector's card beside the Discover list: Ready, 12 tools, Kind Connector (an MCP server), It needs nothing from you, and In conversations: Enabled, with how to add it to a conversation and a Turn off button"
@@ -98,6 +105,30 @@ it there to take it out of this conversation.
 To have a connector or plugin in every new conversation of an agent, add it to that
 agent: open the agent in **Settings → Agents**, or save a conversation's setup as an
 agent.
+
+## When an agent needs what is not enabled
+
+Installing CLIO downloads no connector or tool server. When you start a conversation
+with an agent, or switch to one, whose plugins use connectors that are not enabled or
+not set up yet, the conversation asks once, before your first message:
+
+<Capture client:visible image={await captureImage(agentLoad)}
+  alt="A new EarthScope conversation: the card reads EarthScope uses Geo and National Data Platform, which are not enabled. Enable them?, then Geo, Connector, downloads its tools, and National Data Platform, Plugin, downloads its tools, then Not now: EarthScope works without them and can offer them later, and Enable all, Not now and Settings (2)"
+  caption="An agent's first conversation asks before anything is downloaded."
+/>
+
+Each row names a connector, or a plugin that brings one with skills, and what enabling
+it does: downloads its tools, turns it on, needs a value from you, or asks you to sign
+in when it is first used. A required value that is missing shows on the card.
+
+- **Enable all** downloads and turns them on in the background. Each row then says
+  where it is (**Downloading its tools…**, **Turning it on…**, **Ready, 10 tools**, or
+  why it could not be enabled, with **Try again**), and the agent has them from its
+  next step. **Hide** keeps it going while you work; **Close** puts the card away.
+- **Settings** leaves one out, and holds the optional values each one takes.
+- **Not now** leaves the agent working without them, and is remembered for that
+  agent in this workspace, so its next conversations do not ask again. The agent can
+  still offer one when a request needs it (next section), and Discover lists them.
 
 ## When the agent offers a connector or plugin
 

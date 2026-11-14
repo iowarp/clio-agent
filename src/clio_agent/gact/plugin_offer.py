@@ -133,6 +133,7 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
             "name": found.name,
             "summary": summary(found.description),
             "enabled": state.choice(found.id).enabled,
+            "kit": bool(found.kit),
         }
         for found in connectors(app, session_id)
     ]
@@ -161,11 +162,30 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
         for record in library(app)
         if record.id not in here
     ]
-    rows.sort(key=lambda row: row["name"].casefold())
     plugins.sort(
         key=lambda row: (order.get(row["marketplace"], len(order)), row["name"].casefold())
     )
-    return rows + plugins
+    # Under the cap (LZ-D10): the connectors that are on, then the catalog's own entries
+    # and the clio-kit servers a plugin of the person's library brings with skills, then
+    # the plugins (CF-D4's order), then the remaining clio-kit servers, which are many.
+    followed = _followed(app)
+    first = [row for row in rows if row["enabled"] or not row["kit"] or row["id"] in followed]
+    rest = [row for row in rows if row not in first]
+    first.sort(key=lambda row: (not row["enabled"], row["name"].casefold()))
+    rest.sort(key=lambda row: row["name"].casefold())
+    return first + plugins + rest
+
+
+def _followed(app: Any) -> set[str]:
+    """The connectors an installed plugin that brings skills follows."""
+
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+
+    return {
+        record.follows
+        for record in plugin_service(app).store.records()
+        if record.follows and record.skills
+    }
 
 
 def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int]:

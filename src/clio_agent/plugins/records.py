@@ -212,6 +212,14 @@ class PluginRecord:
     #: in plugin pickers.
     follows: str = ""
 
+    def __post_init__(self) -> None:
+        # A plugin whose one server is a known clio-kit server follows that server's
+        # connector (LZ-D8): shown once with it, mounted only while it is on.
+        if not self.follows and self.mcp_servers:
+            from clio_agent.connectors.kit_entries import kit_follow  # noqa: PLC0415
+
+            object.__setattr__(self, "follows", kit_follow(self.mcp_servers))
+
     @property
     def errors(self) -> list[Diagnostic]:
         return [row for row in self.diagnostics if row.severity == "error"]

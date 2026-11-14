@@ -375,6 +375,12 @@ limits.shell_max_timeout_s: 0.0
 # the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
+# CLIO_TOOL_RESULT_RECORD_BYTES  (int)  <- src/clio_agent/tools/recorded_results.py
+# Largest tool result, in JSON bytes, a call's record keeps inline (at least
+# 1024); past it the record keeps the result's head and the whole result in
+# a file.
+limits.tool_result_record_bytes: 524288
+
 # CLIO_TOOL_STRUCTURED_BYTES  (int)  <- src/clio_agent/gact/structured_wire_bound.py
 # Byte bound on a tool result's structured content in the transcript and
 # trace (a script still receives the whole value); larger payloads are
@@ -449,6 +455,12 @@ agents.react_extract.enabled: true
 # shipped catalogs/connectors; a later folder cannot replace an entry. Set
 # it for test fixtures.
 # connectors.catalog_dirs:  # default unset; resolved in code
+
+# CLIO_CONNECTOR_DERIVE_KIT  (bool)  <- src/clio_agent/connectors/entries.py
+# Every MCP server of the clio-kit CLIO pins is a connector in Discover,
+# derived from that clio-kit's catalogue. Set false to list only the hand-
+# written catalog entries.
+connectors.derive_kit: true
 
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
