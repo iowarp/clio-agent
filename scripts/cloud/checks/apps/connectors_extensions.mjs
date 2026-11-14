@@ -20,8 +20,9 @@ async function rows(page) {
     .evaluateAll((items) =>
       items
         .map((item) => item.innerText.replace(/\s+/gu, " ").trim())
-        // The connector rows; the plugins after them are only counted.
-        .filter((text) => text.includes("Connector")),
+        // The connector rows: a catalog one reads "Plugin … 1 MCP server" (PL-D1), one
+        // added by address "Connector"; the library's plugins after them are only counted.
+        .filter((text) => text.includes("MCP server") || text.includes("Connector")),
     );
 }
 

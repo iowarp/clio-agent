@@ -258,3 +258,27 @@ def test_marketplace_clio_data_plugin_skills_resolve(tmp_path: Path) -> None:
         assert res.skill is not None and res.skill.scope == "plugin"
         assert res.skill.source == "clio-data"
         assert read_skill_body(res.skill).strip(), f"{skill_id} body is empty"
+
+
+def test_a_block_scalar_description_is_read_as_its_text() -> None:
+    """PL-F1: an upstream skill's ``description: >`` was listed to the agent as ">"."""
+
+    from clio_agent.gact.skills import _parse_skill_frontmatter
+
+    folded = (
+        "---\nname: hub\ndescription: >\n  Hub best practices. Load first.\n\n"
+        '  TRIGGER WHEN:\n  - editing automations\nmetadata:\n  version: "56"\n---\n# Body\n'
+    )
+    meta, body = _parse_skill_frontmatter(folded)
+    assert meta["name"] == "hub"
+    assert (
+        meta["description"]
+        == "Hub best practices. Load first.\nTRIGGER WHEN: - editing automations"
+    )
+    assert body == "# Body"
+    literal = "---\ndescription: |-\n  one\n  two\nkeywords:\n- a\n---\n"
+    assert _parse_skill_frontmatter(literal)[0] == {"description": "one\ntwo", "keywords": ["a"]}
+    # A plain value that only starts with ">" stays as written.
+    assert _parse_skill_frontmatter("---\ndescription: >= 2 runs\n---\n")[0] == {
+        "description": ">= 2 runs"
+    }
