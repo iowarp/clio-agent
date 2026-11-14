@@ -15,10 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from clio_agent.arc import clio_core_retry as retry
+from clio_agent.arc.lane_generations import LaneReplaceError
 from clio_agent.gact import core_write_refusal
 from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
 from clio_agent.gact.session_records import WRITE_FAILED_REASON
 from clio_agent.gact.task_history import RecordingUnconfirmed
+from clio_agent.gact.transcript_file import install_transcript_error_handler
 
 ORIGIN = "http://127.0.0.1:4191"
 
@@ -43,6 +45,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, list[s
     app = FastAPI()
     install_error_envelope(app)
     install_typed_error_handlers(app)
+    install_transcript_error_handler(app)
     app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN])
 
     @app.post("/v1/sessions/{sid}/messages")
@@ -52,6 +55,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, list[s
     @app.post("/v1/sessions")
     async def create() -> None:
         raise TimeoutError(f"{WRITE_FAILED_REASON}: a session record did not land")
+
+    @app.post("/v1/sessions/{sid}/lane")
+    async def lane(sid: str) -> None:
+        refused = _Refused("clio-core AsyncPutBlob('x') returned code 12")
+        try:
+            raise RuntimeError("transcript_ingest_failed") from refused
+        except RuntimeError as ingest:
+            raise LaneReplaceError(sid, "_events/m", "write", 0, 1, ingest) from ingest
 
     @app.post("/v1/other")
     async def other() -> None:
@@ -117,3 +128,15 @@ def test_the_last_lost_write_outlives_a_later_success() -> None:
     lost = retry.last_lost_put_write_ever()
     assert lost is not None and lost.native_code == 12
     assert lost.to_details()["native_code"] == 12
+
+
+def test_a_change_the_full_store_did_not_take_is_typed_after_a_restart(client) -> None:
+    """After a restart nothing is on record yet: the refused write in the cause is enough."""
+    test_client, events = client
+    response = test_client.post("/v1/sessions/sess_a/lane")
+    assert response.status_code == 503
+    assert response.json()["error"]["error"] == "lane_replace_failed"  # no lost write on record
+    _lose_a_write()
+    response = test_client.post("/v1/sessions/sess_a/lane")
+    assert response.json()["error"]["error"] == core_write_refusal.CORE_WRITES_REFUSED
+    assert len(events) == 1

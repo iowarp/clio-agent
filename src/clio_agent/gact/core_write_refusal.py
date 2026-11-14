@@ -4,7 +4,8 @@ When clio-core's store is full (``AsyncPutBlob`` returns code 12) a write is los
 (:mod:`clio_agent.arc.clio_core_retry`) and the task history waits to reconcile it
 (``RecordingUnconfirmed``). Every message the person sent then answered
 ``503 core_recording_unconfirmed`` ("Conversation history is recovering. Try again when
-the service is ready."), which never became true while the store stayed full, and a new
+the service is ready.") or, after a restart, ``503 lane_replace_failed`` ("Retry
+shortly."), neither of which became true while the store stayed full, and a new
 conversation timed out after 120 s with a bare 500. The person saw no error at all.
 
 While a lost write is on record, those refusals answer ``503`` with the typed error
@@ -21,7 +22,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
-from clio_agent.arc.clio_core_retry import last_lost_put_write_ever
+from clio_agent.arc.clio_core_retry import last_lost_put_write, last_lost_put_write_ever
 from clio_agent.gact.session_records import WRITE_FAILED_REASON
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime import trace
@@ -84,6 +85,27 @@ def recording_refusal(request: Any) -> JSONResponse | None:
     return _response(info) if info is not None else None
 
 
+def _refused_write_in(exc: BaseException) -> bool:
+    """Whether ``exc`` was caused by clio-core refusing a write (its native code, chained)."""
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(getattr(current, "native_code", None), int):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def write_refusal(exc: BaseException, request: Any) -> JSONResponse | None:
+    """The answer to a change clio-core did not store, when a refused write caused it."""
+
+    if not (_refused_write_in(exc) or last_lost_put_write() is not None):
+        return None
+    return recording_refusal(request)
+
+
 def unhandled_refusal(exc: BaseException, scope: Any) -> JSONResponse | None:
     """The answer to a session record that never landed while writes are being lost."""
 
@@ -93,4 +115,4 @@ def unhandled_refusal(exc: BaseException, scope: Any) -> JSONResponse | None:
     return _response(info) if info is not None else None
 
 
-__all__ = ["CORE_WRITES_REFUSED", "recording_refusal", "unhandled_refusal"]
+__all__ = ["CORE_WRITES_REFUSED", "recording_refusal", "unhandled_refusal", "write_refusal"]
