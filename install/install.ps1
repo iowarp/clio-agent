@@ -1719,6 +1719,9 @@ function Get-ClioKitBusy($Dirs) {
     if (-not $Dirs) { return $null }
     $envDir = [IO.Path]::GetFullPath((Join-Path $Dirs.Tool 'clio-kit')) + '\'
     $shim = if ($Dirs.Bin) { [IO.Path]::GetFullPath((Join-Path $Dirs.Bin 'clio-kit.exe')) } else { '' }
+    # No clio-kit is installed, so none can run: reading every process's path takes seconds
+    # while the install keeps the machine busy.
+    if (-not (Test-Path -LiteralPath $envDir) -and -not ($shim -and (Test-Path -LiteralPath $shim))) { return $null }
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $_.Path -and ($_.Path.StartsWith($envDir, [StringComparison]::OrdinalIgnoreCase) -or $_.Path -ieq $shim)
     } | Select-Object -First 1
