@@ -4,10 +4,14 @@
 //
 //   VF_SESSION  "<workspace id>/<session id>"
 //   VF_CARD     text of the dashboard's card in the transcript (a regular expression)
+//   VF_ASK      a plain request sent with the dashboard open (e.g. asking the agent to
+//               check it, which captures it); the step waits for the turn to end
 // A capture (capture_a2ui_surface, a region comment) draws the surface with every live
 // height frozen; "AsCaptured" measures that layout too (MC-F5 showed only there).
 // Prints one JSON line: per width, each view's box, its cell's, the cells it covers and
 // whether it spills, and shoots each width.
+import { send, waitIdle } from "./_lib.mjs";
+
 const sleep = (page, ms) => page.waitForTimeout(ms);
 
 /**
@@ -66,9 +70,16 @@ export default async function (page, shot) {
   const card = page.getByText(new RegExp(process.env.VF_CARD || "dashboard", "i")).filter({ visible: true });
   await card.last().click({ timeout: 30000 });
   await sleep(page, 20000);
+  const log = [];
+  if (process.env.VF_ASK) {
+    await send(page, process.env.VF_ASK);
+    await sleep(page, 5000);
+    await waitIdle(page, session, log, 12);
+    await shot("asked");
+  }
   const docked = await measure(page);
   await shot("docked");
-  const results = { docked, dockedAsCaptured: await measureFrozen(page), viewport: page.viewportSize() };
+  const results = { log, docked, dockedAsCaptured: await measureFrozen(page), viewport: page.viewportSize() };
   if (page.viewportSize().width > 800) {
     const toggle = page.getByRole("button", { name: "Toggle Sidebar" }).first();
     if (await page.getByRole("button", { name: "New conversation" }).first().isVisible().catch(() => false))
