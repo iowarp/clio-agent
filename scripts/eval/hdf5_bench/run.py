@@ -120,7 +120,8 @@ def _wait(client: GactClient, sid: str, timeout_s: float) -> str:
 
 
 def _answer(text: str) -> list[dict[str, Any]] | None:
-    blocks = re.findall(r"```(?:json)?\s*(\[.*?\])\s*```", text, flags=re.S)
+    # The answer block may end the reply without its closing fence.
+    blocks = re.findall(r"```(?:json)?\s*(\[.*?\])\s*(?:```|$)", text, flags=re.S)
     for block in reversed(blocks):
         try:
             rows = json.loads(block)
@@ -171,10 +172,9 @@ def io_time(session: dict[str, Any]) -> dict[str, float]:
     calls = session.get("tool_calls") or []
     top = [c for c in calls if not c.get("parent_call_id")]
     nested = [c for c in calls if c.get("parent_call_id")]
+    # Seconds in; metrics._union_ms returns milliseconds.
     spans = [
-        (c["started_at"] * 1000.0, c["ended_at"] * 1000.0)
-        for c in top
-        if c.get("started_at") and c.get("ended_at")
+        (c["started_at"], c["ended_at"]) for c in top if c.get("started_at") and c.get("ended_at")
     ]
     return {
         "tool_ms": round(metrics._union_ms(spans), 1),
