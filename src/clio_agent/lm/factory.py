@@ -139,7 +139,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         model=model_name,
         # A keyless local server has no credential: an empty key is omitted, never sent.
         **({"api_key": config.api_key} if config.api_key else {}),
-        max_tokens=config.max_tokens or None,
+        max_tokens=_output_cap(config),
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
         # always lands in dspy.settings.usage_tracker (cache_hits
@@ -365,6 +365,40 @@ def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
 
         api_base = native_root(api_base) + "/v1"
     return {"api_base": api_base}
+
+
+def _output_cap(config: LMProviderConfig) -> int | None:
+    """The ``max_tokens`` to send, or ``None`` to send no cap.
+
+    CLIO sends no output cap unless one is configured (``lm.max_tokens``). The
+    Anthropic Messages API requires one, though, and DSPy's engine then fills in
+    its own class default (16,384 tokens, thinking included), a cap nobody chose:
+    long researcher replies were cut off (``finish_reason=length``) on
+    claude-sonnet-5-5, whose real output limit is 128,000 (2026-11-14). For that
+    API an unset cap is the model's discovered output limit instead. When no
+    catalog knows the model, the engine's default applies and is logged.
+    """
+    if config.max_tokens:
+        return config.max_tokens
+    if _resolved_litellm_prefix(config) != "anthropic":
+        return None
+    from clio_agent.config import resolve_effective_max_tokens  # noqa: PLC0415
+    from clio_agent.providers.handshake.sources import resolve_output_limit  # noqa: PLC0415
+
+    limit = resolve_output_limit(config.model, "anthropic")
+    if not limit:
+        logger.warning(
+            "output_cap_unknown provider=anthropic model=%s reason=no_catalog_output_limit "
+            "detail=the Messages API requires max_tokens; the engine default applies",
+            config.model,
+        )
+        return None
+    return resolve_effective_max_tokens(
+        user_max_tokens=0,
+        provider_default=limit,
+        output_limit=limit,
+        context_window=getattr(config, "context_window", None),
+    )
 
 
 def _engine_kwargs(config: LMProviderConfig) -> dict[str, str]:

@@ -154,6 +154,56 @@ def test_anthropic_runs_on_the_native_engine_whatever_the_environment(
     assert lm.kwargs["api_base"] == "https://api.anthropic.com/v1"
 
 
+def _anthropic(max_tokens: int = 0) -> LMProviderConfig:
+    return LMProviderConfig(
+        provider="anthropic",  # type: ignore[arg-type]
+        provider_id="anthropic",
+        model="claude-sonnet-5-5",
+        api_base="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
+        max_tokens=max_tokens,
+    )
+
+
+def test_anthropic_sends_the_models_output_limit_when_no_cap_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Messages API requires a cap; the engine's 16,384 default cut long replies off."""
+    from clio_agent.lm import factory  # noqa: PLC0415
+    from clio_agent.providers.handshake import sources  # noqa: PLC0415
+
+    monkeypatch.setattr(sources, "resolve_output_limit", lambda model, kind: 128000)
+    assert factory._output_cap(_anthropic()) == 128000
+    assert factory.create_lm(_anthropic()).kwargs["max_tokens"] == 128000
+
+
+def test_a_configured_cap_wins_and_an_unknown_model_keeps_the_engine_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from clio_agent.lm import factory  # noqa: PLC0415
+    from clio_agent.providers.handshake import sources  # noqa: PLC0415
+
+    monkeypatch.setattr(sources, "resolve_output_limit", lambda model, kind: 128000)
+    assert factory._output_cap(_anthropic(max_tokens=8000)) == 8000
+    monkeypatch.setattr(sources, "resolve_output_limit", lambda model, kind: None)
+    with caplog.at_level("WARNING", logger="clio_agent.lm.factory"):
+        assert factory._output_cap(_anthropic()) is None
+    assert "output_cap_unknown" in caplog.text
+
+
+def test_other_providers_send_no_cap_unless_configured() -> None:
+    from clio_agent.lm.factory import _output_cap  # noqa: PLC0415
+
+    config = LMProviderConfig(
+        provider="openai",  # type: ignore[arg-type]
+        provider_id="openai",
+        model="gpt-5",
+        api_base="https://api.openai.com/v1",
+        api_key="sk-test",
+    )
+    assert _output_cap(config) is None
+
+
 def test_other_providers_keep_the_automatic_engine() -> None:
     from clio_agent.lm.factory import _engine_kwargs  # noqa: PLC0415
 
