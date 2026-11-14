@@ -98,6 +98,12 @@ export default async function (page, shot) {
     await settle(page, 1500);
     // A removal asks to confirm what leaves with it.
     await applyMode(page, shot);
+    // In a conversation with no messages the confirmation is a plain Yes / No dialog.
+    const yes = page.getByRole("dialog").getByRole("button", { name: /^Yes$/ });
+    if (await yes.waitFor({ timeout: 8000 }).then(() => true, () => false)) {
+      await shot("remove-confirm");
+      await yes.click();
+    }
     await settle(page, 6000);
   }
   const notice = page.getByRole("region", { name: "Plugin changes waiting for compaction" });

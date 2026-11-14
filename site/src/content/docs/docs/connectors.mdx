@@ -211,6 +211,48 @@ through `uvx`, and plots waveforms in the conversation. Install ngspice, or LTsp
 Windows, first. It does not support macOS. Ask, for example, "Simulate rc_lowpass.cir
 with ngspice and show me V(out)".
 
+### 3D globe
+
+Runs the [MCP Apps map example server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/map-server)
+(`@modelcontextprotocol/server-map` 2.0.4) on your machine through `npx`, and shows a
+region on a 3D globe you can turn and zoom, in the conversation or in a tab. It needs
+Node.js 20 or later and nothing from you. The globe is drawn with CesiumJS, loaded from
+cesium.com, over OpenStreetMap tiles, and it finds places by name with OpenStreetMap's
+Nominatim. Ask, for example, "Show me the Cascadia subduction zone on a 3D globe". With
+NASA Earthdata in the same conversation, the agent can search for datasets and then
+show the area the search covers.
+
+The globe frames a region and labels it. It does not draw points, outlines or GeoJSON,
+and it does not zoom closer than about 500 km above the ground.
+
+### PDF viewer
+
+Runs the [MCP Apps PDF example server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/pdf-server)
+(`@modelcontextprotocol/server-pdf` 2.0.4) on your machine through `npx`, and shows a
+paper in a viewer you can page through, search and zoom, in the conversation or in a
+tab. It needs Node.js 20 or later and nothing from you. It opens papers by address
+from arXiv, bioRxiv, medRxiv, ChemRxiv, Zenodo, OSF, HAL and similar archives. Ask,
+for example, "Show me arXiv 2611.15421 so I can read it". The agent reads the page you
+are on, can jump to a section, search the paper and take a picture of a page.
+
+It cannot open a file from your workspace yet. Each time the viewer opens, it reads the
+whole file again, and the conversation keeps a row for every part it reads.
+
+### NASA Earthdata
+
+Runs [earthdata-mcp-server](https://github.com/datalayer/earthdata-mcp-server) 0.6.0 on
+your machine through `uvx`. It searches NASA's Earthdata catalog for Earth-science
+datasets and their files, for example "Which GRACE-FO terrestrial water storage
+datasets on NASA Earthdata cover 2020 to 2024?". Searching needs no account. To
+download files, enter your free
+[NASA Earthdata Login](https://urs.earthdata.nasa.gov) username and password in its
+two optional rows.
+
+| Row | What to enter |
+| --- | --- |
+| **Earthdata Login username** | Empty to search only. |
+| **Earthdata Login password** | Kept as a secret. Never shown again once saved. |
+
 ### ParaView
 
 Opens scientific data in ParaView and shows it in a live view the agent can drive. It
