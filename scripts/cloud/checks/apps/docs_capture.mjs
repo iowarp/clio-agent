@@ -142,8 +142,7 @@ export default async function (page, rawShot) {
     }
     const name = env.DOCS_CONNECTOR || "Geo";
     await page
-      .locator('[role="group"][aria-label$="to enable"]')
-      .getByText(name, { exact: true })
+      .locator('[data-slot="discover-card-open"]', { hasText: new RegExp(`^${name}$`, "u") })
       .first()
       .click();
     const card = page.locator('[data-slot="connector-setup-card"]');

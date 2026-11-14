@@ -10,10 +10,11 @@ const words = (text) => text.replace(/\s+/gu, " ").trim();
 async function listRows(page, label) {
   const group = page.locator(`[role="group"][aria-label="${label}"]`);
   if (!(await group.count())) return [];
-  return group
-    .first()
-    .locator(":scope > *")
-    .evaluateAll((items) => items.map((item) => item.innerText.replace(/\s+/gu, " ").trim()));
+  // Discover's catalog is cards inside domain groups (DC-D1); other lists are rows.
+  const cards = group.first().locator('[data-slot="discover-card"]');
+  return ((await cards.count()) ? cards : group.first().locator(":scope > *")).evaluateAll(
+    (items) => items.map((item) => item.innerText.replace(/\s+/gu, " ").trim()),
+  );
 }
 
 async function filter(page, name) {
@@ -58,19 +59,18 @@ export default async function (page, shot) {
 
   await page.getByRole("radio", { name: "Discover" }).first().click();
   await settle(page, 2500);
-  report.discoverConnectors = await listRows(page, "Connectors to enable");
+  report.discoverConnectors = await listRows(page, "Catalog connectors");
   await shot("discover-connectors");
   await filter(page, "Plugins");
-  report.discoverPlugins = await listRows(page, "Plugins to enable");
+  report.discoverPlugins = await listRows(page, "Catalog plugins");
   await shot("discover-plugins");
   await filter(page, "All");
-  report.discoverAll = await listRows(page, "Plugins and connectors to enable");
+  report.discoverAll = await listRows(page, "Catalog plugins and connectors");
   report.suggested = await listRows(page, "Suggested extensions");
   await shot("discover-all");
 
   await page
-    .locator('[role="group"][aria-label="Plugins and connectors to enable"]')
-    .getByText(open, { exact: true })
+    .locator('[data-slot="discover-card-open"]', { hasText: new RegExp(`^${open}$`, "u") })
     .first()
     .click();
   const card = page.locator('[data-slot="connector-setup-card"]');
