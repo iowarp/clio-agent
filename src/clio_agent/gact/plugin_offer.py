@@ -136,7 +136,20 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
         }
         for found in connectors(app, session_id)
     ]
-    rows += [
+    # Grouped by marketplace, the most recently added first: a marketplace the person
+    # just added is not hidden behind the cap by an older, larger one (CF-D4).
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+
+    added = plugin_service(app).store.marketplaces()
+    order = {
+        name: rank
+        for rank, name in enumerate(
+            sorted(
+                added, key=lambda n: str((added[n] or {}).get("installed_at") or ""), reverse=True
+            )
+        )
+    }
+    plugins = [
         {
             "kind": "plugin",
             "id": record.id,
@@ -148,7 +161,11 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
         for record in library(app)
         if record.id not in here
     ]
-    return sorted(rows, key=lambda row: (row["kind"] != "connector", row["name"].casefold()))
+    rows.sort(key=lambda row: row["name"].casefold())
+    plugins.sort(
+        key=lambda row: (order.get(row["marketplace"], len(order)), row["name"].casefold())
+    )
+    return rows + plugins
 
 
 def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int]:

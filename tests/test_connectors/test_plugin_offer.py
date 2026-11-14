@@ -173,8 +173,19 @@ def test_a_second_marketplace_is_offered_and_a_removed_one_is_not(app: Any) -> N
     science = _record("spectra", marketplace="science")
     records = [*RECORDS, science]
     store.records = lambda: list(records)
-    store.marketplaces = lambda: {BUILTIN_MARKETPLACE: {}, "lab": {}, "science": {}}
-    rows = {row["id"]: row for row in plugin_offer.offerable(app, "sess_a")}
+    store.marketplaces = lambda: {
+        BUILTIN_MARKETPLACE: {},
+        "lab": {"installed_at": "2026-01-01T00:00:00Z"},
+        "science": {"installed_at": "2026-02-01T00:00:00Z"},
+    }
+    listed = plugin_offer.offerable(app, "sess_a")
+    # The most recently added marketplace first, after the connectors.
+    assert [row["id"] for row in listed if row["kind"] == "plugin"] == [
+        "spectra",
+        "Alpha",
+        "tariff-calc",
+    ]
+    rows = {row["id"]: row for row in listed}
     assert rows["spectra"]["marketplace"] == "science" and rows["spectra"]["ref"] == (
         "science/spectra"
     )
