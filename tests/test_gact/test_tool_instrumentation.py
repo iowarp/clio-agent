@@ -623,8 +623,8 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
             "goal_status": {},
             # No enabled connector of that name: the typed connector_not_enabled reply.
             "set_connector_value": {"connector": "missing", "key": "address", "value": "x"},
-            # No connector of that name: the typed connector_not_found reply, no card.
-            "offer_connector": {"connector": "missing"},
+            # No plugin or connector of that name: the typed plugin_not_found reply, no card.
+            "offer_plugin": {"plugin": "missing"},
             # No view is open in this session: the immediate typed answer.
             "look_at_view": {},
             # No parent AgentTask in this harness -> returns the typed

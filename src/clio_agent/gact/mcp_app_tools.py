@@ -601,6 +601,7 @@ def _agent_tool(tool: AppTool) -> Any:
         domain="surfaces",
         title=tool.name.replace("_", " ").strip().capitalize(),
         read_only=tool.read_only,
+        outside=True,  # acts on the view the person sees: follows the approval mode
     )
     return instrument_tools([built])[0]
 

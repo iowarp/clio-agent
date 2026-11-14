@@ -34,8 +34,24 @@ def _pin(ctx: FlowContext, handle: str) -> list[dict[str, Any]]:
         if task.terminal_at is None or task.recording != "confirmed":
             continue
         TaskAccess(history, ctx.caller).require(child, "read")
-        rows.append(task.model_dump(mode="json"))
+        row = task.model_dump(mode="json")
+        row["submitted_backend"] = _submitted_backend(history, task)
+        rows.append(row)
     return rows
+
+
+def _submitted_backend(history: Any, task: Any) -> dict[str, Any] | None:
+    """The backend CLIO submitted the call to, from its own submission record.
+
+    A call answered inline (in-process built-ins such as ``web``) never adopts a
+    backend task, so its snapshot's ``backend`` stays empty; the submission still
+    names the server it was sent to.
+    """
+    if task.submission is None:
+        return None
+    submitted = history.read_content(task.submission)
+    backend = submitted.get("backend") if isinstance(submitted, dict) else None
+    return dict(backend) if isinstance(backend, dict) else None
 
 
 def _read(ctx: FlowContext, handle: str, pins: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.keenable.ai/v1/fetch/public?url=https://adios2.readthedocs.io/en/latest/engines/engines.html",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "X-Keenable-Title": "clio-agent-tests"
+    },
+    "params": {
+      "url": "https://adios2.readthedocs.io/en/latest/engines/engines.html"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "x-ratelimit-limit": "1000",
+    "x-ratelimit-remaining": "999",
+    "x-ratelimit-reset": "2026-11-12T20:59:27.643Z",
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "url": "https://adios2.readthedocs.io/en/latest/engines/engines.html",
+    "title": "Supported Engines — ADIOS2 2.13.0-rc1 documentation",
+    "content": "# Supported Engines\n\nThis section provides a description of the [Available Engines](../components/components.html#available-engines) in ADIOS2 and their specific parameters to allow extra-control from the user. Parameters are passed in key-value pairs for:\n\n1. Engine specific parameters\n2. Engine supported transports and parameters\nParameters are passed at:\n\n1. Compile time `IO::SetParameters` (`adios2_set_parameter` in C, Fortran)\n2. Compile time `IO::AddTransport` (`adios2_set_transport_parameter` in C, Fortran)\n3. [Runtime Configuration Files](../components/components.html#runtime-configuration-files) in the [ADIOS](../components/components.html#adios) component.\n\n## BP5\n\nThe BP5 Engine writes and reads files in ADIOS2 native binary-pack (bp version 5) format. This was a new format for ADIOS 2.8, improving on the metadata operations and the memory consumption of the older BP4/BP3 formats. BP5 is the default file format as of ADIOS 2.9. As compared to the older format, BP5 provides three main advantages:\n\n> - **Lower memory** consumption. Deferred Puts will use user buffer for I/O wherever possible thus saving on a memory copy. Aggregation uses a fixed-size shared-memory segment on each compute node instead of using MPI to send data from one process to another. Memory consumption can get close to half of BP4 in some cases.\n> - **Faster metadata** management improves write/read performance where hundreds or more variables are added to the output.\n> - Improved functionality around **appending** many output steps into the same file. Better performance than writing new files each step. Restart can append to an existing series by truncating unwanted steps. Readers can filter out unwanted steps to only see and process a limited set of steps. Just like as in BP4, existing steps cannot be corrupted by appending new steps.\n\nIn 2.8 BP5 was a brand new file format and engine. It still does **NOT** support some functionality of BP4:\n\n> - **Burst buffer support** for writing data.\n\nBP5 files have the following structure given a “name” string passed as the first argument of `IO::Open`:\n\n```\nio.SetEngine(\"BP5\");\nadios2::Engine bpFile = io.Open(\"name\", adios2::Mode::Write);\n```\n\nwill generate:\n\n```\n% BP5 datasets are always a directory\nname.bp/\n\n% data and metadata files\nname.bp/\n        data.0\n        data.1\n        ...\n        data.M\n        md.0\n        md.idx\n        mmd.0\n```\n\nNote\n\nBP5 file names are compatible with the Unix (`/`) and Windows (`\\\\`) file system naming convention for directories and files.\n\nNote\n\nBP5 has an `mmd.0` file in the directory, which BP4 does not have.\n\nThis engine allows the user to fine tune the buffering operations through the following optional parameters:\n\n1. Streaming through file\n  1. **OpenTimeoutSecs**: (Streaming mode) Reader may want to wait for the creation of the file in `io.Open()`. By default the Open() function returns with an error if file is not found.\n  2. **IgnoreActiveFlag**: A writer marks the file as being written (active) until it closes it, and a writer that is killed or crashes leaves that mark behind. By default (`true`) the reader ignores the mark and reads the steps that are present, so `BeginStep()` returns `EndOfStream` after the last one instead of waiting for more. Set it to `false` to follow a file that is still being written; `BeginStep()` then waits for new steps (up to its timeout) as long as the file is marked active. The `FileStream` engine sets it to `false`. A file left active by a killed writer can also be marked complete with `adios2_deactivate_bp`.\n  1. **EOFWaitSecs**: How long a read of data the metadata refers to may wait on an end-of-file before failing, once the writer is known to be gone. The wait absorbs shared-filesystem consistency lag; on a file truncated by an interrupted writer, reads of the missing bytes fail cleanly after roughly 1.5x this many seconds. Recovery tools can set it low to fail fast.\n  2. **BeginStepPollingFrequencySecs**: (Streaming mod…[trimmed]",
+    "description": "",
+    "truncated": true,
+    "total_chars": 78733
+  }
+}

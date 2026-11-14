@@ -15,7 +15,7 @@
 // enough to give it more than 600 px (--width 1920 --height 1080).
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { ROOT, api, openConversation, send, waitIdle } from "./_lib.mjs";
+import { ROOT, api, openConversation, send, waitIdle, isViewDocument } from "./_lib.mjs";
 
 const here = path.join(ROOT, "scripts/cloud/checks/apps");
 
@@ -50,7 +50,7 @@ export default async function (page, shot) {
   log.push(`tab frame: ${Math.round(box.width)}x${Math.round(box.height)}`);
   await shot("tab");
 
-  const view = page.frames().filter((f) => f.url() === "about:srcdoc").at(-1);
+  const view = page.frames().filter(isViewDocument).at(-1);
   for (const label of ["Expand controls", "Selection mode"]) {
     await view.getByRole("button", { name: label }).first().click({ timeout: 30000 });
     await page.waitForTimeout(1500);

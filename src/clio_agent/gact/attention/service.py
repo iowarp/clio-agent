@@ -27,6 +27,7 @@ import numpy as np
 from clio_schemas.attention import AttentionProfile, display_intensities
 
 from clio_agent.gact.attention import aggregate as agg
+from clio_agent.gact.attention.alignment import diagnosed
 from clio_agent.gact.attention.capture import load_capture
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.lm_calls import LmCall, turn_calls
@@ -210,37 +211,41 @@ def explain_selection(
     call = span.call
     if any(item.span.call.event_id != call.event_id for item in selected):
         raise AttentionUnavailable("selection_ambiguous", "aggregate selections per model call")
-    capture = load_capture(call, store, renderer_for)
-    summary, renderer, encoded = capture.summary, capture.renderer, capture.encoded
-    sections, sections_source = capture.sections, capture.sections_source
+    # A tokenizer that does not reproduce the capture is said out loud (alignment.py).
+    with diagnosed(call):
+        capture = load_capture(call, store, renderer_for)
+        summary, renderer, encoded = capture.summary, capture.renderer, capture.encoded
+        sections, sections_source = capture.sections, capture.sections_source
 
-    opened = prompt_opens_thinking(encoded.text)
-    step_span = output_steps(
-        renderer,
-        call.content or "",
-        span.out_lo,
-        span.out_hi,
-        summary.record,
-        reasoning=call.reasoning,
-        opened=opened,
-        source=span.source,
-    )
-    selected_steps = set(step_span.steps)
-    for item in selected[1:]:
-        if item.request.profile != request.profile:
-            raise AttentionUnavailable("selection_ambiguous", "one profile is required for a union")
-        selected_steps.update(
-            output_steps(
-                renderer,
-                call.content or "",
-                item.span.out_lo,
-                item.span.out_hi,
-                summary.record,
-                reasoning=call.reasoning,
-                opened=opened,
-                source=item.span.source,
-            ).steps
+        opened = prompt_opens_thinking(encoded.text)
+        step_span = output_steps(
+            renderer,
+            call.content or "",
+            span.out_lo,
+            span.out_hi,
+            summary.record,
+            reasoning=call.reasoning,
+            opened=opened,
+            source=span.source,
         )
+        selected_steps = set(step_span.steps)
+        for item in selected[1:]:
+            if item.request.profile != request.profile:
+                raise AttentionUnavailable(
+                    "selection_ambiguous", "one profile is required for a union"
+                )
+            selected_steps.update(
+                output_steps(
+                    renderer,
+                    call.content or "",
+                    item.span.out_lo,
+                    item.span.out_hi,
+                    summary.record,
+                    reasoning=call.reasoning,
+                    opened=opened,
+                    source=item.span.source,
+                ).steps
+            )
     if len(selected_steps) > 4096:
         raise AttentionUnavailable("selection_too_large", "select at most 4096 output tokens")
     # Read only contiguous selected intervals; gaps do not become selected rows.

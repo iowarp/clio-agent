@@ -233,7 +233,10 @@ def test_queue_head_starts_automatically_when_active_turn_becomes_idle(tmp_path:
 def test_message_state_snapshot_reconciles_transcript_pending_queue_and_cursor(
     tmp_path: Path,
 ) -> None:
-    agent = SlowClioAgent(delay_s=2.0)
+    # Hold the turn at a checkpoint rather than racing a sleep against a wall-clock poll: on a
+    # loaded runner the first turn can take longer than any fixed bound to reach the model.
+    # A turn that never arrives is caught by the per-test hang guard, with every stack.
+    agent = BlockingClioAgent(timeout_s=150.0)
     app = build_app(
         sessions_path=tmp_path / "sessions.json",
         agent=agent,
@@ -247,19 +250,20 @@ def test_message_state_snapshot_reconciles_transcript_pending_queue_and_cursor(
             ).status_code
             == 202
         )
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and not agent.calls:
-            time.sleep(0.02)
-        assert agent.calls, "the first input never committed and reached model execution"
-        queued = client.post(
-            f"/v1/sessions/{sid}/queued-messages",
-            json={"text": "later", "client_message_id": "queued_client"},
-        )
-        assert queued.status_code == 201
-
-        snapshot = client.get(f"/v1/sessions/{sid}/message-state")
-        assert snapshot.status_code == 200
-        payload = snapshot.json()
+        try:
+            agent.entered.wait()
+            queued = client.post(
+                f"/v1/sessions/{sid}/queued-messages",
+                json={"text": "later", "client_message_id": "queued_client"},
+            )
+            assert queued.status_code == 201
+            snapshot = client.get(f"/v1/sessions/{sid}/message-state")
+            assert snapshot.status_code == 200
+            payload = snapshot.json()
+            # Read while the turn is still held, so no later event moves the bus past it.
+            latest = app.state.bus.latest_event_id(sid)
+        finally:
+            agent.release.set()
         assert payload["protocol_version"] == "0.3"
         assert payload["authoritative"] is True
         assert payload["session"]["id"] == sid
@@ -268,5 +272,5 @@ def test_message_state_snapshot_reconciles_transcript_pending_queue_and_cursor(
         assert [row["id"] for row in payload["queued_messages"]] == [queued.json()["id"]]
         # The cursor is directly usable as Last-Event-ID: the highest event id
         # this snapshot already accounts for.
-        assert payload["next_cursor"] == app.state.bus.latest_event_id(sid)
+        assert payload["next_cursor"] == latest
         assert payload["dropped_events"] == 0

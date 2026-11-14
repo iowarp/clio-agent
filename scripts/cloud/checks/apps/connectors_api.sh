@@ -9,7 +9,8 @@
 # It starts the OAuth fixture server (tests/fixtures/oauth_mcp_server.py) on
 # CONNECTOR_FIXTURE_PORT (default 19101) and stops it at the end. The agent requests
 # are plain: they name no tool. Sessions run in bypass approval in a disposable
-# workspace under .cloud-run/apps-work/connectors.
+# workspace under .cloud-run/apps-work/connectors. Enabling a connector adds it to no
+# conversation (CS-D1): when the agent offers one, the script answers Add as the person.
 set -u
 A="${1:?agent url}"; UI="${2:?ui url}"
 ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
@@ -40,9 +41,20 @@ send() {
 card() {  # the pending connector_setup interaction id, or empty
   j "$A/v1/sessions/$1/interactions" | py "import sys,json;r=[x['id'] for x in json.load(sys.stdin)['interactions'] if x['kind']=='connector_setup' and x['status']=='pending'];print(r[0] if r else '')"
 }
+offer() {  # the pending offer card (connectors are added per conversation, CS-D6), or empty
+  j "$A/v1/sessions/$1/interactions" | py "import sys,json;r=[x['id']+' '+(x.get('payload') or {}).get('connector_name','') for x in json.load(sys.stdin)['interactions'] if x['kind']=='connector_setup' and x['status']=='pending' and (x.get('payload') or {}).get('intent') in ('enable','add_plugin')];print(r[0] if r else '')"
+}
 settle() {  # wait for the turn to end, or for a setup card (prints card <id>)
+  # An offer to add a connector to this conversation is answered Add, as the person
+  # does on the card (the same respond route); a setup card is returned to the caller.
   sleep 3
   while true; do
+    o=$(offer "$1")
+    if [ -n "$o" ]; then
+      j -X POST "$A/v1/sessions/$1/interactions/${o%% *}/respond" -H 'content-type: application/json' \
+        -d '{"action":"submit","values":{}}' >/dev/null
+      echo "offer added: ${o#* }"; sleep 3; continue
+    fi
     c=$(card "$1"); [ -n "$c" ] && { echo "card $c"; return; }
     s=$(j "$A/v1/sessions/$1" | py "import sys,json;print(json.load(sys.stdin).get('status'))")
     case "$s" in idle|error) echo "turn $s"; return;; esac

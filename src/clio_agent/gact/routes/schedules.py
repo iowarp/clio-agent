@@ -24,6 +24,7 @@ packages (types, stdlib, FastAPI) and never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
-def _work_rows(app: FastAPI, sid: str) -> tuple[list[Any], list[dict[str, Any]]]:
+def _work_rows(app: FastAPI, sid: str) -> tuple[list[Any], list[Mapping[str, Any]]]:
     """The session's messages and its current schedules, read with blocking store I/O."""
     messages = getattr(app.state, "messages", {})
     rows = list(messages.get(sid, [])) if hasattr(messages, "get") else []

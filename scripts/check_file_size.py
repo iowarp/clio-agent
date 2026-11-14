@@ -923,7 +923,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (tools/harness_notes.py).
     # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
     # comma dropped from one observer call freed 6.
-    "src/clio_agent/tools/execution.py": 986,
+    "src/clio_agent/tools/execution.py": 985,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1088,25 +1088,25 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed these with CI off during the RC1 UI freeze, so the guard went red unnoticed.
     # The code is frozen for the release; split or hoist and ratchet these back down after
     # RC1 instead of growing them further.
-    "src/clio_agent/gact/agents/clio_react.py": 804,
     "src/clio_agent/gact/compaction.py": 913,
-    "src/clio_agent/gact/infrastructure/node_service.py": 845,
+    "src/clio_agent/gact/infrastructure/node_service.py": 824,
     # macOS worker identity (libproc start time, no /proc). This file ships to the host as one
     # standalone script (routes/infrastructure_models.py reads node_models.__file__), so the
     # probe cannot move to a sibling module; ratchet down when the worker body is split.
     # #2234 (+40, 816 -> 856): Windows download cancel (replace retry, chunked cancellable
     # verification, taskkill of the identity-checked supervisor) -- same one-script constraint.
     "src/clio_agent/gact/infrastructure/node_models.py": 856,
-    "src/clio_agent/gact/permission_gate.py": 837,
+    "src/clio_agent/gact/permission_gate.py": 834,
     # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,
     "src/clio_agent/gact/sessions.py": 844,
     "src/clio_agent/gact/turn_finalize.py": 803,
-    "src/clio_agent/gact/types.py": 803,
-    "src/clio_agent/runtime/sandbox_cli.py": 833,
+    "src/clio_agent/gact/types.py": 802,
+    # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to
+    # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,
-    "src/clio_agent/tools/gateway.py": 807,
+    "src/clio_agent/tools/gateway.py": 805,
     "src/clio_agent/tools/mcp_prepare.py": 1226,
 }
 

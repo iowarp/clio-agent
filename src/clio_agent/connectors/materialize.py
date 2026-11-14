@@ -2,10 +2,13 @@
 
 The connection has the connector's id as its name, ``connector: <id>`` as its
 marker and ``connection_only: true``: it is never mounted on its own, only through
-the plugin that follows the connector (:mod:`.follow`), so its scope is one rule.
-Address and value needs are written into the declaration; a secret stays a
-``${need.<key>}`` placeholder there and is filled only when the server starts
-(:func:`fill_secrets`, called from ``tools.mcp_config.spec_from_declaration``).
+the connector's plugin (:mod:`.follow`), which a person adds to a conversation.
+The saved declaration is a template: every need stays a ``${need.<key>}``
+placeholder (CV-D2). Address and value needs are filled per conversation, the
+conversation's own values over the person's defaults (:func:`fill_declaration`,
+called by ``plugins.servers.server_declarations``); anything still unfilled when
+a spec is parsed takes the defaults (``tools.mcp_config.spec_from_declaration``).
+A secret is filled only when the server starts (:func:`fill_secrets`).
 A sign-in need adds CLIO's managed OAuth block; the sign-in itself is the existing
 ``/v1/mcp/configuration/{id}/sign-in`` flow, whose tokens are keyed by this
 connection.
@@ -43,15 +46,14 @@ def _substitute(entry: Entry, values: Mapping[str, str], text: str, *, keep_secr
     return PLACEHOLDER.sub(one, text)
 
 
-def declaration(entry: Entry, values: Mapping[str, str]) -> dict[str, Any]:
-    """The saved-connection declaration for ``entry`` with the person's ``values``."""
+def declaration(entry: Entry) -> dict[str, Any]:
+    """The saved-connection template for ``entry``: every need a ``${need.<key>}``."""
 
     server = entry.server
-    sub = lambda text: _substitute(entry, values, str(text), keep_secrets=True)  # noqa: E731
     out: dict[str, Any] = {CONNECTOR_KEY: entry.id, "connection_only": True}
     if entry.is_url:
-        out.update(transport="http", url=sub(server["url"]).strip())
-        headers = {str(k): sub(v) for k, v in (server.get("headers") or {}).items()}
+        out.update(transport="http", url=str(server["url"]).strip())
+        headers = {str(k): str(v) for k, v in (server.get("headers") or {}).items()}
         if headers:
             out["headers"] = headers
         if any(need.kind == "sign-in" for need in entry.needs):
@@ -61,13 +63,72 @@ def declaration(entry: Entry, values: Mapping[str, str]) -> dict[str, Any]:
     else:
         out.update(
             transport="stdio",
-            command=sub(server["command"]),
-            args=[sub(arg) for arg in server.get("args") or ()],
+            command=str(server["command"]),
+            args=[str(arg) for arg in server.get("args") or ()],
         )
-        env = {str(k): sub(v) for k, v in (server.get("env") or {}).items()}
+        env = {str(k): str(v) for k, v in (server.get("env") or {}).items()}
         if env:
             out["env"] = env
     return out
+
+
+def _fill(entry: Entry, declared: Mapping[str, Any], values: Mapping[str, str]) -> dict:
+    sub = lambda text: _substitute(entry, values, str(text), keep_secrets=True)  # noqa: E731
+    out = dict(declared)
+    for place in ("url", "command"):
+        if isinstance(out.get(place), str):
+            out[place] = sub(out[place]).strip() if place == "url" else sub(out[place])
+    if isinstance(out.get("args"), list):
+        out["args"] = [sub(arg) for arg in out["args"]]
+    for place in ("headers", "env"):
+        if isinstance(out.get(place), Mapping):
+            out[place] = {str(k): sub(v) for k, v in out[place].items()}
+    return out
+
+
+def resolved(entry: Entry, values: Mapping[str, str]) -> dict[str, Any]:
+    """The declaration with ``values`` written in (secrets stay placeholders)."""
+
+    return _fill(entry, declaration(entry), values)
+
+
+def in_use(declared: Mapping[str, Any]) -> dict[str, Any]:
+    """A saved connection as it is used outside any conversation: a connector's template
+    (CV-D2) filled from the defaults, anything else unchanged. Its ``url`` is the one a
+    sign-in is stored under (Extensions, the probe), so sign-in, sign-out and the
+    connector's own check name the same server."""
+
+    return fill_declaration(declared) if declared.get("connector") else dict(declared)
+
+
+def fill_declaration(
+    declared: Mapping[str, Any],
+    overlay: Mapping[str, str] | None = None,
+    *,
+    from_entry: bool = False,
+) -> dict[str, Any]:
+    """A connector connection with its address and value needs filled.
+
+    Each need takes ``overlay`` (one conversation's values) over the person's defaults;
+    what is already written in stays. With ``from_entry`` the connector's current
+    entry is the template, so a connection saved by an older CLIO (values written in)
+    follows the conversation too; its sign-in block is kept. A declaration with no
+    known connector is returned unchanged.
+    """
+
+    from clio_agent.connectors import state  # noqa: PLC0415
+
+    connector_id = str(declared.get(CONNECTOR_KEY) or "")
+    entry = state.all_entries().get(connector_id) if connector_id else None
+    if entry is None:
+        return dict(declared)
+    template = dict(declared)
+    if from_entry:
+        template = declaration(entry)
+        if declared.get("auth") and template.get("auth"):
+            template["auth"] = declared["auth"]
+    values = {**state.choice(entry.id).values, **dict(overlay or {})}
+    return _fill(entry, template, values)
 
 
 def fill_secrets(declared: Mapping[str, Any]) -> dict[str, Any]:

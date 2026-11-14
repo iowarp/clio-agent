@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.connectors.materialize import in_use
 from clio_agent.gact.mcp_auth import McpSignIns, managed_oauth
 from clio_agent.gact.mcp_user_configuration import get_user_mcp_server, set_user_mcp_server
 from clio_agent.gact.routes._body import json_body
@@ -138,9 +139,8 @@ def register_mcp_auth_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Remote MCP connection not found")
         await sign_ins(app).cancel_name(name)
         connection_id = (spec.get("auth") or {}).get("connection_id")
-        await asyncio.to_thread(
-            DurableFileTokenStorage(str(spec["url"]), connection_id=connection_id).clear
-        )
+        url = str(in_use(spec)["url"])  # a connector's template names its address in use
+        await asyncio.to_thread(DurableFileTokenStorage(url, connection_id=connection_id).clear)
         await _refresh_agent_tool_gateway(app)
         _connector_signed(app, name)
         return {"name": name, "state": "signed_out"}

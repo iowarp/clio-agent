@@ -30,7 +30,7 @@
 #   CLIO_PREFIX        install root         (default: <agent data>/app)
 #   CLIO_BIN_DIR       launcher location    (default: $HOME/.local/bin)
 #   CLIO_INSTALLER_REF pin launcher scripts (default: the installed release's tag)
-#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.12.3)
+#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.12.7)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
 #   CLIO_DESKTOP_DIR   macOS app folder     (default: $HOME/Applications)
 #   CLIO_INSTALL_PROGRESS  human | json     (default: human; as --progress)
@@ -1453,9 +1453,39 @@ start_release_runtime() {  # TAG
   RUNTIME_JOB=$!
 }
 
+# write_runtime_launchers ROOT PYTHON: ROOT/bin gets a launcher running PYTHON, written as
+# uv writes it (so a path with spaces works), for every console and GUI command the
+# runtime's packages declare: what a PyPI install of the same packages has. The first
+# declaration of a name wins and a file already in bin/ (uv) is kept. The lite desktop
+# starts its backend with clio-agent-gact; an install without it never starts
+# (gact-tui#739). 1 when there is no clio-agent command.
+write_runtime_launchers() {
+  local root="$1" script name module attr written=()
+  script="$(printf '%s' "$2" | sed "s/'/'\\\\''/g")"
+  while read -r name module attr; do
+    [ ! -e "$root/bin/$name" ] && [ ! -L "$root/bin/$name" ] || continue
+    printf "#!/bin/sh\n'''exec' '%s' \"\$0\" \"\$@\"\n' '''\nimport sys\nfrom %s import %s\nif __name__ == \"__main__\":\n    sys.exit(%s())\n" \
+      "$script" "$module" "${attr%%.*}" "$attr" > "$root/bin/$name" || return 1
+    written+=("$root/bin/$name")
+  done < <(awk '
+    FNR == 1 { section = "" }
+    /^[[:space:]]*\[/ { section = $0; gsub(/[][[:space:]]/, "", section); next }
+    (section == "console_scripts" || section == "gui_scripts") && index($0, "=") {
+      name = substr($0, 1, index($0, "=") - 1); value = substr($0, index($0, "=") + 1)
+      gsub(/[[:space:]]/, "", name); sub(/\[.*$/, "", value); gsub(/[[:space:]]/, "", value)
+      split(value, part, ":")
+      if (name ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ && part[1] ~ /^[A-Za-z_][A-Za-z0-9_.]*$/ \
+          && part[2] ~ /^[A-Za-z_][A-Za-z0-9_.]*$/ && !(name in seen)) {
+        seen[name] = 1; print name, part[1], part[2]
+      }
+    }' "$root"/python/lib/python3.*/site-packages/*.dist-info/entry_points.txt 2>/dev/null)
+  [ "${#written[@]}" = 0 ] || chmod 755 "${written[@]}"
+  [ -x "$root/bin/clio-agent" ]
+}
+
 # finish_release_runtime VERSION: the runtime becomes $VENV; 1 means install from PyPI.
 finish_release_runtime() {
-  local status=0 root python version previous="" script
+  local status=0 root python version previous=""
   [ -n "$RUNTIME_JOB" ] || return 1
   wait "$RUNTIME_JOB" || status=$?
   RUNTIME_JOB=""
@@ -1468,25 +1498,19 @@ finish_release_runtime() {
     return 1
   fi
   python="$(cd "$root/python/bin" && ls python3.* 2>/dev/null | grep -v -- -config | head -1)"
-  # The environment's usual entry points: bin/python, and the clio-agent command that
-  # `clio` runs (written as uv writes it, so a path with spaces works).
+  # The environment's usual entry points: bin/python, and the commands a PyPI install
+  # writes (clio-agent, which `clio` runs; clio-agent-gact, which the desktop runs).
   if [ -z "$python" ] || ! ln -s "../python/bin/$python" "$root/bin/python" \
       || ! ln -s python "$root/bin/python3"; then
     warn "the release's prebuilt agent has no Python: installing it from PyPI instead"
     rm -rf "$RUNTIME_STAGE"
     return 1
   fi
-  script="$(printf '%s' "$VENV/bin/python" | sed "s/'/'\\\\''/g")"
-  cat > "$root/bin/clio-agent" <<EOF
-#!/bin/sh
-'''exec' '$script' "\$0" "\$@"
-' '''
-import sys
-from clio_agent.ui.cli import main
-if __name__ == "__main__":
-    sys.exit(main())
-EOF
-  chmod 755 "$root/bin/clio-agent"
+  if ! write_runtime_launchers "$root" "$VENV/bin/python"; then
+    warn "the release's prebuilt agent declares no clio-agent command: installing it from PyPI instead"
+    rm -rf "$RUNTIME_STAGE"
+    return 1
+  fi
   version="$("$root/bin/python" -I -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
   if [ "$version" != "$1" ]; then
     if [ -z "${CLIO_RUNTIME_PACKAGE:-}" ]; then
@@ -1549,7 +1573,7 @@ start_clio_kit() {
     return 0
   fi
   if [ -z "$CLIO_KIT_PACKAGE" ]; then
-    clio_kit_spec="clio-kit==2.12.3"
+    clio_kit_spec="clio-kit==2.12.7"
     say "Provisioning released clio-kit launcher ($clio_kit_spec) at the same time"
   elif [[ "$CLIO_KIT_PACKAGE" == *"=="* ]]; then
     clio_kit_spec="${CLIO_KIT_PACKAGE%%==*}[science]==${CLIO_KIT_PACKAGE#*==}"

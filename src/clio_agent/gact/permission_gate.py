@@ -111,7 +111,7 @@ from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.tools.catalog import get_tool_entry
+from clio_agent.tools.catalog import action_subject, get_tool_entry
 from clio_agent.tools.tool_observation import call_identity_claimed, peek_call_identity
 
 if TYPE_CHECKING:
@@ -655,11 +655,8 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.folder_access import request_folder_access, requested_folders
 
         folders = requested_folders(name, args)
-        subject = (
-            "external MCP tool"
-            if _is_external_mcp_permission_context(context)
-            else "destructive tool"
-        )
+        external = _is_external_mcp_permission_context(context)
+        subject = "external MCP tool" if external else action_subject(name)
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)

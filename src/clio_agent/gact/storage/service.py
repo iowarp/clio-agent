@@ -560,13 +560,15 @@ class StorageService:
 
     def _check_s3(self, record: SourceRecord) -> None:
         """Ask the bucket for one key under the prefix, so a wrong name or key fails now."""
+        from botocore.exceptions import BotoCoreError, ClientError
+
         from clio_agent.gact.storage.s3_source import S3Location, s3_client
 
         location = S3Location.parse(record.source.root)
         client = s3_client(record.configuration, s3_keys.keys(self.auth, record))
         try:
             client.list_objects_v2(Bucket=location.bucket, Prefix=location.prefix + "/", MaxKeys=1)
-        except Exception as exc:
+        except (BotoCoreError, ClientError) as exc:
             from clio_agent.gact.storage.s3_source import _denied
 
             self.auth.disconnect(record.source.id)

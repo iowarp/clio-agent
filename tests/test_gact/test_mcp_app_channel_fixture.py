@@ -36,7 +36,7 @@ async def test_fixture_opens_a_view_and_logs_each_set_time(
         moved = await client.call_tool("set_time", {"time": 7})
         assert moved.structured_content == {"time": 7, "steps": 12}
         resource = await client.read_resource(module.VIEW_URI)
-        assert resource[0].mimeType == "text/html;profile=mcp-app"
+        assert resource[0].mime_type == "text/html;profile=mcp-app"
         assert "ui/update-model-context" in resource[0].text
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert [(row["tool"], row["time"]) for row in rows] == [("open_timeline", 2), ("set_time", 7)]

@@ -1,6 +1,7 @@
 """Configuration readiness probes accept the same declarative transport shapes."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -75,7 +76,7 @@ def test_probe_normalizes_declarations_without_rewriting_saved_config(
         async def list_tools(self) -> list[SimpleNamespace]:
             return [SimpleNamespace(name="search"), SimpleNamespace(name="fetch")]
 
-    def transport(value: MCPServerSpec) -> object:
+    def transport(value: MCPServerSpec, *, cwd: str | None = None) -> object:
         seen.append(value)
         return object()
 
@@ -98,3 +99,34 @@ def test_probe_keeps_explicit_invalid_transport_as_a_visible_failure() -> None:
     )
     assert tools == []
     assert error is not None and "transport" in error and "invalid" in error
+
+
+def test_a_probed_stdio_server_starts_in_the_default_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """FP-D3: enabling a connector never starts its server in the launch folder."""
+    folder = tmp_path / "conversations"
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(folder))
+    monkeypatch.chdir(tmp_path)
+    cwds: list[str | None] = []
+
+    class Client:
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def list_tools(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(name="plot")]
+
+    def transport(value: MCPServerSpec, *, cwd: str | None = None) -> object:
+        cwds.append(cwd)
+        return object()
+
+    monkeypatch.setattr(mcp_configuration, "transport_for", transport)
+    monkeypatch.setattr(mcp_configuration, "make_mcp_client", lambda *args, **kwargs: Client())
+    spec = {"command": "/usr/bin/true", "args": []}
+    assert asyncio.run(mcp_configuration._probe_user_mcp_server(spec)) == (["plot"], None)
+    assert cwds == [str(folder)]
+    assert folder.is_dir()

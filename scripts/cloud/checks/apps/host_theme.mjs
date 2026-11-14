@@ -2,11 +2,12 @@
 // variables from its notebook tokens, and resends them when the theme switches. Takes
 // desktop hero shots (left navigation collapsed, canvas wide) in dark and light.
 import { check, log, openConversation, sendAndSettle, viewIn } from "./_app_view.mjs";
+import { isViewDocument } from "./_lib.mjs";
 
 async function viewColours(page) {
   const frame = page
     .frames()
-    .find((f) => f.url() === "about:srcdoc" && f.parentFrame()?.url().includes("/mcp-apps/"));
+    .find(isViewDocument);
   return frame.evaluate(() => {
     const body = getComputedStyle(document.body);
     return {

@@ -71,3 +71,24 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
     assert listing.offered("burette", rows) == [{"name": "open_ketcher"}]
     assert listing.offered("spice", listed) == listed
     assert listing.offered("unknown", listed) == listed
+
+
+def test_more_connectors_are_data_only() -> None:
+    """The PDF viewer and the 3D globe (MCP Apps) and NASA Earthdata are catalog entries only."""
+
+    catalog = entries.load_catalog([SHIPPED])
+    pdf = catalog.entries["pdf"]
+    assert pdf.server["command"] == "npx" and pdf.needs == () and pdf.tools == ()
+    assert "@modelcontextprotocol/server-pdf@2.0.4" in pdf.server["args"]
+    assert pdf.logo_path is not None and pdf.logo_path.read_text().startswith("<svg")
+    earthdata = catalog.entries["earthdata"]
+    assert earthdata.server["args"][0] == "earthdata-mcp-server==0.6.0"
+    assert [(n.key, n.kind, n.required) for n in earthdata.needs] == [
+        ("username", "value", False),
+        ("password", "secret", False),
+    ]
+    assert earthdata.server["env"]["EARTHDATA_PASSWORD"] == "${need.password}"
+    assert earthdata.logo == "" and earthdata.tools == ()
+    globe = catalog.entries["globe"]
+    assert "@modelcontextprotocol/server-map@2.0.4" in globe.server["args"]
+    assert globe.needs == () and globe.logo == "" and globe.tools == ()

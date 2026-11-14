@@ -466,7 +466,10 @@ def test_capability_routes_stay_bound_and_session_delete_cleans_up(tmp_path: Pat
         )
         assert sandbox.status_code == 200
         assert "allow-scripts allow-same-origin allow-forms" in sandbox.text
-        assert "inner.srcdoc = html" in sandbox.text
+        # The view is written into its frame (its address is the sandbox's, not
+        # about:srcdoc); srcdoc only when CLIO cannot write the frame (MC-F4).
+        assert "doc.open(); doc.write(html); doc.close();" in sandbox.text
+        assert "else { inner.srcdoc = html; }" in sandbox.text
         assert "event.origin === window.location.origin" in sandbox.text
         # The sandbox host carries no API authority.
         refused = client.get(f"http://{sandbox_host}:8100/v1/sessions")

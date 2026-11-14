@@ -14,7 +14,6 @@ state.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -27,6 +26,8 @@ from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 
 _WORKSPACE_ID_PREFIX = "ws_"
 DEFAULT_WORKSPACE_ID = "ws_default"
+#: The first-run default workspace's folder under CLIO's data folder (FP-D3).
+FIRST_RUN_WORKSPACE_DIR = "workspace"
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,12 @@ def default_workspace_root() -> str:
     """The root a fresh ``ws_default`` is seeded with, created like a PATCHed root.
 
     The configured setting wins (``~`` is expanded; the directory is created if
-    missing); without it the server's working directory at first start is used.
-    The setting only seeds: an existing ``ws_default`` keeps its root and is
-    repointed with ``PATCH /v1/workspaces/ws_default {"root_path": ...}``.
+    missing). Without it, a first run's conversations get their own folder under
+    CLIO's data folder (``<data>/workspace``, FP-D3): the agent's outputs and the
+    files a connector's server writes land there, never in whatever folder the
+    server happened to be started from. The setting only seeds: an existing
+    ``ws_default`` keeps its root and is repointed with
+    ``PATCH /v1/workspaces/ws_default {"root_path": ...}``.
 
     Raises:
         ValueError: If the setting is not an absolute path or cannot be created.
@@ -55,7 +59,9 @@ def default_workspace_root() -> str:
 
     configured = configured_default_workspace_root()
     if not configured:
-        return os.getcwd()
+        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+        configured = str(paths.user_data_dir() / FIRST_RUN_WORKSPACE_DIR)
     root = Path(configured).expanduser()
     if not root.is_absolute():
         raise ValueError(

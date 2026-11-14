@@ -139,6 +139,14 @@ server should treat an empty value as "not set". When a value changes, CLIO rest
 command server, or reconnects to a URL server, and lists its tools again. Read values
 when the server starts.
 
+*Amended.* Address and value needs are filled per conversation: a conversation's own
+values over the person's defaults. Two conversations with different values run two
+copies of your command server (or two connections to your URL), each started with its
+own environment and arguments, side by side in the same workspace folder. Do not
+assume one copy per machine: key any state you keep on disk by the values it belongs
+to, and expect a reopen to replay a call against whichever values the conversation
+has at that moment.
+
 A secret reaches the server only in its environment or a header. CLIO keeps it in its
 credential store, and the saved connection holds only the placeholder.
 
@@ -169,18 +177,24 @@ connection under the same name with `connections`:
 }
 ```
 
-- When the person enables the connector, the plugin joins their agents, for every
-  conversation or for the agents they chose. When they disable it, it leaves. A
-  person's own removal of the plugin from an agent still wins.
-- It is never offered in a plugin picker.
+- Enabling the connector adds the plugin to no conversation. While the connector is
+  enabled, the plugin is offered under **Connectors** in a conversation's **Add
+  plugin** picker, by the connector's name and logo, and in the agent editor. The
+  person adds it to the conversations that need it, or to an agent as a default.
+- When the connector is turned off, a conversation that has the plugin keeps it in its
+  delta, but the plugin leaves the conversation's resolution with the typed reason
+  `connector_off`; it comes back when the connector is enabled again. A connector
+  that is off is not offered in the pickers.
+- The Extensions list shows the plugin with its connector, not on its own.
 - `connections` must map the connector's id to itself. A plugin that follows a
   connector without that binding fails to load.
 - The plugin must be installed from a marketplace the person trusts. IOWarp's
   following plugins ship in the `clio` marketplace. Set the entry's `plugin` to its
   name so the card can name it.
 
-A connector with no following plugin still reaches agents: CLIO adds a plugin with no
-content, `connector-<id>`, that only binds the connection.
+A connector with no following plugin is added the same way: for every enabled
+connector CLIO lists a plugin with no content, `connector-<id>` in the
+`clio-connectors` marketplace, that only binds the connection.
 
 Write the plugin's skill to tell the agent how to use the tools well, and which values
 it may change with `set_connector_value`. See [Plugin reference](/docs/sdk/plugins/).

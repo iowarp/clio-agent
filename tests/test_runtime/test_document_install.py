@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from clio_agent.runtime import document_install as installer
+from clio_agent.runtime import install_tool_servers as tool_servers
 
 
 @pytest.mark.parametrize("javascript", ["ready", "failed"])
@@ -126,15 +127,22 @@ def test_installer_reports_each_sub_jobs_seconds(
 ) -> None:
     (tmp_path / "locked").mkdir()
 
-    def packages(*args: Any, timings: dict[str, float] | None = None, **kwargs: Any) -> Any:
+    def packages(
+        *args: Any,
+        timings: dict[str, float] | None = None,
+        office_checked: bool = False,
+        **kwargs: Any,
+    ) -> Any:
         assert timings is not None
+        # The installer's conversion check owns Office; the probe must not start it again.
+        assert office_checked
         timings["python_environment"] = 1.0
         return {
             "status": "ready",
             "runtime_id": "locked",
             "javascript": {"status": "ready"},
-            "native_tools": {},
-            "capabilities": {},
+            "native_tools": {"soffice": {"status": "not_checked"}},
+            "capabilities": {"office_render_recalculate": "not_checked"},
         }
 
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
@@ -148,7 +156,11 @@ def test_installer_reports_each_sub_jobs_seconds(
         lambda **kwargs: {"status": "available", "implementation": "mxc"},
     )
     timings: dict[str, float] = {}
-    installer.install_document_runtime(tmp_path / "workspace", cache_root=tmp_path, timings=timings)
+    result = installer.install_document_runtime(
+        tmp_path / "workspace", cache_root=tmp_path, timings=timings
+    )
+    assert result["native_tools"]["soffice"] == {"status": "available", "path": "soffice"}
+    assert result["capabilities"]["office_render_recalculate"] == "available"
     assert set(timings) == {
         "protect_runtime",
         "office",
@@ -446,6 +458,292 @@ def test_default_marketplace_is_installed_by_an_install_but_never_by_a_launch_ch
     assert install["status"] == "ready", install
     assert lines[-1] == "The default agents are installed."
     assert PluginService().ensure_default_marketplace() is None
+
+
+def _done(value: dict[str, Any]) -> Any:
+    from concurrent.futures import Future
+
+    future: Future[dict[str, Any]] = Future()
+    future.set_result(value)
+    return future
+
+
+def test_tool_servers_wait_for_the_installer_kit_then_build_in_parallel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The agents' clio-kit servers are built at install, after the installer's clio-kit."""
+    from argparse import Namespace
+
+    from clio_agent.tools import mcp_prepare
+
+    signal = tmp_path / "kit-ready.json"
+    kit_bin = tmp_path / "kit-bin"
+    monkeypatch.setenv(tool_servers.KIT_READY_ENV, str(signal))
+    monkeypatch.setenv("PATH", "base")
+    monkeypatch.setattr(tool_servers, "_KIT_READY_POLL_S", 0.01)
+    servers = {"hdf5": object(), "parquet": object(), "adios": object()}
+    monkeypatch.setattr(tool_servers, "_carried_kit_servers", lambda: servers)
+    seen_path: list[str] = []
+    both = Barrier(len(servers), timeout=5)
+
+    def provision(name: str, spec: Any) -> str:
+        seen_path.append(__import__("os").environ["PATH"])
+        both.wait()  # every server builds at once
+        if name == "adios":
+            raise mcp_prepare.PrepareError(mcp_prepare.PROVISION_NETWORK, "offline")
+        return mcp_prepare.PROVISIONED
+
+    monkeypatch.setattr(mcp_prepare, "provision", provision)
+    args = Namespace(prepare_tool_servers=True, reuse_installed=False)
+    started = Event()
+
+    def write_signal() -> None:
+        started.wait(5)
+        signal.write_text(
+            json.dumps({"status": "ready", "path": [str(kit_bin)], "env": {"UV_TOOL_DIR": "t"}}),
+            encoding="utf-8",
+        )
+
+    from threading import Thread
+
+    writer = Thread(target=write_signal)
+    writer.start()
+    started.set()
+    lines: list[str] = []
+    result = tool_servers._prepare_tool_servers(args, _done({"status": "ready"}), lines.append)
+    writer.join()
+    assert result["status"] == "failed"
+    assert result["servers"]["hdf5"]["status"] == mcp_prepare.PROVISIONED
+    assert result["servers"]["adios"]["reason"] == mcp_prepare.PROVISION_NETWORK
+    assert all(path.startswith(str(kit_bin)) for path in seen_path)
+    assert __import__("os").environ["UV_TOOL_DIR"] == "t"
+    assert lines[-1].endswith("adios")
+
+
+def test_carried_kit_servers_read_only_installed_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery gets the installed records and never loads the built-ins."""
+    from types import SimpleNamespace
+
+    from clio_agent.plugins import service as service_module
+    from clio_agent.runtime import mcp_launcher
+
+    kit = SimpleNamespace(command="clio-kit", args=["mcp-server", "hdf5"])
+    installed = [
+        SimpleNamespace(id="hdf5", mcp_servers={"hdf5": {}, "hdf5-other": {}}),
+        SimpleNamespace(id="loose", mcp_servers={"loose": {}}),
+    ]
+
+    class Store:
+        def installed_records(self) -> list[Any]:
+            return installed
+
+        def records(self) -> list[Any]:
+            pytest.fail("built-ins loaded")
+
+    class Service:
+        store = Store()
+
+        def agents(self) -> list[Any]:
+            selection = SimpleNamespace(ref=SimpleNamespace(id="hdf5"))
+            return [SimpleNamespace(spec=SimpleNamespace(plugins=[selection]))]
+
+    seen: list[Any] = []
+
+    def discover(*, records: Any) -> dict[str, Any]:
+        seen.append(records)
+        other = SimpleNamespace(command="python", args=["-m", "x"])
+        return {"hdf5": kit, "hdf5-other": other, "loose": kit}
+
+    monkeypatch.setattr(service_module, "PluginService", Service)
+    monkeypatch.setattr(mcp_launcher, "discover_declared_mcp_servers", discover)
+    assert tool_servers._carried_kit_servers() == {"hdf5": kit}
+    assert seen == [installed]
+
+
+def test_tool_servers_are_skipped_without_the_flag_kit_or_marketplace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argparse import Namespace
+
+    calls: list[str] = []
+    monkeypatch.setattr(tool_servers, "_carried_kit_servers", lambda: calls.append("x") or {})
+    ready = _done({"status": "ready"})
+    off = tool_servers._prepare_tool_servers(
+        Namespace(prepare_tool_servers=False, reuse_installed=False), ready, print
+    )
+    assert off == {"status": "skipped", "reason": "not_requested"}
+    no_market = tool_servers._prepare_tool_servers(
+        Namespace(prepare_tool_servers=True, reuse_installed=False),
+        _done({"status": "failed"}),
+        print,
+    )
+    assert no_market["reason"] == "tool_servers_marketplace_unavailable"
+    signal = tmp_path / "kit-ready.json"
+    signal.write_text(json.dumps({"status": "failed", "path": [], "env": {}}), encoding="utf-8")
+    monkeypatch.setenv(tool_servers.KIT_READY_ENV, str(signal))
+    no_kit = tool_servers._prepare_tool_servers(
+        Namespace(prepare_tool_servers=True, reuse_installed=False), ready, print
+    )
+    assert no_kit["reason"] == "tool_servers_kit_unavailable"
+    assert calls == []
+
+
+def _kit_catalogue(pins: dict[str, str | None], runtimes: dict[str, str] | None = None) -> dict:
+    import hashlib
+
+    servers, artifacts = {}, {}
+    for name, pin in pins.items():
+        files = {"pyproject.toml": {"sha256": "0" * 64, "size": 1}}
+        if pin is not None:
+            data = pin.encode("ascii")
+            files[".python-version"] = {
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        runtime = (runtimes or {}).get(name, "python")
+        servers[name] = {"artifact": f"server/{name}", "runtime": runtime}
+        artifacts[f"server/{name}"] = {"files": files}
+    return {"servers": servers, "artifacts": artifacts}
+
+
+def test_server_python_request_is_the_pin_every_python_server_shares() -> None:
+    request = tool_servers._catalogue_python_request
+    assert request(_kit_catalogue({"hdf5": "3.12\n", "adios": "3.12\n"})) == "3.12"
+    assert request(_kit_catalogue({"hdf5": "3.13"})) == "3.13"
+    # A server of another runtime carries no Python pin and does not count.
+    node = _kit_catalogue({"hdf5": "3.12\n", "web": None}, {"web": "node"})
+    assert request(node) == "3.12"
+    assert request(_kit_catalogue({"hdf5": "3.12\n", "adios": "3.13\n"})) is None
+    assert request(_kit_catalogue({"hdf5": "3.12\n", "adios": None})) is None
+    assert request(_kit_catalogue({"hdf5": "3.12.4\n"})) is None
+    assert request(_kit_catalogue({})) is None
+
+
+def _bundled_kit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, catalogue: dict) -> list[Any]:
+    import importlib.util
+    from types import SimpleNamespace
+
+    from clio_agent.tools import desktop_mcp_runtime, mcp_environment
+
+    package = tmp_path / "clio_kit"
+    package.mkdir()
+    (package / "_components.json").write_text(json.dumps(catalogue), encoding="utf-8")
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec(name: str, *rest: Any) -> Any:
+        if name == "clio_kit":
+            return SimpleNamespace(submodule_search_locations=[str(package)])
+        return real_find_spec(name, *rest)
+
+    kit_cache = tmp_path / "kit-cache"
+    launcher_env = {"PATH": str(tmp_path / "bin"), "CLIO_KIT_CACHE_DIR": str(kit_cache)}
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(
+        desktop_mcp_runtime,
+        "bundled_module_launcher",
+        lambda command, args: ("python", ["-c", "kit", *args], dict(launcher_env)),
+    )
+    environment = {"UV_MANAGED_PYTHON": "1", "VIRTUAL_ENV": "v", "PATH": "ambient"}
+    monkeypatch.setattr(
+        mcp_environment, "stdio_environment", lambda spec_env, **_: dict(environment)
+    )
+    monkeypatch.setattr(tool_servers.shutil, "which", lambda name, path=None: f"{path}/{name}")
+    runs: list[Any] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        runs.append((command, kwargs["env"]))
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(tool_servers.subprocess, "run", run)
+    return runs
+
+
+def test_server_python_is_installed_with_the_builds_uv_and_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argparse import Namespace
+
+    runs = _bundled_kit(monkeypatch, tmp_path, _kit_catalogue({"hdf5": "3.12\n"}))
+    lines: list[str] = []
+    result = tool_servers._prefetch_server_python(
+        Namespace(prepare_tool_servers=True, reuse_installed=False), lines.append
+    )
+    assert result["status"] == "ready"
+    assert result["request"] == "3.12"
+    ((command, env),) = runs
+    uv = f"{tmp_path / 'bin'}/uv"
+    assert command == [uv, "python", "install", "--no-bin", "--no-registry", "3.12"]
+    assert env["UV_CACHE_DIR"] == str((tmp_path / "kit-cache").resolve() / "uv-cache")
+    assert "VIRTUAL_ENV" not in env
+    assert lines[-1] == "Python 3.12 for the agents' data tools is ready."
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("UV_PYTHON", "3.11"),
+        ("UV_PYTHON_DOWNLOADS", "manual"),
+        ("UV_PYTHON_PREFERENCE", "only-system"),
+        ("UV_NO_MANAGED_PYTHON", "1"),
+        ("UV_MANAGED_PYTHON", ""),
+    ],
+)
+def test_server_python_is_left_to_the_builds_when_their_choice_is_overridden(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str, value: str
+) -> None:
+    from argparse import Namespace
+
+    from clio_agent.tools import mcp_environment
+
+    runs = _bundled_kit(monkeypatch, tmp_path, _kit_catalogue({"hdf5": "3.12\n"}))
+    environment = {"UV_MANAGED_PYTHON": "1", variable: value}
+    monkeypatch.setattr(
+        mcp_environment, "stdio_environment", lambda spec_env, **_: dict(environment)
+    )
+    result = tool_servers._prefetch_server_python(
+        Namespace(prepare_tool_servers=True, reuse_installed=False), print
+    )
+    assert result == {"status": "skipped", "reason": "python_choice_overridden"}
+    assert runs == []
+
+
+def test_server_python_is_skipped_without_a_shared_pin_or_a_bundled_kit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argparse import Namespace
+
+    from clio_agent.tools import desktop_mcp_runtime
+
+    args = Namespace(prepare_tool_servers=True, reuse_installed=False)
+    assert tool_servers._prefetch_server_python(
+        Namespace(prepare_tool_servers=False, reuse_installed=False), print
+    ) == {"status": "skipped", "reason": "not_requested"}
+    runs = _bundled_kit(monkeypatch, tmp_path, _kit_catalogue({"a": "3.12\n", "b": "3.13\n"}))
+    assert tool_servers._prefetch_server_python(args, print)["reason"] == "no_shared_python_pin"
+    monkeypatch.setattr(desktop_mcp_runtime, "bundled_module_launcher", lambda *_: None)
+    assert tool_servers._prefetch_server_python(args, print)["reason"] == "no_bundled_kit"
+    assert runs == []
+
+
+def test_a_failed_server_python_install_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argparse import Namespace
+    from types import SimpleNamespace
+
+    _bundled_kit(monkeypatch, tmp_path, _kit_catalogue({"hdf5": "3.12\n"}))
+    monkeypatch.setattr(
+        tool_servers.subprocess,
+        "run",
+        lambda *_, **__: SimpleNamespace(returncode=2, stderr=b"no network"),
+    )
+    result = tool_servers._prefetch_server_python(
+        Namespace(prepare_tool_servers=True, reuse_installed=False), print
+    )
+    assert result["status"] == "failed"
+    assert result["error"] == "no network"
 
 
 def test_browser_is_fetched_by_an_install_but_never_by_a_launch_check(

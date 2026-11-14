@@ -304,12 +304,14 @@ def test_several_values_are_set_with_one_apply(
     state.update("fixture-remote", enabled=True)
     applied: list[dict[str, Any]] = []
 
-    async def set_values(_app: Any, connector_id: str, values: Any, **kw: Any) -> dict:
-        applied.append({"connector": connector_id, "values": dict(values), **kw})
+    async def set_values(_app: Any, sid: str, connector_id: str, values: Any, **kw: Any) -> dict:
+        applied.append({"session": sid, "connector": connector_id, "values": dict(values), **kw})
         return {"state": {"status": "ready"}, "tool_count": 2}
 
-    monkeypatch.setattr(service, "set_values", set_values)
+    # CV-D4: the agent's value is this conversation's, applied to its own fleet.
+    monkeypatch.setattr("clio_agent.gact.connector_values.set_session_values", set_values)
     monkeypatch.setattr(context, "active_app", lambda: _app())
+    monkeypatch.setattr(context, "active_tool_session_id", lambda: "sess_a")
     result = asyncio.run(
         connector_tool.set_connector_value(
             "Fixture Remote", values={"address": "node08", "Jump host": "login"}
@@ -317,9 +319,11 @@ def test_several_values_are_set_with_one_apply(
     )
     assert applied == [
         {
+            "session": "sess_a",
             "connector": "fixture-remote",
             "values": {"address": "node08", "via": "login"},
             "by_agent": True,
+            "move_turn": True,
         }
     ]
     assert result["values"] == {"Where it runs": "node08", "Jump host": "login"}
@@ -329,7 +333,12 @@ def test_several_values_are_set_with_one_apply(
         result,
     )
     assert row["subject"] == "Where it runs, Jump host of Fixture Remote"
-    assert [b["text"] for b in row["blocks"]] == ["node08", "login", "Ready (2 tools)"]
+    assert [b["text"] for b in row["blocks"]] == [
+        "node08",
+        "login",
+        "This conversation",
+        "Ready (2 tools)",
+    ]
 
     one = asyncio.run(connector_tool.set_connector_value("fixture-remote", "via", "ares"))
     assert applied[-1]["values"] == {"via": "ares"} and one["value"] == "ares"

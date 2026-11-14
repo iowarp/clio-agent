@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -14,6 +15,7 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
 from clio_agent.gact import view_call_cancel
+from clio_agent.tools import fleet_close_listeners
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
@@ -27,6 +29,10 @@ logger = logging.getLogger(__name__)
 #: replaced because the call now names a different server object: the fleet that
 #: owned the old proxy was reaped or rebuilt, and its process is gone with it.
 EXTERNAL_MCP_CONNECTION_SUPERSEDED = "external_mcp_connection_superseded"
+#: A retained connection to a proxy its fleet stopped routing to (the fleet was reaped,
+#: restarted or rebuilt, or the namespace was rebound): nothing can reach it any more,
+#: and it kept the proxy's server process running (CV-N2).
+EXTERNAL_MCP_CONNECTION_FLEET_CLOSED = "external_mcp_connection_fleet_closed"
 
 
 def _in_process_owner(configured: Client) -> str:
@@ -209,17 +215,58 @@ async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -
             continue
         if not stale_owner.startswith("in-process:"):
             continue
-        idle = not (host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
-        logger.warning(
-            "%s server=%s retired=%s",
-            EXTERNAL_MCP_CONNECTION_SUPERSEDED,
-            server,
-            idle,
+        await _retire_stale(self, host, EXTERNAL_MCP_CONNECTION_SUPERSEDED)
+
+
+async def _retire_stale(
+    self: ExternalTasks, host: ExternalConnection, reason: str, **why: str
+) -> None:
+    """Retire ``host`` now when idle; a busy one is marked so its calls end typed."""
+
+    idle = not (host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
+    detail = "".join(f" {key}={value}" for key, value in why.items())
+    logger.warning("%s server=%s retired=%s%s", reason, host.cache_key[0], idle, detail)
+    if idle:
+        await retire_connection(self, host, shutdown=True)
+    else:  # its calls end with their server, and their records name why
+        host.superseded = True
+
+
+def watch_fleets(self: ExternalTasks) -> None:
+    """Retire the connections retained on a fleet's proxies when it drops them (CV-N2).
+
+    The reaper, a restart or a rebuild closes a fleet, and a connector change rebinds
+    a namespace to a new proxy, on whichever thread does it; the retirement runs on the
+    application's loop. Registered once per application, removed by
+    :func:`close_connections`.
+    """
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # built outside the application's lifespan (tests): not watched
+        logger.info("external_mcp_fleet_watch_skipped reason=no_running_loop")
+        return
+    owner = weakref.ref(self)
+
+    def dropped(root: str, proxies: tuple[Any, ...], reason: str) -> None:
+        tasks = owner()
+        if tasks is None or tasks._closing or loop.is_closed():
+            return
+        owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
+        asyncio.run_coroutine_threadsafe(retire_owned(tasks, owners, root, reason), loop)
+
+    self._unwatch_fleets = fleet_close_listeners.listen(dropped)
+
+
+async def retire_owned(self: ExternalTasks, owners: set[str], root: str, reason: str) -> int:
+    """Retire every retained connection to one of ``owners``; return how many matched."""
+
+    matched = [host for host in tuple(self.connections.values()) if host.cache_key[2] in owners]
+    for host in matched:
+        await _retire_stale(
+            self, host, EXTERNAL_MCP_CONNECTION_FLEET_CLOSED, fleet=root or "-", because=reason
         )
-        if idle:
-            await retire_connection(self, host, shutdown=True)
-        else:  # its calls end with their server, and their records name why
-            host.superseded = True
+    return len(matched)
 
 
 def failure_reason(host: ExternalConnection, error: BaseException) -> str:
@@ -234,9 +281,17 @@ async def retire_connection(
     *,
     shutdown: bool = False,
 ) -> None:
-    """Close one exclusive transport only after submission and observation custody ends."""
+    """Close one exclusive transport only after submission and observation custody ends.
+
+    A shared connection closes only at shutdown, or once it was superseded (its proxy is
+    no longer routed to): then it goes when its last call's custody ends.
+    """
     async with host.reconnect_lock:
-        if host.client is None or host.closing or not (shutdown or host.isolated):
+        if (
+            host.client is None
+            or host.closing
+            or not (shutdown or host.isolated or host.superseded)
+        ):
             return
         if host.rpcs or any(not driver.done() for driver in host.drivers.values()):
             return
@@ -279,6 +334,8 @@ async def retire_connection(
 async def close_connections(self: ExternalTasks) -> None:
     """Finish acceptance, then close observation without cancelling external server jobs."""
     self._closing = True
+    if unwatch := getattr(self, "_unwatch_fleets", None):
+        unwatch()
     if self._opening:
         await asyncio.shield(asyncio.gather(*tuple(self._opening.values()), return_exceptions=True))
     hosts = tuple(self.connections.values())

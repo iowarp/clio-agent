@@ -16,10 +16,6 @@ from clio_agent.gact.mcp_user_configuration import (
     McpUserConfigurationError,
     set_user_mcp_server,
 )
-from clio_agent.gact.routes.mcp_configuration import (
-    _configured_web_remote_url,
-    _probe_web_search_remote,
-)
 from clio_agent.tools.mcp_config import load_mcp_servers
 
 
@@ -39,41 +35,6 @@ def _web_spec(remote_url: str) -> dict[str, Any]:
             remote_url,
         ],
     }
-
-
-def test_web_remote_readiness_uses_only_the_declared_endpoint(monkeypatch) -> None:
-    requested: list[str] = []
-
-    class _Response:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict[str, Any]:
-            return {
-                "status": "ready",
-                "checks": {"docling": "ready", "searxng": "ready", "grobid": "ready"},
-            }
-
-    class _Client:
-        def __init__(self, **kwargs: Any) -> None:
-            assert kwargs["timeout"] == 15.0
-
-        async def __aenter__(self) -> "_Client":
-            return self
-
-        async def __aexit__(self, *_args: Any) -> None:
-            return None
-
-        async def get(self, url: str) -> _Response:
-            requested.append(url)
-            return _Response()
-
-    monkeypatch.setattr("httpx.AsyncClient", _Client)
-    spec = _web_spec("http://search.example:8089")
-
-    assert _configured_web_remote_url(spec) == "http://search.example:8089"
-    asyncio.run(_probe_web_search_remote("http://search.example:8089"))
-    assert requested == ["http://search.example:8089/readyz"]
 
 
 def test_user_mcp_configuration_persists_across_restart_and_preserves_siblings(
@@ -420,65 +381,6 @@ def test_missing_named_configuration_reports_local_fallback(
     }
 
 
-def test_saved_web_endpoint_also_configures_uploaded_source_conversion(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    user_dir = tmp_path / "user"
-    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
-    monkeypatch.setenv("CLIO_DOCUMENT_PROCESSOR_URL", "http://local.example:8089")
-    config_path = user_dir / "mcp.yaml"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text(
-        yaml.safe_dump({"mcp_servers": {"web": _web_spec("http://remote.example:8089")}}),
-        encoding="utf-8",
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-
-    capabilities = app.state.resource_converter_factory.capabilities()
-    assert capabilities == [
-        {
-            "id": "clio-web-search-docling",
-            "priority": 100,
-            "configured": True,
-            "endpoint": "http://remote.example:8089",
-        }
-    ]
-
-
-def test_web_configuration_updates_document_conversion_live_and_remove_restores_local(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
-    monkeypatch.setenv("CLIO_DOCUMENT_PROCESSOR_URL", "http://local.example:8089")
-
-    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
-        del spec
-        return ["web_fetch"], None
-
-    monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
-    )
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as client:
-        saved = client.put(
-            "/v1/mcp/configuration/web",
-            json=_web_spec("http://remote.example:8089"),
-        )
-        assert saved.status_code == 200, saved.text
-        assert app.state.resource_converter_factory.capabilities()[0]["endpoint"] == (
-            "http://remote.example:8089"
-        )
-
-        removed = client.delete("/v1/mcp/configuration/web")
-        assert removed.status_code == 200, removed.text
-        assert app.state.resource_converter_factory.capabilities()[0]["endpoint"] == (
-            "http://local.example:8089"
-        )
-
-
 @pytest.mark.parametrize(
     ("command", "retries"), [("uvx", 12), ("/usr/bin/npx", 12), ("python", None)]
 )
@@ -500,7 +402,7 @@ def test_a_first_start_launcher_gets_time_to_prepare_its_server(
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    monkeypatch.setattr(mcp_configuration, "transport_for", lambda spec: object())
+    monkeypatch.setattr(mcp_configuration, "transport_for", lambda spec, **_kwargs: object())
     monkeypatch.setattr(mcp_configuration, "make_mcp_client", lambda *a, **k: _Client())
     tools, detail = asyncio.run(
         mcp_configuration._probe_user_mcp_server({"transport": "stdio", "command": command})

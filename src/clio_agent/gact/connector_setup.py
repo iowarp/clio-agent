@@ -14,6 +14,14 @@ it at ``POST /v1/sessions/{sid}/interactions/connector:<id>/respond``:
   refused (422) and the card stays.
 * ``decline`` returns the typed refusal ``connector_declined`` naming the connector.
 
+Values typed in the card are this conversation's (CV-D5); ``metadata.save_as_default``
+names the keys that also become the person's defaults. A secret is always the
+person's, for every conversation. The waiting call runs on the fleet its turn
+started with, so when the card gave this conversation values of its own the call
+does not run with the old ones: it returns the typed
+:data:`VALUES_SET_FOR_CONVERSATION`, and the turn's next call of the connector reaches
+the conversation's own server.
+
 There is no timeout (plan rule 6): stopping the turn ends the wait, and the call is
 recorded as cancelled. The interaction lives in memory beside the permissions: the
 values are never stored in it, nor in a question record or a transcript.
@@ -26,13 +34,25 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact.events import Event
 from clio_agent.runtime import trace
 
+if TYPE_CHECKING:
+    from clio_agent.gact.interaction_types import PendingInteraction
+
 DECLINED = "connector_declined"
+VALUES_SET_FOR_CONVERSATION = "connector_values_set_for_conversation"
 PREFIX = "connector:"
+#: A setup row's status as its pending interaction reads it.
+_INTERACTION_STATUS: dict[str, Literal["pending", "answered", "denied"]] = {
+    "pending": "pending",
+    "submitted": "answered",
+    "declined": "denied",
+}
+#: The card intents that are the agent's offer (connector discovery, plugin discovery).
+OFFER_INTENTS = frozenset({"enable", "add_plugin"})
 
 
 def _rows(app: Any) -> dict[str, dict[str, Any]]:
@@ -107,12 +127,13 @@ def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) ->
 
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
+    from clio_agent.gact.connector_values import session_choice  # noqa: PLC0415
     from clio_agent.tools.tool_observation import peek_call_identity  # noqa: PLC0415
 
     found = state.all_entries().get(connector_id)
-    choice = state.choice(connector_id)
-    if found is None or not choice.enabled:
+    if found is None or not state.choice(connector_id).enabled:
         return None
+    choice = session_choice(app, session_id, found)
     absent = service.missing(found, choice)
     if not absent:
         return None
@@ -139,6 +160,14 @@ def await_setup(app: Any, session_id: str, connector_id: str, tool_name: str) ->
         return _denial(
             f"{DECLINED}: the person declined to set up the {found.name} connector "
             f"({found.id}), so {tool_name} was not called."
+        )
+    if row.get("moved_fleet") is not None:
+        from clio_agent.gact.connector_values import move_running_turn  # noqa: PLC0415
+
+        move_running_turn(found.id, row.pop("moved_fleet"))
+        return _denial(
+            f"{VALUES_SET_FOR_CONVERSATION}: {found.name} is set up for this conversation "
+            f"and restarted with its values; {tool_name} was not called. Call it again."
         )
     return None
 
@@ -218,17 +247,16 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
         if row["session_id"] not in owners:
             continue
         pending = row["status"] == "pending"
-        offer = row.get("intent") == "enable"
+        # The agent's offer: of a connector (``enable``) or of a plugin (``add_plugin``).
+        offer = row.get("intent") in OFFER_INTENTS
         out.append(
             PendingInteraction(
                 id=PREFIX + row["id"],
                 kind="connector_setup",
                 owner_session_id=row["session_id"],
                 attended_session_id=attended_session_id(app, row["session_id"]),
-                status={"pending": "pending", "submitted": "answered", "declined": "denied"}.get(
-                    row["status"], "cancelled"
-                ),
-                title=f"Turn on {row['connector_name']}"
+                status=_INTERACTION_STATUS.get(row["status"], "cancelled"),
+                title=f"Add {row['connector_name']} to this conversation"
                 if offer
                 else f"Set up {row['connector_name']}",
                 prompt=f"The agent offers {row['connector_name']}: {row.get('reason') or ''}".strip()
@@ -246,19 +274,22 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                     "interaction_id": PREFIX + row["id"],
                     "connector_id": row["connector_id"],
                     "connector_name": row["connector_name"],
-                    "logo_url": _logo_url(row["connector_id"]),
+                    "logo_url": _logo_url(row["connector_id"]) if row["connector_id"] else None,
                     "missing": row["missing"],
                     "tool_name": row["tool_name"],
-                    # Connector discovery (CD-1 to CD-6): the agent offers a connector
-                    # that is off; the card turns it on (``connector_offer``).
+                    # Connector discovery (CD-1 to CD-8): the agent offers to add a
+                    # connector to this conversation; the card adds it, turning it on
+                    # first when it is off (``connector_offer``).
                     **(
                         {
-                            "intent": "enable",
+                            "intent": row["intent"],
+                            **_plugin_fields(row),
                             "description": row.get("description") or "",
                             "reason": row.get("reason") or "",
                             "agent_ref": row.get("agent_ref") or "",
                             "agent_name": row.get("agent_name") or "",
                             "asks_sign_in": bool(row.get("asks_sign_in")),
+                            "connector_enabled": bool(row.get("connector_enabled")),
                         }
                         if offer
                         else {}
@@ -268,6 +299,14 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
             )
         )
     return out
+
+
+def _plugin_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A plugin offer's own fields (``plugin_offer``); none for a connector's."""
+
+    if row.get("intent") != "add_plugin":
+        return {}
+    return {"plugin_id": row.get("plugin_id") or "", "plugin_ref": row.get("plugin_ref") or ""}
 
 
 def _logo_url(connector_id: str) -> str | None:
@@ -290,14 +329,13 @@ async def respond(
     action: str,
     values: Mapping[str, Any],
     metadata: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> PendingInteraction:
     """Answer a setup card; returns the updated row's interaction.
 
     An offer card (``intent: enable``) is answered by :func:`.connector_offer.answer`:
-    ``submit`` turns the connector on with ``metadata.scope`` (``all`` or ``agent``).
+    ``submit`` adds the connector to this conversation, turning it on if it is off.
     """
 
-    from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
 
     row = _rows(app).get(interaction_id.removeprefix(PREFIX))
@@ -309,17 +347,37 @@ async def respond(
         from clio_agent.gact.connector_offer import answer  # noqa: PLC0415
 
         await answer(app, row, action, values, metadata or {})
+    elif row.get("intent") == "add_plugin":
+        from clio_agent.gact import plugin_offer  # noqa: PLC0415
+
+        await plugin_offer.answer(app, row, action)
     elif action == "decline":
         row.update(status="declined", updated_at=_now())
     elif action == "submit":
+        from clio_agent.gact.connector_values import (  # noqa: PLC0415
+            default_keys,
+            session_choice,
+            session_fleet,
+            set_session_values,
+        )
+
+        sid = str(row["session_id"])
         found = service.entry(row["connector_id"])
-        absent = await asyncio.to_thread(service.missing, found, state.choice(found.id))
+        absent = await asyncio.to_thread(service.missing, found, session_choice(app, sid, found))
         if values:
             try:
-                await service.set_values(app, row["connector_id"], values)
+                plain, _secret = service.check_values(found, values, by_agent=False)
+                defaults = default_keys(metadata, plain)
+                updated = await set_session_values(
+                    app, sid, found.id, values, by_agent=False, save_as_default=list(defaults)
+                )
             except service.ConnectorError as exc:
                 raise SetupResponseError(exc.status, exc.code, str(exc)) from None
-            absent = await asyncio.to_thread(service.missing, found, state.choice(found.id))
+            if updated.get("moved"):  # values of its own: another fleet serves it now
+                row["moved_fleet"] = await asyncio.to_thread(session_fleet, app, sid)
+            absent = await asyncio.to_thread(
+                service.missing, found, session_choice(app, sid, found)
+            )
         elif not absent:
             # Signed in through the sign-in flow: the waiting call's fleet reconnects to it
             # (a connection that failed for want of a sign-in is not reused).

@@ -1,7 +1,9 @@
 // First-run journeys (ledger "First-run journey"): a person types plain requests and
 // answers what CLIO asks, as a person would, while this step file counts what they meet.
 //
-//   JOURNEY_PROMPTS   JSON array of plain requests, sent one after another (required)
+//   JOURNEY_PROMPTS   JSON array of plain requests, sent one after another (required); an
+//                     empty string with JOURNEY_START=session:… sends nothing and follows
+//                     the turn that conversation is running (its waiting cards included)
 //   JOURNEY_START     "landing" (default): type in the first screen's composer, as a new
 //                     person does; "workspace:<name>": a new conversation in a workspace
 //                     folder under .cloud-run/apps-work/<name>; "session:<path>": reopen
@@ -25,7 +27,8 @@ import { ROOT, api, appFrames, heroShot, openConversation } from "./_lib.mjs";
 const label = process.env.JOURNEY_LABEL || "journey";
 const prompts = JSON.parse(process.env.JOURNEY_PROMPTS || "[]");
 const start = process.env.JOURNEY_START || "landing";
-const scope = process.env.JOURNEY_PERMISSION === "once" ? "Allow once" : "Allow for this session";
+// The permission card's buttons read "Allow once", "This session", "This workspace", "Deny".
+const scope = process.env.JOURNEY_PERMISSION === "once" ? /^(\d\s*)?Allow once/ : /^(\d\s*)?(This session|Allow for this session)/;
 const setupAction = process.env.JOURNEY_SETUP || "continue";
 const minutes = Number(process.env.JOURNEY_MINUTES || 10);
 
@@ -82,10 +85,11 @@ export default async function (page, shot) {
   for (const [index, text] of prompts.entries()) {
     const began = Date.now();
     if (sid) seen = new Set((await messages(sid)).map((m) => m.id));
-    sid = await composerSend(page, text);
+    sid = text ? await composerSend(page, text) : page.url().split("/sessions/")[1].split(/[/?#]/)[0];
     const turn = { request: text, sid, permissions: [], setups: [], waits: 0 };
-    const permission = page.locator('[data-slot="ask-card"][data-interaction-kind="permission"]');
-    const setup = page.locator('[data-slot="ask-card"][data-interaction-kind="connector_setup"]');
+    // Only the card the dock shows: two waiting cards are paged ("1/2"), one at a time.
+    const permission = page.locator('[data-slot="ask-card"][data-interaction-kind="permission"]:visible');
+    const setup = page.locator('[data-slot="ask-card"][data-interaction-kind="connector_setup"]:visible');
     const question = page.locator('[data-slot="ask-card"]:not([data-interaction-kind="permission"]):not([data-interaction-kind="connector_setup"])');
     let busy = false;
     const deadline = Date.now() + minutes * 60000;
@@ -102,11 +106,19 @@ export default async function (page, shot) {
       }
       if (await setup.count()) {
         const card = setup.first();
+        // A setup card says Continue/Decline; a connector offer card says Add/Not now.
+        const name = setupAction === "decline" ? /^(\d\s*)?(Decline|Not now)/ : /^(\d\s*)?(Continue|Add)\b/;
+        const button = card.getByRole("button", { name }).first();
+        // An answered offer stays on screen, its buttons disabled, while the connector
+        // turns on: that is a wait, not a second card.
+        if (!(await button.isEnabled().catch(() => false))) {
+          turn.waits += 1;
+          continue;
+        }
         await card.scrollIntoViewIfNeeded().catch(() => {});
         await shot(`t${index + 1}-setup-${turn.setups.length + 1}`);
         turn.setups.push((await card.innerText()).replace(/\s+/g, " ").slice(0, 600));
-        const name = setupAction === "decline" ? "Decline" : "Continue";
-        await card.getByRole("button", { name }).first().click();
+        await button.click();
         await page.waitForTimeout(1500);
         continue;
       }

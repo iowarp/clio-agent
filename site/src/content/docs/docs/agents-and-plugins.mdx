@@ -45,7 +45,8 @@ The default agent, shown as **CLIO**, is `clio/standard`. Its plugins:
 |---|---|
 | `workspace` | Read, search, and edit files in the session workspace, and view images. |
 | `shell` | A shell in the session workspace. |
-| `web` | Fetch web pages and search the web. |
+| `web` | Search the web and read pages. See [Search the web](/docs/web-search/). |
+| `literature` | Find papers, preprints, reports and datasets, and follow references, citations and versions. See [Find papers and review the literature](/docs/literature/). |
 | `documents` | A pack of document formats: PDF, Word, spreadsheets, presentations, LaTeX, and OpenDocument. |
 | `visuals` | Interactive analysis, dashboards, diagrams, and visual review in the side panel. |
 | `connected-data` | Connected research data sources, the National Data Platform, and knowledge stores. |
@@ -129,6 +130,18 @@ To remove a plugin, choose the remove button on its row in the **Plugins** tab. 
 - `core` has no remove button.
 
 Changes apply to this conversation only. The agent's name in the title shows how many changes you made.
+
+### When the agent offers a plugin
+
+The agent knows which of your plugins and connectors this conversation does not have:
+each by name, the marketplace it comes from and a line about what it does, the most
+recently added marketplace first, up to `plugins.offer_listed` (20) with the total. When
+a request needs one, it asks with a card, **Add tariff-calc to this conversation?**, and
+its reason. **Add** adds the plugin to this conversation as an injection (the agent is
+told about it at once), and its skills and tools are the agent's in the same reply; a
+plugin's own Python tools arrive with your next message. **Not now** changes nothing. The
+agent never adds a plugin by itself, and it does not offer a plugin a request has no use
+for.
 
 ### How a change reaches the agent
 

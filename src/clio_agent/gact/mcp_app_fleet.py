@@ -34,11 +34,17 @@ __all__ = ["MCP_APP_SERVER_STOPPED", "admitted", "server_stopped"]
 
 
 def _canonical_root(app: Any, sid: str) -> str:
+    """The key of the fleet serving ``sid``: its workspace root and, when the
+    conversation has connector values of its own, their variant (CV-D3)."""
+    from clio_agent.gact.connector_values import session_fleet_variant  # noqa: PLC0415
     from clio_agent.gact.view_fleet import _fleet_root  # noqa: PLC0415
+    from clio_agent.tools.fleet_key import fleet_key  # noqa: PLC0415
     from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
 
     root = _fleet_root(app, sid)
-    return canonical_workspace_root(root) if root else ""
+    return (
+        fleet_key(canonical_workspace_root(root), session_fleet_variant(app, sid)) if root else ""
+    )
 
 
 def _current_fleet(app: Any, sid: str) -> Any:

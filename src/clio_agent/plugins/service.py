@@ -16,6 +16,7 @@ from typing import Any
 
 from clio_agent.plugins.prebuilt import adopt_prebuilt
 from clio_agent.plugins.records import Diagnostic, PluginRecord
+from clio_agent.plugins.resolution_digest import resolution_digest
 from clio_agent.plugins.resolve import (
     NO_DELTA,
     Catalog,
@@ -43,7 +44,7 @@ DEFAULT_MARKETPLACE_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
 # The commit an installed product fetches: the checkout's submodule pin, never the
 # repository's default branch. tests/test_plugins/test_default_marketplace_pin.py keeps
 # it equal to the pin.
-DEFAULT_MARKETPLACE_COMMIT = "bc5ddb2f0e783b28857d1b4aa30a9e5dfcde8ff5"
+DEFAULT_MARKETPLACE_COMMIT = "9c93d449fd1457c832bc484706e486245c369cff"
 _SUBMODULE = Path(__file__).resolve().parents[3] / "external" / "clio-agent-marketplace"
 
 
@@ -222,6 +223,10 @@ class PluginService:
     def catalog(self, extra: list[PluginRecord] | None = None) -> Catalog:
         self.ready()
         records = self.store.records()
+        # Every enabled connector's carrier is a plugin the person can add (CN9 *Amended*).
+        from clio_agent.connectors.follow import carriers  # noqa: PLC0415
+
+        extra = [*carriers(records), *(extra or [])]
         if extra:
             replaced = {(r.marketplace, r.id) for r in extra}
             records = [r for r in records if (r.marketplace, r.id) not in replaced] + list(extra)
@@ -361,18 +366,21 @@ class PluginService:
                 "description": entry.user_agent.description,
                 "parent": root.ref,
             }
-        # Plugins that follow the person's enabled connectors come first, so the
-        # person's own delta can still remove one (``connectors.follow``, CN9).
-        from clio_agent.connectors.follow import additions  # noqa: PLC0415
+        # A connector's plugin is added like any plugin; one whose connector is off
+        # leaves with a typed ``removed`` row instead of failing (``connectors.follow``).
+        from clio_agent.connectors.follow import drop_off  # noqa: PLC0415
 
-        followed, carriers = additions(self.store.records(), (entry.ref, root.ref))
+        applied, dropped = drop_off(user_delta.then(delta), self.store.records())
         resolution = resolve_agent(
-            self.catalog([*(extra or []), *carriers] or None),
+            self.catalog(extra),
             root.spec,
             marketplace=root.marketplace,
-            delta=Delta(tuple(followed)).then(user_delta).then(delta),
+            delta=applied,
             identity=identity,
         )
+        if dropped:
+            resolution.removed = [*resolution.removed, *dropped]
+            resolution.digest = resolution_digest(resolution.body())
         if entry.user_agent is not None:
             resolution.agent = {
                 **resolution.agent,

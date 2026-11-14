@@ -1,0 +1,32 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.you.com/mcp?profile=free",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "accept": "application/json, text/event-stream",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "clio-agent-tests",
+          "version": "0.1"
+        }
+      }
+    },
+    "params": {
+      "profile": "free"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "text/event-stream"
+  },
+  "body": "event: message\ndata: {\"result\": {\"protocolVersion\": \"2025-06-18\", \"capabilities\": {\"logging\": {}, \"tools\": {\"listChanged\": false}}, \"serverInfo\": {\"name\": \"You.com\", \"version\": \"4.0.7\"}, \"instructions\": \"Use this server to search the web, fetch full page content, and run multi-step research using You.com. The you-contents tool extracts page content and returns it in markdown or HTML format. Use HTML format for layout preservation, interactive content, and visual fidelity; use markdown for text extraction and simpler consumption.\"}, \"jsonrpc\": \"2.0\", \"id\": 1}\n\n"
+}

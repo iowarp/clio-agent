@@ -98,6 +98,8 @@ def test_a7_no_network_json_schema_dereferencing_in_clio_agent() -> None:
         Path("src/clio_agent/gact/questions.py"),
         Path("src/clio_agent/gact/agents/dspy_native_tool.py"),
         Path("src/clio_agent/gact/storage/ndp_endpoint_operations.py"),
+        # The connector catalog's own schema: local ``#/$defs`` refs, no resolver.
+        Path("src/clio_agent/connectors/entries.py"),
     }
     src_root = Path("src/clio_agent")
     offenders = []

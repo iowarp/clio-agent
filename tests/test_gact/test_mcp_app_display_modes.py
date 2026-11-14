@@ -141,7 +141,9 @@ def test_display_mode_route_sets_mode_and_pin(tmp_path: Path) -> None:
         sid = client.post("/v1/sessions", json={"title": "apps"}).json()["id"]
         part = _open_app(app, client, sid)
         assert part["display_mode"] == "inline"
-        assert part["title"] == "Fixture viewer"
+        # FP-D2: no saved connection names this server, so the tool title leads,
+        # followed by the opening call's subject.
+        assert part["title"] == "Fixture viewer: x"
         base = f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}"
         query = {"data_ref": part["data_ref"]}
         headers = {"Origin": "http://127.0.0.1:5173", "Referer": "http://127.0.0.1:5173/"}

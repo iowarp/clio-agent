@@ -134,6 +134,7 @@ def app_context_block(
     context: Any = None,
     tools: list[str] | None = None,
     shown: bool = False,
+    state_keys: str = "",
 ) -> str:
     """The one block a live app adds to model text (``clio.reminder.mcp_app_context``).
 
@@ -149,6 +150,7 @@ def app_context_block(
             "context": json.dumps(context, sort_keys=True, default=str) if context else "",
             "tools": ", ".join(tools or ()),
             "shown": "yes" if shown else "",
+            "state_keys": state_keys,
         },
         app=app,
         session_id=sid,
@@ -160,6 +162,7 @@ def app_context_injection(app: Any, sid: str) -> str:
     """The turn's block for every live app on screen, or that reported context or offers
     tools."""
     from clio_agent.gact.mcp_app_look import look_table  # noqa: PLC0415
+    from clio_agent.gact.mcp_app_state_keys import record_state_words  # noqa: PLC0415
     from clio_agent.gact.mcp_app_tools import offered_names_by_app  # noqa: PLC0415
     from clio_agent.gact.mcp_apps import _registry  # noqa: PLC0415
 
@@ -183,6 +186,7 @@ def app_context_injection(app: Any, sid: str) -> str:
             context=entry.get("context"),
             tools=names,
             shown=shown,
+            state_keys=record_state_words(app, sid, record),
         )
         if block:
             blocks.append(block)

@@ -121,7 +121,11 @@ def test_workflow_state_rides_submit_tool_arg_types() -> None:
     assert submit.arg_types["workflow_state"] == dict[str, Any]
     assert submit.arg_types["answer"] is str
 
-    _, engine = _run([Reply(text="n/a")], signature=_Sig)
+    # A direct answer without its declared workflow_state is followed by the extract.
+    extract = Reply(
+        text="[[ ## reasoning ## ]]\nn/a\n\n[[ ## workflow_state ## ]]\n{}\n\n[[ ## completed ## ]]"
+    )
+    _, engine = _run([Reply(text="n/a"), extract], signature=_Sig)
     [schema] = [t.parameters for t in engine.requests[0].tools if t.name == "submit"]
     assert set(schema["properties"]) == {"answer", "workflow_state", "assignment_disposition"}
     assert schema["properties"]["workflow_state"]["type"] == "object"

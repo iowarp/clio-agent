@@ -10,6 +10,11 @@ none of it may be read as an option: a commit is hex, a ref passes
 ``git check-ref-format``, positional arguments follow ``--``, and a source a
 marketplace *declares* (``declared=True``) must be a network URL. It never names a
 folder on this machine, and ``file``/``ext`` transports are refused.
+
+A machine with no usable git (a Mac without the Command Line Tools whose install came
+from PyPI, a minimal Linux or Windows) still fetches a GitHub source: GitHub's archive
+of the same revision is unpacked instead of a clone (:func:`_fetch_archive`), so the
+default marketplace installs during the install wherever git is missing.
 """
 
 from __future__ import annotations
@@ -18,11 +23,17 @@ import hashlib
 import logging
 import os
 import re
+import ssl
 import subprocess
+import tarfile
 import time
+import urllib.request
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, BinaryIO
+from urllib.parse import quote
 
 from clio_agent.platform_paths import remove_tree, rename_extended
 from clio_agent.runtime.git_executable import GitUnavailableError, run_git
@@ -30,6 +41,10 @@ from clio_agent.runtime.git_executable import GitUnavailableError, run_git
 
 class SourceError(RuntimeError):
     """A source could not be fetched. The message names the source and the cause."""
+
+
+class GitMissingError(SourceError):
+    """This machine has no usable git (the message says what to install)."""
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +82,21 @@ def cache_key(url: str, revision: str) -> str:
     return hashlib.sha256(f"{url}\0{revision}".encode()).hexdigest()[:20]
 
 
+def fetch_cache_names(entry: dict[str, Any]) -> set[str]:
+    """The fetch cache folders an installed marketplace ``entry``'s install filled (``fetch_cache``).
+
+    An entry installed before that was recorded names only its own checkout, derived
+    from its URL and revision the way :func:`fetch` keys it.
+    """
+    if "fetch_cache" in entry:
+        return {str(name) for name in entry.get("fetch_cache") or []}
+    url = str(entry.get("url") or "")
+    if not url:
+        return set()
+    revision = entry.get("commit", "") if entry.get("pinned") else entry.get("ref", "")
+    return {cache_key(url, str(revision or ""))}
+
+
 _COMMIT = re.compile(r"[0-9a-f]{7,64}")
 #: Transports a marketplace-declared source may use; ``file`` and ``ext`` never.
 _DECLARED_URL = re.compile(r"(?:https|ssh|git)://[^\s]+|[\w.-]+@[\w.-]+:[^\s]+")
@@ -80,6 +110,12 @@ _PROTOCOLS = (
     "-c",
     "protocol.git.allow=always",
 )
+#: A GitHub https repository URL, the only kind fetched without git (``owner``, ``repo``).
+_GITHUB_HTTPS = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?")
+#: What ``git check-ref-format --allow-onelevel`` accepts, for a machine without git.
+_REF = re.compile(r"(?!.*(?:\.\.|//|@\{|\.lock/|/\.))(?![/.])[A-Za-z0-9._/+-]+(?<![/.])(?<!\.lock)")
+#: The largest repository archive a git-less fetch reads (a marketplace is about 1 MB).
+ARCHIVE_MAX_BYTES = 256 * 1024 * 1024
 
 
 def _check_revision(source: str, ref: str, commit: str) -> None:
@@ -90,6 +126,9 @@ def _check_revision(source: str, ref: str, commit: str) -> None:
     if ref:
         try:
             _git(["check-ref-format", "--allow-onelevel", ref], timeout=10)
+        except GitMissingError:
+            if not _REF.fullmatch(ref):
+                raise SourceError(f"{source}: ref {ref!r} is not a branch or tag name") from None
         except SourceError as exc:
             raise SourceError(f"{source}: ref {ref!r} is not a branch or tag name") from exc
 
@@ -117,7 +156,7 @@ def _git(args: list[str], cwd: Path | None = None, timeout: int = 600) -> str:
             check=False,
         )
     except GitUnavailableError as exc:
-        raise SourceError(f"git {verb} failed: {exc}") from exc
+        raise GitMissingError(f"git {verb} failed: {exc}") from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SourceError(f"git {verb} failed: {exc}") from exc
     if completed.returncode != 0:
@@ -182,13 +221,20 @@ def fetch(
     except OSError as exc:
         raise SourceError(f"cannot create the fetch folder {staging}: {exc}") from exc
     try:
-        _git(["init", "-q"], cwd=staging, timeout=60)
-        _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
         wanted = commit or ref or "HEAD"
-        protocols = [] if local else list(_PROTOCOLS)
-        _git([*protocols, "fetch", "-q", "--depth", "1", "--", "origin", wanted], cwd=staging)
-        _git(["checkout", "-q", "--detach", "FETCH_HEAD", "--"], cwd=staging, timeout=120)
-        head = _git(["rev-parse", "HEAD"], cwd=staging, timeout=30)
+        try:
+            _git(["init", "-q"], cwd=staging, timeout=60)
+        except GitMissingError:
+            archive = None if local else github_archive_url(url, wanted)
+            if archive is None:
+                raise
+            head = _fetch_archive(archive, staging, url=url)
+        else:
+            _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
+            protocols = [] if local else list(_PROTOCOLS)
+            _git([*protocols, "fetch", "-q", "--depth", "1", "--", "origin", wanted], cwd=staging)
+            _git(["checkout", "-q", "--detach", "FETCH_HEAD", "--"], cwd=staging, timeout=120)
+            head = _git(["rev-parse", "HEAD"], cwd=staging, timeout=30)
         if commit and not head.startswith(commit[:12]):
             raise SourceError(f"{url}: fetched {head} but the pin is {commit}")
         try:
@@ -203,6 +249,80 @@ def fetch(
         _discard(staging)
         raise
     return FetchedSource(path=target, url=url, commit=head, local=False)
+
+
+def github_archive_url(url: str, revision: str) -> str | None:
+    """GitHub's tar.gz archive of ``url`` at ``revision``, or ``None`` for another host."""
+    match = _GITHUB_HTTPS.fullmatch(url)
+    if match is None:
+        return None
+    owner, repo = match.groups()
+    return f"https://codeload.github.com/{owner}/{repo}/tar.gz/{quote(revision, safe='/')}"
+
+
+class _Capped:
+    """A response read through, refusing to read past ``limit`` bytes."""
+
+    def __init__(self, stream: BinaryIO, limit: int) -> None:
+        self._stream = stream
+        self._limit = limit
+        self.read_bytes = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._stream.read(size)
+        self.read_bytes += len(data)
+        if self.read_bytes > self._limit:
+            raise SourceError(f"the archive is larger than {self._limit} bytes")
+        return data
+
+
+def _open_archive(archive: str) -> BinaryIO:
+    import truststore  # noqa: PLC0415 - a dependency; only a git-less fetch needs it
+
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    request = urllib.request.Request(archive, headers={"User-Agent": "clio-agent"})
+    return urllib.request.urlopen(request, timeout=60, context=context)  # noqa: S310 - https
+
+
+def _fetch_archive(archive: str, staging: Path, *, url: str) -> str:
+    """Unpack GitHub's ``archive`` into ``staging``; returns the commit it holds.
+
+    The same tree a shallow clone checks out, without ``.git``: GitHub names the
+    commit in the archive's global header, and ``fetch`` checks it against the pin.
+    Members are unpacked with the ``data`` filter (no absolute paths, nothing outside
+    ``staging``, no devices) below the archive's one top folder.
+    """
+    started = time.monotonic()
+    try:
+        with _open_archive(archive) as response:
+            capped = _Capped(response, ARCHIVE_MAX_BYTES)
+            with tarfile.open(fileobj=capped, mode="r|gz") as bundle:  # type: ignore[call-overload]
+
+                def members() -> Iterator[tarfile.TarInfo]:
+                    for member in bundle:
+                        _, _, inner = member.name.partition("/")
+                        if not inner:
+                            continue
+                        member.name = inner
+                        if member.islnk():
+                            member.linkname = member.linkname.partition("/")[2]
+                        yield member
+
+                bundle.extractall(staging, members=members(), filter="data")
+                head = str(bundle.pax_headers.get("comment", "")).strip()
+    except (SourceError, OSError, tarfile.TarError, ValueError) as exc:
+        raise SourceError(f"{url}: no git here, and GitHub's archive failed: {exc}") from exc
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
+        raise SourceError(f"{url}: GitHub's archive names no commit")
+    logger.info(
+        "plugin source fetched without git reason=git_unavailable url=%s commit=%s "
+        "bytes=%d seconds=%.1f",
+        url,
+        head,
+        capped.read_bytes,
+        time.monotonic() - started,
+    )
+    return head
 
 
 def _discard(staging: Path) -> None:

@@ -38,8 +38,6 @@ AGENT_REF_KEY = "agent_ref"
 AGENT_DELTA_KEY = "agent_delta"
 AGENT_RESOLUTION_KEY = "agent_resolution"
 SUBAGENT_KEY = "agent_subagent"
-#: The enabled connectors whose following plugins this pin includes (CN9, CN10).
-CONNECTOR_FOLLOW_KEY = "agent_connectors"
 
 
 class SessionAgentUnavailable(RuntimeError):
@@ -108,17 +106,7 @@ def resolution_metadata(resolution: Resolution, *, ref: str, delta: Delta) -> di
         AGENT_REF_KEY: ref,
         AGENT_DELTA_KEY: delta.to_dict(),
         AGENT_RESOLUTION_KEY: resolution.digest,
-        CONNECTOR_FOLLOW_KEY: connector_stamp(ref, resolution),
     }
-
-
-def connector_stamp(ref: str, resolution: Resolution) -> list[str]:
-    """The enabled connectors that reach this agent (what its pin was resolved with)."""
-
-    from clio_agent.connectors.follow import applicable  # noqa: PLC0415
-
-    agent = resolution.agent
-    return applicable((ref, str(agent.get("ref") or ""), str(agent.get("extends") or "")))
 
 
 def prepare_session_agent(app: Any, metadata: dict[str, Any], ref: str = "") -> Resolution:
@@ -201,10 +189,10 @@ def session_resolution(app: Any, session_id: str) -> Resolution:
         return pin_session_agent(app, session_id)
     ref = str(metadata.get(AGENT_REF_KEY) or "")
     resolution = pinned_resolution(app, digest, ref)
-    if not metadata.get(SUBAGENT_KEY) and list(
-        metadata.get(CONNECTOR_FOLLOW_KEY) or ()
-    ) != connector_stamp(ref, resolution):
-        # The person enabled or disabled a connector since this pin (CN10).
+    from clio_agent.connectors.follow import drifted  # noqa: PLC0415
+
+    if not metadata.get(SUBAGENT_KEY) and drifted(resolution):
+        # A connector whose plugin this conversation has was turned off, or on again.
         from clio_agent.gact.connector_follow import follow_connectors  # noqa: PLC0415
 
         return follow_connectors(app, session_id)
@@ -228,6 +216,8 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
             {(row["plugin"], str(Path(row["path"]).parent.parent)) for row in resolution.skills}
         ),
     }
+    if agent.get("bare"):
+        metadata["bare"] = True
     structured = dict(agent.get("structured_outputs") or {})
     if resolution.workflow_state is not None:
         # A plugin declaring a workflow_state vocabulary makes its agents emit it.
@@ -325,6 +315,12 @@ def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentD
     return resolution_agent_def(child)
 
 
+def is_bare(agent_def: AgentDef) -> bool:
+    """Whether a resolved agent is bare (see :attr:`clio_agent.sdk.agent.Agent.bare`)."""
+
+    return bool((agent_def.metadata or {}).get("bare"))
+
+
 def apply_session_tool_allowlist(
     app: Any, agent_def: AgentDef, *, session_id: str = ""
 ) -> AgentDef:
@@ -334,8 +330,20 @@ def apply_session_tool_allowlist(
     all, so a server's elicitation message cannot drive a tool-capable turn.
     ``tool_allowlist`` is stamped when the child session is minted. Only the
     explicit empty list is handled; an absent or non-empty allowlist is a no-op.
+
+    A bare agent (``Agent.bare``) is stripped the same way on every turn, and also
+    loses its system prompt: its model sees only the conversation.
     """
 
+    if is_bare(agent_def):
+        return agent_def.model_copy(
+            update={
+                "tools": [],
+                "skills": [],
+                "module": {"kind": "chain_of_thought"},
+                "system_prompt": "",
+            }
+        )
     allowlist = _session_metadata(app, session_id).get("tool_allowlist")
     if not isinstance(allowlist, (list, tuple)) or allowlist:
         return agent_def
@@ -483,10 +491,16 @@ def session_server_set(app: Any, session_id: str) -> str:
     supplied = supplied_server_values(
         app, servers, workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id)
     )
+    from clio_agent.gact.connector_values import session_overlay  # noqa: PLC0415
     from clio_agent.gact.mcp_user_configuration import list_user_mcp_servers  # noqa: PLC0415
 
     try:
-        return register_server_set(servers, supplied, connections=list_user_mcp_servers())
+        return register_server_set(
+            servers,
+            supplied,
+            connections=list_user_mcp_servers(),
+            connector_values=session_overlay(app, session_id),
+        )
     except ConnectionUnavailable as exc:
         raise SessionAgentUnavailable(
             "",
