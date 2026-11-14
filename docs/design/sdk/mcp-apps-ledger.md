@@ -832,7 +832,7 @@ The first-run journey's frictions (JR-P5 to JR-P15) and the integrator's watch i
 
 | ID | Item | Reason |
 | --- | --- | --- |
-| FP-O1 | `scripts/check_file_size.py` fails on the integration branch: `gact/agents/clio_react.py` 817 > 804 and `plugins/store.py` 846 > 800 | not touched here; owners of those files |
+| FP-O1 | `scripts/check_file_size.py` fails on the integration branch: `gact/agents/clio_react.py` 817 > 804 and `plugins/store.py` 846 > 800 | fixed by GT-M1 |
 | FP-O2 | JR-P2 (connector values global), JR-P3 (prompts per view call), JR-R1 (release pins) | owned by conn-scope, conn-values, perm and the release |
 | FP-O3 | JR-P12's memory half (a first conversation's preference surfacing later) | not a polish item; needs a memory policy decision |
 | FP-O4 | The label of a view opened by a scene id names the id, not the dataset | the dataset is only in the result; the rule reads the call. A server could declare a subject later |
@@ -880,6 +880,65 @@ Stack N=28 (agent 8828, UI 5228) on `ws/conn-values` at the integration head plu
 | CF-N5 | Left in the stream's isolated config (`.cloud-run/xdg`, gitignored): the `trade-lab` fixture marketplace, installed and trusted; ParaView enabled with its default prepare value | — | done (recorded) |
 | CF-N6 | Pre-existing, unchanged: `check_file_size.py` (`clio_react.py`, `plugins/store.py`, CV-N4) and `check_theme_colors.mjs` (`a2ui-app-capture.ts`, `mcp-app-comment-images.ts`) | — | open (pre-existing) |
 
+### CI gates (GT)
+
+Stream `gates`, on `ws/polish` after merging the integration head (clio-agent `a1a1ef285`, gact-tui `8718733b4`): every gate the four repositories' CI runs, on the merged code, with no live stack. "Base" is the merge base with `origin/develop` (`54ae350af` in clio-agent) or `origin/main` (clio-kit `c22c7e4`, clio-schemas `fd04806`). The unit suite ran at `-n 2` on a shared 4-CPU machine; a failure that passed when its file was rerun on its own is recorded as load, not as a fault.
+
+#### Moves and fixes
+
+| ID | Change |
+| --- | --- |
+| GT-M1 | **Size ratchet, clio-agent.** Both files were already over at the base (this branch changes neither but one line of `store.py`). Develop's own pure moves are backported byte-equal so a later merge of develop applies cleanly: clio_react's media placement helpers to `gact/agents/clio_react_media.py` (817 to 769, its 804 baseline entry removed, b3a918ad4); `UserAgent` to `plugins/user_agent.py`, the fetch-cache naming into `plugins/sources.py` (b3a918ad4) and the built-in records cache to `plugins/builtin_records.py` (7ccbfbb3b), so `store.py` goes from 846 to 725. The cache's noqa-swallow entry moves with it. No baseline was raised. |
+| GT-M2 | **Size ratchet, clio-kit.** `mcp-servers/paraview/src/paraview_mcp/node/engine.py` (new on the branch, 816 against the 800 cap): the camera (directions, read/apply, the browser's camera report, `set_camera`, look, `fit_camera`) moves unchanged to `node/camera.py` as the `CameraCommands` mixin, ahead of `SceneReading` in the MRO; 816 to 692. |
+| GT-M3 | **noqa-swallow ratchet, moves.** `tools/workspace_fleet.py`'s close handler moved byte-equal from `agent.py` (its entry moves, `agent.py` 3 to 2); `gact/mcp_app_cleanup.py`'s session cleanup handler moved from `gact/mcp_apps.py` and forwards into the `RuntimeError` it raises, and `connector_values`' listing failure forwards into the returned reason: both marked `forwards:`; `--lower-baseline` drops `mcp_apps.py` to 0. |
+| GT-M4 | **mypy**: the branch's 26 errors fixed with type-only changes (walrus-bound `.get()` values, `connector_setup.respond` annotated as the `PendingInteraction` it returns, `overlay.merged` takes one connector's overlay, an assert of the invariant `admit()` already guarantees in the service proxy, annotations). The base had one (`code_mode/tool.py`), fixed by backporting develop's rename (b3a918ad4). |
+| GT-M5 | **Unit suite**: MCP 2 field names before their deprecated aliases in `mcp_app_label` and `mcp_result_media` (the 3.14 leg runs `-W error::DeprecationWarning`); the A7 proof allows `connectors/entries.py` (its own schema, local refs, no resolver); `resident_ledgers`' bound for `display_mode` (MA1); `plan_mode_reminder` reads the session workspace's plans folder (FP-D3); wire goldens re-recorded (only the prompt digest and the three new tool names change). |
+| GT-M6 | **gact-tui tests**: the operation count includes `look_at_view` (85); the e2e fixture serves `GET /v1/connectors` (the Extensions library reads it) and lists `POST /v1/connectors` and `POST /v1/sessions/:id/mcp-apps/reopen` as unserved; `settings-tools.test.tsx` no longer expects a connector `scope` (removed by 20cd1f473). |
+| GT-M7 | **clio-schemas**: the vocabulary test counts 40 components, `clio.mcp-app.v1` among them. **clio-kit**: `test_front.py`'s imports sorted (ruff I001). |
+
+#### Gates
+
+| Repo | Gate | Command | Result |
+| --- | --- | --- | --- |
+| clio-agent | ruff | `uv run --no-sync ruff check src/ tests/ scripts/create_demo_data.py scripts/mcp_mem_attribution.py` | passed |
+| clio-agent | format | `uv run --no-sync ruff format --check src/ tests/ scripts/` | passed |
+| clio-agent | size ratchet | `python scripts/check_file_size.py` | fixed (GT-M1); failing identically at the base |
+| clio-agent | class-in-function, summaries, settle, elicitationId, middle dot, tool instrumentation, model overlay, silent fallbacks | the `scripts/check_*.py` and `compile_model_overlay.py --check` steps of `ci.yml` | passed |
+| clio-agent | noqa-hidden swallows | `python scripts/check_noqa_swallows.py` | **failing (GT-O1)**: 8 new handlers; passes at the base |
+| clio-agent | mypy | `uv run --no-sync mypy src/` | fixed (GT-M4): 0 errors in 1703 files |
+| clio-agent | marketplace plugin check | `clio-agent plugin check external/clio-agent-marketplace` | passed, 62/62 |
+| clio-agent | native services | `pytest --confcutdir=tests/test_native_services tests/test_native_services` | passed, 20 (1 Windows-only skip) |
+| clio-agent | bundle lock | `check_bundle_matches_lock.py --resolve` | passed, 4 platforms |
+| clio-agent | homelab script | `bash -n scripts/homelab-env.sh` | passed |
+| clio-agent | unit suite | `run_tests.py tests/ -m "not integration" -W error::DeprecationWarning -n 2` | fixed (GT-M5). Full run: 16,627 passed, 34 failed, 43 errors in 1 h 34 min; the 22 failing files rerun: 15 consistent, now fixed but `test_copilot_auth_discovery.py` (2; the `copilot` extra is not installed here, CI installs it; file unchanged on the branch); the other 64 passed on rerun (load: app-fixture start-ups under a load of 8) |
+| gact-tui | lint | `pnpm lint` | passed |
+| gact-tui | typecheck | `pnpm typecheck` | passed |
+| gact-tui | core, viewer, desktop tests | `vitest run src/v3` in core (365), hdf5-viewer (33), desktop `node --test` (76) | passed |
+| gact-tui | web tests | `vitest run` (one fork) then the 25 files it had not reached | fixed (GT-M6): 753 files pass. Run with the repository's `brand.config.json`: the checkout's local CLIO brand file makes `connected-source-picker.test.tsx` read "CLIO's computer" (4 failures, pass with the CI brand; environment) |
+| gact-tui | brand descriptor | `gen-brand-backend` then `git diff --exit-code` | passed with the CI brand config (the local brand file regenerates a CLIO descriptor; environment) |
+| gact-tui | Go size, media policy | `check_go_file_size.py --enforce`, `check_media_policy.py` | passed; Rust, Go, TUI and adapter jobs not run: the branch changes none of `desktop/src-tauri`, `tui`, `adapters` |
+| clio-kit | ruff, format, size | `ruff check scripts src tests evals skills/clio-coder-skills`, `ruff format --check`, `check_file_size.py` | passed after GT-M2 |
+| clio-kit | mypy | `mypy src --ignore-missing-imports` | passed |
+| clio-kit | root tests | `pytest tests -q` | 613 passed, 1 environment failure: the Go server build finds an empty `/tmp/.git` above pytest's temp folder (`error obtaining VCS status`); passes with `--basetemp` outside `/tmp` |
+| clio-kit | paraview server | `ruff check .`, `ruff format --check .`, `mypy src`, `pytest tests/` from `mcp-servers/paraview` | passed (48, 12 pvpython skips); with `PARAVIEW_TEST_PVPYTHON=/opt/pv6/bin/pvpython` the node half passes 12/12, and the camera, colours, panel, view-mode and PDB pvpython checks pass after GT-M2 |
+| clio-kit | catalogue sync, plugin manifests | `clio-kit marketplace sync --root .` (no drift); `claude plugin validate --strict` on the marketplace and the 3 changed plugins | passed |
+| clio-kit | install acceptance, website build | `verify_*`, `npm run build` | not run (heavy; the brief forbids a full build) |
+| marketplace | unit, pins, literals | `python -m unittest discover -s tests`, `check_model_pins.py`, `check_skill_literals.py` | passed |
+| marketplace | plugin check | `plugin check .` and `plugin check testing` | passed, 62/62 and 8/8 |
+| marketplace | plugin tests | `pytest plugins/*/tests` | passed: 344 with clio-agent's environment, and the 21 that need `trimesh`, `adios2` and `netCDF4` in an environment with them |
+| clio-schemas | lint, format, pyright, canonical schemas | `ruff check`, `ruff format --check`, `pyright src tests scripts`, `python -m clio_schemas.export --verify` | passed |
+| clio-schemas | tests, TS round trip | `pytest`, `npm run check` in `tools/ts-gen` | fixed (GT-M7): 932 passed; TS check passed |
+| clio-schemas | version pins agree | pyproject `0.7.0b2` == `__version__` | passed |
+| clio-schemas | version bump | `check_version_bump.py --base v0.7.0` | **failing (GT-O2)** |
+
+#### Open
+
+| ID | Item | Why it is open | Status |
+| --- | --- | --- | --- |
+| GT-O1 | **Eight broad excepts that only trace**, all new on the branch: `connector_offer.py:301` (join fleet), `connector_plugins.py:37` (brief row), `connector_rebind.py:142` (relist), `connector_values.py:67` (fleet variant), `connectors_service.py:221` (records), `mcp_app_downloads.py:217` (artifact mint), `plugin_offer.py:178` (facts), `tools/fleet_close_listeners.py:63` (a listener). Each catches `Exception` and reports through `trace.event`, which the guard counts as a swallow. Fixing them means choosing per site what may be raised (narrow types, as develop does), forwarding the failure into the typed result, or letting it fail loudly: a behaviour decision for the connectors and apps owners, not a pure move | needs the owners' decision | open |
+| GT-O2 | **clio-schemas version sequence.** `main` published `v0.7.0` after this branch forked from `0.7.0b1`; the branch's `0.7.0b2` sorts below it, so the bump check fails. The next version (for example `0.7.1` or `0.8.0b1`) and clio-agent's pin are a release decision | release | open |
+| GT-O3 | **Merging develop.** A trial `git merge-tree` of clio-agent against `origin/develop` conflicts in the gact-tui gitlink, `config.defaults.yaml`, `tools/mcp_config.py`, `site/src/assets/captures/README.md`, two tests and (from GT-M1) one import line of `plugins/sources.py` (take develop's); develop also re-recorded the wire goldens GT-M5 regenerates | integrator, when merging develop | open |
+
 ### Findings handed between streams, and where each went
 
 | ID | Finding | Resolution |
@@ -918,7 +977,7 @@ Stack N=28 (agent 8828, UI 5228) on `ws/conn-values` at the integration head plu
 | PVUI-O1 | The agent's first `capture` of a scene restored from a manifest once lacked a colour legend that was on (`sess_e474e033dc76`) | Explained and fixed by PVUI-D13 (one legend per field kept in step across its objects) | done |
 | PVUI-O2 | At phone width the ParaView top bar wrapped onto two rows | Fixed by PVUI-D11 (one row; step menu) | done |
 | GR6 | Logo terms for ParaView and Burette, recorded above, wait for the owner's confirmation | owner work | open |
-| FX-F4, QG-Q1 | **Pre-existing at the base:** `scripts/check_file_size.py` fails on `gact/agents/clio_react.py` (817 against baseline 804) and `plugins/store.py` (846 against the 800 cap), identically at `54ae350af` and at head; neither file is changed by this work | owners of those files | open (pre-existing) |
+| FX-F4, QG-Q1 | **Pre-existing at the base:** `scripts/check_file_size.py` fails on `gact/agents/clio_react.py` (817 against baseline 804) and `plugins/store.py` (846 against the 800 cap), identically at `54ae350af` and at head; neither file is changed by this work | Fixed by GT-M1 (develop's moves backported) | done |
 | FX-F5 | **Load-flaky test:** `tests/test_tools/test_execution.py::test_sync_tool_executor_setup_waits_while_its_server_starts` (`NoProgressTimeout` with a 1 s window) failed once and passed once at the base and on `ws/fix` at load 14 to 18. Also flaky under load: `test_artifact_table_query.py::test_build_app_survives_a_racing_dspy_import_in_a_fresh_process`, and gact-tui `settings-tools.test.tsx` (5.8 to 7.5 s cases time out at load 18 and pass alone). `test_hpc_mcp_integration.py::test_candidate_kit_executes_and_persists_external_input_lineage` needs `CLIO_TEST_KIT_LAUNCHER` (an environment precondition older than the base) and was not run | pre-existing | open (pre-existing) |
 | PV5-F1 | **The `--multi-clients` fixture note.** The cluster's pvserver form uses `pvserver --multi-clients` because a ParaView 6.2.1 pvserver exits when its first client disconnects; the flag is deprecated in 6.2.1. If a later ParaView drops it, the fixture needs another way to hold a session (for example a client that never disconnects with a server that accepts reconnects). The server itself never uses it | fixture only | done (recorded) |
 | QG-S2 | While a connector's Enable was pending the card read "Not enabled" with only a dimmed button | Fixed by FN-D1 ("Starting…" in the card, its scope line, its button and its Extensions row) | done |
