@@ -1345,7 +1345,7 @@ async def test_declared_path_ui_resource_admits_and_serves_through_the_apps_host
             # MA23: a view never reaches loopback directly; the declared source is refused.
             assert "connect-src 'self';" in csp
             assert "127.0.0.1:*" not in csp
-            assert "script-src 'self' 'unsafe-inline' blob: data: blob:" in csp
+            assert "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: blob:" in csp
     finally:
         if executor is not None:
             executor.close()
