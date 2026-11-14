@@ -33,6 +33,26 @@ Word documents and PowerPoint presentations can have a saved PDF preview for
 reading inside CLIO. The editable file remains available to open or download.
 If a preview is unavailable, download the original and open it in your editor.
 
+## View 3D models
+
+STEP (`.step`, `.stp`), STL, 3MF, OBJ, PLY and glTF files open as a 3D view, whether
+you or the agent made them. Drag to turn the model, right-drag to move it, and scroll
+or pinch to zoom. **Fit to view** brings the whole model back, and **Standard views**
+shows it from the top, front, right or at an angle.
+
+The toolbar shows the model's size in millimetres, as width × depth × height, which
+is what a printer's build plate is measured in. STL files carry no unit, so their
+numbers are read as millimetres. A model with several parts, such as a STEP
+assembly, shows each part in its own colour and lists the parts by the names in the
+file. Clear a part's box to hide it; the size then covers the parts still shown.
+**File actions** turns the edges and the parts list on or off.
+
+**Download** keeps the original file. The menu beside it adds **Export to…** rows that
+save the model as a binary STL for a slicer, as a GLB for other 3D viewers, or as a PNG
+picture of the current view. STEP files are read in the browser by OpenCASCADE, which
+loads only when you open one. On a narrow screen the size shows in the view's lower
+left corner, and the parts list is under **File actions**.
+
 ## Ask about the file
 
 Type **@** in your message and select the file, then say what you want to know or

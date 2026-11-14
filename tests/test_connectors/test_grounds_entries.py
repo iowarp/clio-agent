@@ -92,3 +92,13 @@ def test_more_connectors_are_data_only() -> None:
     globe = catalog.entries["globe"]
     assert "@modelcontextprotocol/server-map@2.0.4" in globe.server["args"]
     assert globe.needs == () and globe.logo == "" and globe.tools == ()
+
+
+def test_geo_is_a_data_only_entry_on_the_clio_kit_launcher() -> None:
+    """Geo (the globe of clio-kit's geo server) starts like ParaView, through clio-kit."""
+
+    catalog = entries.load_catalog([SHIPPED])
+    geo = catalog.entries["geo"]
+    assert geo.server["command"] == "clio-kit"
+    assert list(geo.server["args"]) == ["mcp-server", "geo"]
+    assert geo.needs == () and geo.logo == "" and geo.tools == ()
