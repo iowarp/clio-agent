@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from clio_agent.runtime import fleet_runtime_paths as fleet_paths
 from clio_agent.runtime import sandbox_cli as scli
 from clio_agent.runtime import sandbox_codex as sc
 
@@ -266,10 +267,10 @@ def test_fleet_grant_is_typed_noop_off_windows() -> None:
 
 def test_fleet_grant_plan_resolves_the_expected_windows_paths() -> None:
     """The real resolver names all five fleet-runtime paths (uv bin/tools/python, cache, Temp)."""
-    labels = {label for label, _p, _i in scli._resolve_fleet_runtime_paths()}
+    labels = {label for label, _p, _i in fleet_paths._resolve_fleet_runtime_paths()}
     assert labels == {"uv_tool_bin", "uv_tools", "uv_python", "clio_kit_cache", "user_temp"}
     # Temp is the only traverse-only (non-inherit) grant; the rest are recursive dir trees.
-    specs = {label: inherit for label, _p, inherit in scli._resolve_fleet_runtime_paths()}
+    specs = {label: inherit for label, _p, inherit in fleet_paths._resolve_fleet_runtime_paths()}
     assert specs["user_temp"] is False
     assert all(v for k, v in specs.items() if k != "user_temp")
 
@@ -287,12 +288,15 @@ def test_fleet_grant_plan_covers_a_kit_python_outside_uv_python(tmp_path, monkey
     monkeypatch.setattr(
         "clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root", lambda: None
     )
-    specs = {label: (path, inherit) for label, path, inherit in scli._resolve_fleet_runtime_paths()}
+    specs = {
+        label: (path, inherit)
+        for label, path, inherit in fleet_paths._resolve_fleet_runtime_paths()
+    }
     assert specs["clio_kit_python"] == (str(kit_python), True)
 
     roaming_python = tmp_path / "roaming" / "uv" / "python" / "cpython-3.14.10"
     (tools / "clio-kit" / "pyvenv.cfg").write_text(f"home = {roaming_python}\n", encoding="utf-8")
-    labels = {label for label, _p, _i in scli._resolve_fleet_runtime_paths()}
+    labels = {label for label, _p, _i in fleet_paths._resolve_fleet_runtime_paths()}
     assert "clio_kit_python" not in labels
 
 
