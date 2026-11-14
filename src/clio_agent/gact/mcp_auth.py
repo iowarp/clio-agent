@@ -256,6 +256,9 @@ class McpSignIns:
         client_secret: str,
         client_metadata_url: str | None,
     ) -> None:
+        from clio_agent.connectors.materialize import in_use  # noqa: PLC0415
+
+        spec = in_use(spec)  # a connector's template: sign in at the address in use
         storage = DurableFileTokenStorage(str(spec["url"]), connection_id=flow.name)
 
         async def redirect(url: str) -> None:
