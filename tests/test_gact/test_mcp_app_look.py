@@ -22,6 +22,7 @@ from clio_agent.gact.agents.recorded_media import result_part
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_app_context import app_context_injection
 from clio_agent.gact.mcp_app_look import (
+    HOLDER_LEASE_SECONDS,
     LOOK_EVENT,
     ViewLooks,
     look_at_view,
@@ -245,6 +246,23 @@ def test_an_older_mount_unloading_does_not_hide_a_newer_one() -> None:
     table.set_shown("s", "a", "tab", True)
     table.set_shown("s", "a", "card", True)
     assert table.set_shown("s", "a", "", False) is False  # nobody watches: every mount goes
+
+
+def test_a_claim_nobody_renews_lapses() -> None:
+    """A window that went away without unloading its frames stops renewing its claim; a
+    look then stops waiting on it instead of waiting for a surface that cannot answer."""
+    now = [0.0]
+    table = ViewLooks(clock=lambda: now[0])
+    table.set_shown("s", "a", "gone-window", True)
+    table.set_shown("s", "a", "live-window", True)
+    now[0] = HOLDER_LEASE_SECONDS - 1
+    table.set_shown("s", "a", "live-window", True)  # the live mount renews
+    now[0] = HOLDER_LEASE_SECONDS + 1
+    assert table.shown("s", "a")  # the live claim is current, the other lapsed
+    assert table.set_shown("s", "a", "live-window", False) is False
+    table.set_shown("s", "b", "gone-window", True)
+    now[0] += HOLDER_LEASE_SECONDS + 1
+    assert not table.shown("s", "b")
 
 
 def test_context_lines_are_readable_and_cut() -> None:

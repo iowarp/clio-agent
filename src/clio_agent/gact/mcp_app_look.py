@@ -37,13 +37,15 @@ import io
 import json
 import secrets
 import threading
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from clio_agent.runtime import trace
 
 __all__ = [
+    "HOLDER_LEASE_SECONDS",
     "LOOK_EVENT",
     "LookAnswerInvalid",
     "ViewLooks",
@@ -70,6 +72,7 @@ CONTEXT_CHARS = 4000
 
 _SKIP_WORDS = {
     "frame_cross_origin": "a frame from another origin",
+    "view_not_drawing": "the view itself: the browser is not drawing it (hidden or off screen)",
     "webgl_frame_not_redrawn": "a WebGL canvas that did not redraw when asked",
     "webgl_canvas_idle": "a blank WebGL canvas that drew nothing while the view redrew",
     "cross_origin_pixels": "pixels from another origin",
@@ -104,38 +107,54 @@ class PendingLook:
         }
 
 
+#: How long a mount's claim to hold a view lasts unless it is renewed. A mounted view
+#: renews it (gact-tui every 20 s); a window that went away without unloading its frames
+#: (closed, crashed, asleep) stops renewing, so its claim lapses instead of leaving a look
+#: waiting on a surface that can never answer.
+HOLDER_LEASE_SECONDS = 60.0
+
+
 class ViewLooks:
     """Per session: which surface holds each view, and the looks waiting on views."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._lock = threading.RLock()
-        # Every mount that holds the view now (a card and a tab can overlap while a frame
-        # moves); the view is shown while any holds it.
-        self._holders: dict[tuple[str, str], list[str]] = {}
+        self._clock = clock
+        # Every mount that holds the view now, with when it last said so (a card and a tab
+        # can overlap while a frame moves); the view is shown while any claim is current.
+        self._holders: dict[tuple[str, str], dict[str, float]] = {}
         self._looks: dict[str, PendingLook] = {}
 
     def set_shown(self, sid: str, app_id: str, holder: str, shown: bool) -> bool:
-        """A mount of the view loaded (``shown``) or unloaded; returns whether any mount
-        still holds the view. An unload names its own mount, so a frame moving between the
-        card and a tab never hides the other mount; an empty ``holder`` lets every mount go.
+        """A mount of the view loaded or renewed its claim (``shown``), or unloaded; returns
+        whether any mount still holds the view. An unload names its own mount, so a frame
+        moving between the card and a tab never hides the other mount; an empty ``holder``
+        lets every mount go.
         """
         key = (sid, app_id)
         with self._lock:
-            holders = self._holders.setdefault(key, [])
-            if holder in holders:
-                holders.remove(holder)
+            holders = self._holders.setdefault(key, {})
+            holders.pop(holder, None)
             if shown:
-                holders.append(holder)
+                holders[holder] = self._clock()
             elif not holder:
                 holders.clear()
-            if not holders:
-                self._holders.pop(key, None)
-                return False
-            return True
+            return self._current(key)
 
     def shown(self, sid: str, app_id: str) -> bool:
         with self._lock:
-            return (sid, app_id) in self._holders
+            return self._current((sid, app_id))
+
+    def _current(self, key: tuple[str, str]) -> bool:
+        """Drop the claims that lapsed; whether one is left."""
+        holders = self._holders.get(key, {})
+        cutoff = self._clock() - HOLDER_LEASE_SECONDS
+        for holder in [name for name, seen in holders.items() if seen < cutoff]:
+            holders.pop(holder)
+        if not holders:
+            self._holders.pop(key, None)
+            return False
+        return True
 
     def begin(self, sid: str, app_id: str) -> PendingLook:
         look = PendingLook(f"look_{secrets.token_urlsafe(12)}", sid, app_id)
@@ -599,14 +618,17 @@ def look_at_view(view: str = "") -> dict[str, Any]:
     unwatched = False
     try:
         # No timeout (rule 6): the look ends when the surface answers, the app closes, the
-        # turn is cancelled, or no window shows the conversation any more (a browser closed
-        # without unloading its frames cannot answer).
+        # turn is cancelled, no window shows the conversation any more, or no mount still
+        # holds the view (a browser closed without unloading its frames cannot answer, and
+        # its claim lapses after HOLDER_LEASE_SECONDS).
         while not look.done.wait(0.25):
             if _cancelled(app):
                 from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 
                 raise _turn_cancelled()
-            if not _watched(app, sid):
+            # No window shows the conversation, or no mount still holds the view (its
+            # window went away without unloading, and its claim lapsed).
+            if not _watched(app, sid) or not table.shown(sid, chosen.app_instance_id):
                 unwatched = True
                 break
     finally:

@@ -173,7 +173,11 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
         // The host asks for a snapshot of the view: answered here, never sent to the view.
         const id = event.data.id;
         const reply = (result) => window.parent.postMessage({jsonrpc: '2.0', id, result}, parentTarget);
-        const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+        // Bounded: a frame the browser is not drawing runs no frame callbacks.
+        const frame = () => new Promise((done) => {
+          const timer = setTimeout(done, 150);
+          requestAnimationFrame(() => { clearTimeout(timer); done(); });
+        });
         // The view frame is a flex item: max-width narrows it (width alone does not), and a
         // view with a minimum height may overflow, so both sides move by one pixel.
         const nudge = async () => {
