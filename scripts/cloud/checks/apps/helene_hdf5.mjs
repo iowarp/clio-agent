@@ -122,6 +122,8 @@ async function finalBeat(page, shot, sid, log) {
   // The dashboard may already be open (the agent shows what it published); otherwise the
   // newest dashboard card in the conversation opens it in the canvas.
   const live = page.locator('iframe[title*="ParaView"]');
+  // A dashboard the agent just published may still be mounting its live view.
+  await live.first().waitFor({ timeout: 20000 }).catch(() => {});
   if (!(await live.count())) {
     await toLatest(page);
     const label = page.getByText("Dashboard", { exact: true }).last();
