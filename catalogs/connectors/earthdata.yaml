@@ -1,0 +1,26 @@
+# NASA Earthdata: datalayer/earthdata-mcp-server, BSD-3-Clause, a plain MCP server (no
+# view) over NASA's Common Metadata Repository through earthaccess. CLIO starts it as its
+# own process through uvx and never bundles or imports it. The version is pinned to the
+# release qualified here (0.6.0). Searching datasets and their files is anonymous;
+# downloading files needs a free NASA Earthdata Login, read from the two optional needs
+# (apps ledger, "More connectors"). NASA's insignia may not be used without NASA's
+# permission, and the server ships no mark of its own, so the entry has no logo.
+- id: earthdata
+  name: NASA Earthdata
+  description: Search NASA Earthdata for Earth-science datasets and their files, and download them with an Earthdata Login
+  server:
+    command: uvx
+    args: [earthdata-mcp-server==0.6.0, start, --transport, stdio]
+    env:
+      EARTHDATA_USERNAME: ${need.username}
+      EARTHDATA_PASSWORD: ${need.password}
+  needs:
+    - key: username
+      kind: value
+      label: Earthdata Login username
+      required: false
+      help: Searching needs no account. Downloading files needs a free NASA Earthdata Login (urs.earthdata.nasa.gov).
+    - key: password
+      kind: secret
+      label: Earthdata Login password
+      required: false

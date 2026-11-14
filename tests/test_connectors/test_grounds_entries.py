@@ -74,16 +74,18 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_more_connectors_are_data_only() -> None:
-    """The PDF viewer (an MCP App) and arXiv (no view) are catalog entries, nothing more."""
+    """The PDF viewer (an MCP App) and NASA Earthdata (no view) are catalog entries only."""
 
     catalog = entries.load_catalog([SHIPPED])
     pdf = catalog.entries["pdf"]
     assert pdf.server["command"] == "npx" and pdf.needs == () and pdf.tools == ()
     assert "@modelcontextprotocol/server-pdf@2.0.4" in pdf.server["args"]
     assert pdf.logo_path is not None and pdf.logo_path.read_text().startswith("<svg")
-    arxiv = catalog.entries["arxiv"]
-    assert arxiv.server["args"][:2] == ["arxiv-mcp-server==0.8.2", "--storage-path"]
-    assert [(n.key, n.kind, n.required, n.agent_settable) for n in arxiv.needs] == [
-        ("papers", "value", False, True)
+    earthdata = catalog.entries["earthdata"]
+    assert earthdata.server["args"][0] == "earthdata-mcp-server==0.6.0"
+    assert [(n.key, n.kind, n.required) for n in earthdata.needs] == [
+        ("username", "value", False),
+        ("password", "secret", False),
     ]
-    assert arxiv.logo == "" and "search_papers" in arxiv.tools
+    assert earthdata.server["env"]["EARTHDATA_PASSWORD"] == "${need.password}"
+    assert earthdata.logo == "" and earthdata.tools == ()
