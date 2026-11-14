@@ -13,10 +13,9 @@ from typing import Any
 from filelock import FileLock
 
 from clio_agent import paths
+from clio_agent.runtime.fleet_runtime_paths import FleetGrant, build_fleet_runtime_grant_plan
 from clio_agent.runtime.sandbox_cli import (
-    FleetGrant,
     _run_icacls,
-    build_fleet_runtime_grant_plan,
     grant_fleet_runtime_access,
 )
 

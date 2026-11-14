@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from clio_agent.runtime.sandbox_cli import FleetGrant
+    from clio_agent.runtime.fleet_runtime_paths import FleetGrant
 
 logger = logging.getLogger(__name__)
 
