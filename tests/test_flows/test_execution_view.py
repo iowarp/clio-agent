@@ -122,7 +122,7 @@ def test_recorded_output_rejection_does_not_become_successful_audit() -> None:
     )
     row = next(row for row in rows if row["id"] == "critic")
     assert row["status"] == "output_rejected"
-    assert "child returned" in row["detail"]
+    assert "found problems in the answer" in row["detail"]
     assert "Invalid requirement ID" in row["detail"]
 
 
