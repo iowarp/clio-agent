@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from clio_agent.gact.file_view_routes import register_file_view_routes
 from clio_agent.gact.mcp_app_calls import set_saved_display_mode
 from clio_agent.gact.mcp_app_cleanup import _cleanup_record
 from clio_agent.gact.mcp_app_context import (
@@ -202,6 +203,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
 
     register_app_context_and_tool_routes(app, resolve)
     register_app_look_routes(app, resolve)
+    register_file_view_routes(app)
 
     @app.put("/v1/sessions/{sid}/mcp-apps/{app_id}/display-mode")
     async def put_mcp_app_display_mode(

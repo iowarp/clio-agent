@@ -7,6 +7,7 @@ import WidgetRecording from '../../../components/WidgetRecording.astro';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
 import cadStep from '../../../assets/captures/files/cad-step-assembly.png';
+import cadComment from '../../../assets/captures/files/cad-region-comment.png';
 
 Open a file beside the conversation to read it, check a result, or ask for a
 change. This guide covers the file viewer. To bring in new material or choose
@@ -43,8 +44,8 @@ you or the agent made them. Drag to turn the model, right-drag to move it, and s
 or pinch to zoom. **Fit to view** brings the whole model back, and **Standard views**
 shows it from the top, front, right or at an angle.
 
-The toolbar shows the model's size in millimetres, as width × depth × height, which
-is what a printer's build plate is measured in. STL files carry no unit, so their
+The toolbar shows the model's size in millimetres, as width × depth × height. STL
+files carry no unit, so their
 numbers are read as millimetres. A model with several parts, such as a STEP
 assembly, shows each part in its own colour and lists the parts by the names in the
 file. Clear a part's box to hide it; the size then covers the parts still shown.
@@ -66,10 +67,8 @@ The toolbar also holds the usual CAD tools, each with a key when the view has fo
 - Click a part, or its name in the parts list, to see its own size and triangle count,
   and to ghost or isolate the other parts.
 
-Under **File actions**, **Print plate** draws a printer's bed and build volume under the
-model and says whether the shown parts fit, for example “Fits the Bambu Lab A1 plate” or
-“Too tall by 12.0 mm”; pick a common printer or enter your own size. **Orthographic**
-and **Inches** change the projection and the unit. The axis buttons in the corner look
+Under **File actions**, **Orthographic** and **Inches** change the projection and the
+unit. The axis buttons in the corner look
 along an axis; click the same one again to look from the other side.
 
 **Download** keeps the original file. The menu beside it adds **Export to…** rows that
@@ -78,6 +77,17 @@ picture of the current view. STEP files are read in the browser by OpenCASCADE, 
 loads only when you open one. On a narrow screen the size shows in the view's lower
 left corner, the parts list and the CAD tools are under **File actions**, and a tool's
 controls open as a sheet along the bottom of the view.
+
+In a conversation, choose **Comments** in the toolbar and drag over the model to mark
+a region, then write your question. CLIO sends the agent a picture of the view as you
+see it, measurement labels included, with the camera, section, exploded view,
+selected part and measurements in words. Ask about the model you have open and the
+agent can also look at it itself while it is on screen.
+
+<Capture client:visible image={await captureImage(cadComment)}
+  alt="The whistle's STEP assembly cut through its air channel, seen from the front: a 1.60 mm measurement across the floor wall, a region marked S1 around it, and the comment editor reading “Is this wall thick enough to print?”"
+  caption="A region comment on a section of a model, with a wall measured."
+/>
 
 ## Ask about the file
 

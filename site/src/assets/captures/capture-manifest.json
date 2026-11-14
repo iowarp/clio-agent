@@ -285,6 +285,14 @@
         "scale": 1,
         "source": "cad, CAD2",
         "origin": "gallery/website/cad-dark-desktop.png"
+      },
+      {
+        "file": "files/cad-region-comment.png",
+        "sha256": "688af68161409a5e0c47dff76730bf71b457d8b5af2c3c5fd612ec643b891fd1",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "fileview, FV-Q1 (sess_95bdfe75e964)",
+        "origin": "fresh"
       }
     ]
   }

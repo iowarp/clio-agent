@@ -34,7 +34,7 @@ from clio_agent.gact.documents.review_render import entry_block
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-__all__ = ["render_app_view_comments"]
+__all__ = ["render_app_view_comments", "view_box"]
 
 #: One mark's context, at most, as encoded JSON (the view's own cap, MA10).
 _MAX_CONTEXT_BYTES = 128 * 1024
@@ -62,7 +62,8 @@ def _header(attachment: CommentAttachment) -> str:
     return f"Comment on the view “{title}”{f' ({detail})' if detail else ''}."
 
 
-def _box(anchor: Any) -> str:
+def view_box(anchor: Any) -> str:
+    """A region in percent of the view, and in CSS pixels of the view when its size is known."""
     x, y, width, height = anchor.rect
     text = (
         f"x {round(x * 100)}% to {round((x + width) * 100)}%, "
@@ -127,7 +128,7 @@ def render_app_view_comments(
         source = anchor.source
         resolved = ResolvedMark(mode="region")
         if anchor.rect:
-            resolved.lines.append(("Box", _box(anchor)))
+            resolved.lines.append(("Box", view_box(anchor)))
         point = source.get("point")
         if isinstance(point, list) and len(point) == 2:
             resolved.lines.append(
