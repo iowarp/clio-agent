@@ -26,6 +26,8 @@ class RasterGrid:
     bounds: tuple[float, float, float, float]
     x_label: str = "Column"
     y_label: str = "Row"
+    #: For a variable with more than two dimensions: the plane drawn along each leading one.
+    frame: tuple[dict[str, Any], ...] = ()
 
 
 _MAX_SOURCE_BYTES = 256 * 1024 * 1024
@@ -54,7 +56,73 @@ def _numeric_plane(value: Any, *, variable: str | None) -> np.ndarray:
     return plane
 
 
-def _xarray_grid(path: Path, *, variable: str | None, zarr_archive: bool) -> RasterGrid:
+def _plane_of(data: Any, select: dict[str, Any] | None) -> tuple[Any, tuple[dict[str, Any], ...]]:
+    """The 2-D plane of ``data``: leading dimensions picked from ``select`` (nearest) or 0."""
+    frame: list[dict[str, Any]] = []
+    for dim in data.dims[:-2]:
+        size = int(data.sizes[dim])
+        if select and dim in select:
+            try:
+                picked = data.sel({dim: select[dim]}, method="nearest")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RasterQueryError(
+                    "raster_selection_invalid",
+                    f"Could not select {dim}={select[dim]!r}: {exc}",
+                ) from exc
+            index = (
+                int(np.argmin(np.abs(data[dim].values - picked[dim].values)))
+                if dim in data.coords
+                else 0
+            )
+            data = picked
+        else:
+            index, data = 0, data.isel({dim: 0})
+        value = np.asarray(data[dim].values) if dim in data.coords else np.asarray(index)
+        text = (
+            np.datetime_as_string(value, unit="s") + "Z"
+            if np.issubdtype(value.dtype, np.datetime64)
+            else str(value.item() if value.ndim == 0 else value)
+        )
+        frame.append({"dim": str(dim), "value": text, "index": index, "count": size})
+    return data, tuple(frame)
+
+
+def _coordinate_bounds(
+    data: Any, plane: np.ndarray
+) -> tuple[np.ndarray, tuple[float, float, float, float]] | None:
+    """Cell-edge bounds from 1-D numeric coordinates, rows ordered top (largest y) first."""
+    y_dim, x_dim = data.dims[-2:]
+    if y_dim not in data.coords or x_dim not in data.coords:
+        return None
+    y, x = np.asarray(data[y_dim].values), np.asarray(data[x_dim].values)
+    if (
+        y.ndim != 1
+        or x.ndim != 1
+        or y.size < 2
+        or x.size < 2
+        or y.dtype.kind not in "iuf"
+        or x.dtype.kind not in "iuf"
+    ):
+        return None
+    dy, dx = np.diff(y), np.diff(x)
+    if not ((dy > 0).all() or (dy < 0).all()) or not ((dx > 0).all() or (dx < 0).all()):
+        return None
+    if dy[0] > 0:
+        plane, y = plane[::-1, :], y[::-1]
+    if dx[0] < 0:
+        plane, x = plane[:, ::-1], x[::-1]
+    half_y, half_x = abs(float(dy[0])) / 2, abs(float(dx[0])) / 2
+    return plane, (
+        float(x[0]) - half_x,
+        float(y[0]) + half_y,
+        float(x[-1]) + half_x,
+        float(y[-1]) - half_y,
+    )
+
+
+def _xarray_grid(
+    path: Path, *, variable: str | None, zarr_archive: bool, select: dict[str, Any] | None = None
+) -> RasterGrid:
     import xarray as xr  # noqa: PLC0415
 
     store: Any = None
@@ -75,15 +143,24 @@ def _xarray_grid(path: Path, *, variable: str | None, zarr_archive: bool) -> Ras
                     f"Choose one raster variable from {names}; received {variable!r}.",
                 )
             data = dataset[chosen]
-            if data.ndim != 2:
+            if data.ndim < 2:
                 raise RasterQueryError(
                     "raster_shape_invalid",
-                    f"Raster variable {chosen!r} has dimensions {list(data.dims)}; select a two-dimensional variable.",
+                    f"Raster variable {chosen!r} has dimensions {list(data.dims)}; it needs two.",
                 )
+            data, frame = _plane_of(data, select)
             plane = _numeric_plane(data.values, variable=chosen)
-            y_label, x_label = data.dims
+            y_label, x_label = data.dims[-2:]
+            located = _coordinate_bounds(data, plane)
+            if located is not None:
+                plane, bounds = located
+                return RasterGrid(plane, bounds, str(x_label), str(y_label), frame)
             return RasterGrid(
-                plane, (0.0, 0.0, float(plane.shape[1]), float(plane.shape[0])), x_label, y_label
+                plane,
+                (0.0, 0.0, float(plane.shape[1]), float(plane.shape[0])),
+                str(x_label),
+                str(y_label),
+                frame,
             )
     except RasterQueryError:
         raise
@@ -96,7 +173,9 @@ def _xarray_grid(path: Path, *, variable: str | None, zarr_archive: bool) -> Ras
             store.close()
 
 
-def load_raster(path: Path, *, name: str, variable: str | None, band: int) -> RasterGrid:
+def load_raster(
+    path: Path, *, name: str, variable: str | None, band: int, select: dict[str, Any] | None = None
+) -> RasterGrid:
     """Decode a registered NPY, numeric CSV, GeoTIFF, NetCDF, or zipped Zarr grid."""
 
     if path.stat().st_size > _MAX_SOURCE_BYTES:
@@ -131,9 +210,9 @@ def load_raster(path: Path, *, name: str, variable: str | None, band: int) -> Ra
                     "Y" if dataset.crs else "Row",
                 )
         elif suffix.endswith((".nc", ".netcdf")):
-            return _xarray_grid(path, variable=variable, zarr_archive=False)
+            return _xarray_grid(path, variable=variable, zarr_archive=False, select=select)
         elif suffix.endswith(".zarr.zip"):
-            return _xarray_grid(path, variable=variable, zarr_archive=True)
+            return _xarray_grid(path, variable=variable, zarr_archive=True, select=select)
         else:
             raise RasterQueryError(
                 "raster_format_unsupported",
@@ -194,6 +273,7 @@ def resample_raster(
         "sourceShape": list(grid.values.shape),
         "xLabel": grid.x_label,
         "yLabel": grid.y_label,
+        **({"frame": list(grid.frame)} if grid.frame else {}),
         "min": float(finite.min()) if finite.size else None,
         "max": float(finite.max()) if finite.size else None,
         "values": output,

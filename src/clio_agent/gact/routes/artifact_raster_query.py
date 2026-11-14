@@ -23,6 +23,8 @@ class RasterQueryRequest(BaseModel):
     extent: tuple[float, float, float, float] | None = None
     variable: str | None = None
     band: int = Field(default=1, ge=1)
+    #: Leading-dimension values to draw (nearest), e.g. {"time": "2024-09-26T12:00"}.
+    select: dict[str, str | float | int] | None = None
 
 
 def register_artifact_raster_query_routes(app: FastAPI) -> None:
@@ -83,5 +85,5 @@ async def _run_bounded_query(
 def _query(path: Path, name: str, body: RasterQueryRequest) -> dict[str, Any]:
     """Keep source decoding and sampling on the bounded worker pool."""
 
-    grid = load_raster(path, name=name, variable=body.variable, band=body.band)
+    grid = load_raster(path, name=name, variable=body.variable, band=body.band, select=body.select)
     return resample_raster(grid, width=body.width, height=body.height, extent=body.extent)
