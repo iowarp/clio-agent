@@ -44,6 +44,8 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
     stopped = content.get("status") not in {"running", "completed"}
     outcome = content.get("result") if stopped else {}
     outcome = outcome if isinstance(outcome, dict) else {"message": str(outcome)}
+    # A run stopped on request did not fail: its end node reads cancelled, not failed.
+    ended = "cancelled" if content.get("status") == "cancelled" else "failed"
     if research and any(name.endswith("._plan") for name in names):
         previous = [add("run:plan", "Plan", "completed", previous)]
     if stopped and not calls:
@@ -194,7 +196,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             ]
         elif stopped:
             previous = [
-                add("run:stop", "Stopped", "failed", previous, detail=outcome.get("message", ""))
+                add("run:stop", "Stopped", ended, previous, detail=outcome.get("message", ""))
             ]
             previous = [add("run:draft", "Draft report", "not_run", previous)]
         review = reviews[-1] if reviews else None
@@ -223,7 +225,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
                 add(
                     "run:review",
                     "Report review",
-                    "failed" if report_reached else "not_run",
+                    ended if report_reached else "not_run",
                     previous,
                     detail=outcome.get("message", "") if report_reached else "",
                 )
@@ -269,7 +271,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             add(
                 "run:stop",
                 f"Stopped at {location}" if location else "Stopped",
-                "failed",
+                ended,
                 previous,
                 detail=outcome.get("message", ""),
             )

@@ -31,6 +31,9 @@ class TaskCaller:
     session_id: str
     human_id: str
     human_action: bool = False
+    #: Why this caller acts, when an operation names it (``conversation_stop``); a
+    #: cancellation records it with the request.
+    intent: str = ""
 
 
 class TaskAccess:

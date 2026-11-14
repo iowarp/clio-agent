@@ -260,7 +260,7 @@ from clio_agent.gact.app import build_app
 # /v1/search/query and PUT/DELETE /v1/search/engine-keys/{engine} with GET/PATCH
 # /v1/search/providers, PUT/DELETE /v1/search/providers/{source}/key, POST
 # /v1/search/openalex-key and the search-service POST /v1/search, POST /v1/fetch, GET /v1/limits.
-EXPECTED_ROUTE_METHOD_PAIRS = 447
+EXPECTED_ROUTE_METHOD_PAIRS = 448
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -311,6 +311,7 @@ def test_build_app_registers_expected_route_count() -> None:
         ("/v1/sessions/{sid}/message-state", "GET"),
         ("/v1/workspaces/{wid}/sources/{source_id}/operations/{handle}/cancel", "POST"),
         ("/v1/sessions/{sid}/legacy-transcript", "GET"),
+        ("/v1/sessions/{sid}/stop-scope", "GET"),
     } <= set(route_pairs)
     assert ("/v1/infrastructure/models/details", "GET") in route_pairs
     assert ("/v1/html-renderer", "GET") not in route_pairs
