@@ -911,9 +911,19 @@ function Initialize-ClioUv([string]$From = '') {
     $bundled = if ($From) { Join-Path $From 'uv.exe' } else { '' }
     if ($bundled -and (Test-Path -LiteralPath $bundled)) {
         Say "Installing uv into $BinDir (from the CLIO runtime)"
+        # A hard link to the runtime's own uv, which was scanned as it unpacked: Defender
+        # scans a fresh copy again on its first run, 8 s under the install's load, on the
+        # path to the clio-kit install. An earlier uv here is unlinked first, never written
+        # through, so a runtime it shares a file with keeps its own uv. Deleting either name
+        # works while the other runs, so neither an upgrade nor uninstall is held by it.
+        # Where links are unavailable (another volume, FAT), uv is copied as before.
         foreach ($exe in 'uv.exe', 'uvx.exe') {
             $source = Join-Path $From $exe
-            if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $BinDir $exe) -Force }
+            if (-not (Test-Path -LiteralPath $source)) { continue }
+            $target = Join-Path $BinDir $exe
+            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+            try { New-Item -ItemType HardLink -Path $target -Value $source -ErrorAction Stop | Out-Null }
+            catch { Copy-Item -LiteralPath $source -Destination $target -Force }
         }
     } else {
         Say "Installing uv into $BinDir"
