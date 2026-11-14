@@ -210,13 +210,22 @@ class PluginStore:
     def records(self) -> list[PluginRecord]:
         """Every usable plugin record: built-ins first, then installed ones."""
 
+        return [*builtin_records(), *self.installed_records()]
+
+    def installed_records(self) -> list[PluginRecord]:
+        """The installed plugin records, without the built-ins.
+
+        Reading them never loads the built-ins, whose Python parts import the agent
+        engine: the first :meth:`records` in a process pays for that import.
+        """
+
         view = self._view()
         installed = view.installed
         if installed is None:
             installed = view.installed = tuple(
                 PluginRecord.from_dict(row) for row in view.state["plugins"].values()
             )
-        return [*builtin_records(), *installed]
+        return list(installed)
 
     def pending(self) -> list[PluginRecord]:
         return [PluginRecord.from_dict(row) for row in self.read_state()["pending"].values()]

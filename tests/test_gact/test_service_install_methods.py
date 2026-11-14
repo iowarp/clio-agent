@@ -38,9 +38,8 @@ def test_site_without_containers_keeps_its_native_vllm_method(gpu: str, native: 
     assert variants[native].compatible
     assert all(not row.compatible for row in variants.values() if row.install_type == "container")
     assert catalog["vllm"].recommended_variant == native
-    for service in ("searxng", "model_router"):
-        assert all(row.compatible for row in catalog[service].variants)
-        assert all(row.install_type == "native_uv" for row in catalog[service].variants)
+    assert all(row.compatible for row in catalog["model_router"].variants)
+    assert all(row.install_type == "native_uv" for row in catalog["model_router"].variants)
 
 
 def test_windows_native_llama_remains_available_when_docker_is_stopped() -> None:

@@ -121,8 +121,18 @@ def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
     mcp_prepare.forget(namespace)
 
 
-def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> list[str]:
-    """Rebind ``namespace`` in every resident fleet; return the workspace roots touched."""
+def rebind_namespace(
+    agent: Any,
+    namespace: str,
+    declaration: Mapping[str, Any],
+    relist_failed: dict[str, str] | None = None,
+) -> list[str]:
+    """Rebind ``namespace`` in every resident fleet; return the workspace roots touched.
+
+    A fleet whose new listing fails keeps its last tools; the failure, ``"<type>:
+    <message>"`` by workspace root, goes into ``relist_failed`` for the caller to report
+    (``connectors_service.apply`` puts it in the connector's state).
+    """
 
     from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
 
@@ -146,7 +156,10 @@ def rebind_namespace(agent: Any, namespace: str, declaration: Mapping[str, Any])
             continue
         try:
             tools = listed if listed is not None else ensure_namespace(namespace, spec)
-        except Exception as exc:  # noqa: BLE001 - typed; the namespace keeps its tools
+        except Exception as exc:  # noqa: BLE001 - forwards: relist_failed, which the row reports
+            failure = f"{type(exc).__name__}: {exc}"
+            if relist_failed is not None:
+                relist_failed[root] = failure
             trace.event(
                 "TOOLS",
                 "connector_relist_failed namespace=%s root=%s reason=%s",
@@ -189,7 +202,7 @@ def conversation_spec(app: Any, session_id: str, namespace: str, root: str) -> A
         session_server_set,
     )
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
-    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
     reason = "not_in_server_set"
     spec = None
@@ -204,7 +217,7 @@ def conversation_spec(app: Any, session_id: str, namespace: str, root: str) -> A
         reason = "no_conversation"
     elif declared:
         # The fleet builds its gateway the same way (``_build_tool_gateway``, cwd = root).
-        specs = load_agent_mcp_servers(cwd=fleet_root(root) or None, plugin_servers=declared)
+        specs = load_mcp_servers(cwd=fleet_root(root) or None, plugin_servers=declared)
         spec = specs.get(namespace)
     if spec is None:
         trace.event(

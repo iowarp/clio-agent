@@ -3,7 +3,8 @@
 After a loop longer than ``agents.react_extract.after_steps`` model steps (default 3),
 the signature outputs the loop did not produce are filled, from the agent's clio-core
 context, by literally DSPy's ``ReAct`` extract: ``ChainOfThought`` over the task
-inputs, those outputs and the trajectory. A workflow step fills a missing
+inputs, those outputs and the trajectory. A workflow step, or an agent whose
+signature declares ``workflow_state`` (a flow child), fills a missing
 ``workflow_state`` before that floor; other outputs still wait. Two endings
 qualify: ``max_iters`` (no answer at all) and a direct answer
 on a signature with further outputs (``question -> answer, summary``). The answer the
@@ -57,16 +58,23 @@ def missing_outputs(
 ) -> list[str]:
     """The output fields the extract should fill, empty when it should not run.
 
-    A short turn skips the extract. A workflow step is the exception, and only
-    for ``workflow_state``: the fold reads that field, and a direct answer does
-    not carry it. Other outputs still wait for the normal step floor.
+    A short turn skips the extract. ``workflow_state`` is the exception: the
+    workflow fold or the flow that called the agent reads that field, and a direct
+    (or empty) answer does not carry it. It is filled on a short turn for a
+    workflow step, and on a direct (or empty) answer from any agent whose signature
+    declares it (a flow child with ``structured_outputs={"workflow_state": True}``,
+    such as the deep-research critic). Other outputs still wait for the normal
+    step floor.
     """
 
     if reason not in EXTRACT_REASONS or not extract_enabled():
         return []
     missing = [name for name in signature.output_fields if outputs.get(name) in (None, "")]
     if steps <= extract_after_steps():
-        if workflow_step and "workflow_state" in missing:
+        # A flow child that answered directly (or emptily) without its state; running
+        # out of steps keeps the step floor (the submit audit already recorded it).
+        declared = reason == "direct_response" and "workflow_state" in signature.output_fields
+        if (workflow_step or declared) and "workflow_state" in missing:
             return ["workflow_state"]
         return []
     return missing

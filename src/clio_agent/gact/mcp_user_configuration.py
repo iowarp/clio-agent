@@ -96,28 +96,6 @@ def list_user_mcp_servers() -> dict[str, dict[str, Any]]:
         }
 
 
-def mcp_server_arg_value(declaration: Mapping[str, Any] | None, flag: str) -> str:
-    """Return the value following one exact argv flag in a saved declaration."""
-
-    if not isinstance(declaration, Mapping):
-        return ""
-    args = declaration.get("args")
-    if not isinstance(args, (list, tuple)):
-        return ""
-    values = [str(value) for value in args]
-    try:
-        index = values.index(flag)
-    except ValueError:
-        return ""
-    return values[index + 1].strip() if index + 1 < len(values) else ""
-
-
-def configured_web_remote_url() -> str:
-    """Return the durable Web Search endpoint shared by MCP and document ingestion."""
-
-    return mcp_server_arg_value(get_user_mcp_server("web"), "--remote-url")
-
-
 def set_user_mcp_server(
     name: str, declaration: Mapping[str, Any], *, label: str | None = None
 ) -> dict[str, Any]:

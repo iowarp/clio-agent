@@ -181,6 +181,23 @@ def test_environments_built_elsewhere_are_removed_for_a_rebuild(tmp_path: Path) 
     assert environments.remove_stale_environments(cache) == []  # once per process
 
 
+def test_an_environment_clio_kit_staged_beside_itself_is_kept(tmp_path: Path) -> None:
+    cache = tmp_path / "mcp-runtime"
+    root = cache / "mcp-environments"
+    staged = _venv(root / "hdf5-679e8d", root / ".hdf5-679e8d.123636.1794593389482878500.tmp")
+    moved = _venv(
+        root / "adios-2af833",
+        tmp_path / "old" / "mcp-environments" / ".adios-2af833.144380.1794593472712220700.tmp",
+    )
+    other = _venv(root / "ndp-0d8675", root / ".hdf5-679e8d.1.2.tmp")
+
+    assert not path_relocation.venv_is_stale(staged)
+    assert path_relocation.venv_is_stale(moved)
+    assert path_relocation.venv_is_stale(other)
+    assert environments.remove_stale_environments(cache) == ["adios-2af833", "ndp-0d8675"]
+    assert staged.is_dir()
+
+
 def test_an_environment_a_live_launcher_holds_is_left(tmp_path: Path) -> None:
     from clio_kit.environment_locks import EnvironmentInUseMarker
 

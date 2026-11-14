@@ -78,6 +78,11 @@ from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
 from clio_agent.gact.agents.step_clock import StepClock as _StepClock
+from clio_agent.gact.agents.tool_call_dedupe import (
+    collapse_identical,
+    record_collapsed,
+    with_repeat_notes,
+)
 from clio_agent.gact.agents.tool_concurrency import run_bounded
 from clio_agent.gact.context import active_app
 from clio_agent.gact.highway_writer import flush_session
@@ -281,7 +286,9 @@ class _Loop:
         self.lm = agent.lm or dspy.settings.lm
         if self.lm is None:
             raise NoLanguageModelError()
-        self.system = _system(agent.signature, self.inputs, agent.tools)
+        # A bare agent sends no system message at all, not even the signature's docstring.
+        self.bare = bool(getattr(agent, "_clio_bare", False))
+        self.system = "" if self.bare else _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
@@ -333,7 +340,8 @@ class _Loop:
         from clio_agent.gact.summon import expand_server_summons  # noqa: PLC0415
 
         added = expand_server_summons([*_ctx.turn_injections(), *start], self.agent)
-        self.recorder.injections(added)
+        if not self.bare:  # a bare agent's model sees only the conversation
+            self.recorder.injections(added)
         # The continuing flag is this forward's alone: anything it starts opens its own task.
         continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
         if continue_token is None:
@@ -466,11 +474,13 @@ class _Loop:
                 self._record(text, thinking, [], {}, origin)
             _log.info("Tool proposal superseded by steer at step=%s", self.step)
             return None
+        calls, repeats = collapse_identical(calls)  # identical copies run once, noted
+        record_collapsed(active_app(), self.recorder.session, calls, repeats)
         thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
             self.recorder.step_open(self.step, self.span, text, calls)
             _raise_if_cancelled()
-            outcomes = self._execute(calls)
+            outcomes = with_repeat_notes(calls, self._execute(calls), repeats)
         finally:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
@@ -510,7 +520,7 @@ class _Loop:
         """The request for the context as it stands (commits and records nothing)."""
         return Request(
             model=self.lm.model,
-            system=self.system,
+            system=self.system or None,  # a bare agent sends no system message
             messages=tuple(_place_tool_media(self._context(), self.tool_media)),
             tools=self.tools,
             config=self.config,

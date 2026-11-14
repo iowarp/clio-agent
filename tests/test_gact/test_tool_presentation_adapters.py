@@ -618,29 +618,37 @@ def test_rejected_artifact_explains_the_actual_rejection(
     assert view["blocks"][0]["text"] == expected
 
 
-def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
+def test_web_fetch_shows_the_page_its_reader_and_notes() -> None:
     result = {
         "structuredContent": {
-            "url": "https://example.org/paper.pdf",
-            "content_type": "application/pdf",
-            "conversion_id": "conversion",
+            "ok": True,
             "status": 200,
-            "local_path": "D:/workspace/paper.md",
-            "metadata_path": "D:/workspace/paper.json",
-            "events": [{"stage": "docling", "message": "Converting page 3"}],
+            "url": "https://example.org/paper",
+            "title": "A paper",
+            "content": "# A paper\n\nBody text.",
+            "reader": "keenable",
+            "chars": 22,
+            "truncated": False,
+            "notes": [
+                {
+                    "code": "fetch_hosted_reader",
+                    "source": "keenable",
+                    "message": "The page was read through a hosted reader.",
+                    "detail": "HTTP 403",
+                }
+            ],
         }
     }
     before = json.dumps(result)
-    view = present_mcp_result("web_fetch", {}, result)
-    assert view["summary"] == "HTTP 200"
+    view = present_mcp_result("web_fetch", {"url": "https://example.org/paper"}, result)
+    assert view["summary"] == "Read through Keenable"
     assert view["subject"] == "subject"
-    assert view["blocks"][0]["uri"] == "https://example.org/paper.pdf"
     blocks = {block["id"]: block for block in view["blocks"]}
-    assert blocks["identity"]["text"] == "Content type: application/pdf"
-    assert "Conversion:" not in json.dumps(blocks)
-    assert blocks["events"]["text"] == "docling: Converting page 3"
-    assert blocks["local_path"]["uri"] == "D:/workspace/paper.md"
-    assert blocks["metadata_path"]["uri"] == "D:/workspace/paper.json"
+    assert blocks["subject"]["uri"] == "https://example.org/paper"
+    assert blocks["subject"]["label"] == "A paper"
+    assert blocks["content"]["text"].startswith("# A paper")
+    assert blocks["note-0"]["severity"] == "warning"
+    assert "Keenable: The page was read" in blocks["note-0"]["text"]
     assert json.dumps(result) == before
 
 
@@ -663,45 +671,73 @@ def test_generic_mcp_resource_content_is_readable_and_structured_json_is_technic
     assert view["blocks"][0]["text"] == "Actual report"
 
 
-def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
-    """Display the actual document title and failed search coverage, not only an acknowledgement."""
+def test_web_search_lists_results_with_the_answering_source_and_notes() -> None:
+    """Show the query, every result with its snippet, who answered and why it moved on."""
     payload = {
         "structuredContent": {
             "ok": True,
-            "title": None,
-            "url": "https://example.org/guide.pdf",
-            "document": {
-                "metadata": {"title": "Official guide"},
-                "structure_summary": {"pages": 19},
-            },
-            "conversion_id": "conversion-1",
-            "status": 200,
+            "query": "research",
+            "source": "exa",
+            "results": [
+                {
+                    "title": "Guide",
+                    "url": "https://example.org/g",
+                    "date": "2026-01-02",
+                    "snippet": "S",
+                }
+            ],
+            "notes": [
+                {
+                    "code": "search_source_allowance_used",
+                    "source": "keenable",
+                    "message": "Used up.",
+                }
+            ],
+            "payload_file": "/w/tool-output/s/search/x.json",
         }
     }
-    before = json.dumps(payload)
-    view = present_mcp_result("web_fetch", {}, payload)
-    assert view["summary"] == "HTTP 200"
-    assert view["subject"] == "subject"
-    assert view["blocks"][0]["label"] == "Official guide"
-    assert view["blocks"][0]["uri"] == "https://example.org/guide.pdf"
-    assert "Pages: 19" in view["blocks"][1]["text"]
-    assert json.dumps(payload) == before
-    search = present_mcp_result(
+    view = present_mcp_result("web_search", {"query": "research"}, payload)
+    blocks = {block["id"]: block for block in view["blocks"]}
+    assert view["summary"] == "1 result from Exa"
+    assert blocks["subject"]["text"] == "research"
+    assert blocks["result-0"]["uri"] == "https://example.org/g"
+    assert blocks["result-0-snippet"]["text"] == "2026-01-02 S"
+    assert blocks["note-0"]["text"].startswith("Keenable: Used up.")
+    assert blocks["payload"]["target"] == "resource"
+    failed = present_mcp_result(
         "web_search",
         {"query": "research"},
         {
             "structuredContent": {
-                "provider": "searxng",
-                "results": [],
-                "engines_answered": [],
-                "unresponsive_engines": [{"engine": "duckduckgo", "reason": "CAPTCHA"}],
+                "ok": False,
+                "error": {
+                    "code": "search_all_sources_unavailable",
+                    "message": "Every source rests.",
+                },
             }
         },
     )
-    blocks = {block["id"]: block for block in search["blocks"]}
-    assert search["summary"] == "0 results"
-    assert "result-count" not in blocks
-    assert blocks["engine-status"]["text"] == "duckduckgo: CAPTCHA"
+    assert "Every source rests" in json.dumps(failed)
+    down = present_mcp_result(
+        "web_search",
+        {"query": "research"},
+        {
+            "structuredContent": {
+                "ok": False,
+                "error": {
+                    "code": "search_source_temporarily_down",
+                    "message": "The source failed twice in a row.",
+                    "source": "keenable",
+                    "advice": "Keenable did not answer (HTTP 404). Call web_search again.",
+                },
+                "retry_after_s": 30,
+                "next_source": "exa",
+            }
+        },
+    )
+    down_blocks = {block["id"]: block for block in down["blocks"]}
+    assert down_blocks["subject"]["text"] == "research"
+    assert down_blocks["advice"]["text"].startswith("Keenable did not answer (HTTP 404).")
 
 
 def test_file_result_has_one_portable_filename_link() -> None:

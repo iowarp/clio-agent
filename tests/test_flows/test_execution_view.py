@@ -228,3 +228,44 @@ def test_reconciliation_joins_exact_run_and_owner_only() -> None:
     assert result is not None
     assert [row["handle"] for row in result["calls"]] == ["match"]
     assert result["calls"][0]["returned_after_stop"] is True
+
+
+def test_a_named_child_shows_its_name_and_planned_question() -> None:
+    content: dict[str, Any] = {
+        "flow": "deep-research",
+        "status": "running",
+        "steps": {
+            "p": {
+                "name": "DeepResearch._plan",
+                "result": {
+                    "directions": [
+                        {"id": "d1", "name": "Anthropic PTC docs", "question": "What is PTC?"},
+                        {"id": "d2", "name": "Script provenance", "question": "How is it traced?"},
+                    ]
+                },
+            }
+        },
+    }
+    rows = execution_view(
+        content,
+        [
+            {
+                "invocation": "flow:x:key=research:d1:0:0",
+                "target": "researcher",
+                "label": "Anthropic PTC docs",
+                "status": "running",
+                "together": "a",
+            },
+            {
+                "invocation": "flow:x:key=research:g2.1:0:0",
+                "target": "researcher",
+                "label": "Sandbox audit logs",
+                "status": "running",
+            },
+            {"invocation": "flow:x:key=critic:0:0", "target": "critic", "status": "running"},
+        ],
+    )
+    labels = {row["label"]: row for row in rows}
+    assert {"Anthropic PTC docs", "Sandbox audit logs", "critic"} <= set(labels)
+    assert labels["Anthropic PTC docs"]["question"] == "What is PTC?"
+    assert "question" not in labels["Sandbox audit logs"]

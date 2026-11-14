@@ -1,0 +1,1029 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.datacite.org/dois?query=GOES-18%20ABI&page[size]=5",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "query": "GOES-18 ABI",
+      "page[size]": "5"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "data": [
+      {
+        "id": "10.5281/zenodo.23104581",
+        "type": "dois",
+        "attributes": {
+          "doi": "10.5281/zenodo.23104581",
+          "identifiers": [
+            {
+              "identifier": "oai:zenodo.org:23104581",
+              "identifierType": "oai"
+            }
+          ],
+          "creators": [
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "Smithsonian Astrophysical Observatory"
+              ],
+              "givenName": "Qindan",
+              "familyName": "Zhu",
+              "name": "Zhu, Qindan",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "University of British Columbia"
+              ],
+              "givenName": "Tianjia",
+              "familyName": "Liu",
+              "name": "Liu, Tianjia",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "University of Utah"
+              ],
+              "givenName": "Makoto",
+              "familyName": "Kelp",
+              "name": "Kelp, Makoto",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "Marshall Space Flight Center"
+              ],
+              "givenName": "Aaron R.",
+              "familyName": "Naeger",
+              "name": "Naeger, Aaron R.",
+              "nameIdentifiers": []
+            }
+          ],
+          "titles": [
+            {
+              "title": "Analysis code and intermediate datasets for \"Capturing Time-Resolved Prescribed Fire Emissions with TEMPO Special Observations\""
+            }
+          ],
+          "publisher": "Zenodo",
+          "container": {},
+          "publicationYear": 2026,
+          "subjects": [
+            {
+              "subject": "TEMPO"
+            },
+            {
+              "subject": "prescribed fire"
+            },
+            {
+              "subject": "NOx emissions"
+            },
+            {
+              "subject": "geostationary satellite"
+            },
+            {
+              "subject": "fire emissions"
+            }
+          ],
+          "contributors": [],
+          "dates": [
+            {
+              "date": "2026-10-02",
+              "dateType": "Issued"
+            }
+          ],
+          "language": null,
+          "types": {
+            "schemaOrg": "Dataset",
+            "resourceTypeGeneral": "Dataset",
+            "citeproc": "dataset",
+            "bibtex": "misc",
+            "ris": "DATA",
+            "resourceType": ""
+          },
+          "relatedIdentifiers": [
+            {
+              "relationType": "IsVersionOf",
+              "relatedIdentifier": "10.5281/zenodo.23104580",
+              "relatedIdentifierType": "DOI"
+            }
+          ],
+          "relatedItems": [],
+          "sizes": [],
+          "formats": [],
+          "version": "1.0",
+          "rightsList": [
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://creativecommons.org/licenses/by/4.0/legalcode",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "Creative Commons Attribution 4.0 International",
+              "rightsIdentifier": "cc-by-4.0"
+            },
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://opensource.org/licenses/MIT",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "MIT License",
+              "rightsIdentifier": "mit"
+            }
+          ],
+          "descriptions": [
+            {
+              "descriptionType": "Abstract",
+              "description": "Analysis code and intermediate datasets for Zhu, Liu, Kelp, and Naeger (2026), \"Capturing Time-Resolved Prescribed Fire Emissions with TEMPO Special Observations\", Geophysical Research Letters (manuscript 2026GL125411). tempo-rx-fires-code-v1.0.zip contains the tempo_fires Python package (TEMPO Level-2 NO2 extraction, HRRR wind regridding, wind-aware plume detection, cross-wind line-density integration, EMG fitting, quality control, uncertainty budget, GOES/HMS/FIRMS overlays, and the top-down versus bottom-up comparison) together with the scripts used for every figure and table (MIT License). tempo-rx-fires-data-outputs-v1.0.zip contains the per-scan wind-aligned analysis windows, line densities, and EMG fit results for the QC-passing TEMPO scans of the four prescribed fires (Geneva State Forest, AL, 27 March 2025; Eglin-Blackwater, FL, 28 March 2025; Chattahoochee-Oconee National Forest, GA, 8 April 2026; Fort Stewart, GA, 12 April 2026), the coincident TROPOMI fits, and the CSV tables behind Tables 1, S1, S2, and S3 (CC BY 4.0). tempo-rx-fires-data-inputs-v1.0.zip contains the 5-minute GOES-16/18/19 ABI fire radiative power per burn unit, HMS smoke polygons, MODIS/VIIRS active-fire detections, digitized burn-unit polygons, bottom-up emission tables, and TROPOMI NO2 regridded to the TEMPO grid (CC BY 4.0). Raw TEMPO Level-2 V04 granules (NASA ASDC, doi:10.5067/IS-40e/TEMPO/NO2_L2.004), HRRR analyses, and RAVE v2 files are not redistributed; the extraction and download scripts are included. See README.md inside each archive for reproduction steps."
+            }
+          ],
+          "geoLocations": [],
+          "fundingReferences": [],
+          "url": "https://zenodo.org/doi/10.5281/zenodo.23104581",
+          "contentUrl": null,
+          "metadataVersion": 0,
+          "schemaVersion": "http://datacite.org/schema/kernel-4",
+          "source": "api",
+          "isActive": true,
+          "state": "findable",
+          "reason": null,
+          "viewCount": 0,
+          "downloadCount": 0,
+          "referenceCount": 0,
+          "citationCount": 0,
+          "partCount": 0,
+          "partOfCount": 0,
+          "versionCount": 0,
+          "versionOfCount": 1,
+          "created": "2026-10-02T14:26:41Z",
+          "registered": "2026-10-02T14:26:41Z",
+          "published": null,
+          "updated": "2026-10-02T14:26:41Z"
+        },
+        "relationships": {
+          "client": {
+            "data": {
+              "id": "cern.zenodo",
+              "type": "clients"
+            }
+          }
+        }
+      },
+      {
+        "id": "10.5281/zenodo.23104580",
+        "type": "dois",
+        "attributes": {
+          "doi": "10.5281/zenodo.23104580",
+          "identifiers": [],
+          "creators": [
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "Smithsonian Astrophysical Observatory"
+              ],
+              "givenName": "Qindan",
+              "familyName": "Zhu",
+              "name": "Zhu, Qindan",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "University of British Columbia"
+              ],
+              "givenName": "Tianjia",
+              "familyName": "Liu",
+              "name": "Liu, Tianjia",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "University of Utah"
+              ],
+              "givenName": "Makoto",
+              "familyName": "Kelp",
+              "name": "Kelp, Makoto",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "Marshall Space Flight Center"
+              ],
+              "givenName": "Aaron R.",
+              "familyName": "Naeger",
+              "name": "Naeger, Aaron R.",
+              "nameIdentifiers": []
+            }
+          ],
+          "titles": [
+            {
+              "title": "Analysis code and intermediate datasets for \"Capturing Time-Resolved Prescribed Fire Emissions with TEMPO Special Observations\""
+            }
+          ],
+          "publisher": "Zenodo",
+          "container": {},
+          "publicationYear": 2026,
+          "subjects": [
+            {
+              "subject": "TEMPO"
+            },
+            {
+              "subject": "prescribed fire"
+            },
+            {
+              "subject": "NOx emissions"
+            },
+            {
+              "subject": "geostationary satellite"
+            },
+            {
+              "subject": "fire emissions"
+            }
+          ],
+          "contributors": [],
+          "dates": [
+            {
+              "date": "2026-10-02",
+              "dateType": "Issued"
+            }
+          ],
+          "language": null,
+          "types": {
+            "schemaOrg": "Dataset",
+            "resourceTypeGeneral": "Dataset",
+            "citeproc": "dataset",
+            "bibtex": "misc",
+            "ris": "DATA",
+            "resourceType": ""
+          },
+          "relatedIdentifiers": [
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.23104581",
+              "relatedIdentifierType": "DOI"
+            }
+          ],
+          "relatedItems": [],
+          "sizes": [],
+          "formats": [],
+          "version": "1.0",
+          "rightsList": [
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://creativecommons.org/licenses/by/4.0/legalcode",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "Creative Commons Attribution 4.0 International",
+              "rightsIdentifier": "cc-by-4.0"
+            },
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://opensource.org/licenses/MIT",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "MIT License",
+              "rightsIdentifier": "mit"
+            }
+          ],
+          "descriptions": [
+            {
+              "descriptionType": "Abstract",
+              "description": "Analysis code and intermediate datasets for Zhu, Liu, Kelp, and Naeger (2026), \"Capturing Time-Resolved Prescribed Fire Emissions with TEMPO Special Observations\", Geophysical Research Letters (manuscript 2026GL125411). tempo-rx-fires-code-v1.0.zip contains the tempo_fires Python package (TEMPO Level-2 NO2 extraction, HRRR wind regridding, wind-aware plume detection, cross-wind line-density integration, EMG fitting, quality control, uncertainty budget, GOES/HMS/FIRMS overlays, and the top-down versus bottom-up comparison) together with the scripts used for every figure and table (MIT License). tempo-rx-fires-data-outputs-v1.0.zip contains the per-scan wind-aligned analysis windows, line densities, and EMG fit results for the QC-passing TEMPO scans of the four prescribed fires (Geneva State Forest, AL, 27 March 2025; Eglin-Blackwater, FL, 28 March 2025; Chattahoochee-Oconee National Forest, GA, 8 April 2026; Fort Stewart, GA, 12 April 2026), the coincident TROPOMI fits, and the CSV tables behind Tables 1, S1, S2, and S3 (CC BY 4.0). tempo-rx-fires-data-inputs-v1.0.zip contains the 5-minute GOES-16/18/19 ABI fire radiative power per burn unit, HMS smoke polygons, MODIS/VIIRS active-fire detections, digitized burn-unit polygons, bottom-up emission tables, and TROPOMI NO2 regridded to the TEMPO grid (CC BY 4.0). Raw TEMPO Level-2 V04 granules (NASA ASDC, doi:10.5067/IS-40e/TEMPO/NO2_L2.004), HRRR analyses, and RAVE v2 files are not redistributed; the extraction and download scripts are included. See README.md inside each archive for reproduction steps."
+            }
+          ],
+          "geoLocations": [],
+          "fundingReferences": [],
+          "url": "https://zenodo.org/doi/10.5281/zenodo.23104580",
+          "contentUrl": null,
+          "metadataVersion": 0,
+          "schemaVersion": "http://datacite.org/schema/kernel-4",
+          "source": "api",
+          "isActive": true,
+          "state": "findable",
+          "reason": null,
+          "viewCount": 0,
+          "downloadCount": 0,
+          "referenceCount": 0,
+          "citationCount": 0,
+          "partCount": 0,
+          "partOfCount": 0,
+          "versionCount": 1,
+          "versionOfCount": 0,
+          "created": "2026-10-02T14:26:41Z",
+          "registered": "2026-10-02T14:26:41Z",
+          "published": null,
+          "updated": "2026-10-02T14:26:41Z"
+        },
+        "relationships": {
+          "client": {
+            "data": {
+              "id": "cern.zenodo",
+              "type": "clients"
+            }
+          }
+        }
+      },
+      {
+        "id": "10.5281/zenodo.889205",
+        "type": "dois",
+        "attributes": {
+          "doi": "10.5281/zenodo.889205",
+          "identifiers": [],
+          "creators": [
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "SMHI"
+              ],
+              "familyName": "Adam Dybbroe",
+              "name": "Adam Dybbroe",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "SMHI"
+              ],
+              "familyName": "Ronald Scheirer",
+              "name": "Ronald Scheirer",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "SMHI"
+              ],
+              "familyName": "Martin Raspaud",
+              "name": "Martin Raspaud",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "CIMSS/SSEC University of Wisconsin"
+              ],
+              "familyName": "David Hoese",
+              "name": "David Hoese",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "familyName": "Xin Zhang",
+              "name": "Xin Zhang",
+              "nameIdentifiers": [],
+              "affiliation": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "European Space Agency"
+              ],
+              "familyName": "Simon R Proud",
+              "name": "Simon R Proud",
+              "nameIdentifiers": []
+            }
+          ],
+          "titles": [
+            {
+              "title": "Satellite Sensor Relative Spectral Response data"
+            }
+          ],
+          "publisher": "Zenodo",
+          "container": {
+            "identifier": "https://zenodo.org/communities/pytroll",
+            "identifierType": "URL",
+            "type": "DataRepository"
+          },
+          "publicationYear": 2026,
+          "subjects": [
+            {
+              "subject": "Satellite"
+            },
+            {
+              "subject": "Imager"
+            },
+            {
+              "subject": "Response"
+            },
+            {
+              "subject": "Spectral"
+            },
+            {
+              "subject": "PySpectral"
+            },
+            {
+              "subject": "Environmental"
+            },
+            {
+              "subject": "Oceanography"
+            },
+            {
+              "subject": "Meteorology"
+            },
+            {
+              "subject": "PyTroll"
+            }
+          ],
+          "contributors": [],
+          "dates": [
+            {
+              "date": "2026-04-01",
+              "dateType": "Issued"
+            },
+            {
+              "date": "2026-03-30",
+              "dateType": "Issued"
+            }
+          ],
+          "language": null,
+          "types": {
+            "schemaOrg": "Dataset",
+            "resourceTypeGeneral": "Dataset",
+            "citeproc": "dataset",
+            "bibtex": "misc",
+            "ris": "DATA",
+            "resourceType": ""
+          },
+          "relatedIdentifiers": [
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1205138",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.19373017",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.7116653",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3824535",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3813418",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.2617441",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.2545299",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.11110033",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3786824",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3381130",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3358843",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1146757",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.889206",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3667766",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.12742887",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.7311143",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.13833977",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.12743289",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1409621",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3461164",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.18928854",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.19338051",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.14008148",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.10026657",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.7245133",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.6026563",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3381083",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.17238136",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.10029746",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1491277",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1012412",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.2653487",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1146748",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1040312",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.3813522",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.1010470",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.5797957",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.4305549",
+              "relatedIdentifierType": "DOI"
+            },
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.6557386",
+              "relatedIdentifierType": "DOI"
+            }
+          ],
+          "relatedItems": [],
+          "sizes": [],
+          "formats": [],
+          "version": "v1.6.1",
+          "rightsList": [
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://creativecommons.org/licenses/by/4.0/legalcode",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "Creative Commons Attribution 4.0 International",
+              "rightsIdentifier": "cc-by-4.0"
+            }
+          ],
+          "descriptions": [
+            {
+              "descriptionType": "Abstract",
+              "description": "Satellite Spectral Response functions for a number of imaging sensors. Currently supports:\n\n\n\nHimawari-8 AHI\n\nHimawari-9 AHI\n\nGOES-16 ABI\n\nGOES-17 ABI\n\nGOES-18 ABI\n\nGOES-19 ABI\n\nNOAA AVHRR/1, AVHRR/2, AVHRR/3 (NOAA-6 errors in ch1 & 2 fixed)\n\nMetop AVHRR/3\n\nTIROS-N AVHRR/1\n\nEnvisat AATSR\n\nSentinel-3A, B, C & D SLSTR\n\nSentinel-3A&B OLCI - mean rsr\n\nMeteosat SEVIRI\n\nTerra/Aqua MODIS\n\nSuomi-NPP VIIRS\n\nJPSS-1 (NOAA-20) VIIRS\n\nJPSS-2 (NOAA-21) VIIRS\n\nSentinel-2A MSI\n\nSentinel-2B MSI\n\nLandsat-8 OLI & TIRS\n\nLandsat-9 OLI & TIRS\n\nHY-1C COCTS\n\nMetop-SG-A1 MetImage  - low res macro pixel (average over all detectors)\n\nSentinel-3B OLCI - mean rsr\n\nFY-3D MERSI-2\n\nFY-3F MERSI-3\n\nFY-4A AGRI\n\nFY-4B AGRI\n\nFY-3B VIRR\n\nFY-3C VIRR\n\nGEO-KOMPSAT-2A AMI\n\nMeteosat-12 FCI (version from EUMETSAT, April 2022)\n\nMTG-I1 FCI (same as above)\n\nElectro-L N2 MSU-GS\n\nArctica-M 1 MSU-GS/A\n\nDSCOVR EPIC\n\nSentinel-C MSI\n\n\n \n\nChangelog for the Relative Spectral Response data=================================================\n\nVersion v1.6.1 (Wed Apr  1 08:14:23 PM CEST 2026)\n\n-------------------------------------------\n\n* Bugfix adding the new MODIS RSR files and now also with an extra attribute  for the sensor name\n\n \n\nVersion v1.6.0 (Mon Mar 30 06:58:54 PM CEST 2026)\n\n-------------------------------------------\n\n* Updated the MODIS RSR files with new platform names, Terra and Aqua instead  of the previous EOS-Terra and EOS-Aqua, see the WMO OSCAR database\n\n \n\nVersion v1.5.1 (Mon Mar  9 09:13:07 PM CET 2026)\n\n-------------------------------------------\n\n* Added actual measured (low resolution macro pixel) RSRs for METImage Metop-SG A1\n\n \n\nVersion v1.5.0 (Tue Sep 30 09:53:59 PM CEST 2025)\n\n-------------------------------------------\n\n* Added SLSTR RSRs for Sentinel-3C and -D. Updated with the latest versions from ESA for Sentinel-3A and -B.\n\n \n\nVersion v1.4.1 (Tue Oct 29 03:45:40 PM CET 2024)\n\n-------------------------------------------\n\n * Added RSRs for Landsat-8 and -9 OLI & TIRS. Original RSR as provided by NASA. Previously we had only Landsat-8 OLI\n\n \n\nVersion v1.4.0 (Tue Sep 24 03:35:15 PM CEST 2024)\n\n-------------------------------------------\n\n * Added RSRs for Sentinel-2C MSI and updated the MSI RSR for Sentinel 2A & B\n\n \n\nVersion v1.3.2 (Mon Jul 15 12:32:12 PM CEST 2024)\n\n-------------------------------------------\n\n * Corrected the file name for the RSRs of Mersi-3 onboard FY-3F\n\n \n\nVersion v1.3.1 (Mon Jul 15 11:12:10 AM CEST 2024)-------------------------------------------\n\n * Added SRFs (RSRs) for the Mersi-3 sensor onboard FY-3F\n\n \n\nVersion v1.3.0 (Fri May  3 04:11:43 PM CEST 2024)-------------------------------------------\n\n * Added SRFs (RSRs) for the Mersi-1 sensor onboard FY-3A/B/C * Added SRFs for the Mersi-RM sensor onboard FY-3G * Added SRFs for the GHI (Geostationary High-speed Imager) sensor onboard FY-4B * Added SRFs for GOCI-II (Geostationary Ocean Color Imager: Follow-on) sensor onboard GK-2B (GEO-KOMPSAT-2B)\n\n \n\nVersion v1.2.4 (Sat Oct 21 12:25:00 PM CEST 2023)\n\n-------------------------------------------\n\n* Normalized RSR responses for the EPIC sensor. Now values are scaled to be\n\n  between 0 and 1.\n\n \n\nVersion v1.2.3 (Fri Oct 20 01:58:29 2023)\n\n-------------------------------------------\n\n* Added RSR file for EPIC on DSCOVR (responses not normalized)\n\n \n\nVersion v1.2.2 (Tue Nov 15 14:44:03 2022)-------------------------------------------\n\n * Added RSR file for AGRI onboard FY-4B * Corrected RSR file for AGRI onboard FY-3B   Values were between 0 and 100, now scaled to between 0 and 1\n\n \n\nVersion v1.2.1 (Mon Oct 24 16:26:14 2022)-------------------------------------------\n\n * Changed name of the FY-3D MERSI-2 RSR file, removing the hyphen:   New name = rsr_mersi2_FY-3D.h5 \n\nVersion v1.2.0 (Tue Sep 27 21:08:13 2022)-------------------------------------------\n\n * Added VIIRS RSR for JPSS-2/NOAA-21:   Based on the J2_VIIRS_RSR_DAWG_At-Launch_Public_Release_V2_Jul2019.zip   The data read are the Detector wise files under J2_VIIRS_Detector_RSR_V2…[trimmed]"
+            }
+          ],
+          "geoLocations": [],
+          "fundingReferences": [],
+          "url": "https://zenodo.org/doi/10.5281/zenodo.889205",
+          "contentUrl": null,
+          "metadataVersion": 47,
+          "schemaVersion": "http://datacite.org/schema/kernel-4",
+          "source": "mds",
+          "isActive": true,
+          "state": "findable",
+          "reason": null,
+          "viewCount": 0,
+          "downloadCount": 0,
+          "referenceCount": 0,
+          "citationCount": 0,
+          "partCount": 0,
+          "partOfCount": 0,
+          "versionCount": 39,
+          "versionOfCount": 0,
+          "created": "2017-09-12T09:26:03Z",
+          "registered": "2017-09-12T09:26:04Z",
+          "published": null,
+          "updated": "2026-09-15T06:04:00Z"
+        },
+        "relationships": {
+          "client": {
+            "data": {
+              "id": "cern.zenodo",
+              "type": "clients"
+            }
+          }
+        }
+      },
+      {
+        "id": "10.5281/zenodo.19373017",
+        "type": "dois",
+        "attributes": {
+          "doi": "10.5281/zenodo.19373017",
+          "identifiers": [
+            {
+              "identifier": "oai:zenodo.org:19373017",
+              "identifierType": "oai"
+            }
+          ],
+          "creators": [
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "SMHI"
+              ],
+              "familyName": "Adam Dybbroe",
+              "name": "Adam Dybbroe",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "SMHI"
+              ],
+              "familyName": "Ronald Scheirer",
+              "name": "Ronald Scheirer",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "SMHI"
+              ],
+              "familyName": "Martin Raspaud",
+              "name": "Martin Raspaud",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "CIMSS/SSEC University of Wisconsin"
+              ],
+              "familyName": "David Hoese",
+              "name": "David Hoese",
+              "nameIdentifiers": []
+            },
+            {
+              "nameType": "Personal",
+              "familyName": "Xin Zhang",
+              "name": "Xin Zhang",
+              "nameIdentifiers": [],
+              "affiliation": []
+            },
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "European Space Agency"
+              ],
+              "familyName": "Simon R Proud",
+              "name": "Simon R Proud",
+              "nameIdentifiers": []
+            }
+          ],
+          "titles": [
+            {
+              "title": "Satellite Sensor Relative Spectral Response data"
+            }
+          ],
+          "publisher": "Zenodo",
+          "container": {},
+          "publicationYear": 2026,
+          "subjects": [
+            {
+              "subject": "Satellite"
+            },
+            {
+              "subject": "Imager"
+            },
+            {
+              "subject": "Response"
+            },
+            {
+              "subject": "Spectral"
+            },
+            {
+              "subject": "PySpectral"
+            },
+            {
+              "subject": "Environmental"
+            },
+            {
+              "subject": "Oceanography"
+            },
+            {
+              "subject": "Meteorology"
+            },
+            {
+              "subject": "PyTroll"
+            }
+          ],
+          "contributors": [],
+          "dates": [
+            {
+              "date": "2026-04-01",
+              "dateType": "Issued"
+            },
+            {
+              "date": "2026-03-30",
+              "dateType": "Issued"
+            }
+          ],
+          "language": null,
+          "types": {
+            "schemaOrg": "Dataset",
+            "resourceTypeGeneral": "Dataset",
+            "citeproc": "dataset",
+            "bibtex": "misc",
+            "ris": "DATA",
+            "resourceType": ""
+          },
+          "relatedIdentifiers": [
+            {
+              "relationType": "IsVersionOf",
+              "relatedIdentifier": "10.5281/zenodo.889205",
+              "relatedIdentifierType": "DOI"
+            }
+          ],
+          "relatedItems": [],
+          "sizes": [],
+          "formats": [],
+          "version": "v1.6.1",
+          "rightsList": [
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://creativecommons.org/licenses/by/4.0/legalcode",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "Creative Commons Attribution 4.0 International",
+              "rightsIdentifier": "cc-by-4.0"
+            }
+          ],
+          "descriptions": [
+            {
+              "descriptionType": "Abstract",
+              "description": "Satellite Spectral Response functions for a number of imaging sensors. Currently supports:\n\n\n\nHimawari-8 AHI\n\nHimawari-9 AHI\n\nGOES-16 ABI\n\nGOES-17 ABI\n\nGOES-18 ABI\n\nGOES-19 ABI\n\nNOAA AVHRR/1, AVHRR/2, AVHRR/3 (NOAA-6 errors in ch1 & 2 fixed)\n\nMetop AVHRR/3\n\nTIROS-N AVHRR/1\n\nEnvisat AATSR\n\nSentinel-3A, B, C & D SLSTR\n\nSentinel-3A&B OLCI - mean rsr\n\nMeteosat SEVIRI\n\nTerra/Aqua MODIS\n\nSuomi-NPP VIIRS\n\nJPSS-1 (NOAA-20) VIIRS\n\nJPSS-2 (NOAA-21) VIIRS\n\nSentinel-2A MSI\n\nSentinel-2B MSI\n\nLandsat-8 OLI & TIRS\n\nLandsat-9 OLI & TIRS\n\nHY-1C COCTS\n\nMetop-SG-A1 MetImage  - low res macro pixel (average over all detectors)\n\nSentinel-3B OLCI - mean rsr\n\nFY-3D MERSI-2\n\nFY-3F MERSI-3\n\nFY-4A AGRI\n\nFY-4B AGRI\n\nFY-3B VIRR\n\nFY-3C VIRR\n\nGEO-KOMPSAT-2A AMI\n\nMeteosat-12 FCI (version from EUMETSAT, April 2022)\n\nMTG-I1 FCI (same as above)\n\nElectro-L N2 MSU-GS\n\nArctica-M 1 MSU-GS/A\n\nDSCOVR EPIC\n\nSentinel-C MSI\n\n\n \n\nChangelog for the Relative Spectral Response data=================================================\n\nVersion v1.6.1 (Wed Apr  1 08:14:23 PM CEST 2026)\n\n-------------------------------------------\n\n* Bugfix adding the new MODIS RSR files and now also with an extra attribute  for the sensor name\n\n \n\nVersion v1.6.0 (Mon Mar 30 06:58:54 PM CEST 2026)\n\n-------------------------------------------\n\n* Updated the MODIS RSR files with new platform names, Terra and Aqua instead  of the previous EOS-Terra and EOS-Aqua, see the WMO OSCAR database\n\n \n\nVersion v1.5.1 (Mon Mar  9 09:13:07 PM CET 2026)\n\n-------------------------------------------\n\n* Added actual measured (low resolution macro pixel) RSRs for METImage Metop-SG A1\n\n \n\nVersion v1.5.0 (Tue Sep 30 09:53:59 PM CEST 2025)\n\n-------------------------------------------\n\n* Added SLSTR RSRs for Sentinel-3C and -D. Updated with the latest versions from ESA for Sentinel-3A and -B.\n\n \n\nVersion v1.4.1 (Tue Oct 29 03:45:40 PM CET 2024)\n\n-------------------------------------------\n\n * Added RSRs for Landsat-8 and -9 OLI & TIRS. Original RSR as provided by NASA. Previously we had only Landsat-8 OLI\n\n \n\nVersion v1.4.0 (Tue Sep 24 03:35:15 PM CEST 2024)\n\n-------------------------------------------\n\n * Added RSRs for Sentinel-2C MSI and updated the MSI RSR for Sentinel 2A & B\n\n \n\nVersion v1.3.2 (Mon Jul 15 12:32:12 PM CEST 2024)\n\n-------------------------------------------\n\n * Corrected the file name for the RSRs of Mersi-3 onboard FY-3F\n\n \n\nVersion v1.3.1 (Mon Jul 15 11:12:10 AM CEST 2024)-------------------------------------------\n\n * Added SRFs (RSRs) for the Mersi-3 sensor onboard FY-3F\n\n \n\nVersion v1.3.0 (Fri May  3 04:11:43 PM CEST 2024)-------------------------------------------\n\n * Added SRFs (RSRs) for the Mersi-1 sensor onboard FY-3A/B/C * Added SRFs for the Mersi-RM sensor onboard FY-3G * Added SRFs for the GHI (Geostationary High-speed Imager) sensor onboard FY-4B * Added SRFs for GOCI-II (Geostationary Ocean Color Imager: Follow-on) sensor onboard GK-2B (GEO-KOMPSAT-2B)\n\n \n\nVersion v1.2.4 (Sat Oct 21 12:25:00 PM CEST 2023)\n\n-------------------------------------------\n\n* Normalized RSR responses for the EPIC sensor. Now values are scaled to be\n\n  between 0 and 1.\n\n \n\nVersion v1.2.3 (Fri Oct 20 01:58:29 2023)\n\n-------------------------------------------\n\n* Added RSR file for EPIC on DSCOVR (responses not normalized)\n\n \n\nVersion v1.2.2 (Tue Nov 15 14:44:03 2022)-------------------------------------------\n\n * Added RSR file for AGRI onboard FY-4B * Corrected RSR file for AGRI onboard FY-3B   Values were between 0 and 100, now scaled to between 0 and 1\n\n \n\nVersion v1.2.1 (Mon Oct 24 16:26:14 2022)-------------------------------------------\n\n * Changed name of the FY-3D MERSI-2 RSR file, removing the hyphen:   New name = rsr_mersi2_FY-3D.h5 \n\nVersion v1.2.0 (Tue Sep 27 21:08:13 2022)-------------------------------------------\n\n * Added VIIRS RSR for JPSS-2/NOAA-21:   Based on the J2_VIIRS_RSR_DAWG_At-Launch_Public_Release_V2_Jul2019.zip   The data read are the Detector wise files under J2_VIIRS_Detector_RSR_V2…[trimmed]"
+            }
+          ],
+          "geoLocations": [],
+          "fundingReferences": [],
+          "url": "https://zenodo.org/doi/10.5281/zenodo.19373017",
+          "contentUrl": null,
+          "metadataVersion": 1,
+          "schemaVersion": "http://datacite.org/schema/kernel-4",
+          "source": "api",
+          "isActive": true,
+          "state": "findable",
+          "reason": null,
+          "viewCount": 0,
+          "downloadCount": 0,
+          "referenceCount": 0,
+          "citationCount": 0,
+          "partCount": 0,
+          "partOfCount": 0,
+          "versionCount": 0,
+          "versionOfCount": 1,
+          "created": "2026-04-01T18:17:43Z",
+          "registered": "2026-04-01T18:17:44Z",
+          "published": null,
+          "updated": "2026-09-15T06:03:58Z"
+        },
+        "relationships": {
+          "client": {
+            "data": {
+              "id": "cern.zenodo",
+              "type": "clients"
+            }
+          }
+        }
+      },
+      {
+        "id": "10.5281/zenodo.21157780",
+        "type": "dois",
+        "attributes": {
+          "doi": "10.5281/zenodo.21157780",
+          "identifiers": [],
+          "creators": [
+            {
+              "nameType": "Personal",
+              "affiliation": [
+                "Royal Observatory of Belgium"
+              ],
+              "givenName": "Deniz",
+              "familyName": "Poyraz",
+              "name": "Poyraz, Deniz",
+              "nameIdentifiers": [
+                {
+                  "nameIdentifierScheme": "ORCID",
+                  "nameIdentifier": "0000-0002-2692-5621"
+                }
+              ]
+            }
+          ],
+          "titles": [
+            {
+              "title": "Reflected Solar Radiation Narrow Band Radiance to Broadband Flux Conversion for Earth Climate Observatory Phase-0 Study"
+            }
+          ],
+          "publisher": "Zenodo",
+          "container": {},
+          "publicationYear": 2026,
+          "subjects": [
+            {
+              "subject": "Earth radiation budget"
+            },
+            {
+              "subject": "shortwave flux"
+            },
+            {
+              "subject": "angular distribution model"
+            },
+            {
+              "subject": "narrowband-to-broadband conversion"
+            },
+            {
+              "subject": "GOES-16 / GOES-18 ABI"
+            }
+          ],
+          "contributors": [],
+          "dates": [
+            {
+              "date": "2026-07-03",
+              "dateType": "Issued"
+            },
+            {
+              "date": "2026-07-03",
+              "dateType": "Submitted"
+            }
+          ],
+          "language": "en",
+          "types": {
+            "schemaOrg": "SoftwareSourceCode",
+            "resourceTypeGeneral": "Software",
+            "citeproc": "article",
+            "bibtex": "misc",
+            "ris": "COMP",
+            "resourceType": ""
+          },
+          "relatedIdentifiers": [
+            {
+              "relationType": "HasVersion",
+              "relatedIdentifier": "10.5281/zenodo.21157781",
+              "relatedIdentifierType": "DOI"
+            }
+          ],
+          "relatedItems": [],
+          "sizes": [],
+          "formats": [],
+          "version": "v1.0.0",
+          "rightsList": [
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://creativecommons.org/licenses/by/4.0/legalcode",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "Creative Commons Attribution 4.0 International",
+              "rightsIdentifier": "cc-by-4.0"
+            },
+            {
+              "rightsIdentifierScheme": "SPDX",
+              "rightsUri": "https://opensource.org/licenses/MIT",
+              "schemeUri": "https://spdx.org/licenses/",
+              "rights": "MIT License",
+              "rightsIdentifier": "mit"
+            },
+            {
+              "rightsUri": "http://rightsstatements.org/vocab/InC/1.0/",
+              "rights": "Copyright (c) 2026 Deniz Poyraz"
+            }
+          ],
+          "descriptions": [
+            {
+              "descriptionType": "Abstract",
+              "description": "Python code for narrowband-to-broadband (NB2BB)  conversion and angular distribution models (ADMs), supporting a manuscript submitted to EGU Earth Observation. Includes simulation based regression fits and radiance-to-flux conversion using GOES-16/18 ABI data. See README and README_installation for usage and requirements.txt for dependencies. Version v1.0.0 corresponds to the submitted manuscript."
+            }
+          ],
+          "geoLocations": [],
+          "fundingReferences": [],
+          "url": "https://zenodo.org/doi/10.5281/zenodo.21157780",
+          "contentUrl": null,
+          "metadataVersion": 2,
+          "schemaVersion": "http://datacite.org/schema/kernel-4",
+          "source": "api",
+          "isActive": true,
+          "state": "findable",
+          "reason": null,
+          "viewCount": 0,
+          "downloadCount": 0,
+          "referenceCount": 0,
+          "citationCount": 0,
+          "partCount": 0,
+          "partOfCount": 0,
+          "versionCount": 2,
+          "versionOfCount": 1,
+          "created": "2026-07-03T09:40:51Z",
+          "registered": "2026-07-03T09:40:51Z",
+          "published": null,
+          "updated": "2026-09-13T19:38:35Z"
+        },
+        "relationships": {
+          "client": {
+            "data": {
+              "id": "cern.zenodo",
+              "type": "clients"
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "total": 42,
+      "totalPages": 9,
+      "page": 1
+    },
+    "links": {
+      "self": "https://api.datacite.org/dois?query=GOES-18%20ABI&page[size]=5",
+      "next": "https://api.datacite.org/dois?page%5Bnumber%5D=2&page%5Bsize%5D=5&query=GOES-18+ABI"
+    }
+  }
+}

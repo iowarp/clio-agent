@@ -47,7 +47,8 @@ The `clio` marketplace is installed by default and trusted at install.
 | `shell` | A shell in the workspace, with CLIO's managed execution runtime. | |
 | `ssh` | Run commands on a configured remote host over SSH. | `shell` |
 | `slurm` | Submit Slurm batch jobs, record their ids, wait in bounded steps, and read a failed job's output before resubmitting (skill). | `shell` |
-| `web` | Fetch web pages and search the web (tool server). | |
+| `web` | Search the web and read pages: `web_search`, `web_fetch` (built into CLIO). See [Search the web](/docs/web-search/). | |
+| `literature` | Find scholarly works and follow their references, citations and versions: `literature_search`, `literature_lookup` (built into CLIO). See [Find papers and review the literature](/docs/literature/). | |
 | `browser` | The shared browser: open, read and act on web pages from a script, shown to you in the side panel. See [Use the browser](/docs/browser/). | |
 | `marimo` | Start a marimo notebook, open it in the shared browser, and work in its live Python session. Not in any agent by default. | `shell` |
 | `delegation` | Start general subagents: any installed agent, or one of this agent's defined subagents, with a task prompt. | |
@@ -109,7 +110,7 @@ These carry one agent's mission and are rarely useful elsewhere: `factorio` (wit
 
 | Agent | Name | Builds on | Adds |
 |---|---|---|---|
-| `clio/standard` | CLIO | `Agent` | `workspace`, `shell`, `web`, `documents`, `visuals`, `connected-data`, `delegation`, `orchestration`, `browser` |
+| `clio/standard` | CLIO | `Agent` | `workspace`, `shell`, `web`, `literature`, `documents`, `visuals`, `connected-data`, `delegation`, `orchestration`, `browser` |
 | `clio/science` | CLIO Science | `standard` | `scientific-method` |
 | `clio/factorio` | Factorio | `science` | `manufacturing`, `abaqus`, `morphorm`, `slurm`, `factorio` |
 | `clio/earthscope` | EarthScope | `science` | `earthscope`, `geodesy`, `geo`, `ndp` |
@@ -135,6 +136,8 @@ Each tool belongs to one plugin. Require that plugin to give your plugin or suba
 | `orchestration` | `run_flow`, `run_workflow`, `make_plugin` |
 | `workspace` | `fs_read_file`, `fs_list_directory`, `fs_search_text`, `fs_write_file`, `fs_edit_file`, `view_image` |
 | `shell` | `shell_bash`, `prepare_execution_runtime` |
+| `web` | `web_search`, `web_fetch` |
+| `literature` | `literature_search`, `literature_lookup` |
 | `ssh` | `ssh_execute` |
 | `delegation` | `spawn_agent_task`, `spawn_agents_parallel`, `spawn_skill_task` |
 | `visuals` | `create_a2ui_surface`, `update_a2ui_components`, `update_a2ui_data_model`, `delete_a2ui_surface`, `inspect_a2ui_surface`, `capture_a2ui_surface`, `publish_dashboard_report` |
@@ -144,7 +147,7 @@ Each tool belongs to one plugin. Require that plugin to give your plugin or suba
 | `clio-search` | `clio_search`, `clio_search_read` |
 | `weather` | `get_weather_forecast` |
 
-Plugins with a tool server (`web`, `hdf5`, `adios`, `parquet`, `pandas`, `plot`, `ndp`, `geo`, `spotter`) bring that server's tools, named after the server: `web_fetch` and `web_search` from `web`, for example.
+Plugins with a tool server (`hdf5`, `adios`, `parquet`, `pandas`, `plot`, `ndp`, `geo`, `spotter`) bring that server's tools, named after the server. The `web` and `literature` tools are built into CLIO, and their plugins claim them.
 
 ## Hook events
 

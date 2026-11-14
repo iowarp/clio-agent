@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.keenable.ai/v1/search/public",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "query": "ADIOS2 BP5 engine documentation",
+      "max_results": 5
+    }
+  },
+  "status": 400,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "error": "Missing app identifier",
+    "message": "X-Keenable-Title header is required for token-less requests",
+    "type": "invalid_request_error",
+    "code": "missing_app_title",
+    "fix": "Name your app in the X-Keenable-Title header (or the keenable_title query parameter) and retry. With an API key, call /v1/search or /v1/fetch instead, which do not need it.",
+    "docs_url": "https://docs.keenable.ai/errors#missing-app-title",
+    "retryable": false,
+    "param": "X-Keenable-Title",
+    "request_id": "01a1d157-f775-730c-ad24-6dc6fea1aa55"
+  }
+}

@@ -332,6 +332,13 @@ class FileAccessPolicy:
             )
         return resolved
 
+    def validate_write_directory(self, path: str, *, field: str = "path") -> Path:
+        """Validate an existing folder that an operation will write inside."""
+        resolved = self.validate_read_directory(path, field=field)
+        self._refuse_git_metadata(resolved, field=field)
+        self._ensure_writable(resolved, field=field)
+        return resolved
+
     def _validate_read_location(self, path: str, *, field: str) -> Path:
         """Resolve one approved existing read target before checking its entry type."""
         raw_path = _coerce_path(path, field=field)
@@ -390,6 +397,7 @@ class FileAccessPolicy:
         """Validate an explicit output path and return its resolved path."""
         raw_path = _coerce_path(path, field=field)
         self._check_connected_storage(raw_path, field=field, write=True)
+        self._refuse_git_metadata(raw_path, field=field)
         parent = raw_path.parent
         if not self.allow_symlinks and (_has_symlink(parent) or raw_path.is_symlink()):
             raise self._error(
@@ -405,6 +413,7 @@ class FileAccessPolicy:
             if create_parent:
                 resolved_parent = parent.resolve(strict=False)
                 self._ensure_writable(resolved_parent, field=field)
+                self._refuse_git_metadata(resolved_parent / raw_path.name, field=field)
                 parent.mkdir(parents=True, exist_ok=True)
                 resolved_parent = parent.resolve(strict=True)
                 return resolved_parent / raw_path.name
@@ -416,7 +425,30 @@ class FileAccessPolicy:
                 next_action="Create the output directory inside an allowed root.",
             ) from exc
         self._ensure_writable(resolved_parent, field=field)
+        self._refuse_git_metadata(resolved_parent / raw_path.name, field=field)
         return resolved_parent / raw_path.name
+
+    def _refuse_git_metadata(self, path: Path, *, field: str) -> None:
+        """Refuse a write to a repository's ``.git``, as the sandbox does for commands.
+
+        The OS fence keeps an agent's commands from writing ``.git``: hooks and config
+        there run later, outside the sandbox, whenever the person uses git. File writes
+        run in CLIO's own process, outside that fence, so the same line is drawn here.
+        A ``.git`` file is refused too: its ``gitdir:`` line would point git elsewhere.
+        """
+
+        if not any(part.casefold() == GIT_METADATA_NAME for part in path.parts):
+            return
+        raise self._error(
+            code="git_metadata_protected",
+            message=f"Writing inside a repository's .git is not allowed: {path}",
+            field=field,
+            path=str(path),
+            next_action=(
+                "Leave .git to git. To record changes, use fs_git_commit, which asks "
+                "the person first."
+            ),
+        )
 
     def _check_connected_storage(self, path: Path, *, field: str, write: bool = False) -> None:
         from clio_agent.runtime.storage_access import check_storage_access  # noqa: PLC0415
@@ -489,6 +521,10 @@ def validate_read_path(path: str, *, field: str = "path", loads_whole_file: bool
     return FileAccessPolicy.from_env().validate_read(
         path, field=field, loads_whole_file=loads_whole_file
     )
+
+
+#: A repository's metadata entry; file writes never touch it (see ``_refuse_git_metadata``).
+GIT_METADATA_NAME = ".git"
 
 
 def validate_write_path(

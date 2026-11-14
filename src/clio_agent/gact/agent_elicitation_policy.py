@@ -31,18 +31,26 @@ def _enabled() -> bool:
     )
 
 
+#: CLIO's own servers whose questions only the person may answer: approving where
+#: search queries go and choosing what to do when a free allowance runs out.
+PERSON_ONLY_SERVERS = frozenset({"web", "literature"})
+
+
 def _denied_servers() -> frozenset[str]:
-    """Per-server opt-OUT list (namespace names) -- the policy knob the owner required."""
+    """Per-server opt-OUT list (namespace names) -- the policy knob the owner required.
+
+    :data:`PERSON_ONLY_SERVERS` are always included; configuration cannot route
+    their questions to an agent.
+    """
 
     default: list[str] = []
-    return frozenset(
-        conf.resolve(
-            "tools.mcp.elicitation.agent_audience.denied_servers",
-            env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS",
-            default=default,
-            cast=conf.as_csv,
-        )
+    configured = conf.resolve(
+        "tools.mcp.elicitation.agent_audience.denied_servers",
+        env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS",
+        default=default,
+        cast=conf.as_csv,
     )
+    return frozenset(configured) | PERSON_ONLY_SERVERS
 
 
 def _max_depth() -> int:

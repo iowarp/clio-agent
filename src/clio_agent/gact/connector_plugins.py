@@ -34,14 +34,20 @@ def connector_brief(app: Any, connector_id: str) -> dict[str, Any] | None:
         return None
     try:
         row = service.row(app, found)
-    except Exception as exc:  # noqa: BLE001 - the plugin row still lists; typed in trace
+    except (state.ConnectorStateError, OSError) as exc:
+        # The plugin row still lists; the brief says its state was not read, and why.
         trace.event(
             "PLUGINS",
             "connector_brief_unavailable connector=%s (%s)",
             connector_id,
             type(exc).__name__,
         )
-        row = {"enabled": state.choice(connector_id).enabled, "state": {"status": "unknown"}}
+        # An unreadable state file says nothing of the choice either: not enabled.
+        unread = isinstance(exc, state.ConnectorStateError)
+        row = {
+            "enabled": False if unread else state.choice(connector_id).enabled,
+            "state": {"status": "unknown", "reason": f"connector_state_unreadable: {exc}"},
+        }
     status = row.get("state") or {}
     return {
         "id": found.id,

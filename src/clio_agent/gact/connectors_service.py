@@ -216,10 +216,12 @@ def _records(app: Any) -> list[Any]:
     service = getattr(app.state, "plugin_service", None)
     if service is None:
         return []
+    from clio_agent.plugins.store import StoreError  # noqa: PLC0415
+
     try:
         return list(service.store.records())
-    except Exception as exc:  # noqa: BLE001 - the row still shows the entry's own plugin
-        trace.event("PLUGINS", "connector_row_records_unavailable (%s)", type(exc).__name__)
+    except StoreError as exc:  # an unreadable plugin state: the row shows the entry's own plugin
+        trace.event("PLUGINS", "connector_row_records_unavailable (%s)", exc.args[0])
         return []
 
 
@@ -314,16 +316,42 @@ async def apply(app: Any, found: Entry) -> dict[str, Any]:
         await _refresh_agent_tool_gateway(app)
         agent = getattr(app.state, "agent", None)
         steps: list[Coroutine[Any, Any, Any]] = []
+        relist_failed: dict[str, str] = {}
         if agent is not None:
-            steps.append(asyncio.to_thread(rebind_namespace, agent, found.id, saved))
+            steps.append(asyncio.to_thread(rebind_namespace, agent, found.id, saved, relist_failed))
         if not any(need.kind != "sign-in" for need in missing(found, choice)):
             steps.append(probe(app, found, choice, force=True))
         # The running servers' rebind and the probe are separate processes: run them
         # together, so a value change costs one server start, not two in a row.
         await asyncio.gather(*steps)
+        if relist_failed:
+            _relist_failed(app, found, choice, saved, relist_failed)
     sessions = await asyncio.to_thread(follow_in_open_sessions, app)
     publish_changed(app, found.id, sessions)
     return row(app, found, state.choice(found.id))
+
+
+def _relist_failed(
+    app: Any,
+    found: Entry,
+    choice: state.Choice,
+    saved: Mapping[str, Any],
+    failed: Mapping[str, str],
+) -> None:
+    """The open conversations' servers did not list again after a change: the row says so.
+
+    Their fleets keep their last tools (:func:`connector_rebind.rebind_namespace`); the
+    connector's state reads unreachable with the server's error until it is checked again.
+    """
+
+    detail = "; ".join(sorted(set(failed.values())))
+    trace.event("TOOLS", "connector_relist_failed connector=%s roots=%d", found.id, len(failed))
+    _probes(app)[found.id] = {
+        "key": _probe_key(found, choice),
+        "tool_count": None,
+        "status": "unreachable",
+        "reason": unreachable_reason(found, saved, detail),
+    }
 
 
 def check_values(

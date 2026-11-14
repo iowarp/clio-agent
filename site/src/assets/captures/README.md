@@ -278,6 +278,31 @@ its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`)
 | `papers/wtfp-plan-and-check.png` | `/wtfp:plan-and-check background` as a two-step workflow run. |
 | `papers/wtfp-comment-applied.png` | A comment on the paper and the edit to `introduction.tex`. |
 
+## Web search, literature and deep research
+
+The `search/` images are dark-mode browser captures at two device pixels per CSS pixel
+of real development sessions on 13 November 2026, on a fresh CLIO state with no search
+keys and nothing approved (agent branch `claude/nifty-mccarthy-ybiwgz` on develop
+`4cb6d13a`, UI develop `4d040650`, model Claude Haiku 5.5 through the Claude Code
+provider). Nothing is painted or composited.
+
+| File | Viewport | What it shows |
+| --- | --- | --- |
+| `settings-web.png` | 1440 x 900 | Settings, Web search, Web tab before any search. |
+| `settings-web-phone.png` | 390 x 844 | The same tab on a phone. |
+| `settings-literature.png` | 1440 x 900 | The Literature tab. |
+| `chat-permission.png` | 1440 x 1000 | The Ask first permission request for the first literature search. |
+| `chat-approval.png` | 1440 x 1000 | The first-use question for Keenable. |
+| `chat-web-results.png`, `chat-literature-results.png` | 1440 x 1000 | Opened search rows from the same conversation. |
+| `deep-mode-menu.png` | 1440 x 1000, cropped | The composer's mode menu. |
+| `deep-running.png`, `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: in progress (the conversation reopened 6 minutes in), the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
+
+The chat requests were plain questions with no tool or step named. The capture script
+answered the search approvals and allowed the search tools for the session, as a person
+would; it answered nothing else. The OpenAlex note in `chat-literature-results.png` is
+real: earlier development runs from the same network had used OpenAlex's keyless daily
+allowance. Reproduce with `scripts/cloud/capture_search_docs.mjs` against a stack started
+with `bash scripts/cloud/stack.sh start` and a fresh `CLIO_AGENT_HOME`.
 
 ## Connectors and apps
 

@@ -29,11 +29,17 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     prepare_office_runtime,
 )
+from clio_agent.runtime.document_stack.process import end_on_termination
 from clio_agent.runtime.execution_environment import (
     protect_bundled_runtime,
     publish_environment,
 )
 from clio_agent.runtime.github_cli import ensure_github_cli
+from clio_agent.runtime.install_tool_servers import (
+    KIT_READY_ENV,
+    _prefetch_server_python,
+    _prepare_tool_servers,
+)
 from clio_agent.runtime.ripgrep import ensure_ripgrep
 from clio_agent.runtime.tectonic import ensure_tectonic
 
@@ -124,7 +130,11 @@ def prepare_managed_packages(
                 timings,
                 "packages",
                 lambda: prepare_document_runtime(
-                    workspace, cache_root=cache_root, progress=report, timings=timings
+                    workspace,
+                    cache_root=cache_root,
+                    progress=report,
+                    office_checked=True,
+                    timings=timings,
                 ),
             )
             if result["javascript"]["status"] != "ready":
@@ -308,6 +318,7 @@ def _report_warnings() -> None:
 
 def main() -> None:
     """Run the installer step; a failed step exits 1 with its message, not a traceback."""
+    end_on_termination()
     _report_warnings()
     try:
         _main()
@@ -354,6 +365,14 @@ def _main() -> None:
         default="",
         metavar="KINDS",
         help="Comma-separated provider kinds (e.g. claude_code) whose SDK to install now.",
+    )
+    parser.add_argument(
+        "--prepare-tool-servers",
+        action="store_true",
+        help=(
+            "Build the environments of the clio-kit tool servers the installed agents carry. "
+            f"Waits for the installer's clio-kit when {KIT_READY_ENV} names its signal file."
+        ),
     )
     args = parser.parse_args()
     if args.prefetch_only:
@@ -405,9 +424,15 @@ def _main() -> None:
     # install just wrote out of the first start (see _prewarm_runtime_files).
     # A provider SDK the caller names is a download too; without it the first turn
     # with that provider would install it.
-    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="clio-packages") as installing:
+    # The agents' clio-kit tool servers each build an environment on first use (minutes
+    # for a cold cache), so an install that asks for them builds them here, once the
+    # marketplace that declares them is installed. The Python they pin does not depend
+    # on the marketplace, so it is installed from the start.
+    with ThreadPoolExecutor(max_workers=7, thread_name_prefix="clio-packages") as installing:
         browser = installing.submit(_prepare_browser, args, emit)
+        server_python = installing.submit(_prefetch_server_python, args, emit)
         marketplace = installing.submit(_prepare_default_marketplace, args, emit)
+        tool_servers = installing.submit(_prepare_tool_servers, args, marketplace, emit)
         providers = installing.submit(_prepare_provider_support, args, emit)
         prewarm = installing.submit(_prewarm_runtime_files, args)
         installation_timings: dict[str, float] = {}
@@ -427,6 +452,9 @@ def _main() -> None:
         migrations = _run_store_migrations(args, emit)
         marketplace_result = marketplace.result()
         providers_result = providers.result()
+        # The MCP cache prune must not run while the tool servers' builds use that cache.
+        server_python_result = server_python.result()
+        tool_servers_result = tool_servers.result()
         maintenance: dict[str, Any] = {}
         if not args.reuse_installed:
             # An install or upgrade, not a per-launch check: bound the MCP cache (B4) and
@@ -446,6 +474,8 @@ def _main() -> None:
         "store_migrations": migrations,
         "browser": browser_result,
         "marketplace": marketplace_result,
+        "tool_servers": tool_servers_result,
+        "server_python": server_python_result,
         "provider_support": providers_result,
         "prewarm": prewarm_result,
         **maintenance,

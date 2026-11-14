@@ -127,18 +127,6 @@ BUNDLE_SPEC="${SPEC}[$(echo "$BUNDLE_EXTRAS" | tr ' ' ',')]"
 echo "[build-gact-runtime] installing: $BUNDLE_SPEC (locked)"
 uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$BUNDLE_SPEC"
 
-# Install the source-locked Web Search MCP adapter now.  Connecting the
-# recommended service must not build a second Python environment on first use.
-# Its dependencies are already installed from the `desktop` extra; the
-# constraint keeps any it adds on the lock (and check_bundle_matches_lock.py
-# fails on a package the lock does not cover).
-WEB_MCP_PROJECT="$("$OUT/$PYBIN_REL" -c 'from clio_kit import get_servers_path; from clio_kit.component_store import server_project; print(server_project("web", get_servers_path()))')"
-[ -f "$WEB_MCP_PROJECT/pyproject.toml" ] || {
-  echo "build-gact-runtime: bundled Web Search MCP project missing at $WEB_MCP_PROJECT" >&2
-  exit 1
-}
-echo "[build-gact-runtime] installing bundled CLIO Web Search adapter"
-uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$WEB_MCP_PROJECT"
 rm -f "$CONSTRAINTS"
 
 # check_bundle_matches_lock.py is the automated proof this constraint actually
