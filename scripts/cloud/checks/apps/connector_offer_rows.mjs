@@ -1,5 +1,6 @@
 // The "Offer connector" row of a finished conversation, expanded: the agent's reason,
-// what the person chose, where it applies and the tools that joined (or "Not now").
+// what the person chose, where it went (this conversation) and the tools that joined
+// (or "Not now").
 //
 //   OFFER_SESSION  the conversation (a session connector_offer.mjs left)
 import { api } from "./_lib.mjs";

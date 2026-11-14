@@ -130,6 +130,19 @@ layer wins; then the person's rules (`/v1/policies`); then the tool's default; t
 approval mode and a script's grant. So a plugin can keep `send_email` on `ask` in
 `auto-edits`; `bypass` skips a default's question but never a deny.
 
+**A built-in that acts outside CLIO follows the approval mode like an MCP tool.** A
+native tool declares it with `native_tool(outside=True)`: it drives a server, a view the
+person sees or a connector's state, and does not ask by a card of its own. Today a
+view's own tools (`app__<server>__<tool>`) and `set_connector_value` declare it. Their
+calls pass the whole gate (`native_gate` in `gact/runtime/tool_permission_layers.py`):
+in `ask` each asks, titled with the tool's title, with allow once, for this session or
+for this workspace (a rule for that exact tool name, so once per tool); in `bypass` none
+asks; a view tool annotated `readOnlyHint` asks nothing unless a rule or default says
+so. Other built-ins (`search_tools`, `load_skill`, plans, todos, memory) are CLIO's own
+bookkeeping: only a rule or default makes them ask or refuses them. Built-ins that act
+outside but ask by their own gate call or card keep doing so without the declaration
+(`ssh_execute`, `connected_data_connect`, `run_code`, `offer_connector`'s card).
+
 **Deny hides the tool.** A tool whose default is `deny`, or that a person's rule names
 exactly and denies, is left out of the agent's tools: the tool list, the deferred
 catalog and the `run_code` stubs, traced `tool_permission_deny`; a call to it by name is

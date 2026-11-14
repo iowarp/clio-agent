@@ -81,6 +81,10 @@ start_ui() {
   if alive "$STATE/ui.pid"; then echo "ui: already running"; return 0; fi
   local web="$ROOT/external/gact-tui/web"
   [ -f "$web/package.json" ] || { echo "ui: $web missing (run scripts/cloud/session_start.sh)"; return 1; }
+  # Run the UI as CLIO (logo, name, accent), as the release builds do, not the
+  # neutral GACT profile. The override is gitignored in gact-tui.
+  local brand="$ROOT/external/gact-tui/brand.config.local.json"
+  [ -f "$brand" ] || printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$ROOT" > "$brand"
   launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
   if wait_http "http://127.0.0.1:$UI_PORT/" 120; then
     echo "ui: http://127.0.0.1:$UI_PORT"

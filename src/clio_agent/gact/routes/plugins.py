@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent.gact import plugin_authoring, session_warmup
+from clio_agent.gact import connector_plugins, plugin_authoring, session_warmup
 from clio_agent.gact.agents import prompt_basis
 from clio_agent.gact.agents.resolution import (
     AGENT_DELTA_KEY,
@@ -133,7 +133,8 @@ def plugin_row(record: PluginRecord, *, trusted: bool, pending: bool = False) ->
         "trusted": trusted,
         "pending_trust": pending,
         "diagnostics": [row.to_dict() for row in record.diagnostics],
-        # Follows a connector (CN9): it comes and goes with it; pickers do not offer it.
+        # Follows a connector (CN9 *Amended*): a conversation adds it while that
+        # connector is on; the listing adds ``connector`` (``gact.connector_plugins``).
         "follows": record.follows,
     }
 
@@ -141,26 +142,27 @@ def plugin_row(record: PluginRecord, *, trusted: bool, pending: bool = False) ->
 def resolution_view(resolution: Resolution) -> dict[str, Any]:
     """A resolution with the composed prompt's sections attributed to their plugins.
 
-    A plugin that follows a connector (CN9) is labelled with that connector, not as the
-    person's own addition.
+    A connector's plugin (CN9 *Amended*) keeps its own provenance (the person added it)
+    and names its connector, ``{id, name, logo_url}``.
     """
 
     view = {**resolution.to_dict(), "tool_names": resolution.tool_names}
     if any(row.get("follows") for row in view["plugins"]):
         from clio_agent.connectors.state import all_entries  # noqa: PLC0415
 
-        names = {key: entry.name for key, entry in all_entries().items()}
-        view["plugins"] = [
-            {
-                **row,
-                "provenance": {
-                    "source": "connector",
-                    "via": row["follows"],
-                    "label": f"From connector {names.get(row['follows'], row['follows'])}",
-                },
+        entries = all_entries()
+
+        def brief(connector_id: str) -> dict[str, Any]:
+            found = entries.get(connector_id)
+            logo = found is not None and bool(found.logo)
+            return {
+                "id": connector_id,
+                "name": found.name if found is not None else "",
+                "logo_url": f"/v1/connectors/{connector_id}/logo" if logo else None,
             }
-            if row.get("follows")
-            else row
+
+        view["plugins"] = [
+            {**row, "connector": brief(row["follows"])} if row.get("follows") else row
             for row in view["plugins"]
         ]
     return view
@@ -199,7 +201,9 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             service.ready()
             store = service.store
             pending = store.pending()
-            plugins = [plugin_row(r, trusted=store.trusted(r)) for r in store.records()]
+            plugins = connector_plugins.catalog_rows(
+                app, store.records(), plugin_row, store.trusted
+            )
             plugins.extend(plugin_row(r, trusted=False, pending=True) for r in pending)
             return {"plugins": plugins, "default_marketplace_error": service.ready_error}
 
@@ -215,6 +219,8 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         def inspect() -> dict[str, Any]:
             service.ready()
             records = service.store.pending() if pending else service.store.records()
+            if not pending:
+                records = [*records, *connector_plugins.carrier_records(records)]
             record = next((row for row in records if f"{row.marketplace}/{row.id}" == ref), None)
             if record is None:
                 raise StoreError("plugin_not_found", f"Plugin {ref!r} is not installed")
