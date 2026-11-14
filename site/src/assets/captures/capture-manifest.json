@@ -216,18 +216,18 @@
       },
       {
         "file": "connectors/offer-connector-geo.png",
-        "sha256": "73c1e4d6eaf24760cb9e28cc017890fc8057c7d188bd380d959e5e2b14001e25",
+        "sha256": "00b6358702e0fa1e00c561fd5d2f4ed2498f9f1dd77c018eed32956d2bcac4d6",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C12 (sess_fe14bc320835)",
+        "source": "prefinal, PF-C2 (sess_f45672057bde)",
         "origin": "fresh"
       },
       {
         "file": "connectors/offer-plugin.png",
-        "sha256": "d97f6928a7669bbc8db5cccdc56497454241c7d17c6f16057e99155db3dbaf39",
+        "sha256": "8a47d8a6e317d896e10df797d399f7a57acaf9e7bd93247fef4f39e9c7727d85",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C13 (sess_27d580bb861d, Home Assistant demo instance)",
+        "source": "prefinal, PF-C1 (sess_df445bf80c6d, Home Assistant demo instance; DOCS-F7 compact card)",
         "origin": "fresh"
       },
       {

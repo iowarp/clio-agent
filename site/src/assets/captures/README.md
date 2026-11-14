@@ -311,8 +311,9 @@ provider, Sonnet 5.5), dark mode, 1440 x 900, CLIO brand. Files at 2880 x 1800 w
 at two device pixels per CSS pixel; the rest at one. `capture-manifest.json`
 (`connectors_and_apps`) records each file's checksum, size and source. The record of each
 run is in `docs/design/sdk/mcp-apps-ledger.md`: the `DOCS` rows (stack N=35, 14 November
-2026) for the fresh captures, and the stream named below for those copied from the
-qualification gallery. Requests are plain unless a row says otherwise; permission prompts
+2026) for the fresh captures, the `PF` rows (stack N=38) for the two offer cards
+retaken after the compact-card fix, and the stream named below for those copied from
+the qualification gallery. Requests are plain unless a row says otherwise; permission prompts
 were answered "This session" and offer cards "Add" by the harness,
 `scripts/cloud/checks/apps/docs_capture.mjs`.
 
@@ -340,8 +341,8 @@ plugins shown as what they are), on a fresh stack.
 | `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, Connector (an MCP server), In conversations. | `docs`, DOCS-C9 |
 | `connectors/add-plugin-picker.png` | A new conversation's Add plugin menu: Connectors, then Packs. | `docs`, DOCS-C10 |
 | `connectors/add-plugin-picker-plugins.png` | The same menu scrolled: the Plugins group with Home Assistant. | `docs`, DOCS-C10 |
-| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector, with View connector. | `docs`, DOCS-C12 |
-| `connectors/offer-plugin.png` | The offer card for the Home Assistant plugin, its required rows filled. | `docs`, DOCS-C13 |
+| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector, with View connector. | `prefinal`, PF-C2 |
+| `connectors/offer-plugin.png` | The compact offer card for the Home Assistant plugin; its saved address and token wait under Settings (2). | `prefinal`, PF-C1 |
 | `connectors/offer-view-plugin.png` | View plugin over the waiting card: two skills, one MCP server. | `docs`, DOCS-C13 |
 | `connectors/offer-plugin-answered.png` | The reply after Add: a skill loaded and the plugin's tools used. | `docs`, DOCS-C13 |
 | `connectors/add-by-command.png` | Add by URL or command, filled for a local command; not added. | `docs`, DOCS-C11 |
