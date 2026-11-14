@@ -472,6 +472,17 @@ def test_a_search_miss_says_what_is_not_searched() -> None:
     assert "Only this conversation's tools are searched" in text and "offer_plugin" in text
 
 
+def test_a_search_that_names_an_addable_plugin_or_connector_says_so(app: Any) -> None:
+    rows = plugin_offer.offerable_matching(app, "sess_a", "tariff-calc landed cost")
+    assert [row["id"] for row in rows] == ["tariff-calc"]
+    connector = plugin_offer.offerable_matching(app, "sess_a", "open in fixture-plain")
+    assert [(row["kind"], row["id"]) for row in connector] == [("connector", "fixture-plain")]
+    assert plugin_offer.offerable_matching(app, "sess_a", "already-here") == []
+    assert plugin_offer.offerable_matching(app, "sess_a", "nothing like it") == []
+    note = plugin_offer.search_note(rows)
+    assert 'tariff-calc (plugin, id "tariff-calc")' in note and "offer_plugin" in note
+
+
 def test_a_connector_offer_names_the_skills_its_plugin_brings(
     app: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

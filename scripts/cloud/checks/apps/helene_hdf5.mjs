@@ -25,14 +25,19 @@ const TURNS = {
   // evidence of the mechanism and the agent's analysis, not of its choice of view.
   clouds:
     "What did the clouds around it look like on the 26th, before it came ashore? The cloud, " +
-    "rain and snow water for those days are in the era5 folder. Show me the storm in ParaView " +
-    "as a see-through volume, looking down on it at an angle, so I can see the spiral.",
+    "rain and snow water for those days are in the era5 folder. Show it to me in ParaView " +
+    "from above, tilted a little, so I can see the spiral. Give the cloud droplets, ice, rain " +
+    "and snow each their own strong colour, and hide the thin wisps so the shape of the " +
+    "storm stands out.",
   share: "Put all of this on a dashboard so I can share it with colleagues.",
   follow: "Can I step through the days on this and have everything follow, the 3D clouds too?",
   go: "3-hourly, go ahead.",
   beat:
     "I stepped the 3D view to landfall and raised the liquid-water surface. What does it " +
     "show now, and how does it compare with the day before?",
+  beatTurned:
+    "I stepped the 3D view to landfall and turned the storm around. What does it show now, " +
+    "and how does it compare with the day before?",
 };
 
 const T0 = Date.now();
@@ -43,32 +48,44 @@ function mark(name) {
 
 async function settle(page, sid, log, shot, name, minutes = 25) {
   mark(`${name}-waiting`);
-  let n = 0;
-  const until = Date.now() + minutes * 60_000;
-  while (Date.now() < until) {
-    // The agent may offer a connector (ParaView) for this conversation: the person reads the
-    // offer and clicks Add, as anyone would to get the view they asked for.
-    await acceptOffers(page, shot, name);
-    const done = await waitIdle(page, sid, log, 0.5);
-    n += 1;
-    if (n % 6 === 0 || done) await shot(`${name}-${String(n).padStart(2, "0")}`);
-    if (done) {
-      await toLatest(page);
-      mark(`${name}-answered`);
-      return true;
+  // The agent may offer a connector (ParaView) for this conversation: the person reads the
+  // offer and clicks Add, as anyone would to get the view they asked for. It is watched on
+  // its own, so the click follows the card within a second instead of a polling round.
+  let settled = false;
+  const watcher = (async () => {
+    while (!settled) {
+      await acceptOffers(page, shot, name).catch(() => {});
+      await page.waitForTimeout(300).catch(() => {});
     }
+  })();
+  try {
+    let n = 0;
+    const until = Date.now() + minutes * 60_000;
+    while (Date.now() < until) {
+      const done = await waitIdle(page, sid, log, 0.5);
+      n += 1;
+      if (n % 6 === 0 || done) await shot(`${name}-${String(n).padStart(2, "0")}`);
+      if (done) {
+        await toLatest(page);
+        mark(`${name}-answered`);
+        return true;
+      }
+    }
+    mark(`${name}-timeout`);
+    return false;
+  } finally {
+    settled = true;
+    await watcher;
   }
-  mark(`${name}-timeout`);
-  return false;
 }
 
 async function acceptOffers(page, shot, name) {
   const offer = page.locator('[data-interaction-kind="connector_setup"]').locator("visible=true");
   const add = offer.getByRole("button").filter({ hasText: /Add/ }).first();
   if (!(await add.isVisible().catch(() => false))) return;
-  await toLatest(page);
-  await page.waitForTimeout(2500); // reads what it adds and why
-  await shot(`${name}-offer`);
+  await add.scrollIntoViewIfNeeded();
+  mark(`${name}-offer-shown`);
+  await page.waitForTimeout(1000); // reads what it adds and why
   await add.click({ timeout: 5000 });
   mark(`${name}-offer-accepted`);
   console.log("ACCEPTED connector offer");
@@ -182,21 +199,30 @@ async function finalBeat(page, shot, sid, log) {
   await page.waitForTimeout(5000);
   await shot("beat-dashboard");
   // Step the 3D view to landfall (27 Sep 03Z is step 26 of 32); the other views follow.
-  const time = app.getByRole("slider", { name: /Time step/ }).first();
-  await time.focus();
+  // A narrow view folds the step buttons into a menu on its step counter; open it then.
+  const next = app.getByRole("button", { name: "Next step" }).locator("visible=true").first();
+  if (!(await next.isVisible().catch(() => false))) {
+    await app.getByRole("button", { name: /^Time step \d+ of \d+$/ }).first().click();
+    await page.waitForTimeout(600);
+  }
+  const back = app.getByRole("button", { name: "Previous step" }).locator("visible=true").first();
   // The counter updates after the server moves the view, so step and wait for it.
+  // Landfall (27 Sep 03Z) is step 26 of a 3-hourly 24-27 Sep series: the same share of
+  // whatever series the agent built.
+  const { total } = await stepOf(app);
+  const target = Math.max(1, Math.round((total * 26) / 32));
   for (let k = 0; k < 40; k += 1) {
-    const now = Number((await stepOf(app)).split("/")[0]);
-    if (now === 26) break;
-    await time.focus();
-    await page.keyboard.press(now < 26 ? "ArrowRight" : "ArrowLeft");
+    const { now } = await stepOf(app);
+    if (now === target) break;
+    await (now < target ? next : back).click({ timeout: 5000 });
     await page.waitForTimeout(1200);
   }
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(6000);
   await shot("beat-landfall");
   // The person's own change in the view: raise the liquid-water surface when the scene has
   // one (an isosurface), else turn the storm around to look at it (a volume).
-  const liquid = app.getByRole("button", { name: /^(?!Hide |Show |Remove ).*liquid/i }).first();
+  const liquid = app.getByRole("button", { name: /^(?!Hide |Show |Remove ).*(liquid|droplet)/i }).first();
   if (!(await liquid.isVisible().catch(() => false))) {
     await app.getByRole("button", { name: "Pipeline" }).click();
     await page.waitForTimeout(1200);
@@ -314,7 +340,9 @@ async function toLatest(page) {
 }
 
 async function stepOf(app) {
-  return (await app.getByText(/^\s*\d+\s*\/\s*32\s*$/).first().textContent().catch(() => "0/32")).trim();
+  const text = await app.getByText(/^\s*\d+\s*\/\s*\d+\s*$/).first().textContent().catch(() => "0/0");
+  const [now, total] = text.split("/").map((v) => Number(v.trim()));
+  return { now, total };
 }
 
 export default async function (page, shot) {

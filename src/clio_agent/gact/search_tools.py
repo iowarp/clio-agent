@@ -302,6 +302,14 @@ def build_search_tools_tool() -> Any:
 
             if loading := loading_note(_ctx.active_app(), _ctx.active_session_id()):
                 text, structured["loading"] = f"{text}\n\n{loading}", loading
+        if not structured["tools"]:  # it may name a plugin or connector to add instead
+            from clio_agent.gact.plugin_offer import (  # noqa: PLC0415
+                offerable_matching,
+                search_note,
+            )
+
+            if rows := offerable_matching(_ctx.active_app(), _ctx.active_session_id(), query):
+                text, structured["offerable"] = f"{text}\n\n{search_note(rows)}", rows
         names = [row["name"] for row in structured["tools"]]
         _record_loaded(_ctx.active_app(), _ctx.active_session_id(), names)
         trace.event(
