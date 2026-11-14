@@ -50,6 +50,11 @@ const settleMs = Number(opt("settle", 60000));
 const video = args.includes("--video");
 // --touch: a touch device (hasTouch, isMobile), so steps can tap and drag with real touches.
 const touch = args.includes("--touch");
+// --scale N: the device pixel ratio (2 for sharp screenshots, e.g. for the website).
+const scale = Number(opt("scale", 1));
+// --theme light|dark: the UI's stored theme choice before the first load, as its own
+// switch saves it (theme/preference.ts), so the app and its views start in that theme.
+const theme = opt("theme", null);
 
 function chromiumPath() {
   const base = "/opt/pw-browsers";
@@ -81,6 +86,8 @@ try {
 }
 const context = await browser.newContext({
   viewport: { width, height },
+  deviceScaleFactor: scale,
+  ...(theme ? { colorScheme: theme === "dark" ? "dark" : "light" } : {}),
   ...(touch ? { hasTouch: true, isMobile: true } : {}),
   ...(video ? { recordVideo: { dir: path.join(root, ".cloud-run/video-tmp"), size: { width, height } } } : {}),
 });
@@ -100,6 +107,20 @@ await context.addInitScript(
   },
   [new URL(uiUrl).origin, agentUrl],
 );
+if (theme) {
+  await context.addInitScript(
+    ([origin, choice]) => {
+      if (window.location.origin !== origin) return;
+      try {
+        const record = JSON.parse(window.localStorage.getItem("clio.appearance.v1") || "{}");
+        window.localStorage.setItem("clio.appearance.v1", JSON.stringify({ ...record, theme: choice }));
+      } catch {
+        // Storage refused: the UI keeps its default theme.
+      }
+    },
+    [new URL(uiUrl).origin, theme],
+  );
+}
 const page = await context.newPage();
 const consoleErrors = [];
 const failedRequests = [];

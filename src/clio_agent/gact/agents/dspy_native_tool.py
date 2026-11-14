@@ -159,6 +159,17 @@ class ClioNativeTool(dspy.Tool):
             )
         }
         try:
+            # A required argument (no default) the call left out is a schema error the
+            # model can correct, not a TypeError from inside the tool.
+            missing = [
+                key
+                for key, parameter in parameters.items()
+                if parameter.default is inspect.Parameter.empty
+                and key in (self.args or {})
+                and key not in given
+            ]
+            if missing:
+                raise ValueError(f"missing required argument {', '.join(missing)}.")
             return super()._validate_and_parse_args(**given)
         except ValueError as exc:
             from clio_agent.tools import execution  # noqa: PLC0415

@@ -76,8 +76,15 @@ def _short(value: Any) -> str:
 
 
 def _last_segment(text: str) -> str:
+    """The path's last segment that names something: a pattern segment of wildcards
+    only (``data/pulse_series/*``) names its folder (``pulse_series``)."""
+
     trimmed = text.split("?", 1)[0].split("#", 1)[0].rstrip("/\\")
-    return re.split(r"[\\/]", trimmed)[-1] or text
+    segments = [part for part in re.split(r"[\\/]", trimmed) if part]
+    for part in reversed(segments):
+        if part.strip("*?[]{}.") and part not in ("~",):
+            return part
+    return segments[-1] if segments else text
 
 
 def call_subject(tool: Any, arguments: Mapping[str, Any] | None) -> str:

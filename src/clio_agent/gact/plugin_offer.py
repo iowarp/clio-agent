@@ -302,6 +302,7 @@ def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[st
         "plugin": record.id,
         "plugin_ref": _ref(record),
         "plugin_name": record.id,
+        "description": summary(record.description),
         "already_here": already,
         "skills": skills,
         "tools": sorted(tools),
@@ -323,7 +324,12 @@ async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> 
         return await asyncio.to_thread(_joined, app, session_id, record, already=True)
     row = await asyncio.to_thread(_card_row, app, session_id, record, reason)
     trace.event("TOOLS", "plugin_offered plugin=%s session=%s", _ref(record), session_id)
-    named = {"plugin": record.id, "plugin_name": record.id, "reason": reason}
+    named = {
+        "plugin": record.id,
+        "plugin_name": record.id,
+        "description": summary(record.description),
+        "reason": reason,
+    }
     if await asyncio.to_thread(wait_for_card, app, row):
         return {
             "error": OFFER_CANCELLED,
@@ -344,8 +350,13 @@ async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> 
 # -------------------------------------------------------------------- the tool
 
 
-async def offer_plugin(plugin: str = "", reason: str = "") -> dict[str, Any]:
-    """Offer to add a plugin or connector to this conversation; wait for Add or Not now."""
+async def offer_plugin(reason: str, plugin: str = "") -> dict[str, Any]:
+    """Offer to add a plugin or connector to this conversation; wait for Add or Not now.
+
+    ``reason`` is required (schema: no default, at least one character): the card shows
+    the person why the agent asks, so an offer without one is a validation error the
+    model corrects, never a card with no reason (CF-N4).
+    """
 
     from clio_agent.gact import connector_offer, context  # noqa: PLC0415
 
@@ -401,7 +412,11 @@ def build_offer_plugin_tool() -> Any:
             },
             "reason": {
                 "type": "string",
-                "description": "One sentence for the person: what it would do for this request.",
+                "minLength": 1,
+                "description": (
+                    "Required. One sentence for the person, shown on the card: why this "
+                    "request needs it and what it would do here."
+                ),
             },
         },
         presentation=present,
