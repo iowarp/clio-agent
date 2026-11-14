@@ -245,7 +245,7 @@ def test_add_puts_the_plugin_here_and_its_skills_and_servers_join_the_turn(
     assert "load with load_skill from your next step: tariff-landed-cost" in result["message"]
     assert result["reason"] == "It computes duty and VAT."
     # Asked again: already here, no second card.
-    again = asyncio.run(plugin_offer.offer_plugin(plugin="tariff-calc"))
+    again = asyncio.run(plugin_offer.offer_plugin(plugin="tariff-calc", reason="Duty."))
     assert again["already_here"] is True and len(app.state.connector_setups) == 1
 
 
@@ -274,7 +274,7 @@ def test_not_now_and_a_conversation_that_cannot_take_it_are_typed(
         raise connector_follow.ConnectorAddError("subagent_plugins_fixed", "fixed")
 
     monkeypatch.setattr(connector_follow, "add_plugins", refuse)
-    worker, _outcome = _offer_in_thread(plugin="lab/Alpha")
+    worker, _outcome = _offer_in_thread(plugin="lab/Alpha", reason="To try it.")
     card = _pending_card(app, worker)
     with pytest.raises(connector_setup.SetupResponseError) as refused:
         asyncio.run(connector_setup.respond(app, {"sess_a"}, card.id, "submit", {}, {}))
@@ -291,7 +291,7 @@ def test_stopping_the_turn_ends_the_offer(app: Any, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         "clio_agent.gact.code_task_context.question_cancel_token", lambda _app, _sid: stop
     )
-    result = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha"))
+    result = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="To try it."))
     assert result["error"] == plugin_offer.OFFER_CANCELLED and result["outcome"] == "cancelled"
 
 
@@ -305,19 +305,19 @@ def test_a_connector_or_its_plugin_is_the_connector_offer(
         return {"connector": connector}
 
     monkeypatch.setattr(connectors, "offer_connector", offer)
-    asyncio.run(plugin_offer.offer_plugin(plugin="Fixture Plain"))
-    asyncio.run(plugin_offer.offer_plugin(plugin="paraview"))  # follows fixture-plain
+    asyncio.run(plugin_offer.offer_plugin(plugin="Fixture Plain", reason="r"))
+    asyncio.run(plugin_offer.offer_plugin(plugin="paraview", reason="r"))  # follows fixture-plain
     assert asked == ["fixture-plain", "fixture-plain"]
 
 
 def test_listing_unknown_and_no_conversation(app: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    listed = asyncio.run(plugin_offer.offer_plugin())
+    listed = asyncio.run(plugin_offer.offer_plugin(reason="r"))
     assert len(listed["offerable"]) == 5 and "can add" in listed["message"]
     for name in ("nope", "core", "python-tools", "bundle"):
-        missing = asyncio.run(plugin_offer.offer_plugin(plugin=name))
+        missing = asyncio.run(plugin_offer.offer_plugin(plugin=name, reason="r"))
         assert missing["error"] == "plugin_not_found", name
     monkeypatch.setattr(connectors, "_session_id", lambda: "")
-    assert asyncio.run(plugin_offer.offer_plugin(plugin="x"))["error"] == (
+    assert asyncio.run(plugin_offer.offer_plugin(plugin="x", reason="r"))["error"] == (
         "plugin_offer_no_conversation"
     )
 
@@ -354,6 +354,7 @@ def test_the_row_reads_offer_and_says_what_joined() -> None:
         {
             "plugin": "tariff-calc",
             "plugin_name": "tariff-calc",
+            "description": "Landed cost of imported goods.",
             "skills": [{"id": f"skill-{n}", "description": "x" * 200} for n in range(12)],
             "tools": [f"tariff_tool_{n}" for n in range(25)],
             "tools_next_message": ["py_run"],
@@ -363,6 +364,12 @@ def test_the_row_reads_offer_and_says_what_joined() -> None:
     assert added["action"] == "Offer" and added["subject"] == "plugin" and "status" not in added
     texts = {block["id"]: block for block in added["blocks"]}
     assert texts["plugin"]["text"] == "tariff-calc" and texts["reason"]["text"] == "Duty and VAT."
+    assert texts["what"] == {
+        "id": "what",
+        "type": "text",
+        "label": "What it is",
+        "text": "Landed cost of imported goods.",
+    }
     assert texts["outcome"]["text"] == "Added" and texts["scope"]["text"] == "This conversation"
     assert texts["skills"]["label"] == "Skills (12)" and texts["tools"]["label"] == "Tools (25)"
     assert texts["later"]["severity"] == "warning" and texts["later"]["text"] == "py_run"
@@ -485,3 +492,19 @@ def test_a_connector_offer_names_the_skills_its_plugin_brings(
         {"connector_name": "ParaView", "tools": ["a"], "skills": [{"id": "scenes"}]},
     )
     assert {b["id"]: b["text"] for b in shown["blocks"]}["skills"] == "scenes"
+
+
+def test_the_reason_is_required_by_the_schema() -> None:
+    """CF-N4: an offer without a reason is a typed validation error the model corrects."""
+
+    from clio_agent.gact.agents.dspy_native_tool import ToolArgumentError
+
+    tool = plugin_offer.build_offer_plugin_tool()
+    schema = tool.format_as_litellm_function_call()["function"]["parameters"]
+    assert schema["required"] == ["reason"]
+    with pytest.raises(ToolArgumentError, match="missing required argument reason"):
+        tool._validate_and_parse_args(plugin="tariff-calc")
+    with pytest.raises(ToolArgumentError, match="reason"):
+        tool._validate_and_parse_args(plugin="tariff-calc", reason="")
+    parsed = tool._validate_and_parse_args(plugin="tariff-calc", reason="Duty and VAT.")
+    assert parsed["reason"] == "Duty and VAT."

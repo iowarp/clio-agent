@@ -379,3 +379,22 @@ def test_a_running_turn_takes_a_moved_namespace_from_the_new_fleet() -> None:
     assert refresher(tools) is True
     assert tools["pv_open"].func() == "own" and tools["docs_find"].func() == "shared"
     assert refresher(tools) is False  # nothing new on either fleet
+
+
+def test_a_sign_in_is_stored_under_the_address_in_use(fixture_catalog: Path) -> None:
+    """FQ-F1: the saved connection is a template, so signing in from it stored the token
+    under "${need.address}" while the connector looked under its address: AQ3 stayed
+    "Needs a sign-in" after a sign-in that connected."""
+
+    found = entries.load_catalog().entries["fixture-signin"]
+    state.update("fixture-signin", values={"address": "http://127.0.0.1:19101/mcp"})
+    declared = materialize.declaration(found)
+    assert "${need.address}" in str(declared.get("url"))
+    used = materialize.in_use(declared)
+    assert used["url"] == "http://127.0.0.1:19101/mcp"
+    choice = state.choice("fixture-signin")
+    checked = service._sign_in_storage(found, choice.values)
+    assert checked.server_url == used["url"]
+    # A connection that is not a connector's is used as saved.
+    plain = {"url": "https://example.org/mcp"}
+    assert materialize.in_use(plain) == plain

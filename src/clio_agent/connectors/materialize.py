@@ -92,6 +92,15 @@ def resolved(entry: Entry, values: Mapping[str, str]) -> dict[str, Any]:
     return _fill(entry, declaration(entry), values)
 
 
+def in_use(declared: Mapping[str, Any]) -> dict[str, Any]:
+    """A saved connection as it is used outside any conversation: a connector's template
+    (CV-D2) filled from the defaults, anything else unchanged. Its ``url`` is the one a
+    sign-in is stored under (Extensions, the probe), so sign-in, sign-out and the
+    connector's own check name the same server."""
+
+    return fill_declaration(declared) if declared.get("connector") else dict(declared)
+
+
 def fill_declaration(
     declared: Mapping[str, Any],
     overlay: Mapping[str, str] | None = None,
