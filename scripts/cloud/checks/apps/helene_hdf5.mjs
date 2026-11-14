@@ -25,8 +25,10 @@ const TURNS = {
   // evidence of the mechanism and the agent's analysis, not of its choice of view.
   clouds:
     "What did the clouds around it look like on the 26th, before it came ashore? The cloud, " +
-    "rain and snow water for those days are in the era5 folder. Show me the storm in ParaView " +
-    "as a see-through volume, looking down on it at an angle, so I can see the spiral.",
+    "rain and snow water for those days are in the era5 folder. Show it to me in ParaView " +
+    "from above, tilted a little, so I can see the spiral. Give the cloud droplets, ice, rain " +
+    "and snow each their own strong colour, and hide the thin wisps so the shape of the " +
+    "storm stands out.",
   share: "Put all of this on a dashboard so I can share it with colleagues.",
   follow: "Can I step through the days on this and have everything follow, the 3D clouds too?",
   go: "3-hourly, go ahead.",
@@ -43,32 +45,44 @@ function mark(name) {
 
 async function settle(page, sid, log, shot, name, minutes = 25) {
   mark(`${name}-waiting`);
-  let n = 0;
-  const until = Date.now() + minutes * 60_000;
-  while (Date.now() < until) {
-    // The agent may offer a connector (ParaView) for this conversation: the person reads the
-    // offer and clicks Add, as anyone would to get the view they asked for.
-    await acceptOffers(page, shot, name);
-    const done = await waitIdle(page, sid, log, 0.5);
-    n += 1;
-    if (n % 6 === 0 || done) await shot(`${name}-${String(n).padStart(2, "0")}`);
-    if (done) {
-      await toLatest(page);
-      mark(`${name}-answered`);
-      return true;
+  // The agent may offer a connector (ParaView) for this conversation: the person reads the
+  // offer and clicks Add, as anyone would to get the view they asked for. It is watched on
+  // its own, so the click follows the card within a second instead of a polling round.
+  let settled = false;
+  const watcher = (async () => {
+    while (!settled) {
+      await acceptOffers(page, shot, name).catch(() => {});
+      await page.waitForTimeout(300).catch(() => {});
     }
+  })();
+  try {
+    let n = 0;
+    const until = Date.now() + minutes * 60_000;
+    while (Date.now() < until) {
+      const done = await waitIdle(page, sid, log, 0.5);
+      n += 1;
+      if (n % 6 === 0 || done) await shot(`${name}-${String(n).padStart(2, "0")}`);
+      if (done) {
+        await toLatest(page);
+        mark(`${name}-answered`);
+        return true;
+      }
+    }
+    mark(`${name}-timeout`);
+    return false;
+  } finally {
+    settled = true;
+    await watcher;
   }
-  mark(`${name}-timeout`);
-  return false;
 }
 
 async function acceptOffers(page, shot, name) {
   const offer = page.locator('[data-interaction-kind="connector_setup"]').locator("visible=true");
   const add = offer.getByRole("button").filter({ hasText: /Add/ }).first();
   if (!(await add.isVisible().catch(() => false))) return;
-  await toLatest(page);
-  await page.waitForTimeout(2500); // reads what it adds and why
-  await shot(`${name}-offer`);
+  await add.scrollIntoViewIfNeeded();
+  mark(`${name}-offer-shown`);
+  await page.waitForTimeout(1000); // reads what it adds and why
   await add.click({ timeout: 5000 });
   mark(`${name}-offer-accepted`);
   console.log("ACCEPTED connector offer");

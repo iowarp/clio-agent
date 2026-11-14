@@ -6,7 +6,7 @@
 // not from page events), shows a ring on press, and makes every `locator.click()` glide to
 // its target first instead of jumping there.
 
-const GLIDE_STEPS = 18;
+const GLIDE_STEPS = 8;
 
 export async function showCursor(page) {
   await page.addInitScript(() => {
@@ -99,7 +99,7 @@ export async function showCursor(page) {
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, {
           steps: GLIDE_STEPS,
         });
-        await page.waitForTimeout(120);
+        await page.waitForTimeout(60);
         await draw('press', true, box.x + box.width / 2, box.y + box.height / 2);
         setTimeout(() => draw('press', false, 0, 0), 150);
       }
