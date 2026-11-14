@@ -179,3 +179,46 @@ async def test_an_abandoned_read_only_call_drops_its_unwritten_admission() -> No
     await asyncio.sleep(0)
     assert rpc.cancelled()
     assert recorded == [] and owner._lazy == {}
+
+
+def _raises_when_cancelled() -> Any:
+    def invoke() -> str:
+        from clio_agent.errors import CancellationError
+
+        checker = make_cancellation_checker(app_holder[0])
+        while not checker():
+            threading.Event().wait(0.01)
+        raise CancellationError("tool call cancelled by client")
+
+    return invoke
+
+
+@pytest.mark.asyncio
+async def test_a_call_cancelled_by_its_gone_request_is_answered_typed() -> None:
+    from fastapi import HTTPException
+
+    app = _app()
+    app_holder[:] = [app]
+    request = _Request()
+    work = asyncio.ensure_future(
+        view_call_cancel.run(app, _raises_when_cancelled(), request=request)
+    )
+    await asyncio.sleep(0.05)
+    request.gone.set()
+    with pytest.raises(HTTPException) as raised:
+        await asyncio.wait_for(work, 5)
+    assert raised.value.status_code == 409
+    assert str(raised.value.detail).startswith(view_call_cancel.VIEW_CALL_CANCELLED)
+
+
+@pytest.mark.asyncio
+async def test_a_call_cancelled_at_shutdown_without_a_request_still_raises() -> None:
+    from clio_agent.errors import CancellationError
+
+    app = _app()
+    app_holder[:] = [app]
+    work = asyncio.ensure_future(view_call_cancel.run(app, _raises_when_cancelled()))
+    await asyncio.sleep(0.05)
+    view_call_cancel.cancel_all(app)
+    with pytest.raises(CancellationError):
+        await asyncio.wait_for(work, 5)
