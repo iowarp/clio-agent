@@ -122,6 +122,7 @@ function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
 # follow junctions. Whatever rd leaves goes to Remove-Item, so a failure still surfaces
 # unless -Soft.
 $script:Doomed = New-Object System.Collections.Generic.List[string]
+$script:EmptyAfterRemoval = New-Object System.Collections.Generic.List[string]
 function LongPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     if ($full.StartsWith('\\?\')) { return $full }
@@ -145,7 +146,10 @@ function Remove-ClioTree([string]$Path, [switch]$Soft) {
 # clio-agent folder left holding nothing but these trees goes after them.
 function Start-ClioTreeRemoval {
     $trees = @($script:Doomed | Where-Object { Test-Path -LiteralPath $_ })
-    if (-not $trees.Count) { return }
+    if (-not $trees.Count) {
+        foreach ($dir in $script:EmptyAfterRemoval) { Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue }
+        return
+    }
     $steps = @($trees | ForEach-Object { "rd /s /q `"$(LongPath $_)`"" })
     $parents = @($trees | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique)
     foreach ($parent in $parents) {
@@ -153,6 +157,8 @@ function Start-ClioTreeRemoval {
         $kept = @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.removing-[0-9a-f]{8}$' })
         if (-not $kept.Count) { $steps += "rd `"$(LongPath $parent)`"" }
     }
+    # Non-recursive: a folder that gained a file meanwhile is kept.
+    foreach ($dir in $script:EmptyAfterRemoval) { $steps += "rd `"$(LongPath $dir)`"" }
     $deleter = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList '/d', '/c', ("(" + ($steps -join ' & ') + ") 2>nul") -WindowStyle Hidden -PassThru
     Say "Deleting the removed folders' files in the background (pid $($deleter.Id))"
 }
@@ -400,15 +406,30 @@ foreach ($f in @($LauncherCmd, $LauncherPs1)) {
 if (Test-Path $Prefix) {
     Say "Removing installed application payloads in $Prefix"
     $ResolvedPrefix = [IO.Path]::GetFullPath($Prefix)
-    $Owned = @('clio-agent\.venv', 'clio-agent\web', 'uv-tools', 'gact.exe', 'uninstall.ps1')
+    $Owned = @('clio-agent\.venv', 'clio-agent\web', 'uv-tools', 'gact.exe', 'uninstall.ps1', 'libexec\clio.ps1', 'libexec\clio.cmd')
     if (-not $KitPythonUsed) { $Owned += @('uv-python', 'clio-kit-owned.json') }
     foreach ($relative in $Owned) {
         $OwnedPath = [IO.Path]::GetFullPath((Join-Path $ResolvedPrefix $relative))
         if (-not $OwnedPath.StartsWith($ResolvedPrefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid application path' }
         Remove-ClioTree $OwnedPath -Soft
     }
-    if (Test-Path $Prefix) {
-        Warn "Retained user data and unknown files in $Prefix."
+    $LibExecDir = Join-Path $ResolvedPrefix 'libexec'
+    if ((Test-Path -LiteralPath $LibExecDir) -and -not (Get-ChildItem -LiteralPath $LibExecDir -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $LibExecDir -Force -ErrorAction SilentlyContinue
+    }
+    # What remains besides the folders the background deleter is removing (a clio-agent
+    # folder holding only those goes with them).
+    $Retained = @(Get-ChildItem -LiteralPath $ResolvedPrefix -Force -ErrorAction SilentlyContinue | Where-Object {
+        if ($_.Name -match '\.removing-[0-9a-f]{8}$') { return $false }
+        if ($_.PSIsContainer -and $_.Name -eq 'clio-agent') {
+            return [bool]@(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.removing-[0-9a-f]{8}$' }).Count
+        }
+        return $true
+    })
+    if ($Retained.Count) {
+        Warn "Retained user data and unknown files in ${Prefix}: $(($Retained | ForEach-Object { $_.Name }) -join ', ')"
+    } elseif (Test-Path -LiteralPath $ResolvedPrefix) {
+        $script:EmptyAfterRemoval.Add($ResolvedPrefix)
     }
 }
 # A live clio-core daemon still has the store open; its pid is recorded per host.
