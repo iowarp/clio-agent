@@ -236,6 +236,7 @@ def with_connector_setup(app: Any, gate: Callable[..., Any] | None) -> Callable[
 def projected(app: Any, owners: set[str]) -> list[Any]:
     """The connector setup rows of ``owners`` as pending interactions."""
 
+    from clio_agent.gact import agent_needs  # noqa: PLC0415
     from clio_agent.gact.interaction_types import (  # noqa: PLC0415
         PendingInteraction,
         PendingInteractionSource,
@@ -245,6 +246,9 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
     out = []
     for row in list(_rows(app).values()):
         if row["session_id"] not in owners:
+            continue
+        if row.get("intent") == agent_needs.INTENT:  # the agent-load card (LZ-D2)
+            out.append(agent_needs.interaction(app, row))
             continue
         pending = row["status"] == "pending"
         # The agent's offer: of a connector (``enable``) or of a plugin (``add_plugin``).
@@ -343,7 +347,11 @@ async def respond(
         raise SetupResponseError(404, "not_found", f"interaction not found: {interaction_id}")
     if row["status"] != "pending":
         raise SetupResponseError(409, "interaction_resolved", "interaction is already resolved")
-    if row.get("intent") == "enable":
+    if row.get("intent") == "agent_needs":
+        from clio_agent.gact import agent_needs  # noqa: PLC0415
+
+        await agent_needs.answer(app, row, action, values, metadata or {})
+    elif row.get("intent") == "enable":
         from clio_agent.gact.connector_offer import answer  # noqa: PLC0415
 
         await answer(app, row, action, values, metadata or {})

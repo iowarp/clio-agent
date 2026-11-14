@@ -260,6 +260,10 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         "description": found.description,
         "logo_url": f"/v1/connectors/{found.id}/logo" if found.logo else None,
         "source": found.source,
+        # Discover's domain (LZ-D9) and the clio-kit server it runs, whose tools are
+        # downloaded when it is first enabled (LZ-D1).
+        "group": found.group or None,
+        "kit": found.kit or None,
         "enabled": choice.enabled,
         "plugin": _plugin(records, found),
         # What a conversation's plugin picker adds for this connector (CN9 *Amended*).

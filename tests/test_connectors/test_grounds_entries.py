@@ -147,7 +147,12 @@ def test_a_catalog_plugin_is_followed_by_a_marketplace_plugin_with_skills() -> N
     assert {"paraview", "home-assistant"} <= named
     for entry in catalog.entries.values():
         if not entry.plugin:
-            assert entry.id not in following, f"{entry.id} is a connector; nothing follows it"
+            # Only a plugin whose one server is this connector's clio-kit server follows
+            # it (LZ-D8); its server is not a saved connection.
+            for plugin_id in following.get(entry.id, []):
+                assert entry.kit, f"{entry.id} is a connector; only its own server follows it"
+                (spec,) = plugins[plugin_id].mcp_servers.values()
+                assert spec["args"][:2] == ["mcp-server", entry.kit], plugin_id
             continue
         assert following.get(entry.id) == [entry.plugin], entry.id
         record = plugins[entry.plugin]
@@ -156,5 +161,6 @@ def test_a_catalog_plugin_is_followed_by_a_marketplace_plugin_with_skills() -> N
         assert folders, f"{entry.plugin} brings no skill"
         # Every skill loads: a frontmatter YAML error drops a skill with only a diagnostic.
         assert len(record.skills) == len(folders) and not record.diagnostics, entry.plugin
-    # The geo plugin earthscope and geodesy require keeps its own server and follows none.
-    assert plugins["geo"].follows == "" and "geo" in plugins["geo"].mcp_servers
+    # The geo plugin earthscope and geodesy require keeps its own server and follows the
+    # Geo connector through it (LZ-D8, superseding PL-D6): mounted while Geo is on.
+    assert plugins["geo"].follows == "geo" and "geo" in plugins["geo"].mcp_servers

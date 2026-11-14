@@ -24,12 +24,14 @@ import json
 import os
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from clio_agent.connectors import kit_entries
 
 NeedKind = Literal["address", "sign-in", "secret", "value"]
 NEED_KINDS: tuple[NeedKind, ...] = ("address", "sign-in", "secret", "value")
@@ -76,6 +78,10 @@ class Entry:
     tools: tuple[str, ...] = ()
     source: Literal["catalog", "custom"] = "catalog"
     folder: str = ""
+    #: The domain Discover groups it under ("" for none, LZ-D9).
+    group: str = ""
+    #: The clio-kit server it runs, when its server is ``clio-kit mcp-server <name>``.
+    kit: str = ""
 
     def need(self, key: str) -> Need | None:
         return next((need for need in self.needs if need.key == key), None)
@@ -244,6 +250,8 @@ def entry_from_raw(
         tools=tuple(str(name) for name in raw.get("tools") or ()),
         source=source,
         folder=folder,
+        group=str(raw.get("group") or ""),
+        kit=kit_entries.kit_server(raw["server"]),
     )
 
 
@@ -297,12 +305,49 @@ def load_folder(folder: Path, catalog: Catalog) -> None:
             catalog.entries[entry_id] = entry_from_raw(raw, folder=str(folder))
 
 
+def derive_kit() -> bool:
+    """Whether the pinned clio-kit's servers are connectors (``connectors.derive_kit``)."""
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return bool(
+        conf.resolve(
+            "connectors.derive_kit",
+            env="CLIO_CONNECTOR_DERIVE_KIT",
+            default=True,
+            cast=conf.as_bool,
+        )
+    )
+
+
+def add_derived(folder: Path, catalog: Catalog) -> None:
+    """Add a connector for every server of the pinned clio-kit (:mod:`.kit_entries`).
+
+    A hand-written entry of the same id wins and takes only the derived group.
+    """
+
+    for raw in kit_entries.derived_raw(folder):
+        entry_id = str(raw["id"])
+        written = catalog.entries.get(entry_id)
+        if written is not None:
+            if not written.group and raw.get("group"):
+                catalog.entries[entry_id] = replace(written, group=str(raw["group"]))
+            continue
+        errors = validate_entry(raw, folder=None)
+        if errors:
+            catalog.diagnostics.append(
+                Diagnostic(ENTRY_INVALID, "; ".join(errors), kit_entries.DERIVE_DIR, entry_id)
+            )
+            continue
+        catalog.entries[entry_id] = entry_from_raw(raw, folder=str(folder / kit_entries.DERIVE_DIR))
+
+
 def _stamp(dirs: list[Path]) -> tuple[Any, ...]:
     stamp: list[Any] = []
     for folder in dirs:
         if folder.is_dir():
             stamp.extend((str(p), p.stat().st_mtime_ns) for p in sorted(folder.glob("*")))
-    return tuple(stamp)
+    return (*stamp, *kit_entries.stamp(), derive_kit())
 
 
 _CACHE: dict[str, Any] = {}
@@ -316,7 +361,9 @@ def load_catalog(dirs: list[Path] | None = None) -> Catalog:
     if _CACHE.get("stamp") == stamp:
         return _CACHE["catalog"]
     catalog = Catalog()
-    for folder in folders:
+    for index, folder in enumerate(folders):
         load_folder(folder, catalog)
+        if index == 0 and dirs is None and derive_kit():
+            add_derived(folder, catalog)
     _CACHE.update(stamp=stamp, catalog=catalog)
     return catalog

@@ -7,6 +7,7 @@
 # permission, and the server ships no mark of its own, so the entry has no logo.
 - id: earthdata
   name: NASA Earthdata
+  group: Earth science
   description: Search NASA Earthdata for Earth-science datasets and their files, and download them with an Earthdata Login
   server:
     command: uvx

@@ -13,6 +13,7 @@
 # reset weekly), which is how this entry was qualified without a home of our own.
 - id: home-assistant
   name: Home Assistant
+  group: Home and devices
   description: Read sensors and their history from your Home Assistant, control devices, and write automations, scripts, scenes and dashboards
   server:
     command: uvx

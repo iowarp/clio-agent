@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from clio_agent import conf
 from clio_agent.arc.task_types import QuestionReply
 from clio_agent.errors import ClioError
-from clio_agent.gact import connector_setup
+from clio_agent.gact import agent_needs, connector_setup
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
@@ -451,6 +451,7 @@ def project_pending_interactions(
         if str(permission.get("session_id") or "") in owners:
             row = _permission_interaction(app, permission)
             (pending if row.status == "pending" else resolved).append(row)
+    agent_needs.ensure_card_safely(app, root_session_id)  # after a restart (LZ-D2)
     for row in connector_setup.projected(app, owners):
         (pending if row.status == "pending" else resolved).append(row)
     ordered_owners = _owners_newest_first(app, owners)

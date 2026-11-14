@@ -4,6 +4,7 @@
 # The server finds ngspice or LTspice on this machine itself; it has no needs.
 - id: spice
   name: SPICE circuit simulation
+  group: Electronics
   description: Simulate circuits with ngspice or LTspice and plot their waveforms
   server:
     command: uvx

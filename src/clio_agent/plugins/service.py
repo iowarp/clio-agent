@@ -380,6 +380,10 @@ class PluginService:
         )
         if dropped:
             resolution.removed = [*resolution.removed, *dropped]
+        # A server whose connector is off is left out, typed (``connectors.server_gate``).
+        from clio_agent.connectors.server_gate import gate  # noqa: PLC0415
+
+        if gate(resolution) or dropped:
             resolution.digest = resolution_digest(resolution.body())
         if entry.user_agent is not None:
             resolution.agent = {
@@ -396,6 +400,10 @@ class PluginService:
         self, parent: Resolution, subagent_id: str, *, pin: bool = True
     ) -> Resolution:
         resolution = resolve_subagent(self.catalog(), parent, subagent_id)
+        from clio_agent.connectors.server_gate import gate  # noqa: PLC0415
+
+        if gate(resolution):
+            resolution.digest = resolution_digest(resolution.body())
         if pin:
             self.store.save_resolution(resolution.digest, resolution.to_dict())
         return resolution

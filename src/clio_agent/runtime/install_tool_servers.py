@@ -1,7 +1,12 @@
-"""Build the agents' clio-kit tool server environments during an install.
+"""Build the agents' clio-kit tool server environments during an install, when asked.
 
-Split from :mod:`clio_agent.runtime.document_install`, whose ``--prepare-tool-servers``
-step runs :func:`_prepare_tool_servers` beside the other package downloads.
+Off by default (LZ-D1): an install builds no tool server, and CLIO asks on agent load
+whether to enable what an agent needs (``gact.agent_needs``), downloading each server
+then. For offline or air-gapped installs the step is an explicit opt-in: the Windows
+installer's ``-PrepareToolServers`` passes ``--prepare-tool-servers`` to
+:mod:`clio_agent.runtime.document_install`, which runs :func:`_prepare_tool_servers`
+beside the other package downloads; ``install.sh --prepare-tool-servers`` runs this
+module on its own once clio-kit is installed (:func:`main`).
 """
 
 from __future__ import annotations
@@ -243,3 +248,27 @@ def _prepare_tool_servers(
         "seconds": round(time.monotonic() - started, 1),
         "servers": results,
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Prepare the agents' clio-kit tool servers now (``install.sh --prepare-tool-servers``).
+
+    Prints each step and the typed result as one JSON line; exits 1 when a server
+    failed (its first use retries it), else 0.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog="python -m clio_agent.runtime.install_tool_servers",
+        description="Prepare the agents' clio-kit tool servers now, for offline use.",
+    )
+    parser.parse_args(argv)
+    installed: Future[dict[str, Any]] = Future()
+    installed.set_result({"status": "ready"})
+    args = argparse.Namespace(prepare_tool_servers=True, reuse_installed=False)
+    result = _prepare_tool_servers(args, installed, lambda line: print(line, flush=True))
+    print(json.dumps({"tool_servers": result}, sort_keys=True), flush=True)
+    return 1 if result.get("status") == "failed" else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

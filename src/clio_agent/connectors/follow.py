@@ -137,11 +137,18 @@ def drop_off(delta: Any, records: Iterable[Any]) -> tuple[Any, list[dict[str, st
     rows = list(records)
     on = enabled_ids()
     entries = state.all_entries()
+    installed = {record.id: record for record in rows}
     kept: list[str] = []
     dropped: list[dict[str, str]] = []
     for ref in delta.add:
         plugin_id = PluginRef.parse(ref).id
         connector_id = connector_of(plugin_id, rows)
+        # A plugin that follows a connector only because its own server is the
+        # connector's clio-kit server keeps its skills; :mod:`.server_gate` drops just
+        # that server while the connector is off (LZ-D8).
+        record = installed.get(plugin_id)
+        if record is not None and record.mcp_servers and not binds_connection(record):
+            connector_id = ""
         if not connector_id or connector_id in on:
             kept.append(ref)
             continue
@@ -152,23 +159,32 @@ def drop_off(delta: Any, records: Iterable[Any]) -> tuple[Any, list[dict[str, st
     return Delta(tuple(kept), delta.remove), dropped
 
 
+def binds_connection(record: Any) -> bool:
+    """Whether a plugin binds a saved connection (``connections``, or a carrier)."""
+
+    servers = getattr(record, "mcp_servers", None) or {}
+    return any(dict(spec).get("type") == "clio-connection" for spec in servers.values())
+
+
 def drifted(resolution: Any) -> bool:
     """Whether a pinned resolution no longer matches which connectors are on.
 
-    A plugin of a connector now off is still in it, or a plugin dropped because its
-    connector was off can come back.
+    A server bound to a connector now off is still mounted, or a plugin or a server
+    left out because its connector was off can come back (:mod:`.server_gate`).
     """
 
-    named = {row["follows"] for row in resolution.plugins if row.get("follows")}
+    from clio_agent.connectors.server_gate import bound_connectors, left_out  # noqa: PLC0415
+
+    mounted = bound_connectors(resolution)
     dropped = {
         str(row.get("because") or "")
         for row in resolution.removed
         if row.get("reason") in {CONNECTOR_OFF, CONNECTOR_GONE}
-    }
-    if not named and not dropped:
+    } | set(left_out(resolution))
+    if not mounted and not dropped:
         return False
     on = enabled_ids()
-    return bool(named - on) or bool(dropped & on)
+    return bool(mounted - on) or bool(dropped & on)
 
 
 def follows_flag(record_or_row: Any) -> str:
