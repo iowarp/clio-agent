@@ -11,6 +11,9 @@
 //   OFFER_NAME     the workspace folder name (default "connector-offer")
 //   OFFER_EXPECT   "offer" (default) or "none": the request needs nothing to be added,
 //                  and the turn must end with no card
+//   OFFER_VIEW_PLUGIN "1": record the card's rows (what it is, why, what it brings), open
+//                  View plugin, shoot the plugin explorer, close it with Escape and check
+//                  the card still waits, before answering
 //
 // Nothing in the request names a tool.
 import { cpSync } from "node:fs";
@@ -61,6 +64,31 @@ export default async function (page, shot) {
   await page.waitForTimeout(1500);
   await card.scrollIntoViewIfNeeded();
   await shot("offer-card-hero");
+  if (process.env.OFFER_VIEW_PLUGIN === "1") {
+    // The card's rows, then View plugin: the plugin explorer opens over the conversation,
+    // Escape closes it, and the card is still waiting for Add.
+    const rows = await card.evaluate((el) =>
+      Object.fromEntries(
+        ["connector-offer-description", "connector-offer-reason", "connector-offer-contents"].map((slot) => [
+          slot,
+          el.querySelector(`[data-slot="${slot}"]`)?.textContent ?? null,
+        ]),
+      ),
+    );
+    log.push(`rows: ${JSON.stringify(rows)}`);
+    await card.getByRole("button", { name: "View plugin" }).click();
+    const dialog = page.getByRole("dialog").last();
+    await dialog.waitFor({ state: "visible", timeout: 30000 });
+    await page.waitForTimeout(3000);
+    log.push(`explorer: ${(await dialog.innerText()).replace(/\s+/g, " ").slice(0, 400)}`);
+    await shot("view-plugin-explorer");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden", timeout: 10000 });
+    await page.waitForTimeout(1000);
+    if (!(await card.isVisible())) throw new Error("closing the plugin explorer answered the offer");
+    log.push("explorer closed, the card still waits");
+    await shot("view-plugin-closed-card-kept");
+  }
   const values = JSON.parse(process.env.OFFER_VALUES || "{}");
   const more = card.getByRole("button", { name: /^Settings \(/ });
   if (Object.keys(values).length && (await more.count())) await more.click();
