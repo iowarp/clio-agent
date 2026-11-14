@@ -105,7 +105,9 @@ async function openFieldFromAnswer(page, shot) {
 /** The person's own turn in the dashboard: step the 3D view, raise a surface, then ask. */
 async function finalBeat(page, shot, sid, log) {
   // The newest dashboard card in the conversation opens it in the canvas.
-  await page.locator("main").getByText("Dashboard", { exact: true }).last().click();
+  const label = page.getByText("Dashboard", { exact: true }).last();
+  await label.scrollIntoViewIfNeeded();
+  await label.locator("xpath=../preceding-sibling::*[1]").click();
   await page.locator('[data-slot="a2ui-surface-root"]').last().waitFor({ timeout: 60000 });
   await page.getByRole("button", { name: "Maximize canvas" }).click().catch(() => {});
   const pv = page.locator('iframe[title*="ParaView"]').first();
@@ -120,9 +122,13 @@ async function finalBeat(page, shot, sid, log) {
   // Step the 3D view to landfall (27 Sep 03Z is step 26 of 32); the other views follow.
   const time = app.getByRole("slider", { name: /Time step/ }).first();
   await time.focus();
-  for (let k = 0; k < 40 && !/^\s*26\s*\//.test(await stepOf(app)); k += 1) {
-    await page.keyboard.press(Number((await stepOf(app)).split("/")[0]) < 26 ? "ArrowRight" : "ArrowLeft");
-    await page.waitForTimeout(400);
+  // The counter updates after the server moves the view, so step and wait for it.
+  for (let k = 0; k < 40; k += 1) {
+    const now = Number((await stepOf(app)).split("/")[0]);
+    if (now === 26) break;
+    await time.focus();
+    await page.keyboard.press(now < 26 ? "ArrowRight" : "ArrowLeft");
+    await page.waitForTimeout(1200);
   }
   await page.waitForTimeout(6000);
   await shot("beat-landfall");
@@ -131,18 +137,18 @@ async function finalBeat(page, shot, sid, log) {
   await app.getByRole("button", { name: "liquid", exact: true }).click();
   await app.getByRole("button", { name: "Add filter" }).click();
   await app.getByRole("button", { name: /^Edit/ }).first().click();
-  const lift = app.getByRole("slider", { name: /Values 1 slider/ });
-  const box = await lift.boundingBox();
-  if (!box) throw new Error("the isovalue slider is not shown");
-  const thumb = box.x + box.width * 0.55;
-  await page.mouse.move(thumb, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.72, box.y + box.height / 2, { steps: 20 });
-  await page.mouse.up();
+  // Types the raised liquid surface (the slider does not yet track drags; see the
+  // ParaView panel task) and applies it.
+  const values = app.getByRole("textbox", { name: "Values" });
+  await values.click();
+  await values.fill("");
+  await page.keyboard.type("5e-05, 0.0001", { delay: 60 });
+  await app.getByRole("button", { name: "Update" }).click();
   await page.waitForTimeout(8000);
   await shot("beat-raised");
   await app.getByRole("button", { name: "Done" }).click().catch(() => {});
   await page.getByRole("button", { name: /Restore canvas|Exit maximized|Minimize canvas/ }).click().catch(() => {});
+  if (process.env.BEAT_ASK === "0") return;
   await send(page, TURNS.beat);
   await settle(page, sid, log, shot, "beat", 15);
 }
