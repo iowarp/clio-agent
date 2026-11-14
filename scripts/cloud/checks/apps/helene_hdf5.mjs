@@ -19,9 +19,11 @@ const TURNS = {
     "Hurricane Helene crossed the Gulf in late September 2024. Can you track its centre and " +
     "central pressure in this from the 24th to the 27th?",
   deepen: "How fast did it deepen, and was the water under it warm enough to explain that?",
+  // The person names the viewer they want: without it the agent sometimes builds its own
+  // mesh view instead, a valid choice that the rest of this script does not follow.
   clouds:
-    "What did the clouds around it look like on the 26th, as it came ashore? The linked ERA5 " +
-    "bucket has cloud water; those files are big. Show me in 3D.",
+    "What did the clouds around it look like on the 26th, before it came ashore? The linked " +
+    "ERA5 bucket has cloud water; those files are big. Show me in 3D in ParaView.",
   share: "Put all of this on a dashboard so I can share it with colleagues.",
   follow: "Can I step through the days on this and have everything follow, the 3D clouds too?",
   go: "3-hourly, go ahead.",
@@ -30,14 +32,25 @@ const TURNS = {
     "show now, and how does it compare with the day before?",
 };
 
+const T0 = Date.now();
+/** A timestamp from the start of the recording, for cutting the video into beats. */
+function mark(name) {
+  console.log(`MARK ${name} ${((Date.now() - T0) / 1000).toFixed(1)}`);
+}
+
 async function settle(page, sid, log, shot, name, minutes = 25) {
+  mark(`${name}-waiting`);
   let n = 0;
   const until = Date.now() + minutes * 60_000;
   while (Date.now() < until) {
     const done = await waitIdle(page, sid, log, 4);
     await shot(`${name}-${String(++n).padStart(2, "0")}`);
-    if (done) return true;
+    if (done) {
+      mark(`${name}-answered`);
+      return true;
+    }
   }
+  mark(`${name}-timeout`);
   return false;
 }
 
@@ -104,6 +117,7 @@ async function openFieldFromAnswer(page, shot) {
 
 /** The person's own turn in the dashboard: step the 3D view, raise a surface, then ask. */
 async function finalBeat(page, shot, sid, log) {
+  mark("beat-dashboard");
   // The newest dashboard card in the conversation opens it in the canvas.
   const label = page.getByText("Dashboard", { exact: true }).last();
   await label.scrollIntoViewIfNeeded();
@@ -169,9 +183,15 @@ export default async function (page, shot) {
   const composer = page.locator('textarea, [contenteditable="true"]').last();
   await composer.waitFor({ state: "visible", timeout: 180000 });
   await page.waitForTimeout(2000);
+  // Only this conversation on screen: the workspace list is hidden for the recording.
+  if (process.env.HIDE_SIDEBAR !== "0") {
+    await page.getByRole("button", { name: "Toggle Sidebar" }).first().click().catch(() => {});
+  }
+  mark("start");
   const chips = () => page.locator('[data-slot="composer-toolbar"]').locator("xpath=..").innerText();
 
   if (only.includes("contents")) {
+    mark("contents-typing");
     await composer.click();
     await atReference(page, MSL);
     await page.keyboard.type(" " + TURNS.contents);
@@ -180,6 +200,7 @@ export default async function (page, shot) {
     await settle(page, sid, log, shot, "contents");
   }
   if (only.includes("track")) {
+    mark("field-open");
     await openFieldFromAnswer(page, shot);
     await page.getByRole("button", { name: "Add to message" }).click();
     await page.waitForTimeout(800);
@@ -192,6 +213,7 @@ export default async function (page, shot) {
     await settle(page, sid, log, shot, "track");
   }
   if (only.includes("deepen")) {
+    mark("deepen-typing");
     await composer.click();
     await page.keyboard.type(TURNS.deepen);
     await atReference(page, SST, "SSTK");
@@ -203,6 +225,7 @@ export default async function (page, shot) {
   }
   for (const name of ["clouds", "share", "follow", "go"]) {
     if (!only.includes(name)) continue;
+    mark(`${name}-typing`);
     await send(page, TURNS[name]);
     await settle(page, sid, log, shot, name, 35);
   }
