@@ -295,7 +295,12 @@ def join_running_turn(app: Any, connector_id: str) -> tuple[list[str], str]:
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
     from clio_agent.gact.agents.clio_react import active_loop  # noqa: PLC0415
     from clio_agent.gact.agents.live_tool_refresh import LiveToolRefresher  # noqa: PLC0415
-    from clio_agent.gact.connector_rebind import ConnectorJoinError, join_namespace  # noqa: PLC0415
+    from clio_agent.gact.connector_rebind import (  # noqa: PLC0415
+        ConnectorJoinError,
+        conversation_spec,
+        fleet_root_of,
+        join_namespace,
+    )
 
     program = getattr(active_loop(), "agent", None)
     refresher = getattr(program, "_clio_tool_refresh", None)
@@ -321,8 +326,11 @@ def join_running_turn(app: Any, connector_id: str) -> tuple[list[str], str]:
 
     sid = _session_id()
     own = session_fleet(app, sid) if connector_id in session_overlay(app, sid) else None
-    try:  # CV-D5: values of this conversation's own join its own fleet
-        tools = join_namespace(agent, own or executor, connector_id, saved)
+    target = own or executor  # CV-D5: values of this conversation's own join its own fleet
+    # CV-N3: the spec the conversation's server set declares, as the fleet will mount it.
+    declared = conversation_spec(app, sid, connector_id, fleet_root_of(agent, target))
+    try:
+        tools = join_namespace(agent, target, connector_id, saved, spec=declared)
     except ConnectorJoinError as exc:
         trace.event("TOOLS", "%s connector=%s", exc.reason, connector_id)
         return [], exc.reason

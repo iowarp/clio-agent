@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.tools.fleet_close_listeners import fleet_closed
 from clio_agent.tools.fleet_key import fleet_root, fleet_variant, keys_at
 
 _DEFAULT_TTL_S = 120.0
@@ -236,6 +237,8 @@ class WorkspaceExecutorReaper:
                 # #1230: a torn-down root's resolve-activity marker goes with it —
                 # never left to protect a FUTURE (unrelated) resident at this root.
                 self._resolved_at.pop(root, None)
+                # CV-N2: the application's connections retained on its proxies go too.
+                fleet_closed(root, executor, reason)
                 try:
                     executor.close()
                 except Exception as exc:  # noqa: BLE001 - close error is typed below
@@ -414,6 +417,7 @@ class WorkspaceExecutorReaper:
                 "TOOLS", "workspace_fleet_restart_close_failed root=%s reason=%s", root, exc
             )
         self._close_channels_if_last(root)
+        fleet_closed(root, to_close, "restart")  # CV-N2
         trace.event("TOOLS", "workspace_fleet_restarted root=%s reason=grant_applied_live", root)
         return RESTART_RESTARTED_LIVE
 

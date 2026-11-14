@@ -340,12 +340,13 @@ def test_join_running_turn_mounts_the_namespace_and_the_next_step_lists_it(
         "clio_agent.gact.agents.builders._active_base_agent_tool_executor", lambda _a: executor
     )
 
-    def join(_agent: Any, got: Any, namespace: str, declaration: Any) -> dict:
-        assert got is executor and declaration == {"command": "x"}
+    def join(_agent: Any, got: Any, namespace: str, declaration: Any, *, spec: Any) -> dict:
+        assert got is executor and declaration == {"command": "x"} and spec is None
         got.table[f"{namespace}_ping"] = object()
         return {f"{namespace}_ping": object()}
 
     monkeypatch.setattr(connector_rebind, "join_namespace", join)
+    monkeypatch.setattr(connector_rebind, "conversation_spec", lambda *_a: None)
     tools, reason = offer.join_running_turn(_app(), "fixture-plain")
     assert (tools, reason) == (["fixture-plain_ping"], "")
     assert isinstance(refresher.inner, LiveToolRefresher)
