@@ -184,19 +184,19 @@
       },
       {
         "file": "connectors/discover-catalog.png",
-        "sha256": "30fba7dcf08cee3cee1176e9c2bfc862cede17b81ecd98b6c407f360e48a1732",
+        "sha256": "ea0025205ecb3d1dca8be9f09ebf804b6187dabc0526f63089ed0b37578a0820",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "lazy, LZ (every clio-kit server, grouped by domain)",
-        "origin": "fresh"
+        "source": "logos, LG (every connector and plugin with its logo, grouped by domain)",
+        "origin": "gallery/logos/lg-docs-discover-catalog-dark-desktop.png"
       },
       {
         "file": "connectors/agent-load-card.png",
-        "sha256": "1ecf26c46995ddfefffa73fa18a4fc08d4e7f3d8e5fca0d6fbfff8d00e203ec9",
+        "sha256": "34730544fff9e8890981ec7a1828258cdf0040510c8676fbbb9ce5ae67400c50",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "lazy, LZ-Q1",
-        "origin": "gallery/lazy/lz-earthscope-card-desktop.png"
+        "source": "logos, LG (Geo and NDP with their logos)",
+        "origin": "gallery/logos/lg-docs-agent-load-card-dark-desktop.png"
       },
       {
         "file": "connectors/connector-card.png",

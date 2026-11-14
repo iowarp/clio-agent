@@ -258,7 +258,7 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         "id": found.id,
         "name": found.name,
         "description": found.description,
-        "logo_url": f"/v1/connectors/{found.id}/logo" if found.logo else None,
+        **found.logo_urls(),
         "source": found.source,
         # Discover's domain (LZ-D9) and the clio-kit server it runs, whose tools are
         # downloaded when it is first enabled (LZ-D1).

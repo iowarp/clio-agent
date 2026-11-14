@@ -278,7 +278,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                     "interaction_id": PREFIX + row["id"],
                     "connector_id": row["connector_id"],
                     "connector_name": row["connector_name"],
-                    "logo_url": _logo_url(row["connector_id"]) if row["connector_id"] else None,
+                    **_logo_urls(row["connector_id"]),
                     "missing": row["missing"],
                     "tool_name": row["tool_name"],
                     # Connector discovery (CD-1 to CD-8): the agent offers to add a
@@ -313,11 +313,11 @@ def _plugin_fields(row: Mapping[str, Any]) -> dict[str, Any]:
     return {"plugin_id": row.get("plugin_id") or "", "plugin_ref": row.get("plugin_ref") or ""}
 
 
-def _logo_url(connector_id: str) -> str | None:
+def _logo_urls(connector_id: str) -> dict[str, str | None]:
     from clio_agent.connectors import state  # noqa: PLC0415
 
-    found = state.all_entries().get(connector_id)
-    return f"/v1/connectors/{connector_id}/logo" if found is not None and found.logo else None
+    found = state.all_entries().get(connector_id) if connector_id else None
+    return found.logo_urls() if found is not None else {"logo_url": None}
 
 
 class SetupResponseError(ValueError):

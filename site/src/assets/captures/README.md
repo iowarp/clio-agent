@@ -337,7 +337,8 @@ plugins shown as what they are), on a fresh stack.
 | `apps/paraview-region-comment-answer.png` | The agent's answer to that comment. | `final`, FQ-WEB |
 | `apps/paraview-dashboard-time-linked.png` | ParaView and two charts in one dashboard, linked by time, from a plain request. | `final`, FQ-WEB |
 | `apps/pdf-dashboard-table.png` | The PDF viewer in a dashboard beside a table built from the paper. | `more-conn`, MC4 |
-| `connectors/discover-catalog.png` | Discover: every catalog entry that is off, six connectors and two plugins, each with its description. | `docs`, DOCS-C9 |
+| `connectors/discover-catalog.png` | Discover: every connector and plugin that is off, grouped by domain, each with its logo and description. | `logos`, LG |
+| `connectors/agent-load-card.png` | The agent-load card: EarthScope asks to enable Geo and National Data Platform, each with its logo. | `logos`, LG |
 | `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, Connector (an MCP server), In conversations. | `docs`, DOCS-C9 |
 | `connectors/add-plugin-picker.png` | A new conversation's Add plugin menu: Connectors, then Packs. | `docs`, DOCS-C10 |
 | `connectors/add-plugin-picker-plugins.png` | The same menu scrolled: the Plugins group with Home Assistant. | `docs`, DOCS-C10 |

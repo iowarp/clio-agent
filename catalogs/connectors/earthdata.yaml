@@ -4,10 +4,12 @@
 # release qualified here (0.6.0). Searching datasets and their files is anonymous;
 # downloading files needs a free NASA Earthdata Login, read from the two optional needs
 # (apps ledger, "More connectors"). NASA's insignia may not be used without NASA's
-# permission, and the server ships no mark of its own, so the entry has no logo.
+# permission, and the server ships no mark of its own, so its logo, earthdata.svg, is ours:
+# the Earth with a satellite in orbit, drawn for CLIO (apps ledger, "Connector logos (LG)").
 - id: earthdata
   name: NASA Earthdata
   group: Earth science
+  logo: earthdata.svg
   description: Search NASA Earthdata for Earth-science datasets and their files, and download them with an Earthdata Login
   server:
     command: uvx

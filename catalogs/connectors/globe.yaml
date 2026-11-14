@@ -4,10 +4,13 @@
 # it. The version is pinned to the release qualified here (2.0.4). Its show-map tool returns
 # a ui:// view: a CesiumJS globe (loaded from cesium.com) with OpenStreetMap tiles, no
 # Cesium ion token. Its geocode tool asks OpenStreetMap's Nominatim. It has no needs and
-# ships no mark of its own, so the entry has no logo (apps ledger, "More connectors").
+# ships no mark of its own, so its logo, globe.svg, is ours: a globe with a place marker,
+# drawn for CLIO so it reads apart from Geo's plain globe (apps ledger, "More connectors";
+# "Connector logos (LG)").
 - id: globe
   name: 3D globe
   group: Earth science
+  logo: globe.svg
   description: Show regions, places and data footprints on an interactive 3D globe with OpenStreetMap, and find places by name
   server:
     command: npx

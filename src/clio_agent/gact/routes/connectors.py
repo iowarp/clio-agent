@@ -3,7 +3,8 @@
 * ``GET /v1/connectors`` lists every connector with its state for the person
   (``?refresh=true`` checks each enabled server again), plus the entries that did
   not load (``diagnostics``).
-* ``GET /v1/connectors/{id}`` one row; ``GET /v1/connectors/{id}/logo`` its SVG.
+* ``GET /v1/connectors/{id}`` one row; ``GET /v1/connectors/{id}/logo`` its SVG
+  (``?theme=dark``: the dark-theme variant, LG-D1).
   ``?session_id=`` reads the row as that conversation sees it: its own values over
   the defaults, with ``default_value`` and ``conversation`` per need (CV-D5).
 * ``PUT /v1/connectors/{id}/values`` ``{values: {key: str | null}}`` sets needs,
@@ -77,14 +78,15 @@ def register_connector_routes(app: FastAPI) -> None:
         return service.row(app, found, choice)
 
     @app.get("/v1/connectors/{connector_id}/logo")
-    async def connector_logo(connector_id: str) -> Response:
+    async def connector_logo(connector_id: str, theme: str = "") -> Response:
         try:
             found = service.entry(connector_id)
         except service.ConnectorError as exc:
             raise _error(exc) from None
-        path = found.logo_path
+        path = found.theme_logo_path(theme)
         if path is None or not path.is_file():
-            raise HTTPException(404, "This connector has no logo")
+            dark = " dark-theme" if theme == "dark" else ""
+            raise HTTPException(404, f"This connector has no{dark} logo")
         return Response(
             content=await asyncio.to_thread(path.read_bytes),
             media_type="image/svg+xml",

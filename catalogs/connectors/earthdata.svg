@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<!-- CLIO connector icon: the Earth with a satellite in orbit. Drawn for CLIO (our own work, not a third-party mark); apps ledger "Connector logos (LG)". -->
+<rect width="24" height="24" rx="5.5" fill="#17806A"/>
+<g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9.4" cy="14.6" r="4.7"/><path d="M3.4 19.4c3.4 2.2 9.6-.8 12.4-6.2"/></g><g fill="#fff" transform="rotate(45 16.6 7.4)"><rect x="15.2" y="6" width="2.8" height="2.8" rx=".5"/><rect x="11.2" y="6.5" width="3.2" height="1.8" rx=".3"/><rect x="18.8" y="6.5" width="3.2" height="1.8" rx=".3"/></g>
+</svg>
