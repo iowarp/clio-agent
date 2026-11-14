@@ -121,7 +121,8 @@ async function finalBeat(page, shot, sid, log) {
   mark("beat-dashboard");
   // The dashboard may already be open (the agent shows what it published); otherwise the
   // newest dashboard card in the conversation opens it in the canvas.
-  const live = page.locator('iframe[title*="ParaView"]');
+  // Several dashboard tabs may be open; only the shown one's live view counts.
+  const live = page.locator('iframe[title*="ParaView"]').locator("visible=true");
   // A dashboard the agent just published may still be mounting its live view.
   await live.first().waitFor({ timeout: 20000 }).catch(() => {});
   if (!(await live.count())) {
@@ -132,10 +133,13 @@ async function finalBeat(page, shot, sid, log) {
   }
   await page.locator('[data-slot="a2ui-surface-root"]').last().waitFor({ timeout: 60000 });
   await page.getByRole("button", { name: "Maximize canvas" }).click({ timeout: 3000 }).catch(() => {});
-  const pv = page.locator('iframe[title*="ParaView"]').first();
+  const pv = page.locator('iframe[title*="ParaView"]').locator("visible=true").first();
   await pv.scrollIntoViewIfNeeded();
   await page.waitForTimeout(12000);
-  const app = page.frames().find((f) => f.url().endsWith("/index.html"));
+  // The live view's page sits inside the app frame's own sandbox frame.
+  const outer = await (await pv.elementHandle())?.contentFrame();
+  const inside = (f) => [f, ...f.childFrames().flatMap((c) => inside(c))];
+  const app = outer && inside(outer).find((f) => f.url().endsWith("/index.html"));
   if (!app) throw new Error("the live 3D view did not load in the dashboard");
   // Rendered on the ParaView machine, the view keeps drawing when the canvas grows.
   await app.getByRole("button", { name: "Render on ParaView machine" }).click();
