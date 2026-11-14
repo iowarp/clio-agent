@@ -108,3 +108,67 @@ def test_recovery_names_the_flow_an_interrupted_call_started(monkeypatch) -> Non
     assert body["error"] == "operation_outcome_uncertain" and body["resubmitted"] is False
     assert [row["handle"] for row in body["started_tasks"]] == ["task_flow"]
     assert "deep-research flow" in body["started_note"]
+
+
+async def test_an_external_mcp_task_is_linked_to_the_model_call(monkeypatch) -> None:
+    """External MCP tasks used a fresh uuid, so recovery could not name them."""
+    import pytest
+
+    from clio_agent.gact import context, external_tasks
+
+    class Recorded(Exception):
+        pass
+
+    captured: dict = {}
+
+    def submission(**fields):
+        captured.update(fields)
+        raise Recorded
+
+    monkeypatch.setattr(external_tasks, "SubmissionContext", submission)
+    monkeypatch.setattr(external_tasks, "permission_snapshot", lambda *_args: {})
+    assignment = SimpleNamespace(handle="task_parent", owner=SimpleNamespace(human_id="h"))
+    owner = SimpleNamespace(
+        history=SimpleNamespace(latest_assignment=lambda _sid: assignment),
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                sessions=SimpleNamespace(get=lambda _sid: SimpleNamespace(workspace_id="w")),
+                workspaces=SimpleNamespace(get=lambda _w: SimpleNamespace(root_path="/w")),
+            )
+        ),
+    )
+    host = SimpleNamespace(
+        client=object(), tools={"search": SimpleNamespace(output_schema=None)}, backend=None
+    )
+    slot = MODEL_CALL_SLOT.set({"call_id": "call_ext", "model_call_id": "toolu_5"})
+    session = context.set_session_id("parent")
+    try:
+        with pytest.raises(Recorded):
+            await external_tasks.ExternalTasks._call(owner, host, "search", {"q": "x"}, "q", None)
+    finally:
+        context.reset(session)
+        MODEL_CALL_SLOT.reset(slot)
+    assert captured["invocation_id"] == "call_ext~toolu_5"
+    assert started_by(captured["invocation_id"], "toolu_5")
+
+
+def test_recovery_names_an_mcp_task_the_conversation_itself_started() -> None:
+    """The MCP task is owned by the conversation (not a child), and is still named."""
+    from clio_agent.gact.spawn_invocation import started_tasks
+
+    mcp = SimpleNamespace(
+        handle="task_mcp",
+        kind="MCP",
+        label="search",
+        status="active",
+        invocation_id="call_ext~toolu_5",
+        created_at="1",
+        owner=SimpleNamespace(session_id="parent", parent_handle="task_parent"),
+    )
+    history = SimpleNamespace(
+        session_handles=lambda _sid: {"task_parent", "task_mcp"},
+        tree_handles=lambda _sid: {"task_mcp"},
+        task_snapshot={"task_mcp": mcp}.get,
+    )
+    assert [row.handle for row in started_tasks(history, "parent", "toolu_5")] == ["task_mcp"]
+    assert started_tasks(history, "parent", "toolu_6") == []
