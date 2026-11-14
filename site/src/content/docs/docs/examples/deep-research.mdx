@@ -1,0 +1,171 @@
+---
+title: "Research a question in depth: lossy compression for HDF5"
+description: Run one deep research question from start to finish, watch the researchers and their checks, and read the report knowing what each part was checked against.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import PreviewGuide from '../../../../components/docs/PreviewGuide.astro';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import modeMenu from '../../../../assets/captures/search/deep-mode-menu.png';
+import approval from '../../../../assets/captures/search/article-approval.png';
+import running from '../../../../assets/captures/search/article-running.png';
+import checkStep from '../../../../assets/captures/search/article-check-step.png';
+import coordinate from '../../../../assets/captures/search/article-coordinate.png';
+import answerEnd from '../../../../assets/captures/search/article-answer-end.png';
+import report from '../../../../assets/captures/search/article-report.png';
+
+<PreviewGuide features="Deep research with web and literature search" since="v0.9.7" />
+
+This example follows one deep research run from the question to the report. The
+question is a real one from scientific data work: which lossy compressors can you
+use on HDF5 data today, and what do papers report about their error bounds and
+compression ratios?
+
+You need a working [CLIO installation](/docs/install/), a
+[model connection](/docs/connect-a-model/) that can use tools, and at least one
+web or literature search source. The run shown here used Claude Sonnet and took
+about RUN_MINUTES minutes. Your run will choose its own directions and sources,
+so its wording, counts and layout will differ.
+
+## Ask the question
+
+<Steps>
+
+1. Start a new conversation.
+
+2. Open the mode button beside the model and choose **Deep research**.
+
+   <Capture client:visible image={await captureImage(modeMenu)}
+     alt="The composer's mode menu with Execute, Plan and Deep research"
+     caption="Deep research applies to the message you send next." />
+
+3. Send the question. It names the compressors of interest, what "available"
+   means here and what to report:
+
+   ```text
+   What is known about lossy compression for HDF5 scientific data (SZ3, ZFP,
+   and similar compressors)? Which ones are available as HDF5 filters today,
+   and what error bounds and compression ratios do recent papers report?
+   ```
+
+4. Approve the search sources. The first time a run searches through a source,
+   CLIO asks. Choose **Allow searches through …** for each source you want the
+   run to use, then **Send response**. If you decline one, the run moves to the
+   next source you allowed.
+
+   <Capture client:visible image={await captureImage(approval)}
+     alt="A question card asking whether to allow literature searches through a scholarly source, with allow and decline choices"
+     caption="Each search source is approved once. Settings > Web search lists the sources and their state." />
+
+</Steps>
+
+## Watch the run
+
+A **Deep research run** card appears in the conversation. The planner splits
+the question into named directions, and one researcher works on each, all at
+once. In this run the planner chose DIRECTION_COUNT directions:
+
+DIRECTION_LIST
+
+<Capture client:visible image={await captureImage(running)}
+  alt="A running deep research card: Started, Plan, four named researchers in parallel, and a Check step for each, one of them still running"
+  caption="The run while it works. Finished steps are outlined, the running one is dashed, and every step is named after its direction." />
+
+Each researcher reports claims, each with the page it read and the exact passage
+that supports it. As soon as a researcher finishes, its **Check** step starts.
+You can keep using the conversation, or reply to steer the run.
+
+## See how a claim was checked
+
+Choose the full-screen button on the card and select a **Check** step.
+
+<Capture client:visible image={await captureImage(checkStep)}
+  alt="The full-screen run graph with a Check step selected, showing how many of that researcher's claims were verified and rejected"
+  caption="A Check step reports what it verified and what it rejected for one researcher." />
+
+Two things happen in a check:
+
+- **CLIO checks the quote.** Before any model looks at a claim, CLIO confirms
+  that its quoted passage is on the page the researcher read. This is a plain
+  text comparison, not a judgement. A quote that is not on the page is rejected
+  with that reason.
+- **A critic checks the claim.** For each quote that is on the page, the critic
+  reads the passage in context and decides whether it supports the claim as
+  stated, whether the source is authoritative and current, and whether other
+  evidence contradicts it.
+
+In this run, CHECK_SUMMARY
+
+## See what the coordinator decided
+
+Select the **Coordinate** step. The coordinator reads every verified claim
+together, from all directions. It records where sources agree, where they
+contradict each other and what follows from several of them, and decides whether
+the answer needs more research.
+
+<Capture client:visible image={await captureImage(coordinate)}
+  alt="The Coordinate step selected, showing the findings it drew across researchers and the follow-ups it chose"
+  caption="Coordinate is the one place where follow-up research is decided." />
+
+COORDINATE_SUMMARY
+
+## Read the report
+
+When the run ends, CLIO saves the report as a Markdown file in the workspace's
+`deep-research` folder and attaches it to its answer. The answer ends with what
+the run could not verify.
+
+<Capture client:visible image={await captureImage(answerEnd)}
+  alt="The end of the deep research answer with what was not verified and the attached Markdown report"
+  caption="The answer summarizes the outcome and links the saved report." />
+
+Choose the file to open the report beside the conversation.
+
+<Capture client:visible image={await captureImage(report)}
+  alt="The report open beside the conversation: question and scope, executive answer and findings with a source under each claim"
+  caption="Every finding links the page it was checked against." />
+
+REPORT_SUMMARY
+
+Read these sections first:
+
+- **Executive answer**, for the short answer.
+- **Findings**, where each claim links the page its passage came from. A link
+  appears only when a researcher or the critic read that page during the run.
+- **Rejected claims**, which are not findings. Each one says why it was
+  rejected: the quote was not on the page, the page was never read, or the critic
+  judged that the passage does not support the claim.
+- **Unresolved questions** and **Open review notes**, for what the run could
+  not settle.
+
+[Run deep research](/docs/deep-research/#read-the-report) lists every section.
+
+## Check what you rely on
+
+<Aside type="caution">
+A verified claim means its quoted passage is on the cited page and a critic
+judged that it supports the claim. It does not prove the claim is true. Open the
+source of any number you intend to use.
+</Aside>
+
+For the claims you depend on, open the link and find the passage. For an
+error bound or a compression ratio, check the dataset and the settings it was
+measured with: a ratio from one dataset at one error bound rarely transfers to
+another.
+
+To go further, reply in the same conversation:
+
+```text
+For the compression ratios in the findings, list the dataset, the error bound
+and the compressor version each one was measured with, from the cited pages.
+```
+
+To change how deep the run goes, see
+[Change the depth](/docs/deep-research/#change-the-depth).
+
+## Related
+
+- [Run deep research](/docs/deep-research/)
+- [Find papers and review the literature](/docs/literature/)
+- [Check answers and sources](/docs/evidence/)
