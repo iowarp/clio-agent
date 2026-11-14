@@ -120,12 +120,15 @@ def tool_call_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "ended_at": None,
                 "duration_ms": None,
                 "ok": None,
+                "parent_call_id": "",
             },
         )
         row["tool"] = str(payload.get("tool") or row["tool"])
         if kind == "tool.call.started":
             row["step_id"] = str(event.get("parent_span_id") or "")
             row["args"] = _args(payload.get("args"))
+            # A run_code script's calls nest under the script's call (tool_call_nesting).
+            row["parent_call_id"] = str(payload.get("parent_call_id") or "")
             row["started_at"] = epoch(payload.get("started_at")) or epoch(event.get("occurred_at"))
         else:
             row["ended_at"] = epoch(payload.get("completed_at")) or epoch(event.get("occurred_at"))
