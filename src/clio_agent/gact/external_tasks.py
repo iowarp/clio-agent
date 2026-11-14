@@ -36,7 +36,7 @@ from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
 from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
-from clio_agent.tools import view_only_results
+from clio_agent.tools import recorded_results, view_only_results
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
@@ -458,7 +458,7 @@ class ExternalTasks:
                         "retry_safe": False,
                     }
                 )
-        kept = view_only_results.stored_reply(reply)  # the view's reply is returned whole
+        kept = recorded_results.ledger_reply(reply)  # a bounded record; the reply goes back whole
         accepted = external_task_connections.accepted_call(host, handle) or (
             lazy is None
             and (await self.history.io.run(self.history.task_snapshot, handle)).backend is not None

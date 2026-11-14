@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
@@ -34,6 +35,7 @@ class _Executor:
                 meta={"ui": {"resourceUri": "ui://clock/view", "visibility": ["model", "app"]}}
             ),
             "clock_read_bytes": SimpleNamespace(meta={"ui": {"visibility": ["app"]}}),
+            "clock_table": SimpleNamespace(meta={"ui": {"visibility": ["model", "app"]}}),
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -42,8 +44,10 @@ class _Executor:
     def call_tool_result(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         app = self.app_ref[0]
         observer = app.state.pending_tool_observer
-        if name == "clock_read_bytes":  # through the executor's notification seam
+        if name in {"clock_read_bytes", "clock_table"}:  # the executor's notification seam
             result = {"content": [{"type": "text", "text": CHUNK}], "structuredContent": None}
+            if name == "clock_table":
+                result["structuredContent"] = {"rows": [CHUNK, CHUNK, CHUNK]}
             notify_tool_observer(observer, name, args, "started", None)
             notify_tool_observer(observer, name, args, "completed", None, result)
             return result
@@ -144,3 +148,34 @@ def test_a_call_only_the_view_sees_writes_no_row_and_keeps_a_record(tmp_path: Pa
     assert record["reason"] == VIEW_ONLY_CONTENT_NOT_STORED
     assert record["tool"] == "clock_read_bytes" and record["bytes"] > len(CHUNK)
     assert CHUNK not in str(row)
+
+
+def test_a_large_result_the_model_sees_is_a_row_with_its_head_and_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GG-F3: the row and the trace keep a bounded copy of any oversized result."""
+    monkeypatch.setattr(
+        "clio_agent.tools.servers.shell_spill_store.spill_directory",
+        lambda _root, session_id=None: tmp_path / "tool-output",
+    )
+    client, app = _client(tmp_path)
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
+        part = _open(client, sid)["part"]
+        response = client.post(
+            f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}/tools/call",
+            params={"data_ref": part["data_ref"]},
+            json={"name": "table", "arguments": {}},
+        )
+        rows = [
+            p for p in app.state.live_assistant_parts.get(sid, []) if p.tool_name == "clock_table"
+        ]
+        ledger = [r for r in app.state.tool_call_ledger.get(sid, []) if r["name"] == "clock_table"]
+    assert response.status_code == 200
+    assert response.json()["structuredContent"]["rows"][0] == CHUNK  # the view's copy is whole
+    result = next(p for p in rows if p.type == "tool_result")
+    assert result.structured_content is None
+    assert "[clio: tool_result_stored_in_file]" in result.content[0].text
+    assert CHUNK not in result.model_dump_json() and CHUNK not in str(ledger)
+    (stored,) = list((tmp_path / "tool-output").iterdir())
+    assert CHUNK in stored.read_text()

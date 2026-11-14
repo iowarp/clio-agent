@@ -182,3 +182,38 @@ async def test_a_view_poll_cut_off_ends_unknown_and_wakes_no_one(
     assert task.terminal_at is not None and task.attention_episode is None
     assert task.progress.message == view_call_cancel.VIEW_CALL_CANCELLED_TEXT
     assert await asyncio.to_thread(history.pending_mail, sid) == mail_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)  # An in-memory MCP session opens and closes.
+async def test_a_large_model_visible_reply_is_recorded_as_its_head_and_a_file(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GG-F3: any oversized reply, not only a view's, stays out of the ledger's segment."""
+    monkeypatch.setenv("CLIO_TOOL_RESULT_RECORD_BYTES", "65536")
+    monkeypatch.setattr(
+        "clio_agent.tools.servers.shell_spill_store.spill_directory",
+        lambda _root, session_id=None: tmp_path / "tool-output",
+    )
+    app, root = await _environment(arc, tmp_path)
+    history = app.state.task_history
+    external = ExternalTasks(app)
+    client = Client(_server(threading.Event(), threading.Event()))
+    try:
+        reply = await _view_call(
+            app, root, external, client, "read_bytes", {"offset": 2}, MODEL_SEES
+        )
+    finally:
+        await external.close()
+        await app.state.task_recovery.drain()
+    assert reply.structured_content["bytes"] == CHUNK  # the caller's copy is whole
+
+    def recorded() -> Any:
+        (task,) = _tasks(history, root.owner.session_id)
+        return history.read_content(task.result)
+
+    result = await asyncio.to_thread(recorded)
+    stored = result["structuredContent"]["stored_result"]
+    assert stored["reason"] == "tool_result_stored_in_file"
+    assert CHUNK in Path(stored["file"]).read_text()
+    assert len(json.dumps(result)) < 20_000
