@@ -74,6 +74,23 @@ local step. A flow can also read `await ctx.stop_requested()` between phases.
 The run's journal is saved with status `cancelled`, so every finished call
 keeps its handle and result for a restart.
 
+**Who stopped it is the run's reason.** A stop reaches the flow's code as
+whatever it made of the cancelled calls (`call_cancelled` naming the critic, a
+council's `gather_failed`). That is not why the run ended, so it is not recorded
+as the reason: the run ends `cancelled` with `reason: stopped`, `stopped_by`
+(`person`, `agent` or `unknown`), `stop_reason` (`conversation_stop` when the
+conversation's Stop sent it) and `stopped_handle`, and keeps what its code saw as
+`ended_by` (`flows/stop.py`). The source comes from the cancellation request
+itself: each request records `cancellation_by` (`person` for an owner's control,
+`agent` for `cancel_tasks`, `parent` when an ancestor's cancellation reaches it)
+and the caller's `intent` as `cancellation_reason` on the assignment
+(`AssignmentDetails`). The flow walks up its owners to the first request that
+was not passed down. Admission closes the moment a stop is accepted and the
+request is written just after, so a run that ends in between waits up to five
+seconds for it, then records `unknown`. The execution view draws the stopping
+point of a cancelled run as cancelled, not failed, so a stopped run reports no
+failed step.
+
 ## 2. Restart semantics
 
 Restart never repeats accepted work blindly. It opens a **linked assignment**
@@ -88,6 +105,19 @@ restart with a recorded `restart` outcome `not_started` and its reason.
 | Workflow (`run_workflow`) | Same as a flow: finished steps keep their handles, the rest run. | Same as a flow. |
 | The conversation itself | Restart of its assignment opens a linked assignment; the model sees the cancelled tasks and decides what to restart. | Resumes in place. |
 | A child of a stopped conversation | Stop everything cancelled the conversation's assignment, which closes admission below it. Restarting the child first opens a linked successor for the stopped conversation (`restart-child:<handle>`, no input of its own), so the child's result reaches a live conversation and wakes it. Stopped ancestors are resumed the same way, top down. | Not applicable. |
+
+**Restarting a running target.** Restart of an assignment that has not ended
+(including one the service resumed after its own restart, which is running
+again) cancels it first. Its answer says so: `was_running`, the open work it
+cancelled (`cancelled_unfinished`) and a `note` that the cancelled work runs again
+in the successor and that observing or waiting keeps work in progress. The
+`restart_agent` description and the recovery notice for an interrupted call say
+the same beforehand, so the agent can choose to wait instead.
+
+**Following a restart.** The run view of a restarted run carries
+`restarted_as`: the newest `restart:` assignment in its predecessor chain that has
+a run of its own. The card the conversation drew for `run_flow` follows it, so a
+restarted run is watched live where it was started (section 4).
 
 Who can invoke it:
 
@@ -140,7 +170,13 @@ Who can invoke it:
   Lingui.
 - Run rows and the work record keep their Stop and Restart controls. A stopped
   run's card reads "Cancelled" and its graph marks the step where it stopped as
-  "Stopped", both in text.
+  "Stopped", both in text, drawn as cancelled rather than failed. Its outcome
+  line says who stopped it ("You stopped this run", "An agent stopped this run")
+  and that a restart keeps the finished steps; the cancelled call is a detail
+  ("The flow saw").
+- A run card whose run was restarted shows the restart live ("Deep research run,
+  restarted", with "This run continues one that was stopped…") and offers "Show
+  the stopped run"; the stopped run offers "Show the restarted run".
 
 ## Verification
 
@@ -195,7 +231,7 @@ the request and the agent's restart [08](evidence/stop-restart-2026-11-14/08-res
 | Kept | Plan; both researchers (`task_fd6fd259e`, `task_c57e39e79`) and every search and fetch they made. The restarted run accepted no new researcher. |
 | Re-ran | Both checks and the critic (new handles under `restart:337ec18a…`), then the report. |
 | Lost | The two checks' partial work at the stop (their model turns were cancelled). |
-| Gaps | The parent conversation draws no run card for the restarted run (a card follows only a `run_flow` call), and the stopped card does not link to its successor. |
+| Gaps | The parent conversation drew no run card for the restarted run, and the stopped card did not link to its successor. Fixed after review; see "Review fixes" below. |
 
 The first attempt at this example (before the fixes in `ea19d05a`) found three
 defects, all fixed and retested here: the agent called `run_flow` again, because no
@@ -224,6 +260,29 @@ restart, it queried the run, saw it unfinished and called `restart_agent`.
 | Kept | Plan; both researchers (`task_1c116ef79`, `task_c2a27d54f`) and their 25 completed searches and fetches. |
 | Re-ran | Both checks and the critic under `restart:d4b5c402…`. |
 | Lost | The checks' model turns in flight at the kill, and the progress the resumed checks made before the restart cancelled them. |
-| Gaps | The restart cancelled checks that recovery had already resumed; waiting would have kept that progress. The agent's summary says the first run "was cancelled when the service crashed"; the restart cancelled it. At this kill no MCP call was in flight (the fetches finished during the screenshot). In the earlier SIGKILL of the same day, with 7 searches in flight, those settled `task_state_uncertain`, the flow and researchers resumed on their handles, and no duplicate run started. |
+| Gaps | The restart cancelled checks that recovery had already resumed; waiting would have kept that progress. The agent's summary says the first run "was cancelled when the service crashed"; the restart cancelled it. After review the restart answer and the descriptions say this (section 2); not rerun live. At this kill no MCP call was in flight (the fetches finished during the screenshot). In the earlier SIGKILL of the same day, with 7 searches in flight, those settled `task_state_uncertain`, the flow and researchers resumed on their handles, and no duplicate run started. |
 
 In both examples one deep-research run existed at a time: no duplicate run.
+
+### Review fixes, rerun live
+
+A new run (session `sess_f281d86b5cf8`) was stopped with Stop everything while both
+checks ran, then the person wrote "Please restart the research run I stopped."
+No tool was named; the agent chose `restart_agent`. Task trees:
+[after stop](evidence/stop-restart-2026-11-14/rv_after_stop.txt),
+[after restart](evidence/stop-restart-2026-11-14/rv_after_restart.txt).
+
+| | Desktop | Phone |
+| --- | --- | --- |
+| Stopped: "You stopped this run: Stopped with this conversation's Stop." The summary reads 3 cancelled, 3 did not run, no failed step; the recorded outcome is `reason: stopped`, `stopped_by: person`, `stop_reason: conversation_stop`, with the critic's `call_cancelled` kept as `ended_by` | [14](evidence/stop-restart-2026-11-14/14-stopped-by-person-desktop.png) | [15](evidence/stop-restart-2026-11-14/15-stopped-by-person-phone.png) |
+| The same card while the restart runs: "Deep research run, restarted", Running, the kept researchers drawn as run | [16](evidence/stop-restart-2026-11-14/16-restarted-run-live-desktop.png) | |
+| The restarted run done: Completed, 11 steps (the one rejected step is the report review's verdict) | [17](evidence/stop-restart-2026-11-14/17-restarted-run-done-desktop.png) | [18](evidence/stop-restart-2026-11-14/18-restarted-run-done-phone.png) |
+| "Show the stopped run": the stopped run, linked forward with "Show the restarted run" | [19](evidence/stop-restart-2026-11-14/19-stopped-run-linked-desktop.png) | [20](evidence/stop-restart-2026-11-14/20-stopped-run-linked-phone.png) |
+
+| | |
+| --- | --- |
+| Kept | Plan; both researchers (`task_ad32baec5`, `task_ef83ed343`). |
+| Re-ran | Both checks and the critic under `restart:7199bf9e…`, then the report. |
+| Lost | The checks' partial work at the stop. |
+| Gaps | Restarting a running target (the crash case) is covered by `test_restarting_a_running_flow_says_what_it_cancels`, not rerun live. |
+

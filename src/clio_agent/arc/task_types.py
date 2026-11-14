@@ -459,6 +459,11 @@ class AssignmentDetails(TaskRecord):
     execution_deadline: str | None = None
     inference_concurrency: int | None = Field(default=None, ge=1)
     cancellation_members: tuple[str, ...] | None = None
+    #: Who asked to cancel: ``person`` (an owner's control), ``agent`` (a model's
+    #: ``cancel_tasks``) or ``parent`` (an ancestor's cancellation reaching this one).
+    cancellation_by: Literal["person", "agent", "parent"] | None = None
+    #: Why, when the request named it (``conversation_stop``).
+    cancellation_reason: str | None = None
     input_evidence: tuple[AssignmentEvidence, ...] = ()
     evidence_assignment: str | None = None
 

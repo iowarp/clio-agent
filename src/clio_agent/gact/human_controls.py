@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -132,7 +133,8 @@ async def intervene(
         await history.io.run(record, "intent")
 
     if action == "cancel":
-        effect = (await app.state.task_operations.cancel(caller, handle))["outcomes"][0]
+        named = replace(caller, intent=reason) if reason else caller
+        effect = (await app.state.task_operations.cancel(named, handle))["outcomes"][0]
     elif action in {"pause", "resume", "restart"}:
         effect = await getattr(app.state.conversations, action)(caller, handle)
     elif action == "stop":

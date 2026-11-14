@@ -122,7 +122,20 @@ def test_stop_with_children_settles_a_flow_mid_gather(
         assert _snapshot(flow_app, member).status == "cancelled"
     # Nothing the conversation started is left open, and the run says how it ended.
     wait_until(lambda: not flow_app.get(f"/v1/sessions/{sid}/stop-scope").json()["open_children"])
-    assert _calls(flow_app, handle)["status"] == "cancelled"
+    run = _calls(flow_app, handle)
+    assert run["status"] == "cancelled"
+    # The run's reason is the person's stop, not the member whose call it cancelled.
+    result = run["result"]
+    assert result["reason"] == "stopped"
+    assert result["stopped_by"] == "person"
+    assert result["stop_reason"] == "conversation_stop"
+    assert result["message"] == "Stopped from the conversation's Stop."
+    assert result["ended_by"]["status"] in {"cancelled", "gather_failed"}
+    # The run view draws its end as cancelled, not as a failed step.
+    from clio_agent.flows.run_view import flow_run
+
+    view = flow_run(history, handle)
+    assert view is not None and view["outcome"]["reason"] == "stopped"
     # The stop is recorded with its reason.
     wait_until(
         lambda: any(
@@ -226,6 +239,13 @@ def test_restart_after_stop_keeps_finished_steps(flow_app: TestClient) -> None:
     assert after["gather"] == before["gather"]  # finished: the same task, not run again
     assert after["measure"] != before["measure"]
     assert started["attempts"] == {"gather": 1, "measure": 2, "report": 1}
+    # The stopped run's view points at the run that continues it, so its card follows.
+    stopped_view = flow_app.get(f"/v1/sessions/{sid}/tasks/{handle}/flow").json()
+    assert stopped_view["restarted_as"] == restarted.handle
+    assert (
+        "restarted_as"
+        not in flow_app.get(f"/v1/sessions/{sid}/tasks/{restarted.handle}/flow").json()
+    )
     # The stopped conversation got a linked successor, and the result woke it.
     parent = history.latest_assignment(sid)
     assert parent.invocation_id == "restart-child:" + handle
@@ -253,3 +273,30 @@ def test_a_started_flow_is_linked_to_the_model_call_that_started_it(
     assert note["started_tasks"][0]["label"] == "council flow"
     assert handle in note["started_note"] and "not started again" in note["started_note"]
     wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=90)
+
+
+def test_restarting_a_running_flow_says_what_it_cancels(flow_app: TestClient) -> None:
+    gate = threading.Event()
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _workflow_starter(flow_app, gate)
+    try:
+        post(flow_app, sid, "run the workflow")
+        handle = wait_until(lambda: started.get("handle"))
+        wait_until(lambda: started["attempts"].get("measure") == 1, timeout=60)
+        running = _steps(flow_app, handle)["measure"]
+        response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
+        assert response.status_code == 200, response.text
+        effect = response.json()
+        effect = effect.get("effect", effect)
+    finally:
+        gate.set()
+    # The answer says the target was running and names the work the restart ends.
+    assert effect["was_running"] is True
+    assert running in {row["handle"] for row in effect["cancelled_unfinished"]}
+    assert "cancelled its unfinished work" in effect["note"]
+    history = flow_app.app.state.task_history
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+    restarted = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle != handle and latest
+    )
+    wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=90)

@@ -470,7 +470,8 @@ def _started_by_call(tasks: list[TaskSnapshot]) -> dict[str, Any]:
         "started_note": (
             f"Before the restart this call had already started: {names}. It was not "
             "started again. Observe, wait on or restart that task by handle rather than "
-            "starting the same work a second time."
+            "starting the same work a second time. A task the service resumed is running "
+            "again: restarting it cancels the work it has in progress."
         ),
     }
 

@@ -249,8 +249,16 @@ def _members_at_request(
     )
 
 
-async def cancel(self: Conversations, caller: TaskCaller, handle: str) -> dict[str, Any]:
-    """Close admission and acknowledge cancellation before awaiting actual subtree settlement."""
+async def cancel(
+    self: Conversations, caller: TaskCaller, handle: str, *, cascade: bool = False
+) -> dict[str, Any]:
+    """Close admission and acknowledge cancellation before awaiting actual subtree settlement.
+
+    The request records who asked (``cancellation_by``): the person, an agent, or an
+    ancestor's cancellation reaching this assignment (``cascade``), and the caller's
+    ``intent`` when it names one. A flow reads them to say why its run ended.
+    """
+    by = "parent" if cascade else "person" if caller.human_action else "agent"
     with self.history.read_view():
         current = TaskAccess(self.history, caller).require(handle, "control")
         self.require_execution_owner(current)
@@ -277,9 +285,13 @@ async def cancel(self: Conversations, caller: TaskCaller, handle: str) -> dict[s
             )
             reference = self.history.write_content(
                 current.owner.session_id,
-                details.model_copy(update={"cancellation_members": members}).model_dump(
-                    mode="json"
-                ),
+                details.model_copy(
+                    update={
+                        "cancellation_members": members,
+                        "cancellation_by": by,
+                        "cancellation_reason": caller.intent or None,
+                    }
+                ).model_dump(mode="json"),
             )
             self.history.record_snapshot(
                 current.model_copy(
@@ -382,7 +394,9 @@ async def _cancel_subtree(
         try:
             if task.kind in {"Session", "Subagent"}:
                 await self.cancel(
-                    TaskCaller(assignment.owner.session_id, assignment.owner.human_id), handle
+                    TaskCaller(assignment.owner.session_id, assignment.owner.human_id),
+                    handle,
+                    cascade=True,
                 )
             else:
                 effect = await self.cancel_work(task)

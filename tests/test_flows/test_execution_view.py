@@ -187,7 +187,7 @@ def test_reconciliation_joins_exact_run_and_owner_only() -> None:
 
     root = SimpleNamespace(
         handle="root",
-        owner=SimpleNamespace(human_id="h", parent_handle=""),
+        owner=SimpleNamespace(human_id="h", parent_handle="", session_id="s"),
         created_at="2026-10-25T08:00:00+00:00",
         terminal_at="2026-10-25T10:00:00+00:00",
     )
@@ -224,10 +224,14 @@ def test_reconciliation_joins_exact_run_and_owner_only() -> None:
         def descendant_handles(self, handle: str) -> set[str]:
             return set(tasks)
 
+        def latest_assignment(self, session_id: str) -> Any:
+            return root  # not restarted
+
     result = flow_run(History(), "root", reconcile_children=True)
     assert result is not None
     assert [row["handle"] for row in result["calls"]] == ["match"]
     assert result["calls"][0]["returned_after_stop"] is True
+    assert "restarted_as" not in result
 
 
 def test_a_named_child_shows_its_name_and_planned_question() -> None:
@@ -370,3 +374,21 @@ def test_an_unreadable_review_shows_failed_not_rejected() -> None:
     (review,) = [row for row in rows if row["id"] == "run:review"]
     assert review["status"] == "failed"
     assert review["detail"].endswith("ValueError: issues.6.excerpt Field required")
+
+
+def test_a_run_stopped_on_request_ends_cancelled_not_failed() -> None:
+    stopped = {"reason": "stopped", "stopped_by": "person", "message": "Stopped on request."}
+    research = execution_view(
+        {"flow": "deep-research", "status": "cancelled", "result": stopped},
+        [{"invocation": "a", "status": "cancelled"}],
+    )
+    assert ("Stopped", "cancelled") in [(row["label"], row["status"]) for row in research]
+    assert not [row for row in research if row["status"] == "failed"]
+    custom = execution_view(
+        {"flow": "custom", "status": "cancelled", "result": stopped},
+        [{"invocation": "a", "status": "cancelled"}],
+    )
+    assert [(row["label"], row["status"]) for row in custom][-2:] == [
+        ("Stopped", "cancelled"),
+        ("Result", "not_run"),
+    ]
