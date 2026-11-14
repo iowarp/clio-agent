@@ -139,6 +139,14 @@ server should treat an empty value as "not set". When a value changes, CLIO rest
 command server, or reconnects to a URL server, and lists its tools again. Read values
 when the server starts.
 
+*Amended.* Address and value needs are filled per conversation: a conversation's own
+values over the person's defaults. Two conversations with different values run two
+copies of your command server (or two connections to your URL), each started with its
+own environment and arguments, side by side in the same workspace folder. Do not
+assume one copy per machine: key any state you keep on disk by the values it belongs
+to, and expect a reopen to replay a call against whichever values the conversation
+has at that moment.
+
 A secret reaches the server only in its environment or a header. CLIO keeps it in its
 credential store, and the saved connection holds only the placeholder.
 
