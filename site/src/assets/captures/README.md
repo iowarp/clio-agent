@@ -317,8 +317,11 @@ were answered "This session" and offer cards "Add" by the harness,
 `scripts/cloud/checks/apps/docs_capture.mjs`.
 
 The station list `example_stations_rainier.csv` is example data (ten made-up codes at
-real places). `trade-lab` and its `tariff-calc` plugin are a test marketplace
-(`tests/fixtures/plugin_offer/`). `wave.pvd` is synthetic test data.
+real places). The Home Assistant captures use ha-mcp's public demo instance
+(`https://ha-mcp-demo-server.qc-h.net`, token `demo`, reset weekly) with read requests
+only; its sensors are demo sensors. `wave.pvd` is synthetic test data. The Extensions,
+picker and offer captures were retaken after the `plugins` stream (connectors and
+plugins shown as what they are), on a fresh stack.
 
 | File | What it shows | Source |
 | --- | --- | --- |
@@ -333,15 +336,16 @@ real places). `trade-lab` and its `tariff-calc` plugin are a test marketplace
 | `apps/paraview-region-comment-answer.png` | The agent's answer to that comment. | `final`, FQ-WEB |
 | `apps/paraview-dashboard-time-linked.png` | ParaView and two charts in one dashboard, linked by time, from a plain request. | `final`, FQ-WEB |
 | `apps/pdf-dashboard-table.png` | The PDF viewer in a dashboard beside a table built from the paper. | `more-conn`, MC4 |
-| `connectors/discover-catalog.png` | Extensions, Connectors, Discover: all seven catalog entries, Not enabled. | `docs`, DOCS-C6 |
-| `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, In conversations. | `docs`, DOCS-C6 |
-| `connectors/add-plugin-picker.png` | A conversation's Add plugin menu with its Connectors group. | `docs`, DOCS-C5 |
-| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector. | `docs`, DOCS-C1 |
-| `connectors/offer-plugin.png` | The offer card for a plugin, `tariff-calc` from `trade-lab`. | `docs`, DOCS-C4 |
-| `connectors/offer-view-plugin.png` | View plugin over the waiting card: one skill, one MCP server. | `docs`, DOCS-C4 |
-| `connectors/offer-plugin-answered.png` | The same reply after Add: the skill and its tools used. | `docs`, DOCS-C4 |
-| `connectors/add-by-command.png` | Add by URL or command, filled for a local command; not added. | `docs`, DOCS-C7 |
-| `connectors/marketplaces.png` | Installed marketplaces, with clio-kit from GitHub. | `docs`, DOCS-C7 |
+| `connectors/discover-catalog.png` | Discover: every catalog entry that is off, six connectors and two plugins, each with its description. | `docs`, DOCS-C9 |
+| `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, Connector (an MCP server), In conversations. | `docs`, DOCS-C9 |
+| `connectors/add-plugin-picker.png` | A new conversation's Add plugin menu: Connectors, then Packs. | `docs`, DOCS-C10 |
+| `connectors/add-plugin-picker-plugins.png` | The same menu scrolled: the Plugins group with Home Assistant. | `docs`, DOCS-C10 |
+| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector, with View connector. | `docs`, DOCS-C12 |
+| `connectors/offer-plugin.png` | The offer card for the Home Assistant plugin, its required rows filled. | `docs`, DOCS-C13 |
+| `connectors/offer-view-plugin.png` | View plugin over the waiting card: two skills, one MCP server. | `docs`, DOCS-C13 |
+| `connectors/offer-plugin-answered.png` | The reply after Add: a skill loaded and the plugin's tools used. | `docs`, DOCS-C13 |
+| `connectors/add-by-command.png` | Add by URL or command, filled for a local command; not added. | `docs`, DOCS-C11 |
+| `connectors/marketplaces.png` | Installed marketplaces, with clio-kit from GitHub. | `docs`, DOCS-C11 |
 | `connectors/earthdata-results.png` | A NASA Earthdata granule search, and a download refused without a login. | `docs`, DOCS-C3 |
 | `files/cad-step-assembly.png` | A two-part STEP assembly in the file viewer, with its size and parts list. | `cad`, CAD2 |
 

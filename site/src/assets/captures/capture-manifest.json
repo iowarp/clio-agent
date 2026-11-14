@@ -184,74 +184,82 @@
       },
       {
         "file": "connectors/discover-catalog.png",
-        "sha256": "0b485b48cb9aa32d06e6d6b616a5e006c8005b11e5d42a543df9c02ad051bd9a",
+        "sha256": "14b7755109983993782062e9a38b6d790fbbf5155349ddc29e1118e9271e10e1",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C6",
+        "source": "docs, DOCS-C9 (after the plugins stream)",
         "origin": "fresh"
       },
       {
         "file": "connectors/connector-card.png",
-        "sha256": "679cae08504133ad7779dcef1bb84c87178d8c209a3ea03ba6282f0ca3ef456e",
+        "sha256": "5b2d8fcccfd919e8091453d50fc339e39b6e4f45710103cd9c65a17e3dd558ea",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C6",
+        "source": "docs, DOCS-C9",
         "origin": "fresh"
       },
       {
         "file": "connectors/add-plugin-picker.png",
-        "sha256": "5dc89f8f771fb56e42e82789940a96c7db698ebe7e1e8329fd14923a894f17e0",
+        "sha256": "968ac14a85694c692c44124c525375fb89625b6d3628b5735696fd92392b4653",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C5 (sess_bbd66c42132c)",
+        "source": "docs, DOCS-C10 (sess_50e98966a0ab)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/add-plugin-picker-plugins.png",
+        "sha256": "e0a0dab5d972eb85ebbbc0e90c5eeae87349224df356ff884fb83777c3e48c83",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C10",
         "origin": "fresh"
       },
       {
         "file": "connectors/offer-connector-geo.png",
-        "sha256": "94e844099de2c474d2ac127b6cbd32b24b5652a37f9d1b08014a730ae9d11c4c",
+        "sha256": "73c1e4d6eaf24760cb9e28cc017890fc8057c7d188bd380d959e5e2b14001e25",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C1",
+        "source": "docs, DOCS-C12 (sess_fe14bc320835)",
         "origin": "fresh"
       },
       {
         "file": "connectors/offer-plugin.png",
-        "sha256": "c64b3e14514a3ee96d9cde905eab7673628d168a0150fdcb9ebde2356f4ee815",
+        "sha256": "d97f6928a7669bbc8db5cccdc56497454241c7d17c6f16057e99155db3dbaf39",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C4 (sess_dae424340f00)",
+        "source": "docs, DOCS-C13 (sess_27d580bb861d, Home Assistant demo instance)",
         "origin": "fresh"
       },
       {
         "file": "connectors/offer-view-plugin.png",
-        "sha256": "e95a65489c940660e4074f50c40c3a08da94462a631c5c41ff63d2ac00d2281c",
+        "sha256": "46f7de61d15079654dfc51b6dbe6f848e3bd8a49a29cecf6a18fad766ab1856d",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C4",
+        "source": "docs, DOCS-C13 (sess_4b5c4e6dd90e)",
         "origin": "fresh"
       },
       {
         "file": "connectors/offer-plugin-answered.png",
-        "sha256": "cdf1fe40fb923a7bf52e9e713df6e37520299b50e696b66069bdd0bb606c7321",
+        "sha256": "f74fdcd5a5ce0ed2bf19bed3e9dbcaa4c375a9617dcf38ad22aaaf5f0d5aa7a4",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C4",
+        "source": "docs, DOCS-C13 (sess_27d580bb861d)",
         "origin": "fresh"
       },
       {
         "file": "connectors/add-by-command.png",
-        "sha256": "9169aaaa6a88a8bed859ba33fc78a2837fec335868ed7974a61cf8b23432fae4",
+        "sha256": "9d9138844a07698f5893e8bac701191d267a9f96dd21bb9199019adf71662871",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C7 (form filled, not added)",
+        "source": "docs, DOCS-C11 (form filled, not added)",
         "origin": "fresh"
       },
       {
         "file": "connectors/marketplaces.png",
-        "sha256": "15e3dfe775d8987ee6cfad555a305a9008592f0d77522dc917288625b7957f50",
+        "sha256": "9fb3294254d83da7396dc8739e284d8e26203f74deaa0bb8c85520e697f1bc98",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "docs, DOCS-C7",
+        "source": "docs, DOCS-C11",
         "origin": "fresh"
       },
       {
