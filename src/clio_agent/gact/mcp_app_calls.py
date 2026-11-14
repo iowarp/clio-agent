@@ -201,7 +201,7 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
         "arguments": arguments,
         "display_mode": capture.display_mode if capture else "inline",
         "resource_uri": record.resource_uri,
-        "label": _label(tool, bare),
+        "label": view_label(record.source_namespace, tool, record.tool_input) or _label(tool, bare),
         "saved_at": _now(),
     }
     if unsaved:
@@ -416,7 +416,10 @@ async def replay_call(
         definitions = executor.get_all_tool_definitions()
         tools.extend(server_tools(definitions, str(entry["server"])))
         if not entry.get("label"):  # a given call names no title: the tool's, as a card's
-            entry["label"] = _label(definitions.get(full_name), str(entry["tool"]))
+            definition = definitions.get(full_name)
+            entry["label"] = view_label(
+                str(entry["server"]), definition, entry.get("arguments") or {}
+            ) or _label(definition, str(entry["tool"]))
         token = _REPLAY.set(capture)
         try:
             return executor.call_tool_result(full_name, arguments)
