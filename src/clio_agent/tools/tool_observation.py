@@ -26,6 +26,10 @@ OBSERVATION_GROUP: ContextVar[Any | None] = ContextVar("clio_observation_group",
 #: True while a refused call's completion is reported (:func:`notify_refused_call`), so
 #: the observer records it as denied, not as a call that ran and failed.
 REFUSED_CALL: ContextVar[bool] = ContextVar("clio_refused_call", default=False)
+#: The completed call's result before its record was bounded, for the observer's effects
+#: (a write's change record and previous content), which must see it whole. Set only for
+#: the observer call.
+WHOLE_RESULT: ContextVar[Any | None] = ContextVar("clio_whole_result", default=None)
 
 
 class RefusedCallError(PermissionError):
@@ -130,8 +134,23 @@ def notify_tool_observer(
     # The record keeps a bounded copy: no content of a view-only call (MC-F3), and a
     # large result as its head and a file (GG-F3). The caller keeps the whole result.
     args = view_only_results.recorded_arguments(args)
-    if phase == "completed":
-        result = recorded_results.observed(result)
+    whole = WHOLE_RESULT.set(result if phase == "completed" else None)
+    try:
+        if phase == "completed":
+            result = recorded_results.observed(result)
+        return _observe(observer, name, args, phase, error, result)
+    finally:
+        WHOLE_RESULT.reset(whole)
+
+
+def _observe(
+    observer: ToolObserver | LegacyToolObserver,
+    name: str,
+    args: Mapping[str, Any],
+    phase: str,
+    error: str | None,
+    result: Any | None,
+) -> Any | None:
     group = OBSERVATION_GROUP.get()
     if group is not None:  # a background script's nested call: recorded grouped (CT5)
         return group.observe(observer, name, args, phase, error, result)

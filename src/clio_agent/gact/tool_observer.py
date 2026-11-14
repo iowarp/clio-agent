@@ -20,7 +20,7 @@ from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
-from clio_agent.gact.call_effects import pop_previous_content, record_call_effects
+from clio_agent.gact.call_effects import effects_result, record_call_effects
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
@@ -650,7 +650,7 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
-            prev, whole = pop_previous_content(result), result  # effects see the unbounded result
+            prev, whole = effects_result(result)  # the write's record, before any bounding
             if completion_error is None and result is not None:
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
