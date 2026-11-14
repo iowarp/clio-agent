@@ -160,24 +160,35 @@ async function finalBeat(page, shot, sid, log) {
     await app.getByRole("button", { name: "Pipeline" }).click();
   }
   await liquid.click();
-  await app.getByRole("button", { name: "Add filter" }).click();
-  await app.getByRole("button", { name: /^Edit/ }).first().click();
+  // Add filter is a toggle too: open it only when its Edit button is not showing.
+  const edit = app.getByRole("button", { name: /^Edit/ }).first();
+  if (!(await edit.isVisible().catch(() => false))) {
+    await app.getByRole("button", { name: "Add filter" }).click();
+  }
+  await edit.click();
   // Types the raised liquid surface (the slider does not yet track drags; see the
   // ParaView panel task) and applies it.
+  // Raises the liquid surface by dragging its first value's slider to the right
+  // (a log slider when the field spans decades), then lets go: release applies it.
   const values = app.getByRole("textbox", { name: "Values" });
-  // Raises the surface: each of the agent's chosen values, doubled.
-  const raised = (await values.inputValue())
-    .split(/[ ,]+/)
-    .filter(Boolean)
-    .map((v) => String(Number((Number(v) * 2).toPrecision(2))))
-    .join(", ");
-  await values.click();
-  await values.fill("");
-  await page.keyboard.type(raised || "1e-04", { delay: 60 });
-  await app.getByRole("button", { name: "Update" }).click();
+  const before = await values.inputValue();
+  const thumb = app.getByRole("slider", { name: /Values 1 slider/ });
+  const box = await thumb.boundingBox();
+  if (!box) throw new Error("the isovalue slider is not shown");
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width / 2, y);
+  await page.mouse.down();
+  // About two thirds of a decade on a log slider: the surface rises ~2.5x, still visible.
+  await page.mouse.move(box.x + box.width / 2 + 40, y, { steps: 30 });
+  await page.waitForTimeout(400);
+  await page.mouse.up();
+  await page.waitForTimeout(1500);
+  const after = await values.inputValue();
+  if (after === before) throw new Error(`dragging the slider left the values at ${before}`);
+  console.log(`DRAGGED ${before} -> ${after}`);
   await page.waitForTimeout(8000);
   await shot("beat-raised");
-  await app.getByRole("button", { name: "Done" }).click().catch(() => {});
+  await app.getByRole("button", { name: "Done" }).click({ timeout: 3000 }).catch(() => {});
   await page.getByRole("button", { name: /Restore canvas|Exit maximized|Minimize canvas/ }).click().catch(() => {});
   if (process.env.BEAT_ASK === "0") return;
   await send(page, TURNS.beat);
