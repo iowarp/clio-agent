@@ -348,6 +348,7 @@ plugins shown as what they are), on a fresh stack.
 | `connectors/marketplaces.png` | Installed marketplaces, with clio-kit from GitHub. | `docs`, DOCS-C11 |
 | `connectors/earthdata-results.png` | A NASA Earthdata granule search, and a download refused without a login. | `docs`, DOCS-C3 |
 | `files/cad-step-assembly.png` | A two-part STEP assembly in the file viewer, with its size and parts list. | `cad`, CAD2 |
+| `files/cad-region-comment.png` | A region comment on the whistle's section, a 1.60 mm wall measured. | `fileview`, FV-Q1 |
 
 Reproduce with `bash scripts/cloud/stack.sh start` (`CLIO_CLOUD_ISOLATE=1`) and
 `node scripts/cloud/ui_check.mjs --theme dark --steps scripts/cloud/checks/apps/docs_capture.mjs`

@@ -8,7 +8,7 @@ x_trigger: at the start of a turn and after a compaction, while the file view is
 x_variables: path, kind, state
 x_required: the person is looking at the file view; without this the agent cannot know what part, section or measurement they see
 ---
-The person has the {{kind}} view of {{path}} open on screen. look_at_view shows you what it shows now (load it with search_tools).
+The person has the {{kind}} view of {{path}} open on screen. The state below is the viewer's own text report; it does not show the model's shape or what a section or the camera reveals. look_at_view returns the picture the person sees, with this state (load it with search_tools).
 {%- if state %}
 The view state it reports:
 {{state}}

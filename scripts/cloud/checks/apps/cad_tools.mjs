@@ -1,5 +1,5 @@
 // CAD tools in the 3D file view (ledger "CAD tools (CAD2, stack N=36)"): measure, exploded
-// view, section, part selection, print-plate check, orthographic and inches, axis gizmo.
+// view, section, part selection, orthographic and inches, axis gizmo.
 //
 //   CAD_SESSION=/workspaces/<ws>/sessions/<sid>   the conversation whose workspace has the files
 //   CAD_FILE=.step                                  which file to open from Files (name fragment)
@@ -10,12 +10,12 @@
 // pointer (Vertex, Edge, Face), so the step finds the model's ends, a wall and a round edge
 // without knowing the geometry. Prints CAD_TOOLS_RESULT with what each tool reported.
 
-const result = { log: [] };
+export const result = { log: [] };
 const phase = process.env.CHECK_CAD_TOOLS || "desktop";
 
-const visible = (locator) => locator.filter({ visible: true }).first();
-const view = (page) => visible(page.locator('[data-slot="cad-view"]'));
-const canvasBox = async (page) => view(page).locator('[data-slot="cad-canvas"]').boundingBox();
+export const visible = (locator) => locator.filter({ visible: true }).first();
+export const view = (page) => visible(page.locator('[data-slot="cad-view"]'));
+export const canvasBox = async (page) => view(page).locator('[data-slot="cad-canvas"]').boundingBox();
 
 async function setTheme(page, theme) {
   await page.evaluate((dark) => {
@@ -69,7 +69,7 @@ export async function hero(page) {
   await page.waitForTimeout(2500);
 }
 
-async function toolbar(page, label) {
+export async function toolbar(page, label) {
   const button = visible(page.locator(`[data-slot="file-viewer"] button[aria-label="${label}"]`));
   if (await button.count()) return button.click();
   // A narrow bar folds its tools into its … menu.
@@ -78,21 +78,21 @@ async function toolbar(page, label) {
   await page.getByRole("menuitemcheckbox", { name: label }).or(page.getByRole("menuitem", { name: label })).first().click();
 }
 
-async function moreRow(page, label) {
+export async function moreRow(page, label) {
   await visible(page.getByRole("button", { name: "File actions" })).click();
   await page.waitForTimeout(500);
   await page.getByRole("menuitemcheckbox", { name: label }).or(page.getByRole("menuitem", { name: label })).first().click();
   await page.waitForTimeout(800);
 }
 
-async function standardView(page, name) {
+export async function standardView(page, name) {
   await visible(page.getByRole("button", { name: "Standard views" })).click();
   await page.waitForTimeout(400);
   await page.getByRole("menuitem", { name }).click();
   await page.waitForTimeout(800);
 }
 
-async function gizmo(page, axis) {
+export async function gizmo(page, axis) {
   // Clicking the side already in view looks from the other side, so start from an angle.
   await standardView(page, "Isometric");
   // An end hidden behind its opposite (looking straight down that axis) is still a button.
@@ -101,7 +101,7 @@ async function gizmo(page, axis) {
 }
 
 /** Hover at a canvas point and read the snap indicator ("Vertex", "Edge", "Face" or none). */
-async function snapAt(page, x, y) {
+export async function snapAt(page, x, y) {
   await page.mouse.move(x, y);
   await page.waitForTimeout(60);
   const snap = page.locator('[data-slot="cad-snap"]');
@@ -109,7 +109,7 @@ async function snapAt(page, x, y) {
 }
 
 /** Snaps along a line across the canvas, at `steps` points. */
-async function scan(page, from, to, steps) {
+export async function scan(page, from, to, steps) {
   const out = [];
   for (let i = 0; i <= steps; i += 1) {
     const x = from[0] + ((to[0] - from[0]) * i) / steps;
@@ -120,7 +120,7 @@ async function scan(page, from, to, steps) {
 }
 
 const measureItems = (page) => page.locator('[data-slot="cad-measure"] li');
-const panelText = async (page, slot) =>
+export const panelText = async (page, slot) =>
   (await visible(page.locator(`[data-slot="${slot}"]`)).innerText().catch(() => "")).replace(/\s+/gu, " ");
 
 async function clickAt(page, point) {
@@ -171,16 +171,16 @@ function edgeRuns(line) {
 }
 
 /** The gizmo end that looks straight at the cut face: the kept half's open side. */
-async function cutFacing(page) {
+export async function cutFacing(page) {
   const panel = visible(page.locator('[data-slot="cad-section"]'));
   const axis = (await panel.locator('[role="radio"][aria-checked="true"]').innerText()).trim();
   return (await panel.innerText()).includes("keeping the side above") ? `−${axis}` : `+${axis}`;
 }
 
 /** A wall across the section: the cut outline's outer and inner lines, seen face on. */
-async function measureWall(page) {
+export async function measureWall(page, columns = [0.4, 0.3, 0.5, 0.6, 0.25, 0.7]) {
   const box = await canvasBox(page);
-  for (const gx of [0.4, 0.3, 0.5, 0.6, 0.25, 0.7]) {
+  for (const gx of columns) {
     const x = box.x + box.width * gx;
     const runs = edgeRuns(await scan(page, [x, box.y + 20], [x, box.y + box.height - 20], 200));
     result.wallScan = (result.wallScan || []).concat(runs.length);
@@ -323,30 +323,10 @@ async function desktop(page, shot) {
     await page.keyboard.press("Escape");
   }
 
-  // Print plate: a Bambu Lab A1 fits; a small custom plate does not.
-  await moreRow(page, "Print plate");
-  const printer = visible(page.getByRole("combobox", { name: "Printer" }));
-  await printer.click();
-  await page.getByRole("option", { name: "Bambu Lab A1", exact: true }).click();
-  await page.waitForTimeout(800);
-  result.plateA1 = await panelText(page, "cad-plate");
-  await bothThemes(page, shot, "plate-a1");
-  await printer.click();
-  await page.getByRole("option", { name: "Custom size" }).click();
-  await page.waitForTimeout(400);
-  const fields = page.locator('[data-slot="cad-plate"] input');
-  for (const [i, value] of ["40", "40", "15"].entries()) await fields.nth(i).fill(value);
-  await page.waitForTimeout(800);
-  result.plateCustom = await panelText(page, "cad-plate");
-  await bothThemes(page, shot, "plate-custom");
-  await printer.click();
-  await page.getByRole("option", { name: "Bambu Lab A1", exact: true }).click();
-
   // Orthographic and inches.
   await moreRow(page, "Orthographic");
   await moreRow(page, "Inches");
   await toolbar(page, "Fit to view");
-  result.inchPlate = await panelText(page, "cad-plate");
   result.facts = (await visible(page.locator('[data-slot="file-viewer"] [role="toolbar"]')).innerText().catch(() => "")).replace(/\s+/gu, " ");
   await shot("ortho-inch");
   await visible(page.getByRole("button", { name: "File actions" })).click();
@@ -382,9 +362,6 @@ async function phone(page, shot) {
   await page.waitForTimeout(1200);
   await shot("explode");
   await toolbar(page, "Explode");
-  await moreRow(page, "Print plate");
-  result.phonePlate = await panelText(page, "cad-plate");
-  await shot("plate");
 }
 
 export default async function (page, shot) {
