@@ -27,12 +27,20 @@ async function dashboardTitle(session) {
   return parts.filter((p) => /a2ui|surface|dashboard|artifact/.test(p.type) && p.title).at(-1)?.title || "";
 }
 
+// The dashboard's globe: a conversation can hold other globe views (its earlier cards),
+// still loaded behind the maximized canvas, so take the ready one that is on screen.
+async function onScreen(page, frame) {
+  const box = await (await frame.frameElement()).boundingBox().catch(() => null);
+  const view = page.viewportSize();
+  return !!box && box.width > 0 && box.y >= 0 && box.y < view.height && box.x < view.width;
+}
+
 async function findGlobe(page) {
   for (let i = 0; i < 120; i++) {
     for (const frame of page.frames()) {
       if (frame === page.mainFrame()) continue;
       const ready = await frame.evaluate(() => !!(window.geoGlobe && window.geoGlobe.viewer)).catch(() => false);
-      if (ready) return frame;
+      if (ready && (await onScreen(page, frame))) return frame;
     }
     await page.waitForTimeout(1000);
   }
