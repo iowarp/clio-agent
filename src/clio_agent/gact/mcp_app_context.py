@@ -107,7 +107,6 @@ def forget_app_context(app: Any, sid: str, app_instance_id: str) -> None:
 def forget_closed_app(app: Any, sid: str, app_instance_id: str) -> None:
     """A closed app leaves the agent's view: its report, its tools and its looks go."""
     from clio_agent.gact.mcp_app_look import look_table  # noqa: PLC0415
-    from clio_agent.gact.mcp_app_state_keys import record_state_words  # noqa: PLC0415
     from clio_agent.gact.mcp_app_tools import app_tool_table  # noqa: PLC0415
 
     app_tool_table(app).drop_app(sid, app_instance_id)
