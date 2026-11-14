@@ -431,7 +431,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_HOME_IMPORT_EXPORTER` | unmigrated | `src/clio_agent/arc/home_import.py` |
 | `CLIO_INSTALL_DOWNLOADS` | unmigrated | `src/clio_agent/runtime/document_stack/office.py` |
 | `CLIO_INSTALL_KIT_READY` | unmigrated | `src/clio_agent/runtime/install_tool_servers.py` |
-| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
+| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
