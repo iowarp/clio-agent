@@ -133,3 +133,20 @@ def test_folder_listing_presents_an_unknown_size_instead_of_zero_bytes() -> None
     assert "Bytes: unknown until read" in text
     assert "Bytes: 12" in text
     assert "Bytes: 0" not in text and "Bytes: None" not in text
+
+
+def test_a_range_open_presents_the_handle_without_the_url() -> None:
+    view = source_opened(
+        {"path": "pl/e5.t.nc", "range": True},
+        {
+            "handle": "rng_abc",
+            "handle_url": "http://127.0.0.1:8787/v1/sessions/s/source-ranges/rng_abc",
+            "path": "pl/e5.t.nc",
+            "size": 1_221_000_000,
+            "expires_in_s": 3600,
+        },
+    )
+    text = repr(view)
+    assert "Opened by byte range" in text
+    assert "1,221,000,000 bytes" in text and "nothing yet" in text
+    assert "source-ranges" not in text  # the capability URL stays in technical details

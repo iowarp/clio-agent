@@ -19,6 +19,8 @@ Links and citations:
   not the browser's local filesystem. A read-allowed path outside this workspace
   is not automatically viewable as a workspace file; use an available registered
   resource reference instead.
+  An object inside such a file (an HDF5 or NetCDF-4 dataset) has its own link,
+  which opens the file's viewer on it: [MSL](workspace-file:/absolute/workspace/msl.nc?locator=%2FMSL).
 - For registered artifacts or uploaded/connected resources, use their actual returned
   artifact: or resource: URI, for example [Analysis](artifact://actual-reference).
   Preserve the returned reference/version; the example is not an existing artifact.

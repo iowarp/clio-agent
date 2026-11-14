@@ -99,3 +99,27 @@ def test_a_file_named_with_double_colons_is_still_a_plain_file(world) -> None:
 
     assert part.label == "a::b.txt"
     assert "locator" not in part.metadata["context_reference"]["navigation"]
+
+
+def test_a_netcdf4_variable_summarizes_to_json_without_dimension_bookkeeping(tmp_path) -> None:
+    import json
+
+    import h5netcdf
+    import numpy as np
+
+    from clio_agent.gact.hdf5_view import Roots, object_summary
+
+    path = tmp_path / "msl.nc"
+    with h5netcdf.File(path, "w") as nc:
+        nc.dimensions = {"time": 2, "latitude": 3}
+        nc.create_variable("time", ("time",), data=np.array([0, 6], dtype="i4"))
+        nc.create_variable("latitude", ("latitude",), data=np.array([35.0, 34.75, 34.5]))
+        var = nc.create_variable(
+            "MSL", ("time", "latitude"), data=np.ones((2, 3), "f4"), fillvalue=np.float32(9.999e20)
+        )
+        var.attrs["units"] = "Pa"
+    summary = object_summary(path, Roots((tmp_path, tmp_path)), "/MSL")
+    json.dumps(summary)  # dimension references and array attributes are plain values
+    assert summary["attributes"]["units"] == "Pa"
+    assert summary["attributes"]["_FillValue"] == pytest.approx(9.999e20, rel=1e-6)
+    assert "DIMENSION_LIST" not in summary["attributes"]

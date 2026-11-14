@@ -221,6 +221,7 @@ def connected_data_open(
     revision: str = "",
     linked: bool = True,
     folder: str = "",
+    range: bool = False,
 ) -> dict[str, Any]:
     """List an attached folder or open one file through the approved storage path.
 
@@ -234,6 +235,10 @@ def connected_data_open(
     virtual CLIO paths, not operating-system mounts for shell commands.
     A listed file with a null size has a size the provider reports only when it is
     read (for example a Google Doc exported as PDF); it is still readable.
+    With range=true on a linked file, nothing is fetched: it returns a byte-range URL
+    (handle_url) that code reads where the file lives, for example h5py through fsspec
+    or the hdf5 tools' open_file, moving only the bytes a read touches. Sources that
+    cannot serve ranges refuse with range_unsupported.
     """
     from clio_agent.gact.agents.session_inventory import running_operations
     from clio_agent.gact.storage.linked import linked_file
@@ -304,6 +309,8 @@ def connected_data_open(
             ],
             "next_offset": offset + 200 if offset + 200 < len(entries) else None,
         }
+    if range:
+        return _range_handle(app, service, record, path, sid, manifest_id, linked)
     selected = linked_file(service, record, path) if linked else None
     resource = source_resource(
         service.store, app.state.resource_store, record, path, linked_path=selected
@@ -315,6 +322,27 @@ def connected_data_open(
         "source_id": source_id,
         "path": path,
         "revision": manifest_id,
+    }
+
+
+def _range_handle(
+    app: Any, service: Any, record: Any, path: str, sid: str, manifest_id: str, linked: bool
+) -> dict[str, Any]:
+    """Mint a byte-range handle for one linked file instead of fetching it."""
+    from clio_agent.gact.storage.range_handles import handle_url, mint, registry
+
+    if not linked:
+        raise ValueError("Downloaded files are local; open them by path, not by range")
+    handle = mint(service, record, path, session_id=sid, handles=registry(app))
+    return {
+        "handle": handle.id,
+        "handle_url": handle_url(app, handle),
+        "source_id": record.source.id,
+        "path": path,
+        "size": handle.size,
+        "revision": manifest_id,
+        "file_revision": handle.revision,
+        "expires_in_s": handle.stats()["expires_in_s"],
     }
 
 
@@ -341,6 +369,11 @@ def build_connected_data_open_tool() -> Any:
             "linked": {
                 "type": "boolean",
                 "description": "The attachment's linked flag; false reads downloaded inputs.",
+            },
+            "range": {
+                "type": "boolean",
+                "description": "Return a byte-range URL for a large or structured file "
+                "(HDF5, NetCDF-4, Zarr) instead of fetching it.",
             },
         },
         domain="resources",

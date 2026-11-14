@@ -29,6 +29,10 @@ def approved_source(
         from clio_agent.gact.storage.drive import drive_folder_id
 
         root = drive_folder_id(root)
+    elif body.provider == "s3":
+        from clio_agent.gact.storage.s3_source import S3Location
+
+        root = S3Location.parse(root).root
     return next(
         (
             record
@@ -157,7 +161,7 @@ def prepare_connect(
 
     public_ndp = provider == "ndp" and public_selection(service.store, existing)
     if (
-        provider in {"github", "google_drive", "globus", "ndp"}
+        provider in {"github", "google_drive", "globus", "ndp", "s3"}
         and not public_ndp
         and not service.auth.connected(existing)
     ):
@@ -292,7 +296,7 @@ def build_connected_data_connect_tool() -> Any:
                         },
                         {"type": "null"},
                     ],
-                    "description": "Nonsecret provider settings. For NDP use discovered endpoint_id and selected resource_ids; public resources require no sign-in.",
+                    "description": "Nonsecret provider settings. For NDP use discovered endpoint_id and selected resource_ids; public resources require no sign-in. For S3 the root is bucket/prefix and settings give s3_region, s3_endpoint_url for S3-compatible stores, and s3_access (anonymous for public buckets; keys are entered by the person in Settings).",
                 },
             },
             presentation=setup_presentation,

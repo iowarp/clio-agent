@@ -136,6 +136,10 @@ class StorageAuth:
             with self._lock:
                 sftp_entry = self._sftp_credentials.get(record.source.id)
                 return bool(sftp_entry and self._matches(sftp_entry[0], record))
+        if record.source.provider == "s3":
+            from clio_agent.gact.storage import s3_keys  # noqa: PLC0415
+
+            return s3_keys.connected(self, record)
         with self._lock:
             entries = self._entries()
             account = self._account(entries, record)
@@ -759,6 +763,9 @@ class StorageAuth:
         """Stop this source and its pending flows, retaining reusable browser accounts."""
         with self._lock:
             self._sftp_credentials.pop(source_id, None)
+            from clio_agent.gact.storage import s3_keys  # noqa: PLC0415
+
+            s3_keys.forget(self, source_id)
             for key, value in list(self._pending.items()):
                 if value.source_id == source_id:
                     self._remove_pending(key)

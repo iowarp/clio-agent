@@ -40,7 +40,24 @@ def test_the_view_event_is_kept_for_the_part_and_other_meta_is_dropped() -> None
 def test_the_caller_is_named_only_while_a_session_call_runs() -> None:
     assert caller_meta() is None
     with tool_caller_context("sess_branch", "sess_root"):
-        assert caller_meta() == {CALLER_META_KEY: {"session": "sess_branch", "root": "sess_root"}}
+        assert caller_meta() == {
+            CALLER_META_KEY: {"session": "sess_branch", "root": "sess_root", "via": "direct"}
+        }
     with tool_caller_context("sess_root", ""):
-        assert caller_meta() == {CALLER_META_KEY: {"session": "sess_root", "root": "sess_root"}}
+        assert caller_meta() == {
+            CALLER_META_KEY: {"session": "sess_root", "root": "sess_root", "via": "direct"}
+        }
     assert caller_meta() is None
+
+
+def test_a_call_from_a_script_is_named_as_code() -> None:
+    from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID
+
+    with tool_caller_context("sess_a", "sess_a"):
+        token = PARENT_CALL_ID.set("call_script")
+        try:
+            assert caller_meta() == {
+                CALLER_META_KEY: {"session": "sess_a", "root": "sess_a", "via": "code"}
+            }
+        finally:
+            PARENT_CALL_ID.reset(token)

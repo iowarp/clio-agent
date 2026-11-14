@@ -20,7 +20,7 @@ from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
-from clio_agent.gact.call_effects import pop_previous_content, record_call_effects
+from clio_agent.gact.call_effects import effects_result, record_call_effects
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
@@ -36,6 +36,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.structured_wire_bound import wire_structured
 from clio_agent.gact.task_wait_presentation import completed_after_cancel_error, completion_status
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_call_merge import (
@@ -649,7 +650,7 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
-            prev = pop_previous_content(result)  # Undo's pre-write copy: never on a wire
+            prev, whole = effects_result(result)  # the write's record, before any bounding
             if completion_error is None and result is not None:
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
@@ -662,16 +663,8 @@ def _make_tool_observer(app: "FastAPI"):
             # A native tool may DECLARE its typed structured payload (P5; the model's
             # return value is unchanged). Read + cleared once per completed call so it
             # never leaks onto a later call; else the MCP-shaped extraction below.
-            declared_structured = pop_declared_structured_content()
-            structured_content = (
-                declared_structured
-                if declared_structured is not None
-                else (
-                    result.get("structuredContent")
-                    if isinstance(result, Mapping) and "structuredContent" in result
-                    else None
-                )
-            )
+            # The caller already holds the full value; the wire and trace copies are bounded.
+            structured_content, result = wire_structured(pop_declared_structured_content(), result)
             result, presentation = completed_presentation(
                 name,
                 args,
@@ -800,7 +793,7 @@ def _make_tool_observer(app: "FastAPI"):
                         ),
                     )
                 # A write that ran is on disk even if the turn was cancelled meanwhile.
-                record_call_effects(app, sid, name, call_id, error, result, prev, invoking_expert)
+                record_call_effects(app, sid, name, call_id, error, whole, prev, invoking_expert)
         return None
 
     return observe

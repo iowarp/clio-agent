@@ -60,6 +60,25 @@ def notify_record_change(app: "FastAPI", sid: str, result: Any) -> str | None:
     return view
 
 
+def effects_result(result: Any) -> tuple[PreviousContent | None, Any]:
+    """The previous content and the whole result for a completed call's effects.
+
+    The observer's ``result`` is the bounded record (large results become a head and a
+    file); a write's change record must be read whole, so it comes from the result kept
+    before bounding. The previous content is taken off both copies: it never reaches a
+    wire event, the ledger or the trace.
+    """
+
+    from clio_agent.tools.tool_observation import WHOLE_RESULT  # noqa: PLC0415
+
+    whole = WHOLE_RESULT.get()
+    whole = result if whole is None else whole
+    previous = pop_previous_content(whole)
+    if whole is not result:
+        previous = pop_previous_content(result) or previous
+    return previous, whole
+
+
 def record_call_effects(
     app: "FastAPI",
     sid: str,
@@ -80,6 +99,7 @@ def record_call_effects(
 __all__ = [
     "SCIENCE_RECORD_EVENT",
     "SCIENCE_VIEW_EVENT",
+    "effects_result",
     "notify_record_change",
     "notify_study",
     "pop_previous_content",
