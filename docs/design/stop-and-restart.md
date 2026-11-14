@@ -125,8 +125,12 @@ Who can invoke it:
    as `task_state_uncertain`, or continues cancellation that was requested
    before the crash. MCP calls in flight at the crash become
    `task_state_uncertain`, which counts as settled for a flow's call
-   (`run_view._SETTLED`) and for its wait, so an uncertain leaf cannot hold an
-   ancestor open.
+   (`run_view._SETTLED`) and for its wait. An uncertain call whose owning
+   assignment has settled no longer counts as an ancestor's pending work
+   (`gact/assignment_pending.py`), so it cannot hold a finished flow `yielded`.
+5. **A restarted run reads its kept calls' evidence.** The subtrees of the runs
+   it resumes are its own (`flows/tool_evidence.py`); read authorization still
+   applies.
 
 ## 4. UI (gact-tui)
 
@@ -154,3 +158,72 @@ Tests (`tests/test_gact/test_stop_children.py`, `tests/test_flows/test_stop_rest
 
 Live checks are recorded in the PR body; scripted or tool-directed checks are
 mechanism verification, not evidence of agent judgement.
+
+## Live evidence (Nov 14, 2026)
+
+Stack: `scripts/cloud/stack.sh` with the `claude_code` provider (Haiku 5.5), agent
+`deep-researcher`, a separate `CLIO_AGENT_HOME` under `.cloud-run/`. Request in every
+run: "Which HDF5 filter IDs are registered for the ZFP and SZ3 compressors, and what
+error-bound modes does each offer? Keep it to at most two directions and no follow-up
+rounds." Screenshots are in
+[evidence/stop-restart-2026-11-14](evidence/stop-restart-2026-11-14/), captured with
+`scripts/cloud/ui_check.mjs --scale 2` at 1440x900 and 390x844 (the phone dialog,
+04, at scale 1).
+
+### Stop, before and after
+
+| | Desktop | Phone |
+| --- | --- | --- |
+| Before (develop `8051d77d`, its own server and UI): Stop pressed; 60 s later the reply reads "Stopped" while the run card reads "Running" and a check is still executing | [01](evidence/stop-restart-2026-11-14/01-before-develop-desktop.png) | [02](evidence/stop-restart-2026-11-14/02-before-develop-phone.png) |
+| After: Stop asks, naming the open work in words | [03](evidence/stop-restart-2026-11-14/03-after-stop-dialog-desktop.png) | [04](evidence/stop-restart-2026-11-14/04-after-stop-dialog-phone.png) |
+| After "Stop everything": the card reads "Cancelled", both checks did not run, the graph marks "Stopped"; every task is `cancelled` or `completed` and `stop-scope` is empty | [05](evidence/stop-restart-2026-11-14/05-after-stopped-desktop.png) | [06](evidence/stop-restart-2026-11-14/06-after-stopped-phone.png) |
+
+### Worked example 1: restart a stopped run
+
+Stopped with "Stop everything" while both checks ran, then the person wrote "Please
+restart the research run I stopped." No tool or step was named, so this is evidence
+of the agent's own choice. The agent loaded `restart_agent` and restarted the
+stopped flow. Screens: stopped [07](evidence/stop-restart-2026-11-14/07-restart-stopped-before.png),
+the request and the agent's restart [08](evidence/stop-restart-2026-11-14/08-restart-request-desktop.png) /
+[09](evidence/stop-restart-2026-11-14/09-restart-request-phone.png), the answer
+[10](evidence/stop-restart-2026-11-14/10-restart-answer-desktop.png). Task trees:
+[after stop](evidence/stop-restart-2026-11-14/e2b_after_stop.txt),
+[after restart](evidence/stop-restart-2026-11-14/e2b_after_restart.txt).
+
+| | |
+| --- | --- |
+| Kept | Plan; both researchers (`task_fd6fd259e`, `task_c57e39e79`) and every search and fetch they made. The restarted run accepted no new researcher. |
+| Re-ran | Both checks and the critic (new handles under `restart:337ec18a…`), then the report. |
+| Lost | The two checks' partial work at the stop (their model turns were cancelled). |
+| Gaps | The parent conversation draws no run card for the restarted run (a card follows only a `run_flow` call), and the stopped card does not link to its successor. |
+
+The first attempt at this example (before the fixes in `ea19d05a`) found three
+defects, all fixed and retested here: the agent called `run_flow` again, because no
+description said restart keeps finished work; the restarted run was refused reading
+its kept researchers' evidence; a run resumed after a crash stayed `yielded`.
+
+### Worked example 2: restart after a crash
+
+SIGKILL of the server's process group while both checks ran (17:26:30 UTC), restart on
+the same home, then "The service crashed while the research was running. Please
+restart the research run." Again no tool was named. Screens: before the crash
+[11](evidence/stop-restart-2026-11-14/11-crash-before-desktop.png), after
+[12](evidence/stop-restart-2026-11-14/12-crash-after-desktop.png) /
+[13](evidence/stop-restart-2026-11-14/13-crash-after-phone.png). Task trees:
+[before](evidence/stop-restart-2026-11-14/e3_before_crash.txt),
+[after the crash](evidence/stop-restart-2026-11-14/e3_after_crash.txt),
+[after the restart](evidence/stop-restart-2026-11-14/e3_after_restart.txt).
+
+After the crash, recovery resumed the flow, both checks and the parent on their
+original handles. Reading the recovery notice, the agent wrote "I'll check the
+deep-research run I already started rather than launching it again". Asked to
+restart, it queried the run, saw it unfinished and called `restart_agent`.
+
+| | |
+| --- | --- |
+| Kept | Plan; both researchers (`task_1c116ef79`, `task_c2a27d54f`) and their 25 completed searches and fetches. |
+| Re-ran | Both checks and the critic under `restart:d4b5c402…`. |
+| Lost | The checks' model turns in flight at the kill, and the progress the resumed checks made before the restart cancelled them. |
+| Gaps | The restart cancelled checks that recovery had already resumed; waiting would have kept that progress. The agent's summary says the first run "was cancelled when the service crashed"; the restart cancelled it. At this kill no MCP call was in flight (the fetches finished during the screenshot). In the earlier SIGKILL of the same day, with 7 searches in flight, those settled `task_state_uncertain`, the flow and researchers resumed on their handles, and no duplicate run started. |
+
+In both examples one deep-research run existed at a time: no duplicate run.

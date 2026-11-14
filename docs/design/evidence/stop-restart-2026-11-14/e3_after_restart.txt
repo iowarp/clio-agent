@@ -1,0 +1,12 @@
+task_835c7adc0 Session  completed               Restart after a crash        msg_user_0a43122a5fe1
+task_dbc5e0f8b Subagent cancelled               deep-research flow           flow:call_8de5f5bdb143~call_63c25d97_0
+task_1c116ef79 Subagent completed               ZFP filter ID and modes      flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_c2a27d54f Subagent completed               SZ3 filter ID and modes      flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_f9da0d3ce Subagent cancelled               Check: ZFP filter ID and mod flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_8d21c0bd3 Subagent cancelled               Check: SZ3 filter ID and mod flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_273932f88 Subagent completed               deep-research flow           restart:d4b5c402d88a408c93835d8c0bff68ce
+task_a76b6c975 Subagent completed               Check: SZ3 filter ID and mod flowrun_52d593cc9c7b3ea88d347c12:subagent:ke
+task_2df7092bd Subagent completed               Check: ZFP filter ID and mod flowrun_52d593cc9c7b3ea88d347c12:subagent:ke
+task_c509a90da Subagent completed               critic                       flowrun_52d593cc9c7b3ea88d347c12:subagent:ke
+total 38
+stop-scope: []
