@@ -56,6 +56,31 @@ def _numeric_plane(value: Any, *, variable: str | None) -> np.ndarray:
     return plane
 
 
+def _coordinate_value(coord: Any, value: Any) -> Any:
+    """``value`` in the coordinate's own terms: a time as a naive UTC instant.
+
+    A selection can come from any view: an ISO string with a ``Z``, or a number in the
+    file's CF units (``hours since 1900-01-01``), which is what a table of the source's
+    raw times holds.
+    """
+    if not np.issubdtype(np.asarray(coord.values).dtype, np.datetime64):
+        return value
+    import pandas as pd  # noqa: PLC0415
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        units = coord.encoding.get("units")
+        if not units:
+            raise ValueError(f"{coord.name} has no CF time units to read the number {value} in")
+        from xarray.coding.times import decode_cf_datetime  # noqa: PLC0415
+
+        decoded = decode_cf_datetime(
+            np.asarray([value]), units, coord.encoding.get("calendar", "standard")
+        )
+        return pd.Timestamp(decoded[0])
+    stamp = pd.Timestamp(str(value))
+    return stamp.tz_convert("UTC").tz_localize(None) if stamp.tzinfo else stamp
+
+
 def _plane_of(data: Any, select: dict[str, Any] | None) -> tuple[Any, tuple[dict[str, Any], ...]]:
     """The 2-D plane of ``data``: leading dimensions picked from ``select`` (nearest) or 0."""
     frame: list[dict[str, Any]] = []
@@ -63,7 +88,10 @@ def _plane_of(data: Any, select: dict[str, Any] | None) -> tuple[Any, tuple[dict
         size = int(data.sizes[dim])
         if select and dim in select:
             try:
-                picked = data.sel({dim: select[dim]}, method="nearest")
+                wanted = (
+                    _coordinate_value(data[dim], select[dim]) if dim in data.coords else select[dim]
+                )
+                picked = data.sel({dim: wanted}, method="nearest")
             except (KeyError, TypeError, ValueError) as exc:
                 raise RasterQueryError(
                     "raster_selection_invalid",
