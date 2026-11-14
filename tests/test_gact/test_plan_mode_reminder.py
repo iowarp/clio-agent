@@ -32,7 +32,7 @@ from clio_agent.gact.plan_mode import (
 # Single source of truth for the default full-reminder cadence (P1.6a #1068 deleted the
 # duplicate plan_mode._PLAN_REMINDER_FULL_INTERVAL; the composer reads guidance.full_interval).
 from clio_agent.gact.planning import _DEFAULT_FULL_INTERVAL
-from clio_agent.gact.runtime.grant_resolver import plans_dir, resolve
+from clio_agent.gact.runtime.grant_resolver import resolve
 from clio_agent.gact.summarization_record import summarization_part
 from clio_agent.gact.types import Message, Tokens
 from clio_agent.tools.execution import tool_workspace_context
@@ -49,6 +49,12 @@ def _plan_session(tmp_path: Path, mode: str = "plan"):
     app = build_app(sessions_path=tmp_path / "s.json")
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode=mode)
     return app, sess
+
+
+def _session_plans(app, sess) -> Path:
+    """The plans folder of the session's workspace (a first run's own folder, FP-D3)."""
+    root = app.state.workspaces.get(sess.workspace_id).root_path
+    return (paths.workspace_state_dir(root) / "plans").resolve(strict=False)
 
 
 def _append_compaction(app, sid: str) -> None:
@@ -79,7 +85,7 @@ def test_first_plan_turn_gets_full_reminder(tmp_path: Path) -> None:
     out = plan_mode_reminder(app, sess.id, sess)
     assert PLAN_MODE_REMINDER_MARKER in out
     assert _FULL_ONLY in out
-    assert str(plans_dir()) in out
+    assert str(_session_plans(app, sess)) in out
     assert "call plan_exit" in out
     # The block is the reminder alone; the user's text is never glued onto it.
     assert _USER_TEXT not in out
@@ -92,7 +98,7 @@ def test_second_plan_turn_is_sparse_within_window(tmp_path: Path) -> None:
     assert PLAN_MODE_REMINDER_MARKER in out
     assert _SPARSE_ONLY in out
     assert _FULL_ONLY not in out
-    assert str(plans_dir()) in out
+    assert str(_session_plans(app, sess)) in out
     assert "with plan_exit" in out
 
 
@@ -160,7 +166,7 @@ def test_plan_file_path_recorded_on_first_plan_turn(tmp_path: Path) -> None:
     plan_file = fresh.metadata[_PLAN_FILE_METADATA_KEY]
     assert plan_file  # a non-empty path was recorded
     recorded = Path(plan_file)
-    assert recorded.parent == plans_dir()  # lives directly under the plans dir
+    assert recorded.parent == _session_plans(app, sess)  # directly under the plans dir
     assert recorded.suffix == ".md"
     assert recorded_plan_file(fresh) == plan_file
 

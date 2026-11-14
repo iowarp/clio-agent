@@ -38,7 +38,7 @@ def _image_blocks(raw_result: Any) -> list[tuple[str, str]]:
         get = block.get if isinstance(block, dict) else lambda k, b=block: getattr(b, k, None)
         if get("type") != "image":
             continue
-        found.append((str(get("mimeType") or get("mime_type") or ""), str(get("data") or "")))
+        found.append((str(get("mime_type") or get("mimeType") or ""), str(get("data") or "")))
     return found
 
 
