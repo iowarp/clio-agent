@@ -18,7 +18,11 @@ no drawing buffer (``preserveDrawingBuffer: false``, as vtk.js uses) reads blank
 browser shows it, so its context's draw calls are watched, the view is nudged to redraw (its frame shrinks
 by one pixel for two frames), and the canvas is copied when the app's drawing task ends.
 
+A view the browser is not drawing (laid out, but hidden or clipped away) runs no frame
+callbacks, so every wait for a frame is bounded: the snapshot still answers, and says so.
+
 Every gap is typed, never silent: ``skipped`` lists ``frame_cross_origin``,
+``view_not_drawing`` (no frame came while a WebGL canvas was asked to redraw),
 ``webgl_frame_not_redrawn``, ``webgl_canvas_idle`` (a blank canvas beside one that redrew),
 ``cross_origin_pixels``, ``not_drawable`` and ``wrapped_text_not_drawn`` (a word broken
 across lines); a refused snapshot answers ``{error: {reason, message}}``
@@ -37,7 +41,15 @@ const clioViewSnapshot = (() => {
   const MAX_SIDE = 4096;
   const DRAWS = ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced',
     'drawRangeElements', 'blitFramebuffer', 'clear'];
-  const frame = (win) => new Promise((done) => win.requestAnimationFrame(() => done()));
+  // A view the browser is not drawing (laid out but hidden or clipped away) runs no frame
+  // callbacks, so every wait for a frame gives up after FRAME_WAIT_MS: a snapshot always
+  // answers, and says the view was not drawing (view_not_drawing).
+  const FRAME_WAIT_MS = 150;
+  let framesDrawn = 0, framesMissed = 0;
+  const frame = (win) => new Promise((done) => {
+    const timer = setTimeout(() => { framesMissed += 1; done(false); }, FRAME_WAIT_MS);
+    win.requestAnimationFrame(() => { clearTimeout(timer); framesDrawn += 1; done(true); });
+  });
   const wait = (ms) => new Promise((done) => setTimeout(done, ms));
   const px = (value) => parseFloat(value) || 0;
 
@@ -319,7 +331,11 @@ const clioViewSnapshot = (() => {
       }
     }
     let copies = new Map();
+    framesDrawn = 0; framesMissed = 0;
     if (live.length) copies = await redrawn(live, params.nudge || (async () => {}));
+    if (framesMissed && !framesDrawn) {
+      skipped.push({ what: 'view', reason: 'view_not_drawing' });
+    }
     const out = document.createElement('canvas');
     out.width = Math.round(width * scale);
     out.height = Math.round(height * scale);
