@@ -51,6 +51,8 @@ _INTERACTION_STATUS: dict[str, Literal["pending", "answered", "denied"]] = {
     "submitted": "answered",
     "declined": "denied",
 }
+#: The card intents that are the agent's offer (connector discovery, plugin discovery).
+OFFER_INTENTS = frozenset({"enable", "add_plugin"})
 
 
 def _rows(app: Any) -> dict[str, dict[str, Any]]:
@@ -245,7 +247,8 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
         if row["session_id"] not in owners:
             continue
         pending = row["status"] == "pending"
-        offer = row.get("intent") == "enable"
+        # The agent's offer: of a connector (``enable``) or of a plugin (``add_plugin``).
+        offer = row.get("intent") in OFFER_INTENTS
         out.append(
             PendingInteraction(
                 id=PREFIX + row["id"],
@@ -271,7 +274,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                     "interaction_id": PREFIX + row["id"],
                     "connector_id": row["connector_id"],
                     "connector_name": row["connector_name"],
-                    "logo_url": _logo_url(row["connector_id"]),
+                    "logo_url": _logo_url(row["connector_id"]) if row["connector_id"] else None,
                     "missing": row["missing"],
                     "tool_name": row["tool_name"],
                     # Connector discovery (CD-1 to CD-8): the agent offers to add a
@@ -279,7 +282,8 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                     # first when it is off (``connector_offer``).
                     **(
                         {
-                            "intent": "enable",
+                            "intent": row["intent"],
+                            **_plugin_fields(row),
                             "description": row.get("description") or "",
                             "reason": row.get("reason") or "",
                             "agent_ref": row.get("agent_ref") or "",
@@ -295,6 +299,14 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
             )
         )
     return out
+
+
+def _plugin_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A plugin offer's own fields (``plugin_offer``); none for a connector's."""
+
+    if row.get("intent") != "add_plugin":
+        return {}
+    return {"plugin_id": row.get("plugin_id") or "", "plugin_ref": row.get("plugin_ref") or ""}
 
 
 def _logo_url(connector_id: str) -> str | None:
@@ -335,6 +347,10 @@ async def respond(
         from clio_agent.gact.connector_offer import answer  # noqa: PLC0415
 
         await answer(app, row, action, values, metadata or {})
+    elif row.get("intent") == "add_plugin":
+        from clio_agent.gact import plugin_offer  # noqa: PLC0415
+
+        await plugin_offer.answer(app, row, action)
     elif action == "decline":
         row.update(status="declined", updated_at=_now())
     elif action == "submit":

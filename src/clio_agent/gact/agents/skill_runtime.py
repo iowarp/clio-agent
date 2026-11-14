@@ -368,12 +368,15 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
 
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
-    resolved = runtime.resolved
     agent_id = getattr(agent_def, "id", "?")
 
     def load_skill(skill_id: str, file: str = "", files: Optional[list[str]] = None) -> str:
+        from clio_agent.gact.agents.skill_join import joined_skill  # noqa: PLC0415
+
         skill_id = (skill_id or "").strip()
-        res = resolved.get(skill_id)
+        # Read at call time: a plugin added during the turn brings skills (CF-D6).
+        resolved = runtime.resolved
+        res = resolved.get(skill_id) or joined_skill(runtime, skill_id)
         if res is None or res.skill is None:
             raise ValueError(
                 f"unknown skill {skill_id!r} — this expert declares: "
@@ -628,7 +631,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
 
     def starting_skill(args: Mapping[str, Any]) -> dict[str, Any]:
         """Name the requested material without reading it or claiming completion."""
-        resolution = resolved.get(str(args.get("skill_id") or ""))
+        resolution = runtime.resolved.get(str(args.get("skill_id") or ""))
         ref = resolution.skill if resolution else None
         return skill_presentation(
             args,

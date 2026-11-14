@@ -1,0 +1,4 @@
+{
+  "name": "trade-lab",
+  "description": "A test marketplace with one plugin that follows no connector (plugin discovery). Never shipped."
+}

@@ -71,20 +71,39 @@ def add_to_conversation(app: Any, session_id: str, connector_id: str) -> list[st
     """
 
     from clio_agent.connectors.follow import plugin_refs  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+
+    if present := in_conversation(app, session_id, connector_id):
+        return present
+    refs = plugin_refs(connector_id, plugin_service(app).store.records())
+    resolution = add_plugins(app, session_id, refs)
+    trace.event(
+        "PLUGINS",
+        "connector_added_to_conversation connector=%s session=%s plugins=%s",
+        connector_id,
+        session_id,
+        ",".join(refs),
+    )
+    return [row["id"] for row in resolution.plugins if row.get("follows") == connector_id]
+
+
+def add_plugins(app: Any, session_id: str, refs: list[str]) -> Any:
+    """Add ``refs`` to this conversation's delta as a note-mode change; the resolution.
+
+    Raises :class:`ConnectorAddError` with the typed resolution reason when the
+    conversation cannot take them (a defined subagent's, an unresolvable plugin).
+    """
+
     from clio_agent.gact import session_warmup  # noqa: PLC0415
     from clio_agent.gact.agents import prompt_basis  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         AGENT_RESOLUTION_KEY,
         SessionAgentUnavailable,
         pin_session_agent,
-        plugin_service,
         session_delta,
     )
     from clio_agent.plugins.resolve import Delta  # noqa: PLC0415
 
-    if present := in_conversation(app, session_id, connector_id):
-        return present
-    refs = plugin_refs(connector_id, plugin_service(app).store.records())
     session = app.state.sessions.get(session_id)
     previous = str(((getattr(session, "metadata", None) or {}).get(AGENT_RESOLUTION_KEY)) or "")
     delta = session_delta(app, session_id).then(Delta(tuple(refs)))
@@ -94,14 +113,7 @@ def add_to_conversation(app: Any, session_id: str, connector_id: str) -> list[st
         raise ConnectorAddError(exc.reason, str(exc)) from exc
     prompt_basis.hold_basis(app, session_id, previous)
     session_warmup.start_session_warmup(app, session_id, trigger="agent_changed")
-    trace.event(
-        "PLUGINS",
-        "connector_added_to_conversation connector=%s session=%s plugins=%s",
-        connector_id,
-        session_id,
-        ",".join(refs),
-    )
-    return [row["id"] for row in resolution.plugins if row.get("follows") == connector_id]
+    return resolution
 
 
 def open_session_ids(app: Any) -> list[str]:

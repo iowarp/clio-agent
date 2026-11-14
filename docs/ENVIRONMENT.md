@@ -128,7 +128,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_USER_CHARS` | `compaction.keep.user_chars` | int | `80000` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_WORKING_STATE` | `compaction.keep.working_state` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
-| `CLIO_CONNECTORS_OFFER_LISTED` | `connectors.offer_listed` | int | `20` | `src/clio_agent/gact/connector_offer.py` |
 | `CLIO_CONNECTOR_CATALOG_DIRS` | `connectors.catalog_dirs` | str | _(unset)_ | `src/clio_agent/connectors/entries.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS` | `gact.context_references.evidence_sessions` | int | `5000` | `src/clio_agent/gact/context_reference_evidence.py` |
@@ -272,6 +271,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
+| `CLIO_PLUGINS_OFFER_LISTED` | `plugins.offer_listed` | int | `20` | `src/clio_agent/gact/plugin_offer.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_PORT` | `gact.port` | int | `17800` | `src/clio_agent/server_port.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |

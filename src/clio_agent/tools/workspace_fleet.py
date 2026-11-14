@@ -110,6 +110,9 @@ def resolve_workspace_executor(agent: Any) -> Any:
                         root,
                         exc,
                     )
+                from clio_agent.tools.fleet_close_listeners import fleet_closed  # noqa: PLC0415
+
+                fleet_closed(key, executor, "configuration_switched")  # CV-N2
                 trace.event(
                     "TOOLS",
                     "workspace_fleet_mcp_configuration_revision_evict root=%s from_epoch=%s to_epoch=%s",
