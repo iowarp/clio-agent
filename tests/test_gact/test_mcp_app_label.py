@@ -93,3 +93,12 @@ def test_an_unreadable_label_file_names_nothing(
         "clio_agent.connectors.entries.load_catalog", lambda: SimpleNamespace(entries={})
     )
     assert mcp_app_label.connector_name("x") == ""
+
+
+def test_a_pattern_names_its_folder_or_its_own_stem() -> None:
+    """FQ: "~/data/pulse_series/*" was labelled "ParaView: *"."""
+
+    tool = _tool(properties=("path",))
+    assert call_subject(tool, {"path": "~/data/pulse_series/*"}) == "pulse_series"
+    assert call_subject(tool, {"path": "~/data/pulse*"}) == "pulse*"
+    assert call_subject(tool, {"path": "/runs/*/*.vti"}) == "*.vti"
