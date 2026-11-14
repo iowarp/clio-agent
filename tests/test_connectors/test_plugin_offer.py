@@ -508,3 +508,47 @@ def test_the_reason_is_required_by_the_schema() -> None:
         tool._validate_and_parse_args(plugin="tariff-calc", reason="")
     parsed = tool._validate_and_parse_args(plugin="tariff-calc", reason="Duty and VAT.")
     assert parsed["reason"] == "Duty and VAT."
+
+
+def test_many_clio_kit_connectors_never_hide_the_library(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LZ-D10: every clio-kit server is a connector now; the ones nothing brings with
+    skills come after the library's plugins, so the cap keeps the plugins in view."""
+
+    from dataclasses import replace
+
+    shipped = dict(state.all_entries())
+    plain = shipped["fixture-plain"]
+    kit = {
+        f"kit-{n:02d}": replace(plain, id=f"kit-{n:02d}", name=f"Kit {n:02d}", kit=f"kit-{n:02d}")
+        for n in range(25)
+    }
+    # One kit connector an installed plugin with skills follows; one the person turned on.
+    followed = replace(plain, id="kit-skilled", name="Skilled kit", kit="kit-skilled")
+    monkeypatch.setattr(state, "all_entries", lambda: {**shipped, **kit, "kit-skilled": followed})
+    state.update("kit-07", enabled=True)
+    RECORDS.append(
+        _record(
+            "skilled",
+            follows="kit-skilled",
+            skills=(SkillRecord("s", "a skill", "/x/SKILL.md"),),
+        )
+    )
+    try:
+        rows = plugin_offer.offerable(app, "sess_a")
+        monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "8")
+        listed, total = plugin_offer.offerable_facts(app, "sess_a")
+    finally:
+        RECORDS.pop()
+    assert [row["id"] for row in rows[:7]] == [
+        "kit-07",  # on
+        "fixture-plain",
+        "fixture-secret",
+        "fixture-signin",
+        "kit-skilled",  # a plugin of the library brings it with skills
+        "Alpha",
+        "tariff-calc",
+    ]
+    assert rows[7]["id"] == "kit-00" and total == len(rows) == 7 + 24
+    assert [row["id"] for row in listed][-2:] == ["tariff-calc", "kit-00"]
