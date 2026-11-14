@@ -274,3 +274,15 @@ def test_unloading_a_view_the_server_closed_is_not_an_error(tmp_path: Path) -> N
         shown = client.put(gone, params=cap, json={"holder": "card", "shown": True})
         assert shown.status_code == 404  # showing a closed view still fails
         assert client.put(f"{prefix}/shown", params=cap, json={"shown": "x"}).status_code == 422
+
+
+def test_a_look_the_surface_ended_after_30_s_says_why_in_words() -> None:
+    """The surface answers a look after 30 s: a view off screen (DOCS-F2) reads as such."""
+    for reason, summary in (
+        ("view_not_visible", "The view is not on screen"),
+        ("snapshot_unanswered", "The view did not answer"),
+    ):
+        row = {"ok": False, "reason": reason, "text": "Ask the person to show the view."}
+        view = present({"view": "globe"}, row, row)
+        assert view["status"] == "failed" and view["summary"] == summary
+        assert view["blocks"][0]["text"] == "Ask the person to show the view."
