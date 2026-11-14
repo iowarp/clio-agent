@@ -9,6 +9,7 @@
 // reads its attributes and looks at it, adds /MSL from the viewer and asks to track the
 // storm; then asks how it deepened with /SSTK @-referenced from the composer (Tab into the
 // file); then the clouds in 3D; then a dashboard to share. No turn names a tool.
+import { showCursor } from "./_cursor.mjs";
 import { api, send, waitIdle } from "./_lib.mjs";
 
 const MSL = "msl_2024-09.nc";
@@ -251,6 +252,8 @@ export default async function (page, shot) {
   const sid = process.env.SID;
   const only = (process.env.TURNS || Object.keys(TURNS).join(",")).split(",");
   const log = [];
+  // A recording shows the pointer: headless Chromium draws none.
+  if (process.env.SHOW_CURSOR !== "0") await showCursor(page);
   await page.goto(new URL(`/workspaces/${ws}/sessions/${sid}`, page.url()).toString(), {
     waitUntil: "domcontentloaded",
     timeout: 120000,
