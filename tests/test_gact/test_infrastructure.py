@@ -131,11 +131,8 @@ async def test_runtime_keeps_service_record_in_managing_clio(tmp_path: Path) -> 
     )
 
     operation = runtime.start_action("ollama", request)
-    for _ in range(100):
-        current = store.operation(operation.id)
-        if current is not None and current.state in {"succeeded", "failed"}:
-            break
-        await asyncio.sleep(0.01)
+    # Await the operation itself; a fixed 1 s poll lost to a loaded CI runner.
+    await runtime._tasks[operation.id]
 
     current = store.operation(operation.id)
     assert current is not None
