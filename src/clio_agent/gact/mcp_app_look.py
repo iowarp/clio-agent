@@ -254,7 +254,7 @@ def coverage_lines(snapshot: Mapping[str, Any]) -> list[str]:
         "The view's HTML (panels, labels, buttons) is drawn approximately: backgrounds and "
         "one-line text, not its exact styling."
     )
-    skipped = snapshot.get("skipped") if isinstance(snapshot.get("skipped"), list) else []
+    skipped = listed if isinstance(listed := snapshot.get("skipped"), list) else []
     gaps = sorted(
         {
             f"{_SKIP_WORDS.get(str(row.get('reason')), str(row.get('reason')))} "

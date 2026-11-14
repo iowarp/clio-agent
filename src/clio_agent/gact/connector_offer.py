@@ -577,7 +577,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         }
     )
     blocks.append({"id": "scope", "type": "text", "label": "Where", "text": "This conversation"})
-    status = row.get("state") if isinstance(row.get("state"), Mapping) else {}
+    status = told if isinstance(told := row.get("state"), Mapping) else {}
     tools = [str(name) for name in row.get("tools") or []]
     blocks.append(
         {

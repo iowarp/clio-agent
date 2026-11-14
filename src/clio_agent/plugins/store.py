@@ -33,10 +33,7 @@ import json
 import logging
 import os
 import shutil
-import threading
-import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,8 +41,8 @@ from typing import Any
 from filelock import FileLock
 
 from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
+from clio_agent.plugins.builtin_records import BUILTIN_MARKETPLACE, builtin_records
 from clio_agent.plugins.claude_code import import_claude_plugin
-from clio_agent.plugins.commands import BUILTIN_ROOT
 from clio_agent.plugins.loader import (
     PluginLoadError,
     carry_digests,
@@ -65,15 +62,15 @@ from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.sources import (
     FetchedSource,
     SourceError,
-    cache_key,
     fetch,
+    fetch_cache_names,
     remove_cached,
 )
 from clio_agent.plugins.store_relocation import relocate_plugin_store
+from clio_agent.plugins.user_agent import UserAgent
 from clio_agent.sdk.agent import AgentSpec
 from clio_agent.sdk.versions import PluginRef, valid_plugin_id
 
-BUILTIN_MARKETPLACE = "clio-builtin"
 logger = logging.getLogger(__name__)
 USER_MARKETPLACE = "user"
 #: ``trusted_digests`` key for a marketplace's ``agents/`` folder (not a valid plugin id).
@@ -93,56 +90,8 @@ class StoreError(RuntimeError):
         self.code = code
 
 
-@dataclass(frozen=True)
-class UserAgent:
-    """A user agent: a parent agent plus a delta, never a flattened list."""
-
-    id: str
-    name: str
-    extends: str
-    add: tuple[str, ...] = ()
-    remove: tuple[str, ...] = ()
-    description: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "extends": self.extends,
-            "add": list(self.add),
-            "remove": list(self.remove),
-            "description": self.description,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UserAgent":
-        return cls(
-            id=str(data["id"]),
-            name=str(data.get("name") or data["id"]),
-            extends=str(data["extends"]),
-            add=tuple(str(v) for v in data.get("add") or ()),
-            remove=tuple(str(v) for v in data.get("remove") or ()),
-            description=str(data.get("description") or ""),
-        )
-
-
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat()
-
-
-def _fetch_cache(entry: dict[str, Any]) -> set[str]:
-    """The fetch cache folders ``entry``'s install filled (``fetch_cache``).
-
-    An entry installed before that was recorded names only its own checkout, derived
-    from its URL and revision the way :func:`~clio_agent.plugins.sources.fetch` keys it.
-    """
-    if "fetch_cache" in entry:
-        return {str(name) for name in entry.get("fetch_cache") or []}
-    url = str(entry.get("url") or "")
-    if not url:
-        return set()
-    revision = entry.get("commit", "") if entry.get("pinned") else entry.get("ref", "")
-    return {cache_key(url, str(revision or ""))}
 
 
 def _copy_tree(source: Path, target: Path) -> None:
@@ -168,76 +117,6 @@ def _copy_tree(source: Path, target: Path) -> None:
         if not target.is_dir():
             raise
         # Another install of the same content finished first: its copy is identical.
-
-
-#: The built-in records last loaded, with the (root, file stamp) they were loaded from.
-_BUILTIN_LOADED: tuple[tuple[str, str], tuple[PluginRecord, ...]] | None = None
-#: When the stamp was last taken; built-ins change only in a dev checkout, so the
-#: tree walk runs at most once per this many seconds, on its own thread.
-_BUILTIN_RECHECK_S = 2.0
-_builtin_checked_at = 0.0
-_builtin_recheck = threading.Lock()  # held by the one thread re-stamping the tree
-_builtin_executor: ThreadPoolExecutor | None = None
-
-
-def _builtin_rechecker() -> ThreadPoolExecutor:
-    # A standing worker: starting a thread per check blocks the caller until it runs.
-    global _builtin_executor
-    if _builtin_executor is None:
-        _builtin_executor = ThreadPoolExecutor(1, thread_name_prefix="clio-builtin-plugins")
-    return _builtin_executor
-
-
-def _load_builtins(key: tuple[str, str]) -> tuple[PluginRecord, ...]:
-    global _BUILTIN_LOADED
-    records = tuple(
-        load_plugin(child, marketplace=BUILTIN_MARKETPLACE, trusted=True)
-        for child in sorted(BUILTIN_ROOT.iterdir())
-        if (child / "plugin.json").is_file()
-    )
-    _BUILTIN_LOADED = (key, records)
-    return records
-
-
-def _recheck_builtins() -> None:
-    """Re-stamp the built-in tree and reload it if it moved (background thread)."""
-    global _builtin_checked_at
-    try:
-        key = (str(BUILTIN_ROOT), source_stamp(BUILTIN_ROOT))
-        loaded = _BUILTIN_LOADED
-        if loaded is None or loaded[0] != key:
-            _load_builtins(key)
-    except Exception:  # noqa: BLE001 - logged; loaded records stay, next due read retries
-        logger.warning("built-in plugin recheck failed", exc_info=True)
-    finally:
-        _builtin_checked_at = time.monotonic()
-        _builtin_recheck.release()
-
-
-def builtin_records() -> list[PluginRecord]:
-    """Plugins that ship inside clio-agent itself (trusted like any pip package).
-
-    Loading hashes and parses every built-in file; every catalog read (each MCP
-    listing, agent resolution and doctor pass) needs them. They are loaded again
-    only when the tree's file metadata (:func:`source_stamp`) moves. Once loaded, a
-    due check (every :data:`_BUILTIN_RECHECK_S`) runs on one background thread and
-    readers keep the loaded records meanwhile, so no request pays for the tree walk.
-    """
-
-    global _builtin_checked_at
-    loaded = _BUILTIN_LOADED
-    if loaded is not None and loaded[0][0] == str(BUILTIN_ROOT):
-        if time.monotonic() - _builtin_checked_at >= _BUILTIN_RECHECK_S and (
-            _builtin_recheck.acquire(blocking=False)
-        ):
-            _builtin_rechecker().submit(_recheck_builtins)
-        return list(loaded[1])
-    if not BUILTIN_ROOT.is_dir():
-        return []
-    key = (str(BUILTIN_ROOT), source_stamp(BUILTIN_ROOT))
-    records = _load_builtins(key)
-    _builtin_checked_at = time.monotonic()
-    return list(records)
 
 
 @dataclass
@@ -778,9 +657,9 @@ class PluginStore:
                 for key in [k for k in state[table] if k.split("/", 1)[0] in removed]:
                     del state[table][key]
             self._write_state(state)
-            in_use = {name for entry in markets.values() for name in _fetch_cache(entry)}
+            in_use = {name for entry in markets.values() for name in fetch_cache_names(entry)}
             failures: list[str] = []
-            for name in sorted({n for entry in dropped for n in _fetch_cache(entry)} - in_use):
+            for name in sorted({n for entry in dropped for n in fetch_cache_names(entry)} - in_use):
                 try:
                     remove_cached(self.root / "sources", name)
                 except OSError as exc:

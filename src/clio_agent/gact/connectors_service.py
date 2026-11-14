@@ -29,7 +29,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -313,7 +313,7 @@ async def apply(app: Any, found: Entry) -> dict[str, Any]:
         saved = await asyncio.to_thread(save_connection, found, choice)
         await _refresh_agent_tool_gateway(app)
         agent = getattr(app.state, "agent", None)
-        steps = []
+        steps: list[Coroutine[Any, Any, Any]] = []
         if agent is not None:
             steps.append(asyncio.to_thread(rebind_namespace, agent, found.id, saved))
         if not any(need.kind != "sign-in" for need in missing(found, choice)):

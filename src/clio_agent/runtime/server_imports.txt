@@ -1504,6 +1504,7 @@ clio_agent/plugins/service.py
 clio_agent/plugins/sources.py
 clio_agent/plugins/store.py
 clio_agent/plugins/store_relocation.py
+clio_agent/plugins/user_agent.py
 clio_agent/plugins/workflows.py
 clio_agent/prompts.py
 clio_agent/provenance_config.py

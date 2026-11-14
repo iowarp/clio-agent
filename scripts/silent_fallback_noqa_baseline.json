@@ -1,6 +1,6 @@
 {
  "__init__.py": 1,
- "agent.py": 3,
+ "agent.py": 2,
  "arc/clio_core_daemon.py": 3,
  "arc/clio_core_liveness.py": 2,
  "arc/context_compiler.py": 2,
@@ -58,7 +58,6 @@
  "gact/hooks/stop_loop.py": 1,
  "gact/hooks/wire.py": 2,
  "gact/live_edge.py": 3,
- "gact/mcp_apps.py": 1,
  "gact/mcp_readiness.py": 1,
  "gact/messages.py": 1,
  "gact/messaging.py": 1,
@@ -112,7 +111,7 @@
  "lm/hooked_lm.py": 2,
  "lm/lazy_tiktoken.py": 5,
  "optimizer/trainer.py": 1,
- "plugins/store.py": 1,
+ "plugins/builtin_records.py": 1,
  "providers/argonne_auth.py": 2,
  "providers/capabilities/dialects/alcf.py": 1,
  "providers/capabilities/dialects/cloud_thinking.py": 1,
@@ -176,5 +175,6 @@
  "tools/servers/shell_server.py": 2,
  "tools/spawn_diet.py": 3,
  "tools/tool_hooks.py": 2,
+ "tools/workspace_fleet.py": 1,
  "ui/cli.py": 1
 }

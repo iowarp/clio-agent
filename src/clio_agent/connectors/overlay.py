@@ -101,7 +101,7 @@ def validated(raw: Any, entries: Mapping[str, Any], *, where: str = "") -> Overl
     return out
 
 
-def merged(overlay: Mapping[str, Mapping[str, str]], changes: Mapping[str, str | None]) -> dict:
+def merged(overlay: Mapping[str, str], changes: Mapping[str, str | None]) -> dict:
     """``overlay`` for one connector with ``changes`` applied (``None`` or "" clears a key)."""
 
     out = dict(overlay)

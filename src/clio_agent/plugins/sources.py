@@ -23,6 +23,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from clio_agent.platform_paths import remove_tree, rename_extended
 from clio_agent.runtime.git_executable import GitUnavailableError, run_git
@@ -65,6 +66,21 @@ def is_local(value: str) -> bool:
 def cache_key(url: str, revision: str) -> str:
     """The fetch cache folder name of ``url`` at ``revision`` (a commit or a ref)."""
     return hashlib.sha256(f"{url}\0{revision}".encode()).hexdigest()[:20]
+
+
+def fetch_cache_names(entry: dict[str, Any]) -> set[str]:
+    """The fetch cache folders an installed marketplace ``entry``'s install filled (``fetch_cache``).
+
+    An entry installed before that was recorded names only its own checkout, derived
+    from its URL and revision the way :func:`fetch` keys it.
+    """
+    if "fetch_cache" in entry:
+        return {str(name) for name in entry.get("fetch_cache") or []}
+    url = str(entry.get("url") or "")
+    if not url:
+        return set()
+    revision = entry.get("commit", "") if entry.get("pinned") else entry.get("ref", "")
+    return {cache_key(url, str(revision or ""))}
 
 
 _COMMIT = re.compile(r"[0-9a-f]{7,64}")

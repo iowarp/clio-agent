@@ -22,7 +22,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from clio_agent import paths
 from clio_agent.runtime import trace
@@ -240,7 +240,7 @@ class DurableFileTokenStorage:
         with _lock:
             entries = self._load_entries()
             entry = dict(entries.get(self._entry_key) or {})
-            secrets = dict(entry.get("secrets") or {})
+            secrets = dict(cast("dict[str, object]", entry.get("secrets") or {}))
             for key, value in values.items():
                 if value:
                     secrets[key] = value

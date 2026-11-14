@@ -175,6 +175,7 @@ def native_gate(tool: Any, name: str, args: Mapping[str, Any]) -> Iterator[str]:
     )
 
     context = {"kind": "native", "summary": callable_title(tool) or f"Use {name}"}
+    refused: str | None
     if acts_outside(tool):
         refused = _gated(app, name, args, context)
     else:

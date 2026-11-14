@@ -55,8 +55,13 @@ def tool_title(tool: Any) -> str:
 
 
 def _declared_order(tool: Any) -> list[str]:
-    tool_map = _mapping(tool)
-    schema = getattr(tool, "inputSchema", None) or tool_map.get("inputSchema")
+    # MCP 2's ``input_schema`` first: reading its deprecated ``inputSchema`` alias warns.
+    if isinstance(tool, Mapping):
+        schema = tool.get("inputSchema")
+    elif hasattr(tool, "input_schema"):
+        schema = tool.input_schema
+    else:
+        schema = getattr(tool, "inputSchema", None) or _mapping(tool).get("inputSchema")
     properties = _mapping(schema).get("properties")
     return [str(key) for key in properties] if isinstance(properties, Mapping) else []
 
