@@ -74,7 +74,7 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_more_connectors_are_data_only() -> None:
-    """The PDF viewer (an MCP App) and NASA Earthdata (no view) are catalog entries only."""
+    """The PDF viewer and the 3D globe (MCP Apps) and NASA Earthdata are catalog entries only."""
 
     catalog = entries.load_catalog([SHIPPED])
     pdf = catalog.entries["pdf"]
@@ -89,3 +89,6 @@ def test_more_connectors_are_data_only() -> None:
     ]
     assert earthdata.server["env"]["EARTHDATA_PASSWORD"] == "${need.password}"
     assert earthdata.logo == "" and earthdata.tools == ()
+    globe = catalog.entries["globe"]
+    assert "@modelcontextprotocol/server-map@2.0.4" in globe.server["args"]
+    assert globe.needs == () and globe.logo == "" and globe.tools == ()
