@@ -274,6 +274,28 @@ def test_fleet_grant_plan_resolves_the_expected_windows_paths() -> None:
     assert all(v for k, v in specs.items() if k != "user_temp")
 
 
+def test_fleet_grant_plan_covers_a_kit_python_outside_uv_python(tmp_path, monkeypatch) -> None:
+    """A clio-kit whose Python install.ps1 keeps in the CLIO prefix gets that folder granted."""
+    tools = tmp_path / "tools"
+    kit_python = tmp_path / "prefix" / "uv-python" / "cpython-3.14.10-windows-x86_64-none"
+    (tools / "clio-kit").mkdir(parents=True)
+    (tools / "clio-kit" / "pyvenv.cfg").write_text(
+        f"home = {kit_python}\nimplementation = CPython\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("UV_TOOL_DIR", str(tools))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    monkeypatch.setattr(
+        "clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root", lambda: None
+    )
+    specs = {label: (path, inherit) for label, path, inherit in scli._resolve_fleet_runtime_paths()}
+    assert specs["clio_kit_python"] == (str(kit_python), True)
+
+    roaming_python = tmp_path / "roaming" / "uv" / "python" / "cpython-3.14.10"
+    (tools / "clio-kit" / "pyvenv.cfg").write_text(f"home = {roaming_python}\n", encoding="utf-8")
+    labels = {label for label, _p, _i in scli._resolve_fleet_runtime_paths()}
+    assert "clio_kit_python" not in labels
+
+
 def test_default_elevator_is_guarded_off_win32() -> None:
     """The default elevator IS the self-elevation, structurally guarded off-win32.
 
