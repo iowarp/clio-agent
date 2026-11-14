@@ -109,8 +109,8 @@ export default async function (page, rawShot) {
   }
 
   if (env.DC_SEARCH) {
-    await page.locator("[data-extension-search]:visible").first().click();
-    const search = page.locator("input:visible").and(page.getByPlaceholder(/Search/u)).first();
+    // The search field is always shown (DC-D9).
+    const search = page.locator("input[data-extension-search]:visible").first();
     await search.fill(env.DC_SEARCH);
     await settle(page, 2000);
     report.search = await groups(page);
