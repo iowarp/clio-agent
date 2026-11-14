@@ -251,6 +251,7 @@ def run_once(
         "output_tokens": m["totals"]["output_tokens"],
         "input_tokens": int((m["totals"]["uncached_per_step"] or 0) * m["totals"]["steps"]),
         "cached_input_tokens": int((m["totals"]["cached_per_step"] or 0) * m["totals"]["steps"]),
+        "cost_usd": round(float((export.get("session") or {}).get("cost_usd") or 0.0), 4),
         "tool_counts": m["totals"]["tool_counts"],
         "s3": range_bytes(client, sid, export) if args.where == "s3" else None,
         "grade": grade(task, _answer(reply), truth[task]),
@@ -282,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"{r['arm']}-{r['where']} {task} run {index}: {r['state']} wall {r['wall_s']}s "
                 f"(tools {r['tool_s']}s) steps {r['steps']} calls {r['tool_calls']} "
-                f"out {r['output_tokens']} score {r['grade']['score']}"
+                f"out {r['output_tokens']} ${r['cost_usd']:.2f} score {r['grade']['score']}"
                 + (f" s3 {r['s3']['bytes'] / 2**20:.1f} MB" if r["s3"] else ""),
                 flush=True,
             )
