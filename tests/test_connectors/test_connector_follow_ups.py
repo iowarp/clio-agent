@@ -118,6 +118,13 @@ def test_a_joined_connector_is_not_a_changed_spec_on_the_next_resolve(
     _join(fleet, saved, declared, monkeypatch)
     assert fleet.tools and fleet._clio_namespace_specs["fixture-secret"] is declared
     assert server_set_spec_changed(agent, fleet, "/ws", key) is False
+    # A second conversation of the workspace joins the same way: nothing is reinstalled,
+    # so the server (and every view it serves) stays.
+    installs: list[str] = []
+    monkeypatch.setattr(connector_rebind, "_install", lambda _e, ns, _s, _r: installs.append(ns))
+    again = connector_rebind.conversation_spec(None, "sess_b", "fixture-secret", "/ws")
+    connector_rebind.join_namespace(None, fleet, "fixture-secret", saved, spec=again)
+    assert installs == []
     report = merge_server_set_namespaces(
         fleet, agent._build_tool_gateway(cwd="/ws", server_set=key), server_set=key, root="/ws"
     )

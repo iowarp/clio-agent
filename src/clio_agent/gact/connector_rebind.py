@@ -262,7 +262,12 @@ def join_namespace(
         )
     if not spec.usable:
         raise ConnectorJoinError("connector_join_unusable", "; ".join(spec.validation_errors))
-    _install(executor, namespace, spec, root)
+    # The fleet mounts it already, the same way (another conversation of this workspace
+    # added it): its server, and every view it serves, stays. Reinstalling would restart
+    # it under those views.
+    mounted = specs.get(namespace) == spec
+    if not mounted:
+        _install(executor, namespace, spec, root)
     connector = str(getattr(spec, "connector", "") or namespace)
     kept = listing.offered(connector, listing.last_listed(connector))
     try:
@@ -274,10 +279,11 @@ def join_namespace(
     merge(namespace, tools)
     trace.event(
         "TOOLS",
-        "connector_joined_turn namespace=%s root=%s tools=%d source=%s",
+        "connector_joined_turn namespace=%s root=%s tools=%d source=%s mounted=%s",
         namespace,
         root or "-",
         len(tools),
         "last_listing" if kept else "listed",
+        "already" if mounted else "now",
     )
     return dict(tools)
