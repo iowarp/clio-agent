@@ -8,7 +8,13 @@ const settle = (page, ms = 1500) => page.waitForTimeout(ms);
 
 export default async function (page, shot) {
   const out = {};
-  await page.getByRole("link", { name: "Settings" }).first().click();
+  const settings = page.getByRole("link", { name: "Settings" }).first();
+  // On a phone the navigation is a drawer behind its toggle.
+  if (!(await settings.isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: "Toggle Sidebar" }).first().click();
+    await settle(page, 1000);
+  }
+  await settings.click();
   await settle(page, 2500);
   const nav = page.locator("nav").filter({ hasText: "Appearance" }).first();
   out.groups = await nav
