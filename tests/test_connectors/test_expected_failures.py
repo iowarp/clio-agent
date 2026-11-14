@@ -287,3 +287,13 @@ def test_a_fault_registering_the_download_raises(
 ) -> None:
     with pytest.raises(TypeError):
         _download(monkeypatch, tmp_path, TypeError("bug"))
+
+
+def test_an_app_without_a_session_store_has_no_offer_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import plugin_offer
+
+    monkeypatch.setattr(plugin_offer, "offerable", _boom(AssertionError("not asked")))
+    assert plugin_offer.offerable_facts(None, "sess_a") == ([], 0)
+    assert plugin_offer.offerable_facts(SimpleNamespace(state=SimpleNamespace()), "s") == ([], 0)

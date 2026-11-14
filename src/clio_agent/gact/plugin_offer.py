@@ -171,7 +171,8 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
 def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int]:
     """The rows the session facts name (at most ``offer_listed``), and how many there are."""
 
-    if not session_id:
+    # No session store (an app built without one) means no conversation to offer to.
+    if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
         return [], 0
     from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415
