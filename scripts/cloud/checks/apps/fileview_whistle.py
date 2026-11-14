@@ -2,7 +2,9 @@
 # uv run --no-project --python 3.12 --with cadquery python fileview_whistle.py <folder>
 # (put the CadQuery environment in its own UV_CACHE_DIR and remove it afterwards: ~1.7 GB)
 """A two-part duct whistle: a hollow body with a windway and labium window, and a plug."""
+
 import sys
+
 import cadquery as cq
 
 out = sys.argv[1]
@@ -20,7 +22,11 @@ bore = (
     .box(20.5, W - 2 * WALL, H - 2 * WALL, centered=(False, True, False))
     .translate((-0.5, 0, WALL))
 )
-window = cq.Workplane("XY").box(5, 10, WALL + 0.2, centered=(False, True, False)).translate((20, 0, H - WALL))
+window = (
+    cq.Workplane("XY")
+    .box(5, 10, WALL + 0.2, centered=(False, True, False))
+    .translate((20, 0, H - WALL))
+)
 body = body.cut(chamber).cut(bore).cut(window)
 # A lanyard lug with a 4 mm hole at the closed end.
 lug = cq.Workplane("XZ").center(L + 5, H / 2).circle(6).circle(2).extrude(3, both=True)
@@ -31,7 +37,9 @@ plug = (
     .box(20, W - 2 * WALL - 0.2, H - 2 * WALL - 1.2, centered=(False, True, False))
     .translate((0, 0, WALL))
 )
-plug = plug.union(cq.Workplane("XY").box(3, W, H, centered=(False, True, False)).translate((-3, 0, 0)))
+plug = plug.union(
+    cq.Workplane("XY").box(3, W, H, centered=(False, True, False)).translate((-3, 0, 0))
+)
 assy = cq.Assembly(name="whistle")
 assy.add(body, name="body", color=cq.Color(0.95, 0.55, 0.15))
 assy.add(plug, name="plug", color=cq.Color(0.2, 0.45, 0.85))
