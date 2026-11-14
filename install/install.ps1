@@ -1930,7 +1930,9 @@ function Find-ClioUserManagedPython([string]$Uv) {
     $SavedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $found = @(& $Uv python find --system --managed-python --no-python-downloads $py 2>$null | Select-Object -First 1)
+        # The whole output is read first: stopping the pipeline at the first line (Select-Object
+        # -First 1) leaves Windows PowerShell's $LASTEXITCODE at -1 while uv is still exiting.
+        $found = @(& $Uv python find --system --managed-python --no-python-downloads $py 2>$null)
         if ($LASTEXITCODE -eq 0 -and $found.Count -and "$($found[0])".Trim()) { return "$($found[0])".Trim() }
     } catch { } finally { $ErrorActionPreference = $SavedPreference }
     return $null
