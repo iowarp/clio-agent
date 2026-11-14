@@ -555,8 +555,6 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     """
     if spec.transport == "stdio":
         cwd = os.path.abspath(cwd) if cwd else cwd
-        from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
-
         # Fail-loud preflight (iowarp/clio-agent MCP spawn diagnosability): catch the
         # two preconditions that otherwise make the subprocess die post-spawn with a
         # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` is
@@ -618,7 +616,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         # otherwise the declared command spawns and — when eligible — a learn
         # scan is scheduled against that live chain. Both outcomes are typed
         # inside spawn_diet.
-        from clio_agent.tools import spawn_diet  # noqa: PLC0415
+        from clio_agent.tools import spawn_diet, spawn_diet_transport  # noqa: PLC0415
 
         diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(resolved_args), env)
         if diet is not None:
@@ -649,7 +647,8 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
 
             register_namespace_child(cwd, spec.name, sandbox_net_child)
-        transport = StdioTransport(
+        # A dieted launch re-declares itself once its plan is dropped (VF-D9).
+        transport = spawn_diet_transport.stdio_transport(spec, cwd, diet is not None)(
             command=confined.command,
             args=confined.args,
             env={**env, **confined.env_overlay},
