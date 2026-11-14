@@ -219,6 +219,42 @@ async function finalBeat(page, shot, sid, log) {
   await settle(page, sid, log, shot, "beat", 15);
 }
 
+/**
+ * The person looks at the dashboard the agent just published: full width, scrolled slowly
+ * from top to bottom with a pause on each screen, then back beside the conversation.
+ */
+export async function showOffDashboard(page, shot, name) {
+  const surface = page.locator('[data-slot="a2ui-surface-root"]').locator("visible=true").last();
+  if (!(await surface.isVisible({ timeout: 15000 }).catch(() => false))) {
+    console.log(`STEP_SKIPPED dashboard ${name}: none on screen`);
+    return;
+  }
+  mark(`${name}-dashboard`);
+  await page.getByRole("button", { name: "Maximize canvas" }).click({ timeout: 5000 });
+  await page.waitForTimeout(3500);
+  await shot(`${name}-dashboard-top`);
+  const box = await surface.boundingBox();
+  if (box) await page.mouse.move(box.x + box.width / 2, Math.min(box.y + 300, 700), { steps: 20 });
+  // The scroller is the surface's nearest scrollable ancestor; step it a screen at a time.
+  const scroll = () =>
+    surface.evaluate((node) => {
+      let el = node;
+      while (el && !(el.scrollHeight > el.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(el).overflowY))) el = el.parentElement;
+      return el ? [el.scrollTop, el.scrollHeight - el.clientHeight] : [0, 0];
+    });
+  for (let k = 0; k < 12; k += 1) {
+    const [top, end] = await scroll();
+    if (top >= end - 2) break;
+    await page.mouse.wheel(0, 420);
+    await page.waitForTimeout(2200);
+  }
+  await page.waitForTimeout(2000);
+  await shot(`${name}-dashboard-end`);
+  await page.getByRole("button", { name: "Restore canvas beside conversation" }).click({ timeout: 5000 });
+  await page.waitForTimeout(1500);
+  await toLatest(page);
+}
+
 /** Whether the agent's latest reply ends by asking the person something. */
 async function lastAnswerAsks(sid) {
   const exported = await api("GET", `/v1/sessions/${sid}/export`);
@@ -319,6 +355,8 @@ export default async function (page, shot) {
     mark(`${name}-typing`);
     await send(page, TURNS[name]);
     await settle(page, sid, log, shot, name, 35);
+    // A published dashboard is shown off before the conversation goes on.
+    if (name === "share" || name === "go") await showOffDashboard(page, shot, name);
   }
   if (only.includes("beat")) await finalBeat(page, shot, sid, log);
   await shot("final");
