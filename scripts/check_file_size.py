@@ -1107,7 +1107,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,
     "src/clio_agent/tools/gateway.py": 805,
-    "src/clio_agent/tools/mcp_prepare.py": 1226,
+    "src/clio_agent/tools/mcp_prepare.py": 1221,
 }
 
 # Root of the source tree to scan, relative to the repository root.

@@ -14,7 +14,7 @@ from fastmcp.client.transports import FastMCPTransport, SSETransport, StdioTrans
 from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
-from clio_agent.gact import view_call_cancel
+from clio_agent.gact import view_call_cancel, view_call_ledger
 from clio_agent.tools import fleet_close_listeners
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
@@ -189,16 +189,23 @@ async def abandon_view_call(
     """Cancel the RPC of a view's call outside a turn whose request went away.
 
     Only for a plain call (no task was accepted for it): nothing else waits for its
-    reply, so the RPC is cancelled on the wire and its record says so with the typed
-    reason. A turn's call and an accepted task keep their custody rules unchanged.
+    reply, so the RPC is cancelled on the wire and its record ends cancelled with the
+    typed reason and ``settlement: unknown``, opening no attention episode: the call is
+    the view's, so no model is woken for it (:mod:`.view_call_ledger`). A turn's call
+    and an accepted task keep their custody rules unchanged.
     """
     if not view_call_cancel.requested() or accepted_call(host, handle):
         return
     rpc.cancel()
-    if lazy is None:  # written ahead: its record says it was cancelled, outcome unknown
+    if lazy is None:  # written ahead: it ends cancelled, outcome unknown, no wake (MC-F2)
         await self._record_or_defer(
             "external-call:" + handle,
-            partial(self._attention, handle, view_call_cancel.VIEW_CALL_CANCELLED_TEXT, lost=False),
+            partial(
+                view_call_ledger.settle_cut_off,
+                self.history,
+                handle,
+                view_call_cancel.VIEW_CALL_CANCELLED_TEXT,
+            ),
         )
     self._lazy.pop(handle, None)
 

@@ -56,6 +56,7 @@ from clio_agent.gact.mcp_apps import (
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part, PostMessageRequest
+from clio_agent.tools import view_only_results
 from clio_agent.tools.mcp_extension_registry import (
     MCP_APP_MIME_TYPE,
     MCP_APPS_PROTOCOL_REVISION,
@@ -168,7 +169,10 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
 
         def call(executor: Any) -> Any:
             full_name = _resolve_app_tool(executor, record, requested)
-            return executor.call_tool_result(full_name, dict(arguments))
+            # A tool only the view sees keeps a record, not its content (MC-F3).
+            definition = executor.get_all_tool_definitions().get(full_name)
+            with view_only_results.scope(full_name, definition):
+                return executor.call_tool_result(full_name, dict(arguments))
 
         try:
             result = await _run_bound(app, sid, call, request=request)
