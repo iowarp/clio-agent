@@ -31,13 +31,14 @@ from clio_agent.gact import context, external_task_connections, external_task_in
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
 from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
+from clio_agent.gact.spawn_invocation import spawn_invocation_id
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
 from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
-from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
+from clio_agent.tools.task_call_context import permission_snapshot, safe_description
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
     TaskAwareClient,
@@ -276,7 +277,10 @@ class ExternalTasks:
         component = host.tools.get(name)
         if component is None:
             raise ValueError("Tool is unavailable on the selected server")
-        sid, invocation = context.active_session_id(), TASK_CALL.get().invocation_id or uuid4().hex
+        # The model's tool call is in the id, so recovery can name this task to the
+        # call it interrupts (spawn_invocation.started_tasks) instead of the agent
+        # starting the same call again after a crash.
+        sid, invocation = context.active_session_id(), spawn_invocation_id()
         # A view read: it never waits behind queued writes on the history writer.
         assignment = await asyncio.to_thread(self.history.latest_assignment, sid)
         if assignment is None:

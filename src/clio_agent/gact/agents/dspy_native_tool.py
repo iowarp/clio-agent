@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
+import logging
 import threading
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -20,6 +22,50 @@ from typing import Any, NamedTuple
 import dspy
 from jsonschema import Draft202012Validator
 from referencing import Registry
+
+logger = logging.getLogger(__name__)
+
+
+def _schema_types(schema: dict[str, Any] | None) -> list[str]:
+    """The JSON types an argument's schema accepts (``anyOf``/``oneOf`` included)."""
+
+    schema = schema or {}
+    kind = schema.get("type")
+    if isinstance(kind, str):
+        return [kind]
+    if isinstance(kind, list):
+        return [str(item) for item in kind]
+    types: list[str] = []
+    for option in schema.get("anyOf") or schema.get("oneOf") or []:
+        for item in _schema_types(option if isinstance(option, dict) else None):
+            if item not in types:
+                types.append(item)
+    return types
+
+
+def _decoded(value: Any, schema: dict[str, Any] | None) -> Any:
+    """A JSON-encoded object or array given as text, decoded: a format fix only.
+
+    Models sometimes send an object argument as its JSON text
+    (``options='{"max_rounds": 0}'``). When the argument takes an object or array
+    and not text, and the text is exactly one, the value is that object; nothing
+    else changes. Any other text is left for validation to refuse.
+    """
+
+    if not isinstance(value, str):
+        return value
+    types = _schema_types(schema)
+    if "string" in types or not {"object", "array"} & set(types):
+        return value
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if (isinstance(decoded, dict) and "object" in types) or (
+        isinstance(decoded, list) and "array" in types
+    ):
+        return decoded
+    return value
 
 
 class _Parsed(NamedTuple):
@@ -85,7 +131,8 @@ class ToolArgumentError(ValueError):
 
     def __init__(self, tool: str, reason: str, args: dict[str, Any], required: set[str]) -> None:
         listed = ", ".join(
-            f"{key} ({(schema or {}).get('type', 'any')}{', required' if key in required else ''})"
+            f"{key} ({' or '.join(_schema_types(schema)) or 'any'}"
+            f"{', required' if key in required else ''})"
             for key, schema in args.items()
         )
         super().__init__(f"{tool}: {reason} Its arguments are: {listed or 'none'}.")
@@ -158,6 +205,17 @@ class ClioNativeTool(dspy.Tool):
                 and parameters[key].default not in (None, inspect.Parameter.empty)
             )
         }
+        schemas = dict(self.args or {})
+        for key, value in list(given.items()):
+            decoded = _decoded(value, schemas.get(key))
+            if decoded is not value:
+                logger.info(
+                    "tool_argument_json_text_decoded tool=%s argument=%s "
+                    "reason=json_text_for_structured_argument",
+                    self.name,
+                    key,
+                )
+                given[key] = decoded
         try:
             return super()._validate_and_parse_args(**given)
         except ValueError as exc:

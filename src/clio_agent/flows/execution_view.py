@@ -153,10 +153,10 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             kind=call.get("kind", "agent"),
             **({"question": question} if question else {}),
             detail=(
-                "The child returned, but the flow rejected its audit and requested a repair:\n"
-                + "\n".join(str(problem) for problem in rejection)
+                "It answered, but the flow found problems in the answer and asked for a "
+                "correction:\n" + "\n".join(str(problem) for problem in rejection)
                 if rejection
-                else "The child returned. Its output still requires the flow's review."
+                else "It answered. The flow checks the answer before using it."
                 if status == "returned"
                 else ""
             ),
