@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.errors import CancellationError
+from clio_agent.gact.mcp_app_label import view_label
 from clio_agent.gact.mcp_apps import (
     DISPLAY_MODES,
     MCP_APP_MIME_TYPE,
@@ -200,7 +201,7 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
         "arguments": arguments,
         "display_mode": capture.display_mode if capture else "inline",
         "resource_uri": record.resource_uri,
-        "label": _label(tool, bare),
+        "label": view_label(record.source_namespace, tool, record.tool_input) or _label(tool, bare),
         "saved_at": _now(),
     }
     if unsaved:
@@ -308,6 +309,7 @@ def _part(record: MCPAppRecord, display_mode: str) -> dict[str, Any]:
         data_ref=record.data_ref,
         mime_type=MCP_APP_MIME_TYPE,
         display_mode=display_mode,
+        title=view_label(record.source_namespace, None, record.tool_input),
         metadata={"stream_source": "reopen", "protocol": MCP_APPS_PROTOCOL_REVISION},
     ).to_wire()
 
@@ -414,7 +416,10 @@ async def replay_call(
         definitions = executor.get_all_tool_definitions()
         tools.extend(server_tools(definitions, str(entry["server"])))
         if not entry.get("label"):  # a given call names no title: the tool's, as a card's
-            entry["label"] = _label(definitions.get(full_name), str(entry["tool"]))
+            definition = definitions.get(full_name)
+            entry["label"] = view_label(
+                str(entry["server"]), definition, entry.get("arguments") or {}
+            ) or _label(definition, str(entry["tool"]))
         token = _REPLAY.set(capture)
         try:
             return executor.call_tool_result(full_name, arguments)

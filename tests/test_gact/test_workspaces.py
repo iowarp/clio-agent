@@ -640,14 +640,19 @@ def test_default_workspace_root_setting_seeds_and_creates_ws_default(
     assert root.is_dir()
 
 
-def test_default_workspace_root_falls_back_to_cwd_and_expands_home(
+def test_default_workspace_root_is_a_data_folder_and_expands_home(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    from clio_agent.gact.workspaces import WorkspaceStore
+    """FP-D3: a first run's conversations get a folder of their own, not the launch folder."""
+    from clio_agent import paths
+    from clio_agent.gact.workspaces import FIRST_RUN_WORKSPACE_DIR, WorkspaceStore
 
     monkeypatch.delenv("CLIO_DEFAULT_WORKSPACE", raising=False)
     monkeypatch.chdir(tmp_path)
-    assert WorkspaceStore().get("ws_default").root_path == str(Path.cwd())
+    seeded = WorkspaceStore().get("ws_default").root_path
+    assert seeded == str(paths.user_data_dir() / FIRST_RUN_WORKSPACE_DIR)
+    assert seeded != str(Path.cwd())
+    assert Path(seeded).is_dir()
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", "~/clio-work")
@@ -670,7 +675,7 @@ def test_default_workspace_setting_never_repoints_an_existing_ws_default(
 
     store_path = tmp_path / "workspaces.json"
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CLIO_DEFAULT_WORKSPACE", raising=False)
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(tmp_path))
     WorkspaceStore(path=store_path)
     elsewhere = tmp_path / "elsewhere"
     monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(elsewhere))

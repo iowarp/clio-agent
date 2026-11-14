@@ -104,7 +104,7 @@ def compile_dashboard_surface(
     chart_error = _chart_spec.validate_chart_components(components)
     if chart_error:
         raise ValueError(json.dumps(chart_error))
-    app_error = _mcp_app_reference.validate_mcp_app_components(app, components)
+    app_error = _mcp_app_reference.validate_mcp_app_components(app, components, session_id=sid)
     if app_error:
         raise ValueError(json.dumps(app_error))
     selection = select_catalog(app, sid, preferred=document.catalog_id or None)

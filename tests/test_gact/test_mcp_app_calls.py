@@ -114,7 +114,8 @@ def test_opening_call_is_saved_without_private_result(stack: Any) -> None:
         "display_mode": "inline",
     }
     assert entry["resource_uri"] == _VIEW
-    assert entry["label"] == "Open a board"
+    # FP-D2: no connection names the server, so the tool title leads, then the subject.
+    assert entry["label"] == "Open a board: Q3"
     # Stored on the session record (clio-core), and the client sees it there.
     wire = stack.client.get(f"/v1/sessions/{stack.sid}").json()
     assert wire["metadata"][SESSION_KEY][app_id]["tool"] == "open_board"
@@ -336,7 +337,7 @@ def test_a_given_call_opens_a_view_and_is_saved(stack: Any) -> None:
     assert body["part"]["display_mode"] == "fullscreen"
     assert "reopened_from" not in body["saved_call"]
     assert body["saved_call"]["arguments"] == {"title": "From a surface"}
-    assert body["saved_call"]["label"] == "Open a board"
+    assert body["saved_call"]["label"] == "Open a board: From a surface"
 
 
 def test_a_surface_call_is_answered_with_its_tools_title(stack: Any) -> None:
@@ -348,7 +349,7 @@ def test_a_surface_call_is_answered_with_its_tools_title(stack: Any) -> None:
             "save": False,
         },
     ).json()
-    assert body["saved_call"]["label"] == "Open a board"
+    assert body["saved_call"]["label"] == "Open a board: S"
 
 
 @pytest.mark.parametrize(
