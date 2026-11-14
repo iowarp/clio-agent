@@ -295,7 +295,8 @@ provider). Nothing is painted or composited.
 | `chat-approval.png` | 1440 x 1000 | The first-use question for Keenable. |
 | `chat-web-results.png`, `chat-literature-results.png` | 1440 x 1000 | Opened search rows from the same conversation. |
 | `deep-mode-menu.png` | 1440 x 1000, cropped | The composer's mode menu. |
-| `deep-running.png`, `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: in progress (the conversation reopened 6 minutes in), the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
+| `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
+| `deep-run-graph.png` | 1440 x 1000 at 2x | A finished Deep research run (deep-research 0.6.0, Sonnet 5.5) from a plain request under Ask first, shown full screen: three named directions, a check per researcher, Coordinate, and three follow-ups. The run took 11 minutes, verified 106 claims and wrote a 5,441-word report. Captured 14 November 2026 from gact-tui develop `63c67331`. |
 
 The chat requests were plain questions with no tool or step named. The capture script
 answered the search approvals and allowed the search tools for the session, as a person

@@ -8,7 +8,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
 import modeMenu from '../../../assets/captures/search/deep-mode-menu.png';
-import running from '../../../assets/captures/search/deep-running.png';
+import runGraph from '../../../assets/captures/search/deep-run-graph.png';
 import delivered from '../../../assets/captures/search/deep-delivered.png';
 import report from '../../../assets/captures/search/deep-report.png';
 
@@ -82,9 +82,9 @@ reads while CLIO saves its report. See
 You can follow the researchers and the critic while they work in **Work**; see
 [Follow work in progress](/docs/following-work/).
 
-<Capture client:visible image={await captureImage(running)}
-  alt="A deep research run in progress, with researcher subagents working on separate directions"
-  caption="Each researcher works on one direction. Open one to see its searches and the pages it read." />
+<Capture client:visible image={await captureImage(runGraph)}
+  alt="A finished deep research run in full screen: three named researchers, a check for each, a Coordinate step, then three follow-up researchers, with the report below"
+  caption="Each researcher and its check is named after its direction. Coordinate is where the run chose its follow-ups. Select a step to see it." />
 
 ## Read the report
 
