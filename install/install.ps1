@@ -1601,7 +1601,10 @@ function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
     $kitUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($kitUv -and -not $script:KitJob -and -not $script:KitKept) {
         $script:py = (& $runtimePython -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
-        if ($LASTEXITCODE -eq 0 -and $script:py) { $script:KitJob = Start-ClioKitInstall $kitUv.Source }
+        if ($LASTEXITCODE -eq 0 -and $script:py) {
+            $script:RuntimePy = $script:py
+            $script:KitJob = Start-ClioKitInstall $kitUv.Source
+        }
     }
     & uv venv --quiet --allow-existing --system-site-packages --python $runtimePython $Venv
     if ($LASTEXITCODE -ne 0) { return "uv could not create the environment over the CLIO runtime (exit $LASTEXITCODE)" }
@@ -1884,6 +1887,7 @@ if (-not $OptSource -and $RuntimePlan) {
     # place: an install that fails puts it back.
     $Previous = Set-ClioVenvAside $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
+    $RuntimePy = $null
     $failure = Install-ClioRuntime $RuntimePlan $RuntimeScratch $Previous | Select-Object -Last 1
     if ($failure) {
         # The previous environment is put back, and the same release installs from PyPI.
@@ -1906,7 +1910,8 @@ if (-not $OptSource -and $RuntimePlan) {
         $RuntimePlan = $null
     } else {
         if ($Previous) { Remove-ClioTreeLater $Previous }
-        $py = (& (Join-Path $Venv 'python\python.exe') -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
+        # The runtime's Python version, read once already when clio-kit started.
+        $py = if ($RuntimePy) { $RuntimePy } else { (& (Join-Path $Venv 'python\python.exe') -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim() }
         $ClioVersion = $PackageVersion
     }
 }
