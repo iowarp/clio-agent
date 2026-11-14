@@ -1437,3 +1437,37 @@ def test_a_call_whose_approval_wait_was_cancelled_is_recorded_as_cancelled():
     error = seen[-1][2]
     assert error is not None and "did not run" in error
     assert completed_tool_outcome(error, None, refused=False) == "cancelled"
+
+
+def test_declared_mcp_permission_gate_receives_the_tools_own_title() -> None:
+    """A tool's top-level title reaches the gate: a view-only tool has no other (MC-F1)."""
+
+    fake_client = FakeClient()
+    observed: list[dict[str, Any]] = []
+
+    def gate(name: str, args: Mapping[str, Any], context: Mapping[str, Any]) -> str:
+        observed.append(dict(context))
+        return "deny"
+
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: fake_client,
+        permission_gate=gate,
+        preloaded_tools={
+            "viewer_read_bytes": SimpleNamespace(
+                name="viewer_read_bytes",
+                title="Read PDF Bytes",
+                inputSchema={"properties": {}},
+                annotations=None,
+            )
+        },
+        namespace_servers={"viewer": object()},
+    )
+    try:
+        with pytest.raises(PermissionError, match="denied by permission gate"):
+            executor.call_tool("viewer_read_bytes", {})
+    finally:
+        executor.close()
+
+    assert observed == [{"kind": "external_mcp", "annotations": {}, "title": "Read PDF Bytes"}]

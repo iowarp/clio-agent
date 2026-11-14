@@ -95,7 +95,13 @@ def _safe_sources(value: Any) -> list[str]:
 def _csp_header(
     csp: Mapping[str, Any], host_origin: str, service_sources: Sequence[str] = ()
 ) -> str:
-    """Build the sandbox policy; ``service_sources`` are the app's own service route."""
+    """Build the sandbox policy; ``service_sources`` are the app's own service route.
+
+    Scripts may evaluate code (``'unsafe-eval'``, which also covers WebAssembly), as in
+    the specification's reference host (``examples/basic-host``): a CesiumJS globe, a
+    WebAssembly decoder or a chemistry editor need it, and the view runs on its own
+    sandbox host, which carries no API authority (apps ledger MC-D1).
+    """
 
     # CLIO's own route on the sandbox origin: built by CLIO, never declared by the view.
     service = " ".join(service_sources)
@@ -106,7 +112,7 @@ def _csp_header(
     return "; ".join(
         [
             "default-src 'self' 'unsafe-inline'",
-            f"script-src 'self' 'unsafe-inline' blob: data: {resources}".strip(),
+            f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: {resources}".strip(),
             f"style-src 'self' 'unsafe-inline' blob: data: {resources}".strip(),
             f"img-src 'self' data: blob: {resources}".strip(),
             f"font-src 'self' data: blob: {resources}".strip(),
@@ -157,7 +163,12 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
         if (permissions?.clipboardWrite) allow.push('clipboard-write');
         if (allow.length) inner.setAttribute('allow', allow.join('; '));
         if (typeof html !== 'string') return;
-        inner.srcdoc = html;
+        // Written into the frame, as the reference host does, not set as srcdoc: a view
+        // whose libraries read their own address (CesiumJS) stalls in an about:srcdoc
+        // document. A frame CLIO cannot write (no same-origin token) takes srcdoc.
+        let doc = null;
+        try { doc = inner.contentDocument; } catch { doc = null; }
+        if (doc) { doc.open(); doc.write(html); doc.close(); } else { inner.srcdoc = html; }
       } else if (event.data?.method === '@@SNAPSHOT_METHOD@@' && event.data.id !== undefined) {
         // The host asks for a snapshot of the view: answered here, never sent to the view.
         const id = event.data.id;

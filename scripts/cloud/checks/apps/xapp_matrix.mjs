@@ -29,12 +29,13 @@
 //              (feature 7); needs XM_SESSION
 //     reopen   Reopen the conversation's latest view from its card (or its restored tab)
 //   XM_SESSION  "<workspace id>/<session id>": continue that conversation
+//   XM_OPEN_IN_SESSION=1  send XM_OPEN in the XM_SESSION conversation too
 //   XM_PHONE=1  phone layout: no hero shots, the tab is the docked sheet
 //   XM_OUT      a file that receives the JSON result (also printed as XM_RESULT)
 import { copyFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { AGENT, ROOT, allowPending, api, openConversation, send } from "./_lib.mjs";
+import { AGENT, ROOT, allowPending, api, openConversation, send, isViewDocument } from "./_lib.mjs";
 
 const env = process.env;
 const phone = env.XM_PHONE === "1";
@@ -122,13 +123,13 @@ async function navCollapse(page) {
 
 async function maximize(page) {
   const button = page.getByRole("button", { name: "Maximize canvas" }).first();
-  if (await button.isVisible().catch(() => false)) await button.click();
+  if (await button.isVisible().catch(() => false)) await button.click({ timeout: 10000 }).catch((e) => note("maximize", String(e).slice(0, 120)));
   await sleep(page, 8000);
 }
 
 async function restore(page) {
   const button = page.getByRole("button", { name: /Restore canvas|Exit maximized|Minimize canvas/ }).first();
-  if (await button.isVisible().catch(() => false)) await button.click();
+  if (await button.isVisible().catch(() => false)) await button.click({ timeout: 10000 }).catch((e) => note("restore", String(e).slice(0, 120)));
   await sleep(page, 5000);
 }
 
@@ -151,7 +152,7 @@ async function showing(page) {
 
 /** The view documents: each app frame's inner document (CLIO's sandbox frame holds it). */
 function viewDocuments(page) {
-  return page.frames().filter((f) => f.url() === "about:srcdoc" && /\/mcp-apps\//.test(f.parentFrame()?.url() || ""));
+  return page.frames().filter(isViewDocument);
 }
 
 async function frameWidth(page, placement) {
@@ -209,7 +210,7 @@ async function maxRestore(page, shot) {
   const navigations = [];
   let phase = "maximize";
   const listener = (f) => {
-    if (f.url() === "about:srcdoc" || /\/mcp-apps\//.test(f.url())) navigations.push(`${phase}: ${f.url().slice(0, 60)}`);
+    if (f.url() === "about:srcdoc" || isViewDocument(f) || /\/mcp-apps\//.test(f.url())) navigations.push(`${phase}: ${f.url().slice(0, 60)}`);
   };
   page.on("framenavigated", listener);
   if (!phone) await navCollapse(page);
@@ -340,11 +341,25 @@ async function closeAndReopen(page, shot) {
   await reopen(page, shot, "reopened");
 }
 
+/** Scroll the conversation up until a view's Reopen line is rendered (a long transcript
+ *  renders only the rows near the screen), at most `steps` screens. */
+async function findReopenLine(page, steps = 30) {
+  const lines = page.locator("[data-mcp-app-reopen]");
+  for (let i = 0; i < steps && !(await lines.count()); i += 1) {
+    await page.mouse.move(700, 400);
+    await page.mouse.wheel(0, -1500);
+    await sleep(page, 600);
+  }
+  return lines.count();
+}
+
 async function reopen(page, shot, label) {
   const line = page.locator("[data-mcp-app-reopen]").filter({ visible: true }).last();
   const tabRestored = await page.locator('[data-mcp-app-placement="tab"] [data-mcp-app-iframe]').count();
+  if (!tabRestored && !(await page.locator("[data-mcp-app-iframe]").count())) await findReopenLine(page);
+  await line.scrollIntoViewIfNeeded().catch(() => undefined);
   if (!tabRestored && (await line.count())) {
-    await line.getByRole("button", { name: /Reopen/ }).click();
+    await line.getByRole("button", { name: /Reopen/ }).click({ timeout: 15000 }).catch((e) => note("reopen click", String(e).slice(0, 120)));
     const allow = page.getByRole("button", { name: /Allow once/ });
     if (await allow.first().waitFor({ timeout: 15000 }).then(() => true, () => false)) await allow.first().click();
   }
@@ -403,7 +418,9 @@ export default async function (page, shot) {
   }
   out.session = sessionOf(page);
   note("session", out.session);
-  if (env.XM_OPEN && !env.XM_SESSION) {
+  // With XM_SESSION, XM_OPEN still runs when XM_OPEN_IN_SESSION=1 (a conversation the person
+  // prepared, e.g. a connector added from its plugin picker first).
+  if (env.XM_OPEN && (!env.XM_SESSION || env.XM_OPEN_IN_SESSION === "1")) {
     for (const [i, text] of env.XM_OPEN.split(" || ").entries()) {
       await turn(page, shot, text.replaceAll("{root}", root), `open${i + 1}`);
     }

@@ -36,8 +36,9 @@ def permission_summary(name: str, context: Mapping[str, Any] | None, subject: st
 
     A native tool's own summary wins. An external MCP tool reads as its declared title
     ("Change the timestep"), so a person is not shown the namespaced identifier: the
-    title an agent's tools registered, else the one in the call's own annotations (a
-    view reopened after a restart, before any agent listed its tools). A tool without
+    title an agent's tools registered, else the one the call's own listing declares, its
+    ``title`` or its annotations' (a view reopened after a restart, before any agent listed
+    its tools, or a tool only a view may call, which no agent ever lists). A tool without
     one keeps the plain ``<subject> call: <name>`` line.
     """
 
@@ -45,7 +46,9 @@ def permission_summary(name: str, context: Mapping[str, Any] | None, subject: st
         return str(context["summary"])[:500]
     if subject == "external MCP tool":
         annotations = (context or {}).get("annotations")
-        listed = annotations.get("title") if isinstance(annotations, Mapping) else None
+        listed = (context or {}).get("title") or (
+            annotations.get("title") if isinstance(annotations, Mapping) else None
+        )
         if title := tool_title(name) or sanitize_title(listed):
             return title
     return f"{subject} call: {name}"

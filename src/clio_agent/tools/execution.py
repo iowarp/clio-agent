@@ -365,10 +365,9 @@ def _declared_mcp_permission_context(
     namespace, separator, _bare_name = name.partition("_")
     if not separator or namespace not in namespace_servers:
         return None
-    return {
-        "kind": "external_mcp",
-        "annotations": dict(_tool_annotations(tool)),
-    }
+    title = tool.get("title") if isinstance(tool, Mapping) else getattr(tool, "title", None)
+    context = {"kind": "external_mcp", "annotations": dict(_tool_annotations(tool))}
+    return {**context, "title": title} if title else context  # a view-only tool's own title
 
 
 def create_async_tool_executor(
