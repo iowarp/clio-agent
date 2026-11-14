@@ -260,3 +260,17 @@ def test_context_lines_are_readable_and_cut() -> None:
     assert lines[-1].startswith("(cut here:")
     assert view_context_lines(None) == []
     assert isinstance(look_table(SimpleNamespace(state=SimpleNamespace())), ViewLooks)
+
+
+def test_unloading_a_view_the_server_closed_is_not_an_error(tmp_path: Path) -> None:
+    """A surface's unload after a newer view replaced this one answers, not 404 (PM run)."""
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid, record = _setup(client, app, tmp_path)
+        prefix, cap = _prefix(sid, record)
+        gone = f"/v1/sessions/{sid}/mcp-apps/closed-app/shown"
+        unloaded = client.put(gone, params=cap, json={"holder": "card", "shown": False})
+        assert unloaded.status_code == 200 and unloaded.json() == {"shown": False}
+        shown = client.put(gone, params=cap, json={"holder": "card", "shown": True})
+        assert shown.status_code == 404  # showing a closed view still fails
+        assert client.put(f"{prefix}/shown", params=cap, json={"shown": "x"}).status_code == 422

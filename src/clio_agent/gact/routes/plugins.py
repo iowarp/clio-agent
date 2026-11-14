@@ -143,18 +143,26 @@ def resolution_view(resolution: Resolution) -> dict[str, Any]:
     """A resolution with the composed prompt's sections attributed to their plugins.
 
     A connector's plugin (CN9 *Amended*) keeps its own provenance (the person added it)
-    and names its connector, ``{id, name}``.
+    and names its connector, ``{id, name, logo_url}``.
     """
 
     view = {**resolution.to_dict(), "tool_names": resolution.tool_names}
     if any(row.get("follows") for row in view["plugins"]):
         from clio_agent.connectors.state import all_entries  # noqa: PLC0415
 
-        names = {key: entry.name for key, entry in all_entries().items()}
+        entries = all_entries()
+
+        def brief(connector_id: str) -> dict[str, Any]:
+            found = entries.get(connector_id)
+            logo = found is not None and bool(found.logo)
+            return {
+                "id": connector_id,
+                "name": found.name if found is not None else "",
+                "logo_url": f"/v1/connectors/{connector_id}/logo" if logo else None,
+            }
+
         view["plugins"] = [
-            {**row, "connector": {"id": row["follows"], "name": names.get(row["follows"], "")}}
-            if row.get("follows")
-            else row
+            {**row, "connector": brief(row["follows"])} if row.get("follows") else row
             for row in view["plugins"]
         ]
     return view

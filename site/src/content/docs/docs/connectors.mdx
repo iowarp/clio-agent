@@ -1,6 +1,6 @@
 ---
 title: "Connectors"
-description: Turn on a service such as ParaView or Burette, give it what it needs once, and let the agent use it in any conversation.
+description: Enable a service such as ParaView or Burette, give it what it needs once, and add it to the conversations that need it.
 ---
 
 import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
@@ -15,13 +15,15 @@ Connectors are in the development build. v0.9.6.6 does not have them. See
 [Features and versions](/docs/versions/).
 </Aside>
 
-A connector is a service you turn on for the agent: a molecule viewer, ParaView, a
+A connector is a service you enable for the agent: a molecule viewer, ParaView, a
 circuit simulator. It has a logo, it says what it needs from you, such as an address
-or a sign-in, and you give it those things on one card. Once it is ready, the agent
-can use its tools in your conversations. Many connectors also show their results as
-a live [app](/docs/apps/) in the conversation or in a tab.
+or a sign-in, and you give it those things on one card. Enabling it installs it and
+gets it ready; it does not put it in any conversation. You add it to the
+conversations that need it, so a conversation that does not use ParaView never
+carries ParaView's tools. Many connectors also show their results as a live
+[app](/docs/apps/) in the conversation or in a tab.
 
-## Turn on a connector
+## Enable a connector
 
 <Steps>
 
@@ -33,13 +35,13 @@ a live [app](/docs/apps/) in the conversation or in a tab.
 3. Fill in any rows under **Setup**, then choose **Save**. CLIO connects, lists the
    connector's tools and updates its state.
 
-4. Under **Where it applies**, leave **Available in every conversation** on, or turn
-   it off and choose the agents that should have it. Then choose **Enable**.
+4. Under **In conversations**, choose **Enable**. CLIO starts it, lists its tools and
+   shows **Ready** with the number of tools.
 
 </Steps>
 
 <Capture client:visible image={await captureImage(list)}
-  alt="Settings, Extensions: Burette, ParaView and SPICE circuit simulation listed first as connectors, above the plugins, with Burette's card open showing Ready, 4 tools, It needs nothing from you, and Enabled for every conversation"
+  alt="Settings, Extensions: Burette, ParaView and SPICE circuit simulation listed first as connectors, above the plugins, with Burette's card open showing Ready, 4 tools and It needs nothing from you"
   caption="Connectors come first. Burette needs nothing, so it is ready as soon as it is enabled. SPICE has no logo, so it shows its initials."
 />
 
@@ -52,9 +54,25 @@ A connector's state reads the same everywhere it appears:
 | **Can’t be reached** | CLIO started or called it and it did not answer. The card gives the reason, for example that nothing answered at the address. |
 | **Not enabled** | It is turned off. |
 
-To change where it applies, change the switch or the agents and choose **Apply**.
-**Turn off** removes it from your agents. Its values and secrets are kept, so turning
-it on again needs nothing more.
+**Turn off** stops it. A conversation you added it to keeps it in its list but cannot
+use it, and says it left because the connector is turned off; enable the connector
+again and it is back in that conversation. Its values and secrets are kept, so
+enabling it again needs nothing more.
+
+## Add a connector to a conversation
+
+In the conversation, open the **Agent** tab and choose **Add plugin**. Enabled
+connectors are listed first, under **Connectors**, with their logos and their state.
+Choose one. Its tools join this conversation only; other conversations are not
+changed. In a conversation that has already started, CLIO asks how the change reaches
+the agent, as for any plugin, and the conversation shows that its plugins changed.
+
+The connector then reads **Connector you added** in the agent's list. Remove it there
+to take it out of this conversation. A connector that is turned off is not offered;
+enable it in Extensions first, or let the agent offer it (below).
+
+To have a connector in every new conversation of an agent, add it to that agent: open
+the agent in **Settings → Agents**, or save a conversation's setup as an agent.
 
 ## The setup card
 
@@ -133,16 +151,21 @@ not marked, and it cannot turn a connector on or off.
   caption="The agent set three ParaView values in one call. node08 and login are hosts of a test cluster."
 />
 
+## When the agent offers a connector
+
+If you ask for something a connector does and the conversation does not have it, the
+agent can offer it: a card reads **Add ParaView to this conversation?**, with the
+connector's logo, whether it is enabled, and why the agent asks. Choose **Add** and
+the connector joins this conversation, enabled first if it was off, and the agent
+continues your request in the same reply. Choose **Not now** and nothing changes. The
+agent never adds a connector by itself.
+
 ## Plugins that come with a connector
 
 A connector can bring a plugin, such as instructions for working with its tools. The
-card names it under **Brings plugin**. You do not install it yourself: it joins your
-agents when you turn the connector on and leaves when you turn it off. It is not
-offered in the plugin pickers, because it is no use without its connector. In an
-agent's plugin list it reads **From connector** and the connector's name.
-
-Turning a connector on or off during a conversation reaches the agent at once. The
-conversation shows the usual notice that its plugins changed.
+card names it under **Brings plugin**. You do not install it yourself: adding the
+connector to a conversation adds its plugin, which is listed under the connector's
+name. In the Extensions list the plugin is shown with its connector, not on its own.
 
 ## Add a service by URL or command
 
