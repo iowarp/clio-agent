@@ -101,6 +101,7 @@ async def intervene(
     action: str,
     *,
     message: str = "",
+    reason: str = "",
     stop_reservation: threading.Event | None = None,
     stop_reservation_captured: bool = False,
 ) -> dict[str, Any]:
@@ -118,6 +119,8 @@ async def intervene(
         "actor_human": caller.human_id,
         "requested_at": stamp,
         "message": message,
+        # Why the person acted, when an operation names it (``conversation_stop``).
+        **({"reason": reason} if reason else {}),
     }
 
     def record(phase: str, effect: dict[str, Any] | None = None) -> None:

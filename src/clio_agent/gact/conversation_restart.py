@@ -78,6 +78,7 @@ async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[
                 latest = self.history.latest_assignment(previous.owner.session_id)
                 if latest is None or latest.handle != previous.handle:
                     raise ValueError("Assignment acquired a successor while restart waited")
+                resume_stopped_parent(self, previous)
                 task = self._new_assignment(
                     previous.owner.session_id,
                     previous.description or "Retained assignment",
@@ -188,3 +189,38 @@ async def prepare_terminal_restart(
             )
 
     return cancellation, verify_settled
+
+
+def resume_stopped_parent(owner: Conversations, child: TaskSnapshot) -> TaskSnapshot | None:
+    """Give a child restarted after its conversation was stopped a live conversation.
+
+    Stop with ``children: stop`` cancels the conversation's assignment, which closes
+    admission for everything under it. Restarting one of its children then needs a
+    parent that can receive the result: the stopped conversation gets a linked
+    successor assignment (``restart-child:<handle>``). The successor sends no input
+    of its own; the child's result wakes it, as any task result does. Ancestors
+    stopped the same way are resumed first. Called under ``history.serialized()``.
+    """
+
+    if not child.owner.parent_handle:
+        return None
+    parent = owner.history.task_snapshot(child.owner.parent_handle)
+    if parent is None:
+        return None
+    latest = owner.history.latest_assignment(parent.owner.session_id)
+    if (
+        latest is None
+        or latest.terminal_at is None
+        or latest.cancellation_requested_at is None
+        or latest.owner.human_id != child.owner.human_id
+        or not owner.supports_execution(latest)
+    ):
+        return None
+    resume_stopped_parent(owner, latest)
+    return owner._new_assignment(
+        latest.owner.session_id,
+        latest.description or "Retained assignment",
+        latest.owner.human_id,
+        predecessor=latest,
+        invocation_id="restart-child:" + child.handle,
+    )
