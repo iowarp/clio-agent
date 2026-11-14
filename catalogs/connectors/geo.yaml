@@ -1,0 +1,17 @@
+# Geo: IOWarp's geospatial server from clio-kit (mcp-servers/geo). It renders GeoJSON
+# layers as map images and, from geo 2.4.0, shows the same layers on an interactive 3D
+# globe (show_on_globe, an MCP Apps view, ui://geo/globe): stations as dots, regions,
+# footprints and tracks, with the feature the person clicks reported back as
+# selected_feature, which a dashboard can bind both ways. It also geocodes, queries
+# ArcGIS layers and checks GeoJSON. CLIO starts it through the clio-kit launcher, as it
+# does ParaView; the launcher runs the geo server of the clio-kit CLIO pins, so the globe
+# arrives with the clio-kit release that carries geo 2.4.0. The view loads CesiumJS from
+# cesium.com and OpenStreetMap tiles, both declared in its resource CSP; it needs no
+# account or key (apps ledger, "Geo globe (GG)").
+- id: geo
+  name: Geo
+  description: Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name
+  server:
+    command: clio-kit
+    args: [mcp-server, geo]
+  needs: []
