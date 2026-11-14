@@ -956,6 +956,10 @@ if ($OptSource) { Start-ClioUvInstall }
 # packaged (MSIX) interpreter cannot run inside protected execution: MXC refuses to
 # launch packaged apps. Use uv's own Pythons unless the operator chose otherwise.
 if (-not $env:UV_MANAGED_PYTHON) { $env:UV_MANAGED_PYTHON = '1' }
+# A Python uv installs for CLIO is found by its folder: it is not registered with the
+# user's Python launcher (HKCU\Software\Python) nor given a python3.x.exe on the PATH.
+if (-not $env:UV_PYTHON_INSTALL_REGISTRY) { $env:UV_PYTHON_INSTALL_REGISTRY = '0' }
+if (-not $env:UV_PYTHON_INSTALL_BIN) { $env:UV_PYTHON_INSTALL_BIN = '0' }
 if ($OptSource -and -not (Have git)) { Die 'git is required for --source' }
 # The checkout this script runs from, when it runs from one (not from a URL).
 $Checkout = $null
@@ -1702,28 +1706,66 @@ function Use-ClioKitToolDirs([switch]$Restore) {
         }
     }
 }
-function Get-ClioKitBusy([string]$Uv) {
+function Get-ClioKitDirs([string]$Uv) {
     Use-ClioKitToolDirs
     try {
         $toolDir = (& $Uv tool dir 2>$null | Select-Object -First 1)
         $binDir = (& $Uv tool dir --bin 2>$null | Select-Object -First 1)
     } finally { Use-ClioKitToolDirs -Restore }
     if (-not $toolDir) { return $null }
-    $envDir = [IO.Path]::GetFullPath((Join-Path $toolDir.Trim() 'clio-kit')) + '\'
-    $shim = if ($binDir) { [IO.Path]::GetFullPath((Join-Path $binDir.Trim() 'clio-kit.exe')) } else { '' }
+    return @{ Tool = $toolDir.Trim(); Bin = $(if ($binDir) { $binDir.Trim() } else { '' }) }
+}
+function Get-ClioKitBusy($Dirs) {
+    if (-not $Dirs) { return $null }
+    $envDir = [IO.Path]::GetFullPath((Join-Path $Dirs.Tool 'clio-kit')) + '\'
+    $shim = if ($Dirs.Bin) { [IO.Path]::GetFullPath((Join-Path $Dirs.Bin 'clio-kit.exe')) } else { '' }
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $_.Path -and ($_.Path.StartsWith($envDir, [StringComparison]::OrdinalIgnoreCase) -or $_.Path -ieq $shim)
     } | Select-Object -First 1
 }
+# A clio-kit this installation owns (in its own tool folders, or one it installed in the
+# user's while none was there, as clio-kit-owned.json records) gets its Python inside the
+# prefix, so uninstall.ps1 removes both. The user's own clio-kit is left on its Python.
+# A matching Python uv already manages for the user is reused where it is, as before, and
+# is left there by uninstall.ps1: only a Python the kit has to download goes in the prefix.
+$KitPythonDir = Join-Path $Prefix 'uv-python'
+$KitOwnedRecord = Join-Path $Prefix 'clio-kit-owned.json'
+$KitNewlyOwned = $null
+$KitUserPython = $null
+function Find-ClioUserManagedPython([string]$Uv) {
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # The whole output is read first: stopping the pipeline at the first line (Select-Object
+        # -First 1) leaves Windows PowerShell's $LASTEXITCODE at -1 while uv is still exiting.
+        $found = @(& $Uv python find --system --managed-python --no-python-downloads $py 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $found.Count -and "$($found[0])".Trim()) { return "$($found[0])".Trim() }
+    } catch { } finally { $ErrorActionPreference = $SavedPreference }
+    return $null
+}
 function Start-ClioKitInstall([string]$Uv) {
-    $busy = Get-ClioKitBusy $Uv
+    $dirs = Get-ClioKitDirs $Uv
+    $busy = Get-ClioKitBusy $dirs
     if ($busy) {
         $script:KitKept = "clio-kit is running ($($busy.ProcessName), pid $($busy.Id)); its environment was kept as it is. Stop it and run this installer again to update it to $ClioKitSpec."
         return $null
     }
+    $owned = $KitToolDirs.Count -or (Test-Path -LiteralPath $KitOwnedRecord)
+    if (-not $owned -and $dirs -and -not (Test-Path -LiteralPath (Join-Path $dirs.Tool 'clio-kit'))) {
+        $owned = $true
+        $script:KitNewlyOwned = $dirs
+    }
+    $savedPython = $env:UV_PYTHON_INSTALL_DIR
+    if ($owned -and -not $savedPython) {
+        $script:KitUserPython = Find-ClioUserManagedPython $Uv
+        if (-not $script:KitUserPython) { $env:UV_PYTHON_INSTALL_DIR = $KitPythonDir }
+    }
     Use-ClioKitToolDirs
     try { return Start-ClioBackground $Uv "tool install --python $py `"$ClioKitSpec`"" 'kit' }
-    finally { Use-ClioKitToolDirs -Restore }
+    finally {
+        Use-ClioKitToolDirs -Restore
+        $env:UV_PYTHON_INSTALL_DIR = $savedPython
+    }
 }
 $KitKept = $null
 
@@ -2094,6 +2136,11 @@ if ($KitJob -or $KitKept -or (Have uv)) {
         $kitStatus = 0
     } elseif ($KitJob) {
         $kitStatus = Complete-ClioBackground $KitJob
+        if ($kitStatus -eq 0 -and $KitNewlyOwned -and (Test-Path -LiteralPath (Join-Path $KitNewlyOwned.Tool 'clio-kit'))) {
+            # python_dir is empty when the kit runs on the user's own uv-managed Python.
+            $owner = [ordered]@{ tool_dir = $KitNewlyOwned.Tool; bin_dir = $KitNewlyOwned.Bin; python_dir = $(if ($KitUserPython) { '' } else { $KitPythonDir }); user_python = $(if ($KitUserPython) { $KitUserPython } else { '' }) }
+            [System.IO.File]::WriteAllText($KitOwnedRecord, (ConvertTo-Json $owner), (New-Object System.Text.UTF8Encoding $false))
+        }
     } else {
         $kitStatus = 1
     }
