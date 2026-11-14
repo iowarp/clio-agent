@@ -64,6 +64,14 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
   agent puts that folder first on its own PATH at start-up, however it was launched
   (the `clio` launcher, Desktop or a service), and the uninstaller removes it with
   the installation.
+  On Windows, `install.ps1` keeps the Python of a clio-kit it owns in
+  `$CLIO_PREFIX\uv-python`, unless uv already manages a matching Python for you: that
+  one is reused where it is and left there on uninstall. It owns the one in `$CLIO_PREFIX\uv-tools`, and one it
+  installs in your own uv tool folder while none is there, which it records in
+  `$CLIO_PREFIX\clio-kit-owned.json`. `uninstall.ps1` runs `uv tool uninstall clio-kit`
+  only for that recorded one and removes `uv-python` with the prefix. Pythons uv
+  installs for CLIO are never registered with the Python launcher (`HKCU\Software\Python`)
+  or given a `python3.x.exe` on PATH.
 
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, opens Web, and manages the server
