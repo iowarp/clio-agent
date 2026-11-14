@@ -326,24 +326,42 @@ def object_summary(target: Path, roots: Roots, locator: str) -> dict[str, Any]:
         raise Hdf5ViewError(404, "hdf5_path_not_found", str(exc)) from exc
 
 
+#: Attributes the netCDF library and dimension scales keep for themselves.
+_BOOKKEEPING_ATTRIBUTES = frozenset(
+    {"DIMENSION_LIST", "REFERENCE_LIST", "CLASS", "NAME", "_Netcdf4Dimid", "_Netcdf4Coordinates"}
+)
+
+
+def _plain(value: Any) -> Any:
+    """A JSON-safe attribute value: nested arrays, references and bytes made plain."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, np.ndarray):
+        if value.size > 8:
+            return f"<array {list(value.shape)}>"
+        return [_plain(item) for item in value.ravel().tolist()]
+    if isinstance(value, np.generic):
+        return _plain(value.item())
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def _short_attributes(attrs: h5py.AttributeManager) -> dict[str, Any]:
     out: dict[str, Any] = {}
     text_chars = summary_text_chars()
-    for name in list(attrs.keys())[: summary_attributes()]:
+    names = [name for name in attrs.keys() if name not in _BOOKKEEPING_ATTRIBUTES]
+    for name in names[: summary_attributes()]:
         try:
-            value = attrs[name]
+            value = _plain(attrs[name])
         except (OSError, TypeError, ValueError):  # an unreadable attribute type
             out[name] = "<unreadable>"
             continue
-        if isinstance(value, bytes):
-            value = value.decode("utf-8", "replace")
-        elif isinstance(value, np.ndarray):
-            value = value.tolist() if value.size <= 8 else f"<array {list(value.shape)}>"
-        elif isinstance(value, np.generic):
-            value = value.item()
-        if isinstance(value, bytes):
-            value = value.decode("utf-8", "replace")
+        if isinstance(value, list) and len(value) == 1:
+            value = value[0]
         if isinstance(value, str) and len(value) > text_chars:
             value = value[: text_chars - 1] + "…"
-        out[name] = value if isinstance(value, (str, int, float, bool, list)) else str(value)
+        out[name] = value
     return out
