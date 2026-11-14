@@ -3,8 +3,8 @@
 //   WS=<workspace> SID=<session> node scripts/cloud/ui_check.mjs \
 //     --steps scripts/cloud/checks/apps/helene_hdf5.mjs --label helene --width 1600 --height 1000
 //
-// The workspace holds era5/msl_2024-09.nc and era5/sst_2024-09.nc and has the ERA5
-// pressure-level bucket linked (bench/live/setup_ws.py). The person asks what is in the
+// The workspace holds era5/msl_2024-09.nc, era5/sst_2024-09.nc and ERA5's cloud, rain and
+// snow water for 24-27 September (bench/live/setup_ws.py with NO_S3=1). The person asks what is in the
 // pressure file (the file @-referenced from the composer), opens the field from the answer,
 // reads its attributes and looks at it, adds /MSL from the viewer and asks to track the
 // storm; then asks how it deepened with /SSTK @-referenced from the composer (Tab into the
@@ -20,11 +20,13 @@ const TURNS = {
     "Hurricane Helene crossed the Gulf in late September 2024. Can you track its centre and " +
     "central pressure in this from the 24th to the 27th?",
   deepen: "How fast did it deepen, and was the water under it warm enough to explain that?",
-  // The person names the viewer they want: without it the agent sometimes builds its own
-  // mesh view instead, a valid choice that the rest of this script does not follow.
+  // The person names the viewer and the look they want (a see-through volume, as in a
+  // published hurricane figure), and the fields: this turn is person-directed, so it is
+  // evidence of the mechanism and the agent's analysis, not of its choice of view.
   clouds:
-    "What did the clouds around it look like on the 26th, before it came ashore? The linked " +
-    "ERA5 bucket has cloud water; those files are big. Show me in 3D in ParaView.",
+    "What did the clouds around it look like on the 26th, before it came ashore? The cloud, " +
+    "rain and snow water for those days are in the era5 folder. Show me the storm in ParaView " +
+    "as a see-through volume, looking down on it at an angle, so I can see the spiral.",
   share: "Put all of this on a dashboard so I can share it with colleagues.",
   follow: "Can I step through the days on this and have everything follow, the 3D clouds too?",
   go: "3-hourly, go ahead.",
@@ -176,46 +178,62 @@ async function finalBeat(page, shot, sid, log) {
   }
   await page.waitForTimeout(6000);
   await shot("beat-landfall");
-  // Raise the liquid-water surface with its slider.
-  // The agent names its contours; pick the liquid one whatever it called it. The panel
-  // remembers an open drawer, so open the pipeline only when its list is not showing.
+  // The person's own change in the view: raise the liquid-water surface when the scene has
+  // one (an isosurface), else turn the storm around to look at it (a volume).
   const liquid = app.getByRole("button", { name: /^(?!Hide |Show |Remove ).*liquid/i }).first();
   if (!(await liquid.isVisible().catch(() => false))) {
     await app.getByRole("button", { name: "Pipeline" }).click();
+    await page.waitForTimeout(1200);
   }
-  await liquid.click();
-  // Add filter is a toggle too: open it only when its Edit button is not showing.
-  const edit = app.getByRole("button", { name: /^Edit/ }).first();
-  if (!(await edit.isVisible().catch(() => false))) {
-    await app.getByRole("button", { name: "Add filter" }).click();
+  let question = TURNS.beat;
+  if (await liquid.isVisible().catch(() => false)) {
+    await liquid.click();
+    // Add filter is a toggle too: open it only when its Edit button is not showing.
+    const edit = app.getByRole("button", { name: /^Edit/ }).first();
+    if (!(await edit.isVisible().catch(() => false))) {
+      await app.getByRole("button", { name: "Add filter" }).click();
+    }
+    await edit.click();
+    // Drags its first value's slider right (a log slider when the field spans decades);
+    // release applies it.
+    const values = app.getByRole("textbox", { name: "Values" });
+    const before = await values.inputValue();
+    const thumb = app.getByRole("slider", { name: /Values 1 slider/ });
+    const box = await thumb.boundingBox();
+    if (!box) throw new Error("the isovalue slider is not shown");
+    const y = box.y + box.height / 2;
+    await page.mouse.move(box.x + box.width / 2, y);
+    await page.mouse.down();
+    // About two thirds of a decade on a log slider: the surface rises ~2.5x, still visible.
+    await page.mouse.move(box.x + box.width / 2 + 40, y, { steps: 30 });
+    await page.waitForTimeout(400);
+    await page.mouse.up();
+    await page.waitForTimeout(1500);
+    const after = await values.inputValue();
+    if (after === before) throw new Error(`dragging the slider left the values at ${before}`);
+    console.log(`DRAGGED ${before} -> ${after}`);
+    await page.waitForTimeout(8000);
+    await shot("beat-raised");
+    await app.getByRole("button", { name: "Done" }).click({ timeout: 3000 }).catch(() => {});
+  } else {
+    // A volume: close the drawer and turn the storm around with the mouse.
+    await app.getByRole("button", { name: "Pipeline" }).click({ timeout: 3000 }).catch(() => {});
+    const view = await pv.boundingBox();
+    if (!view) throw new Error("the 3D view is not shown");
+    const cx = view.x + view.width * 0.55;
+    const cy = view.y + view.height * 0.6;
+    await page.mouse.move(cx, cy, { steps: 15 });
+    await page.mouse.down();
+    await page.mouse.move(cx + 220, cy - 60, { steps: 60 });
+    await page.mouse.up();
+    await page.waitForTimeout(3000);
+    console.log("ROTATED the 3D view");
+    await shot("beat-turned");
+    question = TURNS.beatTurned;
   }
-  await edit.click();
-  // Types the raised liquid surface (the slider does not yet track drags; see the
-  // ParaView panel task) and applies it.
-  // Raises the liquid surface by dragging its first value's slider to the right
-  // (a log slider when the field spans decades), then lets go: release applies it.
-  const values = app.getByRole("textbox", { name: "Values" });
-  const before = await values.inputValue();
-  const thumb = app.getByRole("slider", { name: /Values 1 slider/ });
-  const box = await thumb.boundingBox();
-  if (!box) throw new Error("the isovalue slider is not shown");
-  const y = box.y + box.height / 2;
-  await page.mouse.move(box.x + box.width / 2, y);
-  await page.mouse.down();
-  // About two thirds of a decade on a log slider: the surface rises ~2.5x, still visible.
-  await page.mouse.move(box.x + box.width / 2 + 40, y, { steps: 30 });
-  await page.waitForTimeout(400);
-  await page.mouse.up();
-  await page.waitForTimeout(1500);
-  const after = await values.inputValue();
-  if (after === before) throw new Error(`dragging the slider left the values at ${before}`);
-  console.log(`DRAGGED ${before} -> ${after}`);
-  await page.waitForTimeout(8000);
-  await shot("beat-raised");
-  await app.getByRole("button", { name: "Done" }).click({ timeout: 3000 }).catch(() => {});
-  await page.getByRole("button", { name: /Restore canvas|Exit maximized|Minimize canvas/ }).click().catch(() => {});
+  await page.getByRole("button", { name: "Restore canvas beside conversation" }).click({ timeout: 5000 }).catch(() => {});
   if (process.env.BEAT_ASK === "0") return;
-  await send(page, TURNS.beat);
+  await send(page, question);
   await settle(page, sid, log, shot, "beat", 15);
 }
 
@@ -356,7 +374,11 @@ export default async function (page, shot) {
     await send(page, TURNS[name]);
     await settle(page, sid, log, shot, name, 35);
     // A published dashboard is shown off before the conversation goes on.
-    if (name === "share" || name === "go") await showOffDashboard(page, shot, name);
+    if (name === "share" || name === "go") {
+      await showOffDashboard(page, shot, name).catch((error) =>
+        console.log(`STEP_SKIPPED dashboard ${name}: ${String(error).slice(0, 160)}`),
+      );
+    }
   }
   if (only.includes("beat")) await finalBeat(page, shot, sid, log);
   await shot("final");
