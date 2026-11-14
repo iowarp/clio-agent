@@ -32,6 +32,7 @@ connection (below). People never see that plugin; they add the connector.
   - earthdata.yaml
   - geo.yaml
   - globe.yaml
+  - home-assistant.yaml
   - paraview.yaml
   - paraview.svg
   - pdf.yaml
@@ -195,7 +196,10 @@ connection under the same name with `connections`:
   delta, but the plugin leaves the conversation's resolution with the typed reason
   `connector_off`; it comes back when the connector is enabled again. A connector
   that is off is not offered in the pickers.
-- The Extensions list shows the plugin with its connector, not on its own.
+- People see one entry. When the plugin brings anything beyond the connector's server,
+  such as skills, the entry is shown as a **Plugin** with what it brings ("2 skills,
+  1 MCP server (27 tools)") and the connector's needs and state; otherwise it is shown
+  as a **Connector**. The plugin is never listed a second time on its own.
 - `connections` must map the connector's id to itself. A plugin that follows a
   connector without that binding fails to load.
 - The plugin must be installed from a marketplace the person trusts. IOWarp's

@@ -9,6 +9,7 @@ import { captureImage } from '../../../lib/captures';
 import discover from '../../../assets/captures/connectors/discover-catalog.png';
 import connectorCard from '../../../assets/captures/connectors/connector-card.png';
 import picker from '../../../assets/captures/connectors/add-plugin-picker.png';
+import pickerPlugins from '../../../assets/captures/connectors/add-plugin-picker-plugins.png';
 import offerGeo from '../../../assets/captures/connectors/offer-connector-geo.png';
 import offerPlugin from '../../../assets/captures/connectors/offer-plugin.png';
 import viewPlugin from '../../../assets/captures/connectors/offer-view-plugin.png';
@@ -29,45 +30,58 @@ CLIO gives the agent new abilities in two forms:
   or a sign-in, and it lists its tools. Many connectors also show their results as a
   live [app](/docs/apps/).
 - A **plugin** brings skills: instructions for doing a kind of work well. It may also
-  bring its own MCP server. The ParaView plugin, for example, brings skills for working
-  with ParaView and the server that drives it.
+  bring an MCP server. The ParaView plugin, for example, brings a skill for working
+  with ParaView and the server that drives it; the Home Assistant plugin brings two
+  skills and the ha-mcp server.
+
+Extensions shows each as what it is. A connector's row reads **Connector** and
+**1 MCP server (4 tools)**; a plugin's row reads **Plugin** and what it brings, such as
+**2 skills, 1 MCP server (27 tools)**. A plugin that brings a server is listed once, as
+the plugin.
 
 You add both to a conversation the same way, and the agent can offer either one when a
 request needs it. Adding one changes only that conversation, so a conversation that
 does not use ParaView never carries ParaView's tools.
 
-## Walk-through: find a connector and bring it in
+## Walk-through: find a connector or plugin and bring it in
 
 <Steps>
 
-1. **Browse.** Open **Settings → Extensions and connectors**, choose **Connectors**
-   above the list, then **Discover**. **Connector catalog** lists the connectors CLIO
-   ships that you have not enabled yet. Below it, the public MCP Registry lists more
-   MCP servers you can install.
+1. **Browse.** Open **Settings → Extensions and connectors**, then **Discover**.
+   **Plugins and connectors to enable** lists what CLIO's catalog offers and you have
+   not enabled yet, each with a line about what it is and what it still needs from
+   you. **Plugins** or **Connectors** above the list narrows it to one kind. Below,
+   **Suggested** lets you bring your own plugin, skills or marketplace, and the public
+   MCP Registry lists more MCP servers you can install.
 
    <Capture client:visible image={await captureImage(discover)}
-     alt="Settings, Extensions and connectors, filtered to Connectors, Discover view: the connector catalog lists Burette, NASA Earthdata, Geo, 3D globe, ParaView, PDF viewer and SPICE circuit simulation, each marked Not enabled, above the MCP Registry"
-     caption="The connector catalog in Discover. Nothing in it is enabled until you enable it."
+     alt="Settings, Extensions and connectors, Discover: under Plugins and connectors to enable, Burette, NASA Earthdata, Geo, 3D globe, PDF viewer and SPICE circuit simulation as connectors with 1 MCP server, and Home Assistant and ParaView as plugins with their skills, each with its description and Not enabled; Home Assistant also says it needs your Home Assistant address and long-lived access token"
+     caption="The catalog in Discover. Nothing in it is enabled until you enable it."
    />
 
-2. **Enable it once.** Choose a connector. Its card opens beside the list. Fill in any
-   rows under **Setup**, then under **In conversations** choose **Enable**. CLIO
-   installs it, starts it and lists its tools; the card reads **Ready** with the number
-   of tools. Enabling puts it in no conversation.
+2. **Enable it once.** Choose one. Its card opens beside the list. Fill in any rows
+   under **Setup**, then under **In conversations** choose **Enable**. CLIO installs
+   it, starts it and lists its tools; the card reads **Ready** with the number of
+   tools. Enabling puts it in no conversation.
 
    <Capture client:visible image={await captureImage(connectorCard)}
-     alt="The Geo connector's card: It needs nothing from you, Ready, 12 tools, and In conversations: Enabled, with how to add it to a conversation and a Turn off button"
+     alt="The Geo connector's card beside the Discover list: Ready, 12 tools, Kind Connector (an MCP server), It needs nothing from you, and In conversations: Enabled, with how to add it to a conversation and a Turn off button"
      caption="A connector's card. Enabled means installed and ready; each conversation adds it when it needs it."
    />
 
 3. **Add it to a conversation.** In the conversation, open the **Agent** tab and choose
-   **Add plugin**. Enabled connectors come first, under **Connectors**, with their logo
-   and their state in words; plugins and packs follow. Choose one. Its tools join this
-   conversation only.
+   **Add plugin**. The menu has three groups: **Connectors**, with each enabled
+   connector's logo and state in words, then **Packs**, then **Plugins**. Choose one.
+   Its tools and skills join this conversation only.
 
    <Capture client:visible image={await captureImage(picker)}
-     alt="A conversation's Agent tab with the Add plugin menu open: under Connectors, Burette Ready 4 tools, NASA Earthdata In this conversation, Geo Ready 12 tools and PDF viewer Ready 9 tools; under Packs, clio-analysis from clio-kit"
-     caption="The Add plugin menu in a conversation. NASA Earthdata is already in this one."
+     alt="A new conversation's Agent tab with the Add plugin menu open: under Connectors, Burette, NASA Earthdata, Geo and PDF viewer, each Ready with its tool count and description; under Packs, clio-analysis from clio-kit"
+     caption="The Add plugin menu: enabled connectors first."
+   />
+
+   <Capture client:visible image={await captureImage(pickerPlugins)}
+     alt="The same menu scrolled down: more packs from clio-kit and clio, then under Plugins, Home Assistant with 2 skills, 1 MCP server (27 tools) and Ready"
+     caption="Further down, the Plugins group. Home Assistant is enabled, so it is offered."
    />
 
 4. **Or just ask.** You do not have to add anything first. Ask for what you want, and
@@ -97,9 +111,12 @@ it. The card has four rows:
 2. What it is, in one line.
 3. **Why**: the agent's reason, on one line. Select it to read all of it.
 4. **Add**, **Not now**, what Add brings (for example **1 MCP server (12 tools)** or
-   **1 skill and 1 MCP server**), and **View plugin**, which shows its skills, tools
-   and files without answering the card. A connector with optional settings also shows
-   **Settings** with their number.
+   **2 skills and 1 MCP server (27 tools)**), and **View connector** or **View
+   plugin**, which shows what it brings without answering the card. A connector with
+   optional settings also shows **Settings** with their number.
+
+Rows it requires, such as an address or a token, appear on the card above the buttons,
+filled in when you have already given them.
 
 Choose **Add** and the connector or plugin joins this conversation only, enabled first
 if it was off, and the agent continues your request in the same reply, with the new
@@ -113,33 +130,33 @@ in example_stations_rainier.csv on a globe, coloured by station kind." The
 conversation did not have Geo, so the agent read the file and offered it:
 
 <Capture client:visible image={await captureImage(offerGeo)}
-  alt="A conversation in the cascadia workspace. The agent read example_stations_rainier.csv and offered Geo; the card reads Add Geo to this conversation?, Enabled, Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name, Why: Needed to plot the GNSS stations from the CSV on an interactive 3D globe coloured by station kind, then Add, Not now, Brings 1 MCP server (12 tools) to this conversation, and View plugin"
-  caption="The offer card for a connector. After Add, the globe appeared in the same reply; the apps walk-through continues from here."
+  alt="A conversation in the cascadia workspace. The agent read example_stations_rainier.csv and offered Geo; the card reads Add Geo to this conversation?, Enabled, Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name, Why: Needed to plot the GNSS stations from the CSV on an interactive 3D globe coloured by station kind, then Add, Not now, Brings 1 MCP server (12 tools) to this conversation, and View connector"
+  caption="The offer card for a connector, with View connector. After Add, the globe appeared in the same reply."
 />
 
 The [Apps walk-through](/docs/apps/#walk-through-stations-on-a-globe) follows this
 conversation from the card onwards.
 
-### A plugin with a skill
+### A plugin with skills
 
-A plugin is offered the same way. This example uses `tariff-calc`, a small plugin from a
-test marketplace, `trade-lab`, with one skill and one MCP server. The person asked what
-an import would cost once it clears customs; any plugin of a marketplace you add is
-offered the same way.
+A plugin is offered the same way. In a `lab-sensors` workspace, with the Home Assistant
+plugin enabled and pointed at ha-mcp's public demo instance, the request was "What is
+the temperature at home right now, and how has the outside temperature changed over the
+last day?"
 
 <Capture client:visible image={await captureImage(offerPlugin)}
-  alt="A conversation in the shipments workspace: the person asks what importing 400 cotton T-shirts into Germany will cost once cleared; the card reads Add Tariff calc to this conversation?, Plugin from trade-lab, the plugin's description, the agent's reason, Add, Not now, Brings 1 skill and 1 MCP server to this conversation, and View plugin"
-  caption="The offer card for a plugin names the marketplace it comes from."
+  alt="The offer card in the lab-sensors conversation: Add Home Assistant to this conversation?, Enabled, its description, the agent's reason, the two required rows already filled (the demo instance's address, and the token saved), Add, Not now, Brings 2 skills and 1 MCP server (27 tools) to this conversation, and View plugin"
+  caption="The offer card for a plugin. Its required rows show already filled."
 />
 
 <Capture client:visible image={await captureImage(viewPlugin)}
-  alt="View plugin open over the conversation: the tariff-calc plugin from trade-lab, its skill tariff-landed-cost and its MCP server tariff, not started"
-  caption="View plugin shows what Add brings before you answer. Close it and the card is still waiting."
+  alt="View plugin over the conversation: the home-assistant plugin from the clio marketplace, its description, its skills home-assistant-best-practices and home-assistant-sensors with what each is for, and its MCP server home-assistant, not started"
+  caption="View plugin shows what Add brings before you answer; close it and the card is still waiting. Taken at a second request in the same workspace."
 />
 
 <Capture client:visible image={await captureImage(pluginAnswered)}
-  alt="The answer in the same reply: the shipment costs about 4,198.32 EUR once cleared, with a table from invoice value to total landed cost, and a note on where each rate came from"
-  caption="After Add, the agent loaded the plugin's skill and used its tools in the same reply, and said which rate it looked up and which it supplied itself."
+  alt="The answer in the same reply: 22.5 °C from the living-room sensor, a table of the two outside sensors that did not change over the day, and the note that these look like demo sensors"
+  caption="After Add, the agent loaded a skill of the plugin and used its tools in the same reply. The readings are the demo instance's."
 />
 
 ## Add your own MCP server
@@ -179,13 +196,13 @@ recently added first.
 See [Add and manage marketplaces](/docs/marketplaces/manage/) for adding, trusting,
 updating and removing them.
 
-## A connector's state
+## State in words
 
-A connector's state reads the same everywhere it appears:
+A connector's or plugin's state reads the same everywhere it appears:
 
 | State | Meaning |
 |---|---|
-| **Ready, 4 tools** | It answered and its tools are available. |
+| **Ready** (on a card, **Ready, 4 tools**) | It answered and its tools are available. In a list, the tool count is in what it brings: **1 MCP server (4 tools)**. |
 | **Needs** followed by what, such as **Needs a sign-in** | A required row is empty. Optional rows never hold a connector back. |
 | **Can’t be reached** | CLIO started or called it and it did not answer. The card gives the reason, for example that nothing answered at the address. |
 | **Not enabled** | It is turned off. |
@@ -264,7 +281,7 @@ none asks. The offer card itself is the question for adding a connector or plugi
 ## Connectors CLIO includes
 
 None is enabled until you enable it. Each runs on the machine that runs CLIO, except
-Burette, which is a hosted service.
+Burette, which is a hosted service. The catalog's plugins are listed after them.
 
 ### Geo
 
@@ -322,12 +339,37 @@ Runs [ltspice-mcp](https://github.com/cognitohazard/ltspice-mcp) 0.8.0 through `
 and plots waveforms in the conversation. Install ngspice, or LTspice on Windows, first.
 It does not support macOS.
 
-## The ParaView plugin
+## Plugins CLIO includes
 
-ParaView is a plugin: it brings skills for working with scenes and the server that opens
-your data in ParaView and shows it in a live view in a tab. It needs ParaView 6.0 or
-later where ParaView runs. It is listed with the connectors in Extensions because its
-server has settings of its own. All three are optional, and the agent can set each:
+These plugins bring skills together with an MCP server, and are enabled the same way.
+None is enabled until you enable it.
+
+### Home Assistant
+
+Reads sensors and their history from your [Home Assistant](https://www.home-assistant.io),
+controls devices, and writes automations, scripts, scenes and dashboards: a lab's or a
+greenhouse's monitors as much as a home's. It runs ha-mcp 9.2.0 through `uvx` and offers
+27 of its tools. Its two skills are `home-assistant-sensors`, for finding entities and
+reading state and history, and `home-assistant-best-practices`, taken unchanged from the
+homeassistant-ai skills project, for writing configuration the native way. Both rows are
+required:
+
+| Row | What to enter |
+| --- | --- |
+| **Your Home Assistant address** | The address you open Home Assistant at, for example `http://homeassistant.local:8123`. |
+| **Long-lived access token** | In Home Assistant, open your profile, then **Security**, and create one. Kept as a secret. |
+
+ha-mcp starts and lists its tools even when the address or token is wrong, so the card
+can read **Ready** until the first call fails; the agent then says that Home Assistant
+did not answer. Its tools can change your Home Assistant, such as switching a device or
+saving an automation; those calls follow your [permissions](/docs/permissions/), and you
+can ask the agent to show a change without saving it.
+
+### ParaView
+
+Brings a skill for working with scenes and the server that opens your data in ParaView
+and shows it in a live view in a tab. It needs ParaView 6.0 or later where ParaView
+runs. Its server has three settings, all optional, and the agent can set each:
 
 | Row | What to enter |
 |---|---|
@@ -339,7 +381,7 @@ On this machine, CLIO looks for `pvpython` after running the first command. If t
 none, the first scene request says so and tells the agent how to point ParaView at
 another machine.
 
-### ParaView on another machine
+#### ParaView on another machine
 
 Two hops such as `ssh login` then `ssh node08` are one setting: **Where ParaView runs**
 `node08`, **Jump host** `login`. You can also just tell the agent: "Connect to the

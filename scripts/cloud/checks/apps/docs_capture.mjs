@@ -106,15 +106,21 @@ export default async function (page, rawShot) {
   const report = { mode };
   let session;
   if (mode === "extensions" || mode === "marketplaces") {
-    // Settings, Extensions and connectors, Connectors, Discover: the catalog's connectors
-    // that are off; then one of them (DOCS_CONNECTOR, default Geo) enabled from its card;
-    // then the installed marketplaces.
+    // Settings, Extensions and connectors, Discover: the catalog's plugins and connectors
+    // that are off; then one of them (DOCS_CONNECTOR, default Geo) enabled from its card.
+    // DOCS_MODE=marketplaces shoots the installed marketplaces instead.
     const filter = (name) =>
       page.getByRole("radio", { name }).or(page.getByRole("button", { name })).first();
-    await page.getByRole("link", { name: "Settings" }).first().click();
-    await page.waitForTimeout(1500);
-    if (!(await page.getByRole("heading", { name: "Extensions" }).count()))
-      await page.getByRole("link", { name: /^Extensions/ }).first().click();
+    const settings = page.getByRole("link", { name: "Settings" }).first();
+    if (await settings.isVisible().catch(() => false)) {
+      await settings.click();
+      await page.waitForTimeout(1500);
+      if (!(await page.getByRole("heading", { name: "Extensions" }).count()))
+        await page.getByRole("link", { name: /^Extensions/ }).first().click();
+    } else {
+      // A phone keeps the navigation folded: open the page by its address.
+      await page.goto(new URL("/settings/plugins", page.url()).toString());
+    }
     await page.locator('[role="group"][aria-label="Extensions"]').waitFor({ timeout: 30000 });
     await page.waitForTimeout(2500);
     if (mode === "marketplaces") {
@@ -124,13 +130,22 @@ export default async function (page, rawShot) {
       console.log(JSON.stringify(report));
       return;
     }
-    await filter(/^Connectors/).click();
+    // DOCS_FILTER: the type filter above the list (default All, so plugins and connectors).
+    await filter(new RegExp(`^${env.DOCS_FILTER || "All"}`)).click();
     await page.waitForTimeout(1000);
     await filter(/^Discover/).click();
     await page.waitForTimeout(4000);
     await shot("discover");
+    if (env.DOCS_ENABLE === "0") {
+      console.log(JSON.stringify(report));
+      return;
+    }
     const name = env.DOCS_CONNECTOR || "Geo";
-    await page.locator('[role="group"][aria-label="Connectors to enable"]').getByText(name, { exact: true }).first().click();
+    await page
+      .locator('[role="group"][aria-label$="to enable"]')
+      .getByText(name, { exact: true })
+      .first()
+      .click();
     const card = page.locator('[data-slot="connector-setup-card"]');
     await card.waitFor({ timeout: 20000 });
     await page.waitForTimeout(1500);
@@ -223,7 +238,9 @@ export default async function (page, rawShot) {
     await shot("reopened");
   } else if (mode === "picker") {
     const lists = page.getByRole("toolbar", { name: "Workbench lists" });
-    if (!(await lists.isVisible().catch(() => false))) {
+    // A closed workbench keeps its lists in the page, off to the right: open it then.
+    const box = await lists.boundingBox().catch(() => null);
+    if (!box || box.x + box.width > page.viewportSize().width) {
       await page.getByRole("button", { name: "Open workspace canvas" }).first().click();
       await page.waitForTimeout(1500);
     }
@@ -234,6 +251,11 @@ export default async function (page, rawShot) {
     await page.getByRole("button", { name: /Add (package|plugin)/u }).first().click();
     await page.waitForTimeout(2000);
     await shot("add-plugin");
+    // The menu scrolls: its later groups (Plugins) sit below Packs.
+    await page.mouse.move(1230, 400);
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(1500);
+    await rawShot("add-plugin-scrolled");
   }
   report.calls = await toolCalls(session);
   report.log = log;
