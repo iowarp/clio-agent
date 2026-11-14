@@ -11,7 +11,8 @@ conversation timed out after 120 s with a bare 500. The person saw no error at a
 While a lost write is on record, those refusals answer ``503`` with the typed error
 :data:`CORE_WRITES_REFUSED`, a plain message that names the store and what to do, and
 the lost write's facts in ``details``; each refusal is written to the runtime trace
-(``clio_core_writes_refused``) with the session and route. A refusal with no lost write
+(``clio_core_writes_refused``) with the session and route, once per route and lost
+write. A refusal with no lost write
 on record keeps its original answer.
 """
 
@@ -33,13 +34,15 @@ CORE_WRITES_REFUSED = "clio_core_writes_refused"
 NO_ROOM_CODES = frozenset({12, 13})
 #: What the person reads.
 MESSAGE = (
-    "Not saved: CLIO's conversation store is refusing writes, so nothing new can be "
-    "recorded. Free disk space or give the store more room, then restart CLIO."
-)
-MESSAGE_NO_ROOM = (
-    "Not saved: CLIO's conversation store is full, so nothing new can be recorded. "
+    "CLIO's conversation store is refusing writes, so nothing new can be recorded. "
     "Free disk space or give the store more room, then restart CLIO."
 )
+MESSAGE_NO_ROOM = (
+    "CLIO's conversation store is full, so nothing new can be recorded. "
+    "Free disk space or give the store more room, then restart CLIO."
+)
+#: (session, route, lost write) already traced: a page polling a refused route is one line.
+_TRACED: set[tuple[str, str, str]] = set()
 _SESSION = re.compile(r"/v1/sessions/([^/]+)")
 
 
@@ -48,16 +51,19 @@ def _refusal(route: str) -> ErrorInfo | None:
     if lost is None:
         return None
     session = _SESSION.search(route)
-    trace.event(
-        "CORE",
-        "%s session=%s route=%s lost_at=%s native_code=%s lost_name=%s",
-        CORE_WRITES_REFUSED,
-        session.group(1) if session else "",
-        route,
-        lost.occurred_at,
-        lost.native_code,
-        lost.name,
-    )
+    key = (session.group(1) if session else "", route, lost.name)
+    if key not in _TRACED:
+        _TRACED.add(key)
+        trace.event(
+            "CORE",
+            "%s session=%s route=%s lost_at=%s native_code=%s lost_name=%s",
+            CORE_WRITES_REFUSED,
+            key[0],
+            route,
+            lost.occurred_at,
+            lost.native_code,
+            lost.name,
+        )
     return ErrorInfo(
         error=CORE_WRITES_REFUSED,
         message=MESSAGE_NO_ROOM if lost.native_code in NO_ROOM_CODES else MESSAGE,

@@ -32,6 +32,7 @@ class _Refused(RuntimeError):
 @pytest.fixture(autouse=True)
 def _write_health() -> Iterator[None]:
     retry._reset_put_write_health_for_tests()
+    core_write_refusal._TRACED.clear()
     yield
     retry._reset_put_write_health_for_tests()
 
@@ -99,11 +100,12 @@ def test_a_full_store_refuses_a_message_typed_and_traced(client) -> None:
     assert response.headers["access-control-allow-origin"] == ORIGIN  # readable in a browser
     error = response.json()["error"]
     assert error["error"] == core_write_refusal.CORE_WRITES_REFUSED
-    assert error["message"].startswith("Not saved: CLIO's conversation store is full")
+    assert error["message"].startswith("CLIO's conversation store is full")
     assert error["recoverable"] is False
     assert error["details"]["native_code"] == 12
     assert error["details"]["lost_payload_bytes"] == 16384
     assert error["details"]["recovery_actions"] == ["free_disk_space", "enlarge_store", "restart"]
+    test_client.post("/v1/sessions/sess_a/messages")  # the same refusal again: one line
     (event,) = events
     assert event.startswith("clio_core_writes_refused session=sess_a route=/v1/sessions/sess_a/")
     assert "native_code=12" in event
