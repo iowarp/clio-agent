@@ -1920,9 +1920,21 @@ function Get-ClioKitBusy($Dirs) {
 # A clio-kit this installation owns (in its own tool folders, or one it installed in the
 # user's while none was there, as clio-kit-owned.json records) gets its Python inside the
 # prefix, so uninstall.ps1 removes both. The user's own clio-kit is left on its Python.
+# A matching Python uv already manages for the user is reused where it is, as before, and
+# is left there by uninstall.ps1: only a Python the kit has to download goes in the prefix.
 $KitPythonDir = Join-Path $Prefix 'uv-python'
 $KitOwnedRecord = Join-Path $Prefix 'clio-kit-owned.json'
 $KitNewlyOwned = $null
+$KitUserPython = $null
+function Find-ClioUserManagedPython([string]$Uv) {
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $found = @(& $Uv python find --system --managed-python --no-python-downloads $py 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $found.Count -and "$($found[0])".Trim()) { return "$($found[0])".Trim() }
+    } catch { } finally { $ErrorActionPreference = $SavedPreference }
+    return $null
+}
 function Start-ClioKitInstall([string]$Uv) {
     $dirs = Get-ClioKitDirs $Uv
     $busy = Get-ClioKitBusy $dirs
@@ -1936,7 +1948,10 @@ function Start-ClioKitInstall([string]$Uv) {
         $script:KitNewlyOwned = $dirs
     }
     $savedPython = $env:UV_PYTHON_INSTALL_DIR
-    if ($owned -and -not $savedPython) { $env:UV_PYTHON_INSTALL_DIR = $KitPythonDir }
+    if ($owned -and -not $savedPython) {
+        $script:KitUserPython = Find-ClioUserManagedPython $Uv
+        if (-not $script:KitUserPython) { $env:UV_PYTHON_INSTALL_DIR = $KitPythonDir }
+    }
     Use-ClioKitToolDirs
     try { return Start-ClioBackground $Uv "tool install --python $py `"$ClioKitSpec`"" 'kit' }
     finally {
@@ -2110,7 +2125,8 @@ if ($KitJob -or $KitKept -or (Have uv)) {
     } elseif ($KitJob) {
         $kitStatus = Complete-ClioBackground $KitJob
         if ($kitStatus -eq 0 -and $KitNewlyOwned -and (Test-Path -LiteralPath (Join-Path $KitNewlyOwned.Tool 'clio-kit'))) {
-            $owner = [ordered]@{ tool_dir = $KitNewlyOwned.Tool; bin_dir = $KitNewlyOwned.Bin; python_dir = $KitPythonDir }
+            # python_dir is empty when the kit runs on the user's own uv-managed Python.
+            $owner = [ordered]@{ tool_dir = $KitNewlyOwned.Tool; bin_dir = $KitNewlyOwned.Bin; python_dir = $(if ($KitUserPython) { '' } else { $KitPythonDir }); user_python = $(if ($KitUserPython) { $KitUserPython } else { '' }) }
             [System.IO.File]::WriteAllText($KitOwnedRecord, (ConvertTo-Json $owner), (New-Object System.Text.UTF8Encoding $false))
         }
     } else {
