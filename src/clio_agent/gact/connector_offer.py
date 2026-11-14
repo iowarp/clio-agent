@@ -380,14 +380,42 @@ def _turned_on(
     }
     if reason:
         result["join_reason"] = reason
+    skills = _plugin_skills(app, plugins)
+    if skills:
+        result["skills"] = skills
     if plugins and not already:
+        result["message"] += f" Its plugin {', '.join(plugins)} joined this conversation only."
+    if skills:  # loadable in this turn (CF-D6)
         result["message"] += (
-            f" Its plugin {', '.join(plugins)} joined this conversation only; its skills are "
-            "offered from the next message."
+            " Its skills load with load_skill from your next step: "
+            f"{', '.join(skill['id'] for skill in skills)}."
         )
     if text := instructions_for(found.id):
         result["instructions"] = text
     return result
+
+
+def _plugin_skills(app: Any, plugins: list[str]) -> list[dict[str, str]]:
+    """The skills the connector's plugins bring this conversation ({id, description})."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+
+    sid = _session_id()
+    if not plugins or not sid or _session(app, sid) is None:
+        return []
+    try:
+        rows = session_resolution(app, sid).skills
+    except (SessionAgentUnavailable, RuntimeError) as exc:
+        trace.event("TOOLS", "connector_offer_skills_unavailable session=%s (%s)", sid, exc)
+        return []
+    return [
+        {"id": str(row["id"]), "description": str(row.get("description") or "")}
+        for row in rows
+        if row.get("plugin") in plugins
+    ]
 
 
 async def offer_connector(connector: str = "", reason: str = "") -> dict[str, Any]:
@@ -560,6 +588,18 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
             **({"severity": "warning"} if not tools else {}),
         }
     )
+    if skills := [s for s in row.get("skills") or [] if isinstance(s, Mapping)]:
+        blocks.append(
+            {
+                "id": "skills",
+                "type": "text",
+                "label": f"Skills ({len(skills)})",
+                "text": "\n".join(
+                    f"{skill.get('id')}: {skill.get('description') or ''}".rstrip(": ")
+                    for skill in skills
+                ),
+            }
+        )
     if status.get("status") == "unreachable":
         blocks.append(
             {

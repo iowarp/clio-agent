@@ -463,3 +463,25 @@ def test_a_search_miss_says_what_is_not_searched() -> None:
     text, structured = search_result(Catalog(), "paraview")  # type: ignore[arg-type]
     assert not structured["tools"]
     assert "Only this conversation's tools are searched" in text and "offer_plugin" in text
+
+
+def test_a_connector_offer_names_the_skills_its_plugin_brings(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pinned = SimpleNamespace(
+        skills=[
+            {"id": "scenes", "plugin": "paraview", "description": "Work with scenes"},
+            {"id": "other", "plugin": "core", "description": "x"},
+        ]
+    )
+    monkeypatch.setattr("clio_agent.gact.agents.resolution.session_resolution", lambda *_: pinned)
+    assert connectors._plugin_skills(app, ["paraview"]) == [
+        {"id": "scenes", "description": "Work with scenes"}
+    ]
+    assert connectors._plugin_skills(app, []) == []
+    shown = connectors.present(
+        {"connector": "paraview"},
+        None,
+        {"connector_name": "ParaView", "tools": ["a"], "skills": [{"id": "scenes"}]},
+    )
+    assert {b["id"]: b["text"] for b in shown["blocks"]}["skills"] == "scenes"
