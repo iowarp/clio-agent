@@ -75,6 +75,8 @@ _SKIP_WORDS = {
     "cross_origin_pixels": "pixels from another origin",
     "not_drawable": "an element the browser could not draw",
     "wrapped_text_not_drawn": "text that wraps over several lines",
+    "canvas_not_readable": "a canvas the browser would not read",
+    "html_overlay_not_drawn": "the labels and panels over the view",
 }
 
 
