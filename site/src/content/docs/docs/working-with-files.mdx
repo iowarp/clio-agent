@@ -47,6 +47,23 @@ assembly, shows each part in its own colour and lists the parts by the names in 
 file. Clear a part's box to hide it; the size then covers the parts still shown.
 **File actions** turns the edges and the parts list on or off.
 
+The toolbar also holds the usual CAD tools, each with a key when the view has focus:
+
+- **Measure** (M): click two points for the distance and its X, Y and Z parts. Points
+  snap to corners and edges. **Radius** reads a round edge, such as a hole's rim, and
+  **Angle** the angle between two faces. Esc cancels a half-made measurement.
+- **Section** (S): cut the model across X, Y or Z, move the plane with the slider and
+  **Flip** the kept side. Cut faces are filled, so walls and channels read as solid.
+- **Explode** (E): move the parts apart from the assembly's centre with a slider.
+- Click a part, or its name in the parts list, to see its own size and triangle count,
+  and to ghost or isolate the other parts.
+
+Under **File actions**, **Print plate** draws a printer's bed and build volume under the
+model and says whether the shown parts fit, for example “Fits the Bambu Lab A1 plate” or
+“Too tall by 12.0 mm”; pick a common printer or enter your own size. **Orthographic**
+and **Inches** change the projection and the unit. The axis buttons in the corner look
+along an axis; click the same one again to look from the other side.
+
 **Download** keeps the original file. The menu beside it adds **Export to…** rows that
 save the model as a binary STL for a slicer, as a GLB for other 3D viewers, or as a PNG
 picture of the current view. STEP files are read in the browser by OpenCASCADE, which
