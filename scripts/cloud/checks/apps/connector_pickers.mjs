@@ -86,7 +86,8 @@ export default async function (page, shot) {
     await page.getByRole("button", { name: /Add (package|plugin)/u }).first().click();
     await settle(page, 1500);
     await shot("agent-add-plugin");
-    const group = page.getByRole("group", { name: "Connectors" });
+    // A connector is under Connectors; a plugin that bundles one under Plugins (PL-D1).
+    const group = page.getByRole("group", { name: process.env.CHECK_GROUP || "Connectors" });
     report.agentAddPlugin = (await text(group)).includes(connector);
     report.agentAddPluginText = (await text(group)).slice(0, 200);
     await page.keyboard.press("Escape");
