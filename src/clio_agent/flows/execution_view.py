@@ -204,7 +204,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             unreadable = review.get("status") == "review_unreadable"
             issues = review.get("issues") or []
             detail = (
-                "The review could not be read, so the report was delivered unreviewed.\n"
+                "The review could not be completed, so the report was delivered unreviewed.\n"
                 + str(review.get("reason") or "")
                 if unreadable
                 else "\n".join(str(issue.get("reason") or "") for issue in issues)
