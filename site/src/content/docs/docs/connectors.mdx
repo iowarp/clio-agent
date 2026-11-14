@@ -91,6 +91,24 @@ Rows marked **Required** must be filled before the connector is ready.
 When you change a value, CLIO reconnects to the service, or restarts it if it runs on
 your machine, and lists its tools again.
 
+### Values for one conversation, and defaults
+
+*Amended.* The values in Extensions are your **defaults**: every conversation uses
+them unless it has its own. A value given inside a conversation, by you on a card or
+by the agent, is that **conversation's own**. Pointing ParaView at node08 in one
+conversation leaves another conversation's ParaView on this machine, and the views
+in both stay open.
+
+On a card in a conversation, each address or value row has **Save as default**.
+Leave it clear to keep the value in this conversation only; the row then reads
+**This conversation only** and shows the default it replaces. Tick it to make the
+value your default for new conversations too. Secrets and sign-ins are always yours
+for every conversation.
+
+A conversation with values of its own gets its own copy of the connector's server, so
+it never changes what another conversation is connected to. Reopening a view in a
+conversation uses that conversation's values.
+
 A secret goes to the service only. It is kept in CLIO's credential file in your
 configuration folder, readable only by you, and never appears in the conversation,
 in what the model reads, or in the logs.
@@ -120,7 +138,9 @@ The same card appears when a service stops accepting a sign-in it accepted befor
 Some values are things you might say in passing: "the ParaView I want is on node08".
 A row marked **The agent can set this** can be changed by the agent with its
 `set_connector_value` tool. It can set several values of one connector in one call,
-and the card shows the new values. The call follows your
+and the card shows the new values. *Amended:* the agent sets them for the
+conversation it is in, never as your defaults; its step reads **Applies to: This
+conversation**. The call follows your
 [permissions](/docs/permissions/) like any other tool.
 
 The agent can never set a secret or sign in for you. It cannot change a row that is
