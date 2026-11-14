@@ -650,7 +650,7 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
-            prev = pop_previous_content(result)  # Undo's pre-write copy: never on a wire
+            prev, whole = pop_previous_content(result), result  # effects see the unbounded result
             if completion_error is None and result is not None:
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
@@ -793,7 +793,7 @@ def _make_tool_observer(app: "FastAPI"):
                         ),
                     )
                 # A write that ran is on disk even if the turn was cancelled meanwhile.
-                record_call_effects(app, sid, name, call_id, error, result, prev, invoking_expert)
+                record_call_effects(app, sid, name, call_id, error, whole, prev, invoking_expert)
         return None
 
     return observe
