@@ -25,7 +25,7 @@ compression ratios?
 You need a working [CLIO installation](/docs/install/), a
 [model connection](/docs/connect-a-model/) that can use tools, and at least one
 web or literature search source. The run shown here used Claude Sonnet and took
-about RUN_MINUTES minutes. Your run will choose its own directions and sources,
+16 minutes. Your run will choose its own directions and sources,
 so its wording, counts and layout will differ.
 
 ## Ask the question
@@ -49,14 +49,15 @@ so its wording, counts and layout will differ.
    and what error bounds and compression ratios do recent papers report?
    ```
 
-4. Approve the search sources. The first time a run searches through a source,
-   CLIO asks. Choose **Allow searches through …** for each source you want the
-   run to use, then **Send response**. If you decline one, the run moves to the
-   next source you allowed.
+4. Approve the search sources. The first time a researcher searches through a
+   source, CLIO asks below the run, naming the direction that wants to search.
+   Choose **Allow searches through …** for each source you want the run to use,
+   then **Send response**. If you decline one, the run moves to the next source
+   you allowed.
 
    <Capture client:visible image={await captureImage(approval)}
-     alt="A question card asking whether to allow literature searches through a scholarly source, with allow and decline choices"
-     caption="Each search source is approved once. Settings > Web search lists the sources and their state." />
+     alt="A running deep research card with four directions, and below it a question: Allow searches through the literature sources? with allow and decline choices and Send response"
+     caption="CLIO asks once for each source, while the researchers work. This capture is from an earlier run of the same question." />
 
 </Steps>
 
@@ -64,9 +65,12 @@ so its wording, counts and layout will differ.
 
 A **Deep research run** card appears in the conversation. The planner splits
 the question into named directions, and one researcher works on each, all at
-once. In this run the planner chose DIRECTION_COUNT directions:
+once. In this run the planner chose four directions:
 
-DIRECTION_LIST
+- **HDF5 filter registry status**: which compressors have registered HDF5 filter IDs.
+- **SZ and ZFP family capabilities**: what each offers and how its error bounds work.
+- **Other lossy compressors and LibPressio**: SPERR, MGARD, TTHRESH and the LibPressio interface.
+- **Reported ratios on science datasets**: compression ratios from recent papers.
 
 <Capture client:visible image={await captureImage(running)}
   alt="A running deep research card: Started, Plan, four named researchers in parallel, and a Check step for each, one of them still running"
@@ -95,7 +99,12 @@ Two things happen in a check:
   stated, whether the source is authoritative and current, and whether other
   evidence contradicts it.
 
-In this run, CHECK_SUMMARY
+In this run, the check of **Reported ratios on science datasets** verified 17
+claims and rejected or narrowed 4. Among the rejections were ratios whose
+error-bound labels were lost when the page was read, and a ranking across papers
+that no single passage supported. Across the whole run, 142 of 143 quoted
+passages were found on the page the researcher read; the one that was not was
+rejected for that reason. The critics verified 143 claims and rejected 44.
 
 ## See what the coordinator decided
 
@@ -108,7 +117,12 @@ the answer needs more research.
   alt="The Coordinate step selected, showing the findings it drew across researchers and the follow-ups it chose"
   caption="Coordinate is the one place where follow-up research is decided." />
 
-COORDINATE_SUMMARY
+Here the coordinator made 8 findings across the evidence and sent 3 follow-up
+researchers, each on a question none of the first four had answered: **LibPressio
+and MGARD filters**, **Independent benchmark ratios**, and **Release dates and
+SZ3 modes**. Their claims went through the same checks. A second Coordinate step
+after them made 10 findings in all and sent nothing more, because the default
+allows one round of follow-ups.
 
 ## Read the report
 
@@ -117,8 +131,8 @@ When the run ends, CLIO saves the report as a Markdown file in the workspace's
 the run could not verify.
 
 <Capture client:visible image={await captureImage(answerEnd)}
-  alt="The end of the deep research answer with what was not verified and the attached Markdown report"
-  caption="The answer summarizes the outcome and links the saved report." />
+  alt="The end of the deep research answer: a table of compression ratios by dataset for SZ3, ZFP and SPERR, caveats and gaps, the reviewer's open issues, and the attached Markdown report"
+  caption="The answer ends with its caveats and the reviewer's open issues, then the saved report." />
 
 Choose the file to open the report beside the conversation.
 
@@ -126,7 +140,17 @@ Choose the file to open the report beside the conversation.
   alt="The report open beside the conversation: question and scope, executive answer and findings with a source under each claim"
   caption="Every finding links the page it was checked against." />
 
-REPORT_SUMMARY
+This report has 6,078 words. Its findings are grouped into filters and their
+IDs, error-bound modes, and reported compression ratios, followed by a section on
+where the evidence disagrees or is limited. It says plainly that the papers
+measured ratios under different bound conventions, so they do not support a
+head-to-head ranking.
+
+A separate reviewer checked the draft against its evidence and sent it back once.
+The revised draft still had problems: a garbled sentence comparing SPERR with
+SZ3.1, and two statements stronger than their sources. CLIO delivered the report
+with those listed under **Open review notes** and repeated them at the end of the
+answer, rather than presenting it as clean.
 
 Read these sections first:
 

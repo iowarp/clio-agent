@@ -292,20 +292,26 @@ def _coordinations(content: dict[str, Any]) -> dict[int, dict[str, Any]]:
 
 
 def _coordination_detail(event: dict[str, Any]) -> str:
-    """What the coordinator decided, in words, from its typed event."""
-    follow_ups = [str(question) for question in event.get("follow_ups") or []]
-    lines = [
-        f"Chose {len(follow_ups)} follow-up direction{'s' if len(follow_ups) != 1 else ''}:"
+    """What the coordinator decided, in words, from its typed event.
+
+    One paragraph, counts first: step details are shown as inline text, so line
+    breaks and list markers would run together.
+    """
+    follow_ups = [str(question).strip() for question in event.get("follow_ups") or []]
+    parts = [
+        f"Chose {len(follow_ups)} follow-up direction{'s' if len(follow_ups) != 1 else ''}."
         if follow_ups
         else "No follow-up research needed."
         if event.get("rounds_left")
         else "No research rounds left."
     ]
-    lines += [f"- {question}" for question in follow_ups]
     across = int(event.get("across") or 0)
     if across:
-        lines.append(f"{across} finding{'s' if across != 1 else ''} across the verified evidence.")
+        parts.append(f"{across} finding{'s' if across != 1 else ''} across the verified evidence.")
     opened = int(event.get("open_questions") or 0)
     if opened:
-        lines.append(f"{opened} question{'s' if opened != 1 else ''} left open.")
-    return "\n".join(lines)
+        parts.append(f"{opened} question{'s' if opened != 1 else ''} left open.")
+    if follow_ups:
+        numbered = " ".join(f"({n}) {question}" for n, question in enumerate(follow_ups, 1))
+        parts.append(f"Follow-ups: {numbered}")
+    return " ".join(parts)

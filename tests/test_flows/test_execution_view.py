@@ -324,11 +324,13 @@ def test_deep_research_shows_the_coordinator_between_rounds() -> None:
         "run:subagent:key=verify:1:d1:abc:0",
         "run:subagent:key=verify:1:d2:abc:0",
     ]
-    assert first["detail"].splitlines()[:2] == ["Chose 1 follow-up direction:", "- Who ruled?"]
+    assert first["detail"].startswith("Chose 1 follow-up direction.")
+    assert first["detail"].endswith("Follow-ups: (1) Who ruled?")
+    assert "\n" not in first["detail"]
     assert by_id["run:subagent:key=research:g2.1:abc:0"]["after"] == ["run:coordinate:1"]
     assert second["after"] == ["run:subagent:key=verify:2:g2.1:abc:0"]
     assert second["detail"] == (
-        "No research rounds left.\n3 findings across the verified evidence.\n1 question left open."
+        "No research rounds left. 3 findings across the verified evidence. 1 question left open."
     )
     assert by_id["run:draft"]["after"] == ["run:coordinate:2"]
 
