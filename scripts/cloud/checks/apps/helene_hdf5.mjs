@@ -153,16 +153,27 @@ async function finalBeat(page, shot, sid, log) {
   await page.waitForTimeout(6000);
   await shot("beat-landfall");
   // Raise the liquid-water surface with its slider.
-  await app.getByRole("button", { name: "Pipeline" }).click();
-  await app.getByRole("button", { name: "liquid", exact: true }).click();
+  // The agent names its contours; pick the liquid one whatever it called it. The panel
+  // remembers an open drawer, so open the pipeline only when its list is not showing.
+  const liquid = app.getByRole("button", { name: /^(?!Hide |Show |Remove ).*liquid/i }).first();
+  if (!(await liquid.isVisible().catch(() => false))) {
+    await app.getByRole("button", { name: "Pipeline" }).click();
+  }
+  await liquid.click();
   await app.getByRole("button", { name: "Add filter" }).click();
   await app.getByRole("button", { name: /^Edit/ }).first().click();
   // Types the raised liquid surface (the slider does not yet track drags; see the
   // ParaView panel task) and applies it.
   const values = app.getByRole("textbox", { name: "Values" });
+  // Raises the surface: each of the agent's chosen values, doubled.
+  const raised = (await values.inputValue())
+    .split(/[ ,]+/)
+    .filter(Boolean)
+    .map((v) => String(Number((Number(v) * 2).toPrecision(2))))
+    .join(", ");
   await values.click();
   await values.fill("");
-  await page.keyboard.type("5e-05, 0.0001", { delay: 60 });
+  await page.keyboard.type(raised || "1e-04", { delay: 60 });
   await app.getByRole("button", { name: "Update" }).click();
   await page.waitForTimeout(8000);
   await shot("beat-raised");
@@ -212,7 +223,9 @@ export default async function (page, shot) {
   await composer.waitFor({ state: "visible", timeout: 180000 });
   await page.waitForTimeout(2000);
   // Only this conversation on screen: the workspace list is hidden for the recording.
-  if (process.env.HIDE_SIDEBAR !== "0") {
+  // The app remembers the sidebar's state, so hide it only when it is showing.
+  const listShown = await page.getByText("Workspaces", { exact: true }).first().isVisible().catch(() => false);
+  if (process.env.HIDE_SIDEBAR !== "0" && listShown) {
     await page.getByRole("button", { name: "Toggle Sidebar" }).first().click().catch(() => {});
   }
   mark("start");
