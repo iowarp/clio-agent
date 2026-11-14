@@ -688,12 +688,11 @@ def resolve_agent(
     """Resolve ``spec`` (from ``marketplace``) with ``delta`` applied."""
 
     builder = _Builder(catalog, marketplace)
-    selections = []
     depth_of = {layer: index for index, layer in enumerate(spec.layers)}
-    for selection in spec.plugins:
-        selections.append(
-            (selection.ref, "agent", selection.layer, depth_of.get(selection.layer, 0))
-        )
+    selections = [
+        (selection.ref, "agent", selection.layer, depth_of.get(selection.layer, 0))
+        for selection in spec.plugins
+    ]
     removed = _resolve_set(builder, selections, delta, user_depth=len(spec.layers))
     entries = sorted(builder.entries.values(), key=lambda e: e.order)
     identity = dict(identity or {})
@@ -709,6 +708,7 @@ def resolve_agent(
         "spec_checksum": spec.checksum,
         "parent": identity.get("parent", ""),
         "kind": "agent",
+        **({"bare": True} if spec.bare else {}),  # only when set: other digests unchanged
     }
     return _finish(
         builder,

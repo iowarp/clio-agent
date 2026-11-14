@@ -286,7 +286,9 @@ class _Loop:
         self.lm = agent.lm or dspy.settings.lm
         if self.lm is None:
             raise NoLanguageModelError()
-        self.system = _system(agent.signature, self.inputs, agent.tools)
+        # A bare agent sends no system message at all, not even the signature's docstring.
+        self.bare = bool(getattr(agent, "_clio_bare", False))
+        self.system = "" if self.bare else _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
@@ -338,7 +340,8 @@ class _Loop:
         from clio_agent.gact.summon import expand_server_summons  # noqa: PLC0415
 
         added = expand_server_summons([*_ctx.turn_injections(), *start], self.agent)
-        self.recorder.injections(added)
+        if not self.bare:  # a bare agent's model sees only the conversation
+            self.recorder.injections(added)
         # The continuing flag is this forward's alone: anything it starts opens its own task.
         continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
         if continue_token is None:
@@ -517,7 +520,7 @@ class _Loop:
         """The request for the context as it stands (commits and records nothing)."""
         return Request(
             model=self.lm.model,
-            system=self.system,
+            system=self.system or None,  # a bare agent sends no system message
             messages=tuple(_place_tool_media(self._context(), self.tool_media)),
             tools=self.tools,
             config=self.config,
