@@ -9,6 +9,8 @@
 //               phone: the comment flow at phone width (no hero layout); phone-look: the look
 //   FV_COMMENT  the comment typed on the region (default the wall question)
 //   FV_LOOK     the look request
+//   FV_LOOK_AFTER  seconds the view stays open before the look request (default 0): over 60 s
+//               checks the view's claim is renewed while mounted (GF)
 //   FV_OUT      a file that receives the turns' tool calls and answers
 //   FV_STOP     "measure": stop after the section and the wall measurement (calibration)
 // Waits for each turn, allowing the session's permission asks as a person would.
@@ -200,6 +202,7 @@ export default async function (page, shot) {
       if (await close.count()) await close.first().evaluate((button) => button.click());
       await page.waitForTimeout(2000);
     } else await restore(page);
+    await page.waitForTimeout(Number(env.FV_LOOK_AFTER || 0) * 1000);
     await turn(
       page,
       shot,
