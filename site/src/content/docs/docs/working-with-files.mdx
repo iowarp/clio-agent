@@ -4,6 +4,9 @@ description: Read a file beside the conversation, request a revision and keep th
 ---
 
 import WidgetRecording from '../../../components/WidgetRecording.astro';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import cadStep from '../../../assets/captures/files/cad-step-assembly.png';
 
 Open a file beside the conversation to read it, check a result, or ask for a
 change. This guide covers the file viewer. To bring in new material or choose
@@ -46,6 +49,11 @@ numbers are read as millimetres. A model with several parts, such as a STEP
 assembly, shows each part in its own colour and lists the parts by the names in the
 file. Clear a part's box to hide it; the size then covers the parts still shown.
 **File actions** turns the edges and the parts list on or off.
+
+<Capture client:visible image={await captureImage(cadStep)}
+  alt="A STEP file, whistle_assembly.step, open full width in the file viewer: the toolbar reads 63.0 × 20.0 × 24.0 mm and 2 parts, the parts list shows body in orange and plug in blue, both ticked, and the model is drawn in those colours with its edges"
+  caption="A two-part STEP assembly the agent wrote with CadQuery, with its size and parts list."
+/>
 
 **Download** keeps the original file. The menu beside it adds **Export to…** rows that
 save the model as a binary STL for a slicer, as a GLB for other 3D viewers, or as a PNG

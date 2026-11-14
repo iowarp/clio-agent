@@ -13,9 +13,13 @@ does not have them. See [Features and versions](/docs/versions/).
 </Aside>
 
 A [connector](/docs/connectors/) is data: one entry in a YAML file and, optionally, a
-logo. Adding one needs no Python or TypeScript. A plugin can follow a connector, so it
-reaches agents exactly when the connector is on. This page covers both, and then what
-an MCP App server author can use in CLIO beyond the MCP Apps standard.
+logo. Adding one needs no Python or TypeScript. A plugin can follow a connector, to give
+the agent skills for its tools. This page covers both, and then what an MCP App server
+author can use in CLIO beyond the MCP Apps standard.
+
+Under the hood, CLIO carries every connector into a conversation as an Agent Plugin:
+the plugin that follows it, or else a plugin with no content that only binds its
+connection (below). People never see that plugin; they add the connector.
 
 ## Where entries live
 
@@ -23,10 +27,15 @@ an MCP App server author can use in CLIO beyond the MCP Apps standard.
 
 - catalogs/connectors/
   - connector.schema.json the JSON Schema every file is checked against
-  - paraview.yaml
-  - paraview.svg
   - burette.yaml
   - burette.svg
+  - earthdata.yaml
+  - geo.yaml
+  - globe.yaml
+  - paraview.yaml
+  - paraview.svg
+  - pdf.yaml
+  - pdf.svg
   - spice.yaml
 
 </FileTree>
@@ -99,7 +108,7 @@ A remote server is a URL, with optional headers:
 | `server` | Yes | `url` with optional `headers`, or `command` with optional `args` and `env`. |
 | `needs` | No | What the person or the agent supplies. See below. Default: none. |
 | `logo` | No | An SVG file name beside the entry. Without one, CLIO shows a monogram. |
-| `plugin` | No | The plugin that follows this connector, shown on the card as **Brings plugin**. |
+| `plugin` | No | The plugin that follows this connector, shown on the card as **Agent guidance** with the plugin's title. |
 | `tools` | No | The server's tools this connector offers. Absent means all. The others are hidden from the agent and from `search_tools`. A listed name the server lacks is reported, not silently dropped. |
 
 `${VAR}` in a server field is filled from CLIO's environment, as in
@@ -139,7 +148,7 @@ server should treat an empty value as "not set". When a value changes, CLIO rest
 command server, or reconnects to a URL server, and lists its tools again. Read values
 when the server starts.
 
-*Amended.* Address and value needs are filled per conversation: a conversation's own
+Address and value needs are filled per conversation: a conversation's own
 values over the person's defaults. Two conversations with different values run two
 copies of your command server (or two connections to your URL), each started with its
 own environment and arguments, side by side in the same workspace folder. Do not
@@ -180,7 +189,8 @@ connection under the same name with `connections`:
 - Enabling the connector adds the plugin to no conversation. While the connector is
   enabled, the plugin is offered under **Connectors** in a conversation's **Add
   plugin** picker, by the connector's name and logo, and in the agent editor. The
-  person adds it to the conversations that need it, or to an agent as a default.
+  person adds it to the conversations that need it, or to an agent as a default. The
+  agent can also offer it with `offer_plugin`, by the connector's id or name.
 - When the connector is turned off, a conversation that has the plugin keeps it in its
   delta, but the plugin leaves the conversation's resolution with the typed reason
   `connector_off`; it comes back when the connector is enabled again. A connector
@@ -194,10 +204,20 @@ connection under the same name with `connections`:
 
 A connector with no following plugin is added the same way: for every enabled
 connector CLIO lists a plugin with no content, `connector-<id>` in the
-`clio-connectors` marketplace, that only binds the connection.
+`clio-connectors` marketplace, that only binds the connection. Name it in nothing you
+ship; it is CLIO's, and people see the connector.
 
 Write the plugin's skill to tell the agent how to use the tools well, and which values
 it may change with `set_connector_value`. See [Plugin reference](/docs/sdk/plugins/).
+
+## How the agent finds a connector or plugin
+
+In a conversation, the agent sees the connectors and plugins it does not have yet:
+every connector first, then the plugins of the marketplaces the person added, the most
+recently added marketplace first, up to `plugins.offer_listed` (default 20) with the
+total. Each is listed by name with the start of its description, about 100 characters.
+Put what it does in those first words, so the agent can tell when a request needs it.
+The agent offers one with `offer_plugin`; the person's **Add** is the consent.
 
 ## For MCP App authors
 
