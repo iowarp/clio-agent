@@ -189,7 +189,7 @@ def conversation_spec(app: Any, session_id: str, namespace: str, root: str) -> A
         session_server_set,
     )
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
-    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
+    from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
     reason = "not_in_server_set"
     spec = None
@@ -204,7 +204,7 @@ def conversation_spec(app: Any, session_id: str, namespace: str, root: str) -> A
         reason = "no_conversation"
     elif declared:
         # The fleet builds its gateway the same way (``_build_tool_gateway``, cwd = root).
-        specs = load_agent_mcp_servers(cwd=fleet_root(root) or None, plugin_servers=declared)
+        specs = load_mcp_servers(cwd=fleet_root(root) or None, plugin_servers=declared)
         spec = specs.get(namespace)
     if spec is None:
         trace.event(

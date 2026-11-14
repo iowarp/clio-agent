@@ -59,12 +59,12 @@ def _agent() -> Any:
 
     from fastmcp import FastMCP
 
-    from clio_agent.search.web_mcp_default import load_agent_mcp_servers
     from clio_agent.tools.gateway import build_gateway
+    from clio_agent.tools.mcp_config import load_mcp_servers
 
     def gateway(*, cwd: str | None = None, server_set: str = "", **_: Any) -> Any:
         declared = servers.server_set_declarations(server_set)
-        specs = load_agent_mcp_servers(cwd=cwd, plugin_servers=declared)
+        specs = load_mcp_servers(cwd=cwd, plugin_servers=declared)
         return build_gateway(specs, cwd=cwd, proxy_factory=lambda spec: FastMCP(name="stub"))
 
     return SimpleNamespace(_build_tool_gateway=gateway)
