@@ -55,8 +55,13 @@ def call(name, args):
         cif = float(args["cif_value"])
         duty = round(cif * float(args["duty_rate_percent"]) / 100, 2)
         vat = round((cif + duty) * float(args["vat_rate_percent"]) / 100, 2)
-        return {"cif_value": cif, "duty": duty, "vat_base": cif + duty, "vat": vat,
-                "landed_cost": round(cif + duty + vat, 2)}
+        return {
+            "cif_value": cif,
+            "duty": duty,
+            "vat_base": cif + duty,
+            "vat": vat,
+            "landed_cost": round(cif + duty + vat, 2),
+        }
     raise KeyError(name)
 
 
@@ -75,19 +80,28 @@ for raw in sys.stdin:
     if rid is None:
         continue  # a notification
     if method == "initialize":
-        reply(rid, {
-            "protocolVersion": msg.get("params", {}).get("protocolVersion", "2025-06-18"),
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "tariff-fixture", "version": "0.1.0"},
-        })
+        reply(
+            rid,
+            {
+                "protocolVersion": msg.get("params", {}).get("protocolVersion", "2025-06-18"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "tariff-fixture", "version": "0.1.0"},
+            },
+        )
     elif method == "tools/list":
         reply(rid, {"tools": TOOLS})
     elif method == "tools/call":
         params = msg.get("params", {})
         try:
             data = call(params.get("name"), params.get("arguments") or {})
-            reply(rid, {"content": [{"type": "text", "text": json.dumps(data)}],
-                        "structuredContent": data, "isError": "error" in data})
+            reply(
+                rid,
+                {
+                    "content": [{"type": "text", "text": json.dumps(data)}],
+                    "structuredContent": data,
+                    "isError": "error" in data,
+                },
+            )
         except Exception as exc:  # noqa: BLE001
             reply(rid, error={"code": -32602, "message": str(exc)})
     elif method == "ping":
