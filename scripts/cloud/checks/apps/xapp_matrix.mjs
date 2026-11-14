@@ -27,6 +27,7 @@
 //              replaced), then Reopen from its card (feature 7)
 //     restart  `stack.sh restart`, open the conversation again, Reopen or show the view
 //              (feature 7); needs XM_SESSION
+//     reopen   Reopen the conversation's latest view from its card (or its restored tab)
 //   XM_SESSION  "<workspace id>/<session id>": continue that conversation
 //   XM_PHONE=1  phone layout: no hero shots, the tab is the docked sheet
 //   XM_OUT      a file that receives the JSON result (also printed as XM_RESULT)
@@ -159,7 +160,7 @@ async function frameWidth(page, placement) {
 }
 
 async function openInTab(page) {
-  await page.getByRole("button", { name: "Open in tab" }).filter({ visible: true }).last().click({ timeout: 30000 });
+  await page.getByRole("button", { name: /^(Open in tab|Show tab)$/ }).filter({ visible: true }).last().click({ timeout: 30000 });
   await page.locator('[data-mcp-app-placement="tab"] [data-mcp-app-iframe]').first().waitFor({ timeout: 60000 });
 }
 
@@ -183,7 +184,10 @@ async function returnToCard(page) {
 }
 
 async function tab(page, shot) {
-  await openInTab(page);
+  // A view that asked for fullscreen when it loaded is in its tab already.
+  if (await page.locator('[data-mcp-app-placement="tab"] [data-mcp-app-iframe]').count()) {
+    note("tab", "the view opened in its tab by itself");
+  } else await openInTab(page);
   if (env.XM_WIDE === "1" && !phone) {
     note("tab frame width at first load", await frameWidth(page, "tab"));
     await navCollapse(page);
@@ -448,6 +452,7 @@ export default async function (page, shot) {
       else if (phase === "theme") await theme(page, shot);
       else if (phase === "close") await closeAndReopen(page, shot);
       else if (phase === "restart") await restart(page, shot);
+      else if (phase === "reopen") await reopen(page, shot, "reopened");
     } catch (error) {
       out[`${phase}Error`] = String(error).slice(0, 400);
       note(`${phase} failed`, out[`${phase}Error`]);

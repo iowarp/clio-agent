@@ -7,6 +7,8 @@
 //   XD_COPY     files copied into the workspace folder first (comma list, repository paths)
 //   XD_REQUEST  the plain request(s); several turns are joined by " || "; "{root}" is the
 //               conversation's workspace folder
+//   XD_FOLLOWUP a plain request sent once the dashboard is open in the canvas
+//   XD_TITLE    the dashboard's title on its card (found from the transcript when omitted)
 //   XD_SESSION  "<workspace id>/<session id>": only open and shoot that conversation's dashboard
 //   XD_OUT      a file that receives the JSON result (also printed as XD_RESULT)
 // The captures the agent took (`<workspace>/.../a2ui-captures/*.png`) are listed so they can
@@ -48,10 +50,14 @@ async function messages(page) {
   return [...rows].reverse();
 }
 
-function captures(root) {
+const started = Date.now();
+
+/** Surface captures and looks taken during this run (CLIO keeps them in its state folder). */
+function captures() {
+  const root = path.join(ROOT, ".cloud-run", "xdg", "state");
   const found = [];
   const walk = (dir, depth) => {
-    if (depth > 6) return;
+    if (depth > 8) return;
     let entries = [];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
@@ -61,8 +67,9 @@ function captures(root) {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full, depth + 1);
-      else if (/a2ui-captures|look/.test(full) && entry.name.endsWith(".png")) {
-        found.push({ file: full, at: statSync(full).mtimeMs });
+      else if (/a2ui-captures|app-view-looks/.test(full) && entry.name.endsWith(".png")) {
+        const at = statSync(full).mtimeMs;
+        if (at >= started) found.push({ file: full, at });
       }
     }
   };
@@ -85,6 +92,7 @@ async function turn(page, shot, text, label) {
     answer: parts.filter((p) => p.type === "text").map((p) => p.text).join("\n").trim().slice(0, 3000),
   };
   out.turns.push(result);
+  if (env.XD_OUT) writeFileSync(env.XD_OUT, JSON.stringify(out, null, 2)); // kept if a later step fails
   note(`${label} calls`, result.calls);
   note(`${label} answer`, result.answer.slice(0, 1500));
   await shot(label);
@@ -101,7 +109,11 @@ async function heroOn(page) {
   if (phone()) return;
   const navOpen = await page.getByRole("button", { name: "New conversation" }).first().isVisible().catch(() => false);
   if (navOpen) {
-    const toggle = page.locator('[data-slot="sidebar-trigger"]').filter({ visible: true }).first();
+    const toggle = page
+      .locator('[data-slot="sidebar-trigger"]')
+      .or(page.getByRole("button", { name: "Toggle Sidebar" }))
+      .filter({ visible: true })
+      .first();
     if (await toggle.count()) await toggle.click().catch(() => undefined);
   }
   const maximize = page.getByRole("button", { name: "Maximize canvas" }).first();
@@ -119,6 +131,7 @@ export default async function (page, shot) {
     root = path.join(ROOT, ".cloud-run", "apps-work", `xapp-dash-${env.XD_APP}`);
   } else {
     ({ root } = await openConversation(page, `xapp-dash-${env.XD_APP}`));
+    out.session = sessionOf(page);
     for (const file of (env.XD_COPY || "").split(",").filter(Boolean)) {
       copyFileSync(path.join(ROOT, file), path.join(root, path.basename(file)));
     }
@@ -127,7 +140,7 @@ export default async function (page, shot) {
     }
   }
   out.session = sessionOf(page);
-  out.captures = captures(root);
+  out.captures = captures();
   note("captures the agent took", out.captures);
   out.title = env.XD_TITLE || (await dashboardTitle(page));
   note("dashboard title", out.title);
@@ -138,6 +151,17 @@ export default async function (page, shot) {
   out.appInSurface = await app.waitFor({ timeout: 120000 }).then(() => true, () => false);
   await heroOn(page);
   await page.waitForTimeout(25000); // the view starts and draws
+  if (env.XD_FOLLOWUP) {
+    // A plain follow-up asked while the dashboard is open beside the conversation.
+    const restore = page.getByRole("button", { name: /Restore canvas|Exit maximized/ }).first();
+    if (await restore.isVisible().catch(() => false)) await restore.click();
+    await page.waitForTimeout(5000);
+    await turn(page, shot, env.XD_FOLLOWUP, "followup");
+    out.captures = captures();
+    note("captures after the follow-up", out.captures);
+    await heroOn(page);
+    await page.waitForTimeout(10000);
+  }
   for (const theme of ["dark", "light"]) {
     await page.evaluate((dark) => {
       document.documentElement.dataset.theme = dark ? "dark" : "light";
