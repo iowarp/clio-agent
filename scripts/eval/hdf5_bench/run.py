@@ -80,24 +80,42 @@ def _workspace(client: GactClient, root: Path, where: str, era5: Path) -> str:
     return (found[0] if found else client.create_workspace(f"hdf5 bench {where}", str(root)))["id"]
 
 
+def _while_busy(call: Any, attempts: int = 60) -> Any:
+    """Retry a data-access change while CLIO answers 409: a new session's tools are starting."""
+    for _ in range(attempts - 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - only the busy refusal is retried
+            if "409" not in str(exc):
+                raise
+            time.sleep(5)
+    return call()
+
+
 def _link_sources(client: GactClient, wid: str, sid: str) -> None:
     rows = client.get(f"/v1/workspaces/{wid}/sources") or {}
     rows = rows.get("sources", rows) if isinstance(rows, dict) else rows
     for root, label in S3_SOURCES.values():
         source = next((r for r in rows if r.get("root") == root), None)
         if source is None:
-            source = client.post(
-                f"/v1/workspaces/{wid}/sources",
-                {
-                    "provider": "s3",
-                    "root": root,
-                    "label": label,
-                    "mode": "read_only",
-                    "configuration": {"s3_region": "us-west-2", "s3_access": "anonymous"},
-                },
+            source = _while_busy(
+                lambda root=root, label=label: client.post(
+                    f"/v1/workspaces/{wid}/sources",
+                    {
+                        "provider": "s3",
+                        "root": root,
+                        "label": label,
+                        "mode": "read_only",
+                        "configuration": {"s3_region": "us-west-2", "s3_access": "anonymous"},
+                    },
+                )
             )
         if not source.get("linked"):
-            client.post(f"/v1/workspaces/{wid}/sources/{source['id']}/link", {"session_id": sid})
+            _while_busy(
+                lambda source=source: client.post(
+                    f"/v1/workspaces/{wid}/sources/{source['id']}/link", {"session_id": sid}
+                )
+            )
     deadline = time.time() + 300
     while time.time() < deadline:
         rows = client.get(f"/v1/workspaces/{wid}/sources") or {}
