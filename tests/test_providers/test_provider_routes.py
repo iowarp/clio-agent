@@ -115,6 +115,19 @@ def test_ollama_connection_uses_the_openai_compatible_v1_base(saved: str) -> Non
     assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:11434/v1"}
 
 
+@pytest.mark.parametrize("saved", ["https://api.anthropic.com/v1", "https://api.anthropic.com/"])
+def test_anthropic_connection_uses_the_host_root(saved: str) -> None:
+    """The anthropic engine appends ``/v1/messages``: a ``/v1`` base doubled it into a 404."""
+    config = LMProviderConfig(
+        provider="anthropic",  # type: ignore[arg-type]
+        provider_id="anthropic",
+        model="claude-sonnet-5-5",
+        api_base=saved,
+        api_key="sk-ant-test",
+    )
+    assert _connection_kwargs(config) == {"api_base": "https://api.anthropic.com"}
+
+
 def test_ollama_connection_leaves_v1_suffix_for_non_ollama_dialects() -> None:
     """Only the resolved ``ollama_chat`` prefix gets the /v1 strip."""
     config = LMProviderConfig(

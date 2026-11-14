@@ -348,14 +348,22 @@ def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
     strip ``/v1`` because LiteLLM's native provider appends ``/api/chat``
     (iowarp/clio-agent#1413) -- sent every turn to ``/chat/completions`` at
     the host root, a 404. A base saved either way is normalized here.
+
+    The ``anthropic`` engine appends ``/v1/messages`` itself, so it takes the
+    host root: the catalog's ``https://api.anthropic.com/v1`` sent every turn
+    to ``/v1/v1/messages``, a 404 (2026-11-14). The catalog keeps its ``/v1``
+    base for model discovery.
     """
     if not config.api_base:
         return {}
     api_base = config.api_base
-    if _resolved_litellm_prefix(config) == "ollama_chat":
+    prefix = _resolved_litellm_prefix(config)
+    if prefix in {"ollama_chat", "anthropic"}:
         from clio_agent.providers.api_base import native_root  # noqa: PLC0415
 
-        api_base = native_root(api_base) + "/v1"
+        api_base = native_root(api_base)
+        if prefix == "ollama_chat":
+            api_base += "/v1"
     return {"api_base": api_base}
 
 
