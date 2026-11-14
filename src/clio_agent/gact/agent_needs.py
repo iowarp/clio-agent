@@ -215,7 +215,9 @@ def _askable(app: Any, session_id: str) -> bool:
     from clio_agent.gact.agents.resolution import SUBAGENT_KEY  # noqa: PLC0415
 
     session = _session(app, session_id)
-    if session is None or getattr(session, "parent_session_id", ""):
+    if session is None:
+        return False
+    if getattr(session, "parent_session_id", ""):
         return False
     return not (getattr(session, "metadata", None) or {}).get(SUBAGENT_KEY)
 
@@ -260,7 +262,7 @@ def ensure_card(app: Any, session_id: str, resolution: Any = None) -> dict[str, 
         return existing
     if not items:
         return None
-    row = {
+    row: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "session_id": session_id,
         "intent": INTENT,
@@ -290,9 +292,12 @@ def ensure_card(app: Any, session_id: str, resolution: Any = None) -> dict[str, 
 def ensure_card_safely(app: Any, session_id: str, resolution: Any = None) -> None:
     """:func:`ensure_card` where a failure must not fail the caller (typed in the trace)."""
 
+    from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
+    from clio_agent.plugins.store import StoreError  # noqa: PLC0415
+
     try:
         ensure_card(app, session_id, resolution)
-    except Exception as exc:  # noqa: BLE001 - the card is an aid; pinning goes on
+    except (ConnectorStateError, StoreError, OSError) as exc:  # unreadable state: no card
         trace.event("TOOLS", "agent_needs_card_failed session=%s (%s)", session_id, exc)
 
 
@@ -442,7 +447,7 @@ async def _enable_one(app: Any, row: dict[str, Any], item: dict[str, Any], value
     except service.ConnectorError as exc:
         _progress(app, row, item, FAILED, reason=exc.code, detail=str(exc)[:300])
         return
-    except Exception as exc:  # noqa: BLE001 - every failure is the item's typed reason
+    except Exception as exc:  # noqa: BLE001 - forwards: the item's typed reason and words
         reason = str(getattr(exc, "reason", "") or "agent_needs_enable_failed")
         _progress(app, row, item, FAILED, reason=reason, detail=_words(reason, exc))
         return

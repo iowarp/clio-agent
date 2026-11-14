@@ -297,3 +297,67 @@ def test_an_app_without_a_session_store_has_no_offer_facts(
     monkeypatch.setattr(plugin_offer, "offerable", _boom(AssertionError("not asked")))
     assert plugin_offer.offerable_facts(None, "sess_a") == ([], 0)
     assert plugin_offer.offerable_facts(SimpleNamespace(state=SimpleNamespace()), "s") == ([], 0)
+
+
+# ------------------------------------------------- kit_readiness._environment_name
+
+
+@pytest.mark.parametrize("error", [OSError("gone"), "click"])
+def test_an_unreadable_kit_component_is_the_unknown_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: Any
+) -> None:
+    import click
+    import clio_kit
+
+    from clio_agent.connectors import kit_readiness
+
+    raised = click.ClickException("linked path") if error == "click" else error
+    monkeypatch.setattr(clio_kit, "locked_server_project_identity", _boom(raised))
+    kit_readiness._environment_name.cache_clear()
+    try:
+        assert kit_readiness._environment_name(str(tmp_path / "unknown-a")) is None
+    finally:
+        kit_readiness._environment_name.cache_clear()
+
+
+def test_a_fault_hashing_a_kit_component_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import clio_kit
+
+    from clio_agent.connectors import kit_readiness
+
+    monkeypatch.setattr(clio_kit, "locked_server_project_identity", _boom(TypeError("bug")))
+    kit_readiness._environment_name.cache_clear()
+    try:
+        with pytest.raises(TypeError):
+            kit_readiness._environment_name(str(tmp_path / "unknown-b"))
+    finally:
+        kit_readiness._environment_name.cache_clear()
+
+
+# ------------------------------------------------------ agent_needs.ensure_card_safely
+
+
+@pytest.mark.parametrize(
+    "error", [state.ConnectorStateError("unreadable"), OSError("no folder"), "store"]
+)
+def test_unreadable_state_shows_no_agent_load_card(
+    monkeypatch: pytest.MonkeyPatch, error: Any
+) -> None:
+    from clio_agent.gact import agent_needs
+    from clio_agent.plugins.store import StoreError
+
+    raised = (
+        StoreError("store_unreadable", "plugin state unreadable") if error == "store" else error
+    )
+    monkeypatch.setattr(agent_needs, "ensure_card", _boom(raised))
+    assert agent_needs.ensure_card_safely(_app(), "sess_a") is None
+
+
+def test_a_fault_building_the_agent_load_card_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.gact import agent_needs
+
+    monkeypatch.setattr(agent_needs, "ensure_card", _boom(KeyError("bug")))
+    with pytest.raises(KeyError):
+        agent_needs.ensure_card_safely(_app(), "sess_a")
