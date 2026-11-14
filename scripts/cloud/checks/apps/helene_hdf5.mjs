@@ -119,12 +119,17 @@ async function openFieldFromAnswer(page, shot) {
 /** The person's own turn in the dashboard: step the 3D view, raise a surface, then ask. */
 async function finalBeat(page, shot, sid, log) {
   mark("beat-dashboard");
-  // The newest dashboard card in the conversation opens it in the canvas.
-  const label = page.getByText("Dashboard", { exact: true }).last();
-  await label.scrollIntoViewIfNeeded();
-  await label.locator("xpath=../preceding-sibling::*[1]").click();
+  // The dashboard may already be open (the agent shows what it published); otherwise the
+  // newest dashboard card in the conversation opens it in the canvas.
+  const live = page.locator('iframe[title*="ParaView"]');
+  if (!(await live.count())) {
+    await toLatest(page);
+    const label = page.getByText("Dashboard", { exact: true }).last();
+    await label.scrollIntoViewIfNeeded();
+    await label.locator("xpath=../preceding-sibling::*[1]").click();
+  }
   await page.locator('[data-slot="a2ui-surface-root"]').last().waitFor({ timeout: 60000 });
-  await page.getByRole("button", { name: "Maximize canvas" }).click().catch(() => {});
+  await page.getByRole("button", { name: "Maximize canvas" }).click({ timeout: 3000 }).catch(() => {});
   const pv = page.locator('iframe[title*="ParaView"]').first();
   await pv.scrollIntoViewIfNeeded();
   await page.waitForTimeout(12000);
