@@ -54,15 +54,12 @@ from dspy.lm15 import (
     CacheConfig,
     Config,
     ContextLengthError,
-    DocumentPart,
     FunctionTool,
-    ImagePart,
     Message,
     Request,
     TextPart,
     ThinkingPart,
     ToolCallPart,
-    ToolResultPart,
 )
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
@@ -75,6 +72,7 @@ from clio_agent.gact.agents import clio_react_stream as stream
 from clio_agent.gact.agents.clio_react_inputs import MEDIA_INPUTS as _MEDIA_INPUTS
 from clio_agent.gact.agents.clio_react_inputs import SYSTEM_INPUT as _SYSTEM_INPUT
 from clio_agent.gact.agents.clio_react_inputs import bind_task_inputs
+from clio_agent.gact.agents.clio_react_media import _media_part, _place_tool_media
 from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
@@ -231,17 +229,6 @@ def _head(signature: Any, inputs: dict[str, Any]) -> Message:
     return Message(role="user", parts=tuple(parts or [TextPart(text="")]))
 
 
-def _media_part(item: Any) -> ImagePart | DocumentPart:
-    url = str(getattr(item, "url", "") or getattr(item, "file_data", "") or "")
-    header, _, data = url.partition(",")
-    media_type = header.removeprefix("data:").split(";", 1)[0]
-    if not data:
-        raise ValueError(f"attachment {type(item).__name__} carries no inline data")
-    if media_type.startswith("image/"):
-        return ImagePart(data=data, media_type=media_type)
-    return DocumentPart(data=data, media_type=media_type or "application/pdf")
-
-
 def _with_cache_key(config: Config, lm: Any) -> Config:
     """Ask the provider to cache this conversation's growing prefix.
 
@@ -268,41 +255,6 @@ def _with_cache_key(config: Config, lm: Any) -> Config:
     return dataclasses.replace(
         config, cache=dataclasses.replace(cache, key=f"clio:{session}:{scope}")
     )
-
-
-def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
-    """Put tool-result images/documents where the LM's API takes them.
-
-    ``native``: inside the tool result. ``user_message`` (chat-completions servers take
-    text-only tool rows): the tool result keeps a text marker and the media follows in
-    one user message right after the tool message -- the same content, in the one
-    place that API carries it. Deterministic, so the context stays prefix-stable.
-    """
-    if placement == "native":
-        return messages
-    out: list[Message] = []
-    for message in messages:
-        media: list[Any] = []
-        if message.role == "tool":
-            parts = []
-            for part in message.parts:
-                if not isinstance(part, ToolResultPart):
-                    parts.append(part)
-                    continue
-                kept = [p for p in part.content if not isinstance(p, ImagePart | DocumentPart)]
-                moved = [p for p in part.content if isinstance(p, ImagePart | DocumentPart)]
-                if moved:
-                    note = f"({len(moved)} attachment(s) of this result follow in the next message)"
-                    kept.append(TextPart(text=note))
-                    media.extend(moved)
-                    part = dataclasses.replace(part, content=tuple(kept))
-                parts.append(part)
-            message = dataclasses.replace(message, parts=tuple(parts))
-        out.append(message)
-        if media:
-            label = TextPart(text="[attachments from the tool results above]")
-            out.append(Message(role="user", parts=(label, *media)))
-    return out
 
 
 @dataclass

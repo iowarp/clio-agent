@@ -112,7 +112,7 @@
  "lm/hooked_lm.py": 2,
  "lm/lazy_tiktoken.py": 5,
  "optimizer/trainer.py": 1,
- "plugins/store.py": 1,
+ "plugins/builtin_records.py": 1,
  "providers/argonne_auth.py": 2,
  "providers/capabilities/dialects/alcf.py": 1,
  "providers/capabilities/dialects/cloud_thinking.py": 1,

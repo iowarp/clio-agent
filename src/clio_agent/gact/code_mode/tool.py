@@ -451,12 +451,12 @@ def model_text(outcome: Mapping[str, Any]) -> str:
         roots = " and ".join(f"`{root}`" for root in outcome["write_roots"]) or "nowhere"
         parts.append(f"(Plan mode: this script may write only in {roots}.)")
     if attached := outcome.get("attached_media"):
-        count = len(attached)
-        what = "1 image/PDF" if count == 1 else f"{count} images/PDFs"
+        shown = len(attached)
+        what = "1 image/PDF" if shown == 1 else f"{shown} images/PDFs"
         parts.append(
             f"(Attached below: the {what} this script viewed. Look at "
-            f"{'it' if count == 1 else 'them'} before describing what "
-            f"{'it shows' if count == 1 else 'they show'}.)"
+            f"{'it' if shown == 1 else 'them'} before describing what "
+            f"{'it shows' if shown == 1 else 'they show'}.)"
         )
     if not outcome.get("output") and outcome.get("value") is None and not outcome.get("error"):
         parts.insert(0, "The script printed nothing.")
