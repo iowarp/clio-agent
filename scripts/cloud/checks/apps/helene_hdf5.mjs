@@ -82,29 +82,46 @@ async function openFieldFromAnswer(page, shot) {
     if (await file.count()) await file.click();
     else await turn.getByRole("button", { name: new RegExp(MSL.replace(".", "\\.")) }).first().click();
     console.log("FIELD_OPENED_BY", (await file.count()) ? "file link" : "message chip");
-    await page.waitForTimeout(6000);
-    const viewer = page.frameLocator('iframe[title^="HDF5 viewer"]');
-    await viewer.getByRole("button", { name: "Explorer" }).click()
-      .catch(() => page.getByRole("button", { name: "Explorer" }).click());
-    await viewer.getByText("MSL", { exact: true }).first().click();
+    await page.waitForTimeout(5000);
   }
-  await page.waitForTimeout(8000);
+  const viewer = page.frameLocator('iframe[title^="HDF5 viewer"]');
+  // Each control is in the file's toolbar or inside the viewer; a person finds it in
+  // a moment or not at all, so a missing one is logged, never waited on for 30 s.
+  const press = async (name) => {
+    for (const where of [page, viewer]) {
+      const button = where.getByRole("button", { name, exact: true }).first();
+      if (await button.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await button.click({ timeout: 3000 });
+        return true;
+      }
+    }
+    console.log(`STEP_SKIPPED ${name}`);
+    return false;
+  };
+  if (!(await field.count())) {
+    // Opened on the file: show its tree and choose the field.
+    await press("Explorer");
+    await viewer.getByText("MSL", { exact: true }).first().click({ timeout: 5000 });
+    await page.waitForTimeout(1500);
+    // In the docked canvas the tree covers the viewer: close it to see the field.
+    await press("Explorer");
+  }
+  await page.waitForTimeout(4000);
   await shot("field-open");
   // Reads what the field is, then looks at it.
-  await page.getByRole("button", { name: "Attributes" }).click().catch(() => {});
+  await press("Attributes");
   await page.waitForTimeout(4000);
   await shot("field-attributes");
-  await page.getByRole("button", { name: "Image" }).click().catch(() => {});
-  await page.waitForTimeout(6000);
-  const viewer = page.frameLocator('iframe[title^="HDF5 viewer"]');
+  await press("Image");
+  await page.waitForTimeout(5000);
   // ERA5 stores latitude north to south, so the raw array draws south up: flip it.
-  await viewer.getByRole("button", { name: "More controls" }).click().catch(() => {});
-  await viewer.getByRole("button", { name: "Flip Y" }).click().catch(() => {});
+  if (await press("More controls")) await press("Flip Y");
   await page.keyboard.press("Escape").catch(() => {});
   await page.waitForTimeout(1500);
   // Scrubs time to the storm in the Gulf (26 Sep 12Z is step 612 of 720).
   const slider = viewer.getByRole("slider").last();
-  const box = await slider.boundingBox().catch(() => null);
+  const box = await slider.boundingBox({ timeout: 3000 }).catch(() => null);
+  if (!box) console.log("STEP_SKIPPED time slider");
   if (box) {
     await page.mouse.move(box.x + 2, box.y + box.height / 2);
     await page.mouse.down();
@@ -265,6 +282,8 @@ export default async function (page, shot) {
   if (only.includes("track")) {
     mark("field-open");
     await openFieldFromAnswer(page, shot);
+    mark("field-looked");
+    if (process.env.FIELD_ONLY === "1") return;
     await page.getByRole("button", { name: "Add to message" }).click();
     await page.waitForTimeout(800);
     if (!(await chips()).includes("/MSL")) throw new Error("the /MSL reference was not added");
