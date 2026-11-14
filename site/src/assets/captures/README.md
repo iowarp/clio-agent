@@ -307,18 +307,44 @@ with `bash scripts/cloud/stack.sh start` and a fresh `CLIO_AGENT_HOME`.
 ## Connectors and apps
 
 Untouched screenshots of real development sessions on the cloud stack (`claude_code`
-provider), 13 November 2026, 1440 x 900, dark mode, copied from the qualification
-gallery. The full record is in `docs/design/sdk/mcp-apps-ledger.md` (its rows name
-the stream given below). `node08` and `login` are containers of the ParaView cluster test fixture, and
-`wave.pvd`, `pulse_series.pvd` and `rc_lowpass.cir` are synthetic test data.
+provider, Sonnet 5.5), dark mode, 1440 x 900, CLIO brand. Files at 2880 x 1800 were taken
+at two device pixels per CSS pixel; the rest at one. `capture-manifest.json`
+(`connectors_and_apps`) records each file's checksum, size and source. The record of each
+run is in `docs/design/sdk/mcp-apps-ledger.md`: the `DOCS` rows (stack N=35, 14 November
+2026) for the fresh captures, and the stream named below for those copied from the
+qualification gallery. Requests are plain unless a row says otherwise; permission prompts
+were answered "This session" and offer cards "Add" by the harness,
+`scripts/cloud/checks/apps/docs_capture.mjs`.
+
+The station list `example_stations_rainier.csv` is example data (ten made-up codes at
+real places). `trade-lab` and its `tariff-calc` plugin are a test marketplace
+(`tests/fixtures/plugin_offer/`). `wave.pvd` is synthetic test data.
 
 | File | What it shows | Source |
 | --- | --- | --- |
-| `connectors/extensions-connectors-first.png` | Extensions with the three shipped connectors first and Burette's card, ready with 4 tools. | `q-grounds` |
-| `connectors/setup-card-in-conversation.png` | The setup card raised by a waiting call, on the sign-in test connector with a synthetic account. | `conn-be`, AQ6 |
-| `connectors/agent-sets-paraview-values.png` | The agent setting three ParaView values in one call from a plain request. | `q-pv`, H6 |
-| `apps/spice-chart-inline.png` | The SPICE waveform app in its card, from plain requests. | `q-grounds`, AQ32 |
-| `apps/paraview-card-and-tab.png` | ParaView reopened after a restart: the card's in-tab row and the view in a tab. | `q-pv`, AQ47 |
-| `apps/paraview-look-at-view.png` | The agent's answer after looking at the ParaView view, from a plain request. | `comments`, CM-Q1 |
-| `apps/paraview-region-comment.png` | A region comment being written on the ParaView view, canvas maximized. | `comments`, CM-Q2 |
-| `apps/paraview-dashboard-time-linked.png` | ParaView and a chart in one dashboard, linked by time. The dashboard came from a request that named the tool. | `q-pv`, AQ48 |
+| `apps/geo-card-inline.png` | Geo's globe in its card in the conversation, workspace `cascadia`. | `docs`, DOCS-C1 |
+| `apps/geo-in-tab.png` | The same view in a workbench tab; the card reads Open in a tab. | `docs`, DOCS-C1 |
+| `apps/geo-maximized.png` | The view maximized, navigation collapsed. | `docs`, DOCS-C1 |
+| `apps/geo-look.png` | The agent's answer after looking at the globe in its tab. | `docs`, DOCS-C2 |
+| `apps/geo-reopened.png` | The view reopened in its tab after CLIO restarted. | `docs`, DOCS-C2 |
+| `apps/geo-dashboard-linked.png` | The globe and a station table in one dashboard, selection linked both ways. | `geo-globe`, GG3 |
+| `apps/paraview-in-tab.png` | The ParaView plugin's view in a tab, workspace `wave-study`. | `final`, FQ-WEB |
+| `apps/paraview-region-comment.png` | A region comment being written on the ParaView view. | `final`, FQ-WEB |
+| `apps/paraview-region-comment-answer.png` | The agent's answer to that comment. | `final`, FQ-WEB |
+| `apps/paraview-dashboard-time-linked.png` | ParaView and two charts in one dashboard, linked by time, from a plain request. | `final`, FQ-WEB |
+| `apps/pdf-dashboard-table.png` | The PDF viewer in a dashboard beside a table built from the paper. | `more-conn`, MC4 |
+| `connectors/discover-catalog.png` | Extensions, Connectors, Discover: all seven catalog entries, Not enabled. | `docs`, DOCS-C6 |
+| `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, In conversations. | `docs`, DOCS-C6 |
+| `connectors/add-plugin-picker.png` | A conversation's Add plugin menu with its Connectors group. | `docs`, DOCS-C5 |
+| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector. | `docs`, DOCS-C1 |
+| `connectors/offer-plugin.png` | The offer card for a plugin, `tariff-calc` from `trade-lab`. | `docs`, DOCS-C4 |
+| `connectors/offer-view-plugin.png` | View plugin over the waiting card: one skill, one MCP server. | `docs`, DOCS-C4 |
+| `connectors/offer-plugin-answered.png` | The same reply after Add: the skill and its tools used. | `docs`, DOCS-C4 |
+| `connectors/add-by-command.png` | Add by URL or command, filled for a local command; not added. | `docs`, DOCS-C7 |
+| `connectors/marketplaces.png` | Installed marketplaces, with clio-kit from GitHub. | `docs`, DOCS-C7 |
+| `connectors/earthdata-results.png` | A NASA Earthdata granule search, and a download refused without a login. | `docs`, DOCS-C3 |
+| `files/cad-step-assembly.png` | A two-part STEP assembly in the file viewer, with its size and parts list. | `cad`, CAD2 |
+
+Reproduce with `bash scripts/cloud/stack.sh start` (`CLIO_CLOUD_ISOLATE=1`) and
+`node scripts/cloud/ui_check.mjs --theme dark --steps scripts/cloud/checks/apps/docs_capture.mjs`
+with the `DOCS_MODE` the step file describes.
