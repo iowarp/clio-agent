@@ -35,6 +35,9 @@ const TURNS = {
   beat:
     "I stepped the 3D view to landfall and raised the liquid-water surface. What does it " +
     "show now, and how does it compare with the day before?",
+  beatTurned:
+    "I stepped the 3D view to landfall and turned the storm around. What does it show now, " +
+    "and how does it compare with the day before?",
 };
 
 const T0 = Date.now();
@@ -219,7 +222,7 @@ async function finalBeat(page, shot, sid, log) {
   await shot("beat-landfall");
   // The person's own change in the view: raise the liquid-water surface when the scene has
   // one (an isosurface), else turn the storm around to look at it (a volume).
-  const liquid = app.getByRole("button", { name: /^(?!Hide |Show |Remove ).*liquid/i }).first();
+  const liquid = app.getByRole("button", { name: /^(?!Hide |Show |Remove ).*(liquid|droplet)/i }).first();
   if (!(await liquid.isVisible().catch(() => false))) {
     await app.getByRole("button", { name: "Pipeline" }).click();
     await page.waitForTimeout(1200);
