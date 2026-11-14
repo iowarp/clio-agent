@@ -1591,6 +1591,14 @@ function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
     }
     Initialize-ClioUv (Join-Path $Venv 'bin')
     $runtimePython = Join-Path $Venv 'python\python.exe'
+    # clio-kit installs (for the runtime's Python version, as below) while the
+    # environment is finished: the managed-package step waits for it to build the
+    # agents' tool servers, so it no longer starts after these steps.
+    $kitUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($kitUv -and -not $script:KitJob -and -not $script:KitKept) {
+        $script:py = (& $runtimePython -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
+        if ($LASTEXITCODE -eq 0 -and $script:py) { $script:KitJob = Start-ClioKitInstall $kitUv.Source }
+    }
     & uv venv --quiet --allow-existing --system-site-packages --python $runtimePython $Venv
     if ($LASTEXITCODE -ne 0) { return "uv could not create the environment over the CLIO runtime (exit $LASTEXITCODE)" }
     $wheel = Join-Path $Scratch 'clio_runtime_launchers-1-py3-none-any.whl'
@@ -1660,6 +1668,64 @@ function Set-ClioVenvAside([string]$Venv) {
     }
     return $previous
 }
+
+# A release's clio-kit launcher and Web bundle download while the store and the managed
+# packages are prepared; they are completed below in their own steps. From a release's
+# runtime, clio-kit starts as soon as the runtime's uv is in place (Install-ClioRuntime).
+$KitJob = $null
+$WebJob = $null
+if (-not $ClioKitPackage) {
+    $ClioKitSpec = 'clio-kit==2.12.7'
+} elseif ($ClioKitPackage.Contains('==')) {
+    $ClioKitParts = $ClioKitPackage.Split('==', 2)
+    $ClioKitSpec = "$($ClioKitParts[0])[science]==$($ClioKitParts[1])"
+} else {
+    $ClioKitSpec = "$ClioKitPackage[science]"
+}
+# A CLIO with its own prefix, home, data or user folder keeps clio-kit in uv tool
+# folders inside its prefix, so it never replaces the user's own clio-kit; the launcher
+# puts them on the agent's PATH. uv rebuilds a tool's environment for another Python by
+# deleting it first: with one of its servers running, python.exe is locked and the
+# environment is left gutted. So an environment with a running process is kept.
+$KitToolDirs = @{}
+if ($env:CLIO_PREFIX -or $env:CLIO_AGENT_HOME -or $env:CLIO_AGENT_DATA_DIR -or $env:CLIO_USER_DIR) {
+    $KitToolDirs = @{ UV_TOOL_DIR = (Join-Path $Prefix 'uv-tools'); UV_TOOL_BIN_DIR = (Join-Path $Prefix 'uv-tools\bin') }
+}
+function Use-ClioKitToolDirs([switch]$Restore) {
+    foreach ($name in $KitToolDirs.Keys) {
+        if ($Restore) {
+            [Environment]::SetEnvironmentVariable($name, $script:KitSavedEnv[$name])
+        } else {
+            if (-not $script:KitSavedEnv) { $script:KitSavedEnv = @{} }
+            $script:KitSavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+            [Environment]::SetEnvironmentVariable($name, $KitToolDirs[$name])
+        }
+    }
+}
+function Get-ClioKitBusy([string]$Uv) {
+    Use-ClioKitToolDirs
+    try {
+        $toolDir = (& $Uv tool dir 2>$null | Select-Object -First 1)
+        $binDir = (& $Uv tool dir --bin 2>$null | Select-Object -First 1)
+    } finally { Use-ClioKitToolDirs -Restore }
+    if (-not $toolDir) { return $null }
+    $envDir = [IO.Path]::GetFullPath((Join-Path $toolDir.Trim() 'clio-kit')) + '\'
+    $shim = if ($binDir) { [IO.Path]::GetFullPath((Join-Path $binDir.Trim() 'clio-kit.exe')) } else { '' }
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and ($_.Path.StartsWith($envDir, [StringComparison]::OrdinalIgnoreCase) -or $_.Path -ieq $shim)
+    } | Select-Object -First 1
+}
+function Start-ClioKitInstall([string]$Uv) {
+    $busy = Get-ClioKitBusy $Uv
+    if ($busy) {
+        $script:KitKept = "clio-kit is running ($($busy.ProcessName), pid $($busy.Id)); its environment was kept as it is. Stop it and run this installer again to update it to $ClioKitSpec."
+        return $null
+    }
+    Use-ClioKitToolDirs
+    try { return Start-ClioBackground $Uv "tool install --python $py `"$ClioKitSpec`"" 'kit' }
+    finally { Use-ClioKitToolDirs -Restore }
+}
+$KitKept = $null
 
 # ---------- install clio-agent ----------------------------------------
 try {
@@ -1864,65 +1930,9 @@ if (Test-Path $VenvPython) {
     }
 }
 
-# A release's clio-kit launcher and Web bundle download while the store and the managed
-# packages are prepared; they are completed below in their own steps.
-$KitJob = $null
-$WebJob = $null
-if (-not $ClioKitPackage) {
-    $ClioKitSpec = 'clio-kit==2.12.7'
-} elseif ($ClioKitPackage.Contains('==')) {
-    $ClioKitParts = $ClioKitPackage.Split('==', 2)
-    $ClioKitSpec = "$($ClioKitParts[0])[science]==$($ClioKitParts[1])"
-} else {
-    $ClioKitSpec = "$ClioKitPackage[science]"
-}
-# A CLIO with its own prefix, home, data or user folder keeps clio-kit in uv tool
-# folders inside its prefix, so it never replaces the user's own clio-kit; the launcher
-# puts them on the agent's PATH. uv rebuilds a tool's environment for another Python by
-# deleting it first: with one of its servers running, python.exe is locked and the
-# environment is left gutted. So an environment with a running process is kept.
-$KitToolDirs = @{}
-if ($env:CLIO_PREFIX -or $env:CLIO_AGENT_HOME -or $env:CLIO_AGENT_DATA_DIR -or $env:CLIO_USER_DIR) {
-    $KitToolDirs = @{ UV_TOOL_DIR = (Join-Path $Prefix 'uv-tools'); UV_TOOL_BIN_DIR = (Join-Path $Prefix 'uv-tools\bin') }
-}
-function Use-ClioKitToolDirs([switch]$Restore) {
-    foreach ($name in $KitToolDirs.Keys) {
-        if ($Restore) {
-            [Environment]::SetEnvironmentVariable($name, $script:KitSavedEnv[$name])
-        } else {
-            if (-not $script:KitSavedEnv) { $script:KitSavedEnv = @{} }
-            $script:KitSavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
-            [Environment]::SetEnvironmentVariable($name, $KitToolDirs[$name])
-        }
-    }
-}
-function Get-ClioKitBusy([string]$Uv) {
-    Use-ClioKitToolDirs
-    try {
-        $toolDir = (& $Uv tool dir 2>$null | Select-Object -First 1)
-        $binDir = (& $Uv tool dir --bin 2>$null | Select-Object -First 1)
-    } finally { Use-ClioKitToolDirs -Restore }
-    if (-not $toolDir) { return $null }
-    $envDir = [IO.Path]::GetFullPath((Join-Path $toolDir.Trim() 'clio-kit')) + '\'
-    $shim = if ($binDir) { [IO.Path]::GetFullPath((Join-Path $binDir.Trim() 'clio-kit.exe')) } else { '' }
-    Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -and ($_.Path.StartsWith($envDir, [StringComparison]::OrdinalIgnoreCase) -or $_.Path -ieq $shim)
-    } | Select-Object -First 1
-}
-function Start-ClioKitInstall([string]$Uv) {
-    $busy = Get-ClioKitBusy $Uv
-    if ($busy) {
-        $script:KitKept = "clio-kit is running ($($busy.ProcessName), pid $($busy.Id)); its environment was kept as it is. Stop it and run this installer again to update it to $ClioKitSpec."
-        return $null
-    }
-    Use-ClioKitToolDirs
-    try { return Start-ClioBackground $Uv "tool install --python $py `"$ClioKitSpec`"" 'kit' }
-    finally { Use-ClioKitToolDirs -Restore }
-}
-$KitKept = $null
 if (-not $OptSource) {
     $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($uvCommand) { $KitJob = Start-ClioKitInstall $uvCommand.Source }
+    if ($uvCommand -and -not $KitJob -and -not $KitKept) { $KitJob = Start-ClioKitInstall $uvCommand.Source }
     $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
     $webver = $tag -replace '^v', ''
     $webUrl = "https://github.com/iowarp/clio-agent/releases/download/$tag/clio-web-$webver.zip"
