@@ -63,8 +63,10 @@ def test_a_range_is_served_exactly_and_counted() -> None:
     assert tail.content == bytes(range(252, 256))
     open_ended = client.get(url, headers={"Range": "bytes=1020-"})
     assert len(open_ended.content) == 4
-    stats = client.get(url + "/stats").json()
-    assert stats["bytes_served"] == 18 and stats["requests"] == 3
+    named = client.get(url + "/a.bin", headers={"Range": "bytes=0-1"})
+    assert named.content == bytes(range(2))
+    stats = client.get("/v1/sessions/sess_a/source-range-stats/rng_test").json()
+    assert stats["bytes_served"] == 20 and stats["requests"] == 4
 
 
 def test_refusals_are_typed_by_status() -> None:
@@ -95,6 +97,7 @@ def test_mint_reads_a_linked_local_hdf5_file_by_range(tmp_path: Path) -> None:
     app.state.api_port = 8787
     handle = mint(service, record, "run.h5", session_id="sess_a", handles=registry(app))
     assert handle_url(app, handle).startswith("http://127.0.0.1:8787/v1/sessions/sess_a/")
+    assert handle_url(app, handle).endswith("/run.h5")
     client = TestClient(app, client=LOOPBACK)
     url = f"/v1/sessions/sess_a/source-ranges/{handle.id}"
     assert client.get(url, headers={"Range": "bytes=0-7"}).content == b"\x89HDF\r\n\x1a\n"

@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import quote
 
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord
 
@@ -119,7 +120,9 @@ def range_origin(app: Any) -> str:
 
 
 def handle_url(app: Any, handle: RangeHandle) -> str:
-    return f"{range_origin(app)}/{handle.session_id}/source-ranges/{handle.id}"
+    """The handle's URL, ending in the file's name so readers can show what it is."""
+    name = quote(handle.path.rsplit("/", 1)[-1], safe="")
+    return f"{range_origin(app)}/{handle.session_id}/source-ranges/{handle.id}/{name}"
 
 
 def _reader(service: StorageService, record: SourceRecord, entry: FileEntry) -> Reader:

@@ -3,7 +3,8 @@
 Loopback only: the handle is the capability, minted for one session by
 ``connected_data_open`` with ``range``. ``HEAD`` gives the size; ``GET`` with one
 ``bytes=`` range answers 206 with exactly those bytes, read through the source's adapter;
-``…/stats`` reports the bytes and requests served so far.
+``/v1/sessions/{sid}/source-range-stats/{handle}`` reports the bytes and requests
+served so far. A trailing file name after the handle is accepted and ignored.
 """
 
 from __future__ import annotations
@@ -58,7 +59,8 @@ def register_source_range_routes(app: FastAPI) -> None:
     """Serve minted range handles."""
 
     @app.head("/v1/sessions/{sid}/source-ranges/{handle}")
-    async def range_head(sid: str, handle: str, request: Request) -> Response:
+    @app.head("/v1/sessions/{sid}/source-ranges/{handle}/{name}")
+    async def range_head(sid: str, handle: str, request: Request, name: str = "") -> Response:
         found = _handle(app, request, sid, handle)
         return Response(
             headers={
@@ -70,7 +72,8 @@ def register_source_range_routes(app: FastAPI) -> None:
         )
 
     @app.get("/v1/sessions/{sid}/source-ranges/{handle}")
-    async def range_get(sid: str, handle: str, request: Request) -> Response:
+    @app.get("/v1/sessions/{sid}/source-ranges/{handle}/{name}")
+    async def range_get(sid: str, handle: str, request: Request, name: str = "") -> Response:
         found = _handle(app, request, sid, handle)
         span = _span(request.headers.get("range"), found.size)
         if span is None:
@@ -98,6 +101,6 @@ def register_source_range_routes(app: FastAPI) -> None:
             content=data, status_code=status, media_type="application/octet-stream", headers=headers
         )
 
-    @app.get("/v1/sessions/{sid}/source-ranges/{handle}/stats")
+    @app.get("/v1/sessions/{sid}/source-range-stats/{handle}")
     async def range_stats(sid: str, handle: str, request: Request) -> dict:
         return _handle(app, request, sid, handle).stats()
