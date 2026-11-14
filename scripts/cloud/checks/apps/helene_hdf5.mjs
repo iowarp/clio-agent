@@ -196,16 +196,25 @@ async function finalBeat(page, shot, sid, log) {
   await page.waitForTimeout(5000);
   await shot("beat-dashboard");
   // Step the 3D view to landfall (27 Sep 03Z is step 26 of 32); the other views follow.
-  const time = app.getByRole("slider", { name: /Time step/ }).first();
-  await time.focus();
+  // A narrow view folds the step buttons into a menu on its step counter; open it then.
+  const next = app.getByRole("button", { name: "Next step" }).locator("visible=true").first();
+  if (!(await next.isVisible().catch(() => false))) {
+    await app.getByRole("button", { name: /^Time step \d+ of \d+$/ }).first().click();
+    await page.waitForTimeout(600);
+  }
+  const back = app.getByRole("button", { name: "Previous step" }).locator("visible=true").first();
   // The counter updates after the server moves the view, so step and wait for it.
+  // Landfall (27 Sep 03Z) is step 26 of a 3-hourly 24-27 Sep series: the same share of
+  // whatever series the agent built.
+  const { total } = await stepOf(app);
+  const target = Math.max(1, Math.round((total * 26) / 32));
   for (let k = 0; k < 40; k += 1) {
-    const now = Number((await stepOf(app)).split("/")[0]);
-    if (now === 26) break;
-    await time.focus();
-    await page.keyboard.press(now < 26 ? "ArrowRight" : "ArrowLeft");
+    const { now } = await stepOf(app);
+    if (now === target) break;
+    await (now < target ? next : back).click({ timeout: 5000 });
     await page.waitForTimeout(1200);
   }
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(6000);
   await shot("beat-landfall");
   // The person's own change in the view: raise the liquid-water surface when the scene has
@@ -328,7 +337,9 @@ async function toLatest(page) {
 }
 
 async function stepOf(app) {
-  return (await app.getByText(/^\s*\d+\s*\/\s*32\s*$/).first().textContent().catch(() => "0/32")).trim();
+  const text = await app.getByText(/^\s*\d+\s*\/\s*\d+\s*$/).first().textContent().catch(() => "0/0");
+  const [now, total] = text.split("/").map((v) => Number(v.trim()));
+  return { now, total };
 }
 
 export default async function (page, shot) {
