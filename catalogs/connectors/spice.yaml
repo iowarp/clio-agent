@@ -2,9 +2,12 @@
 # CLIO starts it as its own process through uvx and never bundles or imports it.
 # The version is pinned to the release qualified here (0.8.0, the 9455f38 merge).
 # The server finds ngspice or LTspice on this machine itself; it has no needs.
+# ltspice-mcp ships no mark, so its logo, spice.svg, is ours: a circuit chip drawn for
+# CLIO (apps ledger, "Connector logos (LG)").
 - id: spice
   name: SPICE circuit simulation
   group: Electronics
+  logo: spice.svg
   description: Simulate circuits with ngspice or LTspice and plot their waveforms
   server:
     command: uvx

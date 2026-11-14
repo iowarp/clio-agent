@@ -127,7 +127,7 @@ def items_for(resolution: Any) -> list[dict[str, Any]]:
                 # A plugin that brings skills is shown as the plugin (PL-D1).
                 "kind": "plugin" if bundling else "connector",
                 "plugins": sorted(plugins),
-                "logo_url": f"/v1/connectors/{cid}/logo" if found.logo else None,
+                **found.logo_urls(),
                 "group": found.group or None,
                 "reasons": reasons,
                 "enabled": choice.enabled,

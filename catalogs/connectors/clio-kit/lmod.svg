@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<!-- CLIO connector icon: stacked layers of modules. Drawn for CLIO (our own work, not a third-party mark); apps ledger "Connector logos (LG)". -->
+<rect width="24" height="24" rx="5.5" fill="#56688C"/>
+<g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.6l7.2 3.7L12 12 4.8 8.3z"/><path d="M4.8 12.1l7.2 3.7 7.2-3.7"/><path d="M4.8 15.8l7.2 3.7 7.2-3.7"/></g>
+</svg>

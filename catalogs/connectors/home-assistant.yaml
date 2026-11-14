@@ -8,12 +8,14 @@
 # dashboards. Restarting, files, add-ons, HACS, updates, the security policy and removing
 # devices, entities, areas or integrations stay in Home Assistant's own UI (apps ledger,
 # "Connectors as plugins"). The Home Assistant logo is a trademark and its assets are
-# CC BY-NC-SA 4.0 (home-assistant/assets), so the entry has no logo and shows a monogram.
+# CC BY-NC-SA 4.0 (home-assistant/assets), so the entry does not use it: its logo,
+# home-assistant.svg, is a generic house drawn for CLIO (apps ledger, "Connector logos (LG)").
 # ha-mcp maps the token "demo" to its public demo instance (https://ha-mcp-demo-server.qc-h.net,
 # reset weekly), which is how this entry was qualified without a home of our own.
 - id: home-assistant
   name: Home Assistant
   group: Home and devices
+  logo: home-assistant.svg
   description: Read sensors and their history from your Home Assistant, control devices, and write automations, scripts, scenes and dashboards
   server:
     command: uvx

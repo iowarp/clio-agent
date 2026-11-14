@@ -9,7 +9,8 @@ then against the placement rules the schema cannot say:
   a URL that is logged;
 * a sign-in need belongs to a URL server, at most one per entry;
 * a secret or a sign-in has no default and is never ``agent_settable`` (CN6);
-* a logo is an SVG file beside the entry.
+* a logo is an SVG file beside the entry; ``logo_dark``, when given, is the one shown
+  on a dark theme (``logo`` is shown on every theme otherwise, LG-D1).
 
 An invalid entry is left out and reported as a typed diagnostic; the others load.
 The shipped folder is ``catalogs/connectors`` (in a wheel, ``clio_agent/_catalogs/
@@ -73,6 +74,8 @@ class Entry:
     server: Mapping[str, Any]
     needs: tuple[Need, ...] = ()
     logo: str = ""
+    #: The logo shown on a dark theme instead of ``logo`` ("" for the same one, LG-D1).
+    logo_dark: str = ""
     plugin: str = ""
     #: The server tools offered (``tools`` in the entry); empty offers every tool.
     tools: tuple[str, ...] = ()
@@ -93,6 +96,21 @@ class Entry:
     @property
     def logo_path(self) -> Path | None:
         return Path(self.folder) / self.logo if self.logo and self.folder else None
+
+    def theme_logo_path(self, theme: str = "") -> Path | None:
+        """The logo file for ``theme`` (``dark`` reads ``logo_dark``), else None."""
+
+        name = self.logo_dark if theme == "dark" else self.logo
+        return Path(self.folder) / name if name and self.folder else None
+
+    def logo_urls(self) -> dict[str, str | None]:
+        """``logo_url`` and ``logo_dark_url`` as every row carries them (null for none)."""
+
+        base = f"/v1/connectors/{self.id}/logo"
+        return {
+            "logo_url": base if self.logo else None,
+            "logo_dark_url": f"{base}?theme=dark" if self.logo and self.logo_dark else None,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         """The entry as data (a custom connector is stored this way)."""
@@ -246,6 +264,7 @@ def entry_from_raw(
             for row in raw.get("needs") or ()
         ),
         logo=str(raw.get("logo") or ""),
+        logo_dark=str(raw.get("logo_dark") or ""),
         plugin=str(raw.get("plugin") or ""),
         tools=tuple(str(name) for name in raw.get("tools") or ()),
         source=source,
@@ -265,9 +284,10 @@ def validate_entry(raw: Any, *, folder: Path | None) -> list[str]:
     if errors:
         return errors
     errors = placement_errors(raw)
-    logo = raw.get("logo")
-    if logo and folder is not None and not (folder / str(logo)).is_file():
-        errors.append(f"logo {logo!r} is not beside the entry")
+    for key in ("logo", "logo_dark"):
+        logo = raw.get(key)
+        if logo and folder is not None and not (folder / str(logo)).is_file():
+            errors.append(f"{key} {logo!r} is not beside the entry")
     return errors
 
 
@@ -323,9 +343,11 @@ def derive_kit() -> bool:
 def add_derived(folder: Path, catalog: Catalog) -> None:
     """Add a connector for every server of the pinned clio-kit (:mod:`.kit_entries`).
 
-    A hand-written entry of the same id wins and takes only the derived group.
+    A hand-written entry of the same id wins and takes only the derived group; its
+    logo is its own (``logos`` in ``derive.yaml`` is for derived entries, LG-D2).
     """
 
+    derive_folder = folder / kit_entries.DERIVE_DIR
     for raw in kit_entries.derived_raw(folder):
         entry_id = str(raw["id"])
         written = catalog.entries.get(entry_id)
@@ -333,13 +355,13 @@ def add_derived(folder: Path, catalog: Catalog) -> None:
             if not written.group and raw.get("group"):
                 catalog.entries[entry_id] = replace(written, group=str(raw["group"]))
             continue
-        errors = validate_entry(raw, folder=None)
+        errors = validate_entry(raw, folder=derive_folder)
         if errors:
             catalog.diagnostics.append(
                 Diagnostic(ENTRY_INVALID, "; ".join(errors), kit_entries.DERIVE_DIR, entry_id)
             )
             continue
-        catalog.entries[entry_id] = entry_from_raw(raw, folder=str(folder / kit_entries.DERIVE_DIR))
+        catalog.entries[entry_id] = entry_from_raw(raw, folder=str(derive_folder))
 
 
 def _stamp(dirs: list[Path]) -> tuple[Any, ...]:

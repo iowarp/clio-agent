@@ -143,7 +143,7 @@ def resolution_view(resolution: Resolution) -> dict[str, Any]:
     """A resolution with the composed prompt's sections attributed to their plugins.
 
     A connector's plugin (CN9 *Amended*) keeps its own provenance (the person added it)
-    and names its connector, ``{id, name, logo_url}``.
+    and names its connector, ``{id, name, logo_url, logo_dark_url}``.
     """
 
     view = {**resolution.to_dict(), "tool_names": resolution.tool_names}
@@ -154,11 +154,10 @@ def resolution_view(resolution: Resolution) -> dict[str, Any]:
 
         def brief(connector_id: str) -> dict[str, Any]:
             found = entries.get(connector_id)
-            logo = found is not None and bool(found.logo)
             return {
                 "id": connector_id,
                 "name": found.name if found is not None else "",
-                "logo_url": f"/v1/connectors/{connector_id}/logo" if logo else None,
+                **(found.logo_urls() if found is not None else {"logo_url": None}),
             }
 
         view["plugins"] = [

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<!-- Dark-theme variant of pdf.svg (the PDF example server's own pdf-icon.svg, modelcontextprotocol/ext-apps ea3e9d0, MIT): the same paths, the black body made light and the white fold dark so it reads on a dark theme (MC-O1). apps ledger "Connector logos (LG)". -->
+  <!-- Document body -->
+  <path d="M15 2a2 2 0 0 0-2 2v56a2 2 0 0 0 2 2h36a2 2 0 0 0 2-2V16L39 2H15z" fill="#ECEAE6"/>
+  <!-- Folded corner -->
+  <path d="M39 2v12a2 2 0 0 0 2 2h12" fill="none" stroke="#1E1C19" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>

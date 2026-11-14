@@ -24,7 +24,7 @@ def carrier_records(records: list[Any]) -> list[Any]:
 
 
 def connector_brief(app: Any, connector_id: str) -> dict[str, Any] | None:
-    """``{id, name, logo_url, enabled, status, reason}`` of a connector; None if unknown."""
+    """``{id, name, logo_url, logo_dark_url, enabled, status, ...}`` of a connector, or None."""
 
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
@@ -52,7 +52,7 @@ def connector_brief(app: Any, connector_id: str) -> dict[str, Any] | None:
     return {
         "id": found.id,
         "name": found.name,
-        "logo_url": f"/v1/connectors/{found.id}/logo" if found.logo else None,
+        **found.logo_urls(),
         "enabled": bool(row.get("enabled")),
         "status": str(status.get("status") or "unknown"),
         "needs": list(status.get("needs") or ()),

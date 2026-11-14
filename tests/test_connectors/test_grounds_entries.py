@@ -31,7 +31,7 @@ def test_shipped_entries_load_without_diagnostics() -> None:
     }
     assert burette.to_dict()["tools"] == list(burette.tools)
     spice = catalog.entries["spice"]
-    assert spice.server["command"] == "uvx" and spice.logo == "" and spice.tools == ()
+    assert spice.server["command"] == "uvx" and spice.logo == "spice.svg" and spice.tools == ()
     paraview = catalog.entries["paraview"]
     assert paraview.plugin == "paraview"
     assert [(n.key, n.required, n.agent_settable) for n in paraview.needs] == [
@@ -81,6 +81,7 @@ def test_more_connectors_are_data_only() -> None:
     assert pdf.server["command"] == "npx" and pdf.needs == () and pdf.tools == ()
     assert "@modelcontextprotocol/server-pdf@2.0.4" in pdf.server["args"]
     assert pdf.logo_path is not None and pdf.logo_path.read_text().startswith("<svg")
+    assert pdf.logo_dark == "pdf-dark.svg"
     earthdata = catalog.entries["earthdata"]
     assert earthdata.server["args"][0] == "earthdata-mcp-server==0.6.0"
     assert [(n.key, n.kind, n.required) for n in earthdata.needs] == [
@@ -88,10 +89,10 @@ def test_more_connectors_are_data_only() -> None:
         ("password", "secret", False),
     ]
     assert earthdata.server["env"]["EARTHDATA_PASSWORD"] == "${need.password}"
-    assert earthdata.logo == "" and earthdata.tools == ()
+    assert earthdata.logo == "earthdata.svg" and earthdata.tools == ()
     globe = catalog.entries["globe"]
     assert "@modelcontextprotocol/server-map@2.0.4" in globe.server["args"]
-    assert globe.needs == () and globe.logo == "" and globe.tools == ()
+    assert globe.needs == () and globe.logo == "globe.svg" and globe.tools == ()
 
 
 def test_geo_is_a_data_only_entry_on_the_clio_kit_launcher() -> None:
@@ -101,7 +102,7 @@ def test_geo_is_a_data_only_entry_on_the_clio_kit_launcher() -> None:
     geo = catalog.entries["geo"]
     assert geo.server["command"] == "clio-kit"
     assert list(geo.server["args"]) == ["mcp-server", "geo"]
-    assert geo.needs == () and geo.logo == "" and geo.tools == ()
+    assert geo.needs == () and geo.logo == "geo.svg" and geo.tools == ()
 
 
 def test_home_assistant_needs_an_address_and_a_token_and_offers_a_curated_set() -> None:
@@ -118,7 +119,7 @@ def test_home_assistant_needs_an_address_and_a_token_and_offers_a_curated_set() 
         "HOMEASSISTANT_URL": "${need.url}",
         "HOMEASSISTANT_TOKEN": "${need.token}",
     }
-    assert ha.logo == "" and ha.plugin == "home-assistant"
+    assert ha.logo == "home-assistant.svg" and ha.plugin == "home-assistant"
     assert {"ha_get_state", "ha_get_history", "ha_call_service"} <= set(ha.tools)
     # Admin and destructive tools stay in Home Assistant's own UI.
     assert not {"ha_restart", "ha_write_file", "ha_delete_file", "ha_remove_device"} & set(ha.tools)

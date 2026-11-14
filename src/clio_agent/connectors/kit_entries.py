@@ -7,8 +7,10 @@ from the one source of truth: the catalogue the pinned clio-kit ships
 (``clio_kit/_components.json``). Each server becomes an entry whose id is the server
 name, whose description is its package's own, whose command is
 ``clio-kit mcp-server <name>``, and whose group is the clio-kit workflow package that
-lists it (``catalogs/connectors/clio-kit/derive.yaml`` holds the readable names and
-group labels the catalogue cannot say).
+lists it (``catalogs/connectors/clio-kit/derive.yaml`` holds the readable names,
+group labels and logos the catalogue cannot say). A ``logos`` value is one SVG beside
+``derive.yaml``, or ``{light, dark}`` for a logo with a dark-theme variant; it is
+validated and served like a hand-written entry's ``logo`` and ``logo_dark`` (LG-D2).
 
 A hand-written entry with the same id wins (it has the logo and the needs); it only
 takes the group from here. Each entry whose server is a clio-kit server records that
@@ -132,6 +134,15 @@ def _description(packages: Mapping[str, Any], server: str) -> str:
     return f"The {server} tools from clio-kit"
 
 
+def _logo_fields(value: Any) -> dict[str, str]:
+    """``logo`` (and ``logo_dark``) from one ``logos`` value of ``derive.yaml``."""
+
+    if isinstance(value, Mapping):
+        pairs = (("logo", value.get("light")), ("logo_dark", value.get("dark")))
+        return {key: str(name) for key, name in pairs if name}  # validated as an entry
+    return {"logo": str(value)} if value else {}
+
+
 def derived_raw(folder: Path) -> list[dict[str, Any]]:
     """The derived entries as raw data (validated like any entry), in server order."""
 
@@ -139,6 +150,7 @@ def derived_raw(folder: Path) -> list[dict[str, Any]]:
     catalogue = components()
     packages = dict(catalogue.get("packages") or {})
     names = dict(data.get("names") or {})
+    logos = dict(data.get("logos") or {})
     groups = _groups(data, packages)
     rows = []
     for server in sorted(catalogue.get("servers") or {}):
@@ -149,6 +161,7 @@ def derived_raw(folder: Path) -> list[dict[str, Any]]:
                 "description": _description(packages, server),
                 "server": {"command": LAUNCHER, "args": ["mcp-server", server]},
                 "group": groups.get(server, OTHER_GROUP),
+                **_logo_fields(logos.get(server)),
             }
         )
     return rows

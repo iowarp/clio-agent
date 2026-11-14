@@ -7,9 +7,11 @@
 # does ParaView; the launcher runs the geo server of the clio-kit CLIO pins, so the globe
 # arrives with the clio-kit release that carries geo 2.4.0. The view loads CesiumJS from
 # cesium.com and OpenStreetMap tiles, both declared in its resource CSP; it needs no
-# account or key (apps ledger, "Geo globe (GG)").
+# account or key (apps ledger, "Geo globe (GG)"). Logo: geo.svg, a globe drawn for CLIO
+# (our own, not a mark of IOWarp or anyone's; apps ledger "Connector logos (LG)").
 - id: geo
   name: Geo
+  logo: geo.svg
   description: Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name
   server:
     command: clio-kit
