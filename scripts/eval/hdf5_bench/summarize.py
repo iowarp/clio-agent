@@ -1,8 +1,8 @@
 """Summarize HDF5 benchmark results: a Markdown table and a small-multiples graph.
 
 Reads ``<results>/<arm>-<where>/<task>-run<i>.json`` written by ``run.py``. Each cell is
-the median over runs, with the range in brackets; the graph shows medians with min-max
-whiskers for wall time, cost and model steps, grouped by task and where the data lives.
+the median over runs, with the range in brackets; the graph shows every run as a dot with
+the median as a tick, and the direct/scripts ratios of steps, input tokens and cost.
 
     uv run --frozen --no-sync python -m scripts.eval.hdf5_bench.summarize \\
         --results .cloud-run/hdf5-bench/results --out .cloud-run/hdf5-bench/summary
@@ -22,11 +22,6 @@ ARM_LABEL = {"ptc": "Scripts (run_code)", "direct": "Tool calls only"}
 WHERE_LABEL = {"local": "Local file", "s3": "S3 by range"}
 # Categorical slots 1-2 of the reference palette (identity follows the arm, never rank).
 ARM_COLOR = {"ptc": "#2a78d6", "direct": "#eb6834"}
-METRICS = (
-    ("wall_s", "Wall time (s)", "{:.0f}"),
-    ("cost_usd", "Cost (USD)", "{:.2f}"),
-    ("steps", "Model steps", "{:.0f}"),
-)
 
 
 def load(results: Path) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
@@ -70,58 +65,119 @@ def table(groups: dict[tuple[str, str, str], list[dict[str, Any]]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+PANELS = (
+    ("steps", "Model steps"),
+    ("input_total", "Input tokens (incl. cached)"),
+    ("cost_usd", "Cost (USD)"),
+    ("wall_s", "Wall time (s)"),
+    ("s3_mb", "S3 bytes read (MB)"),
+)
+INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
+
+
+def _metric(row: dict[str, Any], key: str) -> float | None:
+    if key == "input_total":
+        return float(row.get("input_tokens") or 0) + float(row.get("cached_input_tokens") or 0)
+    if key == "s3_mb":
+        return row["s3"]["bytes"] / 2**20 if row.get("s3") else None
+    value = row.get(key)
+    return None if value is None else float(value)
+
+
+def ratios(groups: dict[tuple[str, str, str], list[dict[str, Any]]]) -> list[str]:
+    """Median direct / median PTC for steps, input tokens and cost, per task and location."""
+    lines = []
+    for task, where in sorted({(t, w) for t, w, _ in groups}):
+        ptc, direct = groups.get((task, where, "ptc"), []), groups.get((task, where, "direct"), [])
+        if not ptc or not direct:
+            continue
+        parts = []
+        for key, label in (("steps", "steps"), ("input_total", "input"), ("cost_usd", "cost")):
+            a = [v for r in direct if (v := _metric(r, key)) is not None]
+            b = [v for r in ptc if (v := _metric(r, key)) is not None]
+            if a and b and statistics.median(b) > 0:
+                parts.append(f"{label} x{statistics.median(a) / statistics.median(b):.1f}")
+        lines.append(f"{task} {WHERE_LABEL[where]}: " + ", ".join(parts))
+    return lines
+
+
 def graph(groups: dict[tuple[str, str, str], list[dict[str, Any]]], out: Path) -> None:
+    """Every run as a dot with each cell's median as a tick; no bars, so spread stays visible."""
     import matplotlib  # noqa: PLC0415
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt  # noqa: PLC0415
+    from matplotlib.lines import Line2D  # noqa: PLC0415
 
     cases = sorted({(task, where) for task, where, _ in groups})
-    fig, axes = plt.subplots(1, len(METRICS), figsize=(4.2 * len(METRICS), 3.8), dpi=200)
-    width = 0.36
-    for ax, (key, title, _fmt) in zip(axes, METRICS, strict=True):
-        for offset, arm in zip((-width / 2 - 0.02, width / 2 + 0.02), ARMS, strict=True):
-            xs, meds, lo, hi = [], [], [], []
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7.2), dpi=200)
+    offsets = {"ptc": -0.17, "direct": 0.17}
+    for ax, (key, title) in zip(axes.flat, PANELS, strict=False):
+        for arm in ARMS:
             for i, (task, where) in enumerate(cases):
-                values = [float(r[key]) for r in groups.get((task, where, arm), []) if key in r]
+                values = [
+                    v
+                    for r in groups.get((task, where, arm), [])
+                    if (v := _metric(r, key)) is not None
+                ]
                 if not values:
                     continue
+                x = i + offsets[arm]
+                jitter = [x + (j - (len(values) - 1) / 2) * 0.04 for j in range(len(values))]
+                ax.scatter(
+                    jitter,
+                    values,
+                    s=22,
+                    color=ARM_COLOR[arm],
+                    edgecolor="#fcfcfb",
+                    linewidth=1.5,
+                    zorder=3,
+                )
                 med = statistics.median(values)
-                xs.append(i + offset)
-                meds.append(med)
-                lo.append(med - min(values))
-                hi.append(max(values) - med)
-            if not xs:
-                continue
-            ax.bar(xs, meds, width, color=ARM_COLOR[arm], label=ARM_LABEL[arm], zorder=2)
-            ax.errorbar(xs, meds, yerr=[lo, hi], fmt="none", ecolor="#52514e", lw=1, capsize=3)
+                ax.plot([x - 0.12, x + 0.12], [med, med], color=ARM_COLOR[arm], lw=2, zorder=2)
         ax.set_xticks(range(len(cases)))
-        ax.set_xticklabels([f"{t}\n{WHERE_LABEL[w]}" for t, w in cases], fontsize=8)
-        ax.set_title(title, fontsize=10, loc="left", color="#0b0b0b")
-        ax.grid(axis="y", color="#e4e3df", lw=0.6, zorder=0)
+        ax.set_xticklabels([f"{t}\n{WHERE_LABEL[w]}" for t, w in cases], fontsize=8, color=MUTED)
+        ax.set_title(title, fontsize=10, loc="left", color=INK)
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(-0.5, len(cases) - 0.5)
+        ax.grid(axis="y", color=GRID, lw=0.6, zorder=0)
         ax.set_axisbelow(True)
         ax.set_facecolor("#fcfcfb")
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
-        ax.tick_params(axis="y", labelsize=7, colors="#52514e", length=0)
         ax.spines["bottom"].set_color("#c3c2b7")
-    handles, labels = axes[0].get_legend_handles_labels()
+        ax.tick_params(axis="y", labelsize=7, colors=MUTED, length=0)
+    note = axes.flat[-1]
+    note.axis("off")
+    note.set_title("Direct ÷ scripts (medians)", fontsize=10, loc="left", color=INK)
+    note.text(
+        0,
+        0.95,
+        "\n".join(ratios(groups)) or "needs both arms",
+        fontsize=8,
+        color=INK,
+        va="top",
+        family="monospace",
+    )
+    handles = [
+        Line2D([], [], marker="o", ls="", color=ARM_COLOR[a], label=ARM_LABEL[a]) for a in ARMS
+    ]
+    handles.append(Line2D([], [], color=MUTED, lw=2, label="median"))
     fig.legend(
-        handles,
-        labels,
+        handles=handles,
         frameon=False,
         fontsize=8,
-        ncol=2,
+        ncol=3,
         loc="upper left",
-        bbox_to_anchor=(0.01, 0.93),
+        bbox_to_anchor=(0.01, 0.95),
     )
     fig.suptitle(
-        "HDF5 exploration: scripts vs tool calls, local vs S3 (median, min–max)",
+        "HDF5 exploration: scripts vs tool calls, local vs S3 (each dot is a run)",
         fontsize=11,
         x=0.01,
         ha="left",
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.9))
+    fig.tight_layout(rect=(0, 0, 1, 0.91))
     fig.savefig(out, facecolor="#fcfcfb")
 
 
@@ -133,7 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     groups = load(Path(args.results))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "summary.md").write_text(table(groups), encoding="utf-8")
+    (out / "summary.md").write_text(
+        table(groups) + "\n" + "\n".join(f"- {line}" for line in ratios(groups)) + "\n",
+        encoding="utf-8",
+    )
     graph(groups, out / "summary.png")
     print(out / "summary.md", out / "summary.png")
     return 0

@@ -25,6 +25,9 @@ const TURNS = {
   share: "Put all of this on a dashboard so I can share it with colleagues.",
   follow: "Can I step through the days on this and have everything follow, the 3D clouds too?",
   go: "3-hourly, go ahead.",
+  beat:
+    "I stepped the 3D view to landfall and raised the liquid-water surface. What does it " +
+    "show now, and how does it compare with the day before?",
 };
 
 async function settle(page, sid, log, shot, name, minutes = 25) {
@@ -99,6 +102,55 @@ async function openFieldFromAnswer(page, shot) {
   await shot("field-image");
 }
 
+/** The person's own turn in the dashboard: step the 3D view, raise a surface, then ask. */
+async function finalBeat(page, shot, sid, log) {
+  // The newest dashboard card in the conversation opens it in the canvas.
+  await page.locator("main").getByText("Dashboard", { exact: true }).last().click();
+  await page.locator('[data-slot="a2ui-surface-root"]').last().waitFor({ timeout: 60000 });
+  await page.getByRole("button", { name: "Maximize canvas" }).click().catch(() => {});
+  const pv = page.locator('iframe[title*="ParaView"]').first();
+  await pv.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(12000);
+  const app = page.frames().find((f) => f.url().endsWith("/index.html"));
+  if (!app) throw new Error("the live 3D view did not load in the dashboard");
+  // Rendered on the ParaView machine, the view keeps drawing when the canvas grows.
+  await app.getByRole("button", { name: "Render on ParaView machine" }).click();
+  await page.waitForTimeout(5000);
+  await shot("beat-dashboard");
+  // Step the 3D view to landfall (27 Sep 03Z is step 26 of 32); the other views follow.
+  const time = app.getByRole("slider", { name: /Time step/ }).first();
+  await time.focus();
+  for (let k = 0; k < 40 && !/^\s*26\s*\//.test(await stepOf(app)); k += 1) {
+    await page.keyboard.press(Number((await stepOf(app)).split("/")[0]) < 26 ? "ArrowRight" : "ArrowLeft");
+    await page.waitForTimeout(400);
+  }
+  await page.waitForTimeout(6000);
+  await shot("beat-landfall");
+  // Raise the liquid-water surface with its slider.
+  await app.getByRole("button", { name: "Pipeline" }).click();
+  await app.getByRole("button", { name: "liquid", exact: true }).click();
+  await app.getByRole("button", { name: "Add filter" }).click();
+  await app.getByRole("button", { name: /^Edit/ }).first().click();
+  const lift = app.getByRole("slider", { name: /Values 1 slider/ });
+  const box = await lift.boundingBox();
+  if (!box) throw new Error("the isovalue slider is not shown");
+  const thumb = box.x + box.width * 0.55;
+  await page.mouse.move(thumb, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.72, box.y + box.height / 2, { steps: 20 });
+  await page.mouse.up();
+  await page.waitForTimeout(8000);
+  await shot("beat-raised");
+  await app.getByRole("button", { name: "Done" }).click().catch(() => {});
+  await page.getByRole("button", { name: /Restore canvas|Exit maximized|Minimize canvas/ }).click().catch(() => {});
+  await send(page, TURNS.beat);
+  await settle(page, sid, log, shot, "beat", 15);
+}
+
+async function stepOf(app) {
+  return (await app.getByText(/^\s*\d+\s*\/\s*32\s*$/).first().textContent().catch(() => "0/32")).trim();
+}
+
 export default async function (page, shot) {
   const ws = process.env.WS;
   const sid = process.env.SID;
@@ -148,6 +200,7 @@ export default async function (page, shot) {
     await send(page, TURNS[name]);
     await settle(page, sid, log, shot, name, 35);
   }
+  if (only.includes("beat")) await finalBeat(page, shot, sid, log);
   await shot("final");
   console.log("LOG", JSON.stringify(log));
 }
