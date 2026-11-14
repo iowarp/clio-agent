@@ -2,10 +2,12 @@
 
 A request can need a connector this conversation does not have ("show me this VTK file
 in 3D" while the 3D viewer's connector is off, or on but not added here). The agent
-learns which connectors it could offer from the ``session_facts_connectors`` piece of
-the session facts (:func:`offerable_facts`): every connector whose plugin this
-conversation does not have, on or off. It offers one with the native tool
-``offer_connector(connector, reason)``. CLIO never adds a connector by itself.
+learns which connectors it could offer from the ``session_facts_plugins`` piece of the
+session facts (:func:`clio_agent.gact.plugin_offer.offerable_facts`): every connector
+whose plugin this conversation does not have, on or off, beside the plugins it could
+take. It offers one with the native tool ``offer_plugin(plugin, reason)``
+(:mod:`clio_agent.gact.plugin_offer`), whose connector case is this module
+(:func:`offer_connector`). CLIO never adds a connector by itself.
 
 The offer is the in-conversation setup card (CN5, one way to ask): a pending
 interaction of kind ``connector_setup`` with ``intent: enable`` with the connector's
@@ -36,25 +38,14 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
-from clio_agent import conf
-from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.runtime import trace
 
-TOOL_NAME = "offer_connector"
+#: The tool that makes the offer: ``offer_plugin``, whose connector case is this module.
+TOOL_NAME = "offer_plugin"
 #: Typed refusal: the person answered "Not now".
 OFFER_DECLINED = "connector_offer_declined"
 #: Typed outcome: the turn was stopped while the card waited.
 OFFER_CANCELLED = "connector_offer_cancelled"
-
-
-def offer_listed() -> int:
-    """How many offerable connectors the session facts name (``connectors.offer_listed``)."""
-    value = conf.resolve(
-        "connectors.offer_listed", env="CLIO_CONNECTORS_OFFER_LISTED", default=20, cast=conf.as_int
-    )
-    if value < 0:
-        raise ValueError(f"connectors.offer_listed must be at least 0, not {value}")
-    return value
 
 
 # ------------------------------------------------------------- what is offerable
@@ -136,20 +127,6 @@ def _brief(found: Any) -> dict[str, Any]:
         "description": found.description,
         "enabled": state.choice(found.id).enabled,
     }
-
-
-def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, str]], int]:
-    """The offerable connectors the session facts name (at most ``offer_listed``), and
-    how many there are."""
-
-    if not session_id:
-        return [], 0
-    try:
-        found = offerable(app, session_id)
-    except Exception as exc:  # noqa: BLE001 - facts never break a prompt; typed
-        trace.event("TOOLS", "connector_offer_facts_unavailable (%s)", type(exc).__name__)
-        return [], 0
-    return [_brief(row) for row in found[: offer_listed()]], len(found)
 
 
 def _match(entries: Mapping[str, Any], connector: str) -> Any:
@@ -285,17 +262,27 @@ async def answer(
 # ------------------------------------------------------- joining the running turn
 
 
-def join_running_turn(app: Any, connector_id: str) -> tuple[list[str], str]:
+def join_running_turn(
+    app: Any, connector_id: str, *, plugin_server: bool = False
+) -> tuple[list[str], str]:
     """Give the running turn the connector's tools; ``(tool names, typed reason)``.
 
     The tools are callable from the agent's next step: the namespace is mounted in the
-    turn's fleet and the turn's per-step tool refresh takes it whole.
+    turn's fleet and the turn's per-step tool refresh takes it whole. With
+    ``plugin_server`` the namespace is an MCP server a plain plugin added to this
+    conversation declares (:mod:`.plugin_offer`): it has no saved connection, and joins
+    with the spec the conversation's server set declares.
     """
 
     from clio_agent.gact import connectors_service as service  # noqa: PLC0415
     from clio_agent.gact.agents.clio_react import active_loop  # noqa: PLC0415
     from clio_agent.gact.agents.live_tool_refresh import LiveToolRefresher  # noqa: PLC0415
-    from clio_agent.gact.connector_rebind import ConnectorJoinError, join_namespace  # noqa: PLC0415
+    from clio_agent.gact.connector_rebind import (  # noqa: PLC0415
+        ConnectorJoinError,
+        conversation_spec,
+        fleet_root_of,
+        join_namespace,
+    )
 
     program = getattr(active_loop(), "agent", None)
     refresher = getattr(program, "_clio_tool_refresh", None)
@@ -314,15 +301,24 @@ def join_running_turn(app: Any, connector_id: str) -> tuple[list[str], str]:
         except Exception as exc:  # noqa: BLE001 - typed below
             trace.event("TOOLS", "connector_join_fleet_unavailable (%s)", type(exc).__name__)
             return [], "connector_join_fleet_unavailable"
-    saved = service.saved_connection(connector_id)
+    saved = {} if plugin_server else service.saved_connection(connector_id)
     if saved is None:
         return [], "connector_join_no_connection"
     from clio_agent.gact.connector_values import session_fleet, session_overlay  # noqa: PLC0415
 
     sid = _session_id()
-    own = session_fleet(app, sid) if connector_id in session_overlay(app, sid) else None
-    try:  # CV-D5: values of this conversation's own join its own fleet
-        tools = join_namespace(agent, own or executor, connector_id, saved)
+    own = (
+        session_fleet(app, sid)
+        if not plugin_server and connector_id in session_overlay(app, sid)
+        else None
+    )
+    target = own or executor  # CV-D5: values of this conversation's own join its own fleet
+    # CV-N3: the spec the conversation's server set declares, as the fleet will mount it.
+    declared = conversation_spec(app, sid, connector_id, fleet_root_of(agent, target))
+    if plugin_server and declared is None:
+        return [], "plugin_join_undeclared"
+    try:
+        tools = join_namespace(agent, target, connector_id, saved, spec=declared)
     except ConnectorJoinError as exc:
         trace.event("TOOLS", "%s connector=%s", exc.reason, connector_id)
         return [], exc.reason
@@ -384,18 +380,49 @@ def _turned_on(
     }
     if reason:
         result["join_reason"] = reason
+    skills = _plugin_skills(app, plugins)
+    if skills:
+        result["skills"] = skills
     if plugins and not already:
+        result["message"] += f" Its plugin {', '.join(plugins)} joined this conversation only."
+    if skills:  # loadable in this turn (CF-D6)
         result["message"] += (
-            f" Its plugin {', '.join(plugins)} joined this conversation only; its skills are "
-            "offered from the next message."
+            " Its skills load with load_skill from your next step: "
+            f"{', '.join(skill['id'] for skill in skills)}."
         )
     if text := instructions_for(found.id):
         result["instructions"] = text
     return result
 
 
+def _plugin_skills(app: Any, plugins: list[str]) -> list[dict[str, str]]:
+    """The skills the connector's plugins bring this conversation ({id, description})."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+
+    sid = _session_id()
+    if not plugins or not sid or _session(app, sid) is None:
+        return []
+    try:
+        rows = session_resolution(app, sid).skills
+    except (SessionAgentUnavailable, RuntimeError) as exc:
+        trace.event("TOOLS", "connector_offer_skills_unavailable session=%s (%s)", sid, exc)
+        return []
+    return [
+        {"id": str(row["id"]), "description": str(row.get("description") or "")}
+        for row in rows
+        if row.get("plugin") in plugins
+    ]
+
+
 async def offer_connector(connector: str = "", reason: str = "") -> dict[str, Any]:
-    """Offer to add a connector to this conversation; wait for Add or Not now."""
+    """Offer to add a connector to this conversation; wait for Add or Not now.
+
+    ``offer_plugin``'s connector case (:mod:`clio_agent.gact.plugin_offer`).
+    """
 
     from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact import context  # noqa: PLC0415
@@ -561,6 +588,18 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
             **({"severity": "warning"} if not tools else {}),
         }
     )
+    if skills := [s for s in row.get("skills") or [] if isinstance(s, Mapping)]:
+        blocks.append(
+            {
+                "id": "skills",
+                "type": "text",
+                "label": f"Skills ({len(skills)})",
+                "text": "\n".join(
+                    f"{skill.get('id')}: {skill.get('description') or ''}".rstrip(": ")
+                    for skill in skills
+                ),
+            }
+        )
     if status.get("status") == "unreachable":
         blocks.append(
             {
@@ -594,30 +633,3 @@ def present_start(args: Mapping[str, Any]) -> dict[str, Any]:
     if reason := str(args.get("reason") or ""):
         blocks.append({"id": "reason", "type": "text", "label": "Why", "text": reason})
     return {"action": "Offer", "subject": "connector", "summary": "", "blocks": blocks}
-
-
-def build_offer_connector_tool() -> Any:
-    return native_tool(
-        offer_connector,
-        name=TOOL_NAME,
-        domain="tasks",
-        title="Offer connector",
-        desc=(
-            "Offer to add a connector to this conversation, when the person's request "
-            "needs what it does and none of your tools can. The person sees its logo, "
-            "description and your reason, and chooses Add or Not now (adding one that is "
-            "off turns it on); you never add it yourself. On Add its tools are in your tool "
-            "list from your next step and you continue the request; on Not now you get a "
-            "refusal and nothing changed. With no connector it lists the connectors the "
-            "person can add."
-        ),
-        args={
-            "connector": {"type": "string", "description": "The connector's id or name."},
-            "reason": {
-                "type": "string",
-                "description": "One sentence for the person: what it would do for this request.",
-            },
-        },
-        presentation=present,
-        presentation_start=present_start,
-    )

@@ -85,6 +85,8 @@ class ExternalTasks:
         # and their records, written behind their replies (read_only_outcomes).
         self._lazy: dict[str, LazyAdmission] = {}
         self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
+        self._unwatch_fleets: Callable[[], None] | None = None
+        external_task_connections.watch_fleets(self)
 
     connection = external_task_connections.connection
     _retire_connection = external_task_connections.retire_connection

@@ -444,12 +444,6 @@ agents.react_extract.enabled: true
 # it for test fixtures.
 # connectors.catalog_dirs:  # default unset; resolved in code
 
-# CLIO_CONNECTORS_OFFER_LISTED  (int)  <- src/clio_agent/gact/connector_offer.py
-# How many connectors that are off for the agent the session facts name, so
-# it can offer one; the total is always given and offer_connector with no
-# connector lists them all.
-connectors.offer_listed: 20
-
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
 # asking. Unset accounts follow their billing: subscriptions and free
@@ -504,6 +498,12 @@ fleet.usage_poll_seconds: 300
 # uses the bundled marketplace, else the pinned default URL. Point it at a
 # mirror or an offline copy.
 # plugins.default_marketplace:  # default unset; resolved in code
+
+# CLIO_PLUGINS_OFFER_LISTED  (int)  <- src/clio_agent/gact/plugin_offer.py
+# How many plugins and connectors not in a conversation the session facts
+# name, so the agent can offer one; the total is always given and
+# offer_plugin with no plugin lists them all.
+plugins.offer_listed: 20
 
 # CLIO_PLUGIN_STORE  (str)  <- src/clio_agent/plugins/service.py
 # Folder holding installed marketplaces, plugin snapshots, user agents and

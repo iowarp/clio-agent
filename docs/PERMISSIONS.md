@@ -141,7 +141,7 @@ asks; a view tool annotated `readOnlyHint` asks nothing unless a rule or default
 so. Other built-ins (`search_tools`, `load_skill`, plans, todos, memory) are CLIO's own
 bookkeeping: only a rule or default makes them ask or refuses them. Built-ins that act
 outside but ask by their own gate call or card keep doing so without the declaration
-(`ssh_execute`, `connected_data_connect`, `run_code`, `offer_connector`'s card).
+(`ssh_execute`, `connected_data_connect`, `run_code`, `offer_plugin`'s card).
 
 **Deny hides the tool.** A tool whose default is `deny`, or that a person's rule names
 exactly and denies, is left out of the agent's tools: the tool list, the deferred

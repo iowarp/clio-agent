@@ -130,6 +130,18 @@ To remove a plugin, choose the remove button on its row in the **Plugins** tab. 
 
 Changes apply to this conversation only. The agent's name in the title shows how many changes you made.
 
+### When the agent offers a plugin
+
+The agent knows which of your plugins and connectors this conversation does not have:
+each by name, the marketplace it comes from and a line about what it does, the most
+recently added marketplace first, up to `plugins.offer_listed` (20) with the total. When
+a request needs one, it asks with a card, **Add tariff-calc to this conversation?**, and
+its reason. **Add** adds the plugin to this conversation as an injection (the agent is
+told about it at once), and its skills and tools are the agent's in the same reply; a
+plugin's own Python tools arrive with your next message. **Not now** changes nothing. The
+agent never adds a plugin by itself, and it does not offer a plugin a request has no use
+for.
+
 ### How a change reaches the agent
 
 In a conversation with no messages yet, an added plugin applies at once, and a removal asks only **Yes** or **No**: nothing has been sent to the model, so the change applies from the first call.

@@ -264,6 +264,11 @@ KEY_NOTES: dict[str, str] = {
         "Worker slots for background run_code scripts; each running script holds one for its "
         "life. Default 10000: nothing bounds how many scripts run, the person stops them."
     ),
+    "plugins.offer_listed": (
+        "How many plugins and connectors not in a conversation the session facts name, so the "
+        "agent can offer one; the total is always given and offer_plugin with no plugin lists "
+        "them all."
+    ),
     "plugins.store_root": (
         "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
         "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
@@ -271,10 +276,6 @@ KEY_NOTES: dict[str, str] = {
     "connectors.catalog_dirs": (
         "More folders of connector entries, separated like PATH, read after the shipped "
         "catalogs/connectors; a later folder cannot replace an entry. Set it for test fixtures."
-    ),
-    "connectors.offer_listed": (
-        "How many connectors that are off for the agent the session facts name, so it can offer "
-        "one; the total is always given and offer_connector with no connector lists them all."
     ),
     "plugins.default_marketplace": (
         "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "

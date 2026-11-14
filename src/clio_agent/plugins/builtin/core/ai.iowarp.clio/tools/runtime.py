@@ -28,8 +28,9 @@ load_skill = native_tool("load_skill")
 search_tools = native_tool("search_tools")
 # A value one of the person's connectors needs, given in the conversation (CN6).
 set_connector_value = native_tool("set_connector_value")
-# A connector the person has not turned on, offered when a request needs it.
-offer_connector = native_tool("offer_connector", defer=True)
+# A plugin or connector not in this conversation, offered when a request needs it. Listed,
+# not deferred: the session facts name what it offers, and the call is its only use.
+offer_plugin = native_tool("offer_plugin", defer=False)
 # The pixels and the last report of an app view open in the conversation (CM1).
 look_at_view = native_tool("look_at_view", defer=True)
 run_code = native_tool("run_code")

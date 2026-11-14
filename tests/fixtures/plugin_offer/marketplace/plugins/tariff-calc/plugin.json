@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tariff-calc",
+  "version": "0.1.0",
+  "description": "Landed cost of imported goods: customs duty by tariff line and origin, VAT on the duty-paid value, and the total a shipment costs once cleared.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["tariff", "customs", "import duty", "landed cost"]
+}
