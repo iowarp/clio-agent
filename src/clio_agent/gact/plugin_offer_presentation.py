@@ -1,6 +1,7 @@
 """How an ``offer_plugin`` call reads (the tool presentation contract).
 
-One row: "Offer <plugin or connector>". Expansion shows the agent's reason, then what
+One row: "Offer <plugin or connector>". Expansion shows what the plugin is (its own
+description) and the agent's reason, then what
 the person chose and what joined: for a connector its tools (the connector offer's own
 presentation, :func:`clio_agent.gact.connector_offer.present`); for a plugin its skills
 and tools, or the typed refusal. With no plugin named, "List" and the rows that could be
@@ -47,6 +48,8 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         return connector_offer.present({"connector": args.get("plugin"), **args}, result, row)
     name = str(row.get("plugin_name") or row.get("plugin") or args.get("plugin") or "plugin")
     blocks: list[dict[str, Any]] = [{"id": "plugin", "type": "text", "text": name}]
+    if description := str(row.get("description") or ""):
+        blocks.append({"id": "what", "type": "text", "label": "What it is", "text": description})
     if reason := str(row.get("reason") or args.get("reason") or ""):
         blocks.append({"id": "reason", "type": "text", "label": "Why", "text": reason})
     head = {"action": "Offer", "subject": "plugin", "summary": str(row.get("message") or "")}
