@@ -1,4 +1,4 @@
-"""How ``look_at_view`` reads in the transcript (CM1).
+"""How ``look_at_view`` reads in the transcript (CM1; file views FV-D3).
 
 The row is "Look at view" on the view's title. Expansion shows the image the agent saw
 (a link to the kept image), what the view last reported, and what the snapshot could not
@@ -25,6 +25,13 @@ def _text(key: str, label: str, text: str, **extra: Any) -> dict[str, Any]:
     return {"id": key, "type": "text", "label": label, "text": text, **extra}
 
 
+def _listed(item: Mapping[str, Any]) -> str:
+    """One open view in a refusal's list: an app view by server, a file view by path."""
+    if item.get("kind") == "file":
+        return f"{item.get('title')} ({item.get('renderer') or 'file'} view, {item.get('path')})"
+    return f"{item.get('title')} ({item.get('server')}, {item.get('app_instance_id')})"
+
+
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """The finished look: the image, the view's report, and the gaps."""
     from clio_agent.gact.mcp_app_look import coverage_lines  # noqa: PLC0415
@@ -41,11 +48,7 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         )
         views = row.get("views")
         if isinstance(views, list) and views:
-            names = [
-                f"{item.get('title')} ({item.get('server')}, {item.get('app_instance_id')})"
-                for item in views
-                if isinstance(item, Mapping)
-            ]
+            names = [_listed(item) for item in views if isinstance(item, Mapping)]
             blocks.append(_text("views", "Open views", "\n".join(names)))
         return {
             "action": "Look at view",
@@ -64,7 +67,15 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
                 "label": f"What {title} showed",
             }
         )
-    if view.get("server"):
+    if view.get("kind") == "file":
+        blocks.append(
+            _text(
+                "view",
+                "View",
+                f"{view.get('renderer') or 'File'} view of {view.get('path') or title}",
+            )
+        )
+    elif view.get("server"):
         blocks.append(
             _text(
                 "view",
@@ -76,7 +87,8 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     if isinstance(context, list) and context:
         # The view's own report, line for line (it is data: keep its line breaks).
         report = "\n".join(str(x) for x in context)
-        blocks.append({"id": "context", "type": "code", "label": "Last reported", "text": report})
+        label = "View state" if view.get("kind") == "file" else "Last reported"
+        blocks.append({"id": "context", "type": "code", "label": label, "text": report})
     coverage = told if isinstance(told := row.get("coverage"), Mapping) else {}
     gaps = [line for line in coverage_lines(coverage) if line.startswith("Not in the image")]
     if gaps:

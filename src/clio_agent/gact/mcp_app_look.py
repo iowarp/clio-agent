@@ -1,4 +1,7 @@
-"""The agent looks at an open app view: its pixels and its last reported context (CM1).
+"""The agent looks at an open view: its pixels and its last reported context (CM1, FV-D3).
+
+The view is an MCP App view, or a client-rendered file view (a 3D model the file viewer
+draws in the browser, :mod:`clio_agent.gact.file_views`): one tool for both (FV-D3).
 
 ``look_at_view`` is a native tool. It names one of the session's live MCP App views (by
 title, server, tool or instance id; the only one when there is one) and returns an
@@ -305,9 +308,19 @@ class ViewIdentity:
     title: str
     resource_uri: str
     shown: bool
+    #: ``app`` (an MCP App view) or ``file`` (a client-rendered file view, FV-D3).
+    kind: str = "app"
+    #: A file view: the kind of view ("3D model") and the file's workspace.
+    renderer: str = ""
+    workspace_id: str = ""
 
     def describe(self) -> str:
         where = "on screen" if self.shown else "not on screen"
+        if self.kind == "file":
+            return (
+                f"“{self.title}” ({self.renderer or 'file'} view of the workspace file "
+                f"{self.resource_uri}, {where})"
+            )
         return (
             f"“{self.title}” ({self.server or 'server'} view, opened by {self.tool}, "
             f"id {self.app_instance_id}, {where})"
@@ -333,7 +346,28 @@ def _views(app: Any, sid: str) -> list[ViewIdentity]:
                 shown=table.shown(sid, record.app_instance_id),
             )
         )
-    return views
+    return views + _file_views(app, sid)
+
+
+def _file_views(app: Any, sid: str) -> list[ViewIdentity]:
+    """The session's client-rendered file views, as look targets (FV-D3)."""
+    from clio_agent.gact.file_views import file_view_looks, file_view_table  # noqa: PLC0415
+
+    looks = file_view_looks(app)
+    return [
+        ViewIdentity(
+            app_instance_id=view.view_id,
+            server="",
+            tool="",
+            title=view.name,
+            resource_uri=view.path,
+            shown=looks.shown(sid, view.view_id),
+            kind="file",
+            renderer=view.kind,
+            workspace_id=view.file.get("workspace_id", ""),
+        )
+        for view in file_view_table(app).views(sid)
+    ]
 
 
 def _choose(views: Sequence[ViewIdentity], name: str) -> tuple[ViewIdentity | None, str]:
@@ -368,6 +402,15 @@ def _choose(views: Sequence[ViewIdentity], name: str) -> tuple[ViewIdentity | No
 
 
 def _identity_fields(view: ViewIdentity) -> dict[str, Any]:
+    if view.kind == "file":
+        return {
+            "kind": "file",
+            "view_id": view.app_instance_id,
+            "title": view.title,
+            "path": view.resource_uri,
+            "workspace_id": view.workspace_id,
+            "renderer": view.renderer,
+        }
     return {
         "app_instance_id": view.app_instance_id,
         "server": view.server,
@@ -396,6 +439,12 @@ def _watched(app: Any, sid: str) -> bool:
 
 
 def _not_shown_text(view: ViewIdentity) -> str:
+    if view.kind == "file":
+        return (
+            f"The file view {view.describe()} is not on screen, so it cannot be looked at. "
+            "The person can show it by opening the file from Files in the workbench, or by "
+            "bringing its tab forward."
+        )
     return (
         f"The view {view.describe()} is not on screen, so it cannot be looked at. The person "
         f"can show it by opening its card in the conversation or its tab; calling {view.tool} "
@@ -403,8 +452,21 @@ def _not_shown_text(view: ViewIdentity) -> str:
     )
 
 
-def _context_for(app: Any, sid: str, view: ViewIdentity) -> tuple[list[str], str]:
+def _context_for(
+    app: Any, sid: str, view: ViewIdentity, answer: Mapping[str, Any]
+) -> tuple[list[str], str]:
     from clio_agent.gact.mcp_app_context import stored_app_context  # noqa: PLC0415
+
+    if view.kind == "file":
+        from clio_agent.gact.file_views import file_view_table  # noqa: PLC0415
+
+        found = file_view_table(app).get(sid, view.app_instance_id)
+        state = answer.get("state")
+        lines = (
+            list(state) if isinstance(state, list) and state else list(found.state if found else [])
+        )
+        digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest() if lines else ""
+        return lines, digest
 
     entry = stored_app_context(app, sid, view.app_instance_id) or {}
     return view_context_lines(entry.get("context")), str(entry.get("sha256") or "")
@@ -416,11 +478,19 @@ def _model_text(view: ViewIdentity, context: list[str], snapshot: Mapping[str, A
         f"({snapshot.get('width')}x{snapshot.get('height')} CSS pixels on screen)."
     ]
     if context:
-        lines.append("What the view last reported:")
+        lines.append(
+            "The view state when the image was taken:"
+            if view.kind == "file"
+            else "What the view last reported:"
+        )
         lines.extend(f"  {line}" for line in context)
     else:
         lines.append("The view has reported no context.")
-    lines.extend(coverage_lines(snapshot))
+    if view.kind == "file":
+        # The file viewer composites its own canvas and HTML (labels, panels) exactly.
+        lines.extend(line for line in coverage_lines(snapshot) if "approximately" not in line)
+    else:
+        lines.extend(coverage_lines(snapshot))
     return "\n".join(lines)
 
 
@@ -473,15 +543,29 @@ def _save(app: Any, sid: str, png: bytes, call_id: str) -> dict[str, Any]:
     return row
 
 
-def look_at_view(view: str = "") -> dict[str, Any]:
-    """Look at an app view that is open in this conversation, as the person sees it.
+def _look_route(app: Any, view: ViewIdentity) -> tuple[ViewLooks, Any]:
+    """The look table holding ``view`` and how to ask its surface for a snapshot."""
+    if view.kind == "file":
+        from clio_agent.gact.file_views import (  # noqa: PLC0415
+            file_view_looks,
+            publish_file_view_look,
+        )
 
-    Returns an image of what the view shows right now, with the context it last
-    reported (its time step, camera, selection and the like) and its identity. Use it
-    to see a 3D scene, a structure, a plot or any other app view before you describe
-    it or act on it. ``view`` names the view by its title, server, tool or id; leave it
-    empty when only one view is open. A view that is not on screen cannot be looked
-    at; the answer says how to show it.
+        return file_view_looks(app), publish_file_view_look
+    return look_table(app), publish_look
+
+
+def look_at_view(view: str = "") -> dict[str, Any]:
+    """Look at a view the person has open in this conversation, as they see it.
+
+    A view is an app view, or a file the file viewer draws in the person's browser (a
+    3D model: STEP, STL, 3MF, OBJ, PLY, glTF). Returns an image of what the view shows
+    right now, with the context or view state it reports (its time step, camera,
+    section, selection, measurements and the like) and its identity. Use it to see a 3D
+    scene, a model, a structure, a plot or any other view before you describe it or act
+    on it. ``view`` names the view by its title, file name or path, server, tool or id;
+    leave it empty when only one view is open. A view that is not on screen cannot be
+    looked at; the answer says how to show it.
     """
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
         declare_structured_content,
@@ -498,18 +582,18 @@ def look_at_view(view: str = "") -> dict[str, Any]:
     if chosen is None:
         listing = "; ".join(item.describe() for item in views)
         text = (
-            "No app view is open in this conversation."
+            "No app view or file view is open in this conversation."
             if reason == VIEW_NONE and not views
             else f"No open view matches “{view}”. Open views: {listing}."
             if reason == VIEW_NONE
             else f"Several views are open; name one. Open views: {listing}."
         )
         return _refusal(reason, text, views=[_identity_fields(item) for item in views])
-    table = look_table(app)
+    table, publish = _look_route(app, chosen)
     if not chosen.shown or not _watched(app, sid):
         return _refusal(VIEW_NOT_SHOWN, _not_shown_text(chosen), view=_identity_fields(chosen))
     look = table.begin(sid, chosen.app_instance_id)
-    publish_look(app, look)
+    publish(app, look)
     unwatched = False
     try:
         # No timeout (rule 6): the look ends when the surface answers, the app closes, the
@@ -543,7 +627,7 @@ def look_at_view(view: str = "") -> dict[str, Any]:
             view=identity,
         )
     png, width_px, height_px = decode_snapshot_png(str(answer["image"]))
-    context, context_sha = _context_for(app, sid, chosen)
+    context, context_sha = _context_for(app, sid, chosen, answer)
     saved = _save(app, sid, png, look.call_id)
     model_text = _model_text(chosen, context, answer)
     descriptor = {
@@ -594,7 +678,8 @@ def build_look_at_view_tool() -> Any:
             "view": {
                 "type": "string",
                 "description": (
-                    "The view's title, server, tool or id; empty when one view is open."
+                    "The view's title, file name or path, server, tool or id; empty when "
+                    "one view is open."
                 ),
             }
         },

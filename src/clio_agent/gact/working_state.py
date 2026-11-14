@@ -24,7 +24,7 @@ __all__ = [
 
 #: Injection sources that are working state: re-injected, never summarized.
 WORKING_STATE_SOURCES = frozenset(
-    {"session_facts", "plan_mode", "plan", "todos", "mcp_app_context"}
+    {"session_facts", "plan_mode", "plan", "todos", "mcp_app_context", "file_view_context"}
 )
 #: The session's own facts (workspace root, write roots, machine, scratch folder). They
 #: ride the conversation, not the system prompt: the system prompt is cached as one block,
@@ -124,6 +124,10 @@ def working_state_injections(
     from clio_agent.gact.agents.composition import (  # noqa: PLC0415
         _runtime_active_workspace_context,
     )
+    from clio_agent.gact.file_views import (  # noqa: PLC0415
+        FILE_VIEW_CONTEXT_SOURCE,
+        file_view_context_injection,
+    )
     from clio_agent.gact.mcp_app_context import (  # noqa: PLC0415
         APP_CONTEXT_SOURCE,
         app_context_injection,
@@ -146,6 +150,8 @@ def working_state_injections(
         ("todos", todo_recitation(app, session_id, session)),
         # What each live view the person has open reports (MA8), and the tools it offers.
         (APP_CONTEXT_SOURCE, app_context_injection(app, session_id)),
+        # What each client-rendered file view on screen shows (FV-D5).
+        (FILE_VIEW_CONTEXT_SOURCE, file_view_context_injection(app, session_id)),
     )
     return [(source, text) for source, text in blocks if text]
 

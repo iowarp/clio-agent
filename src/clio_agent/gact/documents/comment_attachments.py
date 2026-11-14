@@ -47,7 +47,7 @@ __all__ = [
     "register_surface",
 ]
 
-SurfaceKind = Literal["agent-answer", "a2ui-surface", "browser-page", "mcp-app"]
+SurfaceKind = Literal["agent-answer", "a2ui-surface", "browser-page", "mcp-app", "file-view"]
 _MAX_IMAGE_BASE64 = 12 * 1024 * 1024
 
 
@@ -269,6 +269,12 @@ def render_attachment(
         )
 
         register_surface("mcp-app", render_app_view_comments)
+    if attachment.kind == "file-view" and attachment.kind not in _SURFACES:
+        from clio_agent.gact.documents.file_view_comments import (  # noqa: PLC0415
+            render_file_view_comments,
+        )
+
+        register_surface("file-view", render_file_view_comments)
     handler = _SURFACES.get(attachment.kind)
     if handler is None:
         text = (
@@ -284,6 +290,7 @@ _KIND_WORDS = {
     "a2ui-surface": "a view",
     "browser-page": "a page",
     "mcp-app": "an app view",
+    "file-view": "a file view",
 }
 
 
