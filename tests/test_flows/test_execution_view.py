@@ -187,7 +187,7 @@ def test_reconciliation_joins_exact_run_and_owner_only() -> None:
 
     root = SimpleNamespace(
         handle="root",
-        owner=SimpleNamespace(human_id="h", parent_handle="", session_id="s"),
+        owner=SimpleNamespace(human_id="h", parent_handle=""),
         created_at="2026-10-25T08:00:00+00:00",
         terminal_at="2026-10-25T10:00:00+00:00",
     )
@@ -224,14 +224,10 @@ def test_reconciliation_joins_exact_run_and_owner_only() -> None:
         def descendant_handles(self, handle: str) -> set[str]:
             return set(tasks)
 
-        def latest_assignment(self, session_id: str) -> Any:
-            return root  # not restarted
-
     result = flow_run(History(), "root", reconcile_children=True)
     assert result is not None
     assert [row["handle"] for row in result["calls"]] == ["match"]
     assert result["calls"][0]["returned_after_stop"] is True
-    assert "restarted_as" not in result
 
 
 def test_a_named_child_shows_its_name_and_planned_question() -> None:

@@ -77,9 +77,6 @@ def flow_run(
     }
     if content["flow"] not in {"workflow", "council", "arena"}:
         projected["execution"] = execution_view(content, projected["calls"])
-    successor = restarted_as(history, handle)
-    if successor:
-        projected["restarted_as"] = successor
     return projected
 
 
