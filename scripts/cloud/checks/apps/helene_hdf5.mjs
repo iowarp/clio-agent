@@ -46,8 +46,12 @@ async function settle(page, sid, log, shot, name, minutes = 25) {
   let n = 0;
   const until = Date.now() + minutes * 60_000;
   while (Date.now() < until) {
-    const done = await waitIdle(page, sid, log, 4);
-    await shot(`${name}-${String(++n).padStart(2, "0")}`);
+    // The agent may offer a connector (ParaView) for this conversation: the person reads the
+    // offer and clicks Add, as anyone would to get the view they asked for.
+    await acceptOffers(page, shot, name);
+    const done = await waitIdle(page, sid, log, 0.5);
+    n += 1;
+    if (n % 6 === 0 || done) await shot(`${name}-${String(n).padStart(2, "0")}`);
     if (done) {
       await toLatest(page);
       mark(`${name}-answered`);
@@ -56,6 +60,18 @@ async function settle(page, sid, log, shot, name, minutes = 25) {
   }
   mark(`${name}-timeout`);
   return false;
+}
+
+async function acceptOffers(page, shot, name) {
+  const offer = page.locator('[data-interaction-kind="connector_setup"]').locator("visible=true");
+  const add = offer.getByRole("button").filter({ hasText: /Add/ }).first();
+  if (!(await add.isVisible().catch(() => false))) return;
+  await toLatest(page);
+  await page.waitForTimeout(2500); // reads what it adds and why
+  await shot(`${name}-offer`);
+  await add.click({ timeout: 5000 });
+  mark(`${name}-offer-accepted`);
+  console.log("ACCEPTED connector offer");
 }
 
 /** Reference a file from the composer's @ menu; with `dataset`, Tab into it and pick one. */
