@@ -1,0 +1,15 @@
+# PDF viewer: the PDF example server of the MCP Apps extension (modelcontextprotocol/ext-apps,
+# examples/pdf-server; MIT, the repository moving to Apache-2.0), published on npm as
+# @modelcontextprotocol/server-pdf. CLIO starts it through npx over stdio and never bundles
+# it. The version is pinned to the release qualified here (2.0.4). Its display_pdf tool
+# returns a ui:// view (PDF.js). It reads PDFs by URL from academic archives (arXiv, bioRxiv,
+# medRxiv, ChemRxiv, Zenodo, OSF, HAL, ...); a local file only from its own command line or
+# a client's roots. It has no needs (apps ledger, "More connectors").
+- id: pdf
+  name: PDF viewer
+  logo: pdf.svg
+  description: Read scientific papers from arXiv, bioRxiv, Zenodo and other archives in an interactive PDF viewer
+  server:
+    command: npx
+    args: [-y, --silent, "@modelcontextprotocol/server-pdf@2.0.4", --stdio]
+  needs: []

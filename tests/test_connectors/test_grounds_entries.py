@@ -71,3 +71,19 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
     assert listing.offered("burette", rows) == [{"name": "open_ketcher"}]
     assert listing.offered("spice", listed) == listed
     assert listing.offered("unknown", listed) == listed
+
+
+def test_more_connectors_are_data_only() -> None:
+    """The PDF viewer (an MCP App) and arXiv (no view) are catalog entries, nothing more."""
+
+    catalog = entries.load_catalog([SHIPPED])
+    pdf = catalog.entries["pdf"]
+    assert pdf.server["command"] == "npx" and pdf.needs == () and pdf.tools == ()
+    assert "@modelcontextprotocol/server-pdf@2.0.4" in pdf.server["args"]
+    assert pdf.logo_path is not None and pdf.logo_path.read_text().startswith("<svg")
+    arxiv = catalog.entries["arxiv"]
+    assert arxiv.server["args"][:2] == ["arxiv-mcp-server==0.8.2", "--storage-path"]
+    assert [(n.key, n.kind, n.required, n.agent_settable) for n in arxiv.needs] == [
+        ("papers", "value", False, True)
+    ]
+    assert arxiv.logo == "" and "search_papers" in arxiv.tools

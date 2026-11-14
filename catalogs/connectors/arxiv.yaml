@@ -1,0 +1,21 @@
+# arXiv: blazickjp/arxiv-mcp-server, Apache-2.0, a plain MCP server (no view). CLIO starts
+# it as its own process through uvx and never bundles or imports it. The version is pinned
+# to the release qualified here (0.8.2). It reads arXiv's public API and HTML pages with no
+# account; full text of a paper with no HTML version needs the server's own [pdf] extra,
+# which is left out (apps ledger, "More connectors"). It keeps downloaded papers in the
+# folder given to --storage-path; empty means the folder it runs in, which for a
+# conversation is that conversation's workspace folder.
+- id: arxiv
+  name: arXiv
+  description: Search arXiv for papers, read their abstracts, and download papers to read their full text
+  server:
+    command: uvx
+    args: [arxiv-mcp-server==0.8.2, --storage-path, "${need.papers}"]
+  needs:
+    - key: papers
+      kind: value
+      label: Folder for downloaded papers
+      required: false
+      agent_settable: true
+      help: Leave empty to keep them in the conversation's workspace folder.
+  tools: [search_papers, get_abstract, download_paper, list_papers, read_paper]
