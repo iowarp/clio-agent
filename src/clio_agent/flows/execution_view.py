@@ -200,13 +200,20 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
         review = reviews[-1] if reviews else None
         if review:
             rejected = review.get("status") != "accepted_by_reviewer"
+            # No verdict could be read: the review did not happen, it did not reject.
+            unreadable = review.get("status") == "review_unreadable"
             issues = review.get("issues") or []
-            detail = "\n".join(str(issue.get("reason") or "") for issue in issues)
+            detail = (
+                "The review could not be read, so the report was delivered unreviewed.\n"
+                + str(review.get("reason") or "")
+                if unreadable
+                else "\n".join(str(issue.get("reason") or "") for issue in issues)
+            )
             previous = [
                 add(
                     "run:review",
                     "Report review",
-                    "rejected" if rejected else "completed",
+                    "failed" if unreadable else "rejected" if rejected else "completed",
                     previous,
                     detail=detail,
                 )

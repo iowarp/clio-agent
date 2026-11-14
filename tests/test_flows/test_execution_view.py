@@ -348,3 +348,23 @@ def test_a_failed_coordinator_is_shown_failed_with_its_reason() -> None:
     )
     (row,) = [row for row in rows if row["label"] == "Coordinate"]
     assert row["status"] == "failed" and row["detail"] == "ValueError: bad shape"
+
+
+def test_an_unreadable_review_shows_failed_not_rejected() -> None:
+    content: dict[str, Any] = {
+        "flow": "deep-research",
+        "status": "completed",
+        "steps": {"p": {"name": "DeepResearch._plan"}, "w": {"name": "DeepResearch._write"}},
+        "events": {
+            "r": {
+                "event": "report_review",
+                "status": "review_unreadable",
+                "issues": [],
+                "reason": "ValueError: issues.6.excerpt Field required",
+            }
+        },
+    }
+    rows = execution_view(content, [_call("research:d1", "researcher", "r1")])
+    (review,) = [row for row in rows if row["id"] == "run:review"]
+    assert review["status"] == "failed"
+    assert review["detail"].endswith("ValueError: issues.6.excerpt Field required")

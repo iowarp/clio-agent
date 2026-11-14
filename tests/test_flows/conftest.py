@@ -34,6 +34,21 @@ class Fanout(Flow):
         return {"answer": " | ".join(r.answer for r in results), "handles": [r.handle for r in results]}
 
 
+class StateFan(Flow):
+    id = "statefan"
+
+    async def forward(self, task, ctx):
+        merged = await ctx.gather([ctx.call("self", f"STATE {i}") for i in range(2)])
+        kept = await ctx.gather(
+            [ctx.call("self", f"STATE again {i}") for i in range(2)], merge_state=False
+        )
+        return {
+            "answer": "ok",
+            "merged_conflicts": len(ctx.conflicts),
+            "own_packets": [r.workflow_state.get("packet") for r in [*merged, *kept]],
+        }
+
+
 class Tolerant(Flow):
     id = "tolerant"
 
@@ -257,6 +272,7 @@ def _agent(agent_id, flow):
 
 
 Fanouter = _agent("fanouter", "fanout")
+StateFanner = _agent("statefanner", "statefan")
 Tolerater = _agent("tolerater", "tolerant")
 Yielderer = _agent("yielderer", "yielder")
 Stopperer = _agent("stopperer", "stopper")
@@ -407,6 +423,11 @@ def default_program(question: str = "", **_: Any) -> Any:
             }
         )
         return dspy.Prediction(answer="critique: add a polish step")
+    if question.startswith("STATE"):
+        # Each child returns its own typed section under the same key.
+        return dspy.Prediction(
+            answer=f"done: {question}", workflow_state={"packet": {"from": question}}
+        )
     return dspy.Prediction(answer=f"done: {question.splitlines()[0][:60]}")
 
 
