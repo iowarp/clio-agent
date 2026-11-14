@@ -169,7 +169,10 @@ def search_result(
         more = f" and {len(names) - listed} more" if len(names) > listed else ""
         lines.append(
             f'No deferred tool matches "{query}". The deferred tools are: {shown}{more}. '
-            "Search again by exact name (select:name) or other keywords."
+            "Search again by exact name (select:name) or other keywords. Only this "
+            "conversation's tools are searched: what a plugin or connector not in this "
+            "conversation brings is not, and the session facts list those (offer_plugin "
+            "offers one)."
         )
     return "\n".join(lines).strip(), structured
 

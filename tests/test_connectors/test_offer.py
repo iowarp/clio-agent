@@ -100,15 +100,10 @@ def test_offerable_names_every_connector_not_in_this_conversation(conversation: 
     conversation.state.here = {"fixture-plain": ["connector-fixture-plain"]}
     names = [found.id for found in offer.offerable(conversation, "sess_a")]
     assert names == ["fixture-secret", "fixture-signin"]  # on but not here: still offerable
-    facts, total = offer.offerable_facts(conversation, "sess_a")
-    assert total == 2 and facts[0] == {
-        "id": "fixture-secret",
-        "name": "Fixture Secret",
-        "description": "A test connector that needs an access token and brings a plugin",
-        "enabled": True,
-    }
-    assert facts[1]["enabled"] is False
-    assert offer.offerable_facts(conversation, "") == ([], 0)
+    assert [found.id for found in offer.offerable(conversation, "sess_a")] == [
+        "fixture-secret",
+        "fixture-signin",
+    ]
 
 
 def test_offerable_is_empty_when_the_conversation_cannot_resolve(
@@ -132,26 +127,6 @@ def test_offerable_is_empty_when_the_conversation_cannot_resolve(
     assert offer.conversation_connectors(app, "sess_a") == {"fixture-plain": ["p"]}
 
 
-def test_the_facts_are_capped_and_say_so(
-    conversation: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from clio_agent import injections
-
-    monkeypatch.setenv("CLIO_CONNECTORS_OFFER_LISTED", "1")
-    facts, total = offer.offerable_facts(conversation, "sess_a")
-    assert len(facts) == 1 and total == 3
-    text = injections.render(
-        "session_facts_connectors", {"connectors": facts, "total": total}, app=None, session_id=""
-    )
-    assert "Fixture Plain (fixture-plain, off): A test connector with nothing to set up" in text
-    assert "not in this conversation" in text
-    assert "(3, 1 shown)" in text and "with no connector lists them all" in text
-    assert "offer_connector" in text and "search_tools" in text
-    monkeypatch.setenv("CLIO_CONNECTORS_OFFER_LISTED", "-1")
-    with pytest.raises(ValueError):
-        offer.offer_listed()
-
-
 def test_add_turns_it_on_adds_it_here_and_the_tools_join_the_turn(
     conversation: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -166,7 +141,7 @@ def test_add_turns_it_on_adds_it_here_and_the_tools_join_the_turn(
     assert card.kind == "connector_setup"
     assert card.title == "Add Fixture Secret to this conversation"
     payload = card.payload
-    assert payload["intent"] == "enable" and payload["tool_name"] == "offer_connector"
+    assert payload["intent"] == "enable" and payload["tool_name"] == "offer_plugin"
     assert payload["reason"] == "It checks the token for this request."
     assert payload["connector_enabled"] is False
     assert [row["key"] for row in payload["missing"]] == ["token", "where"]
