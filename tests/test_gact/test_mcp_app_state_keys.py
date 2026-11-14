@@ -93,9 +93,7 @@ def _component(**overrides: Any) -> dict[str, Any]:
 
 def test_a_declaring_server_refuses_a_channel_key_it_does_not_report() -> None:
     app = _app({"viewer_open": _tool([{"key": "time_index", "tool": "set_timestep"}])})
-    refused = _mcp_app_reference.validate_mcp_app_components(
-        app, [_component()], session_id="sess"
-    )
+    refused = _mcp_app_reference.validate_mcp_app_components(app, [_component()], session_id="sess")
     assert refused is not None
     assert refused["reason"] == "a2ui_mcp_app_state_key_unknown"
     assert "time_index (set with set_timestep)" in refused["detail"]
@@ -122,6 +120,12 @@ def test_the_context_block_names_the_state_keys(monkeypatch: pytest.MonkeyPatch)
     record = SimpleNamespace(source_namespace="viewer", tool_name="viewer_open")
     words = keys_module.record_state_words(app, "sess", record)
     assert words == "time (set with set_timestep)"
+    # The fleet that opened the view wins over the agent's active executor (turn start).
+    fleet = SimpleNamespace(
+        get_all_tool_definitions=lambda: {"viewer_open": _tool([{"key": "zoom"}])}
+    )
+    record.fleet = lambda: fleet
+    assert keys_module.record_state_words(app, "sess", record) == "zoom"
     seen: dict[str, Any] = {}
 
     def render(source: str, variables: dict[str, Any], **_: Any) -> str:

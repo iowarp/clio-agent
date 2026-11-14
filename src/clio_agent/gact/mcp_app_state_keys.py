@@ -149,17 +149,33 @@ def state_keys(
     return declared + [StateKey(k, declared=False) for k in reported if k not in known]
 
 
-def record_state_words(app: Any, sid: str, record: Any) -> str:
-    """The keys an open view reports, for its context block (``""`` when none are known)."""
+def _record_definitions(app: Any, record: Any) -> Mapping[str, Any]:
+    """The tool definitions of the fleet whose server opened ``record``.
 
+    The context block is built at the start of a turn, before the session's workspace
+    is bound, where the agent's active executor is its default one; the record keeps a
+    weak reference to the fleet that opened it (``mcp_app_fleet.admitted``).
+    """
+
+    ref = getattr(record, "fleet", None)
+    fleet = ref() if callable(ref) else None
+    listing = getattr(fleet, "get_all_tool_definitions", None)
+    if callable(listing):
+        return listing() or {}
     from clio_agent.gact.a2ui_producer._mcp_app_reference import (  # noqa: PLC0415
         _tool_definitions,
     )
 
+    return _tool_definitions(app) or {}
+
+
+def record_state_words(app: Any, sid: str, record: Any) -> str:
+    """The keys an open view reports, for its context block (``""`` when none are known)."""
+
     server = record.source_namespace or ""
     tool = _bare(record.tool_name, server)
-    definitions = _tool_definitions(app) or {}
-    return describe(state_keys(app, sid, server, tool, definitions.get(f"{server}_{tool}")))
+    definition = _record_definitions(app, record).get(f"{server}_{tool}")
+    return describe(state_keys(app, sid, server, tool, definition))
 
 
 def describe(keys: list[StateKey]) -> str:
