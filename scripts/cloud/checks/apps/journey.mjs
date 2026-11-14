@@ -105,7 +105,8 @@ export default async function (page, shot) {
         await card.scrollIntoViewIfNeeded().catch(() => {});
         await shot(`t${index + 1}-setup-${turn.setups.length + 1}`);
         turn.setups.push((await card.innerText()).replace(/\s+/g, " ").slice(0, 600));
-        const name = setupAction === "decline" ? "Decline" : "Continue";
+        // A setup card says Continue/Decline; a connector offer card says Add/Not now.
+        const name = setupAction === "decline" ? /^(Decline|Not now)/ : /^(\d\s*)?(Continue|Add)\b/;
         await card.getByRole("button", { name }).first().click();
         await page.waitForTimeout(1500);
         continue;
