@@ -142,10 +142,16 @@ def grade(
     def key(value: Any) -> str:
         return re.sub(r"[^0-9]", "", str(value))[:10]  # yyyymmddhh
 
+    def hour(value: Any) -> str | None:
+        """The hour of a time given without its date ("00:00Z" for a one-day question)."""
+        digits = key(value)
+        return digits[:2] if 0 < len(digits) <= 4 else None
+
     by_time = {key(r.get("time")): r for r in rows}
+    by_hour = {h: r for r in rows if (h := hour(r.get("time"))) is not None}
     matched = 0
     for want in truth:
-        got = by_time.get(key(want["time"]))
+        got = by_time.get(key(want["time"])) or by_hour.get(key(want["time"])[8:10])
         if not got:
             continue
         try:
@@ -262,10 +268,22 @@ def run_once(
     return result
 
 
+def regrade(client: GactClient, results: Path, truth: dict) -> None:
+    """Recompute each saved run's grade from its session's export."""
+    for path in sorted(results.glob("*-*/*-run*.json")):
+        row = json.loads(path.read_text(encoding="utf-8"))
+        norm = collect.normalize_export(client.export(row["session_id"]))
+        reply = (norm.get("replies") or [""])[-1]
+        row["grade"] = grade(row["task"], _answer(reply), truth[row["task"]])
+        path.write_text(json.dumps(row, indent=2), encoding="utf-8")
+        print(f"{path.parent.name} {path.stem}: {row['grade']['score']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--arm", choices=("ptc", "direct"), required=True)
-    parser.add_argument("--where", choices=("local", "s3"), required=True)
+    parser.add_argument("--arm", choices=("ptc", "direct"))
+    parser.add_argument("--where", choices=("local", "s3"))
+    parser.add_argument("--regrade", help="Recompute grades of the saved runs in this folder")
     parser.add_argument("--tasks", default="T1,T2")
     parser.add_argument("--n", type=int, default=3)
     parser.add_argument("--era5", required=True, help="Folder with the local ERA5 files")
@@ -277,6 +295,11 @@ def main(argv: list[str] | None = None) -> int:
     args.work = str(Path(args.work).resolve())
     client = GactClient(args.base_url)
     truth = {"T1": gt.track(Path(args.era5)), "T2": gt.cloud_peaks(Path(args.era5))}
+    if args.regrade:
+        regrade(client, Path(args.regrade), truth)
+        return 0
+    if not args.arm or not args.where:
+        parser.error("--arm and --where are required unless --regrade is given")
     for index in range(1, args.n + 1):
         for task in args.tasks.split(","):
             r = run_once(client, args, task, index, truth)
