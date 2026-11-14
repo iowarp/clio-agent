@@ -116,7 +116,8 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         latest = app.state.task_history.latest_assignment(session_id)
         root_handle = latest.handle if latest is not None else ""
     resume_from: list[tuple[str, str]] = []
-    if selection.get("input") is not None or "depth" in selection:
+    started = selection.get("input") is not None or "depth" in selection
+    if started:
         # A started flow (run_flow, run_workflow, ctx.call) is its whole assignment:
         # a later turn of the same assignment resumes the same run.
         marker = root_handle
@@ -128,7 +129,7 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
             trigger = app.state.task_history.mail_item(session_id, turn.input_notification_id)
             written = trigger is not None and trigger.kind in {"human", "peer", "delegation"}
             message = str(kwargs.get("question") or "") if written else ""
-            return _after_the_run(flow_id, predecessor, session_id, message)
+            return _ran(_after_the_run(flow_id, predecessor, session_id, message))
     else:
         # The agent's own flow: each written request starts its own run; any other wake
         # (a child's result, the restart's recovery notice) continues its assignment's run.
@@ -156,7 +157,26 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         kwargs=kwargs,
     )
     ctx.journal.resume_from = resume_from
-    return run_in_new_loop(ctx.run())
+    result = run_in_new_loop(ctx.run())
+    return _ran(result) if started else result
+
+
+def _ran(prediction: Any) -> Any:
+    """A started flow's run returned: its assignment is complete.
+
+    A started flow (run_flow, run_workflow, ctx.call) is its whole assignment, and a
+    run that returns has ended (a failed run raises). Its turn says so rather than
+    leaving the assignment's state to whatever else is pending in the flow's
+    conversation: a late notice there (a child's outcome republished after a
+    restart, for one) must not hold a finished run open with nothing to wake it.
+    On 2026-11-14 a deep-research run resumed after a server restart, finished and
+    saved its report, and its task stayed yielded, so the agent that started it
+    waited for it forever. Input after the run reaches :func:`_after_the_run`.
+    """
+
+    if getattr(prediction, "assignment_disposition", None) is None:
+        prediction.assignment_disposition = "complete"
+    return prediction
 
 
 def _lineage(app: Any, handle: str) -> tuple[str, str]:
