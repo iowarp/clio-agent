@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from clio_agent.gact import spotter_clearance
 from clio_agent.gact.native_work import now
 from clio_agent.gact.spotter_clearance import (
     CLEARANCE_CANCELLED,
@@ -24,6 +25,32 @@ from clio_agent.gact.spotter_clearance import (
 )
 from clio_agent.gact.spotter_watcher import disarm_spotter_watcher, wake_on_parent_activity
 
+# Bounds for joins on real completions: a loaded CI runner can take seconds, and the
+# per-test hang guard (180 s) still bounds one that never completes.
+_JOIN_S = 120
+
+
+class _ProgressClock:
+    """The clearance wait's clock, advanced only by the test.
+
+    The progress window is wall-clock, so a tiny real window also spends itself on the
+    state reads between polls and stalls on a loaded runner. With this clock, only the
+    test's explicit advances consume the window.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._now = 0.0
+        self._lock = threading.Lock()
+        monkeypatch.setattr(spotter_clearance, "time", SimpleNamespace(monotonic=self.monotonic))
+
+    def monotonic(self) -> float:
+        with self._lock:
+            return self._now
+
+    def advance(self, seconds: float) -> None:
+        with self._lock:
+            self._now += seconds
+
 
 def _join_admission(app: Any, sid: str) -> None:
     """Join ``sid``'s in-flight admission checks on the owner loop, where they run."""
@@ -34,7 +61,7 @@ def _join_admission(app: Any, sid: str) -> None:
             await asyncio.shield(pump)
         assert not runner.busy(sid)
 
-    asyncio.run_coroutine_threadsafe(join(), app.state.conversations._loop).result(timeout=5)
+    asyncio.run_coroutine_threadsafe(join(), app.state.conversations._loop).result(_JOIN_S)
 
 
 def test_progress_after_timed_out_poll_is_not_discarded(
@@ -68,24 +95,29 @@ def test_progress_after_timed_out_poll_is_not_discarded(
         await asyncio.gather(*tuple(owner._controls.values()))
         await join_admission()
 
-    asyncio.run_coroutine_threadsafe(hold_models(), owner._loop).result(timeout=5)
+    asyncio.run_coroutine_threadsafe(hold_models(), owner._loop).result(_JOIN_S)
     wake_on_parent_activity(app, parent, tool_name="fs_read_file")
     event = clearance_event(app, parent)
     original_wait = event.wait
     polls: list[bool] = []
+    clock = _ProgressClock(monkeypatch)
 
     def signal_after_poll(timeout: float | None = None) -> bool:
         if not polls:
             result = original_wait(timeout)
             assert not result
             polls.append(result)
+            # The poll timed out and used up the whole window. Only the signal
+            # below, if the wait keeps it, restarts the window.
+            assert timeout is not None
+            clock.advance(timeout)
             signal_clearance(app, parent)
             return result
         for item in app.state.task_history.pending_mail(child):
             app.state.task_history.withdraw_mail(child, item.id)
         # Confirmed withdrawal also wakes admission. Join that worker-free
         # probe before asserting the next clearance state, on the owner loop.
-        asyncio.run_coroutine_threadsafe(join_admission(), owner._loop).result(timeout=5)
+        asyncio.run_coroutine_threadsafe(join_admission(), owner._loop).result(_JOIN_S)
         signal_clearance(app, parent)
         polls.append(True)
         return original_wait(timeout)
@@ -126,10 +158,10 @@ def test_stop_releases_clearance_wait_without_cancelling_the_watcher(
     )
     worker.start()
     try:
-        assert entered.wait(2), "The real clearance wait never started"
+        assert entered.wait(_JOIN_S), "The real clearance wait never started"
         stopped.set()
         assert app.state.cancel_events.pop(parent) is stopped
-        worker.join(timeout=2)
+        worker.join(_JOIN_S)
         assert not worker.is_alive(), "Stop left the invocation awaiting watcher progress"
         assert outcomes == ["spotter_clearance_cancelled"]
         assert app.state.task_history.latest_assignment(child) == before
@@ -138,7 +170,7 @@ def test_stop_releases_clearance_wait_without_cancelling_the_watcher(
         if worker.is_alive():
             disarm_spotter_watcher(app, app.state.sessions.get(parent))
             signal_clearance(app, parent)
-            worker.join(timeout=2)
+            worker.join(_JOIN_S)
         assert not worker.is_alive()
 
 
@@ -193,10 +225,11 @@ def test_uncommitted_coalesced_evidence_holds_clearance(
 
 
 def test_every_progress_signal_restarts_only_the_progress_window(
-    watcher_world: tuple[Any, str, str],
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, parent, child = watcher_world
     wake_on_parent_activity(app, parent, tool_name="fs_read_file")
+    clock = _ProgressClock(monkeypatch)
     result: list[str] = []
     worker = threading.Thread(
         target=lambda: result.append(
@@ -205,20 +238,21 @@ def test_every_progress_signal_restarts_only_the_progress_window(
     )
     worker.start()
     try:
+        # Three signals 0.08 s apart outlast one 0.2 s window only if each restarts it.
         for _ in range(3):
-            time.sleep(0.08)
+            clock.advance(0.08)
             signal_clearance(app, parent)
             assert worker.is_alive()
         for item in app.state.task_history.pending_mail(child):
             app.state.task_history.withdraw_mail(child, item.id)
         signal_clearance(app, parent)
-        worker.join(timeout=5)
+        worker.join(_JOIN_S)
         assert not worker.is_alive() and result == [CLEARANCE_GRANTED]
     finally:
         if worker.is_alive():
             disarm_spotter_watcher(app, app.state.sessions.get(parent))
             signal_clearance(app, parent)
-            worker.join(timeout=5)
+            worker.join(_JOIN_S)
         assert not worker.is_alive()
 
 
