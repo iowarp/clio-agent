@@ -1,0 +1,12 @@
+sess_7598a40c67d9
+stop 204
+task_9f600d11b Session  cancelled               Restart a stopped run (2)    msg_user_6475f3d00034
+task_edfbcc2df Subagent cancelled               deep-research flow           flow:call_d65017b4a784~call_01332e5f_0
+task_fd6fd259e Subagent completed               ZFP filter ID and modes      flowrun_74d21ad92e0bca361467512b:subagent:ke
+task_c57e39e79 Subagent completed               SZ3 filter ID and modes      flowrun_74d21ad92e0bca361467512b:subagent:ke
+task_342be8cf8 Subagent cancelled               Check: SZ3 filter ID and mod flowrun_74d21ad92e0bca361467512b:subagent:ke
+task_ab5297efa Subagent cancelled               Check: ZFP filter ID and mod flowrun_74d21ad92e0bca361467512b:subagent:ke
+total 27
+stop-scope: []
+
+[exited with code 0]

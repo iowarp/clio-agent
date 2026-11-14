@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from uuid import uuid4
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.fleet.child_model import accepted_model
-from clio_agent.tools.task_call_context import TASK_CALL
+from clio_agent.gact.spawn_invocation import spawn_invocation_id
 
 WORKFLOW_EDITOR_TOOLS = ("workflow_add_step", "workflow_cancel_step")
 
@@ -155,7 +154,7 @@ async def _start_flow(
         return refused
     session = app.state.sessions.get(caller.session_id)
     parent_flow = (getattr(session, "metadata", None) or {}).get("agent_flow") or {}
-    invocation = TASK_CALL.get().invocation_id or uuid4().hex
+    invocation = spawn_invocation_id()
     accepted = await app.state.conversations.spawn(
         caller,
         render_input(flow_input) or f"Run the {flow_id} flow.",
@@ -168,6 +167,8 @@ async def _start_flow(
                 "input": _plain(flow_input),
                 "depth": int(parent_flow.get("depth") or 0) + 1,
             },
+            # The task is labelled by its flow, so query_tasks and the Runs rail find it.
+            "subagent_name": flow_id if flow_id == "workflow" else f"{flow_id} flow",
             **child_metadata(claimed),
         },
         model=str(model or "").strip(),
@@ -199,7 +200,9 @@ def _run_flow_description() -> str:
     base = (
         "Start one of this agent's flows as owned work and return its task handle at "
         "acceptance. Keep working; its result arrives as a task result. wait_tasks(handle) "
-        "waits for it; cancel_tasks(handle) cancels it and its subtree."
+        "waits for it; cancel_tasks(handle) cancels it and its subtree. Each call starts a "
+        "new run from nothing; restart_agent(handle) continues an earlier run that was "
+        "stopped, cancelled or interrupted, keeping its finished calls."
     )
     try:
         app, caller = _runtime()

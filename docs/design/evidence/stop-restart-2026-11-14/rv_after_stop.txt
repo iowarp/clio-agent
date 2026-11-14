@@ -1,0 +1,8 @@
+task_fcaaeab6f Session  cancelled               Stop and restart (review)    msg_user_fc695525c77d
+task_6fd8f2b26 Subagent cancelled               deep-research flow           flow:call_59af732c17ac~call_6349d93a_0
+task_ad32baec5 Subagent completed               HDF5 registry filter IDs     flowrun_2a395acc32dacab83e0d46df:subagent:ke
+task_ef83ed343 Subagent completed               ZFP and SZ3 error-bound mode flowrun_2a395acc32dacab83e0d46df:subagent:ke
+task_515d92740 Subagent cancelled               Check: HDF5 registry filter  flowrun_2a395acc32dacab83e0d46df:subagent:ke
+task_dce4f2818 Subagent cancelled               Check: ZFP and SZ3 error-bou flowrun_2a395acc32dacab83e0d46df:subagent:ke
+total 30
+stop-scope: []

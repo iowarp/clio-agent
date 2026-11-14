@@ -370,3 +370,21 @@ def test_an_unreadable_review_shows_failed_not_rejected() -> None:
     (review,) = [row for row in rows if row["id"] == "run:review"]
     assert review["status"] == "failed"
     assert review["detail"].endswith("ValueError: issues.6.excerpt Field required")
+
+
+def test_a_run_stopped_on_request_ends_cancelled_not_failed() -> None:
+    stopped = {"reason": "stopped", "stopped_by": "person", "message": "Stopped on request."}
+    research = execution_view(
+        {"flow": "deep-research", "status": "cancelled", "result": stopped},
+        [{"invocation": "a", "status": "cancelled"}],
+    )
+    assert ("Stopped", "cancelled") in [(row["label"], row["status"]) for row in research]
+    assert not [row for row in research if row["status"] == "failed"]
+    custom = execution_view(
+        {"flow": "custom", "status": "cancelled", "result": stopped},
+        [{"invocation": "a", "status": "cancelled"}],
+    )
+    assert [(row["label"], row["status"]) for row in custom][-2:] == [
+        ("Stopped", "cancelled"),
+        ("Result", "not_run"),
+    ]
