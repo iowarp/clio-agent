@@ -1739,6 +1739,14 @@ Every run had empty `consoleErrors` and `failedRequests` (one phone run first fa
 | DC-Q7 | **The tour's "Bring in tools" step**, light and dark, 1440×900 and 390×844 (touch) | `tour_connectors.mjs` (new): Settings, General, Replay, Next to step 13 of 18, "Bring in tools" after "Explore the results"; the card "Add Geo to this conversation?", "Not enabled (Add turns it on)", the description, "Why You asked for hurricane tracks…", "Brings 1 MCP server to this conversation", spotlighted above the composer; `inert` true, the Geo logo loaded; Next goes to "Select data" and the card is gone (`dc-tour-bring-in-tools-{light,dark}-{desktop,phone}`, `dc-tour-explore-before-light-desktop`). The offer-height hook was then rewritten for lint (`set-state-in-effect`) with the same behaviour; that rewrite is covered by the unit tests, not rerun live | passed (live) |
 | DC-Q8 | **Search and Enable on the review page, no stack** (disk was too low for one) | `external/gact-tui/web/tests/review/discover-cards.html`: the production Extensions library over a fixture slice of the catalog (`tests/review/fixtures/discover-catalog.json`, 14 entries with their logos), served by Vite alone; `scripts/cloud/checks/apps/discover_review.mjs` at device scale 2: light and dark, 1440×900 and 390×844, placeholder "Search plugins, connectors and skills", the field on the tabs' line at 1440 (417 px wide) and on its own line on the phone (350 px), "Search the MCP Registry for “hdf”" after typing, Clear search shown, `consoleErrors` and `failedRequests` empty in all four (`dc-search-{discover,search}-{light,dark}-{desktop,phone}.png`, all read). Synthetic rendering, not a live stack | passed (review page) |
 
+#### Open
+
+| ID | Item | Why it is open | Status |
+| --- | --- | --- | --- |
+| DC-O1 | The site's `connectors/discover-catalog.png` (DC-Q6) shows the toolbar before DC-D9 (the search icon, the 760 px pane); recapture with `docs_capture.mjs` `DOCS_MODE=extensions DOCS_ENABLE=0 --theme dark` and update its manifest hash | disk was too low for a stack after DC-D9 | open |
+| DC-O2 | Every default `IconButton` draws a 17 px glyph in a 28 px button, 5.5 px from each side (DC-D10); a 16 px default would centre them on whole pixels app-wide | primitive owner's call; it changes every icon button | open |
+| DC-O3 | The whole `pnpm test` on a quiet machine | the shared machine's load stopped it (Gates) | open |
+
 ## Open and upstream
 
 | ID | Item | Why it is open | Status |
