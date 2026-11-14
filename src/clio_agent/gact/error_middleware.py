@@ -209,10 +209,12 @@ class EnvelopeErrorMiddleware:
                 scope.get("method", "?"),
                 scope.get("path", "?"),
             )
-            envelope = unhandled_error_envelope(exc)
-            response = JSONResponse(
+            from clio_agent.gact import core_write_refusal  # noqa: PLC0415
+
+            refused = core_write_refusal.unhandled_refusal(exc, scope)
+            response = refused or JSONResponse(
                 status_code=500,
-                content=envelope.model_dump(exclude_none=True),
+                content=unhandled_error_envelope(exc).model_dump(exclude_none=True),
             )
             await response(scope, receive, send)
 
@@ -252,6 +254,10 @@ def install_typed_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RecordingUnconfirmed)
     async def _recording_unconfirmed(_request: object, exc: RecordingUnconfirmed) -> JSONResponse:
         """Classify the existing durable-admission hold as a retryable service refusal."""
+        from clio_agent.gact import core_write_refusal  # noqa: PLC0415
+
+        if (refused := core_write_refusal.recording_refusal(_request)) is not None:
+            return refused  # clio-core is refusing writes: say so, typed (MC-F3)
         return JSONResponse(
             status_code=503,
             content=ErrorEnvelope(
