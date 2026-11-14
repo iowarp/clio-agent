@@ -55,6 +55,7 @@ def flow_run(
                 "invocation": invocation,
                 "kind": row.get("kind", ""),
                 "target": row.get("target", ""),
+                **({"label": row["label"]} if row.get("label") else {}),
                 "handle": row.get("handle", ""),
                 "status": row.get("status", ""),
                 **({"recovered": True} if row.get("recovered") else {}),

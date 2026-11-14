@@ -1,0 +1,134 @@
+---
+title: Run deep research
+description: Ask a question in Deep research mode to get a sourced report whose claims an independent critic checked against the pages they quote.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import modeMenu from '../../../assets/captures/search/deep-mode-menu.png';
+import running from '../../../assets/captures/search/deep-running.png';
+import delivered from '../../../assets/captures/search/deep-delivered.png';
+import report from '../../../assets/captures/search/deep-report.png';
+
+<PreviewGuide features="Deep research with web and literature search" since="v0.9.7" />
+
+Deep research answers a question that needs many sources: the state of a field, a
+comparison of methods, a literature review. CLIO plans the investigation, sends
+several researchers out at once, has an independent critic check what they found,
+and writes a report from the claims the critic verified.
+
+A deep research run takes longer than an ordinary answer, often 15 minutes to
+an hour, and makes hundreds of searches and page reads. Use an ordinary conversation for a quick fact.
+
+## Start a run
+
+<Steps>
+
+1. Start a new conversation.
+2. Open the mode button beside the model (it shows **Execute**) and choose
+   **Deep research**.
+
+   <Capture client:visible image={await captureImage(modeMenu)}
+     alt="The composer's mode menu with Execute, Plan and Deep research, A long, sourced investigation"
+     caption="Deep research applies to the message you send next." />
+
+3. Ask your question. Name the scope, the period and what the answer should
+   cover.
+
+   ```text
+   Write a short literature review of lossless compression for
+   scientific floating-point data since 2020: which methods are
+   used, which of them are available as HDF5 filters, and what
+   compression ratios and speeds papers report.
+   ```
+
+4. Approve the search sources when CLIO asks. See
+   [Approve the first search](/docs/web-search/#approve-the-first-search).
+
+</Steps>
+
+In Deep research mode, tools that write are refused, so the run searches and
+reads while CLIO saves its report. See
+[Choose what CLIO may do](/docs/permissions/).
+
+## How a run works
+
+1. **Plan.** A planner splits the question into research directions, up to six by
+   default.
+2. **Research.** One researcher per direction searches the web and the
+   literature, reads the sources and reports claims, each with the page it read
+   and the exact passage that supports it.
+3. **Verify.** An independent critic checks each claim against the passage it
+   quotes, judges whether the source is authoritative and current, and looks for
+   evidence against it. It returns verified claims, rejected claims and the gaps
+   that remain.
+4. **Close gaps.** Researchers investigate the gaps, and the critic checks the
+   new claims. This repeats up to two more rounds by default.
+5. **Write and review.** A writer drafts the report from verified claims only. A
+   separate reviewer checks the report against its evidence and can send it back
+   once for a correction.
+
+You can follow the researchers and the critic while they work in **Work**; see
+[Follow work in progress](/docs/following-work/).
+
+<Capture client:visible image={await captureImage(running)}
+  alt="A deep research run in progress, with researcher subagents working on separate directions"
+  caption="Each researcher works on one direction. Open one to see its searches and the pages it read." />
+
+## Read the report
+
+When the run ends, CLIO saves the report as a Markdown file in a `deep-research`
+folder of the workspace, attaches it to its answer, and summarizes the outcome:
+what was verified, what was not, and what the critic still questions. Choose the
+file to open the report beside the conversation.
+
+<Capture client:visible image={await captureImage(delivered)}
+  alt="The end of a deep research answer: throughput findings, what was not verified, problems the critic flagged in the report, and the attached Markdown report"
+  caption="The answer ends with what the run could not verify and what the critic still disputes, then the saved report." />
+
+<Capture client:visible image={await captureImage(report)}
+  alt="The report open beside the conversation: question and scope, executive answer, and findings with a source link under each claim"
+  caption="The report states its scope, gives a short answer, then lists its findings with the source of each claim." />
+
+The report has these sections:
+
+| Section | What it holds |
+| --- | --- |
+| **Question and scope** | What the run investigated. |
+| **Executive answer** | The short answer. |
+| **Findings** | The verified claims, each with its citation. |
+| **Conclusion** | What the findings mean together. |
+| **References** | The sources cited. A paper lists its authors, year, venue and DOI when the literature sources provide them. |
+| **Unresolved questions** | Gaps the run could not close. |
+| **Rejected claims** | Claims the critic did not verify, with the reason. They are not findings. |
+| **Open review notes** | Points the final reviewer raised that the run did not resolve, when there are any. |
+
+A link appears in the report only when a researcher or the critic read that page
+during the run.
+
+<Aside type="caution">
+Verification means a source page contains the quoted passage and the critic
+judged that it supports the claim. It does not prove the claim is true. Check
+the sources for anything you rely on, and read the rejected claims and open
+review notes.
+</Aside>
+
+## Change the depth
+
+Say what you need in the request, and CLIO sets the run's limits from it:
+
+- **Broader:** ask for more directions for a wide question, up to 12.
+- **Deeper or faster:** ask for more or fewer gap-closing rounds, from none to
+  five.
+- **Lighter on the services:** ask for fewer researchers at a time.
+- **Other models:** name a model for the researchers or for the critic. The
+  planner, writer and reviewer use the conversation's model.
+
+## Related
+
+- [Find papers and review the literature](/docs/literature/)
+- [Search the web](/docs/web-search/)
+- [Check answers and sources](/docs/evidence/)
+- [Flows and workflows](/docs/flows/)

@@ -114,6 +114,18 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "so CLIO surfaced typed cooperative cancellation without claiming the server stopped."
         ),
     },
+    "tool_calls_collapsed": {
+        "category": "model_output_repair",
+        # The reply streamed live; what was repaired is its CALL LIST (identical
+        # copies of one call ran once, and the model was told).
+        "synthetic_posthoc": False,
+        "live_streaming": True,
+        "recovery_actions": ["read_the_note_in_the_call_result", "retry"],
+        "description": (
+            "The model repeated the exact same tool call (same tool, same arguments) "
+            "in one reply. Each distinct call ran once and its result told the model."
+        ),
+    },
     MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED: {
         "category": "mcp_result_tolerance",
         "synthetic_posthoc": True,

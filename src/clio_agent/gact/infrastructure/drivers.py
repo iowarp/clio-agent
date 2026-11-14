@@ -62,25 +62,10 @@ from clio_agent.gact.infrastructure.native_service_platform import clio_tool
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
 from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
-from clio_agent.gact.infrastructure.searxng_service import (
-    SERVICE_ID as SEARXNG_SERVICE,
-)
-from clio_agent.gact.infrastructure.searxng_service import (
-    searxng_definition,
-    searxng_plan,
-    searxng_port,
-)
 from clio_agent.gact.infrastructure.server_parameters import EngineId
-from clio_agent.gact.infrastructure.web_search_service import (
-    WEB_SEARCH_IMAGE,
-    build_web_search_plan,
-    web_search_definition,
-    web_search_port,
-)
 
 __all__ = [
     "CLIO_AGENT_PORT",
-    "WEB_SEARCH_IMAGE",
     "LOOPBACK_ONLY_SERVICES",
     "DriverPlan",
     "build_driver_plan",
@@ -101,7 +86,6 @@ LOOPBACK_ONLY_SERVICES = frozenset(
     {
         "clio_agent",
         ROUTER_SERVICE,
-        SEARXNG_SERVICE,
         *MODEL_RUNTIME_SERVICES,
         *MONITORING_SERVICES,
     }
@@ -153,10 +137,6 @@ def service_connection_port(
         if not value.isdigit() or not 1024 <= int(value) <= 65535:
             raise ValueError("Remote CLIO port must be between 1024 and 65535")
         return int(value)
-    if service_id == "web_search":
-        return web_search_port(configuration)
-    if service_id == SEARXNG_SERVICE:
-        return searxng_port(configuration or {})
     return None
 
 
@@ -255,8 +235,6 @@ def service_definitions(
         model_runtime_definition("ollama", facts),
         *named.get("ollama", []),
         *monitoring_definitions(facts),
-        web_search_definition(facts),
-        searxng_definition(facts),
         relay,
         clio_agent,
     ]
@@ -308,21 +286,14 @@ def build_driver_plan(
     if action == "delete_data" and not (
         (engine == "vllm" and variant_id.startswith(("native-cuda", "native-xpu")))
         or service_id in MONITORING_SERVICES
-        or service_id in {"web_search", SEARXNG_SERVICE}
         or service_id == ROUTER_SERVICE
     ):
         raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
-    if action == "verify" and service_id not in {
-        *MONITORING_SERVICES,
-        "web_search",
-        SEARXNG_SERVICE,
-    }:
+    if action == "verify" and service_id not in MONITORING_SERVICES:
         raise ValueError("This service definition has no setup verification procedure")
-    if service_id == SEARXNG_SERVICE:
-        return searxng_plan(action, configuration, facts, target)
     if service_id in MONITORING_SERVICES:
         return monitoring_plan(
             service_id,
@@ -377,7 +348,7 @@ def build_driver_plan(
             configuration=configuration,
         )
 
-    return build_web_search_plan(action, configuration, facts, target, owned, variant_id)
+    raise ValueError(f"Unknown managed service {service_id!r}")
 
 
 def _relay_plan(

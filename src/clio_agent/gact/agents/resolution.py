@@ -216,6 +216,8 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
             {(row["plugin"], str(Path(row["path"]).parent.parent)) for row in resolution.skills}
         ),
     }
+    if agent.get("bare"):
+        metadata["bare"] = True
     structured = dict(agent.get("structured_outputs") or {})
     if resolution.workflow_state is not None:
         # A plugin declaring a workflow_state vocabulary makes its agents emit it.
@@ -313,6 +315,12 @@ def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentD
     return resolution_agent_def(child)
 
 
+def is_bare(agent_def: AgentDef) -> bool:
+    """Whether a resolved agent is bare (see :attr:`clio_agent.sdk.agent.Agent.bare`)."""
+
+    return bool((agent_def.metadata or {}).get("bare"))
+
+
 def apply_session_tool_allowlist(
     app: Any, agent_def: AgentDef, *, session_id: str = ""
 ) -> AgentDef:
@@ -322,8 +330,20 @@ def apply_session_tool_allowlist(
     all, so a server's elicitation message cannot drive a tool-capable turn.
     ``tool_allowlist`` is stamped when the child session is minted. Only the
     explicit empty list is handled; an absent or non-empty allowlist is a no-op.
+
+    A bare agent (``Agent.bare``) is stripped the same way on every turn, and also
+    loses its system prompt: its model sees only the conversation.
     """
 
+    if is_bare(agent_def):
+        return agent_def.model_copy(
+            update={
+                "tools": [],
+                "skills": [],
+                "module": {"kind": "chain_of_thought"},
+                "system_prompt": "",
+            }
+        )
     allowlist = _session_metadata(app, session_id).get("tool_allowlist")
     if not isinstance(allowlist, (list, tuple)) or allowlist:
         return agent_def

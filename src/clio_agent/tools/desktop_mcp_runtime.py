@@ -56,28 +56,8 @@ def bundled_module_launcher(
     """Resolve bundled clio-kit through the relocatable runtime interpreter."""
 
     resolved_args = [str(value) for value in args]
-    modules = {
-        "clio-kit": ("clio_kit", CLIO_KIT_ENTRY),
-        # The desktop runtime pre-installs the Web Search MCP adapter during
-        # packaging. Launch it directly: connecting must not download/build a
-        # second Python environment on first use or depend on ambient `uvx`.
-        "clio-web-search-mcp": ("web_mcp", "from web_mcp.server import main; main()"),
-    }
+    modules = {"clio-kit": ("clio_kit", CLIO_KIT_ENTRY)}
     selected = modules.get(command)
-    if (
-        command == "clio-kit"
-        and resolved_args[:2] == ["mcp-server", "web"]
-        and not any(
-            value == "--branch" or value.startswith(("--branch=", "-b"))
-            for value in resolved_args[2:]
-        )
-        and importlib.util.find_spec("web_mcp") is not None
-    ):
-        # The default declaration uses clio-kit too. Going through its CLI
-        # rebuilds a source-locked uv environment despite the installed adapter.
-        # Keep explicit branch requests on clio-kit; forward web options intact.
-        selected = modules["clio-web-search-mcp"]
-        resolved_args = resolved_args[2:]
     if selected is None or importlib.util.find_spec(selected[0]) is None:
         return None
 

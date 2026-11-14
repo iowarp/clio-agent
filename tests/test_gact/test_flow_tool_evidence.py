@@ -22,7 +22,9 @@ from tests.test_gact.test_permission_evidence import world as world
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
-def _tool(app: Any, owner: TaskSnapshot, value: Any) -> TaskSnapshot:
+def _tool(
+    app: Any, owner: TaskSnapshot, value: Any, submission: dict[str, Any] | None = None
+) -> TaskSnapshot:
     handle = "task_" + uuid4().hex
     task = TaskSnapshot(
         handle=handle,
@@ -45,6 +47,11 @@ def _tool(app: Any, owner: TaskSnapshot, value: Any) -> TaskSnapshot:
         result=app.state.task_history.write_content(
             owner.owner.session_id,
             value,
+        ),
+        submission=(
+            app.state.task_history.write_content(owner.owner.session_id, submission)
+            if submission is not None
+            else None
         ),
     )
     app.state.task_history.record_snapshot(task, observation_id=handle)
@@ -83,6 +90,21 @@ def test_child_tool_results_are_complete_pinned_and_isolated_from_siblings(
     replay = _context(app, sid, root)
     assert asyncio.run(replay.tool_results(child.handle)) == rows
     assert len(asyncio.run(replay.tool_results(child.handle))) == 2
+
+
+def test_an_inline_answer_names_the_server_it_was_submitted_to(
+    request: pytest.FixtureRequest,
+) -> None:
+    """A built-in answered inline has no adopted backend; its submission names the server."""
+    app, client, sid, root = request.getfixturevalue("world")
+    child_sid = client.post("/v1/sessions", json={"title": "Critic"}).json()["id"]
+    child = record_assignment_fixture(app, child_sid, parent_sid=sid)
+    backend = {"owner": "external_mcp", "server": "web", "transport": "FastMCPTransport"}
+    task = _tool(app, child, {"ok": True}, submission={"backend": backend, "tool": "fetch"})
+    rows = asyncio.run(_context(app, sid, root).tool_results(child.handle))
+    assert rows[0]["task"]["handle"] == task.handle
+    assert rows[0]["task"]["backend"] is None
+    assert rows[0]["task"]["submitted_backend"]["server"] == "web"
 
 
 def test_tool_evidence_cannot_be_read_from_an_unrelated_assignment(

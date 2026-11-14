@@ -256,18 +256,22 @@ from clio_agent.gact.app import build_app
 # /v1/workspaces/{workspace_id}/folder-attachments (#2175) attaches a host folder in place
 # or as a full copy; GET /v1/folder-attachments/locality (#2177) tells a client whether it
 # runs on CLIO's computer.
-# 443 -> 451: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
+# 443 -> 447: built-in web search (routes/search.py) replaced GET /v1/search/backend, POST
+# /v1/search/query and PUT/DELETE /v1/search/engine-keys/{engine} with GET/PATCH
+# /v1/search/providers, PUT/DELETE /v1/search/providers/{source}/key, POST
+# /v1/search/openalex-key and the search-service POST /v1/search, POST /v1/fetch, GET /v1/limits.
+# 447 -> 455: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
 # /v1/connectors, POST /v1/connectors, GET and DELETE /v1/connectors/{id}, GET .../logo,
 # PUT .../values, POST .../enable and POST .../disable.
-# 451 -> 467: MCP Apps surfaces, all under /v1/sessions/{sid}/mcp-apps/ in owner modules:
+# 455 -> 471: MCP Apps surfaces, all under /v1/sessions/{sid}/mcp-apps/ in owner modules:
 # PUT {app_id}/display-mode, POST {app_id}/downloads, PUT {app_id}/pin (mcp_app_routes.py);
 # GET {app_id}/live, POST reopen (mcp_app_calls.py); PUT {app_id}/app-tools, POST
 # {app_id}/app-tool-results/{call_id} (mcp_app_tool_routes.py); the service proxy
 # {app_id}/service/{data_ref} GET and HEAD, and .../{path:path} GET, HEAD, POST, PUT, PATCH,
 # DELETE and OPTIONS (mcp_app_service_proxy.py).
-# 467 -> 469: looking at a view (gact/mcp_app_look_routes.py, CM1): PUT
+# 471 -> 473: looking at a view (gact/mcp_app_look_routes.py, CM1): PUT
 # {app_id}/shown and POST {app_id}/looks/{call_id}.
-EXPECTED_ROUTE_METHOD_PAIRS = 469
+EXPECTED_ROUTE_METHOD_PAIRS = 473
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

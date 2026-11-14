@@ -29,7 +29,7 @@ class Fanout(Flow):
     id = "fanout"
 
     async def forward(self, task, ctx):
-        calls = [ctx.call("self", f"part {i} of {task}") for i in range(3)]
+        calls = [ctx.call("self", f"part {i} of {task}", label=f"Part {i}") for i in range(3)]
         results = await ctx.gather(calls, limit=2)
         return {"answer": " | ".join(r.answer for r in results), "handles": [r.handle for r in results]}
 

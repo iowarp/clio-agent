@@ -211,7 +211,7 @@ def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str,
 
 
 def _builtin_namespace_server(namespace: str) -> Any:
-    """CLIO's in-process server for a built-in namespace (``fs``, ``shell``), else None.
+    """CLIO's in-process server for a built-in namespace (``fs``, ``web``, ...), else None.
 
     A built-in call sent to the composite gateway was resolved by listing every mounted
     server, which starts each declared server not yet running: a session's first
@@ -219,15 +219,9 @@ def _builtin_namespace_server(namespace: str) -> Any:
     2026-11; a 2 s server took a first call to 3.7 s in a probe). Declared namespaces
     already get a client of their own; the built-ins now do too.
     """
-    if namespace == "fs":
-        from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
+    from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
 
-        return fs_server
-    if namespace == "shell":
-        from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
-
-        return shell_server
-    return None
+    return dict(builtin_servers()).get(namespace)
 
 
 class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):

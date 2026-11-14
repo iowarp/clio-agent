@@ -95,8 +95,8 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Web search",
         ("search",),
-        "Which backend serves the web_search tool (CLIO's private SearXNG by default, a CLIO Web "
-        "Search gateway, or none) and the private SearXNG's engine policy.",
+        "Which hosted sources answer web and literature search, in which order, with which "
+        "approvals, and an optional CLIO search service.",
     ),
     (
         "Provenance, trace and debug",
@@ -1301,43 +1301,45 @@ KEY_NOTES: dict[str, str] = {
         "Default timezone schedules resolve their cron expression's wall-clock fire times in; set "
         "to change the default zone new schedules use."
     ),
-    "search.backend": (
-        "Which service answers the agent's web_search tool: local_searxng (CLIO's private "
-        "SearXNG, installed on first use), clio_web_search (a gateway at "
-        "search.clio_web_search.url) or none (search off; the tool reports how to enable it)."
+    "search.approved": (
+        "Sources the person approved sending queries to (web source names, or literature for "
+        "every literature source); CLIO asks before the first query to any other source."
     ),
-    "search.clio_web_search.url": (
-        "CLIO Web Search gateway URL used when search.backend is clio_web_search; point it at "
-        "another machine to send search traffic from that machine's address."
+    "search.contact_email": (
+        "Optional email sent to Crossref and OpenAlex for their faster polite pools; empty "
+        "shares nothing."
     ),
-    "search.local_searxng.auto_install": (
-        "Whether the server installs and starts the private SearXNG at boot when it is the "
-        "backend and was never installed (or is installed but not running); off leaves it to "
-        "Infrastructure."
+    "search.enabled": (
+        "Whether web_search and literature_search answer at all; off makes them report it."
     ),
-    "search.searxng.engines": (
-        "SearXNG engines CLIO enables (comma-separated names from SearXNG's settings.yml); "
-        "Chinese-jurisdiction engines listed here stay off unless also opted in."
+    "search.literature.disabled": (
+        "Literature sources literature_search never asks (openalex, crossref, arxiv, europepmc, "
+        "osti, opencitations, datacite, semantic_scholar)."
     ),
-    "search.searxng.language": (
-        "Default search language of the private SearXNG (a SearXNG locale such as en, or auto)."
+    "search.max_results": "Default number of results a search returns (1-50).",
+    "search.paid": (
+        "Sources whose saved key is on a paid plan; CLIO then sets no daily allowance of its own "
+        "for them and lets more requests run at once."
     ),
-    "search.searxng.max_results": (
-        "Most results CLIO's direct search path returns per query (1-50)."
+    "search.request_timeout_s": (
+        "Seconds CLIO waits for one search source or page download (2-120); raise on slow or "
+        "proxied networks such as HPC login nodes."
     ),
-    "search.searxng.opt_in_engines": (
-        "Explicit opt-in for engines that are off by policy (baidu, sogou, 360search, chinaso, "
-        "quark, ...); each one named here is enabled."
+    "search.service.url": (
+        "A CLIO search service a site runs (another CLIO's address); when set it answers web "
+        "searches first, using its token from the credential store."
     ),
-    "search.searxng.port": (
-        "Loopback port of the private SearXNG; change it when another program already uses it."
+    "search.snippet_chars": (
+        "Characters of each result's snippet the model sees (80-4000); the full source answer "
+        "is saved to the file named in payload_file."
     ),
-    "search.searxng.request_timeout_s": (
-        "Seconds SearXNG waits for each upstream engine (1-60); raise on slow or proxied "
-        "egress such as HPC login nodes."
+    "search.web.auto_switch": (
+        "Move to the next web source without asking when one's free allowance runs out."
     ),
-    "search.searxng.safe_search": (
-        "SearXNG safe-search level: 0 off, 1 moderate (default), 2 strict."
+    "search.web.disabled": "Web sources web_search never uses.",
+    "search.web.order": (
+        "Web sources in the order web_search tries them (keenable, exa, firecrawl, you, "
+        "parallel); unlisted ones follow in their default order."
     ),
     "sessions.cache_records": (
         "How many conversation-list rows stay in memory; older rows are read from clio-core "

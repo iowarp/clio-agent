@@ -51,17 +51,31 @@ def _ranges_from_declaration(declaration: dict[str, Any]) -> list[DeclaredRange]
     ]
 
 
-def _check_prompt(encoded: Encoded, summary: Any) -> None:
-    if len(encoded.ids) != summary.prompt_tokens:
-        raise AttentionUnavailable(
-            "range_alignment_mismatch",
-            f"re-rendered prompt has {len(encoded.ids)} tokens, capture scored "
-            f"{summary.prompt_tokens}",
-        )
-    if not np.array_equal(np.asarray(encoded.ids, dtype=np.int64), summary.prompt_token_ids):
-        raise AttentionUnavailable(
-            "range_alignment_mismatch", "re-rendered prompt token ids differ from the capture"
-        )
+def _check_prompt(encoded: Encoded, summary: Any, tokenizer: str = "") -> None:
+    """The re-rendered prompt must be the captured one, token for token."""
+    ids = np.asarray(encoded.ids, dtype=np.int64)
+    captured = np.asarray(summary.prompt_token_ids, dtype=np.int64)
+    if len(ids) == summary.prompt_tokens and np.array_equal(ids, captured):
+        return
+    common = min(len(ids), len(captured))
+    differ = np.flatnonzero(ids[:common] != captured[:common])
+    first = int(differ[0]) if differ.size else common
+    detail = (
+        f"re-rendered prompt has {len(ids)} tokens, capture scored {summary.prompt_tokens}"
+        if len(ids) != summary.prompt_tokens
+        else "re-rendered prompt token ids differ from the capture"
+    )
+    raise AttentionUnavailable(
+        "range_alignment_mismatch",
+        f"{detail} (first difference at token {first}); the tokenizer or chat template "
+        "used to re-render the prompt is likely not the one the model used",
+        {
+            "prompt_tokens": len(ids),
+            "captured_prompt_tokens": int(summary.prompt_tokens),
+            "first_difference": first,
+            "tokenizer": tokenizer,
+        },
+    )
 
 
 def _declared_tools(declaration: dict[str, Any]) -> list[Any]:
@@ -104,7 +118,8 @@ def load_capture(
     if tools:
         template_kwargs["tools"] = tools
     encoded = renderer.render_encoded(call.messages, template_kwargs)
-    _check_prompt(encoded, summary)
+    used = str(getattr(renderer, "identity", "") or identity)
+    _check_prompt(encoded, summary, used if used == identity else f"{used} (recorded: {identity})")
 
     if declaration.get("status") == "declared":
         ranges = _ranges_from_declaration(declaration)

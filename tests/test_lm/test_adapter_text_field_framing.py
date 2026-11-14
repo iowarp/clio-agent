@@ -68,3 +68,18 @@ def test_any_other_signature_still_fails_typed(signature: type[dspy.Signature]) 
 def test_an_empty_reply_still_fails_typed() -> None:
     with pytest.raises(AdapterParseError):
         _adapter().parse(WriteReport, "   ")
+
+
+class Block(dspy.Signature):
+    """Write report blocks."""
+
+    question: str = dspy.InputField()
+    blocks: list[dict[str, str]] = dspy.OutputField()
+
+
+def test_an_unmarked_fenced_json_reply_is_the_one_typed_field() -> None:
+    """Live (deep-research writer, run 5): a fenced JSON list and the end marker, no header."""
+    reply = '```json\n[{"text": "## Findings", "kind": "structure"}]\n```\n\n[[ ## completed ## ]]'
+    assert _adapter().parse(Block, reply) == {
+        "blocks": [{"text": "## Findings", "kind": "structure"}]
+    }

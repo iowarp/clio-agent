@@ -388,6 +388,6 @@ def test_task_backend_identity_selects_declared_web_presentation(
     )
     tool = _read(client, sid)
     assert tool["state"] == ("failed" if failed else "succeeded")
-    assert tool["presentation"]["action"] == "Fetch"
+    assert tool["presentation"]["action"] == "Read"
     expected = "Fetch limit exceeded" if failed else "Source document"
     assert any(block.get("text") == expected for block in tool["presentation"]["blocks"])

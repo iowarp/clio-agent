@@ -309,29 +309,34 @@ _COMPLETED_MARKER_VARIANT = re.compile(r"(?m)^([ \t]*)\[\[ ## completed(?: ##)? 
 _FIELD_HEADER = re.compile(r"\[\[ ## \w+ ## \]\]")
 
 
-def _frame_unmarked_text_reply(signature: Any, completion: str) -> str:
-    """Frame a marker-less reply as the signature's one text output field.
+_COMPLETED_MARKER = re.compile(r"\[\[ ## completed ## \]\]")
 
-    A signature whose only output is one ``str`` field (a report, a synthesis) has one
-    place a reply can go. A model that writes that text without DSPy's
-    ``[[ ## field ## ]]`` header -- live, a deep-research writer's whole Markdown report
-    -- loses nothing but the framing; the text is taken whole and DSPy's validation of
-    the field runs unchanged. Any other signature, or a reply carrying a header, is
-    left to DSPy's own parse and its typed ``AdapterParseError``.
+
+def _frame_unmarked_text_reply(signature: Any, completion: str) -> str:
+    """Frame a marker-less reply as the signature's one output field.
+
+    A signature with a single output field (a report, a synthesis, a typed list
+    of report blocks) has one place a reply can go. A model that writes that value
+    without DSPy's ``[[ ## field ## ]]`` header -- live, a deep-research writer's
+    whole Markdown report, and later its fenced JSON list of blocks -- loses nothing
+    but the framing; the value is taken whole and DSPy's parsing and validation of
+    the field run unchanged (a fenced JSON value parses as JSON). DSPy's own
+    ``[[ ## completed ## ]]`` end marker is framing too and does not count as a
+    field. Any other signature, or a reply carrying a field header, is left to
+    DSPy's own parse and its typed ``AdapterParseError``.
     """
 
     fields = signature.output_fields
-    if len(fields) != 1 or not completion.strip() or _FIELD_HEADER.search(completion):
+    body = _COMPLETED_MARKER.sub("", completion).strip()
+    if len(fields) != 1 or not body or _FIELD_HEADER.search(body):
         return completion
-    name, field = next(iter(fields.items()))
-    if field.annotation is not str:
-        return completion
+    name = next(iter(fields))
     logger.warning(
-        "LM reply framed as its one text field reason=adapter_unmarked_text_field field=%s chars=%d",
+        "LM reply framed as its one output field reason=adapter_unmarked_text_field field=%s chars=%d",
         name,
-        len(completion),
+        len(body),
     )
-    return f"[[ ## {name} ## ]]\n{completion}\n\n[[ ## completed ## ]]"
+    return f"[[ ## {name} ## ]]\n{body}\n\n[[ ## completed ## ]]"
 
 
 def _chat_adapter_cls() -> Any:

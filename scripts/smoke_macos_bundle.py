@@ -13,7 +13,7 @@ notary service also inspects. The signing step must sign each listed file
 inside-out with the hardened runtime; see ``install/macos-signing.md``.
 
 ``--exercise`` runs the installer's ``--prepare-runtime`` step first, then has the
-live backend serve local web search and an Office render. After each stage the
+live backend report its web search sources and run an Office render. After each stage the
 seal must verify, nothing in the bundle may change, and no ``__pycache__/*.pyc``
 may be newer than ``Info.plist`` (#1979).
 """
@@ -150,84 +150,28 @@ def get_json(url: str, token: str | None = None) -> object:
         return json.load(response)
 
 
-def find_record(value: object, record_id: str) -> dict[str, object] | None:
-    if isinstance(value, dict):
-        if value.get("id") == record_id:
-            return value
-        value = list(value.values())
-    if isinstance(value, list):
-        for item in value:
-            if (found := find_record(item, record_id)) is not None:
-                return found
-    return None
-
-
-def searxng_operations(inventory: object) -> list[dict[str, object]]:
-    operations = inventory.get("operations") if isinstance(inventory, dict) else None
-    return [
-        row
-        for row in operations or []
-        if isinstance(row, dict) and row.get("service_id") == "searxng"
-    ]
-
-
-def dump_operation_logs(port: int, token: str, operations: list[dict[str, object]]) -> None:
-    """Print each SearXNG operation's newest log lines, for a run that never served."""
-    for row in operations:
-        print(f"SearXNG operation {row.get('action')} {row.get('id')}: {row}", flush=True)
-        try:
-            log = get_json(
-                f"http://127.0.0.1:{port}/v1/infrastructure/operations/{row.get('id')}/log"
-                "?limit=5000",
-                token,
-            )
-        except (HTTPError, URLError, TimeoutError) as error:
-            print(f"  log unavailable: {error}", flush=True)
-            continue
-        lines = log.get("lines") if isinstance(log, dict) else None
-        for line in (lines or [])[-80:]:
-            if isinstance(line, dict):
-                print(f"  {line.get('at')} {line.get('line')}", flush=True)
-
-
 def use_web_search(port: int, token: str) -> None:
-    """Wait for the boot-installed local SearXNG worker, then search through it."""
-    deadline = time.monotonic() + 300
-    record: dict[str, object] | None = None
-    operations: list[dict[str, object]] = []
-    reported: set[tuple[object, ...]] = set()
+    """Check the packaged server answers web search settings with its built-in sources.
+
+    Search runs inside the server (no local search service to install); the smoke
+    proves the route and the source list without sending a query to any service.
+    """
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         try:
-            inventory = get_json(f"http://127.0.0.1:{port}/v1/infrastructure/inventory", token)
+            view = get_json(f"http://127.0.0.1:{port}/v1/search/providers", token)
+            break
         except HTTPError as error:
             # The server answers 503 "starting" until its boot work settles.
             if error.code != 503:
                 raise
             time.sleep(3)
-            continue
-        record = find_record(inventory, "local:searxng")
-        operations = searxng_operations(inventory)
-        for row in operations:
-            key = (row.get("id"), row.get("state"), row.get("progress"))
-            if key not in reported:
-                reported.add(key)
-                print(
-                    f"SearXNG {row.get('action')}: {row.get('state')} {row.get('progress')}",
-                    flush=True,
-                )
-        observation = record.get("observation") if record else None
-        if isinstance(observation, dict) and observation.get("serving"):
-            break
-        time.sleep(3)
     else:
-        dump_operation_logs(port, token, operations)
-        raise TimeoutError(f"Local SearXNG never served within 300 seconds: {record}")
-    configuration = record.get("configuration") if record else None
-    search_port = configuration.get("port") if isinstance(configuration, dict) else None
-    results = get_json(f"http://127.0.0.1:{search_port}/search?q=python&format=json")
-    if not isinstance(results, dict) or "results" not in results:
-        raise RuntimeError(f"SearXNG returned no result list: {str(results)[:300]}")
-    print(f"Local SearXNG answered with {len(results['results'])} results", flush=True)
+        raise TimeoutError("The packaged server never answered /v1/search/providers")
+    names = [row.get("id") for row in view.get("web", [])] if isinstance(view, dict) else []
+    if "keenable" not in names:
+        raise RuntimeError(f"Web search sources missing from the packaged server: {view}")
+    print(f"Web search sources: {', '.join(str(n) for n in names)}", flush=True)
 
 
 # Runs as an agent document tool would: the server's protection first, then the

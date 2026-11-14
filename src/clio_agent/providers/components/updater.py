@@ -483,26 +483,37 @@ def _install(
     )
     constraints.write_text("\n".join(keep) + "\n", encoding="utf-8")
     overlay = env.package_overlay
-    if overlay is not None:
-        overlay.mkdir(parents=True, exist_ok=True)
-    result = env.run(
-        install_command(env.python, constraints, spec.distributions, wheels, target=overlay)
-    )
-    if result.returncode != 0:
-        raise UpdateFailed("install_failed", _tail(result))
-    if overlay is not None:
-        # uv compiled the overlay; a recompile would find (and rewrite) the
+    if overlay is None:
+        result = env.run(install_command(env.python, constraints, spec.distributions, wheels))
+        if result.returncode != 0:
+            raise UpdateFailed("install_failed", _tail(result))
+        recompiled = env.run([env.python, "-c", _RECOMPILE_SCRIPT, json.dumps(list(spec.modules))])
+        if recompiled.returncode != 0:
+            raise UpdateFailed("bytecode_compile_failed", _tail(recompiled))
+        return
+    overlay.mkdir(parents=True, exist_ok=True)
+    # Install beside the live overlay and publish only the finished result, so a
+    # concurrent CLIO import never sees a half-written dependency (pydantic).
+    staging = package_overlay.staging_dir(overlay)
+    try:
+        result = env.run(
+            install_command(env.python, constraints, spec.distributions, wheels, target=staging)
+        )
+        if result.returncode != 0:
+            raise UpdateFailed("install_failed", _tail(result))
+        # uv compiled the staged files; a recompile would find (and rewrite) the
         # sealed runtime's copy whenever the overlay no longer shadows it.
         runtime = env.run([env.python, "-c", _FREEZE_SCRIPT])  # the runtime alone
         if runtime.returncode != 0:
             raise UpdateFailed("environment_unreadable", _tail(runtime))
-        package_overlay.prune_duplicates(overlay, dict(json.loads(runtime.stdout)))
-        if _is_this_interpreter(env.python):
-            package_overlay.prepend(overlay)  # new .pth files, for this process's imports
-        return
-    recompiled = env.run([env.python, "-c", _RECOMPILE_SCRIPT, json.dumps(list(spec.modules))])
-    if recompiled.returncode != 0:
-        raise UpdateFailed("bytecode_compile_failed", _tail(recompiled))
+        try:
+            package_overlay.publish(staging, overlay, dict(json.loads(runtime.stdout)))
+        except OSError as exc:
+            raise UpdateFailed("install_failed", f"could not publish the update: {exc}") from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if _is_this_interpreter(env.python):
+        package_overlay.prepend(overlay)  # new .pth files, for this process's imports
 
 
 def _verify_versions(

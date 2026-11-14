@@ -163,16 +163,30 @@ def venv_is_stale(environment: Path) -> bool:
     Its console scripts then start the OLD location's interpreter, so it must be
     rebuilt before anything runs from it. A relocatable environment (``uv venv
     --relocatable``: ``relocatable = true`` in ``pyvenv.cfg``) finds itself from where it
-    is, so it is never stale.
+    is, so it is never stale. Neither is one clio-kit created in a staging sibling and
+    renamed into place (:func:`_built_in_staging_sibling`).
     """
     if _relocatable(environment):
         return False
     recorded_at = venv_recorded_path(environment)
     if recorded_at is None:
         return False
-    return os.path.normcase(os.path.realpath(recorded_at)) != os.path.normcase(
-        os.path.realpath(environment)
-    )
+    recorded = os.path.normcase(os.path.realpath(recorded_at))
+    here = os.path.normcase(os.path.realpath(environment))
+    return recorded != here and not _built_in_staging_sibling(recorded, here)
+
+
+def _built_in_staging_sibling(recorded: str, here: str) -> bool:
+    """Whether ``recorded`` is clio-kit's staging sibling of ``here``.
+
+    clio-kit creates a missing environment as ``.<name>.<pid>.<ns>.tmp`` next to it and
+    renames it into place before anything is installed, so only the activation scripts
+    name the staging path. Its packages and console scripts belong to ``here``.
+    """
+    if os.path.dirname(recorded) != os.path.dirname(here):
+        return False
+    name = re.escape(os.path.basename(here))
+    return re.fullmatch(rf"\.{name}\.\d+\.\d+\.tmp", os.path.basename(recorded)) is not None
 
 
 def record(entry: dict[str, Any], *, log: bool = True) -> None:

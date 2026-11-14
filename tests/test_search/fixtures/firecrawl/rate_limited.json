@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.firecrawl.dev/v2/search",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "query": "ADIOS2 BP5 engine documentation",
+      "limit": 5
+    }
+  },
+  "status": 429,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "retry-after": "15129"
+  },
+  "body": {
+    "success": false,
+    "error": "You've hit Firecrawl's keyless free tier rate limit. To continue now, create a free API key at https://firecrawl.dev/k/22kahxepgty4\n\nThen authenticate with:\nAuthorization: Bearer YOUR_API_KEY",
+    "reason": "credits",
+    "retry_after_seconds": 15129,
+    "signup_url": "https://firecrawl.dev/k/22kahxepgty4"
+  }
+}

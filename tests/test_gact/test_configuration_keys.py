@@ -107,7 +107,7 @@ def test_a_named_instance_reads_its_engines_keys_and_the_context_control() -> No
     with pytest.raises(UnknownConfigurationKeyError, match="param.max_model_len"):
         validate_configuration_keys("vllm@spotter", {"max_model_len": "8192"})
     with pytest.raises(UnknownConfigurationKeyError):
-        validate_configuration_keys("web_search", {"context.choice": "max"})  # no context control
+        validate_configuration_keys("flowcept", {"context.choice": "max"})  # no context control
 
 
 def test_installed_configuration_echoed_back_is_accepted() -> None:
@@ -120,7 +120,7 @@ def test_installed_configuration_echoed_back_is_accepted() -> None:
 
 def test_param_keys_on_a_service_without_parameters_are_rejected() -> None:
     with pytest.raises(UnknownConfigurationKeyError, match="no server parameters"):
-        validate_configuration_keys("web_search", {"param.threads": "4"})
+        validate_configuration_keys("flowcept", {"param.threads": "4"})
 
 
 def test_http_rejects_an_ignored_key_before_queuing(

@@ -22,10 +22,10 @@ import yaml
 # A cold node start under a fully loaded xdist worker has taken over 10 s on CI runners.
 NODE_TIMEOUT_S = 60
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.6.6"
+EXPECTED_VERSION = "0.9.7"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
-DOCUMENTED_VERSION = "0.9.6.6"
+DOCUMENTED_VERSION = "0.9.7"
 EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.1.2"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"

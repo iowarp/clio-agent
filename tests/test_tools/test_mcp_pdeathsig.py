@@ -21,6 +21,13 @@ import pytest
 
 from clio_agent.tools.mcp_config import pdeathsig_wrapped_command
 
+# How long to wait for the process states this test drives. These bounds only catch a
+# broken wrapper (which never reaps) and are not a speed claim: a loaded runner can take
+# seconds to schedule a SIGKILLed child's exit. The child sleeps longer, so its own exit
+# can never pass for a reap.
+_SETTLE_S = 60.0
+_CHILD_SLEEP_S = 300
+
 
 def _comm(pid: int) -> str:
     """The Linux process name (``/proc/<pid>/comm``), or ``""`` once it is gone."""
@@ -85,19 +92,19 @@ def test_pdeathsig_reaps_child_on_hard_parent_kill(tmp_path: Path) -> None:
         "from pathlib import Path\n"
         "async def main():\n"
         "    p = await asyncio.create_subprocess_exec("
-        "'setpriv','--pdeathsig','SIGKILL','--','sleep','30')\n"
+        f"'setpriv','--pdeathsig','SIGKILL','--','sleep','{_CHILD_SLEEP_S}')\n"
         # Publish readiness only after the complete PID has been written. A
         # reader can observe an empty file between open('w') and write().
         f"    pending = Path({str(pidfile.with_suffix('.tmp'))!r})\n"
         "    pending.write_text(str(p.pid), encoding='utf-8')\n"
         f"    pending.replace({str(pidfile)!r})\n"
-        "    await asyncio.sleep(30)\n"
+        f"    await asyncio.sleep({_CHILD_SLEEP_S})\n"
         "asyncio.run(main())\n"
     )
     parent = subprocess.Popen([sys.executable, "-c", parent_src])
     try:
-        deadline = time.time() + 10
-        while not pidfile.exists() and time.time() < deadline:
+        deadline = time.monotonic() + _SETTLE_S
+        while not pidfile.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert pidfile.exists(), "parent never spawned the child"
         child_pid = int(pidfile.read_text())
@@ -106,18 +113,19 @@ def test_pdeathsig_reaps_child_on_hard_parent_kill(tmp_path: Path) -> None:
         # signal (prctl) only just before it execs ``sleep``: a kill inside that window
         # would orphan the child whatever the wrapper does. Waiting for the exec proves
         # the signal is armed (this failed once on a loaded 4-worker CI runner).
-        deadline = time.time() + 10
-        while _comm(child_pid) != "sleep" and time.time() < deadline:
+        deadline = time.monotonic() + _SETTLE_S
+        while _comm(child_pid) != "sleep" and time.monotonic() < deadline:
             time.sleep(0.02)
         assert _comm(child_pid) == "sleep", "setpriv never exec'd the wrapped child"
 
         parent.kill()  # SIGKILL the parent: no graceful cleanup can run
-        parent.wait(timeout=5)
+        parent.wait(timeout=_SETTLE_S)
 
-        for _ in range(50):  # pdeathsig should reap the child promptly
-            if not _alive(child_pid):
-                break
-            time.sleep(0.1)
+        # The parent's exit path has queued the death signal by the time wait() returns;
+        # poll until the child has died rather than timing how fast the runner kills it.
+        deadline = time.monotonic() + _SETTLE_S
+        while _alive(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert not _alive(child_pid), (
             "MCP child orphaned after a hard parent kill — pdeathsig wrapper failed"
         )

@@ -20,7 +20,7 @@ from inspection import (
     validate_source,
     workbook_calculation_evidence,
 )
-from process import DocumentError, office_convert
+from process import DocumentError, end_on_termination, office_convert
 
 
 def _hash(path: Path) -> str:
@@ -204,6 +204,7 @@ def prepare(
 
 def main() -> int:
     """Run a preparation stage; failure is reflected in JSON and exit status."""
+    end_on_termination()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("inspect", "render", "recalculate"))
     parser.add_argument("source", type=Path)

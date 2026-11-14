@@ -278,11 +278,17 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         # Mercury: a diffusing request whose stream was not snapshot-shaped. The
         # text still streamed live; only the step-by-step canvas was not honoured.
         "diffusion_stream_shape_mismatch",
+        # A reply repeated one identical tool call: each distinct call ran once.
+        "tool_calls_collapsed",
     } == set(catalog)
     # Every DELIVERY-path reason means "the tokens did not stream"; the reasons
     # whose text still streamed live must not be flattened into that claim, so
     # each is asserted on its own honest shape rather than excused from the invariant.
-    streamed_live = {"native_model_inputs_dropped", "diffusion_stream_shape_mismatch"}
+    streamed_live = {
+        "native_model_inputs_dropped",
+        "diffusion_stream_shape_mismatch",
+        "tool_calls_collapsed",
+    }
     for reason, details in catalog.items():
         assert details["category"], reason
         assert details["description"], reason

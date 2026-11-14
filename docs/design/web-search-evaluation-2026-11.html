@@ -1,0 +1,448 @@
+<title>Replacing SearXNG in CLIO</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
+<style>
+/* Layout: one reading column (~72ch) with full-width data tables that scroll inside their own frames; verdict first, evidence after. */
+:root {
+  --bg: #f6f8f8;
+  --surface: #ffffff;
+  --fg: #16201f;
+  --muted: #5a6866;
+  --rule: #d6dfde;
+  --accent: #0d6b73;
+  --accent-soft: #e0efef;
+  --good: #1d7a45;
+  --warn: #a5620a;
+  --bad: #b3352b;
+  --bar-bg: #e5ebea;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1615; --surface: #162120; --fg: #e3ecea; --muted: #9aaba8; --rule: #2a3a38;
+    --accent: #5cc3c9; --accent-soft: #19393a; --good: #5bc78a; --warn: #e0a24a; --bad: #f07b6f; --bar-bg: #233130;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1615; --surface: #162120; --fg: #e3ecea; --muted: #9aaba8; --rule: #2a3a38;
+  --accent: #5cc3c9; --accent-soft: #19393a; --good: #5bc78a; --warn: #e0a24a; --bad: #f07b6f; --bar-bg: #233130;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body);
+  font-size: 16px; line-height: 1.6; margin: 0;
+}
+.wrap {
+  max-width: 980px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 80px;
+}
+.prose { max-width: 72ch; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); letter-spacing: -0.01em; }
+h2 { font-size: 1.65rem; margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.2rem; margin-top: 28px; }
+p, ul, ol { margin: 12px 0; }
+li { margin: 4px 0; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.15rem; color: var(--fg); max-width: 68ch; margin-top: 16px; }
+.meta { color: var(--muted); font-size: 0.9rem; margin-top: 10px; }
+.verdict {
+  margin-top: 28px; background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--accent);
+  padding: 18px 22px; border-radius: 4px;
+}
+.verdict h2 { border: 0; margin: 0 0 8px; padding: 0; font-size: 1.3rem; }
+.verdict ol { padding-left: 22px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 22px; }
+.stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 14px 16px; min-width: 0; }
+.stat .n { font-family: var(--font-display); font-size: 1.9rem; font-variant-numeric: tabular-nums; }
+.stat .l { color: var(--muted); font-size: 0.86rem; line-height: 1.4; }
+.tbl { overflow-x: auto; margin: 16px 0; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; line-height: 1.45; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-weight: 500; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); background: var(--bg); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; font-family: var(--font-mono); white-space: nowrap; }
+.pill { display: inline-block; font-family: var(--font-mono); font-size: 0.72rem; padding: 1px 7px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.good { color: var(--good); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); } .pill.neutral { color: var(--muted); }
+.bars { display: grid; gap: 6px; margin: 18px 0; }
+.bar { display: grid; grid-template-columns: minmax(130px, 220px) 1fr 52px; gap: 10px; align-items: center; font-size: 0.86rem; }
+.bar .name { font-family: var(--font-mono); font-size: 0.8rem; overflow-wrap: anywhere; }
+.bar .track { background: var(--bar-bg); height: 14px; border-radius: 2px; position: relative; }
+.bar .fill { position: absolute; inset: 0 auto 0 0; border-radius: 2px; }
+.bar .fill.good { background: var(--good); } .bar .fill.warn { background: var(--warn); } .bar .fill.bad { background: var(--bad); }
+.bar .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.scale { display: grid; grid-template-columns: minmax(130px, 220px) 1fr 52px; gap: 10px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); }
+.scale .ticks { display: flex; justify-content: space-between; }
+.note { color: var(--muted); font-size: 0.9rem; }
+.callout { background: var(--accent-soft); border-radius: 4px; padding: 12px 16px; margin: 16px 0; }
+.tiers { display: grid; gap: 12px; margin: 18px 0; }
+.tier { display: grid; grid-template-columns: 92px 1fr; gap: 14px; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 14px 16px; }
+.tier .t { font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent); font-weight: 500; }
+.tier h3 { margin: 0 0 4px; font-size: 1.05rem; }
+.tier p { margin: 4px 0; }
+.tier > div { min-width: 0; }
+pre { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 12px 14px; overflow-x: auto; line-height: 1.5; }
+.toc { columns: 2 240px; font-size: 0.92rem; margin-top: 14px; padding-left: 20px; }
+@media (max-width: 560px) {
+  .tier { grid-template-columns: 1fr; gap: 4px; }
+  .bar, .scale { grid-template-columns: 110px 1fr 44px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">CLIO web search · evaluation · 12 Nov 2026</div>
+  <h1>Replacing SearXNG in CLIO</h1>
+  <p class="lede">A survey of how about 40 open agents get web results, live tests of 25 no-key search and fetch paths, and a recommended design that works on first launch, has a daily allowance, and lets users pay for more when they need it.</p>
+  <p class="meta">Tests ran from a Linux cloud container on a datacenter IP on 12 Nov 2026. Vendor limits and prices were read from official pages the same day. Anything not confirmed from a primary source is marked as unverified.</p>
+</header>
+
+<section class="verdict" aria-labelledby="v">
+  <h2 id="v">Recommendation</h2>
+  <ol>
+    <li><strong>Retire the managed SearXNG.</strong> It is still common in self-hosted chat apps (Vane, Local Deep Research, Khoj, Morphic), and those apps carry hundreds of “0 results” issues. Google, Brave, Qwant and DuckDuckGo are blocking SearXNG servers right now. No coding agent uses it as a default; Hermes keeps it as an optional fallback. In my tests every SearXNG-style scraping path failed: the same engines through <code>ddgs</code>, and 25 of 25 public instances.</li>
+    <li><strong>Default to a keyless ring of hosted search endpoints</strong>, as Hermes and OpenCode now do: Exa, Parallel, You.com, Keenable and Firecrawl. Each worked here with no account. Rotate to the next one on a 429 and emit a typed reason each time. This is what makes search work on first launch.</li>
+    <li><strong>Add free scholarly APIs directly</strong>: arXiv, Crossref, OpenAlex, PubMed and Europe PMC. They are stable, documented and keyless or free-key. For a scientific research agent they are the highest-value sources.</li>
+    <li><strong>Use the search the user's model login already includes</strong>, when the session's provider has it: Claude Code, Codex or Gemini. The login is already there, so nothing new is created; it is one more provider in the rotation. Local and ALCF models do not have it.</li>
+    <li><strong>Deferred until funded: an IOWarp search gateway.</strong> It is the only way to offer a guaranteed daily allowance with a paid tier: an anonymous install token issued on first launch, a daily quota, and upgrades on an IOWarp account. Nous runs this pattern for Hermes. It costs roughly $0.05–$0.70 per active user per day. Until then, search is free and best-effort, and the ring is built so the gateway can be added later as one more provider.</li>
+  </ol>
+  <p><strong>Out of the pattern:</strong> any key a person has to go and create. That covers Tavily, Brave, Linkup, Exa and Firecrawl keys, an Ollama account and an OpenAlex key, so they are not part of the design. Vendor terms also forbid shipping one shared key inside CLIO.</p>
+  <p>This moves search out of CLIO's service layer. About 3,500 lines of source, 3,100 lines of tests, a native Windows install and a supervised process are replaced by about 500 lines of HTTP client code in the Web MCP adapter. CLIO keeps only the search settings and, if the gateway is built, the install token.</p>
+</section>
+
+<div class="stats" role="list">
+  <div class="stat" role="listitem"><div class="n">24/24</div><div class="l">queries answered by each of Exa, You.com and Parallel keyless endpoints</div></div>
+  <div class="stat" role="listitem"><div class="n">0–8%</div><div class="l">success of DuckDuckGo-style scraping (the SearXNG method), 8 variants</div></div>
+  <div class="stat" role="listitem"><div class="n">0/25</div><div class="l">top-ranked public SearXNG instances that accepted an API query</div></div>
+  <div class="stat" role="listitem"><div class="n">≈6,600</div><div class="l">lines of SearXNG-related source and tests CLIO maintains today</div></div>
+</div>
+
+<nav aria-label="Contents">
+  <ol class="toc">
+    <li><a href="#today">What CLIO carries today</a></li>
+    <li><a href="#agents">What other agents do</a></li>
+    <li><a href="#research">Deep-research projects</a></li>
+    <li><a href="#tests">Live tests</a></li>
+    <li><a href="#providers">Providers, free tiers and terms</a></li>
+    <li><a href="#budget">Will free tiers cover deep research?</a></li>
+    <li><a href="#design">Recommended design</a></li>
+    <li><a href="#risks">Risks and mitigations</a></li>
+    <li><a href="#migration">What was built</a></li>
+    <li><a href="#method">Method and limits of this study</a></li>
+  </ol>
+</nav>
+
+<section class="prose" aria-labelledby="today">
+<h2 id="today">What CLIO carries today</h2>
+<p>The default backend is <code>search.backend: local_searxng</code>. CLIO installs a private SearXNG on first use, without containers, supervises it on loopback, verifies it, and routes the Web MCP <code>web_search</code> tool to it. The Web MCP adapter (web-mcp 2.1.2, shipped through clio-kit) also bundles <code>ddgs</code>, <code>trafilatura</code> and <code>readability-lxml</code>.</p>
+</section>
+<div class="tbl"><table>
+  <thead><tr><th>Area</th><th>Files</th><th>Lines</th></tr></thead>
+  <tbody>
+    <tr><td>Backend abstraction and settings</td><td><code>search/backend.py</code>, <code>settings.py</code>, <code>web_mcp_default.py</code></td><td class="num">878</td></tr>
+    <tr><td>Service install, launch and supervision</td><td><code>searxng_service.py</code>, <code>searxng_launch.py</code>, <code>searxng_hook.py</code>, <code>searxng_verify.py</code>, <code>searxng_pwd_shim.py</code></td><td class="num">781</td></tr>
+    <tr><td>Web Search service, Apptainer and native hosting</td><td><code>web_search_service.py</code>, <code>web_search_apptainer.py</code>, <code>native_web_search*.py</code></td><td class="num">1,337</td></tr>
+    <tr><td>Bootstrap and routes</td><td><code>gact/search_bootstrap.py</code>, <code>gact/routes/search.py</code></td><td class="num">505</td></tr>
+    <tr><td><strong>Source total</strong></td><td></td><td class="num"><strong>3,501</strong></td></tr>
+    <tr><td>Tests (<code>tests/test_search/</code> and search/SearXNG tests in <code>tests/test_gact/</code>)</td><td>17 files</td><td class="num">3,138</td></tr>
+  </tbody>
+</table></div>
+<div class="prose">
+<p>Recent fixes show where the cost lands: Windows archive paths, native Windows supervision, stopping services on <code>clio stop</code>, and proxy support behind the Windows fence. None of these improve search quality; they keep a metasearch server alive. SearXNG gets its results by scraping engines like DuckDuckGo, Brave, Mojeek, Qwant and Startpage, and those engines increasingly block automated clients. That is why it “fails half the time”.</p>
+</div>
+
+<section aria-labelledby="agents">
+<h2 id="agents">What other agents do</h2>
+<p class="prose">I read the current source of each project's default branch. Two patterns dominate. Vendor CLIs use their own model's built-in search. Provider-agnostic agents have moved to keyless hosted endpoints with failover.</p>
+<div class="tbl"><table>
+  <thead><tr><th>Agent</th><th>Default search</th><th>Works with no key?</th><th>Page reading</th><th>SearXNG / DDG</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Hermes Agent</strong> (Nous)</td><td>Pluggable: Firecrawl, Tavily, Exa, Parallel, Perplexity, Keenable, SearXNG, Brave, DDGS, xAI. Falls back to a <em>keyless ring</em>.</td><td><span class="pill good">yes</span> Round-robin over Exa MCP, Parallel MCP, Firecrawl keyless and Keenable public; moves to the next on 429/401/5xx. Nous Portal users also get a managed gateway; anonymous Nous users get free Perplexity “fast search”.</td><td>Vendor extract APIs; pages over 15k chars trimmed, full text kept on disk</td><td>Both, as optional rungs</td></tr>
+    <tr><td><strong>OpenCode v2</strong></td><td>Exa, Parallel, Firecrawl MCPs, Tavily, TinyFish; chosen at random after a one-time consent prompt</td><td><span class="pill good">yes</span> Keyless calls; each provider cools down for <code>Retry-After</code> or 60 s</td><td>Local fetch, HTML→Markdown</td><td>No</td></tr>
+    <tr><td>OpenCode v1 / Kilo Code</td><td>Exa or Parallel MCP</td><td><span class="pill warn">gated</span> Only for the vendor's own model provider or with an env flag</td><td>Local</td><td>No</td></tr>
+    <tr><td><strong>Gemini CLI</strong></td><td>Gemini “Grounding with Google Search”</td><td><span class="pill warn">login</span> Google login, counts against model quota</td><td>Gemini <code>urlContext</code>, local fallback</td><td>No</td></tr>
+    <tr><td>Codex CLI</td><td>OpenAI native <code>web_search</code> (default mode: cached index)</td><td><span class="pill warn">login</span> OpenAI/ChatGPT only</td><td>Provider-side page actions</td><td>No</td></tr>
+    <tr><td>Claude Code</td><td>Anthropic server-side web search</td><td><span class="pill warn">login</span> Anthropic only; $10 per 1k on the API</td><td>Local fetch + small-model extraction</td><td>No</td></tr>
+    <tr><td>Qwen Code, Kimi CLI, Mistral Vibe, Cline</td><td>Their own vendor search services</td><td><span class="pill warn">login</span> Vendor account/plan</td><td>Vendor or local</td><td>No</td></tr>
+    <tr><td>Continue</td><td>Vendor-hosted proxy (backend not disclosed)</td><td><span class="pill good">yes</span> Through Continue's proxy</td><td>Local crawler</td><td>No</td></tr>
+    <tr><td>Crush (Charm)</td><td>Scrapes DuckDuckGo Lite</td><td><span class="pill warn">yes, fragile</span> Treats DDG's HTTP 202 challenge as throttling</td><td>Local HTML→Markdown</td><td>DDG</td></tr>
+    <tr><td>smolagents (HF)</td><td>DDG or Bing HTML scraping; SerpAPI, Serper, Brave optional</td><td><span class="pill warn">yes, fragile</span></td><td>requests + markdownify</td><td>DDG, Bing</td></tr>
+    <tr><td>OpenHands</td><td>Tavily MCP in a web-researcher subagent</td><td><span class="pill bad">no</span> Needs <code>TAVILY_API_KEY</code></td><td><code>mcp-server-fetch</code></td><td>No</td></tr>
+    <tr><td>Goose, Aider, Roo Code</td><td>None built in (MCP extensions / page scraping only)</td><td><span class="pill neutral">n/a</span></td><td>Local</td><td>No</td></tr>
+  </tbody>
+</table></div>
+<div class="prose">
+<p><strong>Hermes is the reference design for CLIO's case.</strong> It is provider-agnostic and open source, and its docs promise that “a fresh install with no web credentials … gets working web_search and web_extract out of the box”. Its keyless module (<code>plugins/web/keyless_mcp.py</code>) is 452 lines. You were right that it uses a paid API: subscribers to the Nous Portal get a managed Tool Gateway (<code>{vendor}-gateway.nousresearch.com</code>) backed by Perplexity search and Firecrawl extract. The free baseline, though, is the keyless ring.</p>
+</div>
+</section>
+
+<section aria-labelledby="research">
+<h2 id="research">Deep-research projects</h2>
+<div class="prose">
+<p><strong>SearXNG is common here, and so are its failures.</strong> It is the most common self-hosted backend: 11 of about 22 projects support it, and Vane (formerly Perplexica), Local Deep Research, Khoj and Morphic bundle it as the default in Docker Compose. Those same projects have the largest piles of “0 results” issues: 188 SearXNG issues in Vane, 136 in Local Deep Research, 38 “no results” issues in Open WebUI. The research tools themselves (GPT Researcher, LangChain open_deep_research, STORM, Tongyi, MiroThinker, dzhng/deep-research, HF ODR) all need a key by default, mostly Tavily or Serper. None of these projects runs its own free search proxy.</p>
+</div>
+<div class="tbl"><table>
+  <thead><tr><th>Project</th><th>Default</th><th>No-key first run?</th><th>Scholarly</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Jan</strong></td><td>Exa “free, keyless endpoint” (also Tavily, SearXNG, You.com)</td><td><span class="pill good">yes</span> vendor keyless</td><td>—</td></tr>
+    <tr><td><strong>AnythingLLM</strong></td><td>You.com keyless, falls back to DuckDuckGo HTML; ~20 providers incl. Keenable</td><td><span class="pill good">yes</span> vendor keyless</td><td>—</td></tr>
+    <tr><td>LibreChat</td><td>Serper, SearXNG, Tavily, Keenable (keyless)</td><td><span class="pill warn">partly</span></td><td>—</td></tr>
+    <tr><td><strong>Local Deep Research</strong></td><td>Bundled SearXNG; agent picks engines per sub-question</td><td><span class="pill warn">with Docker</span></td><td><span class="pill good">best</span> arXiv, PubMed, Semantic Scholar engines, OpenAlex journal scoring, adaptive rate tracker</td></tr>
+    <tr><td>Vane (Perplexica)</td><td>SearXNG only (“Tavily and Exa coming soon”)</td><td><span class="pill warn">with Docker</span></td><td>Academic mode through SearXNG</td></tr>
+    <tr><td>Khoj</td><td>Bundled SearXNG; Serper, Exa, Firecrawl, Google CSE</td><td><span class="pill warn">with Docker</span></td><td>—</td></tr>
+    <tr><td>Morphic</td><td>SearXNG in Compose; Tavily on Vercel</td><td><span class="pill warn">with Docker</span></td><td>—</td></tr>
+    <tr><td>Open WebUI</td><td>Off by default; 30+ engines incl. SearXNG, DDGS, Ollama cloud</td><td><span class="pill warn">if DDG chosen</span></td><td>—</td></tr>
+    <tr><td>Page Assist</td><td>DuckDuckGo, scraped in the browser</td><td><span class="pill warn">yes, fragile</span></td><td>—</td></tr>
+    <tr><td>GPT Researcher</td><td>Tavily (15 retrievers incl. DDG, SearXNG, Exa)</td><td><span class="pill bad">no</span></td><td>arXiv, Semantic Scholar, PubMed Central</td></tr>
+    <tr><td>LangChain open_deep_research</td><td>Tavily, or Anthropic/OpenAI native search</td><td><span class="pill bad">no</span></td><td>—</td></tr>
+    <tr><td>STORM, HF ODR, Tongyi, MiroThinker, dzhng</td><td>You.com/Bing, Serper, Serper+Jina, Firecrawl</td><td><span class="pill bad">no</span></td><td>Tongyi: Google Scholar via Serper</td></tr>
+    <tr><td>LobeHub, Onyx, Dify</td><td>Configured by the admin (SearXNG, Exa, Serper, plugins)</td><td><span class="pill bad">no</span></td><td>Dify plugins (unverified)</td></tr>
+    <tr><td>Ollama</td><td>Hosted <code>web_search</code> + <code>web_fetch</code></td><td><span class="pill warn">free account key</span></td><td>—</td></tr>
+    <tr><td>LM Studio, Msty</td><td>Community DuckDuckGo plugins / built-in Google and Brave scraping</td><td><span class="pill warn">fragile</span></td><td>—</td></tr>
+  </tbody>
+</table></div>
+<div class="prose">
+<h3>The upstream evidence</h3>
+<ul>
+  <li><strong>SearXNG's own tracker, Oct–Nov 2026:</strong> Google returns 403 and redirects to <code>/sorry/</code> (<a href="https://github.com/searxng/searxng/issues/6835">searxng#6835</a>). Brave suspends for “too many requests” while Google and Qwant are “access denied” (<a href="https://github.com/searxng/searxng/issues/6866">#6866</a>). DuckDuckGo serves a CAPTCHA on every request (<a href="https://github.com/searxng/searxng/issues/6779">#6779</a>). Qwant returns fabricated results when the server IP is blocked (<a href="https://github.com/searxng/searxng/issues/6358">#6358</a>). Since May 2026, 95 issues report 403/429/CAPTCHA.</li>
+  <li><strong><code>ddgs</code>, the library inside CLIO's Web MCP adapter:</strong> as of 4 Nov 2026, every text backend returns “No results found”, because DDG answers 202, Brave answers 429, and blocked and empty pages are reported the same way (<a href="https://github.com/deedy5/ddgs/issues/498">ddgs#498</a>). That matches the 0–8% measured below.</li>
+  <li><strong>The newest apps are leaving scraping</strong>: Jan, AnythingLLM and LibreChat moved to the Exa, You.com and Keenable keyless tiers. AnythingLLM's source records You.com keyless as 100 queries per IP per day. Keenable's docs say every caller on one IP shares 1,000 requests per hour.</li>
+  <li><strong>Scholarly design:</strong> Local Deep Research is the model to copy. It runs per-source engines with adaptive rate tracking and lets the agent choose engines per sub-question.</li>
+</ul>
+</div>
+</section>
+
+<section aria-labelledby="tests">
+<h2 id="tests">Live tests</h2>
+<div class="prose">
+<p>Twelve queries shaped like CLIO's work: HDF5 and ADIOS2 docs, Aurora specs, SZ3 vs ZFP compression, the National Data Platform, GOES-18 on AWS, xarray tips, the 2026 Nobel Prize in Physics (freshness), Slurm arrays, wildfire PM2.5 retrieval, the Globus SDK, and “IOWarp project” (a niche entity). Each backend ran each query twice, one second apart. “Answered” means three or more results; “right source” means a known authoritative domain was in the top results.</p>
+</div>
+
+<h3>Search: queries answered (two rounds, 24 calls; 12 for the last three)</h3>
+<div class="bars" role="img" aria-label="Bar chart of the percentage of queries answered per backend">
+  <div class="scale"><span></span><div class="ticks"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div><span></span></div>
+  <div class="bar"><span class="name">Exa MCP, keyless</span><div class="track"><div class="fill good" style="width:100%"></div></div><span class="v">100%</span></div>
+  <div class="bar"><span class="name">You.com MCP, free</span><div class="track"><div class="fill good" style="width:100%"></div></div><span class="v">100%</span></div>
+  <div class="bar"><span class="name">Parallel MCP, free</span><div class="track"><div class="fill good" style="width:100%"></div></div><span class="v">100%</span></div>
+  <div class="bar"><span class="name">Keenable public</span><div class="track"><div class="fill good" style="width:100%"></div></div><span class="v">100%</span></div>
+  <div class="bar"><span class="name">Firecrawl keyless</span><div class="track"><div class="fill warn" style="width:83%"></div></div><span class="v">83%</span></div>
+  <div class="bar"><span class="name">TinyFish keyless</span><div class="track"><div class="fill warn" style="width:58%"></div></div><span class="v">58%</span></div>
+  <div class="bar"><span class="name">ddgs · bing</span><div class="track"><div class="fill bad" style="width:8%"></div></div><span class="v">8%</span></div>
+  <div class="bar"><span class="name">ddgs · yahoo</span><div class="track"><div class="fill bad" style="width:8%"></div></div><span class="v">8%</span></div>
+  <div class="bar"><span class="name">ddgs · google</span><div class="track"><div class="fill bad" style="width:4%"></div></div><span class="v">4%</span></div>
+  <div class="bar"><span class="name">ddgs · auto</span><div class="track"><div class="fill bad" style="width:0%"></div></div><span class="v">0%</span></div>
+  <div class="bar"><span class="name">ddgs · duckduckgo</span><div class="track"><div class="fill bad" style="width:0%"></div></div><span class="v">0%</span></div>
+  <div class="bar"><span class="name">ddgs · brave</span><div class="track"><div class="fill bad" style="width:0%"></div></div><span class="v">0%</span></div>
+  <div class="bar"><span class="name">ddgs · mojeek</span><div class="track"><div class="fill bad" style="width:0%"></div></div><span class="v">0%</span></div>
+  <div class="bar"><span class="name">DuckDuckGo HTML, direct</span><div class="track"><div class="fill bad" style="width:0%"></div></div><span class="v">0%</span></div>
+</div>
+
+<div class="tbl"><table>
+  <thead><tr><th>Backend</th><th>Answered</th><th>Right source</th><th>Median latency</th><th>Main failure</th></tr></thead>
+  <tbody>
+    <tr><td>You.com MCP <code>?profile=free</code></td><td class="num">100%</td><td class="num">100%</td><td class="num">0.45 s</td><td>none</td></tr>
+    <tr><td>Parallel MCP <code>search.parallel.ai/mcp</code></td><td class="num">100%</td><td class="num">96%</td><td class="num">0.86 s</td><td>none</td></tr>
+    <tr><td>Exa MCP <code>mcp.exa.ai/mcp</code></td><td class="num">100%</td><td class="num">92%*</td><td class="num">0.55 s</td><td>429 only at 10 parallel workers (4 of 30 calls)</td></tr>
+    <tr><td>Keenable <code>/v1/search/public</code></td><td class="num">100%</td><td class="num">100%</td><td class="num">0.16 s</td><td>Needs an <code>X-Keenable-Title</code> app header</td></tr>
+    <tr><td>Firecrawl <code>/v2/search</code>, no key</td><td class="num">83%</td><td class="num">83%</td><td class="num">3.5 s</td><td>429 “keyless free tier rate limit” after ~10 calls</td></tr>
+    <tr><td>TinyFish MCP, keyless</td><td class="num">58%</td><td class="num">58%</td><td class="num">1.6 s</td><td>Malformed or empty tool responses</td></tr>
+    <tr><td>Tavily keyless header</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td><code>daily_cap_reached</code> on first call: the shared cloud IP's daily quota was already spent</td></tr>
+    <tr><td><code>ddgs</code> (the library inside the Web MCP adapter), 7 engines</td><td class="num">0–8%</td><td class="num">0–12%</td><td class="num">0.2–1.7 s</td><td>“No results found” (blocked or challenged)</td></tr>
+    <tr><td>DuckDuckGo HTML endpoint</td><td class="num">0%</td><td class="num">0%</td><td class="num">0.08 s</td><td>HTTP 202 bot challenge on every call</td></tr>
+    <tr><td>Public SearXNG (top 25 by uptime on searx.space)</td><td class="num">0/25</td><td class="num">—</td><td class="num">—</td><td>14 × 429, 5 × 403, 1 × 418, 1 × 503; the 4 that answered 200 served HTML only (JSON API disabled)</td></tr>
+    <tr><td>Marginalia, shared <code>public</code> key</td><td class="num">23%</td><td class="num">15%</td><td class="num">30 s</td><td>Read timeouts</td></tr>
+    <tr><td>Wikipedia API (with a policy-compliant User-Agent)</td><td class="num">17%</td><td class="num">17%</td><td class="num">0.2 s</td><td>429 on the shared IP</td></tr>
+  </tbody>
+</table></div>
+<p class="note prose">* Exa's two “misses” were both on the Slurm query, where it returned university HPC guides (Bern, Arizona, NIH) instead of slurm.schedmd.com. They are relevant, so in practice Exa found a useful source for every query. All three MCPs found the 2026 Nobel Prize pages, the IOWarp site and the National Data Platform catalog.</p>
+
+<h3>Scholarly APIs (keyless)</h3>
+<div class="tbl"><table>
+  <thead><tr><th>API</th><th>Answered</th><th>Latency</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>arXiv</td><td class="num">100%</td><td class="num">0.29 s</td><td>No key. Terms ask for 1 request every 3 s and a single connection. Metadata is CC0.</td></tr>
+    <tr><td>Crossref (polite pool, <code>mailto</code>)</td><td class="num">100%</td><td class="num">0.23 s</td><td>No key; 10 req/s and 3 concurrent in the polite pool</td></tr>
+    <tr><td>Europe PMC</td><td class="num">58%</td><td class="num">0.32 s</td><td>No key. Long natural-language queries return nothing; it needs keyword queries.</td></tr>
+    <tr><td>OpenAlex</td><td class="num">—</td><td class="num">—</td><td>Now metered in dollars. Keyless ≈ $0.10/day; a free key gives $1/day, and a search costs about $0.001. The shared IP had spent its keyless budget (<code>x-ratelimit-remaining-usd: 0.0003</code>).</td></tr>
+    <tr><td>Semantic Scholar</td><td class="num">—</td><td class="num">—</td><td>Keyless traffic shares one global pool and was throttled (429). A free key is issued by form, and its license forbids sharing it.</td></tr>
+  </tbody>
+</table></div>
+
+<h3>Rate-limit behaviour</h3>
+<ul class="prose">
+  <li><strong>Exa keyless:</strong> 40 back-to-back sequential searches with no errors (median 0.47 s). With 10 parallel workers, 4 of 30 calls got <code>429</code> with <code>Retry-After: 1</code>. The error text invites the user to “create a free Exa account … No payment method required”. That is a ready-made upgrade path.</li>
+  <li><strong>Firecrawl keyless</strong> cuts off after about 10 calls in a short window and points to a free-key signup.</li>
+  <li><strong>Tavily keyless</strong> has a per-IP daily cap (third parties say about 30 per day; unverified). It was already spent on this shared IP. Users behind campus NAT or an HPC login node will see the same thing.</li>
+  <li><strong>Not yet measured:</strong> a real deep-research run against the rotation. Each vendor was tested on its own; the rotation was not built when these tests ran, and the 20–60 searches per run figure is an estimate. The deep-research flow runs up to 8 researchers at once, which is the concurrency at which Exa returned 429s.</li>
+</ul>
+
+<h3>Page reading (12 URLs: docs, arXiv PDF, GitHub, NOAA, ALCF, ScienceDirect, PubMed)</h3>
+<div class="tbl"><table>
+  <thead><tr><th>Fetcher</th><th>Readable</th><th>Median</th><th>Failures</th></tr></thead>
+  <tbody>
+    <tr><td>Exa <code>web_fetch_exa</code>, keyless</td><td class="num">12/12</td><td class="num">0.26 s</td><td>none. It served the ALCF, ScienceDirect and GitHub pages that blocked a local fetch.</td></tr>
+    <tr><td>Jina Reader <code>r.jina.ai</code>, keyless (20 RPM)</td><td class="num">10/12</td><td class="num">1.9 s</td><td>GitHub refused for anonymous use; PubMed search page nearly empty</td></tr>
+    <tr><td>Local httpx + trafilatura (today's method)</td><td class="num">8/12</td><td class="num">0.48 s</td><td>403 from GitHub, ALCF and ScienceDirect on a datacenter IP; the arXiv PDF downloaded but had no text (the test script first counted it as read)</td></tr>
+  </tbody>
+</table></div>
+<p class="prose">Keep local fetch as the first attempt: it is private, fast and free. Fall back to a hosted reader (Exa fetch, Parallel <code>web_fetch</code>, Keenable fetch, Jina) only on 403 or 429, or when the page is empty or JavaScript-only.</p>
+
+<h3>Model-native search through a CLIO provider</h3>
+<p class="prose">The <code>claude</code> CLI that CLIO's <code>claude_code</code> provider drives ran its built-in WebSearch here: 20 relevant ADIOS2 doc URLs in 18.8 s, billed to the subscription. CLIO currently starts that provider with <code>allowed_tools: []</code>, so its agents never see this tool. Native search exists only for Anthropic, OpenAI and Google accounts. It does not help LM Studio, ALCF or other OpenAI-compatible endpoints, so it cannot be the default for a model-agnostic agent. It is reasonable as an optional fast path later.</p>
+</section>
+
+<section aria-labelledby="providers">
+<h2 id="providers">Providers, free tiers and terms</h2>
+<div class="callout prose"><p><strong>What fits the zero-setup pattern:</strong> only the keyless paths. Those are the Exa, Parallel and You.com hosted MCPs, Keenable public, Firecrawl keyless, the Tavily keyless header, Jina Reader, the keyless scholarly APIs, and the search included in a model login the user already has. Allowances that need a manually created key are listed below for reference only.</p></div>
+<div class="tbl"><table>
+  <thead><tr><th>Provider</th><th>Free allowance</th><th>Card</th><th>Paid per 1k</th><th>Content in results</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Exa</strong></td><td>Keyless MCP at an unpublished rate limit. Free account: $10 credit each month (≈2,500 lite searches) + $10 one-time</td><td>No</td><td class="num">$4–15</td><td>Highlights, full text</td></tr>
+    <tr><td><strong>Parallel</strong></td><td>Free hosted Search MCP with no account (“variable limits”). Build plan: up to 5,000 free requests/month</td><td>Build: yes</td><td class="num">$1</td><td>Excerpts</td></tr>
+    <tr><td><strong>You.com</strong></td><td>MCP <code>?profile=free</code> with no account, 100 queries/day per IP per You.com docs. API credit amount not stated officially</td><td>—</td><td class="num">$5</td><td>Snippets, optional live crawl</td></tr>
+    <tr><td><strong>Keenable</strong></td><td>Keyless <code>/v1/search/public</code> + <code>/v1/fetch/public</code>: 1,000 requests per hour shared per IP. A free key gives 100k requests/month (homepage figure)</td><td>No</td><td class="num">—</td><td>Snippets; fetch returns content</td></tr>
+    <tr><td><strong>Linkup</strong></td><td>$20/month recurring credit (≈4,000 standard searches) for professional-email signups</td><td>—</td><td class="num">$5–6</td><td>Results or sourced answer</td></tr>
+    <tr><td><strong>Tavily</strong></td><td>1,000 credits/month; keyless header with a small per-IP daily cap</td><td>No</td><td class="num">≈$8</td><td>Snippets, raw content</td></tr>
+    <tr><td><strong>Brave Search API</strong></td><td>$5 credit/month (≈1,000 queries). The old 2,000/month free plan ended for new users in early 2026</td><td>Yes</td><td class="num">$5</td><td>Snippets</td></tr>
+    <tr><td>Firecrawl</td><td>1,000 credits/month (search = 2 credits per 10 results); keyless tier exists</td><td>No</td><td class="num">≈$7.60</td><td>Optional scrape</td></tr>
+    <tr><td>LangSearch</td><td>Free plan with full text; daily token cap only shown in its dashboard</td><td>No</td><td class="num">—</td><td>Full text</td></tr>
+    <tr><td>Ollama web search</td><td>Free with an Ollama account (“generous”, limits not published)</td><td>No</td><td class="num">Pro $20/mo</td><td>Content + fetch</td></tr>
+    <tr><td>Serper / SerpAPI / SearchAPI</td><td>2,500 one-time / 250 per month / 100 one-time</td><td>No</td><td class="num">$0.30–25</td><td>Google snippets</td></tr>
+    <tr><td>Jina</td><td>Reader keyless at 20 RPM; search needs a key (10M tokens one-time)</td><td>—</td><td class="num">tokens</td><td>Full Markdown</td></tr>
+    <tr><td>Google Programmable Search</td><td>Closed to new customers; sunset 1 Jan 2027</td><td>—</td><td class="num">$5</td><td><span class="pill bad">dead end</span></td></tr>
+    <tr><td>Bing Web Search API</td><td>Retired 11 Aug 2025</td><td>—</td><td class="num">—</td><td><span class="pill bad">gone</span></td></tr>
+    <tr><td>Gemini grounding</td><td>2.5 Flash free tier: 500 requests/day; Gemini 3 has none on the free tier</td><td>—</td><td class="num">$14–35</td><td>Grounded answer, not raw results</td></tr>
+    <tr><td>Anthropic / OpenAI native</td><td>None beyond the subscription</td><td>—</td><td class="num">$10</td><td>Provider-side</td></tr>
+  </tbody>
+</table></div>
+<div class="prose">
+<h3>What the terms allow</h3>
+<ul>
+  <li><strong>Embedding one shared vendor key in CLIO is ruled out.</strong> Brave, Tavily, Firecrawl, Semantic Scholar and Jina all forbid sharing or disclosing a key, or hold the key owner liable for everyone's use.</li>
+  <li><strong>A proxy that IOWarp operates is allowed</strong> if IOWarp is the customer, pays, and gives users its own terms. Tavily allows this explicitly. Brave requires a written end-user agreement and forbids redistributing or reselling results.</li>
+  <li><strong>Caching:</strong> Brave forbids storing results beyond transient use, and Mojeek's startup plan allows one hour. ARC memory must not keep raw Brave results; storing CLIO's own summaries and fetched pages is a separate question.</li>
+  <li><strong>Keyless endpoints are published by the vendors for agent use.</strong> Exa, Parallel, You.com, Firecrawl, Tavily, Keenable and TinyFish document them, and their error messages invite signup. Hermes and OpenCode both ship them on by default. Send an honest client name (<code>User-Agent</code>, Keenable's <code>X-Keenable-Title</code>) and respect <code>Retry-After</code>.</li>
+</ul>
+</div>
+</section>
+
+<section aria-labelledby="budget">
+<h2 id="budget">Will free tiers cover deep research?</h2>
+<div class="prose">
+<p>A deep-research run issues about 20–60 searches and 30–100 page reads. Two runs a day plus normal agent browsing is roughly <strong>60–170 searches and 60–250 page reads per user per day</strong>, or 1,800–5,000 searches a month.</p>
+</div>
+<div class="tbl"><table>
+  <thead><tr><th>Option</th><th>Covers 2 deep runs/day?</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Keyless ring (Exa, Parallel, You.com, Keenable, Firecrawl)</td><td><span class="pill good">likely</span></td><td>Five independent per-IP allowances (published where known: You.com 100/day, Keenable 1,000/hour), and 100+ searches here with no failures once paced. No guarantee from any vendor.</td></tr>
+    <tr><td>Scholarly APIs, keyless</td><td><span class="pill good">yes</span></td><td>arXiv and Crossref have no daily caps, only pacing. Keyless OpenAlex allows about 100 searches/day per IP ($0.10 at ≈$0.001 each).</td></tr>
+    <tr><td>Search included in the model login (Claude Code, Codex, Gemini)</td><td><span class="pill good">yes, when present</span></td><td>Billed against a plan the user already has. Gemini's Google-login quota is 1,000 requests/day.</td></tr>
+    <tr><td>IOWarp gateway, install token</td><td><span class="pill good">yes, guaranteed</span></td><td>Daily quota that IOWarp sets and pays for</td></tr>
+    <tr><td>Free tiers that need a manually created key (Linkup, Exa, Tavily, Brave, Firecrawl, Ollama)</td><td><span class="pill neutral">out of pattern</span></td><td>Each needs a person to sign up, so none counts toward first launch</td></tr>
+  </tbody>
+</table></div>
+<div class="callout prose">
+<p><strong>A guaranteed daily allowance</strong> (“N deep researches per day, then pay”) needs a gateway someone operates, because keyless limits are per IP and unpublished. Cost for IOWarp at list prices: 100 searches per user per day costs $0.10 on Parallel ($1/1k), $0.40 on Exa lite, or $0.50 on Brave. Add page reads at $1/1k on Exa or Parallel. That is <strong>$0.05–$0.70 per active user per day</strong>, or about $1.5k–$21k a month for 1,000 daily users. CLIO would request the install token from the gateway on first launch, with no user step, the same way Nous gives anonymous Hermes guests free search. Paid tiers raise the quota on that token.</p>
+</div>
+</section>
+
+<section aria-labelledby="design">
+<h2 id="design">Recommended design</h2>
+<div class="tiers">
+  <div class="tier"><span class="t">Default</span><div><h3>Keyless ring (first launch, zero setup)</h3>
+    <p>An ordered list of providers: Exa → Parallel → You.com → Keenable → Firecrawl. Pace calls to at most 2–3 concurrent per provider. On a 429, cool that provider down for <code>Retry-After</code> (or 60 s) and try the next. Every rotation emits a typed reason (<code>search_provider_rate_limited</code>, <code>search_provider_failed</code>) into the trace, following the no-silent-fallback rule. If the whole ring is exhausted, return a typed <code>search_quota_exhausted</code> error that names the upgrade, so the model and UI can say so plainly.</p></div></div>
+  <div class="tier"><span class="t">Always on</span><div><h3>Scholarly sources</h3>
+    <p>Call arXiv, Crossref (with <code>mailto</code>), OpenAlex, PubMed and Europe PMC directly, paced to their published terms. arXiv allows one request every 3 seconds; the client enforces that. Do not put them in the web rotation: they only answer literature queries, and Crossref returns fuzzy matches for anything (100% answered, 0% right source). Do not route by matching keywords in the query either, because CLIO core must not decide by keyword. Instead, let the model choose by calling <code>web_search(..., sources="scholarly")</code> or a <code>literature_search</code> tool. That call fans out to the scholarly APIs in parallel and de-duplicates by DOI or arXiv ID. The tool description tells the model to write keyword queries, since Europe PMC returned nothing for long natural-language ones.</p></div></div>
+  <div class="tier"><span class="t">Login</span><div><h3>Search that comes with the model login</h3>
+    <p>When the session runs on <code>claude_code</code>, Codex or Gemini, add that provider's built-in search as one more ring member. Today CLIO starts the Claude Code provider with <code>allowed_tools: []</code>, so this means allowing only its WebSearch and recording results through the same provenance path. It is automatic because the login already exists, and it is simply absent for local and ALCF models.</p></div></div>
+  <div class="tier"><span class="t">Fetch</span><div><h3>Local first, hosted fallback</h3>
+    <p>Keep local httpx + trafilatura/readability. On a 403 or 429, or an empty or JavaScript-only page, retry through Exa fetch, Parallel fetch, Keenable fetch or Jina Reader. Report which reader produced the text in the provenance the deep-research critic already checks.</p></div></div>
+  <div class="tier"><span class="t">If funded</span><div><h3>IOWarp gateway with an automatic install token (deferred)</h3>
+    <p>This is the only way to deliver a guaranteed “a couple of deep researches a day, then pay” within the pattern. On first launch CLIO registers anonymously and receives a token. The gateway calls one or two paid vendors on IOWarp's own account, which their terms allow when IOWarp is the customer, and enforces a daily quota. When the quota is used up, CLIO returns a typed <code>search_quota_exhausted</code> error that names the upgrade, and falls back to the keyless ring. A paid IOWarp account raises the quota. The gateway can be built after the ring ships; the ring stands on its own.</p></div></div>
+</div>
+<div class="prose">
+<h3>Could SearXNG run the ring for us?</h3>
+<p>Only partly. CLIO's pinned SearXNG (<code>e8e710e</code>) already ships a <code>keenable</code> engine with keyless mode. It is disabled by default, and enabling it is a settings change. Its <code>exaapi</code> engine needs a paid key, because it calls <code>api.exa.ai</code>, not the free MCP. There are no engines for Parallel, You.com or Firecrawl. The free tiers are MCP endpoints that stream JSON-RPC (Exa answers HTTP 406 if the client does not accept a stream), so SearXNG's generic <code>json_engine</code> cannot read them. They would need custom engine modules patched into the SearXNG install.</p>
+<p>Its design also works against free allowances. SearXNG sends every query to every enabled engine at once, so one search spends all five vendors' allowances instead of one. It only searches, so it cannot provide the hosted-fetch fallback. It also reduces results to title, URL and snippet, which drops the 22–38k characters of excerpts these vendors return per query. And it keeps the install and supervision burden. SearXNG is worth keeping in two places only: server-side, if IOWarp builds the gateway (CLIO's existing <code>clio_web_search</code> backend already speaks its API), and as an optional self-hosted URL for air-gapped sites.</p>
+<h3>Where the code lives</h3>
+<p>The first proposal put the rotation in clio-kit's Web MCP adapter. The implementation instead hosts it inside the CLIO server as built-in MCP servers: one process-wide limiter for every session, questions through CLIO's own question tasks, keys straight from the credential store, and no cross-repo pin. The configuration is small:</p>
+<pre>search:
+  enabled: true
+  web:
+    order: [keenable, exa, firecrawl, you, parallel]
+    disabled: []
+    auto_switch: false
+  approved: []             # filled as the person approves sources
+  literature:
+    disabled: []
+  service:
+    url: ""                # a site's CLIO search service, optional
+  # keys live in the credential store: search-provider:&lt;source&gt;</pre>
+</div>
+</section>
+
+<section class="prose" aria-labelledby="risks">
+<h2 id="risks">Risks and mitigations</h2>
+<div class="tbl"><table>
+  <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+  <tbody>
+    <tr><td>A vendor narrows or closes its keyless tier</td><td>Five independent vendors in the ring; the provider list is config, so a dead one is removed without a release. Firecrawl and Tavily already throttle hard.</td></tr>
+    <tr><td>Shared IPs (campus NAT, HPC login nodes, cloud) exhaust per-IP quotas</td><td>Observed with Tavily here. Detect <code>daily_cap_reached</code>-style answers, cool down for the full <code>Retry-After</code>, and rely on the other ring members. The IOWarp gateway's quota is per install token, not per IP, so it is the fix for shared networks.</td></tr>
+    <tr><td>Privacy: queries leave the machine to US vendors</td><td>SearXNG also forwarded queries to DuckDuckGo, Brave and others. Say so in the first-run consent text (OpenCode shows a one-time prompt). Offer <code>backend: none</code> and keep a self-hosted SearXNG URL as an optional <code>provider</code> for air-gapped sites; it just stops being the default.</td></tr>
+    <tr><td>Result quality differs between vendors, so a run can change with rotation</td><td>Record the provider for every search in the provenance log. A deep-research flow can pin one provider for the whole run (a session id), as Hermes does with <code>_SESSION_ID</code>.</td></tr>
+    <tr><td>Terms change</td><td>Re-check the vendor list each release; this report records the 12 Nov 2026 state.</td></tr>
+    <tr><td>The free tiers are a sales funnel, not a service promise. Each 429 message is a signup pitch, and no vendor has agreed to carry a distributed product's default traffic</td><td>Hermes and OpenCode set the precedent, but it is unwritten. Send an honest client name, and contact Exa, Parallel and Keenable before launch; Vane is already Exa-sponsored. Treat the ring as best-effort, and the gateway as the only guarantee.</td></tr>
+    <tr><td>Response formats drift. Exa's free MCP schema lists <code>objective</code> as required (calls without it still worked on 12 Nov), returns a text blob that must be parsed, and rejects plain JSON clients</td><td>Run a nightly canary that makes one real call per vendor, plus recorded-response tests. A vendor that fails the canary is removed by config.</td></tr>
+    <tr><td>Excerpts are chosen by the vendor (Exa highlights follow the <code>objective</code>)</td><td>Treat search results as leads, not evidence. The deep-research plugin already requires a fetched page for every finding.</td></tr>
+    <tr><td>New outbound hosts</td><td>Five search hosts and the scholarly APIs must be on the sandbox network allowlist. Compute nodes without internet access are unchanged.</td></tr>
+    <tr><td>Thin evidence</td><td>12 queries, two rounds, one day, one IP, and a coarse domain check. Before switching the default, run a week-long canary from a residential and a campus network.</td></tr>
+  </tbody>
+</table></div>
+</section>
+
+<section class="prose" aria-labelledby="migration">
+<h2 id="migration">What was built</h2>
+<p>After this evaluation, the owner's decisions and an independent review (below) shaped the implementation on branch <code>claude/nifty-mccarthy-ybiwgz</code>:</p>
+<ul>
+  <li><strong>No local search server.</strong> SearXNG, the managed Web Search service, its installers and the clio-kit Web Search adapter were removed; the old <code>search.*</code> keys are typed <code>config_key_removed</code> errors.</li>
+  <li><strong>Built-in tools, not an external MCP.</strong> <code>web</code> and <code>literature</code> are in-process MCP servers beside <code>fs</code>/<code>shell</code>, claimed by the <code>web</code> and new <code>literature</code> plugins. Tool calls stay MCP task records, so deep research's evidence binding is unchanged, and one process-wide limiter serves every session and child session.</li>
+  <li><strong>Order and questions.</strong> Web sources are tried in the person's order (default Keenable → Exa → Firecrawl → You.com → Parallel). The first query to a source asks for approval; a used-up free allowance asks once for every waiting caller: switch, switch always, add a key, or stop. These questions always go to the person, also in bypass mode, never to an agent.</li>
+  <li><strong>No key needed; keys optional.</strong> Settings → Web search reorders sources, turns them on or off, adds keys (stored in the credential store) and shows status in words and today's counts. Settings can request a free OpenAlex key for the person's email. A search service URL lets a site serve search for everyone.</li>
+  <li><strong>Compact results.</strong> The model sees title, URL, date and a short snippet; the full source answer is saved to <code>payload_file</code>. <code>web_fetch</code> reads locally first and uses a hosted reader only for public URLs.</li>
+  <li><strong>Literature.</strong> <code>literature_search</code> queries OpenAlex and Crossref plus field sources from a declared table chosen by the model's <code>field</code>/<code>kind</code>; <code>literature_lookup</code> follows references, citations and versions. Skills <code>web-research</code> and <code>literature-search</code> carry the craft; deep research's researcher and critic got the literature tools and lost their SearXNG instructions.</li>
+  <li><strong>Deferred:</strong> the IOWarp gateway (until funded), model-login search, and deep-research flow changes (scoping step, typed packets, binding researcher fetches, conditional prompt pieces), each to be A/B-tested after merge.</li>
+</ul>
+<h3>Research results recorded during implementation</h3>
+<ul>
+  <li>Recorded responses for every API are test fixtures (<code>tests/test_search/fixtures</code>). From this shared cloud IP, Exa, Firecrawl, Parallel and OpenAlex were already rate-limited during capture, so their success fixtures are partial; recapture them from a normal network after merge.</li>
+  <li>Filters were honoured where checked: Keenable (<code>site</code>, <code>published_after</code>) and You.com (date range, excluded sites). Parallel reports a used-up free tier as JSON-RPC <code>-32000</code> inside HTTP 200, so the client reads the body, not the status.</li>
+  <li>OpenAlex now prices by request: a single-work lookup is free, a filtered list costs $0.0001, a search $0.001, against $0.10/day per IP without a key. It also offers an agent key flow (<code>POST /api-keys</code> with an email, activated by one click).</li>
+  <li>Deep research's skills reach its researcher and critic: CLIO keeps core tools such as <code>load_skill</code> on subagents with a tool allowlist.</li>
+</ul>
+<h3>Independent review</h3>
+<p>A second model reviewed this report and the proposals. It approved the direction but not the confidence, and its findings changed the design: per-run sticky vs global order (the owner kept a global order with questions), keeping a site service URL, compact results for small models, public-URL-only hosted reading, and the elicitation routing fix so search questions never go to an agent. Its corrections to the evidence are applied above (local fetch 8/12, the unmeasured rotation, the Exa schema note).</p>
+</section>
+
+<section class="prose" aria-labelledby="method">
+<h2 id="method">Method and limits of this study</h2>
+<ul>
+  <li>All tests ran from one datacenter IP, which many cloud sessions share. That understates scraping (<code>ddgs</code>, DuckDuckGo, public SearXNG), which does better on home connections but is exactly what blocks first under load. It also understates per-IP keyless quotas (Tavily, OpenAlex, Wikipedia). On a residential connection the keyless ring should do at least as well as measured here.</li>
+  <li>“Right source” is a coarse domain check, not a relevance judgement. The ranking is clear without it, but it is not a quality benchmark between Exa, Parallel and You.com.</li>
+  <li>Tiers that need a manually created key (Tavily, Brave, Linkup, Exa, Ollama, LangSearch, Serper) were not tested, because they fall outside the zero-setup pattern. Their figures come from official pricing pages read on 12 Nov 2026 and are for reference only.</li>
+  <li>Unverified: the published keyless limits for Exa, Parallel, You.com, Keenable and TinyFish (none publish numbers); Tavily keyless ≈30/day; the date Brave's free plan ended; You.com free API credit; Europe PMC and CORE limits.</li>
+  <li>Agent survey: shallow clones of each project's default branch, read 12 Nov 2026 (Hermes at commit 754855f, OpenCode v2.2.7). Research and chat apps were read from raw source files and docs; GitHub issue counts come from GitHub search the same day.</li>
+</ul>
+</section>
+</div>

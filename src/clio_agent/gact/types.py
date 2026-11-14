@@ -676,11 +676,9 @@ class ListAgentsResponse(BaseModel):
     agents: list[AgentDef]
 
 
-#: A tool's server-declared functional grouping (#1350 desktop Tools view):
-#: the domain the built-in catalog groups/filters by, instead of the client
-#: guessing one from the tool NAME via a regex. Declared once, at construction
-#: (``tool_instrumentation.native_tool`` / ``boundary_observed_tool``, or the
-#: static gateway ``ToolCatalogEntry`` for fs/shell), never inferred here.
+#: A tool's server-declared functional grouping (#1350 desktop Tools view), never
+#: guessed from the tool NAME. Declared once at construction (``tool_instrumentation.
+#: native_tool`` / ``boundary_observed_tool``, or a static gateway ``ToolCatalogEntry``).
 ToolDomain = Literal[
     "workspace",
     "shell",
@@ -702,6 +700,7 @@ ToolDomain = Literal[
     "interaction",
     "science",
     "browser",
+    "web",
 ]
 
 

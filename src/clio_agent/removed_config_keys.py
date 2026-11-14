@@ -24,6 +24,66 @@ REMOVED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
         "The fixed table-query timeout was replaced by a progress-based wait "
         "(artifacts.table_query_no_progress_s, artifacts.table_query_max_wait_s)",
     ),
+    (
+        "search.backend",
+        "CLIO_SEARCH_BACKEND",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.clio_web_search.url",
+        "CLIO_SEARCH_CLIO_WEB_SEARCH_URL",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.local_searxng.auto_install",
+        "CLIO_SEARCH_AUTO_INSTALL",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.engines",
+        "CLIO_SEARCH_SEARXNG_ENGINES",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.opt_in_engines",
+        "CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.port",
+        "CLIO_SEARCH_SEARXNG_PORT",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.safe_search",
+        "CLIO_SEARCH_SEARXNG_SAFE_SEARCH",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.request_timeout_s",
+        "CLIO_SEARCH_SEARXNG_REQUEST_TIMEOUT_S",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.max_results",
+        "CLIO_SEARCH_SEARXNG_MAX_RESULTS",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
+    (
+        "search.searxng.language",
+        "CLIO_SEARCH_SEARXNG_LANGUAGE",
+        "CLIO's private SearXNG was removed: search uses hosted sources "
+        "(search.web.order, search.service.url; Settings → Web search)",
+    ),
 )
 
 
