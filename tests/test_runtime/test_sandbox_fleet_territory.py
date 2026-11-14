@@ -84,3 +84,19 @@ def test_grant_is_scoped_to_its_workspace(tmp_path: Path) -> None:
     # The grant to workspace A must NOT widen workspace B's territory.
     roots_b = effective_write_roots(PROFILE_SHELL, policy=_policy(ws_b), workspace_root=str(ws_b))
     assert external not in roots_b
+
+
+def test_clio_kit_folders_exist_before_the_fence_rules_on_them(tmp_path, monkeypatch) -> None:
+    """A fence only grants existing paths; clio-kit servers create their folder on first use."""
+    import sys
+
+    if sys.platform != "linux":
+        return
+    from clio_agent.runtime.sandbox_roots import _platform_tool_cache_dirs
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    dirs = _platform_tool_cache_dirs()
+    assert tmp_path / "data" / "clio-kit" in dirs
+    assert (tmp_path / "data" / "clio-kit").is_dir()
+    assert (tmp_path / "cache" / "clio-kit").is_dir()
