@@ -24,6 +24,7 @@ from clio_agent.gact.a2ui import (
     A2UITranscriptFrozenError,
     A2UIValidationError,
 )
+from clio_agent.gact.a2ui_catalogs.validation import A2UIMcpAppArgumentsError
 from clio_agent.gact.a2ui_component_fold import upsert_components_by_id
 from clio_agent.gact.a2ui_producer import _emit
 from clio_agent.gact.a2ui_producer._refusal import catalog_hint, component_hint, refusal
@@ -219,6 +220,8 @@ def apply_messages(
             detail=str(exc),
             hint=catalog_hint(app, exc.catalog_id),
         )
+    except A2UIMcpAppArgumentsError as exc:
+        return refusal(exc.reason, detail=str(exc))
     except A2UIValidationError as exc:
         return refusal(
             "a2ui_validation_failed",

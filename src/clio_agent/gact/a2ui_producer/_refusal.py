@@ -176,6 +176,14 @@ _DEFAULT_HINTS: dict[str, str] = {
         "use a channel key the view reports; the detail lists its state keys and the "
         "tool that sets each"
     ),
+    "a2ui_mcp_app_arguments_too_large": (
+        "pass the view's data by reference in arguments: a file path the tool reads, "
+        "or the view id its result names for reopening, not the data inline"
+    ),
+    "a2ui_mcp_app_arguments_too_deep": (
+        "pass the nested data as a file path the tool reads, or the view id its "
+        "result names for reopening, instead of inline arguments"
+    ),
     "a2ui_components_source_conflict": (
         "pass exactly one of components or components_path, never both"
     ),
@@ -240,6 +248,8 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_raster_invalid",
         "a2ui_mcp_app_tool_not_found",
         "a2ui_mcp_app_state_key_unknown",
+        "a2ui_mcp_app_arguments_too_large",
+        "a2ui_mcp_app_arguments_too_deep",
         "a2ui_components_source_conflict",
         "a2ui_components_source_missing",
         "a2ui_components_path_unresolved",
