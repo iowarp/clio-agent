@@ -1,6 +1,6 @@
 // Exploratory: open the Burette view in a tab and list its visible controls, before and
 // after pressing CHECK_PRESS (an aria-label). Used to find how a person selects residues.
-import { openConversation, send, waitIdle } from "./_lib.mjs";
+import { isViewDocument, openConversation, send, waitIdle } from "./_lib.mjs";
 
 async function controls(frame) {
   return frame.evaluate(() =>
@@ -20,7 +20,7 @@ export default async function (page, shot) {
   await page.getByRole("button", { name: "Open in tab" }).first().click();
   await page.locator('[data-mcp-app-placement="tab"] [data-mcp-app-iframe]').first().waitFor({ timeout: 30000 });
   await page.waitForTimeout(25000);
-  const frame = page.frames().filter((f) => f.url() === "about:srcdoc").at(-1);
+  const frame = page.frames().filter(isViewDocument).at(-1);
   const before = await controls(frame);
   await shot("tab");
   let after = [];

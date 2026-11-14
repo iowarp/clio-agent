@@ -163,7 +163,12 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
         if (permissions?.clipboardWrite) allow.push('clipboard-write');
         if (allow.length) inner.setAttribute('allow', allow.join('; '));
         if (typeof html !== 'string') return;
-        inner.srcdoc = html;
+        // Written into the frame, as the reference host does, not set as srcdoc: a view
+        // whose libraries read their own address (CesiumJS) stalls in an about:srcdoc
+        // document. A frame CLIO cannot write (no same-origin token) takes srcdoc.
+        let doc = null;
+        try { doc = inner.contentDocument; } catch { doc = null; }
+        if (doc) { doc.open(); doc.write(html); doc.close(); } else { inner.srcdoc = html; }
       } else if (event.data?.method === '@@SNAPSHOT_METHOD@@' && event.data.id !== undefined) {
         // The host asks for a snapshot of the view: answered here, never sent to the view.
         const id = event.data.id;

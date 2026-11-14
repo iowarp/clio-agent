@@ -133,3 +133,12 @@ export async function heroShot(page, shot, name, before) {
   const restore = page.getByRole("button", { name: "Restore canvas beside conversation" }).first();
   if (await restore.count()) await restore.click().catch(() => undefined);
 }
+
+/**
+ * A view's own document: the frame inside CLIO's sandbox frame. CLIO writes the view into
+ * that frame (MC-F4), so its address is the sandbox's, not about:srcdoc; an older CLIO
+ * set srcdoc. Either way its parent is the sandbox document.
+ */
+export function isViewDocument(frame) {
+  return /\/mcp-apps\/[^/]+\/sandbox/.test(frame.parentFrame()?.url() || "");
+}
