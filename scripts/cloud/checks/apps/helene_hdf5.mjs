@@ -238,10 +238,13 @@ export default async function (page, shot) {
   await composer.waitFor({ state: "visible", timeout: 180000 });
   await page.waitForTimeout(2000);
   // Only this conversation on screen: the workspace list is hidden for the recording.
-  // The app remembers the sidebar's state, so hide it only when it is showing.
+  // The branded app with its one workspace, briefly; then the side panel collapses for the
+  // rest of the demo. The app remembers its state, so collapse only when it is showing.
   const listShown = await page.getByText("Workspaces", { exact: true }).first().isVisible().catch(() => false);
   if (process.env.HIDE_SIDEBAR !== "0" && listShown) {
-    await page.getByRole("button", { name: "Toggle Sidebar" }).first().click().catch(() => {});
+    await page.waitForTimeout(2500);
+    await page.getByRole("button", { name: "Toggle Sidebar" }).first().click();
+    await page.waitForTimeout(800);
   }
   mark("start");
   const chips = () => page.locator('[data-slot="composer-toolbar"]').locator("xpath=..").innerText();
