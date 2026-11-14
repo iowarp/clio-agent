@@ -11,6 +11,10 @@ where its rows go, once for the whole call: with no turn open, the ordinary no-t
 path, unchanged; with a turn open, they are held and written, when the call ends, as
 their own assistant message (``metadata.origin: "mcp_app"``), the way an action card
 outside a turn is written. Either way the turn's parts never contain them.
+
+A call to a tool the model cannot see (``visibility`` without ``"model"``) writes no row
+at all: the PDF viewer's 512 KB reads and 30 s polls were one row each, every time the
+view mounted or polled (MC-F3). Such a call stays in the trace, as a compact record.
 """
 
 from __future__ import annotations
@@ -24,10 +28,15 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.tools import view_only_results
+
 if TYPE_CHECKING:
     from clio_agent.gact.types import Part
 
 logger = logging.getLogger(__name__)
+
+#: The rows a view-only call (:mod:`clio_agent.tools.view_only_results`) does not write.
+_CALL_ROWS = frozenset({"tool_call", "tool_result"})
 
 #: ``metadata.origin`` of the message that holds a view call's rows.
 VIEW_CALL_ORIGIN = "mcp_app"
@@ -53,6 +62,8 @@ def hold(app: Any, sid: str, part: Part) -> bool:
     call = _CALL.get()
     if call is None:
         return False
+    if part.type in _CALL_ROWS and view_only_results.active() is not None:
+        return True  # a call only the view sees: its record is the trace's (MC-F3)
     if call.held is None:
         from clio_agent.gact.tool_observer import _session_turn_transcript  # noqa: PLC0415
 
