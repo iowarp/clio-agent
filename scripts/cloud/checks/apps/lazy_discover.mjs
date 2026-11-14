@@ -12,8 +12,8 @@ const words = (text) => (text || "").replace(/\s+/gu, " ").trim();
 async function groups(page) {
   return page.locator('[data-slot="discover-group"]').evaluateAll((nodes) =>
     nodes.map((node) => ({
-      group: node.querySelector("p")?.innerText.trim(),
-      rows: [...node.querySelectorAll('[role="group"] > *')].map((row) =>
+      group: node.querySelector("h3")?.innerText.trim(),
+      rows: [...node.querySelectorAll('[data-slot="discover-card"]')].map((row) =>
         row.innerText.replace(/\s+/gu, " ").trim(),
       ),
     })),
@@ -57,8 +57,8 @@ export default async function (page, shot) {
 
   const term = process.env.LZ_SEARCH ?? "hdf";
   if (term) {
-    await page.locator("button[data-extension-search]:visible").first().click();
-    const search = page.locator("input:visible").and(page.getByPlaceholder(/Search/u)).first();
+    // The search field is always shown (DC-D9).
+    const search = page.locator("input[data-extension-search]:visible").first();
     await search.fill(term);
     await settle(page, 2000);
     report.search = await groups(page);
@@ -69,7 +69,9 @@ export default async function (page, shot) {
 
   const name = process.env.LZ_ENABLE;
   if (name) {
-    const row = page.locator('[data-slot="discover-group"]').getByText(name, { exact: true }).first();
+    const row = page
+      .locator('[data-slot="discover-card-open"]', { hasText: new RegExp(`^${name}$`, "u") })
+      .first();
     await row.scrollIntoViewIfNeeded();
     await row.click();
     const card = page.locator('[data-slot="connector-setup-card"]');
