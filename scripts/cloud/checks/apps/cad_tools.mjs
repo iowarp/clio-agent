@@ -143,12 +143,16 @@ async function measureLength(page) {
   }
   const onModel = best?.onModel ?? [];
   result.lengthScan = { hits: onModel.length, edges: onModel.filter((p) => p.snap !== "Face").length };
-  // The model's two ends on that row: an edge or corner there if one snaps, else the face at
-  // the outline (a filleted end has no edge at its outline).
-  const end = (points) => points.slice(0, 3).find((p) => p.snap !== "Face") ?? points[0];
-  const first = end(onModel);
-  const last = end([...onModel].reverse());
-  if (!first || !last) return;
+  // The model's two ends on that row, found to the pixel: the outline in an orthographic
+  // front view is the true extent, whatever snaps there (a filleted end has no edge).
+  const refine = async (from, to) => {
+    const fine = await scan(page, [from, onModel[0].y], [to, onModel[0].y], Math.abs(to - from));
+    return fine.find((p) => p.snap);
+  };
+  if (!onModel.length) return;
+  const first = (await refine(onModel[0].x - 14, onModel[0].x + 2)) ?? onModel[0];
+  const lastHit = onModel[onModel.length - 1];
+  const last = (await refine(lastHit.x + 14, lastHit.x - 2)) ?? lastHit;
   await clickAt(page, first);
   await clickAt(page, last);
 }
@@ -226,7 +230,10 @@ async function desktop(page, shot) {
   await toolbar(page, "Section");
   await page.waitForTimeout(600);
   await gizmo(page, await cutFacing(page));
+  // Orthographic, so the cut outline and the edges behind it line up and the nearer wins.
+  await moreRow(page, "Orthographic");
   result.wallFound = await measureWall(page);
+  await moreRow(page, "Orthographic");
   await page.mouse.move(720, 20);
   result.wall = await panelText(page, "cad-measure");
   await bothThemes(page, shot, "measure-wall");
@@ -262,6 +269,9 @@ async function desktop(page, shot) {
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   result.afterEscape = await panelText(page, "cad-measure");
+  // Clear the measurements so the other tools' shots show the model alone.
+  await visible(page.locator('[data-slot="cad-measure"] button').filter({ hasText: /^Clear/u })).click();
+  result.afterClear = await panelText(page, "cad-measure");
   await toolbar(page, "Measure");
 
   // Exploded view: opens part-way, then the slider moves it.
