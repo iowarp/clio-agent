@@ -150,3 +150,10 @@ def test_a_reopen_before_any_agent_listed_tools_reads_the_call_annotations(title
     app = SimpleNamespace(state=SimpleNamespace(permissions={"perm_2": row}))
     (tool,) = overlay_waiting_calls(app, "sess_1", [])
     assert tool["title"] == "Open a view"
+
+
+def test_a_tool_only_a_view_calls_reads_as_its_own_title(titled: None) -> None:
+    # A tool with `visibility: ["app"]` is never listed to an agent, so no agent registered
+    # its title; the card reads the title its server declared (more connectors, MC-F1).
+    context = {"kind": "external_mcp", "annotations": {}, "title": "Read PDF Bytes"}
+    assert permission_summary("viewer_read_bytes", context, EXTERNAL) == "Read PDF Bytes"
