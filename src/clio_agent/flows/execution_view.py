@@ -7,6 +7,7 @@ never from an agent's prose. Other flows retain their actual call batches.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -57,6 +58,29 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
         ]
     batch: list[str] = []
     group = ""
+    coordinations = _coordinations(content) if research else {}
+    coordinated: set[int] = set()
+
+    def coordinate(round_no: int) -> None:
+        """One row for the coordinator's decision after a round's checks, from its event."""
+        nonlocal previous, batch, group
+        event = coordinations.get(round_no)
+        if event is None or round_no in coordinated:
+            return
+        coordinated.add(round_no)
+        previous = batch or previous
+        batch, group = [], ""
+        failed = event.get("event") == "coordinator_failed"
+        previous = [
+            add(
+                f"run:coordinate:{round_no}",
+                "Coordinate",
+                "failed" if failed else "completed",
+                previous,
+                detail=str(event.get("reason") or "") if failed else _coordination_detail(event),
+            )
+        ]
+
     rejected_outputs = {
         str(event["critic"]): event.get("problems") or []
         for event in (content.get("events") or {}).values()
@@ -65,6 +89,9 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
     for index, call in enumerate(call for call in calls if call.get("kind") != "ask"):
         invocation = str(call.get("invocation") or "")
         site = invocation.split(":", 2)[-1].rsplit(":", 2)[0]
+        follow_up = re.fullmatch(r"key=research:g(\d+)\.\d+", site)
+        if follow_up:
+            coordinate(int(follow_up[1]) - 1)  # it decided these follow-ups
         direction = planned.get(site) if call.get("target") == "researcher" else None
         # The name the flow gave this child (a research direction's name) comes first.
         label = str(call.get("label") or "") or (
@@ -133,6 +160,8 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             ),
         )
         batch.append(key)
+    for round_no in sorted(coordinations):
+        coordinate(round_no)
     previous = batch or previous
     if research and stopped:
         for site, (number, planned_direction) in planned.items():
@@ -242,3 +271,34 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
     elif content.get("status") == "completed":
         add("run:result", "Result", "completed", previous)
     return rows
+
+
+def _coordinations(content: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """The deep-research coordinator's recorded decision (or failure) for each round."""
+    rows: dict[int, dict[str, Any]] = {}
+    for event in (content.get("events") or {}).values():
+        if event.get("event") in {"coordinated", "coordinator_failed"} and isinstance(
+            event.get("round"), int
+        ):
+            rows[event["round"]] = event
+    return rows
+
+
+def _coordination_detail(event: dict[str, Any]) -> str:
+    """What the coordinator decided, in words, from its typed event."""
+    follow_ups = [str(question) for question in event.get("follow_ups") or []]
+    lines = [
+        f"Chose {len(follow_ups)} follow-up direction{'s' if len(follow_ups) != 1 else ''}:"
+        if follow_ups
+        else "No follow-up research needed."
+        if event.get("rounds_left")
+        else "No research rounds left."
+    ]
+    lines += [f"- {question}" for question in follow_ups]
+    across = int(event.get("across") or 0)
+    if across:
+        lines.append(f"{across} finding{'s' if across != 1 else ''} across the verified evidence.")
+    opened = int(event.get("open_questions") or 0)
+    if opened:
+        lines.append(f"{opened} question{'s' if opened != 1 else ''} left open.")
+    return "\n".join(lines)
