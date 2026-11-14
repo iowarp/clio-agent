@@ -75,7 +75,16 @@ def _carried_kit_servers() -> dict[str, Any]:
 
     service = PluginService()
     carried = {selection.ref.id for entry in service.agents() for selection in entry.spec.plugins}
-    installed = service.store.installed_records()
+    # A plugin that binds a connector's saved connection (``connections``) has nothing to
+    # build here, and that connection exists only once the person enables the connector:
+    # declaring it would fail the whole step (``ConnectionUnavailable``).
+    installed = [
+        record
+        for record in service.store.installed_records()
+        if not any(
+            dict(spec).get("type") == "clio-connection" for spec in record.mcp_servers.values()
+        )
+    ]
     names = {name for record in installed if record.id in carried for name in record.mcp_servers}
     return {
         name: spec

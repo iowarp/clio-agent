@@ -534,10 +534,15 @@ def test_carried_kit_servers_read_only_installed_records(
         SimpleNamespace(id="hdf5", mcp_servers={"hdf5": {}, "hdf5-other": {}}),
         SimpleNamespace(id="loose", mcp_servers={"loose": {}}),
     ]
+    # A plugin that binds a connector's saved connection is left out: that connection
+    # exists only once the connector is enabled, and declaring it failed the step (LZ).
+    follower = SimpleNamespace(
+        id="hdf5", mcp_servers={"x": {"type": "clio-connection", "connection": "x"}}
+    )
 
     class Store:
         def installed_records(self) -> list[Any]:
-            return installed
+            return [*installed, follower]
 
         def records(self) -> list[Any]:
             pytest.fail("built-ins loaded")
