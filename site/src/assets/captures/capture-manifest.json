@@ -184,11 +184,11 @@
       },
       {
         "file": "connectors/discover-catalog.png",
-        "sha256": "ea0025205ecb3d1dca8be9f09ebf804b6187dabc0526f63089ed0b37578a0820",
+        "sha256": "85cf43c40d1f59c26fa59773512421e0178931bd2011f7e963d7c624b647264d",
         "pixels": "1440x900",
         "scale": 1,
-        "source": "logos, LG (every connector and plugin with its logo, grouped by domain)",
-        "origin": "gallery/logos/lg-docs-discover-catalog-dark-desktop.png"
+        "source": "discover, DC (the catalog as cards by domain, each with Enable in sight)",
+        "origin": "gallery/discover/dc-docs-discover-catalog-dark-desktop.png"
       },
       {
         "file": "connectors/agent-load-card.png",

@@ -21,7 +21,8 @@ export default async function (page, shot) {
   const list = page.locator('[role="group"][aria-label="Extensions"]');
   await list.waitFor({ timeout: 30000 });
   await settle(page, 2500);
-  await page.getByRole("button", { name: "Search extensions" }).click();
+  // The search field is always shown (DC-D9).
+  await page.getByRole("textbox", { name: "Search extensions" }).click();
   await page.keyboard.type(word);
   await settle(page, 2000);
   await shot("extensions-search");
