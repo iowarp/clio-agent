@@ -168,7 +168,8 @@ class ClioNativeTool(dspy.Tool):
                 and key in (self.args or {})
                 and key not in given
             ]
-            if missing:
+            # An argument the tool does not take is named first (the base check's sentence).
+            if missing and all(key in (self.args or {}) for key in given):
                 raise ValueError(f"missing required argument {', '.join(missing)}.")
             return super()._validate_and_parse_args(**given)
         except ValueError as exc:

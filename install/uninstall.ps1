@@ -1,7 +1,8 @@
 # CLIO uninstaller (Windows / PowerShell).
 #
 # Undoes install.ps1: stops the server, removes the launcher, and
-# removes known application payloads. Pass -Purge to also remove Agent
+# removes known application payloads, with a clio-kit install.ps1 installed in the
+# user's uv tool folder (clio-kit-owned.json). Pass -Purge to also remove Agent
 # configuration. Data, state, caches, and other products are retained unless
 # their scope is named, as in uninstall.sh.
 #
@@ -121,6 +122,7 @@ function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
 # follow junctions. Whatever rd leaves goes to Remove-Item, so a failure still surfaces
 # unless -Soft.
 $script:Doomed = New-Object System.Collections.Generic.List[string]
+$script:EmptyAfterRemoval = New-Object System.Collections.Generic.List[string]
 function LongPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     if ($full.StartsWith('\\?\')) { return $full }
@@ -144,7 +146,10 @@ function Remove-ClioTree([string]$Path, [switch]$Soft) {
 # clio-agent folder left holding nothing but these trees goes after them.
 function Start-ClioTreeRemoval {
     $trees = @($script:Doomed | Where-Object { Test-Path -LiteralPath $_ })
-    if (-not $trees.Count) { return }
+    if (-not $trees.Count) {
+        foreach ($dir in $script:EmptyAfterRemoval) { Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue }
+        return
+    }
     $steps = @($trees | ForEach-Object { "rd /s /q `"$(LongPath $_)`"" })
     $parents = @($trees | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique)
     foreach ($parent in $parents) {
@@ -152,6 +157,8 @@ function Start-ClioTreeRemoval {
         $kept = @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.removing-[0-9a-f]{8}$' })
         if (-not $kept.Count) { $steps += "rd `"$(LongPath $parent)`"" }
     }
+    # Non-recursive: a folder that gained a file meanwhile is kept.
+    foreach ($dir in $script:EmptyAfterRemoval) { $steps += "rd `"$(LongPath $dir)`"" }
     $deleter = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList '/d', '/c', ("(" + ($steps -join ' & ') + ") 2>nul") -WindowStyle Hidden -PassThru
     Say "Deleting the removed folders' files in the background (pid $($deleter.Id))"
 }
@@ -242,6 +249,9 @@ Write-Host "CLIO uninstall - the following will be removed:"
 Write-Host "  application payloads in: $Prefix (unknown files retained)"
 Write-Host "  launcher:        $LauncherCmd"
 Write-Host "  launcher:        $LauncherPs1"
+if (Test-Path -LiteralPath (Join-Path $Prefix 'clio-kit-owned.json')) {
+    Write-Host "  clio-kit:        the uv tool this installation installed (clio-kit-owned.json)"
+}
 if ($Purge) {
     Write-Host "  clio config:     $ClioConfig  (will be removed)"
 } else {
@@ -332,6 +342,63 @@ for ($i = 0; $i -lt 20; $i++) {
 }
 Remove-CoreSegments $Stopped
 
+# ---- clio-kit ----------------------------------------------------------
+# install.ps1 records a clio-kit it installed in the user's uv tool folder while none was
+# there (clio-kit-owned.json); only that one is uninstalled. A clio-kit it did not install
+# is left alone, and so is the prefix's uv-python while any clio-kit still runs on it.
+$KitRecord = Join-Path $Prefix 'clio-kit-owned.json'
+$KitPython = Join-Path $Prefix 'uv-python'
+$UvExe = (Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (-not $UvExe -and (Test-Path -LiteralPath (Join-Path $BinDir 'uv.exe'))) { $UvExe = Join-Path $BinDir 'uv.exe' }
+function Invoke-ClioUvTool([hashtable]$ToolEnv, [string[]]$Arguments, [switch]$Quiet) {
+    $saved = @{}
+    foreach ($name in $ToolEnv.Keys) { $saved[$name] = [Environment]::GetEnvironmentVariable($name); [Environment]::SetEnvironmentVariable($name, $ToolEnv[$name]) }
+    $SavedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($Quiet) { return @(& $UvExe @Arguments 2>$null | ForEach-Object { "$_" }) }
+        return @(& $UvExe @Arguments 2>&1 | ForEach-Object { "$_" })
+    } finally {
+        $ErrorActionPreference = $SavedPreference
+        foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+    }
+}
+$KitRecorded = $null
+if (Test-Path -LiteralPath $KitRecord) {
+    try { $KitRecorded = Get-Content -Raw -LiteralPath $KitRecord | ConvertFrom-Json } catch { $KitRecorded = $null }
+}
+if ($KitRecorded -and $KitRecorded.tool_dir -and (Test-Path -LiteralPath (Join-Path $KitRecorded.tool_dir 'clio-kit'))) {
+    if ($UvExe) {
+        Say "Removing clio-kit, which this installation installed in $($KitRecorded.tool_dir)"
+        $toolEnv = @{ UV_TOOL_DIR = $KitRecorded.tool_dir }
+        if ($KitRecorded.bin_dir) { $toolEnv.UV_TOOL_BIN_DIR = $KitRecorded.bin_dir }
+        $out = Invoke-ClioUvTool $toolEnv @('tool', 'uninstall', 'clio-kit')
+        if (Test-Path -LiteralPath (Join-Path $KitRecorded.tool_dir 'clio-kit')) { Warn "clio-kit could not be removed: $($out -join ' ')" }
+    } else {
+        Warn "uv was not found, so clio-kit in $($KitRecorded.tool_dir) was kept"
+    }
+}
+# Every clio-kit environment uv still has in the user's tool folder, or the recorded one.
+# The prefix's own uv-tools goes with the prefix.
+$KitPythonUsed = $false
+$KitDirs = @()
+if ($KitRecorded -and $KitRecorded.tool_dir) { $KitDirs += $KitRecorded.tool_dir }
+if ($env:UV_TOOL_DIR) { $KitDirs += $env:UV_TOOL_DIR }
+elseif ($UvExe) { $KitDirs += @(Invoke-ClioUvTool @{} @('tool', 'dir') -Quiet | Select-Object -First 1) }
+$KitDirs += Join-Path $env:APPDATA 'uv\tools'
+$KitPythonKey = [IO.Path]::GetFullPath($KitPython).TrimEnd('\') + '\'
+$PrefixToolsKey = [IO.Path]::GetFullPath((Join-Path $Prefix 'uv-tools')).TrimEnd('\') + '\'
+foreach ($dir in @($KitDirs | Where-Object { $_ } | ForEach-Object { "$_".Trim() } | Sort-Object -Unique)) {
+    try {
+        if (([IO.Path]::GetFullPath($dir).TrimEnd('\') + '\').StartsWith($PrefixToolsKey, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $cfg = Join-Path $dir 'clio-kit\pyvenv.cfg'
+        if (-not (Test-Path -LiteralPath $cfg)) { continue }
+        $kitHome = "$(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\s*home\s*=' } | Select-Object -First 1)" -replace '^\s*home\s*=\s*', ''
+        if ($kitHome -and ([IO.Path]::GetFullPath($kitHome.Trim()).TrimEnd('\') + '\').StartsWith($KitPythonKey, [StringComparison]::OrdinalIgnoreCase)) { $KitPythonUsed = $true }
+    } catch { }
+}
+if ($KitPythonUsed) { Warn "Kept $KitPython and ${KitRecord}, since a clio-kit still runs on that Python" }
+
 # ---- remove files ----------------------------------------------------
 foreach ($f in @($LauncherCmd, $LauncherPs1)) {
     if (Test-Path $f) { Say "Removing $f"; Remove-Item $f -Force -ErrorAction SilentlyContinue }
@@ -339,13 +406,30 @@ foreach ($f in @($LauncherCmd, $LauncherPs1)) {
 if (Test-Path $Prefix) {
     Say "Removing installed application payloads in $Prefix"
     $ResolvedPrefix = [IO.Path]::GetFullPath($Prefix)
-    foreach ($relative in @('clio-agent\.venv', 'clio-agent\web', 'uv-tools', 'gact.exe', 'uninstall.ps1')) {
+    $Owned = @('clio-agent\.venv', 'clio-agent\web', 'uv-tools', 'gact.exe', 'uninstall.ps1', 'libexec\clio.ps1', 'libexec\clio.cmd')
+    if (-not $KitPythonUsed) { $Owned += @('uv-python', 'clio-kit-owned.json') }
+    foreach ($relative in $Owned) {
         $OwnedPath = [IO.Path]::GetFullPath((Join-Path $ResolvedPrefix $relative))
         if (-not $OwnedPath.StartsWith($ResolvedPrefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid application path' }
         Remove-ClioTree $OwnedPath -Soft
     }
-    if (Test-Path $Prefix) {
-        Warn "Retained user data and unknown files in $Prefix."
+    $LibExecDir = Join-Path $ResolvedPrefix 'libexec'
+    if ((Test-Path -LiteralPath $LibExecDir) -and -not (Get-ChildItem -LiteralPath $LibExecDir -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $LibExecDir -Force -ErrorAction SilentlyContinue
+    }
+    # What remains besides the folders the background deleter is removing (a clio-agent
+    # folder holding only those goes with them).
+    $Retained = @(Get-ChildItem -LiteralPath $ResolvedPrefix -Force -ErrorAction SilentlyContinue | Where-Object {
+        if ($_.Name -match '\.removing-[0-9a-f]{8}$') { return $false }
+        if ($_.PSIsContainer -and $_.Name -eq 'clio-agent') {
+            return [bool]@(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.removing-[0-9a-f]{8}$' }).Count
+        }
+        return $true
+    })
+    if ($Retained.Count) {
+        Warn "Retained user data and unknown files in ${Prefix}: $(($Retained | ForEach-Object { $_.Name }) -join ', ')"
+    } elseif (Test-Path -LiteralPath $ResolvedPrefix) {
+        $script:EmptyAfterRemoval.Add($ResolvedPrefix)
     }
 }
 # A live clio-core daemon still has the store open; its pid is recorded per host.

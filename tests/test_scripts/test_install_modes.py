@@ -322,7 +322,31 @@ def _runtime_block() -> str:
 _RUNTIME_ASSET = "CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz"
 
 
-def _runtime_archive(tmp_path: Path, version: str) -> tuple[Path, str]:
+# What the runtime's packages declare, as their entry_points.txt files say it: a PyPI
+# install of the same packages writes a bin/ launcher for each console and GUI command.
+_ENTRY_POINTS = {
+    "clio_agent-1.2.3.dist-info": (
+        "[console_scripts]\n"
+        "clio-agent = clio_agent.ui.cli:main\n"
+        "clio-agent-api = clio_agent.ui._deprecated_api:main\n"
+        "clio-agent-gact = clio_agent.gact.app:main_deprecated\n"
+    ),
+    "other_pkg-2.0.dist-info": (
+        "[console_scripts]\n"
+        "other-tool = other_pkg.cli:app.run [extra]\n"
+        "clio-agent = other_pkg.shadow:main\n"
+        "uv = other_pkg.uv:main\n"
+        "\n[gui_scripts]\n"
+        "other-gui = other_pkg.gui:start\n"
+        "\n[other.plugins]\n"
+        "not-a-command = other_pkg.plugin:Plugin\n"
+    ),
+}
+
+
+def _runtime_archive(
+    tmp_path: Path, version: str, *, entry_points: dict[str, str] = _ENTRY_POINTS
+) -> tuple[Path, str]:
     import hashlib
     import tarfile
 
@@ -337,6 +361,11 @@ def _runtime_archive(tmp_path: Path, version: str) -> tuple[Path, str]:
     python.write_text(f"#!/bin/sh\necho {version}\n")
     python.chmod(0o755)
     (runtime / "python/bin/python3.14-config").write_text("")
+    (runtime / "bin/uv").write_text("the runtime's uv\n")
+    site = runtime / "python/lib/python3.14/site-packages"
+    for info, text in entry_points.items():
+        (site / info).mkdir(parents=True)
+        (site / info / "entry_points.txt").write_text(text)
     archive = tmp_path / _RUNTIME_ASSET
     with tarfile.open(archive, "w:gz") as tar:
         tar.add(app, arcname="CLIO Desktop.app")
@@ -392,6 +421,24 @@ def test_a_plain_macos_install_uses_the_releases_prebuilt_runtime(tmp_path: Path
     trampoline = (venv / "bin/clio-agent").read_text()
     assert f"'''exec' '{venv}/bin/python' \"$0\" \"$@\"" in trampoline
     assert "from clio_agent.ui.cli import main" in trampoline
+    # The lite desktop starts its backend with clio-agent-gact (gact-tui#739): every
+    # command a PyPI install writes is there, the first declaration of a name winning.
+    commands = {path.name for path in (venv / "bin").iterdir()} - {"python", "python3"}
+    assert commands == {
+        "clio-agent",
+        "clio-agent-api",
+        "clio-agent-gact",
+        "other-tool",
+        "other-gui",
+        "uv",
+    }
+    gact = (venv / "bin/clio-agent-gact").read_text()
+    assert "from clio_agent.gact.app import main_deprecated" in gact
+    assert "sys.exit(main_deprecated())" in gact
+    tool = (venv / "bin/other-tool").read_text()
+    assert "from other_pkg.cli import app" in tool and "sys.exit(app.run())" in tool
+    assert (venv / "bin/uv").read_text() == "the runtime's uv\n"
+    assert all(os.access(venv / "bin" / name, os.X_OK) for name in commands - {"uv"})
     assert (venv / "runtime.json").is_file()
     assert not (venv / "bin/old").exists()  # the previous environment was replaced
     assert not (tmp_path / "prefix/clio-agent/.venv.previous").exists()
@@ -408,12 +455,19 @@ def test_a_plain_macos_install_uses_the_releases_prebuilt_runtime(tmp_path: Path
         ("no checksums", {}),
         ("pypi requested", {"CLIO_INSTALL_FROM": "pypi"}),
         ("linux", {}),
+        ("no clio-agent command", {}),
     ],
 )
 def test_without_a_verified_matching_runtime_the_install_uses_pypi(
     tmp_path: Path, case: str, env: dict[str, str]
 ) -> None:
-    archive, sha = _runtime_archive(tmp_path, "9.9.9" if case == "other version" else "1.2.3")
+    archive, sha = _runtime_archive(
+        tmp_path,
+        "9.9.9" if case == "other version" else "1.2.3",
+        entry_points={"other_pkg-2.0.dist-info": "[console_scripts]\nother = other_pkg:main\n"}
+        if case == "no clio-agent command"
+        else _ENTRY_POINTS,
+    )
     published: str | None = sha
     if case == "tampered":
         published = "0" * 64

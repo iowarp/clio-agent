@@ -10,7 +10,6 @@ From the **Infrastructure** page, CLIO can install, start, stop, check and remov
 - model servers: vLLM, llama.cpp and Ollama
 - a model router: LiteLLM Proxy
 - provenance capture: Flowcept and HPE CMF
-- web search: CLIO Web Search and SearXNG
 
 It installs them on the computer running CLIO or on a Linux server you reach over SSH, such as a cluster node. From the same page CLIO can also install CLIO itself on a Linux server over SSH, and the CLIO Relay tool on a cluster.
 
@@ -39,8 +38,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | NVIDIA CUDA (native) (0.34.4); CPU (native) (0.34.4); Vulkan (AMD, Intel or NVIDIA) (native) (0.34.4) | CPU (0.34.4); NVIDIA CUDA (0.34.4) |
 | Flowcept | Native application + native/site databases (e638b4e2) | Native application + container databases (1.0.3) |
 | HPE CMF | Native application + native/site databases (53d9c3e5) | Native application + container databases (53d9c3e5) |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Linux x86-64 with an AMD GPU
 
@@ -52,8 +49,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | AMD ROCm (native) (0.34.4); CPU (native) (0.34.4); Vulkan (AMD, Intel or NVIDIA) (native) (0.34.4) | CPU (0.34.4); AMD ROCm (0.34.4) |
 | Flowcept | Native application + native/site databases (e638b4e2) | Native application + container databases (1.0.3) |
 | HPE CMF | Native application + native/site databases (53d9c3e5) | Native application + container databases (53d9c3e5) |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Linux x86-64 with an Intel GPU
 
@@ -65,8 +60,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | Vulkan (AMD, Intel or NVIDIA) (native) (0.34.4); CPU (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Native application + native/site databases (e638b4e2) | Native application + container databases (1.0.3) |
 | HPE CMF | Native application + native/site databases (53d9c3e5) | Native application + container databases (53d9c3e5) |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Linux x86-64 without a GPU
 
@@ -78,8 +71,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | CPU (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Native application + native/site databases (e638b4e2) | Native application + container databases (1.0.3) |
 | HPE CMF | Native application + native/site databases (53d9c3e5) | Native application + container databases (53d9c3e5) |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Linux ARM64 with an NVIDIA GPU
 
@@ -91,8 +82,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | NVIDIA CUDA (native) (0.34.4); CPU (native) (0.34.4); Vulkan (AMD, Intel or NVIDIA) (native) (0.34.4) | CPU (0.34.4); NVIDIA CUDA (0.34.4) |
 | Flowcept | Not available | Native application + container databases (1.0.3) |
 | HPE CMF | Not available | Native application + container databases (53d9c3e5) |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Linux ARM64 without a GPU
 
@@ -104,8 +93,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | CPU (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Native application + container databases (1.0.3) |
 | HPE CMF | Not available | Native application + container databases (53d9c3e5) |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Windows x64 with an NVIDIA GPU
 
@@ -117,8 +104,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | NVIDIA CUDA (native) (0.34.4); CPU (native) (0.34.4); Vulkan (AMD, Intel or NVIDIA) (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Nothing more |
 | HPE CMF | Not available | Nothing more |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Windows x64 with an AMD GPU
 
@@ -130,8 +115,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | Vulkan (AMD, Intel or NVIDIA) (native) (0.34.4); CPU (native) (0.34.4); AMD ROCm (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Nothing more |
 | HPE CMF | Not available | Nothing more |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Windows x64 without a GPU
 
@@ -143,8 +126,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | CPU (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Nothing more |
 | HPE CMF | Not available | Nothing more |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### Windows on ARM
 
@@ -156,8 +137,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | CPU (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Nothing more |
 | HPE CMF | Not available | Nothing more |
-| CLIO Web Search | Not available | Container (0.3.2) |
-| SearXNG | Not available | Nothing more |
 
 ### macOS on Apple silicon
 
@@ -169,8 +148,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | Apple Metal (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Nothing more |
 | HPE CMF | Not available | Nothing more |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 ### macOS on Intel
 
@@ -182,8 +159,6 @@ Each table lists the options CLIO offers for one kind of computer, with the vers
 | Ollama | CPU (native) (0.34.4) | CPU (0.34.4) |
 | Flowcept | Not available | Nothing more |
 | HPE CMF | Not available | Nothing more |
-| CLIO Web Search | Native gateway + SearXNG (0.3.2) | Container (0.3.2) |
-| SearXNG | Native (uv) (2026.8.11+e8e710e42) | Nothing more |
 
 {/* END GENERATED: support tables */}
 

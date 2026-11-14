@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.arc.task_types import CoreReference, QuestionDefinition, QuestionReply
 from clio_agent.gact.agent_elicitation_context import _bounded_transcript_excerpt
 from clio_agent.gact.agent_elicitation_policy import (
+    PERSON_ONLY_SERVERS,
     _default_unhinted,
     _denied_servers,
     _enabled,
@@ -87,6 +88,8 @@ def decide_routing(
     audience, or ``url`` mode, never routes.
     """
 
+    if namespace in PERSON_ONLY_SERVERS:  # always the person's: never offered to an agent
+        return AgentElicitationDecision(route=False)
     explicit_agent = audience == AGENT_AUDIENCE_VALUE
     if not explicit_agent:
         # Unrecognized non-empty value, url mode, or strict routing -> no-op.

@@ -451,120 +451,6 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
     }
 
 
-def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
-    del snapshot
-    if structured_tool_result_error(result) is not None:
-        return standard_mcp_presentation(result)
-    row = _structured(result)
-    blocks: list[dict[str, Any]] = []
-    document = row.get("document")
-    document = document if isinstance(document, Mapping) else {}
-    metadata = document.get("metadata")
-    metadata = metadata if isinstance(metadata, Mapping) else {}
-    title = row.get("title") or metadata.get("title")
-    for field in ("markdown", "content", "text"):
-        if isinstance(row.get(field), str):
-            blocks.append({"id": field, "type": "markdown", "text": row[field]})
-            break
-    identity = []
-    if row.get("content_type"):
-        identity.append(f"Content type: {row['content_type']}")
-    if isinstance(row.get("size_bytes"), int):
-        identity.append(f"Size: {row['size_bytes']:,} bytes")
-    structure = document.get("structure_summary")
-    if isinstance(structure, Mapping) and isinstance(structure.get("pages"), int):
-        identity.append(f"Pages: {structure['pages']}")
-    if identity:
-        blocks.append({"id": "identity", "type": "text", "text": "\n".join(identity)})
-    results = row.get("results")
-    failures = row.get("unresponsive_engines")
-    if isinstance(failures, list) and failures:
-        blocks.append(
-            {
-                "id": "engine-status",
-                "type": "text",
-                "text": "\n".join(
-                    f"{engine.get('engine', 'Search engine')}: {engine.get('reason', 'Unavailable')}"
-                    for engine in failures
-                    if isinstance(engine, Mapping)
-                ),
-            }
-        )
-    if row.get("error"):
-        blocks.append({"id": "error", "type": "text", "text": str(row["error"])})
-    if title and row.get("url"):
-        blocks.insert(
-            0,
-            {
-                "id": "source",
-                "type": "link",
-                "target": "url",
-                "uri": str(row["url"]),
-                "label": "Source document",
-            },
-        )
-    events = row.get("events", [])
-    if isinstance(events, list):
-        text = "\n".join(
-            ": ".join(
-                filter(None, (str(event.get("stage") or ""), str(event.get("message") or "")))
-            )
-            for event in events
-            if isinstance(event, Mapping)
-        )
-        if text:
-            blocks.append({"id": "events", "type": "text", "text": text})
-    for field, label in (
-        ("local_path", "Saved Markdown"),
-        ("markdown_path", "Saved Markdown"),
-        ("metadata_path", "Saved metadata"),
-    ):
-        if isinstance(row.get(field), str) and row[field]:
-            blocks.append(
-                {
-                    "id": field,
-                    "type": "link",
-                    "target": "resource",
-                    "uri": row[field],
-                    "label": label,
-                }
-            )
-    for index, hit in enumerate(results if isinstance(results, list) else []):
-        if isinstance(hit, Mapping) and hit.get("url"):
-            blocks.append(
-                {
-                    "id": f"result-{index}",
-                    "type": "link",
-                    "target": "url",
-                    "uri": str(hit["url"]),
-                    "label": str(hit.get("title") or hit["url"]),
-                }
-            )
-    url = str(row.get("url") or args.get("url") or "")
-    query = str(args.get("query") or args.get("conversion_id") or "")
-    if url or query:
-        blocks = [block for block in blocks if block["id"] != "source"]
-        blocks.insert(
-            0,
-            {
-                "id": "subject",
-                "type": "link" if url else "text",
-                "target": "url" if url else None,
-                "uri": url,
-                "label": str(title or url or query),
-                "text": query,
-            },
-        )
-    status = row.get("status")
-    if isinstance(status, int):
-        summary = f"HTTP {status}"
-    elif isinstance(results, list):
-        summary = f"{len(results)} {'result' if len(results) == 1 else 'results'}"
-    else:
-        summary = ""
-    return {"subject": "subject" if url or query else "", "summary": summary, "blocks": blocks}
-
-
 for _name, _action in (("fs_write_file", "Write"), ("fs_edit_file", "Edit")):
     register_presentation_adapter(
         _name,
@@ -576,13 +462,9 @@ register_presentation_adapter(
     "shell_bash",
     PresentationAdapter(_terminal, start=lambda args: _terminal(args, {}, None), action="Run"),
 )
-for _name, _action in (
-    ("web_search", "Search"),
-    ("web_fetch", "Fetch"),
-    ("web_fetch_events", "Conversion events"),
-):
-    register_presentation_adapter(_name, PresentationAdapter(_web, action=_action))
 
 # The file-inspection presenters (read, search, glob, list) live in their own module;
 # importing it registers them.
 from clio_agent.tools import fs_presentation as _fs_presentation  # noqa: E402,F401
+from clio_agent.tools import git_presentation as _git_presentation  # noqa: E402,F401
+from clio_agent.tools import search_presentation as _search_presentation  # noqa: E402,F401

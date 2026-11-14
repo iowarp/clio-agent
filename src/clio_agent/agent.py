@@ -55,7 +55,6 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_requested,
 )
 from clio_agent.runtime.source_policy_wait import await_source_policy_settled
-from clio_agent.search.web_mcp_default import load_agent_mcp_servers, with_web_placeholders
 from clio_agent.tools.catalog import (
     set_active_catalog,
     tool_owner,
@@ -70,6 +69,7 @@ from clio_agent.tools.gateway import (
     namespace_proxies,
     namespace_specs,
 )
+from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, boot_discovery_pass
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.workspace_root import canonical_workspace_root
@@ -290,7 +290,7 @@ class ClioAgent(dspy.Module):
         """
 
         plugin_servers = self._discover_plugin_servers(server_set)
-        specs = load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)  # #1300
+        specs = load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)  # #1300
         # Product execution uses application-owned SDK clients and input binding.
         tool_gateway = build_gateway(specs, cwd=cwd)
         if not set_catalog:
@@ -363,8 +363,6 @@ class ClioAgent(dspy.Module):
 
         def _initial_pass() -> None:
             outcome = boot_discovery_pass(specs, healer.merge_listed)
-            if tools := with_web_placeholders(outcome.tools, outcome.degraded, specs):
-                self._merge_discovered_tools(tool_gateway, experts, None, tools)
             for namespace, reason in outcome.degraded.items():
                 healer.mark_degraded(namespace, reason)
 

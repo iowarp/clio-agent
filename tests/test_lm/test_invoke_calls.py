@@ -283,3 +283,19 @@ def test_a_string_or_list_parameter_written_as_a_json_list_is_the_list(invoke: N
     [call] = split_reply(_call("plot", signals='{"names": ["v(out)"]}'), call_prefix="c",
                          available_tools=["plot"], schemas=by_ref).calls  # fmt: skip
     assert call.input == {"signals": {"names": ["v(out)"]}}  # a $ref may be a structure
+
+
+def test_a_block_repeating_one_identical_call_is_cut_after_its_last_whole_copy(
+    invoke: None,
+) -> None:
+    same = _call("shell_bash", command="ls")
+    varied = "".join(_call("shell_bash", command=f"ls {n}") for n in range(20))
+    assert invoke_calls.repeated_call_end(varied, TOOLS) is None
+    assert invoke_calls.repeated_call_end(same * 8, TOOLS) is None  # at the limit
+    reply = "Loading.\n" + same * 30 + '<invoke name="shell_bash">\n<parameter'
+    end = invoke_calls.repeated_call_end(reply, TOOLS)
+    assert end is not None
+    kept = reply[:end]
+    assert kept.endswith("</invoke>") and kept.count("<invoke ") == 9
+    split = split_reply(kept, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
+    assert len(split.calls) == 9 and all(c.name == "shell_bash" for c in split.calls)

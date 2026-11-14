@@ -7,10 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf, paths
-from clio_agent.gact.mcp_user_configuration import (
-    McpUserConfigurationError,
-    configured_web_remote_url,
-)
 from clio_agent.gact.resource_custody import ResourceStore
 from clio_agent.gact.resource_delivery import ResourceDeliveryStore
 from clio_agent.gact.resource_processing import (
@@ -54,12 +50,7 @@ def initialize_composer_state(app: Any, session_store_path: Path) -> None:
         default="",
         cast=conf.as_str,
     )
-    try:
-        user_processor_url = configured_web_remote_url()
-    except McpUserConfigurationError as exc:
-        logger.warning("could not resolve saved Web Search document processor: %s", exc)
-        user_processor_url = ""
-    processor_url = user_processor_url or local_processor_url
+    processor_url = local_processor_url
     app.state.resource_processing_store = ResourceProcessingStore(app.state.resource_store)
     app.state.resource_converter_factory = ResourceConverterFactory(
         [DocumentProcessorClient(processor_url, max_resource_bytes=max_resource_bytes)]

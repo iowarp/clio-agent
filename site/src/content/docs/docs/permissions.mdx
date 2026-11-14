@@ -21,7 +21,7 @@ boundaries.
 
 For each action that is not a read, CLIO decides in this order:
 
-1. Mode. In Plan and Deep research, tools that write are refused. Plan mode may still write plan files in Markdown. No rule can override this.
+1. Mode. In Plan and Deep research, tools that write are refused, while web and literature search stay allowed. Plan mode may still write plan files in Markdown. No rule can override this.
 2. Rules. An access rule can `allow`, `deny`, or `ask`. A matching `deny` blocks the action. A matching `allow` lets it through, and the decision is recorded.
 3. The tool's default permission, if no rule matched. A plugin can declare one for each of its tools, and a deployment can set it with `tools.permissions`; see [Tool settings for a plugin](#tool-settings-for-a-plugin). A default `deny` blocks the tool even under **Bypass checks**, and a default `ask` asks in every confirmation policy except **Bypass checks**.
 4. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below. A call made inside a script can be covered by the script's approval; see [Scripts](#scripts).

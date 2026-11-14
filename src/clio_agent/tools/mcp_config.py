@@ -70,7 +70,7 @@ __all__ = [
 
 # Built-in defaults, in lockstep with ``tools.gateway._mount_builtins``: a name listed but not
 # mounted is silently un-mountable as a user server (the phantom ``"web"`` bug).
-BUILTIN_SERVER_NAMES = frozenset({"fs", "shell"})
+BUILTIN_SERVER_NAMES = frozenset({"fs", "shell", "web", "literature"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
 _URL_PREFIXES = ("http://", "https://")

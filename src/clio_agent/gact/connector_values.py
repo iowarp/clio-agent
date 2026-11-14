@@ -59,12 +59,17 @@ def session_fleet_variant(app: Any, sid: str) -> str:
 
     if not session_overlay(app, sid):
         return ""
-    from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_server_set,
+    )
     from clio_agent.plugins.servers import server_set_variant  # noqa: PLC0415
 
     try:
         return server_set_variant(session_server_set(app, sid))
-    except Exception as exc:  # noqa: BLE001 - typed; the caller reads the plain fleet
+    except SessionAgentUnavailable as exc:
+        # An agent that does not resolve mounts no plugin servers (its turn fails typed on
+        # its own path), so no fleet carries this conversation's values: the plain one.
         trace.event("TOOLS", "%s session=%s (%s)", VARIANT_UNRESOLVED, sid, type(exc).__name__)
         return ""
 

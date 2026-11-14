@@ -1,0 +1,264 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://www.osti.gov/api/v1/records?q=ADIOS2&rows=5",
+    "headers": {
+      "User-Agent": "clio-agent-tests/0.1 (+https://github.com/iowarp/clio-agent)"
+    },
+    "params": {
+      "q": "ADIOS2",
+      "rows": "5"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "language": "English",
+      "entry_date": "2026-06-09T08:55:49Z",
+      "report_number": "ORNL/TM-2026/4558; NFE-22-09231",
+      "identifier": "AC05-00OR22725",
+      "country_publication": "United States",
+      "doi": "10.2172/3029729",
+      "description": "This Cooperative Research and Development Agreement (CRADA) between Oak Ridge National Laboratory (ORNL) and General Electric (GE) investigated methods for reducing the size of large computational fluid dynamics (CFD) simulation datasets using scientific data compression techniques. The work focused on adapting the MultiGrid Adaptive Reduction of Data (MGARD) compression framework and integrating it with high-performance I/O and visualization tools used in CFD workflows. MGARD uses hierarchical multilevel decomposition to enable error-controlled compression of floating-point scientific data while preserving quantities of interest. During the project, MGARD compression was integrated with the ADIOS I/O framework and visualization tools such as ParaView to enable efficient storage, transfer, and analysis of simulation data. The collaboration also explored approaches for improving compression performance for CFD data defined on unstructured meshes. Results demonstrate that scientific data compression can significantly reduce storage requirements and improve data management for large-scale CFD simulations.",
+      "title": "Scientific Data Compression for Large Scale Computational Fluid Dynamics (CFD) Simulations",
+      "contract_number": "AC05-00OR22725; ",
+      "publication_date": "2026-04-01T00:00:00Z",
+      "osti_id": "3029729",
+      "product_type": "Technical Report",
+      "authors": [
+        "Reshniak, Viktor [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:0000000315454462)",
+        "Gong, Qian [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:0000000235704142)",
+        "Archibald, Rick [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:0000000245389780)",
+        "Klasky, Scott [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:0000000335595772)",
+        "Podhorszki, Norbert [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:000000019647542X)",
+        "Moreland, Ken [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:0000000270513288)"
+      ],
+      "subjects": [
+        "97 MATHEMATICS AND COMPUTING"
+      ],
+      "format": "15 p.",
+      "doe_contract_number": "AC05-00OR22725; ",
+      "sponsor_orgs": [
+        "USDOE"
+      ],
+      "research_orgs": [
+        "Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)",
+        "General Electric Co., Cincinnati, OH (United States)"
+      ],
+      "links": [
+        {
+          "rel": "citation",
+          "href": "https://www.osti.gov/biblio/3029729"
+        },
+        {
+          "rel": "fulltext",
+          "href": "https://www.osti.gov/servlets/purl/3029729"
+        }
+      ]
+    },
+    {
+      "language": "English",
+      "entry_date": "2026-11-04T12:43:09Z",
+      "identifier": "AC05-00OR22725; AC02-06CH11357",
+      "nondoe_contract_number": "NERSC ASCR-ERCAP0034735",
+      "country_publication": "United States",
+      "doi": "10.13139/OLCF/2562660",
+      "title": "HydraGNN_Predictive_GFM_2026 - Ensemble of predictive graph foundation models for atomistic materials modeling",
+      "contract_number": "AC05-00OR22725; AC02-06CH11357; ",
+      "publication_date": "2026-05-06T00:00:00Z",
+      "osti_id": "2562660",
+      "product_type": "Dataset",
+      "description": "This release contains data and parameters of HydraGNN-based graph foundation models trained as a result of the work published in the pre-print \"Exascale Multi-Task Graph Foundation Models for Imbalanced, Multi-Fidelity Atomistic Data\" by M. Lupo Pasini et al. (https://arxiv.org/abs/2604.15380). We jointly train on 16 open first-principles datasets (544+ million structures covering 85+ elements) using a multi-task architecture with per-dataset heads and a scalable ADIOS2/DDStore data pipeline. On Frontier, we execute six large-scale DeepHyper hyperparameter optimization campaigns in FP64 and promote the top-performing message-passing models to sustained 2,048-node training, yielding a PaiNN-based lead model. \r\n\r\nThe version of HydraGNN used to generate the outputs provided in this release is HydraGNN v5.0 (https://github.com/ORNL/HydraGNN/releases/tag/v5.0)\r\n\r\nThe list of datasets used for the training of the graph foundation model is the following:\r\n1) Alexandria [1]\r\n2) ANI1x [2]\r\n3) MPTrj [3]\r\n4) Open Catalyst 2020 (OC20) [4]\r\n5) Open Catalyst 2022 (OC22) [5]\r\n6) Open Catalyst 2025 (OC25) [6]\r\n7) Open Direct ir Capture 2023 (ODAC23) [7]\r\n8) Open Materials 2024 (OMat24) [8]\r\n9) Open Molecules 2025 (OMol25) [9]\r\n10) OMol25-neutral (subset of OMol25 that contains only molecules with zero total charge)\r\n11) OMol25-non-neutral (subset of OMol25 that contains only molecules with non-zero total charge)\r\n12) Open Polymers 2026 (OPoly2026) [10]\r\n13) Nabla2DFT [11]\r\n14) QCML [12]\r\n15) QM7X [reference 13]\r\n16) transition1x [14]\r\n\r\nDataset references:\r\n[1] J. Schmidt et al., “A dataset of 175k stable and metastable materials calculated with the PBEsol and SCAN functionals,” Scientific Data, vol. 9, p. 64, 2022.\r\n[2] J. S. Smith et al., “The ANI-1ccx and ANI-1x data sets, coupled-cluster and density functional theory properties for molecules,” Scientific Data, vol. 7, p. 134, 2020. [Online]. Available: https:\r\n//www.nature.com/articles/s41597-020-0473-z\r\n[3] A. Jain et al., “Commentary: The Materials Project: A materials genome approach to accelerating materials innovation,” APL Materials, vol. 1, no. 1, p. 011002, 07 2013. [Online]. Available: https://doi.org/10.1063/1.4812323\r\n[4] L. Chanussot et al., “Open catalyst 2020 (oc20) dataset and community challenges,” ACS Catalysis, vol. 11, no. 10, pp. 6059–6072, 2021. [Online]. Available: https://doi.org/10.1021/acscatal.0c04525\r\n[5] K. Tran et al., “Open catalyst 2022 (oc22) dataset and challenges for oxidation electrocatalysts,” ACS Catalysis, vol. 13, no. 5, pp. 3066–3084, 2023. [Online]. Available: https://doi.org/10.1021/acscatal.2c05426\r\n[6] S. J. Sahoo et al., “The open catalyst 2025 (oc25) dataset and models for solid-liquid interfaces,” arXiv preprint arXiv:2509.17862, 2025. [Online]. Available: https://arxiv.org/abs/2509.17862\r\n[7] A. Sriram et al., “The open DAC 2023 dataset and challenges for sorbent discovery in direct air capture,” ACS Central Science, vol. 10, no. 5, pp. 923–941, 2024.\r\n[8] L. Barroso-Luque et al., “Open materials 2024 (omat24) inorganic materials dataset and models,” 2024. [Online]. Available: https://arxiv.org/abs/2410.12771\r\n[9] D. S. Levine et al., “The open molecules 2025 (OMol25) dataset, evaluations, and models,” 2025. [Online]. Available: https://arxiv.org/abs/2505.08762\r\n[10] D. S. Levine et al., The open polymers 2026 (OPoly26) dataset and evaluations,” arXiv preprint arXiv:2512.23117, 2025. [Online]. Available: https://arxiv.org/abs/2512.23117\r\n[11] K. Khrabrov et al., “Nabla2dft: A universal quantum chemistry dataset of drug-like molecules and a benchmark for neural network potentials,” in NeurIPS 2024 Datasets and Benchmarks Track, 2024. [Online]. Available: https://openreview.net/forum?id=ElUrNM9U8c\r\n[12] S. Ganscha et al., “The QCML dataset, quantum chemistry reference data from 33.5M DFT and 14.7B semi-empirical calculations,” Scientific Data, vol. 12, p. 406, 2025.\r\n[13] J. Hoja et al., “QM7-X, a comprehensive dataset of quantum-mechanical p…[trimmed]",
+      "authors": [
+        "Lupo Pasini, Massimiliano [Oak Ridge National Laboratory] (ORCID:0000000249806924)",
+        "Choi, Jong Youl [Oak Ridge National Laboratory] (ORCID:0000000264596152)",
+        "Mehta, Kshitij [Oak Ridge National Laboratory] (ORCID:0000000297149981)",
+        "Messerly , Richard [Oak Ridge National Laboratory] (ORCID:0000000313214246)",
+        "Weaver, Rylie [Oak Ridge National Laboratory]",
+        "Aji, Ashwin M. [Oak Ridge National Laboratory]",
+        "Schulz, Karl W. [Oak Ridge National Laboratory]",
+        "Polo, Jorda [Oak Ridge National Laboratory]"
+      ],
+      "subjects": [
+        "36 MATERIALS SCIENCE",
+        "71 CLASSICAL AND QUANTUM MECHANICS, GENERAL PHYSICS",
+        "74 ATOMIC AND MOLECULAR PHYSICS",
+        "75 CONDENSED MATTER PHYSICS, SUPERCONDUCTIVITY AND SUPERFLUIDITY",
+        "97 MATHEMATICS AND COMPUTING",
+        "Atomistic Materials Modeling",
+        "Distributed Data Parallelism",
+        "Graph Neural Networks",
+        "Model Parallelism",
+        "Multi-Fidelity Data"
+      ],
+      "contributing_org": "AMD Research",
+      "doe_contract_number": "AC05-00OR22725; AC02-06CH11357; ",
+      "sponsor_orgs": [
+        "Office of Science (SC)"
+      ],
+      "research_orgs": [
+        "Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)"
+      ],
+      "links": [
+        {
+          "rel": "citation",
+          "href": "https://www.osti.gov/biblio/2562660"
+        },
+        {
+          "rel": "fulltext",
+          "href": "https://www.osti.gov/servlets/purl/2562660"
+        },
+        {
+          "rel": "citation_doe_dataexplorer",
+          "href": "https://www.osti.gov/dataexplorer/biblio/dataset/2562660"
+        }
+      ]
+    },
+    {
+      "language": "English",
+      "entry_date": "2026-09-05T02:12:57Z",
+      "relation": "The International Conference for High Performance Computing, Networking, Storage, and Analysis (SC'25) - St. Louis, Montana, United States of America - 11/16/2025-11/21/2025",
+      "identifier": "AC05-00OR22725",
+      "country_publication": "United States",
+      "doi": "10.1145/3712285.3759787",
+      "description": "ChatHPC democratizes large language models for the high-performance computing (HPC) community by providing the infrastructure, ecosystem, and knowledge needed to apply modern generative AI technologies to rapidly create specific capabilities for critical HPC components while using relatively modest computational resources. Our divide-and-conquer approach focuses on creating a collection of reliable, highly specialized, and optimized AI assistants for HPC based on the cost-effective and fast Code Llama fine-tuning processes and expert supervision. We target major components of the HPC software stack, including programming models, runtimes, I/O, tooling, and math libraries. Thanks to AI, ChatHPC provides a more productive HPC ecosystem by boosting important tasks related to portability, parallelization, optimization, scalability, and instrumentation, among others. With relatively small datasets (on the order of KB), the AI assistants, which are created in a few minutes by using one node with two NVIDIA H100 GPUs and the ChatHPC library, can create new capabilities with Meta’s 7-billion parameter Code Llama base model to produce high-quality software with a level of trustworthiness of up to 90% higher than the 1.8-trillion parameter OpenAI ChatGPT-4o model for critical programming tasks in the HPC software stack.",
+      "title": "ChatHPC: Building the Foundations for a Productive and Trustworthy AI-Assisted HPC Ecosystem",
+      "contract_number": "AC05-00OR22725; ",
+      "publication_date": "2025-11-01T00:00:00Z",
+      "osti_id": "3682544",
+      "product_type": "Conference",
+      "authors": [
+        "Young, Aaron [ORNL] (ORCID:0000000254484667)",
+        "Monil, M. A. H. [ORNL] (ORCID:0000000334194037)",
+        "Jin, Zheming [ORNL] (ORCID:000000027197780X)",
+        "Pophale, Swaroop [ORNL] (ORCID:0000000185446367)",
+        "Vetter, Jeffrey [ORNL] (ORCID:0000000224496720)",
+        "Teranishi, Keita [ORNL] (ORCID:0000000166472690)",
+        "Godoy, William [ORNL] (ORCID:0000000225905178)",
+        "Valero Lara, Pedro [ORNL] (ORCID:0000000214794310)"
+      ],
+      "doe_contract_number": "AC05-00OR22725; ",
+      "subjects": [],
+      "sponsor_orgs": [
+        "USDOE"
+      ],
+      "research_orgs": [
+        "Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)"
+      ],
+      "conference_info": "The International Conference for High Performance Computing, Networking, Storage, and Analysis (SC'25) - St. Louis, Montana, United States of America - 11/16/2025-11/21/2025",
+      "links": [
+        {
+          "rel": "citation",
+          "href": "https://www.osti.gov/biblio/3682544"
+        },
+        {
+          "rel": "fulltext",
+          "href": "https://www.osti.gov/servlets/purl/3682544"
+        }
+      ]
+    },
+    {
+      "language": "English",
+      "entry_date": "2026-03-11T08:42:19Z",
+      "report_number": "DOEKW0021343",
+      "identifier": "SC0021343",
+      "country_publication": "United States",
+      "doi": "10.2172/3009032",
+      "description": "Final Technical Report for DE-SC0021343",
+      "title": "RAPIDS2: A SciDAC Institute for Computer Science, Data, and Artificial Intelligence",
+      "contract_number": "SC0021343; ",
+      "publication_date": "2025-12-16T00:00:00Z",
+      "osti_id": "3009032",
+      "product_type": "Technical Report",
+      "authors": [
+        "Geveci, Berk [Kitware, Inc.]"
+      ],
+      "doe_contract_number": "SC0021343; ",
+      "subjects": [],
+      "sponsor_orgs": [
+        "USDOE Office of Science (SC), Advanced Scientific Computing Research (ASCR). Computational Science Research & Partnerships (CSRP)"
+      ],
+      "research_orgs": [
+        "Kitware Inc."
+      ],
+      "links": [
+        {
+          "rel": "citation",
+          "href": "https://www.osti.gov/biblio/3009032"
+        },
+        {
+          "rel": "fulltext",
+          "href": "https://www.osti.gov/servlets/purl/3009032"
+        }
+      ]
+    },
+    {
+      "language": "English",
+      "entry_date": "2026-10-14T14:01:13Z",
+      "relation": "Journal Name: International Journal of High Performance Computing Applications ",
+      "identifier": "AC02-06CH11357; AC05-00OR22725; AC52-07NA27344",
+      "country_publication": "United States",
+      "publisher": "SAGE",
+      "journal_type": "AM",
+      "doi": "10.1177/10943420261446003",
+      "description": "This study introduces a novel framework designed to enhance the performance, scalability, and portability of the kilometer-scale E3SM Land Model (km-ELM) within the E3SM modeling infrastructure. By seamlessly integrating cutting-edge data tools, we address existing challenges such as slow performance, limited scalability, and difficulties in software integration in current data-driven ELM simulation over large geographic areas. Our innovative approach leverages the KiloCraft data toolkit to generate unified inputs for simulations ranging from a single-cite case, to a 72,083-cell regional case to a continental configuration encompassing 21.6 million land grid cells at a 1 km × 1 km resolution. We conduct extensive strong- and weak-scaling experiments on three state-of-the-art supercomputers, utilizing up to 100,800 CPU cores across 2400 compute nodes to evaluate end-to-end metrics including wall-clock time, simulation-years-per-day (SYPD), initialization costs, and I/O throughput. Our results reveal the land (LND) component’s efficient scaling, demonstrating near-ideal weak scaling and strong-scaling parallel efficiencies reaching up to 87% at 50,400 cores. We confirm portability and reproducibility through bitwise-equivalent outputs across different machines using identical inputs over supported machines. Notably, at extreme scales, we identify I/O as a critical bottleneck and that leads to effective solution with the SCORPIO/ADIOS stack. Collectively, these findings validate the deployment of km-ELM at a continental scale with high parallel efficiency and provide essential guidance on configuration, decomposition, and I/O settings for optimized kilometer-scale land simulations in E3SM. Furthermore, this work emphasizes the innovative design and practical solutions that enhance the operational capabilities of km-ELM, focusing on software performance and scalability while leaving detailed scientific evaluations of simulated land processes for future investigations.",
+      "title": "Enabling kilometer-scale E3SM land model simulation over North America: A new integrated framework solution",
+      "other_number": "Journal ID: ISSN 1094-3420; Journal ID: ISSN 1741-2846;205935",
+      "contract_number": "AC02-06CH11357; AC05-00OR22725; AC52-07NA27344",
+      "publication_date": "2026-04-30T00:00:00Z",
+      "osti_id": "3649369",
+      "journal_name": "International Journal of High Performance Computing Applications",
+      "product_type": "Journal Article",
+      "authors": [
+        "Wang, Dali [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)] (ORCID:0000000168065108)",
+        "Wang, Chen [Nanyang Technological University (Singapore)]",
+        "Cao, Qinglei [Saint Louis University, MO (United States)] (ORCID:000000026690194X)",
+        "Krishna, Jayesh [Argonne National Laboratory (ANL), Argonne, IL (United States)]",
+        "Zheng, Weijian [Argonne National Laboratory (ANL), Argonne, IL (United States)] (ORCID:0000000327910031)",
+        "Schwartz, Peter [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)]",
+        "Yuan, Fengming [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)]",
+        "Ricciuto, Daniel [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)]",
+        "Thornton, Peter [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)]",
+        "Kao, Shih-Chieh [Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)]"
+      ],
+      "subjects": [
+        "E3SM land model (ELM)",
+        "km-ELM",
+        "performance evaluation",
+        "scalability",
+        "software design"
+      ],
+      "article_type": "Accepted Manuscript",
+      "format": "10943420261446003",
+      "doe_contract_number": "AC02-06CH11357; AC05-00OR22725; AC52-07NA27344",
+      "sponsor_orgs": [
+        "USDOE"
+      ],
+      "research_orgs": [
+        "Argonne National Laboratory (ANL), Argonne, IL (United States)",
+        "Oak Ridge National Laboratory (ORNL), Oak Ridge, TN (United States)"
+      ],
+      "journal_issn": "ISSN 1741-2846",
+      "other_identifiers": [
+        "Journal ID: ISSN 1094-3420; Journal ID: ISSN 1741-2846;205935"
+      ],
+      "links": [
+        {
+          "rel": "citation",
+          "href": "https://www.osti.gov/biblio/3649369"
+        },
+        {
+          "rel": "fulltext",
+          "href": "https://www.osti.gov/servlets/purl/3649369"
+        },
+        {
+          "rel": "citation_doe_pages",
+          "href": "https://www.osti.gov/pages/biblio/3649369"
+        }
+      ]
+    }
+  ]
+}

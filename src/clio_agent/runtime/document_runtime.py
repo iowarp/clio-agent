@@ -146,7 +146,9 @@ def _fingerprint() -> str:
     return digest.hexdigest()[:20]
 
 
-def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
+def _probe(
+    python: Path, *, discovery_only: bool = False, office_checked: bool = False
+) -> dict[str, Any]:
     result = json.loads(
         _run(
             [
@@ -154,6 +156,7 @@ def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
                 "-B",
                 str(STACK_ROOT / "inventory.py"),
                 *(["--execution-only"] if discovery_only else []),
+                *(["--office-checked"] if office_checked else []),
             ],
             cwd=STACK_ROOT,
             env={
@@ -594,6 +597,7 @@ def prepare_document_runtime(
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
     discovery_only: bool = False,
+    office_checked: bool = False,
     timings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Prepare and probe an isolated document runtime without changing Clio's interpreter.
@@ -604,6 +608,8 @@ def prepare_document_runtime(
     ``discovery_only`` freshly inspects executables and package metadata, without
     importing every package or probing document converters/fonts. Requested imports
     are independently checked by the execution tool; no prior answer is reused.
+    ``office_checked`` leaves Office to a caller that verifies it at the same time and
+    reports its own result; Office is then ``not_checked`` here.
     ``timings``, when given, receives the seconds of the Python environment, the
     Node.js packages and the Python import probe.
     """
@@ -655,7 +661,7 @@ def prepare_document_runtime(
 
                 def probe() -> dict[str, Any]:
                     try:
-                        return _probe(python)
+                        return _probe(python, office_checked=office_checked)
                     finally:
                         lap("python_probe", started)
 

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from dspy.lm15 import ContextLengthError
+
 from clio_agent.providers.claude_code_errors import ClaudeCodeSignedOutError
 from clio_agent.providers.claude_code_plan_limit import plan_limit_from_result
 from clio_agent.providers.claude_code_safety_refusal import safety_refusal_from_result
@@ -70,6 +72,10 @@ def result_error_detail(msg: Any) -> str:
     return str(status or getattr(msg, "subtype", None) or "unknown error")
 
 
+#: The CLI's result text when a request is larger than the model's context window.
+PROMPT_TOO_LONG = "prompt is too long"
+
+
 def raise_classified_result_error(msg: Any, *, model: str, assistant_error: str | None) -> None:
     """Raise the typed error for a classified failed result; return otherwise.
 
@@ -82,6 +88,7 @@ def raise_classified_result_error(msg: Any, *, model: str, assistant_error: str 
     Raises:
         ClaudeCodeSignedOutError: The credential was refused (typed signal).
         ClaudeCodeModelRejectedError: The model was rejected (404).
+        ContextLengthError: The request is larger than the model's context window.
         ClaudeCodePlanLimitError: The plan window is exhausted (429).
         ClaudeCodeSafetyRefusalError: Anthropic's safety filter refused the
             request (#1529 follow-up; no dedicated status code, so this is
@@ -99,6 +106,12 @@ def raise_classified_result_error(msg: Any, *, model: str, assistant_error: str 
             f"claude_code rejected model {model!r} (api_error_status={status}): "
             f"{getattr(msg, 'result', '') or 'model not available'}"
         )
+    detail = result_error_detail(msg)
+    if PROMPT_TOO_LONG in detail.lower():
+        # The request outgrew the model's window (verified live 2026-11-13: "Prompt is
+        # too long" after a reply of 561 identical calls). Typed, so the loop stops with
+        # ``context_window_exceeded`` instead of retrying a generic server error.
+        raise ContextLengthError(f"claude_code model {model!r}: {detail}")
     plan_limit = plan_limit_from_result(msg, model=model)
     if plan_limit is not None:
         raise plan_limit

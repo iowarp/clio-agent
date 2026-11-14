@@ -51,6 +51,15 @@ OFFER_CANCELLED = "connector_offer_cancelled"
 # ------------------------------------------------------------- what is offerable
 
 
+#: What resolving the workspace fleet raises when it cannot be built now: a server set
+#: that does not resolve (``ValueError``), a typed mount or preparation failure
+#: (``RuntimeError``: ``PrepareError``, the launcher-cache lock; ``TimeoutError``:
+#: ``NoProgressTimeout``) or the workspace folder (``OSError``). The join is best-effort:
+#: the tools arrive with the next message, and the result says why (``join_reason``).
+#: Anything else is a fault and raises.
+FLEET_RESOLVE_ERRORS: tuple[type[Exception], ...] = (OSError, RuntimeError, ValueError)
+
+
 def _session(app: Any, session_id: str) -> Any:
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     return sessions.get(session_id) if sessions is not None and session_id else None
@@ -298,7 +307,7 @@ def join_running_turn(
 
         try:
             executor = _active_base_agent_tool_executor(agent)
-        except Exception as exc:  # noqa: BLE001 - typed below
+        except FLEET_RESOLVE_ERRORS as exc:
             trace.event("TOOLS", "connector_join_fleet_unavailable (%s)", type(exc).__name__)
             return [], "connector_join_fleet_unavailable"
     saved = {} if plugin_server else service.saved_connection(connector_id)

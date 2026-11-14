@@ -21,6 +21,8 @@ from clio_agent.arc.task_types import (
 from clio_agent.gact import context
 from clio_agent.gact.native_work import now
 
+_ADMIT_WAIT_S = 120.0
+
 
 def hold_model_segment(app: Any, session_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Occupy a real runner slot from Core mail; replace only model execution."""
@@ -45,7 +47,9 @@ def hold_model_segment(app: Any, session_id: str, monkeypatch: pytest.MonkeyPatc
             created_at=now(),
         )
     )
-    assert entered.wait(5), (
+    # Admission does real pre-model work (tool catalog, context) before `_run`; a loaded
+    # CI runner has taken over 5 s. Bound only real hangs, under the 180 s per-test guard.
+    assert entered.wait(_ADMIT_WAIT_S), (
         "The real runner did not admit the initial input",
         {
             "execution_gate": app.state.conversations.execution_gate(session_id),

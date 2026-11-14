@@ -203,6 +203,7 @@ def save_app_download(app: FastAPI, record: MCPAppRecord, params: Mapping[str, A
         _session_workspace_id,
         _workspace_root,
     )
+    from clio_agent.gact.artifacts.registry_store import STORE_ERRORS  # noqa: PLC0415
 
     pending = _decode(params.get("contents"))
     workspace_id = _session_workspace_id(app, record.session_id)
@@ -214,7 +215,7 @@ def save_app_download(app: FastAPI, record: MCPAppRecord, params: Mapping[str, A
         path = _write(root, item)
         try:
             artifact_id = _mint(app, record, workspace_id, root, path)
-        except Exception:  # noqa: BLE001 - the file is saved; the artifact row is reported missing
+        except STORE_ERRORS:  # the file is saved; the result names the missing artifact row
             logger.warning(
                 "mcp app download saved without an artifact reason=artifact_mint_failed path=%s",
                 path,

@@ -75,13 +75,22 @@ def _gateway_tool_funcs() -> dict[str, Callable[..., Any]]:
 
     from clio_agent.tools.servers.fs_server import (  # noqa: PLC0415
         edit_file,
+        git_commit,
         glob,
         list_directory,
         read_file,
         search_text,
         write_file,
     )
+    from clio_agent.tools.servers.literature_server import (
+        lookup as literature_lookup,  # noqa: PLC0415
+    )
+    from clio_agent.tools.servers.literature_server import (
+        search as literature_search,  # noqa: PLC0415
+    )
     from clio_agent.tools.servers.shell_server import bash  # noqa: PLC0415
+    from clio_agent.tools.servers.web_server import fetch as web_fetch  # noqa: PLC0415
+    from clio_agent.tools.servers.web_server import search as web_search  # noqa: PLC0415
 
     return {
         "fs_list_directory": list_directory,
@@ -90,7 +99,12 @@ def _gateway_tool_funcs() -> dict[str, Callable[..., Any]]:
         "fs_glob": glob,
         "fs_write_file": write_file,
         "fs_edit_file": edit_file,
+        "fs_git_commit": git_commit,
         "shell_bash": bash,
+        "web_search": web_search,
+        "web_fetch": web_fetch,
+        "literature_search": literature_search,
+        "literature_lookup": literature_lookup,
     }
 
 

@@ -325,16 +325,18 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SCHEDULER_TZ` | `scheduler.timezone` | str | _(unset)_ | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCRATCH_RETENTION_DAYS` | `paths.scratch_retention_days` | float | `7.0` | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_SCRATCH_ROOT` | `paths.scratch_root` | str | _(unset)_ | `src/clio_agent/runtime/session_scratch.py` |
-| `CLIO_SEARCH_AUTO_INSTALL` | `search.local_searxng.auto_install` | bool | `true` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_BACKEND` | `search.backend` | str | `local_searxng` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_CLIO_WEB_SEARCH_URL` | `search.clio_web_search.url` | str | _(unset)_ | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_ENGINES` | `search.searxng.engines` | list | `duckduckgo,brave,mojeek,qwant,startpage,wikipedia,arxiv,crossref,semantic scholar,pubmed` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_LANGUAGE` | `search.searxng.language` | str | `en` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_MAX_RESULTS` | `search.searxng.max_results` | int | `10` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES` | `search.searxng.opt_in_engines` | list | `list[str]()` _(computed)_ | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_PORT` | `search.searxng.port` | int | `18890` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_REQUEST_TIMEOUT_S` | `search.searxng.request_timeout_s` | float | `10.0` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_SAFE_SEARCH` | `search.searxng.safe_search` | int | `1` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_APPROVED` | `search.approved` | list | `no_names` _(computed)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_CONTACT_EMAIL` | `search.contact_email` | str | _(unset)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_ENABLED` | `search.enabled` | bool | `true` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_LITERATURE_DISABLED` | `search.literature.disabled` | list | `no_names` _(computed)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_MAX_RESULTS` | `search.max_results` | int | `8` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_PAID` | `search.paid` | list | `no_names` _(computed)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_REQUEST_TIMEOUT_S` | `search.request_timeout_s` | float | `20.0` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SERVICE_URL` | `search.service.url` | str | _(unset)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SNIPPET_CHARS` | `search.snippet_chars` | int | `300` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_WEB_AUTO_SWITCH` | `search.web.auto_switch` | bool | `false` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_WEB_DISABLED` | `search.web.disabled` | list | `no_names` _(computed)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_WEB_ORDER` | `search.web.order` | list | `list(WEB_VENDORS)` _(computed)_ | `src/clio_agent/search/settings.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | `trace.detail_level` | str | `semantic` | `src/clio_agent/gact/_params.py` |
 | `CLIO_SEMANTIC_TRACE_FACTORY` | `trace.semantic_factory` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
@@ -434,7 +436,8 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_GIT` | unmigrated | `src/clio_agent/runtime/git_executable.py` |
 | `CLIO_HOME_IMPORT_EXPORTER` | unmigrated | `src/clio_agent/arc/home_import.py` |
 | `CLIO_INSTALL_DOWNLOADS` | unmigrated | `src/clio_agent/runtime/document_stack/office.py` |
-| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
+| `CLIO_INSTALL_KIT_READY` | unmigrated | `src/clio_agent/runtime/install_tool_servers.py` |
+| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |

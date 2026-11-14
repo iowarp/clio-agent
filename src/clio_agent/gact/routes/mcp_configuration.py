@@ -7,15 +7,12 @@ import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent import conf
 from clio_agent.connectors.materialize import in_use
-from clio_agent.gact.mcp_user_configuration import mcp_server_arg_value
-from clio_agent.gact.resource_processing import DocumentProcessorClient
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.gact.workspaces import default_workspace_root
@@ -107,49 +104,6 @@ def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
         status_code=422,
         detail=f"unknown transport: {transport_kind!r} (use stdio|http)",
     )
-
-
-def _configured_web_remote_url(spec: Mapping[str, Any]) -> str:
-    """Return the explicit ``--remote-url`` value without discovery."""
-
-    return mcp_server_arg_value(spec, "--remote-url")
-
-
-def _sync_document_processor(app: FastAPI, remote_url: str) -> None:
-    """Point uploaded-source conversion at the same configured Web Search service."""
-
-    factory = getattr(app.state, "resource_converter_factory", None)
-    if factory is None:
-        return
-    current = factory.get(DocumentProcessorClient.id)
-    max_resource_bytes = int(getattr(current, "max_resource_bytes", 0) or 0)
-    fallback_url = conf.resolve(
-        "resources.document_processor_url",
-        env="CLIO_DOCUMENT_PROCESSOR_URL",
-        default="",
-        cast=conf.as_str,
-    )
-    factory.register(
-        DocumentProcessorClient(remote_url or fallback_url, max_resource_bytes=max_resource_bytes)
-    )
-
-
-async def _probe_web_search_remote(remote_url: str) -> None:
-    """Require readiness from the exact configured high-capacity service."""
-
-    if not remote_url.startswith(("http://", "https://")):
-        raise ValueError("Web Search remote URL must use http:// or https://")
-    ready_url = urljoin(remote_url.rstrip("/") + "/", "readyz")
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(ready_url)
-    response.raise_for_status()
-    payload = response.json()
-    checks = payload.get("checks") if isinstance(payload, Mapping) else None
-    if not isinstance(checks, Mapping) or checks.get("docling") != "ready":
-        raise RuntimeError("Web Search document conversion is not ready")
-    unavailable = sorted(str(name) for name, state in checks.items() if state != "ready")
-    if unavailable:
-        raise RuntimeError(f"Web Search dependency not ready: {', '.join(unavailable)}")
 
 
 #: Launchers that download and build the server on its first start (``uvx git+...``
@@ -267,13 +221,6 @@ async def _probe_user_mcp_server(
             detail += f" ({launcher} may still be preparing the server on its first start; retry)"
         return [], detail
 
-    remote_url = _configured_web_remote_url(spec)
-    if not remote_url:
-        return tool_names, None
-    try:
-        await _probe_web_search_remote(remote_url)
-    except Exception as exc:  # noqa: BLE001 - preserve tools while surfacing readiness
-        return tool_names, f"{type(exc).__name__}: {exc}"
     return tool_names, None
 
 
@@ -437,8 +384,6 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
         display_name = str(body.get("name") or "").strip()
         if display_name:
             _forget_ephemeral_duplicates(app, display_name)
-        if key == "web":
-            _sync_document_processor(app, _configured_web_remote_url(saved))
         await _refresh_agent_tool_gateway(app)
         return await _configuration_row(key, saved)
 
@@ -458,8 +403,6 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
             )
             await asyncio.to_thread(storage.clear)
         _forget_ephemeral_duplicates(app, key)
-        if key == "web":
-            _sync_document_processor(app, "")
         await _refresh_agent_tool_gateway(app)
         return {
             "name": key,
