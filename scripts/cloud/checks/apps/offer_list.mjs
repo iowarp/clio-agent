@@ -6,7 +6,7 @@
 //                 save, and shoot the list again (OL2)
 //               "reset": Reset to default, save, and shoot the list (OL5)
 //               "context": open OL_PATH (a conversation's UI path) and its context view,
-//                 expand "Plugins you can add" and shoot it (OL3)
+//                 expand "Plugin list" and shoot it (OL3, OLS2)
 //               "reminder": Prompts & commands -> Reminders, the session_facts_plugins row's
 //                 "Choose the plugins ... can offer" opens the same list
 //   OL_SEARCH   view: a term typed into the search field before the second shot
@@ -58,7 +58,7 @@ export default async function (page, shot) {
     const sections = page.locator('[aria-label="Context sections"]').last();
     await sections.waitFor({ state: "visible", timeout: 30000 });
     record.sections = (await sections.locator("summary").allInnerTexts()).map((s) => s.replace(/\s+/g, " "));
-    const offer = sections.locator("details").filter({ hasText: "Plugins you can add" }).first();
+    const offer = sections.locator("details").filter({ hasText: "Plugin list" }).first();
     if (await offer.count()) {
       await offer.locator("summary").click();
       await page.waitForTimeout(800);
