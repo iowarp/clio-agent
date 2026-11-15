@@ -84,6 +84,8 @@ Run 3 (`sess_2755ca51e907`), 100 MNIST 0/1 test images, a shared classical front
 
 Noise contracted the values toward 0 (fitted slope 0.88, mean absolute shift 0.052); no image changed class; images 6, 56, 50, 44 and 84 sit within 0.05 of the threshold.
 
+Published: the session's offline export (`sess_2755ca51e907`, opened with the network blocked; the plugin's MCP App views are not in exports, so the example shows them as captures) at `/conversations/quantum/hybrid-qml/`, pinned by size and sha256 from JaimeCernuda/clio-exports@a9dbcf3; example page `docs/examples/hybrid-qml.mdx`.
+
 ## Findings
 
 | ID | Finding | Status |

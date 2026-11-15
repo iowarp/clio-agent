@@ -20,6 +20,7 @@ export interface ConversationCollection {
 const releases = 'https://github.com/iowarp/clio-agent/releases/download/';
 // JaimeCernuda/clio-exports at a fixed commit: the files there never change under a URL.
 const exports = 'https://raw.githubusercontent.com/JaimeCernuda/clio-exports/32bc650e38af894e7e74b5091b2842c855bec314/';
+const quantumExports = 'https://raw.githubusercontent.com/JaimeCernuda/clio-exports/a9dbcf3d3072523b41f39c7aa6c18f8ec097e64f/';
 
 /** Every published conversation, served at /conversations/<collection>/<slug>/. */
 export const conversationCollections: readonly ConversationCollection[] = [
@@ -55,6 +56,15 @@ export const conversationCollections: readonly ConversationCollection[] = [
     conversations: [
       { slug: 'wordle', file: 'Wordle-study-session.html', bytes: 48278832,
         sha256: '8d3a29db0ec2aa39fad261f78a017e520715c94317815ffb36ca4483c00d6b61' },
+    ],
+  },
+  {
+    // A hybrid quantum classifier against a classical baseline, asked as a plain request.
+    id: 'quantum',
+    release: `${quantumExports}quantum/`,
+    conversations: [
+      { slug: 'hybrid-qml', file: 'Hybrid-QML-session.html', bytes: 15499697,
+        sha256: '1f97472211710be95ca7c34b35045717f3042d726d127dc6dbbf2f04645ec4cc' },
     ],
   },
 ];

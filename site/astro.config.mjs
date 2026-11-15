@@ -155,6 +155,7 @@ export default defineConfig({
 						{ label: 'EarthScope data from NDP', slug: 'docs/examples/ndp-earthscope' },
 						{ label: 'Scientific questions for NDP', slug: 'docs/examples/ndp-science' },
 						{ label: 'A branched study', slug: 'docs/examples/branched-study' },
+						{ label: 'A hybrid quantum classifier', slug: 'docs/examples/hybrid-qml' },
 						{ label: 'Find a decision in research notes', slug: 'docs/examples/research-notes' },
 						{ label: 'Create a report and slides', slug: 'docs/examples/reports-and-slides' },
 					],
