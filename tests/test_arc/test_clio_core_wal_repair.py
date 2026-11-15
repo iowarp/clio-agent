@@ -232,3 +232,56 @@ def test_a_session_whose_record_does_not_read_back_keeps_its_folder(
     session_scratch_sweep.sweep_sessions(_Sessions())
 
     assert seen == {"sess_damaged": float("inf"), "sess_deleted": None}
+
+
+def _alloc_entries(*entries: tuple[int, int, int, int, int]) -> bytes:
+    return b"".join(struct.pack("<QQQQQ", *entry) for entry in entries)
+
+
+def _tiered_config(tmp_path: Path) -> tuple[str, Path]:
+    config, store = _config(tmp_path)
+    with open(config, "a", encoding="utf-8") as handle:
+        handle.write(f'    storage:\n      - path: "{(store / "storage.bin").as_posix()}"\n')
+    return config, store
+
+
+def test_a_torn_delete_withholds_the_trailing_frees(tmp_path: Path) -> None:
+    from clio_agent.arc import clio_core_alloc_log as alloc
+
+    config, store = _tiered_config(tmp_path)
+    good = _log(*(_record(seq, _payload(seq)) for seq in range(10, 15)))
+    torn_delete = _record(15, b"\x00" * 31, kind=3)[:20]
+    (store / "metadata.log.blob.0").write_bytes(good + torn_delete)
+    kept = _alloc_entries((1, 3, 0, 4096, 0), (1, 3, 4096, 4096, 0))
+    frees = _alloc_entries((2, 0, 4096, 4096, 0))
+    (store / "storage.bin_node0.alloc_log").write_bytes(kept + frees)
+
+    (scan,) = wal.repair_metadata_logs(config)
+
+    assert scan.torn_type == 3
+    assert (store / "storage.bin_node0.alloc_log").read_bytes() == kept
+    (aside,) = store.glob("storage.bin_node0.alloc_log.withheld-*")
+    assert aside.read_bytes() == frees
+    assert any(item["reason"] == alloc.WITHHELD for item in wal.outcomes())
+
+
+def test_the_allocation_log_is_left_alone_unless_a_put_or_delete_was_torn(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.arc import clio_core_alloc_log as alloc
+
+    config, store = _tiered_config(tmp_path)
+    good = _log(*(_record(seq, _payload(seq)) for seq in range(10, 15)))
+    (store / "metadata.log.blob.0").write_bytes(good + _record(15, b"x" * 40, kind=0)[:20])
+    entries = _alloc_entries((1, 3, 0, 4096, 0), (2, 0, 0, 4096, 0))
+    (store / "storage.bin_node0.alloc_log").write_bytes(entries)
+
+    wal.repair_metadata_logs(config)  # a torn create (type 0) logs no frees
+    assert (store / "storage.bin_node0.alloc_log").read_bytes() == entries
+
+    odd = entries + b"\x01\x02"  # not whole entries: reported, untouched
+    (store / "storage.bin_node0.alloc_log").write_bytes(odd)
+    assert alloc.withhold_trailing_frees(config, "t")[0]["reason"] == alloc.UNVERIFIED
+    assert (store / "storage.bin_node0.alloc_log").read_bytes() == odd
+    (store / "storage.bin_node0.alloc_log").write_bytes(_alloc_entries((1, 3, 0, 4096, 0)))
+    assert alloc.withhold_trailing_frees(config, "t")[0]["reason"] == alloc.UNCHANGED

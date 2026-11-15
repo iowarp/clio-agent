@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -42,22 +43,26 @@ _COUNT = 30
 
 
 def _tear_last_record(store_dir: Path) -> Path:
-    """Cut the largest blob log inside its last record, as a kill mid-append leaves it."""
-    logs = sorted(store_dir.glob("metadata.log.blob.*"), key=lambda p: p.stat().st_size)
-    target = logs[-1]
-    data = target.read_bytes()
-    assert data[:4] == MAGIC
-    offset, last = 4, 4
-    while offset < len(data):
-        _kind, _seq, length = struct.unpack_from("<BQI", data, offset)
-        last, offset = offset, offset + 13 + length
-    assert offset == len(data), "the log was not whole before the tear"
-    os.truncate(target, last + 13 + (len(data) - last - 13) // 2)
+    """Cut the most recently written record inside itself, as a kill mid-append leaves it."""
+    newest: tuple[int, Path, int, int] | None = None
+    for log in store_dir.glob("metadata.log.blob.?"):
+        data = log.read_bytes()
+        assert data[:4] == MAGIC
+        offset, last, seq = 4, None, -1
+        while offset < len(data):
+            _kind, seq, length = struct.unpack_from("<BQI", data, offset)
+            last, offset = offset, offset + 13 + length
+        assert offset == len(data), "the log was not whole before the tear"
+        if last is not None and (newest is None or seq > newest[0]):
+            newest = (seq, log, last, len(data))
+    assert newest is not None
+    _seq, target, last, size = newest
+    os.truncate(target, last + 13 + (size - last - 13) // 2)
     return target
 
 
-@pytest.mark.timeout(600)  # four daemon starts and stops, each up to a minute on CI
-def test_records_written_after_a_torn_metadata_record_survive_restarts(tmp_path: Path) -> None:
+def _private_store(tmp_path: Path) -> tuple[Path, Any]:
+    """A private clio-core config and a runner: one subprocess per daemon lifetime."""
     _require_launcher()
     home = tmp_path / "home"
     (home / ".clio").mkdir(parents=True)
@@ -89,17 +94,18 @@ def test_records_written_after_a_torn_metadata_record_survive_restarts(tmp_path:
         CLIO_ARC_STORE_CONFIG=str(config),
         CLIO_CORE_PORT=str(port),
         CLIO_DURABILITY_OUT=str(out),
+        CLIO_STORE_OPS_OUT=str(out),
         CTP_LOG_LEVEL="error",
     )
-    client = Path(__file__).with_name("_restart_durability_client.py")
+    runs = iter(range(1000))
 
-    def run(*args: str) -> dict[str, object]:
-        log = tmp_path / f"client-{args[0]}-{args[1]}.log"
+    def run(client: str, *args: str) -> dict[str, Any]:
+        log = tmp_path / f"client-{next(runs)}.log"
         out.unlink(missing_ok=True)
         try:
             with log.open("w", encoding="utf-8") as handle:
                 proc = subprocess.run(  # noqa: S603 - fixed interpreter + in-repo script
-                    [sys.executable, str(client), *args],
+                    [sys.executable, str(Path(__file__).with_name(client)), *args],
                     env=env,
                     timeout=_CHILD_TIMEOUT_S,
                     stdout=handle,
@@ -113,6 +119,16 @@ def test_records_written_after_a_torn_metadata_record_survive_restarts(tmp_path:
         assert proc.returncode == 0 and out.is_file(), text[-3000:]
         return json.loads(out.read_text(encoding="utf-8"))
 
+    return store_dir, run
+
+
+@pytest.mark.timeout(600)  # four daemon starts and stops, each up to a minute on CI
+def test_records_written_after_a_torn_metadata_record_survive_restarts(tmp_path: Path) -> None:
+    store_dir, run_client = _private_store(tmp_path)
+
+    def run(*args: str) -> dict[str, Any]:
+        return run_client("_restart_durability_client.py", *args)
+
     run("write", "before", str(_COUNT))
     torn = _tear_last_record(store_dir)
     assert scan_log(torn).verdict == "cut"
@@ -124,3 +140,36 @@ def test_records_written_after_a_torn_metadata_record_survive_restarts(tmp_path:
     assert len(before["missing"]) <= 1, before  # at most the record that was torn
     assert all(scan_log(path).verdict == "clean" for path in store_dir.glob("metadata.log.*.?"))
     assert any(store_dir.glob("metadata.log.blob.*.torn-*")), "the cut bytes are kept"
+
+
+@pytest.mark.timeout(600)  # five daemon starts and stops
+def test_a_torn_delete_never_hands_the_restored_blobs_block_to_a_new_blob(
+    tmp_path: Path,
+) -> None:
+    """The allocation half: the delete's free reached the allocation log, its metadata
+    record did not. The restored blob still points at that block; a new blob given it
+    was overwritten by the restored blob's next write (read back as its bytes).
+
+    **Sabotage:** skip ``withhold_trailing_frees`` in ``repair_metadata_logs`` -> the new
+    record reads back as ``MARKER-REWRITTEN``.
+    """
+    store_dir, run_client = _private_store(tmp_path)
+
+    def run(*ops: str) -> dict[str, Any]:
+        return run_client("_store_ops_client.py", *ops)
+
+    run("put:keep:KEEP", "put:marker:MARKER-ORIGINAL-BYTES")
+    run("del:marker")
+    torn = _tear_last_record(store_dir)  # the delete is the last record written
+    assert scan_log(torn).torn_type == 3
+
+    run("put:conversation:NEW-CONVERSATION-RECORD")
+    run("put:marker:MARKER-REWRITTEN")
+    reads = run("get:conversation", "get:marker", "get:keep")
+
+    assert reads == {
+        "conversation": "NEW-CONVERSATION-RECORD",
+        "marker": "MARKER-REWRITTEN",
+        "keep": "KEEP",
+    }
+    assert any(store_dir.glob("storage.bin_node0.alloc_log.withheld-*")), "frees kept aside"

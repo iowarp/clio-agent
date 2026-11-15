@@ -91,13 +91,22 @@ def probe_clio_core_metadata_restore(
                 name=_NAME,
                 state=IntegrationState.READY,
                 summary=(
-                    f"clio-core's metadata log had {len(repaired)} torn record(s) from a "
-                    "daemon stopped while it wrote; they were cut out before the start, so "
-                    "the records after them load again. The cut bytes are kept beside the log."
+                    f"clio-core's metadata log had {len(repaired)} torn record(s), left by a "
+                    "full disk or a crash while clio-core wrote; they were cut out before the "
+                    "start, so the records after them load again. The cut bytes are kept "
+                    "beside the log."
                 ),
                 config_source=_SOURCE,
                 next_action="No action required.",
-                details={"reason": wal.REPAIRED, "repairs": repaired},
+                details={
+                    "reason": wal.REPAIRED,
+                    "repairs": repaired,
+                    "allocation_log": [
+                        item
+                        for item in found
+                        if str(item.get("reason", "")).startswith("clio_core_alloc_log_")
+                    ],
+                },
                 required=False,
             )
         ]

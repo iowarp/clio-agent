@@ -360,12 +360,38 @@ session folder while the restore is in doubt (`session_scratch_store_restore_sus
 nor the folder of a session the index still lists whose record does not read back
 (`session_scratch_record_unreadable`).
 
-What CLIO cannot repair: clio-core records block allocations in a separate log
-(`storage.bin_node0.alloc_log`). When the torn record was a delete or a put, the
-allocator and the metadata disagree about that blob's blocks, and a later write can
-reuse them: live, a dirty marker undeleted by a torn delete shared its block with a new
-conversation's record, which then read back as `1`. Both defects (no cut before
-appending; metadata and allocation not committed together) are upstream (iowarp-core).
+**What tears a log.** A full file system: with the metadata log on a 3 MB file system
+and four writers, iowarp-core 2.4.1 left both busy logs ending inside a record, answered
+every put as a success and logged nothing. A clean stop under write load, CLIO's own kill
+of a daemon still stopping past its ceiling, and a SIGKILL of the daemon while it wrote
+left every log whole in every trial (appends survive the process). So every put and
+delete CLIO sends first checks the free space of the metadata log's file system
+(`arc/clio_core_disk_guard.py`) and refuses below `arc.cte.metadata_disk_reserve`
+(`CLIO_ARC_CTE_METADATA_DISK_RESERVE`, default 256MB) with `clio_core_metadata_disk_low`.
+The refusal is a lost write (`clio_core_put_write_lost`), so a message answers
+`503 core_writes_refused` with the cause, and writing resumes once space is freed.
+
+**The allocation log** (`arc/clio_core_alloc_log.py`). clio-core logs block allocations
+apart from the metadata, in `<file tier>_node<N>.alloc_log` (40-byte entries:
+`<u64 op><u64 class><u64 offset><u64 size><u64 0>`, op 1 allocates, op 2 frees). A
+delete logs its free there before its metadata record. When that record is torn, the
+restart restores the blob still pointing at the freed block, the next new blob is
+given the block, and the restored blob's next write overwrites it (reproduced: a new
+conversation record read back as `1`). So when the repair cuts a torn put or delete, the
+frees at the end of the allocation log are withheld: moved, unchanged, to
+`<alloc_log>.withheld-<time>` (`clio_core_alloc_log_frees_withheld`); the blocks stay
+with the restored blob, and a withheld free of a delete whose record is whole only leaks
+space. A torn put logs allocations, not frees, and only leaks them
+(`clio_core_alloc_log_unchanged`); a log that is not whole entries is reported
+(`clio_core_alloc_log_unverified`) and left alone.
+
+**When a record still reads back damaged** (for example after a tear CLIO did not see,
+such as a power loss mid-write with frees not at the end of the log): a session the index
+lists whose record does not decode answers `503 session_record_unreadable` instead of
+404, is logged once and listed in the `clio_core_metadata_restore` health row, and its
+folder and transcript are kept (`gact/session_record_damage.py`). The defects themselves
+(no cut before appending; a full disk accepted silently; allocation and metadata not
+committed together) belong to clio-core.
 
 ### Explicit homes get their own daemon (`arc/home_runtime.py`)
 

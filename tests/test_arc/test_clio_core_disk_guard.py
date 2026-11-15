@@ -122,6 +122,20 @@ def test_enough_room_or_a_zero_reserve_lets_writes_through(
     guard.ensure_room(store, "x")
 
 
+def test_the_person_reads_that_the_disk_is_nearly_full(tmp_path: Path) -> None:
+    from clio_agent.gact import core_write_refusal
+
+    refusal = guard.ClioCoreDiskLowRefused("row/x", str(tmp_path), 1024, 4096)
+    clio_core_retry._record_lost_write(name="row/x", payload=b"x", exc=refusal)
+    core_write_refusal._TRACED.clear()
+
+    info = core_write_refusal._refusal("/v1/sessions/sess_a/messages")
+
+    assert info is not None
+    assert info.message == core_write_refusal.MESSAGE_DISK_LOW
+    assert info.details["cause"] == guard.DISK_LOW
+
+
 pytest.importorskip("clio_cte_core_ext")
 
 

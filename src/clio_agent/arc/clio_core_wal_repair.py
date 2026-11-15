@@ -42,6 +42,7 @@ import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from clio_agent.arc.clio_core_alloc_log import UNVERIFIED, withhold_trailing_frees
 from clio_agent.errors import ClioError
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ _HEADER = struct.Struct("<BQI")
 #: by a few. A step this large or a step back marks bytes that are not a record.
 _MAX_SEQ_STEP = 1 << 24
 _LOG_FILE = re.compile(r"\.(blob|tag)\.\d+$")
+#: Metadata record types that can free blocks: 1 (a blob's new block list), 3 (a delete).
+_FREEING_TYPES = frozenset({1, 3})
 _RESTORE_FAILURE = re.compile(r"TransactionLog::Load:|metadata restore under .* failed")
 
 _lock = threading.Lock()
@@ -85,6 +88,8 @@ class LogScan:
     start: int = 0
     end: int = 0
     records: int = 0
+    #: The type byte of the torn record that was cut (-1: none or unknown).
+    torn_type: int = -1
 
 
 def _chain(data: bytes, offset: int, after_seq: int | None) -> list[tuple[int, int, int]] | None:
@@ -135,9 +140,9 @@ def scan_log(path: Path) -> LogScan:
     resume = _resume_offset(data, last_off + _HEADER.size, last_seq)
     if resume is not None:
         start = last_off if resume < last_end else last_end
-        return LogScan(str(path), "cut", len(data), start, resume, len(trusted))
+        return LogScan(str(path), "cut", len(data), start, resume, len(trusted), data[start])
     if last_end == offset:  # only a torn tail follows the good records
-        return LogScan(str(path), "cut", len(data), offset, len(data), len(trusted))
+        return LogScan(str(path), "cut", len(data), offset, len(data), len(trusted), data[offset])
     return LogScan(str(path), "unreadable", len(data), records=len(trusted))
 
 
@@ -230,6 +235,13 @@ def repair_metadata_logs(config_path: str, *, daemon_log: Path | None = None) ->
                 scan.path,
                 stamp,
             )
+    torn = {scan.torn_type for scan in scans if scan.verdict == "cut"}
+    if torn & _FREEING_TYPES:  # a torn put or delete may have logged frees it never committed
+        for outcome in withhold_trailing_frees(config_path, stamp):
+            reason = str(outcome.pop("reason"))
+            _record(reason, outcome)
+            log = logger.error if reason == UNVERIFIED else logger.warning
+            log("clio-core allocation log after a torn record reason=%s %s", reason, outcome)
     return scans
 
 
