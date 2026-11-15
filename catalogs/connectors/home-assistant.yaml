@@ -1,7 +1,9 @@
 # Home Assistant: homeassistant-ai/ha-mcp, MIT, a plain MCP server (no view) over the
-# person's own Home Assistant through its REST and WebSocket APIs. CLIO starts it as its
-# own process through uvx over stdio and never bundles or imports it. The version is
-# pinned to the release qualified here (9.2.0, PyPI). It reads HOMEASSISTANT_URL and
+# person's own Home Assistant through its REST and WebSocket APIs. CLIO starts it through
+# the clio-kit launcher: clio-kit's home-assistant server (mcp-servers/home-assistant)
+# runs ha-mcp exactly as published, pinned to 9.2.0 (PyPI) and locked in clio-kit, in its
+# own Python 3.13 environment; CLIO never imports it. The group, Home and devices, comes
+# from clio-kit's clio-home bundle (derive.yaml). It reads HOMEASSISTANT_URL and
 # HOMEASSISTANT_TOKEN (a long-lived access token, made in Home Assistant under the
 # person's profile, Security). ha-mcp has 81 tools; the entry offers the ones that read
 # the home, act on devices and write automations, scripts, scenes, helpers and
@@ -14,12 +16,11 @@
 # reset weekly), which is how this entry was qualified without a home of our own.
 - id: home-assistant
   name: Home Assistant
-  group: Home and devices
   logo: home-assistant.svg
   description: Read sensors and their history from your Home Assistant, control devices, and write automations, scripts, scenes and dashboards
   server:
-    command: uvx
-    args: [ha-mcp==9.2.0]
+    command: clio-kit
+    args: [mcp-server, home-assistant]
     env:
       HOMEASSISTANT_URL: ${need.url}
       HOMEASSISTANT_TOKEN: ${need.token}

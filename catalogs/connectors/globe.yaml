@@ -1,7 +1,9 @@
 # 3D globe: the map example server of the MCP Apps extension (modelcontextprotocol/ext-apps,
 # examples/map-server; MIT, the repository moving to Apache-2.0), published on npm as
-# @modelcontextprotocol/server-map. CLIO starts it through npx over stdio and never bundles
-# it. The version is pinned to the release qualified here (2.0.4). Its show-map tool returns
+# @modelcontextprotocol/server-map. CLIO starts it through the clio-kit launcher: clio-kit's
+# globe server (mcp-servers/globe) runs that package exactly as published, pinned to 2.0.4
+# and locked in clio-kit, and needs Node.js 20 or newer on this machine. The group, Earth
+# science, comes from clio-kit's clio-geoscience bundle (derive.yaml). Its show-map tool returns
 # a ui:// view: a CesiumJS globe (loaded from cesium.com) with OpenStreetMap tiles, no
 # Cesium ion token. Its geocode tool asks OpenStreetMap's Nominatim. It has no needs and
 # ships no mark of its own, so its logo, globe.svg, is ours: a globe with a place marker,
@@ -9,10 +11,9 @@
 # "Connector logos (LG)").
 - id: globe
   name: 3D globe
-  group: Earth science
   logo: globe.svg
   description: Show regions, places and data footprints on an interactive 3D globe with OpenStreetMap, and find places by name
   server:
-    command: npx
-    args: [-y, --silent, "@modelcontextprotocol/server-map@2.0.4", --stdio]
+    command: clio-kit
+    args: [mcp-server, globe]
   needs: []

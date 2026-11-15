@@ -31,7 +31,11 @@ def test_shipped_entries_load_without_diagnostics() -> None:
     }
     assert burette.to_dict()["tools"] == list(burette.tools)
     spice = catalog.entries["spice"]
-    assert spice.server["command"] == "uvx" and spice.logo == "spice.svg" and spice.tools == ()
+    assert spice.server["command"] == "clio-kit" and list(spice.server["args"]) == [
+        "mcp-server",
+        "spice",
+    ]
+    assert spice.kit == "spice" and spice.logo == "spice.svg" and spice.tools == ()
     paraview = catalog.entries["paraview"]
     assert paraview.plugin == "paraview"
     assert [(n.key, n.required, n.agent_settable) for n in paraview.needs] == [
@@ -73,17 +77,32 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
     assert listing.offered("unknown", listed) == listed
 
 
+#: The connectors whose servers clio-kit runs from a pinned upstream release (apps ledger,
+#: "Connectors moved into clio-kit (KM)"): connector id == clio-kit server name.
+KIT_UPSTREAM = ("pdf", "globe", "earthdata", "home-assistant", "spice")
+
+
+@pytest.mark.parametrize("connector", KIT_UPSTREAM)
+def test_an_upstream_server_starts_through_the_clio_kit_launcher(connector: str) -> None:
+    """Moved into clio-kit (KM): the id is kept, the command is ``clio-kit mcp-server <id>``,
+    and the hand-written entry keeps its own name, logo and needs."""
+
+    entry = entries.load_catalog([SHIPPED]).entries[connector]
+    assert entry.server["command"] == "clio-kit"
+    assert list(entry.server["args"]) == ["mcp-server", connector]
+    assert entry.kit == connector and entry.logo == f"{connector}.svg"
+    assert "npx" not in str(entry.server) and "uvx" not in str(entry.server)
+
+
 def test_more_connectors_are_data_only() -> None:
     """The PDF viewer and the 3D globe (MCP Apps) and NASA Earthdata are catalog entries only."""
 
     catalog = entries.load_catalog([SHIPPED])
     pdf = catalog.entries["pdf"]
-    assert pdf.server["command"] == "npx" and pdf.needs == () and pdf.tools == ()
-    assert "@modelcontextprotocol/server-pdf@2.0.4" in pdf.server["args"]
+    assert pdf.needs == () and pdf.tools == ()
     assert pdf.logo_path is not None and pdf.logo_path.read_text().startswith("<svg")
     assert pdf.logo_dark == "pdf-dark.svg"
     earthdata = catalog.entries["earthdata"]
-    assert earthdata.server["args"][0] == "earthdata-mcp-server==0.6.0"
     assert [(n.key, n.kind, n.required) for n in earthdata.needs] == [
         ("username", "value", False),
         ("password", "secret", False),
@@ -91,7 +110,6 @@ def test_more_connectors_are_data_only() -> None:
     assert earthdata.server["env"]["EARTHDATA_PASSWORD"] == "${need.password}"
     assert earthdata.logo == "earthdata.svg" and earthdata.tools == ()
     globe = catalog.entries["globe"]
-    assert "@modelcontextprotocol/server-map@2.0.4" in globe.server["args"]
     assert globe.needs == () and globe.logo == "globe.svg" and globe.tools == ()
 
 
@@ -106,11 +124,13 @@ def test_geo_is_a_data_only_entry_on_the_clio_kit_launcher() -> None:
 
 
 def test_home_assistant_needs_an_address_and_a_token_and_offers_a_curated_set() -> None:
-    """ha-mcp, pinned, with its URL and long-lived token as needs; the token stays a secret."""
+    """ha-mcp, pinned in clio-kit, with its URL and long-lived token as needs; the token
+    stays a secret."""
 
     catalog = entries.load_catalog([SHIPPED])
     ha = catalog.entries["home-assistant"]
-    assert ha.server["command"] == "uvx" and list(ha.server["args"]) == ["ha-mcp==9.2.0"]
+    assert ha.server["command"] == "clio-kit"
+    assert list(ha.server["args"]) == ["mcp-server", "home-assistant"]
     assert [(n.key, n.kind, n.required) for n in ha.needs] == [
         ("url", "address", True),
         ("token", "secret", True),
