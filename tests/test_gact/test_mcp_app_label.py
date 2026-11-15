@@ -102,3 +102,32 @@ def test_a_pattern_names_its_folder_or_its_own_stem() -> None:
     assert call_subject(tool, {"path": "~/data/pulse_series/*"}) == "pulse_series"
     assert call_subject(tool, {"path": "~/data/pulse*"}) == "pulse*"
     assert call_subject(tool, {"path": "/runs/*/*.vti"}) == "*.vti"
+
+
+def test_two_views_of_one_connector_with_no_subject_are_named_by_what_they_show(
+    names: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KiCad ledger FN-13: a board view and a BOM view were both called "KiCad"."""
+    monkeypatch.setattr(
+        "clio_agent.connectors.entries.load_catalog",
+        lambda: SimpleNamespace(entries={"kicad": SimpleNamespace(name="KiCad")}),
+    )
+    board = view_label("kicad", None, {}, tool_name="kicad_view_board")
+    bom = view_label("kicad", None, {"quantity": 5}, tool_name="kicad_view_bom")
+    assert (board, bom) == ("KiCad: board", "KiCad: bom")
+    # A subject from the arguments still wins, and a bare tool name works too.
+    assert view_label("kicad", None, {"sheet": "power.kicad_sch"}, tool_name="view_schematic") == (
+        "KiCad: power.kicad_sch"
+    )
+    assert view_label("kicad", SimpleNamespace(name="view_parts", title=None), {}) == "KiCad: parts"
+
+
+def test_a_tool_title_fallback_is_not_doubled_with_the_tool_name(
+    names: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "clio_agent.connectors.entries.load_catalog", lambda: SimpleNamespace(entries={})
+    )
+    assert view_label("plain", _tool("Show a board"), {}, tool_name="plain_view_board") == (
+        "Show a board"
+    )

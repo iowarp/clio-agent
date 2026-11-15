@@ -201,7 +201,10 @@ def record_opening_call(app: FastAPI, sid: str, record: MCPAppRecord, tool: Any)
         "arguments": arguments,
         "display_mode": capture.display_mode if capture else "inline",
         "resource_uri": record.resource_uri,
-        "label": view_label(record.source_namespace, tool, record.tool_input) or _label(tool, bare),
+        "label": view_label(
+            record.source_namespace, tool, record.tool_input, tool_name=record.tool_name
+        )
+        or _label(tool, bare),
         "saved_at": _now(),
     }
     if unsaved:
@@ -309,7 +312,9 @@ def _part(record: MCPAppRecord, display_mode: str) -> dict[str, Any]:
         data_ref=record.data_ref,
         mime_type=MCP_APP_MIME_TYPE,
         display_mode=display_mode,
-        title=view_label(record.source_namespace, None, record.tool_input),
+        title=view_label(
+            record.source_namespace, None, record.tool_input, tool_name=record.tool_name
+        ),
         metadata={"stream_source": "reopen", "protocol": MCP_APPS_PROTOCOL_REVISION},
     ).to_wire()
 
@@ -418,7 +423,10 @@ async def replay_call(
         if not entry.get("label"):  # a given call names no title: the tool's, as a card's
             definition = definitions.get(full_name)
             entry["label"] = view_label(
-                str(entry["server"]), definition, entry.get("arguments") or {}
+                str(entry["server"]),
+                definition,
+                entry.get("arguments") or {},
+                tool_name=str(entry["tool"]),
             ) or _label(definition, str(entry["tool"]))
         token = _REPLAY.set(capture)
         try:
