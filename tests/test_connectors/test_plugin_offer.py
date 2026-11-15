@@ -148,21 +148,20 @@ def test_the_facts_are_capped_say_so_and_cost_little(
 ) -> None:
     from clio_agent import injections
 
-    rows, total = plugin_offer.offerable_facts(app, "sess_a")
-    text = injections.render(
-        "session_facts_plugins", {"plugins": rows, "total": total}, app=None, session_id=""
-    )
+    rows, total, left_out = plugin_offer.offerable_facts(app, "sess_a")
+    variables = {"plugins": rows, "total": total, "left_out": left_out}
+    text = injections.render("session_facts_plugins", variables, app=None, session_id="")
     assert "- Fixture Plain (fixture-plain, connector, off): A test connector" in text
     assert "- tariff-calc [lab]: Landed cost of imported goods" in text
-    assert "offer_plugin asks them" in text and "with no plugin lists them all" not in text
+    assert "offer_plugin asks them" in text and "more not listed here" not in text
     assert len(text) < 1200  # about 300 tokens for five rows (CF-D4)
     monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "2")
-    rows, total = plugin_offer.offerable_facts(app, "sess_a")
-    text = injections.render(
-        "session_facts_plugins", {"plugins": rows, "total": total}, app=None, session_id=""
-    )
-    assert "(5, 2 shown)" in text and "offer_plugin with no plugin lists them all" in text
-    assert plugin_offer.offerable_facts(app, "") == ([], 0)
+    rows, total, left_out = plugin_offer.offerable_facts(app, "sess_a")
+    variables = {"plugins": rows, "total": total, "left_out": left_out}
+    text = injections.render("session_facts_plugins", variables, app=None, session_id="")
+    assert "(5, 2 shown)" in text
+    assert "3 more not listed here; offer_plugin with search or category finds them." in text
+    assert plugin_offer.offerable_facts(app, "") == ([], 0, 0)
     monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "-1")
     with pytest.raises(ValueError):
         plugin_offer.offer_listed()
@@ -312,7 +311,8 @@ def test_a_connector_or_its_plugin_is_the_connector_offer(
 
 def test_listing_unknown_and_no_conversation(app: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     listed = asyncio.run(plugin_offer.offer_plugin(reason="r"))
-    assert len(listed["offerable"]) == 5 and "can add" in listed["message"]
+    assert listed["total"] == 5 and "offer_plugin with search" in listed["message"]
+    assert "offerable" not in listed and "matches" not in listed  # no full dump (OL-D11)
     for name in ("nope", "core", "python-tools", "bundle"):
         missing = asyncio.run(plugin_offer.offer_plugin(plugin=name, reason="r"))
         assert missing["error"] == "plugin_not_found", name
@@ -383,6 +383,21 @@ def test_the_row_reads_offer_and_says_what_joined() -> None:
         {"error": "plugin_not_found", "message": "No plugin", "offerable": [{"name": "A"}]},
     )
     assert failed["status"] == "failed" and failed["blocks"][-1]["text"] == "A"
+    closest = present(
+        {"plugin": "nope"},
+        None,
+        {
+            "error": "plugin_not_found",
+            "message": "No",
+            "matches": [{"name": "B", "kind": "plugin"}],
+        },
+    )
+    assert closest["blocks"][-1] == {
+        "id": "matches",
+        "type": "text",
+        "label": "Closest",
+        "text": "B (Plugin)",
+    }
     stopped = present({}, None, {"error": plugin_offer.OFFER_CANCELLED, "outcome": "cancelled"})
     assert stopped["status"] == "cancelled"
     listed = present(
@@ -549,7 +564,7 @@ def test_many_clio_kit_connectors_never_hide_the_library(
     try:
         rows = plugin_offer.offerable(app, "sess_a")
         monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "8")
-        listed, total = plugin_offer.offerable_facts(app, "sess_a")
+        listed, total, _left_out = plugin_offer.offerable_facts(app, "sess_a")
     finally:
         RECORDS.pop()
     assert [row["id"] for row in rows[:7]] == [

@@ -75,13 +75,18 @@ def test_untick_inside_the_cap_and_tick_beyond_it(capped: Any) -> None:
         "exclude": ["connector:fixture-secret"],
     }
 
-    # The session facts follow, in candidate order; the total leaves out the unticked one.
-    rows, total = plugin_offer.offerable_facts(capped, "sess_a")
-    assert _ids(rows) == ["fixture-plain", "tariff-calc"] and total == 4
+    # The session facts follow, in candidate order; the footer counts the rest (OL-D11).
+    rows, total, left_out = plugin_offer.offerable_facts(capped, "sess_a")
+    assert _ids(rows) == ["fixture-plain", "tariff-calc"] and (total, left_out) == (5, 1)
     from clio_agent import injections
 
-    text = injections.render("session_facts_plugins", {"plugins": rows, "total": total})
-    assert "(4, 2 shown)" in text and "Fixture Secret" not in text and "tariff-calc" in text
+    variables = {"plugins": rows, "total": total, "left_out": left_out}
+    text = injections.render("session_facts_plugins", variables)
+    assert "(5, 2 shown)" in text and "Fixture Secret" not in text and "tariff-calc" in text
+    assert text.rstrip().endswith(
+        "3 more not listed here (1 of them left out by the person in Settings); "
+        "offer_plugin with search or category finds them."
+    )
 
 
 def test_redundant_and_unknown_ticks_are_dropped_and_a_conflict_is_typed(capped: Any) -> None:
@@ -127,12 +132,19 @@ def test_an_unreadable_config_lists_the_default_traced(
     assert refused.value.code == offer_list.OVERLAY_UNREADABLE and refused.value.status == 409
 
 
-def test_offer_plugin_lists_without_the_unticked_but_offers_one_named(
+def test_offer_plugin_finds_the_unticked_marked_and_offers_one_named(
     capped: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     offer_list.update(capped, include=[], exclude=["connector:fixture-secret"])
-    listed = asyncio.run(plugin_offer.offer_plugin(reason="list"))
-    assert _ids(listed["offerable"]) == [i for i in ORDER if i != "fixture-secret"]
+    overview = asyncio.run(plugin_offer.offer_plugin(reason="list"))
+    assert (overview["total"], overview["listed"], overview["left_out"]) == (5, 1, 1)
+    assert "offerable" not in overview  # no full dump (OL-D11)
+    found = asyncio.run(plugin_offer.offer_plugin(reason="find", search="fixture"))
+    rows = {row["id"]: row for row in found["matches"]}
+    assert rows["fixture-secret"]["left_out_by_person"] is True
+    assert rows["fixture-secret"]["listed"] is False and rows["fixture-plain"]["listed"] is True
+    assert "left_out_by_person" not in rows["fixture-plain"]
+    assert "left 1 of these out of the list in Settings" in found["message"]
 
     offered: list[str] = []
 
@@ -143,6 +155,17 @@ def test_offer_plugin_lists_without_the_unticked_but_offers_one_named(
     monkeypatch.setattr(connector_offer, "offer_connector", offer_connector)
     asyncio.run(plugin_offer.offer_plugin(plugin="Fixture Secret", reason="It is needed."))
     assert offered == ["fixture-secret"]
+
+
+def test_the_search_note_marks_an_unticked_row(capped: Any) -> None:
+    offer_list.update(capped, include=[], exclude=["connector:fixture-secret"])
+    rows = plugin_offer.offerable_matching(capped, "sess_a", "fixture-secret and fixture-plain")
+    note = plugin_offer.search_note(rows)
+    assert (
+        'Fixture Secret (connector, id "fixture-secret", left out by the person in Settings)'
+        in note
+    )
+    assert 'Fixture Plain (connector, id "fixture-plain")' in note
 
 
 def test_the_routes_get_put_and_reset(capped: Any) -> None:

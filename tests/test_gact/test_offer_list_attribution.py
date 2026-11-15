@@ -28,7 +28,7 @@ def _facts() -> prompt_pieces.Composed:
         return injections.render(f"session_facts{piece}", variables)
 
     head = fact("", {"root": "/work/project"})
-    piece = _offer_piece(None, "", fact, ROWS, 5)
+    piece = _offer_piece(None, "", fact, ROWS, 5, 2)
     return prompt_pieces.join([head, piece, "Machine: lab-7."])
 
 
@@ -38,7 +38,11 @@ def test_the_composed_facts_carry_the_list_span_with_one_item_per_row() -> None:
     assert span["id"] == prompt_pieces.OFFER_PIECE
     listed = facts[span["start"] : span["end"]]
     assert listed.startswith("Plugins and connectors the person has")
-    assert listed.rstrip().endswith("offer_plugin with no plugin lists them all.")
+    # The footer that says how many more there are is inside the span (OL-D11).
+    assert listed.rstrip().endswith(
+        "3 more not listed here (2 of them left out by the person in Settings); "
+        "offer_plugin with search or category finds them."
+    )
     assert [item["label"] for item in span["items"]] == ["HDF5", "tariff-calc"]
     # Each row's size is its own line in the text, measured on the template.
     hdf5_line = next(line for line in listed.splitlines() if line.startswith("- HDF5"))
@@ -59,7 +63,7 @@ def test_the_breakdown_puts_the_list_in_its_own_category_and_the_rest_in_message
     assert result is not None
     sections = {section.id: section for section in result.sections}
     offer = sections["offerable"]
-    assert offer.label == "Plugins you can add"
+    assert offer.label == "Plugin list"
     labels = [(item.label, item.id) for item in offer.items]
     assert ("HDF5", None) in labels and ("tariff-calc", None) in labels
     assert ("List heading and closing line", prompt_pieces.FRAME_ITEM) in labels
