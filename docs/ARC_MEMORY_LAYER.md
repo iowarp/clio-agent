@@ -332,6 +332,41 @@ values, never share a daemon (`arc/runtime_ownership.py`):
 
 The rules are the same on Linux, macOS and Windows.
 
+### A torn metadata record (`arc/clio_core_wal_repair.py`)
+
+clio-core keeps blob and tag metadata in write-ahead logs beside the data tier
+(`metadata.log.blob.<N>`, `metadata.log.tag.<N>`: the magic `2LAW`, then records of a
+13-byte header, `<u8 type><u64 seq><u32 length>`, and the payload). A daemon that dies
+while it appends (a crash, or a stop that ran out of time and was killed) leaves the
+last record torn. iowarp-core 2.4.1 then reports it on the next start
+(`TransactionLog::Load: ... claiming N bytes but only M remain; ignoring it and
+everything after`) and appends after the torn bytes without cutting them off. From the
+start after that, the torn record's length swallows the new records and the reader stops
+inside one (`claiming 2147483839 bytes`): every record written since the tear is lost,
+at every later start (FN-14).
+
+Right before this home spawns its daemon (under the spawn lock; no daemon uses the
+files), CLIO walks each log by its lengths. A log that ends exactly at a record is left
+alone. A torn record followed by records whose sequence numbers continue from the last
+good one, or a torn tail with nothing after it, is cut out; the cut bytes are kept as
+`<log>.torn-<UTC time>` and the cut is logged as `clio_core_metadata_log_repaired`.
+Bytes that are not records with nothing readable after them refuse the attach
+(`clio_core_metadata_log_unreadable`) and change nothing. A log without the `2LAW` magic
+is left to clio-core (`clio_core_metadata_log_format_unknown`). The daemon's own
+restore-failure lines after the spawn are read back too: the `clio_core_metadata_restore`
+health row (inside `cte_metadata_log`) reports a repair, an unreadable log or a failed
+restore (`clio_core_metadata_restore_failed`), and the boot scratch sweep removes no
+session folder while the restore is in doubt (`session_scratch_store_restore_suspect`),
+nor the folder of a session the index still lists whose record does not read back
+(`session_scratch_record_unreadable`).
+
+What CLIO cannot repair: clio-core records block allocations in a separate log
+(`storage.bin_node0.alloc_log`). When the torn record was a delete or a put, the
+allocator and the metadata disagree about that blob's blocks, and a later write can
+reuse them: live, a dirty marker undeleted by a torn delete shared its block with a new
+conversation's record, which then read back as `1`. Both defects (no cut before
+appending; metadata and allocation not committed together) are upstream (iowarp-core).
+
 ### Explicit homes get their own daemon (`arc/home_runtime.py`)
 
 Default installs (Desktop, and the CLI without `CLIO_AGENT_HOME`) keep sharing

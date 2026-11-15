@@ -29,6 +29,7 @@ from clio_agent import paths
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
 from clio_agent.arc import (
     clio_core_attach,
+    clio_core_wal_repair,
     core_control_port,
     crashed_clients,
     home_runtime,
@@ -183,6 +184,8 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
+    # No daemon uses the store now: cut a torn metadata record out first (FN-14).
+    clio_core_wal_repair.repair_metadata_logs(config_path, daemon_log=log_path)
     # Never an unbounded file: a pump caps, rotates and collapses the daemon's output.
     log_sink = runtime_log.open_daemon_log_sink(log_path, state_dir, _daemon_pidfile())
     log_offset = log_path.stat().st_size if log_path.exists() else 0

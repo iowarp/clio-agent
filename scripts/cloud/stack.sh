@@ -110,10 +110,12 @@ stop_one() {  # stop_one <name>
   if alive "$pidf"; then
     local pgid; pgid="$(cat "$pidf")"
     kill -TERM -- "-$pgid" 2>/dev/null
-    for _ in $(seq 1 20); do kill -0 -- "-$pgid" 2>/dev/null || break; sleep 0.5; done
+    # 30 s, as `clio stop` gives: above the server's 20 s shutdown budget, so it stops
+    # its clio-core daemon itself instead of being killed in the middle (FN-14).
+    for _ in $(seq 1 60); do kill -0 -- "-$pgid" 2>/dev/null || break; sleep 0.5; done
     if kill -0 -- "-$pgid" 2>/dev/null; then
       kill -KILL -- "-$pgid" 2>/dev/null
-      echo "$1: force-stopped (did not exit within 10s)"
+      echo "$1: force-stopped (did not exit within 30s)"
     else
       echo "$1: stopped"
     fi
