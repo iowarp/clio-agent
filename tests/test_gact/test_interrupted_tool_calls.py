@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.arc.live import _MemoryStore
-from clio_agent.gact.interrupted_tool_calls import TOOL_OUTCOME_UNRECORDED
+from clio_agent.gact.interrupted_tool_calls import TOOL_OUTCOME_UNRECORDED, TOOL_RESULT_RESTORED
 from clio_agent.gact.part_atoms import (
     append_part_atom,
     build_sealed_part_atom,
@@ -95,7 +95,11 @@ def test_a_started_call_with_no_recorded_outcome_is_reported_unknown_after_resta
     not invent ``done`` or the other turn's call, and a part the ledger sealed stays
     as it was.
 
-    SABOTAGE: make ``unrecorded_tool_calls`` return ``[]`` and ``lost`` is missing from
+    A sealed ``done`` whose result part never landed gets that result back from its
+    recorded completion (a started flow keeps its handle and card).
+
+    SABOTAGE: make ``restored_tool_results`` return ``[]`` and sealed ``done`` reads
+    with no result; make ``unrecorded_tool_calls`` return ``[]`` and ``lost`` is missing from
     the transcript (a silent gap); drop the ``_ENDED`` check and ``done`` is added too;
     drop the incomplete-row branch of ``restart_interruptions._close_transcript`` and
     ``lost`` is missing when the turn's sealed part is the last row.
@@ -132,8 +136,17 @@ def test_a_started_call_with_no_recorded_outcome_is_reported_unknown_after_resta
     assert lost["metadata"]["started_at"] == "2026-11-03T10:00:00+00:00"
     if sealed:  # the turn's own incomplete row keeps its sealed part, verbatim, first
         assert closing["id"] == "msg_asst_crash" and closing["stop_reason"] == "incomplete"
-        assert [part["call_id"] for part in closing["parts"]] == ["done", "lost"]
+        assert [(part["type"], part["call_id"]) for part in closing["parts"]] == [
+            ("tool_call", "done"),
+            ("tool_result", "done"),
+            ("tool_call", "lost"),
+        ]
         assert "outcome" not in calls["done"].get("metadata", {})
+        # Its result part was lost with the process; the recorded completion restores it.
+        restored = closing["parts"][1]
+        assert restored["metadata"]["outcome"]["reason"] == TOOL_RESULT_RESTORED
+        assert not restored.get("is_error")
+        assert '"n": "done"' in restored["content"][0]["text"]
     else:
         assert closing["error_info"]["error"] == "server_restart_interrupted"
 
@@ -143,6 +156,8 @@ def test_a_started_call_with_no_recorded_outcome_is_reported_unknown_after_resta
     assert tools["lost"]["error"] == MISSING_EXECUTION_OUTCOME
     assert tools["lost"]["output"] is None
     assert "earlier" not in tools
+    if sealed:  # what the client reads for the restored call: its recorded result
+        assert tools["done"]["state"] == "succeeded", tools["done"]
     # The recovered row is durable: a third start reads it as recorded, adding nothing.
     third = _app(tmp_path, store, "third")
     with TestClient(third) as client:

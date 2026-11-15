@@ -669,6 +669,11 @@ class FlowContext:
         if not waited.get("pending"):
             await self.app.state.task_history.io.run(self._collect, handle)
         outcome = (waited.get("outcomes") or [{}])[0]
+        if waited.get("pending") and waited.get("interrupted") == "stopped":
+            # This run's own turn is being retired (server shutdown, a pause), not
+            # cancelled: the member keeps running and nothing is known about it. The call
+            # stays open in the journal, so the resumed run waits on the same handle.
+            raise asyncio.CancelledError(f"the run stopped waiting for {kind} {name!r}")
         if waited.get("pending"):
             await self._settle(invocation, "task_state_uncertain")
             raise TaskStateUncertain(

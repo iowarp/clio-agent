@@ -211,6 +211,13 @@ async def openalex_list(filter_expr: str, limit: int, *, key: str) -> list[Paper
 # ------------------------------------------------------------------- Crossref
 
 
+def _full_title(title: str, subtitles: list[str]) -> str:
+    """A title with its subtitle, unless the title already carries it."""
+    if not subtitles or not title or subtitles[0].lower() in title.lower():
+        return title
+    return f"{title}: {subtitles[0]}"
+
+
 def crossref_record(row: dict[str, Any]) -> PaperRecord:
     """One Crossref work as a record (``relation`` becomes ``versions``)."""
 
@@ -220,6 +227,9 @@ def crossref_record(row: dict[str, Any]) -> PaperRecord:
     )
     year = issued[0][0] if issued and issued[0] and isinstance(issued[0][0], int) else None
     titles = row.get("title") or [""]
+    # Crossref splits "Chimp: Efficient lossless ..." into a title and a subtitle;
+    # the work's full title joins them, as it appears on the paper.
+    subtitles = [plain(part) for part in row.get("subtitle") or [] if plain(part)]
     venues = row.get("container-title") or [""]
     authors = [
         " ".join(filter(None, (a.get("given"), a.get("family")))) or str(a.get("name") or "")
@@ -242,7 +252,7 @@ def crossref_record(row: dict[str, Any]) -> PaperRecord:
     )
     kind = str(row.get("subtype") or row.get("type") or "")
     record = PaperRecord(
-        title=plain(titles[0] if titles else ""),
+        title=_full_title(plain(titles[0] if titles else ""), subtitles),
         ids=_ids(doi=doi, arxiv=arxiv_id_of(doi) if doi.startswith("10.48550") else ""),
         authors=authors,
         year=year,
