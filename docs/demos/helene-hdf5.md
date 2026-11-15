@@ -170,5 +170,5 @@ Each was found in a live take, fixed at its root, and covered by tests:
 
 - In one take a ParaView view's frame never answered a snapshot request. The cause is not
   known; the 30 s answer above only stops it from holding the turn.
-- clio-agent pins clio-schemas 0.7.0, which has no `s3` source provider. S3 sources need a
-  clio-schemas release with it and a pin bump.
+- Develop builds clio-schemas 0.8.0b1 from git, which has the `s3` source provider. A
+  CLIO release needs clio-schemas 0.8.0b1 or later on PyPI before it can drop that pin.
