@@ -91,6 +91,7 @@ from clio_agent.gact.permission_delivery import (
     record_resolved_permission as _record_resolved_permission,
 )
 from clio_agent.gact.permission_evidence import emit_permission_resolution, permission_identity
+from clio_agent.gact.permission_outside_sandbox import answer_fields, answered_or_outside
 from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime import tool_permission_layers as layers
 from clio_agent.gact.runtime.globals import _resolve_tool_session
@@ -101,7 +102,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     resolve_detail,
 )
 from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
-from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, STANDARD_ANSWERS, allows
+from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, allows
 from clio_agent.gact.runtime.permission_policies import (
     _append_permission_policy_from_resolution,
     _flush_permission_policies,
@@ -541,8 +542,7 @@ def _ask_and_wait(
     }
     if _is_external_mcp_permission_context(context):
         row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
-    # A call from inside a run_code script shows the script and offers its grant.
-    row.update(script_grants.row_fields(list(STANDARD_ANSWERS)))
+    row.update(answer_fields(context))  # its answers, and a run_code script's grant
     # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
     # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
     # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
@@ -643,8 +643,8 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
         stash_pre_tool_intercept(None)
-        if layers.answered(name):  # a person approved this very call (``native_gate``)
-            return "allow"
+        if (answered := answered_or_outside(app, name, args, context)) is not None:
+            return answered  # a person approved this very call, or must for outside_sandbox
         # #1032: reads inside permitted territory need no action approval. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
         # here as the FIRST branch — before any hook or the plan/architect lock —

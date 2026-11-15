@@ -58,6 +58,7 @@ def register_native_shell(root: NativeRoot, work: NativeWork) -> None:
         background: bool = False,
         access_paths: list[str] | None = None,
         access_reason: str = "",
+        outside_sandbox: bool = False,
     ) -> dict[str, Any]:
         async def body(submission: SubmissionContext, evidence: WorkEvidence) -> dict[str, Any]:
             return await execute_shell(
@@ -68,6 +69,7 @@ def register_native_shell(root: NativeRoot, work: NativeWork) -> None:
                 max_output_bytes,
                 cleanup=evidence,
                 access_paths=access_paths,
+                outside_sandbox=outside_sandbox,
             )
 
         return await work.run(
@@ -81,6 +83,7 @@ def register_native_shell(root: NativeRoot, work: NativeWork) -> None:
                 "background": background,
                 "access_paths": access_paths,
                 "access_reason": access_reason,
+                "outside_sandbox": outside_sandbox,
             },
             body,
         )

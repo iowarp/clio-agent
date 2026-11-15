@@ -18,9 +18,9 @@ from pydantic import Field
 
 from clio_agent.search.literature import literature_lookup, literature_search
 from clio_agent.tools.builtin_annotations import _WEB_ANNOTATIONS
-from clio_agent.tools.servers.search_questions import answered_run
+from clio_agent.tools.servers.search_questions import answered_run, person_round_security
 
-literature_server = FastMCP("literature")
+literature_server = FastMCP("literature", request_state_security=person_round_security())
 
 Field_ = Literal[
     "any", "physical", "life", "chemistry", "earth", "computing", "engineering", "energy"

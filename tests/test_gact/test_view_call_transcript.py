@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.mcp_app_observer_reasons import recorded_mcp_app_observer_skips
 from clio_agent.gact.tool_observer import _open_turn_transcript
 from clio_agent.gact.view_call_transcript import VIEW_CALL_ORIGIN
 from clio_agent.tools.tool_observation import notify_tool_observer
@@ -36,6 +37,9 @@ class _Executor:
             ),
             "clock_read_bytes": SimpleNamespace(meta={"ui": {"visibility": ["app"]}}),
             "clock_table": SimpleNamespace(meta={"ui": {"visibility": ["model", "app"]}}),
+            "clock_poll": SimpleNamespace(
+                meta={"ui": {"resourceUri": "ui://clock/view", "visibility": ["app"]}}
+            ),
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -50,6 +54,11 @@ class _Executor:
                 result["structuredContent"] = {"rows": [CHUNK, CHUNK, CHUNK]}
             notify_tool_observer(observer, name, args, "started", None)
             notify_tool_observer(observer, name, args, "completed", None, result)
+            return result
+        if name == "clock_poll":  # a view-only tool that names the view it feeds
+            result = {"content": [{"type": "text", "text": "rev 2"}], "structuredContent": {}}
+            notify_tool_observer(observer, name, args, "completed", None, result)
+            app.state.pending_mcp_app_observer(name, args, self.definitions[name], result, "clock")
             return result
         observer(name, args, "started", None)
         result = {"content": [{"type": "text", "text": "opened"}], "structuredContent": {}}
@@ -179,3 +188,35 @@ def test_a_large_result_the_model_sees_is_a_row_with_its_head_and_a_file(
     assert CHUNK not in result.model_dump_json() and CHUNK not in str(ledger)
     (stored,) = list((tmp_path / "tool-output").iterdir())
     assert CHUNK in stored.read_text()
+
+
+def test_a_view_only_call_naming_its_view_opens_no_new_view(tmp_path: Path) -> None:
+    """A view's poll of a view-only tool that names its ``ui://`` resource feeds the view
+    that made it: it registers no app and writes no view card (KiCad ledger, KQ10)."""
+    client, app = _client(tmp_path)
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
+        part = _open(client, sid)["part"]
+
+        def views() -> list[Any]:
+            live = app.state.live_assistant_parts.get(sid, [])
+            stored = [p for m in app.state.messages.get(sid, []) for p in m.parts]
+            return [p for p in [*live, *stored] if p.type == "mcp_app"]
+
+        before = len(views())
+        for _ in range(3):
+            response = client.post(
+                f"/v1/sessions/{sid}/mcp-apps/{part['app_instance_id']}/tools/call",
+                params={"data_ref": part["data_ref"]},
+                json={"name": "poll", "arguments": {"since": 1}},
+            )
+            assert response.status_code == 200
+            assert response.json()["content"][0]["text"] == "rev 2"
+        after = len(views())
+    assert after == before
+    skipped = [
+        row
+        for row in recorded_mcp_app_observer_skips()
+        if row["reason"] == "mcp_app_skipped_view_only_call" and row.get("tool") == "clock_poll"
+    ]
+    assert len(skipped) >= 3

@@ -2,9 +2,11 @@
 # CLIO starts it through the clio-kit launcher: clio-kit's spice server (mcp-servers/spice)
 # runs ltspice-mcp exactly as published, as its own program (never imported or linked),
 # pinned to 0.8.0 (the 9455f38 merge) and locked in clio-kit. The server finds ngspice or
-# LTspice on this machine itself; it has no needs, and the catalogue's prerequisite note
-# says one must be installed (`requires`). The group, Electronics, comes from clio-kit's
-# clio-electronics bundle (derive.yaml).
+# LTspice on this machine itself; "Where the simulator is" points it at one installed outside
+# PATH (a user-folder install; the spice plugin's install-simulator skill), and ltspice-mcp
+# skips an empty value. The catalogue's prerequisite note says one must be installed
+# (`requires`). The group, Electronics, comes from clio-kit's clio-electronics bundle
+# (derive.yaml).
 # ltspice-mcp ships no mark, so its logo, spice.svg, is ours: a circuit chip drawn for
 # CLIO (apps ledger, "Connector logos (LG)").
 - id: spice
@@ -14,4 +16,13 @@
   server:
     command: clio-kit
     args: [mcp-server, spice]
-  needs: []
+    env:
+      LTSPICE_MCP_SIMULATOR_EXE: ${need.simulator}
+  needs:
+    - key: simulator
+      kind: value
+      label: Where the simulator is
+      required: false
+      agent_settable: true
+      help: Leave empty to find ngspice or LTspice on this machine. Otherwise the path to the ngspice or LTspice program to use.
+  plugin: spice

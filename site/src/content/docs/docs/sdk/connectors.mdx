@@ -31,7 +31,6 @@ connection (below). People never see that plugin; they add the connector.
   - burette.svg
   - earthdata.yaml
   - geo.yaml
-  - globe.yaml
   - home-assistant.yaml
   - paraview.yaml
   - paraview.svg
@@ -111,6 +110,7 @@ A remote server is a URL, with optional headers:
 | `logo` | No | An SVG file name beside the entry. Without one, CLIO shows a monogram. |
 | `plugin` | No | The plugin that follows this connector, shown on the card as **Agent guidance** with the plugin's title. |
 | `tools` | No | The server's tools this connector offers. Absent means all. The others are hidden from the agent and from `search_tools`. A listed name the server lacks is reported, not silently dropped. |
+| `hide_tools` | No | Glob patterns of the server's tools this connector does not offer, such as `sim_*`. The connector's proxy lists none of them and refuses each by name, so they reach no agent. Use it to leave out what another connector does better, without changing the server. |
 
 `${VAR}` in a server field is filled from CLIO's environment, as in
 [`mcp.yaml`](/docs/mcp-servers/#environment-variables).
@@ -127,6 +127,7 @@ A remote server is a URL, with optional headers:
 | `default` | Used when the person gives nothing. Not for a secret or a sign-in. |
 | `agent_settable` | Default `false`. `true` lets the agent set it with `set_connector_value`. Not for a secret or a sign-in. |
 | `options` | A list of choices, shown as a picker. Only for a `value`. |
+| `group` | A heading the card shows this need under, once, with the others of the same group, such as `Part catalogs`. |
 
 Each kind is shown and placed differently:
 
@@ -219,9 +220,30 @@ it may change with `set_connector_value`. See [Plugin reference](/docs/sdk/plugi
 In a conversation, the agent sees the connectors and plugins it does not have yet:
 every connector first, then the plugins of the marketplaces the person added, the most
 recently added marketplace first, up to `plugins.offer_listed` (default 20) with the
-total. Each is listed by name with the start of its description, about 100 characters.
+total. The person can change that list (Settings, "Plugins CLIO can offer", or
+`GET`/`PUT`/`DELETE /v1/plugins/offer-list`): their ticks are kept as an overlay on the
+default, `exclude` inside the first 20 and `include` beyond them, in the user
+`config.yaml` under `plugins.offer`. Each is listed by name with the start of its
+description, about 100 characters.
 Put what it does in those first words, so the agent can tell when a request needs it.
-The agent offers one with `offer_plugin`; the person's **Add** is the consent.
+The facts say how many more there are, and how many of those the person left out.
+`offer_plugin` with `search` (words matched against the id, name, summary, category and
+keywords) or `category` (a connector's Discover group, a plugin's marketplace category)
+finds the others, each marked whether it is listed and whether the person left it out;
+with nothing named it gives the categories and counts. Give a plugin `keywords` and a
+`category` so it can be found. The agent offers one with `offer_plugin`; the person's
+**Add** is the consent.
+
+A connector can work without an optional need and better with it: a parts search with
+no key, and more catalogs with one. `offer_plugin` with no plugin also lists
+`optional_needs`, the empty optional needs of the connectors already in the
+conversation. When a tool's result shows a key would help, the agent calls
+`offer_plugin` with the connector, its reason and `needs` set to those keys. The person
+sees the connector's card with only those rows and types the values there, never in
+the chat. A secret goes to the credential store and the server restarts with it; the
+agent then calls the tool again. **Not now** is a refusal, and the same needs are not
+asked again in that conversation. So say in your tool's failure what a key would add
+and by which variable, and give the need a `help` line that says the same.
 
 ## For MCP App authors
 
@@ -334,6 +356,35 @@ of the frame itself. It needs nothing from you. It paints canvases (WebGL includ
 images, SVG and one-line text. Frames or pixels from another origin cannot be
 painted, and the result says so; keep nested frames on your own origin or your
 declared service.
+
+### What lies under a mark: `describe_region`
+
+When a person draws a mark on your view, CLIO's picture shows where it is but not what
+is there. If your view offers an app tool named `describe_region`, CLIO calls it once
+per mark with the mark's rectangle in your view's CSS pixels:
+
+```json
+{"x": 412, "y": 160, "width": 220, "height": 140}
+```
+
+Return a PNG of that region drawn by your view, and what lies under it as data:
+
+```json
+{
+  "content": [
+    {"type": "image", "data": "<base64 PNG>", "mimeType": "image/png"},
+    {"type": "text", "text": "{\"footprints\": [...], \"nets\": [\"GND\"]}"}
+  ],
+  "structuredContent": {"footprints": [{"reference": "U1", "layer": "F.Cu"}], "nets": ["GND"]}
+}
+```
+
+Your picture replaces CLIO's crop for that mark, and the agent reads the data as
+"Under the mark", one line per key: say what the region holds in your domain's terms
+(the KiCad board view returns the footprints, pads, tracks and nets with layers and
+millimetre coordinates). A view without the tool gets marks with their rectangle and a
+note that it could not describe them. This is CLIO's convention; other hosts ignore the
+tool.
 
 ## Next steps
 

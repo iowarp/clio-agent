@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 
 from clio_agent.connectors import entries as entries_mod
 from clio_agent.connectors import listing, materialize, secrets, state
+from clio_agent.connectors import refresh as saved_copy
 from clio_agent.connectors.entries import Entry, Need
 from clio_agent.connectors.overlay import value_problem
 from clio_agent.gact.events import Event
@@ -96,6 +97,7 @@ def need_row(found: Entry, choice: state.Choice, need: Need) -> dict[str, Any]:
         "agent_settable": need.agent_settable,
         "default": need.default,
         "options": list(need.options),
+        "group": need.group or None,
         "value": value,
         "has_value": has_value(found, choice, need),
     }
@@ -282,6 +284,9 @@ async def rows(app: Any, *, refresh: bool = False) -> list[dict[str, Any]]:
     stale = []
     for connector_id, found in found_all.items():
         choice = choices.get(connector_id, state.Choice())
+        if choice.enabled:  # the saved copy follows an entry a release changed
+            saved = saved_connection(connector_id)
+            saved_copy.refresh(found, saved, lambda f=found, c=choice: save_connection(f, c))
         if not choice.enabled or any(n.kind != "sign-in" for n in missing(found, choice)):
             continue
         cached = _probes(app).get(connector_id)

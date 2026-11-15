@@ -40,6 +40,7 @@ from clio_agent.arc import history_mode
 from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
+from clio_agent.gact.prompt_pieces import with_offer_category
 from clio_agent.gact.runtime.context_tokens import (
     _bucket_context_categories,
     _resolve_expert_context_window,
@@ -206,7 +207,9 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             autocompact_pct=autocompact_pct,
             live_block_count=len(segments),
             tokens_by_kind=tokens_by_kind,
-            categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
+            categories=with_offer_category(
+                _bucket_context_categories(tokens_by_kind, used, live_tokens), segments
+            ),
             prompt_breakdown=stored_usage.get("prompt_breakdown"),
             usage_recorded_at=stored_usage.get("recorded_at"),
             segments=[msgspec.to_builtins(s) for s in segments],

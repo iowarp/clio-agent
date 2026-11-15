@@ -416,7 +416,7 @@ def _not_open_text(tool: AppTool, still_open: bool) -> str:
 
 
 def call_app_tool(agent_name: str, arguments: Mapping[str, Any]) -> str:
-    """Run one view tool for the agent; the text blocks of the view's answer."""
+    """Run one view tool for the agent; the text of the view's answer, its images attached."""
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
         declare_structured_content,
     )
@@ -466,6 +466,12 @@ def call_app_tool(agent_name: str, arguments: Mapping[str, Any]) -> str:
         outcome = "view_error" if (call.result or {}).get("isError") else "returned"
         if outcome == "view_error":
             text = f"The {tool.server} view reported an error from {tool.name}: {text}"
+        else:  # a view's capture reaches the model as an image, as a server's does
+            from clio_agent.tools.mcp_result_media import show_to_model  # noqa: PLC0415
+
+            shown = show_to_model(call.result, agent_name)
+            if shown:
+                text = f"{text}\n[{shown} image{'s' if shown > 1 else ''} attached]"
     declare_structured_content({**base, **_identity(tool), "outcome": outcome, "text": text})
     return text
 

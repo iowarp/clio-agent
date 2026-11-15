@@ -60,3 +60,17 @@ def test_a_session_keeps_the_last_tools_when_a_proxy_drops_the_sign_in_type(
         mcp_readiness._connector_tools_kept(_executor(), "fixture-plain", plain, _proxied_error())
         is None
     )
+
+
+def test_offered_leaves_out_the_tools_the_entry_hides(monkeypatch: Any) -> None:
+    """The count a connector shows is what reaches the agent: ``hide_tools`` applies."""
+
+    entry = SimpleNamespace(hide_tools=("sim_*",), tools=())
+    monkeypatch.setattr(state, "all_entries", lambda: {"boards": entry})
+    tools = [
+        Tool(name=name, inputSchema={"type": "object"})
+        for name in ("pcb_move", "sim_run_ac", "sim_add_directive", "view_board")
+    ]
+    assert [tool.name for tool in listing.offered("boards", tools)] == ["pcb_move", "view_board"]
+    rows = [{"name": "sim_run_ac"}, {"name": "pcb_move"}]
+    assert listing.offered("boards", rows) == [{"name": "pcb_move"}]

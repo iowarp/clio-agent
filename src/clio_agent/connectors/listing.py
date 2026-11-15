@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -107,7 +108,7 @@ def held_for_setup(connector_id: str, error: BaseException) -> bool:
 def offered(connector_id: str, tools: list[Any]) -> list[Any]:
     """The listed tools (MCP ``Tool`` objects or rows) the connector's entry offers.
 
-    All of them when the entry names none.
+    All of them when the entry names none, less those its ``hide_tools`` patterns hide.
 
     A name the entry lists that the server does not have is a typed trace,
     ``connector_tool_not_listed``, never a silent drop.
@@ -116,6 +117,9 @@ def offered(connector_id: str, tools: list[Any]) -> list[Any]:
     from clio_agent.connectors import state  # noqa: PLC0415
 
     entry = state.all_entries().get(connector_id)
+    hidden = tuple(getattr(entry, "hide_tools", ()) or ())
+    if hidden:
+        tools = [tool for tool in tools if not any(fnmatchcase(_name(tool), p) for p in hidden)]
     allowed = tuple(getattr(entry, "tools", ()) or ())
     if not allowed:
         return tools

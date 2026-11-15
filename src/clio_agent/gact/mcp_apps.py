@@ -51,7 +51,7 @@ from clio_agent.gact.runtime.globals import (
     _tool_session_context,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
-from clio_agent.tools import call_origin
+from clio_agent.tools import call_origin, view_only_results
 from clio_agent.tools.mcp_extension_registry import (
     MCP_APP_MIME_TYPE as MCP_APP_MIME_TYPE,
 )
@@ -548,6 +548,9 @@ def _make_mcp_app_observer(app: FastAPI):
                 tool=name,
                 source_namespace=source_namespace or "",
             )
+            return
+        if view_only_results.active() is not None:
+            _record_observer_skip("mcp_app_skipped_view_only_call", tool=name)
             return
         result_wire = call_tool_result_to_wire(raw_result)
         if result_wire.get("isError") is True:

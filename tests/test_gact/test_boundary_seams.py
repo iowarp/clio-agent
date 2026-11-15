@@ -115,8 +115,13 @@ async def test_shell_and_run_code_attach_the_same_diagnosis(
 
 @pytest.mark.asyncio
 async def test_a_shell_failure_inside_the_territory_carries_no_boundary(
-    fenced: tuple[Path, Path],
+    fenced: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from clio_agent.runtime import sandbox_diagnosis
+
+    # An ordinary account's server, whoever runs the tests: a root server's child lacks
+    # root's privileges, which is its own diagnosis (test_outside_sandbox.py).
+    monkeypatch.setattr(sandbox_diagnosis, "_server_is_root", lambda: False)
     workspace, _ = fenced
     shell, _text = await _shell(
         workspace, f"'{sys.executable}' -c \"{_raise_denial(workspace / 'locked.csv')}\""

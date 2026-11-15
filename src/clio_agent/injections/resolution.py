@@ -25,7 +25,7 @@ injection's text with its source. A switched-off injection is traced with
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -320,3 +320,34 @@ def fire(
         if row.event == event and (not row.tool or fnmatch.fnmatchcase(tool, row.tool))
     ]
     return _plugin_texts(rows, variables, app, session_id)
+
+
+def item_chars(
+    name: str,
+    variables_for: Callable[[int], Mapping[str, Any]],
+    count: int,
+    *,
+    app: Any = None,
+    session_id: str = "",
+) -> list[int]:
+    """How many characters each of ``count`` items adds to core injection ``name``'s text.
+
+    ``variables_for(k)`` gives the variables with the first ``k`` items; item ``k`` is
+    the difference between the text with ``k + 1`` and with ``k`` of them. Measured on
+    the template itself, never by reading the text back, so it holds for a person's
+    edited template too. Plugin additions on the event are not items. ``[]`` when the
+    injection is off.
+    """
+    app, session_id = _context(app, session_id)
+    found = _resolved_all(app, session_id).get(name)
+    if found is None or found.plugin != "core" or not found.active or count <= 0:
+        return []
+    sizes = [
+        len(
+            render_text(
+                found.text, _variables(found.text, variables_for(k), app, session_id, name), name
+            )
+        )
+        for k in range(count + 1)
+    ]
+    return [max(0, after - before) for before, after in zip(sizes, sizes[1:], strict=False)]

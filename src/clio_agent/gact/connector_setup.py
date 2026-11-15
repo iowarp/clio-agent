@@ -52,7 +52,7 @@ _INTERACTION_STATUS: dict[str, Literal["pending", "answered", "denied"]] = {
     "declined": "denied",
 }
 #: The card intents that are the agent's offer (connector discovery, plugin discovery).
-OFFER_INTENTS = frozenset({"enable", "add_plugin"})
+OFFER_INTENTS = frozenset({"enable", "add_plugin", "values"})
 
 
 def _rows(app: Any) -> dict[str, dict[str, Any]]:
@@ -260,9 +260,7 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
                 owner_session_id=row["session_id"],
                 attended_session_id=attended_session_id(app, row["session_id"]),
                 status=_INTERACTION_STATUS.get(row["status"], "cancelled"),
-                title=f"Add {row['connector_name']} to this conversation"
-                if offer
-                else f"Set up {row['connector_name']}",
+                title=_offer_title(row) if offer else f"Set up {row['connector_name']}",
                 prompt=f"The agent offers {row['connector_name']}: {row.get('reason') or ''}".strip()
                 if offer
                 else f"{row['tool_name']} waits for {row['connector_name']} to be set up.",
@@ -303,6 +301,13 @@ def projected(app: Any, owners: set[str]) -> list[Any]:
             )
         )
     return out
+
+
+def _offer_title(row: Mapping[str, Any]) -> str:
+    if row.get("intent") == "values":
+        labels = ", ".join(str(need.get("label") or need.get("key")) for need in row["missing"])
+        return f"{row['connector_name']}: add {labels}?"
+    return f"Add {row['connector_name']} to this conversation"
 
 
 def _plugin_fields(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -351,7 +356,7 @@ async def respond(
         from clio_agent.gact import agent_needs  # noqa: PLC0415
 
         await agent_needs.answer(app, row, action, values, metadata or {})
-    elif row.get("intent") == "enable":
+    elif row.get("intent") in ("enable", "values"):  # "values": connector_needs_offer
         from clio_agent.gact.connector_offer import answer  # noqa: PLC0415
 
         await answer(app, row, action, values, metadata or {})

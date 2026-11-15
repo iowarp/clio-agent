@@ -22,9 +22,9 @@ from clio_agent.search.fetch import web_fetch as _web_fetch
 from clio_agent.search.web import web_search as _web_search
 from clio_agent.search.web_sources import WebQuery
 from clio_agent.tools.builtin_annotations import _WEB_ANNOTATIONS
-from clio_agent.tools.servers.search_questions import answered_run
+from clio_agent.tools.servers.search_questions import answered_run, person_round_security
 
-web_server = FastMCP("web")
+web_server = FastMCP("web", request_state_security=person_round_security())
 
 
 @web_server.tool(annotations=_WEB_ANNOTATIONS)

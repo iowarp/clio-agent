@@ -106,8 +106,14 @@ def conversation_connectors(app: Any, session_id: str) -> dict[str, list[str]] |
     except (SessionAgentUnavailable, RuntimeError) as exc:
         trace.event("TOOLS", "connector_offer_agent_unresolved session=%s (%s)", session_id, exc)
         return None
+    return followed_by(resolution.plugins)
+
+
+def followed_by(plugins: Any) -> dict[str, list[str]]:
+    """The connectors a resolution's plugin rows follow, with those plugins' ids."""
+
     out: dict[str, list[str]] = {}
-    for row in resolution.plugins:
+    for row in plugins:
         if row.get("follows"):
             out.setdefault(str(row["follows"]), []).append(str(row["id"]))
     return out
@@ -116,11 +122,17 @@ def conversation_connectors(app: Any, session_id: str) -> dict[str, list[str]] |
 def offerable(app: Any, session_id: str) -> list[Any]:
     """The connectors whose plugin this conversation does not have, on or off, by name."""
 
-    from clio_agent.connectors import state  # noqa: PLC0415
-
     here = conversation_connectors(app, session_id)
     if here is None:
         return []
+    return offerable_beside(here)
+
+
+def offerable_beside(here: Mapping[str, Any]) -> list[Any]:
+    """The connectors offerable beside ``here`` (connector id -> its plugins present)."""
+
+    from clio_agent.connectors import state  # noqa: PLC0415
+
     on = {cid for cid, choice in state.choices().items() if choice.enabled}
     # A plugin of the agent that declares a connector's clio-kit server keeps its skills
     # while the connector is off, but not the server (LZ-D8): still offerable to enable.
@@ -229,6 +241,27 @@ async def answer(
     except service.ConnectorError as exc:
         raise SetupResponseError(exc.status, exc.code, str(exc)) from None
     sid = str(row["session_id"])
+    # What the person actually gave: a card can ask for more than they fill in.
+    row["given"] = sorted(key for key, value in (values or {}).items() if value not in (None, ""))
+    if row.get("intent") == "values":
+        # The connector is already on here: its values reach this conversation the way the
+        # setup card's do, by moving the conversation to a fleet that has them.
+        from clio_agent.gact.connector_values import set_session_values  # noqa: PLC0415
+
+        try:
+            await set_session_values(
+                app, sid, found.id, values or {}, by_agent=False, save_as_default=list(defaults)
+            )
+        except service.ConnectorError as exc:
+            raise SetupResponseError(exc.status, exc.code, str(exc)) from None
+        row.update(status="submitted", enabled_now=False, plugins=[], updated_at=_now())
+        trace.event(
+            "TOOLS",
+            "connector_values_given connector=%s keys=%s",
+            found.id,
+            ",".join(row["given"]),
+        )
+        return
     if secret:
         await asyncio.to_thread(secrets.save, found.id, secret)
     if defaults:

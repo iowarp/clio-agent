@@ -5,7 +5,8 @@ servers) while this conversation does not carry it. The agent learns which plugi
 could offer from the ``session_facts_plugins`` piece of the session facts
 (:func:`offerable_facts`): every plugin of the person's library this conversation does
 not have, and every connector whose plugin it does not have, on or off, each as
-``name (id): one-line summary``, capped (``plugins.offer_listed``) with the total. It
+``name (id): one-line summary``, capped (``plugins.offer_listed``) with the total, and
+with the person's choice over that list (:mod:`clio_agent.gact.offer_list`). It
 offers one with the native tool ``offer_plugin(plugin, reason)``. The model decides
 whether a request needs one; CLIO never adds a plugin by itself.
 
@@ -120,12 +121,49 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
     row ``{kind: plugin, id, ref, name, marketplace, summary}``.
     """
 
-    from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact.connector_offer import offerable as connectors  # noqa: PLC0415
 
     here = _here(app, session_id)
     if here is None:
         return []
+    return _ordered(app, connectors(app, session_id), here)
+
+
+def default_offerable(app: Any) -> list[dict[str, Any]]:
+    """What a new conversation with the person's default agent could take, in order.
+
+    The default agent is resolved without pinning (no session is touched). Raises
+    :class:`~clio_agent.gact.agents.resolution.SessionAgentUnavailable` (typed) when it
+    does not resolve.
+    """
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        default_agent_ref,
+        plugin_service,
+    )
+    from clio_agent.gact.connector_offer import followed_by, offerable_beside  # noqa: PLC0415
+    from clio_agent.plugins.resolve import ResolutionError  # noqa: PLC0415
+    from clio_agent.plugins.service import AgentNotFound  # noqa: PLC0415
+
+    ref = default_agent_ref(app)
+    try:
+        resolution = plugin_service(app).resolve(ref, pin=False)
+    except AgentNotFound as exc:
+        raise SessionAgentUnavailable(ref, exc.reason, [{"code": exc.reason}]) from exc
+    except ResolutionError as exc:
+        diagnostics = [row.to_dict() for row in exc.diagnostics]
+        raise SessionAgentUnavailable(ref, "agent_resolution_failed", diagnostics) from exc
+    here = {str(row["id"]) for row in resolution.plugins}
+    return _ordered(app, offerable_beside(followed_by(resolution.plugins)), here)
+
+
+def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict[str, Any]]:
+    """The rows for ``found_connectors`` and the library plugins not in ``here``, ordered
+    as the session facts list them."""
+
+    from clio_agent.connectors import state  # noqa: PLC0415
+
     rows: list[dict[str, Any]] = [
         {
             "kind": "connector",
@@ -134,8 +172,10 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
             "summary": summary(found.description),
             "enabled": state.choice(found.id).enabled,
             "kit": bool(found.kit),
+            # Discover's group: what offer_plugin searches by category (OL-D11).
+            "category": found.group or "",
         }
-        for found in connectors(app, session_id)
+        for found in found_connectors
     ]
     # Grouped by marketplace, the most recently added first: a marketplace the person
     # just added is not hidden behind the cap by an older, larger one (CF-D4).
@@ -158,6 +198,8 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
             "name": record.id,
             "marketplace": record.marketplace,
             "summary": summary(record.description),
+            "category": record.category,
+            "keywords": list(record.keywords),
         }
         for record in library(app)
         if record.id not in here
@@ -188,12 +230,19 @@ def _followed(app: Any) -> set[str]:
     }
 
 
-def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int]:
-    """The rows the session facts name (at most ``offer_listed``), and how many there are."""
+def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int, int]:
+    """The rows the session facts name, how many could be added, and how many of those
+    the person left out in Settings.
+
+    The first ``offer_listed`` rows, with the person's choice over them
+    (:mod:`clio_agent.gact.offer_list`): unticked ones left out, ones ticked beyond the
+    cap added, in order. The total counts every candidate (left-out ones too): the facts
+    say how many more there are and that ``offer_plugin`` finds them (OL-D11).
+    """
 
     # No session store (an app built without one) means no conversation to offer to.
     if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
-        return [], 0
+        return [], 0, 0
     from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415
 
@@ -201,8 +250,15 @@ def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], in
         rows = offerable(app, session_id)
     except (StoreError, ConnectorStateError) as exc:  # unreadable stores: no facts this step
         trace.event("TOOLS", "plugin_offer_facts_unavailable (%s)", type(exc).__name__)
-        return [], 0
-    return rows[: offer_listed()], len(rows)
+        return [], 0, 0
+    from clio_agent.gact.offer_list import listed, not_excluded, overlay_or_default  # noqa: PLC0415
+
+    chosen = overlay_or_default()
+    return (
+        listed(rows, offer_listed(), chosen),
+        len(rows),
+        len(rows) - len(not_excluded(rows, chosen)),
+    )
 
 
 def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, Any]]:
@@ -225,12 +281,21 @@ def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, 
 
 
 def search_note(rows: list[dict[str, Any]]) -> str:
-    """What a tool search found to add rather than to call."""
+    """What a tool search found to add rather than to call; a row the person left out in
+    Settings says so (OL-D11)."""
 
-    named = "; ".join(f'{row["name"]} ({row["kind"]}, id "{row["id"]}")' for row in rows)
+    from clio_agent.gact.offer_list import entry_key, overlay_or_default  # noqa: PLC0415
+
+    left_out = overlay_or_default().exclude
+
+    def named(row: dict[str, Any]) -> str:
+        mark = ", left out by the person in Settings" if entry_key(row) in left_out else ""
+        return f'{row["name"]} ({row["kind"]}, id "{row["id"]}"{mark})'
+
     return (
-        f"Not in this conversation, but it can be added: {named}. offer_plugin asks the "
-        "person to add it; its tools join this conversation once they accept."
+        f"Not in this conversation, but it can be added: {'; '.join(named(r) for r in rows)}. "
+        "offer_plugin asks the person to add it; its tools join this conversation once they "
+        "accept."
     )
 
 
@@ -403,8 +468,16 @@ async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> 
 # -------------------------------------------------------------------- the tool
 
 
-async def offer_plugin(reason: str, plugin: str = "") -> dict[str, Any]:
+async def offer_plugin(
+    reason: str,
+    plugin: str = "",
+    search: str = "",
+    category: str = "",
+    needs: list[str] | None = None,
+) -> dict[str, Any]:
     """Offer to add a plugin or connector to this conversation; wait for Add or Not now.
+    With ``search`` or ``category`` instead, find what could be added (OL-D11). With
+    ``needs`` and a connector already here, ask the person for those optional needs.
 
     ``reason`` is required (schema: no default, at least one character): the card shows
     the person why the agent asks, so an offer without one is a validation error the
@@ -420,24 +493,42 @@ async def offer_plugin(reason: str, plugin: str = "") -> dict[str, Any]:
             "error": "plugin_offer_no_conversation",
             "message": "No conversation can show the offer.",
         }
+    if plugin.strip():  # named: offered even when left out of the list (OL-D3)
+        kind, found = await asyncio.to_thread(_match, app, plugin)
+        if kind == "connector" and needs:
+            from clio_agent.gact.connector_needs_offer import offer_needs  # noqa: PLC0415
+
+            return await offer_needs(found, reason, needs)
+        if kind == "connector":
+            return await connector_offer.offer_connector(connector=found.id, reason=reason)
+        if kind == "plugin":
+            return await _offer_plugin(app, session_id, found, reason)
+    from clio_agent.gact import offer_search  # noqa: PLC0415
+    from clio_agent.gact.offer_list import listed, overlay_or_default  # noqa: PLC0415
+
+    chosen = await asyncio.to_thread(overlay_or_default)
     rows = await asyncio.to_thread(offerable, app, session_id)
-    if not plugin.strip():
+    shown = listed(rows, offer_listed(), chosen)
+    if plugin.strip():
         return {
-            "offerable": rows,
-            "message": f"{len(rows)} plugin{'s' if len(rows) != 1 else ''} and connectors "
-            "the person can add to this conversation."
-            if rows
-            else "Nothing more can be added to this conversation.",
+            "error": "plugin_not_found",
+            "message": f"No plugin or connector {plugin!r} the person has; the closest by "
+            "its words follow, if any.",
+            **offer_search.search_result(
+                rows, shown, set(chosen.exclude), offer_listed(), search=plugin
+            ),
         }
-    kind, found = await asyncio.to_thread(_match, app, plugin)
-    if kind == "connector":
-        return await connector_offer.offer_connector(connector=found.id, reason=reason)
-    if kind == "plugin":
-        return await _offer_plugin(app, session_id, found, reason)
+    if search.strip() or category.strip():
+        return offer_search.search_result(
+            rows, shown, set(chosen.exclude), offer_listed(), search=search, category=category
+        )
+    from clio_agent.gact.connector_needs_offer import optional_needs  # noqa: PLC0415
+
     return {
-        "error": "plugin_not_found",
-        "message": f"No plugin or connector {plugin!r} the person has.",
-        "offerable": rows,
+        **offer_search.overview(rows, len(shown), set(chosen.exclude)),
+        # The connectors already here and their empty optional needs (such as API keys),
+        # which ``needs`` can ask the person for.
+        "optional_needs": await asyncio.to_thread(optional_needs, app, session_id),
     }
 
 
@@ -450,25 +541,49 @@ def build_offer_plugin_tool() -> Any:
         domain="tasks",
         title="Offer plugin",
         desc=(
-            "Offer to add one of the plugins or connectors the session facts list as not in "
-            "this conversation, when the person's request needs what it brings. The person "
-            "sees its name and your reason and chooses Add or Not now; you never add it "
-            "yourself. A connector's card also turns it on and asks for what it needs. On "
+            "Offer to add one of the plugins or connectors the person has that this "
+            "conversation does not, when the person's request needs what it brings. The "
+            "person sees its name and your reason and chooses Add or Not now; you never add "
+            "it yourself. A connector's card also turns it on and asks for what it needs. On "
             "Add its tools and skills are yours from your next step and you continue the "
-            "request; on Not now you get a refusal and nothing changed. With no plugin it "
-            "lists everything the person can add."
+            "request; on Not now you get a refusal and nothing changed. The session facts "
+            "list some of them; search (words) or category finds the others, each marked "
+            "listed or not and whether the person left it out in Settings. With nothing "
+            "named it gives the categories and counts, and the optional needs (such as API "
+            "keys) of the connectors already here. With needs it asks the person for those of "
+            "a connector already here, when a tool's result shows they would help."
         ),
         args={
             "plugin": {
                 "type": "string",
-                "description": "The id or name of the plugin or connector, as the list gives it.",
+                "description": "The id or name of the plugin or connector to offer.",
+            },
+            "search": {
+                "type": "string",
+                "description": (
+                    "Words to find plugins and connectors by (all must appear in the id, "
+                    "name, summary, category or keywords). Finds; does not offer."
+                ),
+            },
+            "category": {
+                "type": "string",
+                "description": "A category the overview names, to list what it holds.",
             },
             "reason": {
                 "type": "string",
                 "minLength": 1,
                 "description": (
                     "Required. One sentence for the person, shown on the card: why this "
-                    "request needs it and what it would do here."
+                    "request needs it and what it would do here. For a search, what you are "
+                    "looking for."
+                ),
+            },
+            "needs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional. Keys of a connector's optional needs to ask for (from "
+                    "optional_needs), for a connector already in this conversation."
                 ),
             },
         },

@@ -142,6 +142,13 @@ in when it is first used. A required value that is missing shows on the card.
 
 The agent knows which connectors and plugins this conversation does not have: each by
 name, with a line about what it does and, for a plugin, the marketplace it comes from.
+It is told about the first 20 (`plugins.offer_listed`) and how many there are. To
+choose which, open **Settings → Extensions and connectors → Plugins CLIO can offer →
+Choose…**: every candidate is listed with a tick box, the default 20 marked **Default**.
+Untick one the agent should not offer, tick one beyond the 20 it should, then **Save**;
+**Reset to default** brings back the 20. The change applies from the agent's next turn.
+The agent is also told how many more there are, and can search them by words or by
+category; one you left out shows as left out, so it can say it exists.
 When your request needs one, it asks with a card instead of guessing or working around
 it. The card has four rows:
 
@@ -337,13 +344,6 @@ be linked to a table both ways. See the [Apps walk-through](/docs/apps/).
 The globe needs the Geo server 2.4.0 or later, which comes with the `clio-kit` release
 that carries it. The globe is drawn with CesiumJS, loaded from cesium.com, over
 OpenStreetMap tiles.
-
-### 3D globe
-
-Runs the [MCP Apps map example server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/map-server)
-(`@modelcontextprotocol/server-map` 2.0.4) through `npx`, and frames a named region on
-a 3D globe. It needs Node.js 20 or later. It does not draw points, outlines or GeoJSON,
-and it does not zoom closer than about 500 km above the ground; use Geo for those.
 
 ### PDF viewer
 

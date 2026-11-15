@@ -45,7 +45,7 @@ from clio_agent.gact.permission_gate import resolve_permission
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.grant_resolver import migrate_priorities
 from clio_agent.gact.runtime.grants import GRANTOR_USER
-from clio_agent.gact.runtime.permission_actions import offered
+from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS, offered
 from clio_agent.gact.runtime.permission_policies import (
     _PERMISSION_POLICY_ACTIONS,
     _PERMISSION_POLICY_SCOPES,
@@ -158,11 +158,9 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 status_code=422,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="internal_error",
-                        message=(
-                            "action must be one this question offers: allow, deny, "
-                            "allow_session, allow_workspace, or one listed in its actions"
-                        ),
+                        error="invalid_action",
+                        message="action must be one this question offers: "
+                        + ", ".join(row.get("actions") or STANDARD_ANSWERS),
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
