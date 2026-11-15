@@ -233,8 +233,9 @@ class PluginService:
         extra_ids = {(r.marketplace, r.id) for r in extra or []}
         return Catalog(
             records=records,
-            trusted=lambda record: (record.marketplace, record.id) in extra_ids
-            or self.store.trusted(record),
+            trusted=lambda record: (
+                (record.marketplace, record.id) in extra_ids or self.store.trusted(record)
+            ),
             native_tools=self._native_tools
             if self._native_tools is not None
             else native_tool_names(),
