@@ -321,6 +321,41 @@ def test_restart_after_stop_keeps_finished_steps(flow_app: TestClient) -> None:
     wait_until(lambda: len(assistant_messages(flow_app, sid)) > answered, timeout=60)
 
 
+def test_restart_after_a_restart_and_stop_ignores_a_cut_off_call(
+    flow_app: TestClient,
+) -> None:
+    """A crash cut off a call under the running step; Stop, then restart, still works.
+
+    SABOTAGE: drop ``uncertain_call`` from ``prepare_terminal_restart.settled`` and the
+    restart is refused ("Restart descendant settlement remains unconfirmed").
+    """
+    gate = threading.Event()
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _workflow_starter(flow_app, gate)
+    try:
+        post(flow_app, sid, "run the workflow")
+        handle = wait_until(lambda: started.get("handle"))
+        wait_until(lambda: started["attempts"].get("measure") == 1, timeout=60)
+        measure = wait_until(lambda: _steps(flow_app, handle).get("measure"))
+        orphan = _orphaned_call(flow_app, measure)
+        response = flow_app.post(f"/v1/sessions/{sid}/cancel", json={"children": "stop"})
+        assert response.status_code == 204
+    finally:
+        gate.set()
+    wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, handle).status == "cancelled"
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+    response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
+    assert response.status_code == 200, response.text
+    history = flow_app.app.state.task_history
+    restarted = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle != handle and latest
+    )
+    wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, restarted.handle).status == "completed"
+    assert _snapshot(flow_app, orphan).status == "task_state_uncertain"
+
+
 def test_a_started_flow_is_linked_to_the_model_call_that_started_it(
     flow_app: TestClient,
 ) -> None:

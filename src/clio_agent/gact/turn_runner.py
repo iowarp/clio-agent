@@ -35,9 +35,18 @@ def _stopped(app: Any, sid: str, error: BaseException) -> bool:
 
     if isinstance(error, _TurnCancelled | asyncio.CancelledError | CallCancelled):
         return True
-    history = getattr(getattr(app, "state", None), "task_history", None)
-    assignment = history.latest_assignment(sid) if history is not None else None
-    return assignment is not None and assignment.cancellation_requested_at is not None
+    state = getattr(app, "state", None)
+    history = getattr(state, "task_history", None)
+    if history is None or getattr(state, "conversations", None) is None:
+        return False
+    assignment = history.latest_assignment(sid)
+    if assignment is None:
+        return False
+    from clio_agent.flows.stop import _requested  # noqa: PLC0415
+
+    # Admission's own answer: a stop on this assignment or an ancestor (recorded on the
+    # ancestor first, so a flow can fail on its cancelled members before its own mark).
+    return _requested(app, assignment.handle)
 
 
 # Typed reason recorded on every turn the runner cancels during shutdown drain —
