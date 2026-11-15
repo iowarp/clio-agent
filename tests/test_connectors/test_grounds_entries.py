@@ -79,7 +79,7 @@ def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) ->
 
 #: The connectors whose servers clio-kit runs from a pinned upstream release (apps ledger,
 #: "Connectors moved into clio-kit (KM)"): connector id == clio-kit server name.
-KIT_UPSTREAM = ("pdf", "globe", "earthdata", "home-assistant", "spice")
+KIT_UPSTREAM = ("pdf", "earthdata", "home-assistant", "spice")
 
 
 @pytest.mark.parametrize("connector", KIT_UPSTREAM)
@@ -95,7 +95,7 @@ def test_an_upstream_server_starts_through_the_clio_kit_launcher(connector: str)
 
 
 def test_more_connectors_are_data_only() -> None:
-    """The PDF viewer and the 3D globe (MCP Apps) and NASA Earthdata are catalog entries only."""
+    """The PDF viewer (an MCP App) and NASA Earthdata are catalog entries only."""
 
     catalog = entries.load_catalog([SHIPPED])
     pdf = catalog.entries["pdf"]
@@ -109,8 +109,6 @@ def test_more_connectors_are_data_only() -> None:
     ]
     assert earthdata.server["env"]["EARTHDATA_PASSWORD"] == "${need.password}"
     assert earthdata.logo == "earthdata.svg" and earthdata.tools == ()
-    globe = catalog.entries["globe"]
-    assert globe.needs == () and globe.logo == "globe.svg" and globe.tools == ()
 
 
 def test_geo_is_a_data_only_entry_on_the_clio_kit_launcher() -> None:
