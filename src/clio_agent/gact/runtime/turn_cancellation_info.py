@@ -35,6 +35,17 @@ def turn_cancelled_by_shutdown(app: Any | None = None) -> bool:
     return getattr(server, "should_exit", False) is True
 
 
+def ended_by_shutdown(app: Any, outcome: Any) -> bool:
+    """Whether a turn that ended with an error did so because the server is stopping.
+
+    Such a segment is left open, as the shutdown drain leaves the turns it cancels, so
+    the restart resumes its assignment in place (``conversation_recovery``). Settling
+    it ``failed`` made a race decide between resumed and lost: a turn whose provider
+    child died with the server's own SIGTERM before the drain settled first (CC-F4).
+    """
+    return getattr(outcome, "error", None) is not None and turn_cancelled_by_shutdown(app)
+
+
 def shutdown_error_info(sid: str, exc: BaseException, *, app: Any | None = None) -> Any:
     """The cancellation a turn that failed while the server stops gets, or ``None``.
 
