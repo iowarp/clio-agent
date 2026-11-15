@@ -450,6 +450,39 @@ The first request fails at once with a message that interactive sign-in is neede
 Use an SSH key or agent that the host accepts.
 </Aside>
 
+### 3D-print slicer
+
+<Aside type="note" title="Coming with clio-kit">
+The slicer comes from clio-kit, as its `clio-slicer` plugin. It appears in Discover
+once the clio-kit release that CLIO uses ships it.
+</Aside>
+
+Slices a 3D model (STL, 3MF, STEP or OBJ) for a 3D printer and shows the result layer by
+layer, with a skill for choosing presets, orienting a part, adding supports and reading
+the estimates. It is listed under **Fabrication** in Discover.
+
+- **It uses the slicer you already have.** Install
+  [PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/) or
+  [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) first; its card says so while it
+  is off. CLIO finds `prusa-slicer` or `orca-slicer` on your path, or the program that
+  the `SLICER_BIN` environment variable names. It never downloads a slicer. If none is
+  found, the agent tells you so, and nothing is sliced.
+- **Say it the way you would say it to a person.** For example, "Slice the bracket for
+  a Prusa MK4 in PETG at 0.2 mm". The agent picks the printer, quality and material
+  presets that your slicer ships, and tells you which ones it used.
+- **The layer view** colours toolpaths by type, such as outer and inner walls, infill,
+  bridges, support and travel. Each type is named in the legend, with its share of the
+  print time and a switch to show or hide it. The view also has a layer slider, the
+  print time, the filament in grams and metres, the layer count and height, and the
+  slicer's warnings, written out. Click a toolpath to see its type, height and G-code
+  line. The agent can move the view to a layer, and a dashboard can link it to a chart
+  of time per layer.
+- **What stays where.** The G-code stays with the slicer's server until you ask for it.
+  The agent then writes it, or a table of time per layer, into your folder. Your
+  slicer's own settings are never read or changed.
+
+It never sends anything to a printer.
+
 ## Next steps
 
 <CardGrid>
