@@ -147,6 +147,74 @@ def test_stop_with_children_settles_a_flow_mid_gather(
     )
 
 
+def _orphaned_call(client: TestClient, member: str) -> str:
+    """A search a restart cut off under ``member``: uncertain, never resubmitted."""
+    from clio_agent.arc.task_types import TaskOwner, TaskProgress, TaskSnapshot
+    from clio_agent.gact.native_work import now
+
+    history = client.app.state.task_history
+    owner = _snapshot(client, member)
+    handle, stamp = "task_orphaned_search", now()
+    history.record_snapshot(
+        TaskSnapshot(
+            handle=handle,
+            kind="MCP",
+            owner=TaskOwner(
+                human_id=owner.owner.human_id,
+                session_id=owner.owner.session_id,
+                assignment_id=member,
+                parent_handle=member,
+            ),
+            tool="search",
+            label="search",
+            description="search: cut off by a restart",
+            description_missing=False,
+            invocation_id="call_orphaned",
+            created_at=stamp,
+            updated_at=stamp,
+            raw_status="accepted",
+            status="task_state_uncertain",
+            settlement="unknown",
+            progress=TaskProgress(message="Acceptance identity is unknown."),
+            attention_episode="orphaned",
+        ),
+        observation_id="fixture:orphaned",
+    )
+    return handle
+
+
+def test_stop_after_a_restart_settles_despite_a_cut_off_call(
+    flow_app: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A crash left a member's search uncertain; Stop everything still settles the tree.
+
+    SABOTAGE: drop ``orphaned`` from ``conversation_controls._cancel_subtree`` and the
+    member, the flow and the conversation stay ``task_state_uncertain`` for ever.
+    """
+    gate = threading.Event()
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _council_starter(flow_app, gate)
+    try:
+        post(flow_app, sid, "convene the council on the incident")
+        handle = wait_until(lambda: started.get("handle"))
+        members = wait_until(lambda: _members(flow_app, handle), timeout=60)
+        orphan = _orphaned_call(flow_app, members[0])
+        response = flow_app.post(f"/v1/sessions/{sid}/cancel", json={"children": "stop"})
+        assert response.status_code == 204, response.text
+    finally:
+        gate.set()
+    wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, handle).status == "cancelled"
+    for member in members:
+        wait_until(lambda m=member: _snapshot(flow_app, m).terminal_at is not None, timeout=60)
+        assert _snapshot(flow_app, member).status == "cancelled"
+    # The cut-off call keeps its own truthful status; nothing claims it was cancelled.
+    assert _snapshot(flow_app, orphan).status == "task_state_uncertain"
+    # The stop is an outcome: no turn worker is reported as failed.
+    failed = [r.getMessage() for r in caplog.records if "session_worker_failed" in r.getMessage()]
+    assert not failed, failed
+
+
 def test_stop_keeping_children_leaves_the_flow_running(flow_app: TestClient) -> None:
     gate = threading.Event()
     sid = new_session(flow_app, "clio/orchestrator")
@@ -251,6 +319,41 @@ def test_restart_after_stop_keeps_finished_steps(flow_app: TestClient) -> None:
     assert parent.invocation_id == "restart-child:" + handle
     assert _snapshot(flow_app, restarted.handle).owner.parent_handle == parent.handle
     wait_until(lambda: len(assistant_messages(flow_app, sid)) > answered, timeout=60)
+
+
+def test_restart_after_a_restart_and_stop_ignores_a_cut_off_call(
+    flow_app: TestClient,
+) -> None:
+    """A crash cut off a call under the running step; Stop, then restart, still works.
+
+    SABOTAGE: drop ``uncertain_call`` from ``prepare_terminal_restart.settled`` and the
+    restart is refused ("Restart descendant settlement remains unconfirmed").
+    """
+    gate = threading.Event()
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _workflow_starter(flow_app, gate)
+    try:
+        post(flow_app, sid, "run the workflow")
+        handle = wait_until(lambda: started.get("handle"))
+        wait_until(lambda: started["attempts"].get("measure") == 1, timeout=60)
+        measure = wait_until(lambda: _steps(flow_app, handle).get("measure"))
+        orphan = _orphaned_call(flow_app, measure)
+        response = flow_app.post(f"/v1/sessions/{sid}/cancel", json={"children": "stop"})
+        assert response.status_code == 204
+    finally:
+        gate.set()
+    wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, handle).status == "cancelled"
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+    response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
+    assert response.status_code == 200, response.text
+    history = flow_app.app.state.task_history
+    restarted = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle != handle and latest
+    )
+    wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, restarted.handle).status == "completed"
+    assert _snapshot(flow_app, orphan).status == "task_state_uncertain"
 
 
 def test_a_started_flow_is_linked_to_the_model_call_that_started_it(

@@ -20,6 +20,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _stopped(app: Any, sid: str, error: BaseException) -> bool:
+    """Whether a turn worker ended because its turn was stopped or cancelled.
+
+    The turn's own cancellation, a cancelled wait (a run retired at shutdown), a flow
+    whose called task was cancelled, and anything a flow raised once its assignment
+    was asked to stop (a council's ``GatherFailed`` over cancelled members) end the
+    turn as an outcome the run records (``flows.stop.stopped_ending``); none is a
+    failure of the worker.
+    """
+    from clio_agent.flows.outcomes import CallCancelled  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
+
+    if isinstance(error, _TurnCancelled | asyncio.CancelledError | CallCancelled):
+        return True
+    state = getattr(app, "state", None)
+    history = getattr(state, "task_history", None)
+    if history is None or getattr(state, "conversations", None) is None:
+        return False
+    assignment = history.latest_assignment(sid)
+    if assignment is None:
+        return False
+    from clio_agent.flows.stop import _requested  # noqa: PLC0415
+
+    # Admission's own answer: a stop on this assignment or an ancestor (recorded on the
+    # ancestor first, so a flow can fail on its cancelled members before its own mark).
+    return _requested(app, assignment.handle)
+
+
 # Typed reason recorded on every turn the runner cancels during shutdown drain —
 # distinguishes a deliberate teardown from a user /cancel or a request abort so
 # the trace never shows an unexplained cancellation (no-silent-fallback rule).
@@ -237,11 +266,13 @@ class TurnRunner:
             try:
                 value = context.run(function)
             except BaseException as error:
-                from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
-
-                if isinstance(error, _TurnCancelled):
+                if _stopped(self.app, sid, error):
                     # Stop or cancel ended the turn: an outcome, not a worker failure.
-                    logger.info("Task boundary reason=session_worker_cancelled session=%s", sid)
+                    logger.info(
+                        "Task boundary reason=session_worker_cancelled session=%s error_type=%s",
+                        sid,
+                        type(error).__name__,
+                    )
                 else:
                     logger.exception(
                         "Task boundary reason=session_worker_failed error_type=%s",
@@ -267,7 +298,11 @@ class TurnRunner:
 
         resources.worker_exit = asyncio.create_task(exited())
         try:
-            return await asyncio.shield(result)
+            # Like ``shield``, a cancelled waiter leaves the turn's outcome alone; unlike
+            # it, it adds no logger that reports a stopped turn's exception as unhandled
+            # (the except branch below retrieves it once the worker retired).
+            await asyncio.wait({result})
+            return result.result()
         except asyncio.CancelledError:
             resources.stop.set()
             await self._retire(resources)

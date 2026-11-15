@@ -183,6 +183,12 @@ async def start(app: Any) -> None:
         from clio_agent.gact.turn import _run_turn_in_background
         from clio_agent.gact.types import Message, Part
 
+        def continuation_behavior(session_id: str) -> dict[str, Any]:
+            from clio_agent.gact.message_contract import continued_behavior  # noqa: PLC0415
+
+            behavior = continued_behavior(app.state.messages.get(session_id, []))
+            return {"behavior": behavior} if behavior else {}
+
         def prepare() -> tuple[Message, str]:
             original = history.read_content(segment.trigger.content)
             message_id = original.get("message_id") if isinstance(original, dict) else None
@@ -285,6 +291,7 @@ async def start(app: Any) -> None:
                         "system_injection": True,
                         "assignment_handle": segment.assignment.handle,
                         "parent_turn_id": assignment_details.parent_turn_id,
+                        **continuation_behavior(segment.session_id),
                         **producer_metadata,
                     },
                 ),
