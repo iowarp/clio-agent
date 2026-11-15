@@ -228,6 +228,27 @@ async def answer(
     except service.ConnectorError as exc:
         raise SetupResponseError(exc.status, exc.code, str(exc)) from None
     sid = str(row["session_id"])
+    # What the person actually gave: a card can ask for more than they fill in.
+    row["given"] = sorted(key for key, value in (values or {}).items() if value not in (None, ""))
+    if row.get("intent") == "values":
+        # The connector is already on here: its values reach this conversation the way the
+        # setup card's do, by moving the conversation to a fleet that has them.
+        from clio_agent.gact.connector_values import set_session_values  # noqa: PLC0415
+
+        try:
+            await set_session_values(
+                app, sid, found.id, values or {}, by_agent=False, save_as_default=list(defaults)
+            )
+        except service.ConnectorError as exc:
+            raise SetupResponseError(exc.status, exc.code, str(exc)) from None
+        row.update(status="submitted", enabled_now=False, plugins=[], updated_at=_now())
+        trace.event(
+            "TOOLS",
+            "connector_values_given connector=%s keys=%s",
+            found.id,
+            ",".join(row["given"]),
+        )
+        return
     if secret:
         await asyncio.to_thread(secrets.save, found.id, secret)
     if defaults:

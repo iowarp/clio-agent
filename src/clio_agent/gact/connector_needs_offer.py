@@ -168,11 +168,44 @@ async def offer_needs(found: Any, reason: str, keys: Sequence[str]) -> dict[str,
             "message": f"The person chose not to give {found.name} {labels} now. Nothing changed; "
             "carry on with what the connector has.",
         }
+    given = [key for key in wanted if key in set(row.get("given") or ())]
+    empty = [key for key in wanted if key not in given]
+    declined.update((found.id, key) for key in empty)
+    if not given:
+        return {
+            "refusal": DECLINED,
+            "connector": found.id,
+            "connector_name": found.name,
+            "needs": wanted,
+            "reason": reason,
+            "message": f"The person saved the card for {found.name} without giving {labels}. "
+            "Nothing changed; carry on with what the connector has.",
+        }
+    from clio_agent.gact.connector_values import move_session_fleet  # noqa: PLC0415
+
+    # The waiting turn takes the connector's tools from the fleet with the new values.
+    moved = await asyncio.to_thread(move_session_fleet, app, session_id, found, move_turn=True)
+    given_labels = ", ".join(known[key].label for key in given)
+    message = (
+        f"The person gave {found.name} {given_labels}. Its server restarted with them; "
+        "call the tool again."
+    )
+    if empty:
+        message += (
+            f" They left {', '.join(known[key].label for key in empty)} empty; do not ask for "
+            "those again in this conversation."
+        )
+    if moved.get("status") == "unreachable":
+        message = (
+            f"The person gave {found.name} {given_labels}, but its server did not start with "
+            f"them: {moved.get('reason') or 'no reason given'}."
+        )
     return {
         "connector": found.id,
         "connector_name": found.name,
-        "needs_set": wanted,
+        "needs_set": given,
+        "needs_left_empty": empty,
+        "server": moved.get("status"),
         "reason": reason,
-        "message": f"The person gave {found.name} {labels}. Its server restarted with them; "
-        "call the tool again.",
+        "message": message,
     }

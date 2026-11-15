@@ -140,3 +140,41 @@ def test_an_unknown_key_lists_what_can_be_asked(here: Any) -> None:
     answer = asyncio.run(needs_offer.offer_needs(KEYS, "why", ["nexar_id"]))
     assert answer["error"] == "connector_needs_unknown"
     assert [row["key"] for row in answer["optional_needs"]] == ["where", "api_key"]
+
+
+def test_the_answer_names_only_what_the_person_gave(
+    here: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.connectors import secrets
+    from clio_agent.gact import connectors_service as service
+
+    monkeypatch.setattr(secrets, "save", lambda _cid, _values: None)
+
+    async def apply(_app: Any, _found: Any) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(service, "apply", apply)
+    worker, outcome = _ask(["where", "api_key"])
+    card = _card(here, worker)
+    asyncio.run(connector_setup.respond(here, {"sess_a"}, card.id, "submit", {"api_key": "k-1"}))
+    worker.join(5)
+    answer = outcome["value"]
+    assert answer["needs_set"] == ["api_key"]
+    assert answer["needs_left_empty"] == ["where"]
+    assert "gave Fixture parts Catalog key." in answer["message"]
+    assert "left Where empty" in answer["message"]
+    again = asyncio.run(needs_offer.offer_needs(KEYS, "still limited", ["where"]))
+    assert again["refusal"] == needs_offer.DECLINED
+
+
+def test_a_value_reaches_this_conversations_own_values(
+    here: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.connector_values import session_overlay
+
+    worker, outcome = _ask(["where"])
+    card = _card(here, worker)
+    asyncio.run(connector_setup.respond(here, {"sess_a"}, card.id, "submit", {"where": "eu"}))
+    worker.join(5)
+    assert outcome["value"]["needs_set"] == ["where"]
+    assert session_overlay(here, "sess_a")["fix-keys"] == {"where": "eu"}
