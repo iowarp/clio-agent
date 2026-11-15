@@ -340,12 +340,19 @@ def forward_error_info(state: Any, exc: BaseException, partial_answer: str) -> A
         partial_answer: Answer text the turn already showed ("" when none).
 
     Returns:
-        A ``provider_error`` for a refused sign-in, a known CLI-provider failure or
+        ``cancelled`` with ``reason=server_shutdown`` when the server is stopping; a
+        ``provider_error`` for a refused sign-in, a known CLI-provider failure or
         a provider HTTP error (in the provider's own words); ``agent_error`` for
         anything else.
     """
+    from clio_agent.gact.runtime.turn_cancellation_info import (  # noqa: PLC0415
+        shutdown_error_info,
+    )
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
+    stopped = shutdown_error_info(str(getattr(state, "sid", "") or ""), exc)
+    if stopped is not None:  # the server stopping ended the call (CC-F3)
+        return stopped
     terminal = _terminal_signal_error_info(exc, {"original_error": type(exc).__name__})
     if terminal is not None:
         return _with_model_exhausted(state, terminal)
