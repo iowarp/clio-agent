@@ -297,7 +297,7 @@
     ]
   },
   "clio.raster-viewport.v1": {
-    "description": "An interactive viewport for a registered two-dimensional grid, with sampled values, colour scale, and region reference.",
+    "description": "An interactive viewport for a registered grid (one 2-D field, or one frame of a time series), with sampled values, colour scale, and region reference.",
     "properties": [
       {
         "name": "band",
@@ -322,6 +322,18 @@
         "required": true,
         "description": "Reference to a registered raster artifact, or a binding to a selection so one viewer follows the selected row.",
         "type": "value"
+      },
+      {
+        "name": "selection",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "selectionField",
+        "required": false,
+        "description": "",
+        "type": "string"
       },
       {
         "name": "title",
