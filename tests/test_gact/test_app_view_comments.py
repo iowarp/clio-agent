@@ -126,3 +126,34 @@ def test_skipped_parts_and_the_transcript_summary(tmp_path: Path) -> None:
     summary = _transcript_summary(attachment)
     assert summary.splitlines()[0] == "Comments on Wave scene view:"
     assert "S1 region: what is going on in this area?" in summary
+
+
+def test_a_view_that_describes_the_region_lists_what_is_under_the_mark(tmp_path: Path) -> None:
+    region = {
+        "rect_css": {"x": 200, "y": 300, "width": 200, "height": 150},
+        "under": {
+            "view": "board",
+            "footprints": [{"reference": "U1", "layer": "F.Cu", "position_mm": {"x": 10, "y": 5}}],
+            "nets": ["GND", "VCC"],
+            "tracks": [],
+        },
+    }
+    rendered = render_app_view_comments(
+        _app(), "s", _attachment(region=region), tmp_path, images=True
+    )
+    assert "Under the mark" in rendered.text
+    assert "footprints (1): reference U1, layer F.Cu" in rendered.text
+    assert "nets (2): GND; VCC" in rendered.text
+    assert "tracks" not in rendered.text
+
+
+def test_a_view_without_describe_region_leaves_its_note(tmp_path: Path) -> None:
+    region = {
+        "rect_css": {"x": 1, "y": 2, "width": 3, "height": 4},
+        "note": "The view could not describe this region.",
+    }
+    rendered = render_app_view_comments(
+        _app(), "s", _attachment(region=region), tmp_path, images=True
+    )
+    assert "The view could not describe this region." in rendered.text
+    assert "Under the mark" not in rendered.text

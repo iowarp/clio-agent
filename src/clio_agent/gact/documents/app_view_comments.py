@@ -14,7 +14,9 @@ The entry turns these into readable lines: no anchor JSON reaches the model. A m
 no context of its own reads the session's stored report of the view
 (:mod:`clio_agent.gact.mcp_app_context`) and says so. A mark the browser could not picture
 carries ``snapshot_refused`` and the entry states that reason instead of a crop; parts of
-the view the snapshot could not paint (``snapshot_skipped``) are listed too.
+the view the snapshot could not paint (``snapshot_skipped``) are listed too. A view that
+offers ``describe_region`` (KiCad plan KF2) says what lies under each mark
+(``region.under``), listed as "Under the mark"; one that does not leaves ``region.note``.
 """
 
 from __future__ import annotations
@@ -150,6 +152,13 @@ def render_app_view_comments(
             )
         elif mark.label not in numbers:
             resolved.notes.append("No picture of this mark was attached (snapshot_missing).")
+        region = source.get("region")
+        if isinstance(region, dict):
+            described = describe_region_lines(region.get("under"))
+            if described:
+                resolved.lines.append(("Under the mark", "\n".join(described)))
+            if region.get("note"):
+                resolved.notes.append(str(region["note"]))
         skipped = source.get("snapshot_skipped")
         if isinstance(skipped, list) and skipped:
             gaps = [
@@ -168,3 +177,40 @@ def render_app_view_comments(
             )
         )
     return RenderedAttachment("\n\n".join(["\n".join(lines), *blocks]), pictures if images else [])
+
+
+#: At most this many items of one kind, and this many characters per item, under a mark.
+_UNDER_ITEMS = 40
+_UNDER_ITEM_CHARS = 240
+
+
+def describe_region_lines(under: Any) -> list[str]:
+    """What a view said lies under a mark, one line per kind (KF2); empty when nothing."""
+
+    if not isinstance(under, dict):
+        return [_short(json.dumps(under, ensure_ascii=False))] if under not in (None, "") else []
+    lines: list[str] = []
+    for key, value in under.items():
+        if isinstance(value, list):
+            if not value:
+                continue
+            shown = [_short(_item(item)) for item in value[:_UNDER_ITEMS]]
+            more = f" (and {len(value) - _UNDER_ITEMS} more)" if len(value) > _UNDER_ITEMS else ""
+            lines.append(f"{key} ({len(value)}): " + "; ".join(shown) + more)
+        elif value not in (None, ""):
+            lines.append(f"{key}: {_short(_item(value))}")
+    return lines
+
+
+def _item(value: Any) -> str:
+    if isinstance(value, dict):
+        return ", ".join(
+            f"{name} {json.dumps(field, ensure_ascii=False) if isinstance(field, (dict, list)) else field}"
+            for name, field in value.items()
+            if field not in (None, "", [], {})
+        )
+    return str(value)
+
+
+def _short(text: str) -> str:
+    return text if len(text) <= _UNDER_ITEM_CHARS else text[: _UNDER_ITEM_CHARS - 1] + "…"
