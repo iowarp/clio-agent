@@ -19,8 +19,12 @@
       # keeps it in its dev extra only, so without it the agent cannot look at a schematic.
       - --with
       - cairosvg>=2.9.1,<3
+      # install-jdk lets the server install the Java 21 runtime FreeRouting needs into its
+      # tools folder without administrator rights, when the machine has no Java 21.
+      - --with
+      - install-jdk>=1.1,<2
       - --from
-      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@439920bf0f43c4341e197e7c76abbf1f543ae07d
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@4ef62e734e74ef1d6d557957a8768dfafe42f3d6
       - kicad-mcp-pro
       - --transport
       - stdio
@@ -30,6 +34,9 @@
       KICAD_MCP_ENABLE_APPS: "1"
       KICAD_MCP_KICAD_INSTANCE: auto
       KICAD_MCP_FILTER_RUNTIME_TOOLS: "false"
+      # FreeRouting and its Java runtime, installed once into the plugin's own data folder
+      # (writable to plugin servers, shared by every workspace) rather than each workspace's temp.
+      KICAD_MCP_TOOLS_HOME: ${PLUGIN_DATA}/tools
       KICAD_CLI_PATH: ${need.kicad_cli}
       NEXAR_CLIENT_ID: ${need.nexar_id}
       NEXAR_CLIENT_SECRET: ${need.nexar_secret}
