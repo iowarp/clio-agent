@@ -214,6 +214,62 @@ def test_a_call_reaches_the_view_and_returns_its_text(
         assert again.status_code == 404
 
 
+def test_a_views_image_reaches_the_model_as_an_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clio_core_plane: Any
+) -> None:
+    """A view tool's capture joins the model step's media, as an MCP server's image does."""
+    from clio_agent.gact.model_media import CALL_MEDIA
+    from clio_agent.tools.execution import tool_workspace_context
+
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=="
+    app = _app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "board"}).json()["id"]
+        record = _record(app, sid)
+        prefix, cap = _prefix(sid, record)
+        client.put(f"{prefix}/app-tools", params=cap, json={"tools": [_HIGHLIGHT]})
+        published: list[Any] = []
+        seen = threading.Event()
+        original = app.state.bus.publish
+
+        def publish(event: Any) -> None:
+            if event.type == APP_TOOL_CALL_EVENT:
+                published.append(event)
+                seen.set()
+            original(event)
+
+        monkeypatch.setattr(app.state.bus, "publish", publish)
+        answers: list[str] = []
+        slot: list[dict[str, Any]] = []
+
+        def agent_call() -> None:
+            tokens = _bound(app, sid)
+            media = CALL_MEDIA.set(slot)
+            try:
+                with tool_workspace_context(tmp_path):
+                    answers.append(call_app_tool("app__board__set_highlight", {"reading": "x"}))
+            finally:
+                CALL_MEDIA.reset(media)
+                _unbind(tokens)
+
+        worker = threading.Thread(target=agent_call)
+        worker.start()
+        assert seen.wait(30)
+        result = {
+            "content": [
+                {"type": "image", "data": png, "mimeType": "image/png"},
+                {"type": "text", "text": "Board view at revision 3."},
+            ]
+        }
+        call_id = published[0].payload["call_id"]
+        client.post(f"{prefix}/app-tool-results/{call_id}", params=cap, json={"result": result})
+        worker.join(30)
+    assert answers == ["Board view at revision 3.\n[1 image attached]"]
+    (descriptor,) = slot
+    assert descriptor["media_type"] == "image/png"
+    assert descriptor["label"] == "[image 1 returned by app__board__set_highlight]"
+
+
 def test_a_call_to_a_closed_view_returns_at_once_naming_its_opening_tool(
     tmp_path: Path,
 ) -> None:
