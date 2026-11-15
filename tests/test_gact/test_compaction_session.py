@@ -83,12 +83,15 @@ def test_a_manual_compaction_does_not_leave_a_stale_usage_that_compacts_again(
     boundary read it (no measurement of its own yet) and compacted again at once."""
     app, client = env
     sid = _session_with_turns(app, client, monkeypatch, ["which stations are near LA?"])
-    measured = {SCOPE: {"used_tokens": 950, "source": "provider", "model": "m"}}
+    # The provider measured the whole context before the fold (its size depends on the
+    # installed catalogs, so it is read, not assumed).
+    before = sum(app.state.arc.segment_tokens_by_kind(sid, SCOPE).values())
+    measured = {SCOPE: {"used_tokens": before, "source": "provider", "model": "m"}}
     app.state.sessions.update(sid, metadata_patch={"context_usage_by_scope": measured})
     r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE}, json={})
     assert r.status_code == 200 and r.json()["compacted"], r.text
     row = app.state.sessions.get(sid).metadata["context_usage_by_scope"][SCOPE]
-    assert row["source"] == "estimated" and row["used_tokens"] < 950
+    assert row["source"] == "estimated" and row["used_tokens"] < before, (row, before)
 
     compactions: list[Any] = []
 
