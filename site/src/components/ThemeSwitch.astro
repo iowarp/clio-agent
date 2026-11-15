@@ -2,7 +2,8 @@
 /**
  * Light, automatic and dark in one segmented control, used by the home page and
  * the docs header. The choice is stored under Starlight's own key, so both
- * kinds of page read and write the same preference; automatic stores ''.
+ * kinds of page read and write the same preference; automatic stores ''. With
+ * nothing stored the site is dark (the default), and Dark shows as chosen.
  */
 ---
 
@@ -23,6 +24,7 @@
 	const system = matchMedia('(prefers-color-scheme: dark)');
 	const stored = () => {
 		const value = localStorage.getItem(KEY);
+		if (value === null) return 'dark';
 		return value === 'light' || value === 'dark' ? value : '';
 	};
 	const apply = () => {

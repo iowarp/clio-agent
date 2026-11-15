@@ -15,11 +15,14 @@ import HeroDownload, { distributionsOf } from '@/components/home/HeroDownload';
 import InstallCommand from '@/components/home/InstallCommand';
 import LoopVideo from '@/components/home/LoopVideo';
 import ReleaseVersion from '@/components/home/ReleaseVersion';
+import ScienceCarousel from '@/components/home/ScienceCarousel';
 import WorkspaceDemo from '@/components/home/WorkspaceDemo';
 import { PLATFORMS } from '@/lib/downloads';
 import { release } from '@/lib/release';
+import { scienceSlides } from '@/lib/science-slides';
 import SiteHeader from '@/components/SiteHeader.astro';
 
+const slides = await scienceSlides();
 const icons = { windows: windows.src, macos: apple.src, linux: linux.src };
 const title = 'CLIO, make an AI agent for your science';
 const description =
@@ -90,14 +93,15 @@ const news = [
 		<meta name="twitter:card" content="summary_large_image" />
 		<script is:inline>
 			(() => {
+				// Dark until the visitor picks: no stored choice means dark; '' is "Match the system".
 				const stored = localStorage.getItem('starlight-theme');
-				const pick = stored === 'light' || stored === 'dark' ? stored : '';
+				const pick = stored === null ? 'dark' : stored === 'light' || stored === 'dark' ? stored : '';
 				const dark = matchMedia('(prefers-color-scheme: dark)');
 				const apply = () =>
 					(document.documentElement.dataset.theme = pick || (dark.matches ? 'dark' : 'light'));
 				apply();
 				dark.addEventListener('change', () => {
-					if (!localStorage.getItem('starlight-theme')) apply();
+					if (localStorage.getItem('starlight-theme') === '') apply();
 				});
 			})();
 		</script>
@@ -175,6 +179,17 @@ const news = [
 					<InstallCommand client:idle />
 					<p class="h-quiet-link">Or <a href="/docs/install/">read the install guide</a></p>
 					<CapabilityTabs client:visible={{ rootMargin: '600px' }} />
+				</div>
+			</section>
+
+			<section class="h-section" aria-labelledby="science">
+				<div class="h-wrap h-center">
+					<h2 id="science">CLIO doing science</h2>
+					<p class="h-section-lede">
+						Captures from CLIO sessions in different fields. Each one shows what CLIO did and links to the
+						guide that explains how.
+					</p>
+					<ScienceCarousel client:visible={{ rootMargin: '600px' }} slides={slides} />
 				</div>
 			</section>
 
