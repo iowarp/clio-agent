@@ -138,6 +138,7 @@ def _brief(found: Any) -> dict[str, Any]:
         "name": found.name,
         "description": found.description,
         "enabled": state.choice(found.id).enabled,
+        "requires": found.requires or None,
     }
 
 

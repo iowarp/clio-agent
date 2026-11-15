@@ -6,6 +6,7 @@
 # only the group from here. This file holds what the catalogue cannot say: a readable
 # name where the id read as words is wrong, and a group label for each clio-kit
 # workflow package, whose dependencies place every server in a domain, and the logos below.
+# A name or group whose server the pinned clio-kit does not ship yet derives nothing.
 names:
   adios: ADIOS2
   arxiv: arXiv
@@ -21,6 +22,7 @@ names:
   paraview: ParaView
   parquet: Parquet
   scientific-catalog: Scientific catalog
+  slicer: 3D-print slicer
   slurm: Slurm
   spack: Spack
   web: Web fetch
@@ -31,6 +33,7 @@ groups:
   clio-geoscience: Earth science
   clio-hpc: HPC
   clio-performance: Performance
+  clio-fabrication: Fabrication
   clio-research: Research
 # Logos, served like a hand-written entry's `logo` (an SVG beside this file) and, as
 # {light, dark}, its `logo_dark` (apps ledger, "Connector logos (LG)", LG-D2). A hand-written
@@ -63,6 +66,7 @@ logos:
   plot: plot.svg
   scientific-catalog: scientific-catalog.svg
   seismology: seismology.svg
+  slicer: slicer.svg
   slurm: slurm.svg
   spack: spack.svg
   terrain: terrain.svg
