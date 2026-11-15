@@ -13,3 +13,11 @@ def test_an_option_without_a_value_answers_with_its_label() -> None:
         {"prompt": "Which?", "kind": "choice", "options": [{"label": "One"}, {"label": "Two"}]}
     )
     assert [o.value for o in question.options] == ["One", "Two"]
+
+
+def test_an_option_named_by_id_answers_with_its_id() -> None:
+    option = QuestionOption.model_validate(
+        {"id": "apt", "label": "Install with apt", "description": "Needs /usr"}
+    )
+    assert option.value == "apt"
+    assert option.label == "Install with apt"

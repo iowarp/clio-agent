@@ -498,10 +498,15 @@ class QuestionOption(TaskRecord):
     @model_validator(mode="before")
     @classmethod
     def _value_defaults_to_label(cls, data: Any) -> Any:
-        # An agent that lists only labels had its whole question refused and asked again.
-        if isinstance(data, Mapping) and not data.get("value") and data.get("label"):
-            return {**data, "value": data["label"]}
-        return data
+        # An agent that lists only labels, or names each option by an ``id``, had its whole
+        # question refused and asked again: an ``id`` is the option's value, else its label.
+        if not isinstance(data, Mapping):
+            return data
+        option = dict(data)
+        named = option.pop("id", None)
+        if not option.get("value"):
+            option["value"] = named or option.get("label")
+        return option
 
 
 class QuestionDefinition(TaskRecord):
