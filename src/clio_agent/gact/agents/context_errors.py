@@ -41,7 +41,13 @@ class ContextFoldError(ClioError):
             f"cannot fold the agent context: {problem} at segment {seg_id or '?'} ({kind})"
             + (f": {detail}" if detail else ""),
             error_type=self.reason,
-            details={"problem": problem, "segment_id": seg_id, "kind": kind},
+            details={
+                "problem": problem,
+                "segment_id": seg_id,
+                "kind": kind,
+                # The turn that recorded it: a client can offer to rewind to before it.
+                "turn_id": str(getattr(segment, "turn_id", "") or ""),
+            },
         )
 
 

@@ -349,6 +349,15 @@ class _Loop:
         parent_token = _ctx.set_parent_span(expert_span)
         loop_token = _ACTIVE_LOOP.set(self)
         try:
+            # A call whose result was never recorded gets the truth (outcome unknown)
+            # before the first fold, which would otherwise refuse this scope every turn.
+            from clio_agent.gact.agents.context_repair import (  # noqa: PLC0415
+                repair_unanswered_calls,
+            )
+
+            repair_unanswered_calls(
+                self.arc, self.session, self.scope, turn_id=self.recorder.turn_id
+            )
             steps = range(self.max_iters) if self.max_iters > 0 else itertools.count()
             for step in steps:
                 self.step = step

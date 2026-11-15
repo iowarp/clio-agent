@@ -142,7 +142,6 @@ class Conversations:
 
     _restore_input_projections = conversation_recovery._restore_input_projections
     restore = conversation_recovery.restore
-    _record_interrupted_calls = conversation_recovery._record_interrupted_calls
 
     def eligible(self, sid: str, item: MailItem) -> bool:
         """One admission/injection policy; producers do not independently spawn turns."""
