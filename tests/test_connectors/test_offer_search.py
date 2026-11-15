@@ -152,3 +152,71 @@ def test_the_rows_read_search_category_and_nothing() -> None:
     started = present_start({"search": "seismic", "reason": "r"})
     assert (started["action"], started["blocks"][0]["text"]) == ("Search plugins", "seismic")
     assert present_start({"category": "Research"})["action"] == "Plugins in"
+
+
+def test_uncategorized_is_a_category_the_facts_name() -> None:
+    """The session facts count entries with no category as "uncategorized" (OL-F4), and
+    offer_plugin's category takes that name back."""
+
+    rows = [_row("A", category="Research"), _row("B"), _row("C")]
+    assert [r["name"] for r in offer_search.in_category(rows, "Uncategorized")] == ["B", "C"]
+    found = offer_search.search_result(rows, [], set(), 20, category=offer_search.UNCATEGORIZED)
+    assert found["count"] == 2
+    from clio_agent import injections
+
+    variables = {"plugins": [], "total": 3, "left_out": 0}
+    variables["unlisted"] = offer_search.categories(rows)
+    text = injections.render("session_facts_plugins", variables)
+    assert f"3 more not listed here (Research 1; {offer_search.UNCATEGORIZED} 2);" in text
+
+
+def test_the_unlisted_are_named_by_category_and_the_left_out_only_counted() -> None:
+    """OL-F4: past the listed rows the facts name what a search would reach, by category;
+    an entry the person left out is counted and never named."""
+
+    rows = [
+        _row("Geo", category="Earth science"),
+        _row("Quakes", category="Earth science"),
+        _row("Slurm", category="HPC"),
+        _row("loose"),
+    ]
+    found = offer_search.unlisted(rows, {"plugin:lab/quakes"})
+    assert found == [
+        {"category": "Earth science", "count": 2, "names": ["Geo"]},
+        {"category": "HPC", "count": 1, "names": ["Slurm"]},
+        {"category": "", "count": 1, "names": ["loose"]},
+    ]
+    from clio_agent import injections
+
+    text = injections.render(
+        "session_facts_plugins", {"plugins": [], "total": 4, "left_out": 1, "unlisted": found}
+    )
+    assert (
+        "4 more not listed here (Earth science 2: Geo; HPC 1: Slurm; uncategorized 1: loose);"
+        in text
+    )
+    assert "Quakes" not in text
+
+
+def test_the_agent_is_told_where_the_list_is_chosen() -> None:
+    """OL-F5: the search note, the footer, a search's message and the tool description name
+    the real setting and that a left-out entry is still offered by name; the settings
+    row's title in gact-tui is "Plugins <agent> can offer" under Extensions."""
+
+    from pathlib import Path
+
+    import clio_agent
+
+    core = Path(clio_agent.__file__).parent / "plugins/builtin/core/ai.iowarp.clio/injections"
+    template = (core / "session_facts_plugins.md").read_text(encoding="utf-8")
+    assert offer_list.SETTINGS_PLACE == 'Settings → Extensions → "Plugins CLIO can offer"'
+    assert offer_list.SETTINGS_PLACE in template
+    tool = plugin_offer.build_offer_plugin_tool()
+    assert offer_list.SETTINGS_PLACE in tool.desc
+    assert "the unlisted too" in tool.desc and "still offered by its name" in tool.desc
+    # FN-12: the card is how the agent asks; a suggestion in prose adds nothing.
+    assert "The card is how you ask" in tool.desc and "asks the person nothing" in tool.desc
+    assert offer_search.left_out_fact(2).startswith(
+        f"2 of these are left out by the person in {offer_list.SETTINGS_PLACE}, where they "
+        "can tick them again"
+    )

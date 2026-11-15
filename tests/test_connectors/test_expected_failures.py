@@ -217,9 +217,9 @@ def test_unreadable_stores_give_no_offer_facts(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         plugin_offer, "offerable", _boom(StoreError("plugin_state_unreadable", "x"))
     )
-    assert plugin_offer.offerable_facts(_app(), "sess_a") == ([], 0, 0)
+    assert plugin_offer.offerable_facts(_app(), "sess_a") == ([], 0, 0, [])
     monkeypatch.setattr(plugin_offer, "offerable", _boom(state.ConnectorStateError("bad")))
-    assert plugin_offer.offerable_facts(_app(), "sess_a") == ([], 0, 0)
+    assert plugin_offer.offerable_facts(_app(), "sess_a") == ([], 0, 0, [])
 
 
 def test_a_fault_listing_offer_facts_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,11 +295,12 @@ def test_an_app_without_a_session_store_has_no_offer_facts(
     from clio_agent.gact import plugin_offer
 
     monkeypatch.setattr(plugin_offer, "offerable", _boom(AssertionError("not asked")))
-    assert plugin_offer.offerable_facts(None, "sess_a") == ([], 0, 0)
+    assert plugin_offer.offerable_facts(None, "sess_a") == ([], 0, 0, [])
     assert plugin_offer.offerable_facts(SimpleNamespace(state=SimpleNamespace()), "s") == (
         [],
         0,
         0,
+        [],
     )
 
 

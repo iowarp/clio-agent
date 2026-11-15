@@ -14,7 +14,9 @@ The session facts name only some of the plugins and connectors a conversation co
 Both reach every candidate, the ones the person left out in Settings too: each row says
 whether the session facts list it (``listed``) and marks a left-out one
 (``left_out_by_person``), so the agent can say it exists and leave the choice to the
-person. Results are capped at ``plugins.offer_listed``, with how many ``more``.
+person. The result names where that choice is made and that a left-out entry is still
+offered by name (OL-F5). Results are capped at ``plugins.offer_listed``, with how many
+``more``.
 """
 
 from __future__ import annotations
@@ -22,10 +24,26 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-#: The mark on a row the person left out in Settings ("Plugins CLIO can offer").
+from clio_agent.gact.offer_list import SETTINGS_PLACE, entry_key
+
+#: The mark on a row the person left out in Settings (:data:`SETTINGS_PLACE`).
 LEFT_OUT = "left_out_by_person"
+#: The session facts' name for the entries with no category (``offer_plugin`` takes it).
+UNCATEGORIZED = "uncategorized"
 #: Fields copied into a returned row (the model's view: no keys, no keywords).
 _ROW_FIELDS = ("kind", "id", "name", "summary", "category", "marketplace", "enabled")
+
+
+def left_out_fact(count: int) -> str:
+    """What ``count`` left-out entries mean for the person and for ``offer_plugin``: where
+    the choice is made, and that naming one still offers it. Facts, not advice (OL-F5)."""
+
+    one = count == 1
+    return (
+        f"{count} of these {'is' if one else 'are'} left out by the person in "
+        f"{SETTINGS_PLACE}, where they can tick {'it' if one else 'them'} again; "
+        "offer_plugin with the name still offers one, as when the person asks for it by name"
+    )
 
 
 def _haystack(row: Mapping[str, Any]) -> str:
@@ -53,7 +71,12 @@ def matching(rows: Sequence[Mapping[str, Any]], words: Sequence[str]) -> list[An
 
 
 def in_category(rows: Sequence[Mapping[str, Any]], category: str) -> list[Any]:
+    """The rows of ``category``; :data:`UNCATEGORIZED` (as the session facts count them)
+    holds the rows with none."""
+
     wanted = category.strip().casefold()
+    if wanted == UNCATEGORIZED:
+        wanted = ""
     return [row for row in rows if str(row.get("category") or "").casefold() == wanted]
 
 
@@ -74,10 +97,25 @@ def categories(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def unlisted(rows: Sequence[Mapping[str, Any]], left_out: set[str]) -> list[dict[str, Any]]:
+    """The categories of ``rows`` (the entries the session facts do not list) with their
+    counts and the names of the ones the person did not leave out (OL-F4): what a search
+    would reach, at a few words per entry. A left-out entry is counted, never named."""
+
+    out = categories(rows)
+    for group in out:
+        wanted = str(group["category"]).casefold()
+        group["names"] = [
+            str(row.get("name") or row.get("id"))
+            for row in rows
+            if str(row.get("category") or "").casefold() == wanted
+            and entry_key(row) not in left_out
+        ]
+    return out
+
+
 def returned(row: Mapping[str, Any], listed: set[str], left_out: set[str]) -> dict[str, Any]:
     """A row as a search returns it, with whether it is listed and whether left out."""
-
-    from clio_agent.gact.offer_list import entry_key  # noqa: PLC0415
 
     key = entry_key(row)
     out = {field: row[field] for field in _ROW_FIELDS if row.get(field) not in (None, "")}
@@ -99,8 +137,6 @@ def search_result(
     category: str = "",
 ) -> dict[str, Any]:
     """``offer_plugin``'s answer to a search or a category (capped, with ``more``)."""
-
-    from clio_agent.gact.offer_list import entry_key  # noqa: PLC0415
 
     found = list(rows)
     if category.strip():
@@ -126,7 +162,7 @@ def search_result(
         f"; the first {cap} shown" if out["more"] else ""
     )
     if left:
-        message += f". The person left {left} of these out of the list in Settings"
+        message += f". {left_out_fact(left)}"
     out["message"] = message + "."
     return out
 
@@ -135,8 +171,6 @@ def overview(
     rows: Sequence[Mapping[str, Any]], listed_count: int, left_out: set[str]
 ) -> dict[str, Any]:
     """``offer_plugin`` with nothing named: the categories, the totals and how to search."""
-
-    from clio_agent.gact.offer_list import entry_key  # noqa: PLC0415
 
     left = sum(1 for row in rows if entry_key(row) in left_out)
     return {
@@ -147,7 +181,7 @@ def overview(
         "message": (
             f"{len(rows)} plugins and connectors can be added to this conversation "
             f"({listed_count} listed in the session facts, {left} left out by the person in "
-            "Settings). offer_plugin with search (words) or category finds them."
+            f"{SETTINGS_PLACE}). offer_plugin with search (words) or category finds them."
             if rows
             else "Nothing more can be added to this conversation."
         ),

@@ -148,20 +148,30 @@ def test_the_facts_are_capped_say_so_and_cost_little(
 ) -> None:
     from clio_agent import injections
 
-    rows, total, left_out = plugin_offer.offerable_facts(app, "sess_a")
-    variables = {"plugins": rows, "total": total, "left_out": left_out}
+    rows, total, left_out, unlisted = plugin_offer.offerable_facts(app, "sess_a")
+    assert unlisted == []
+    variables = {"plugins": rows, "total": total, "left_out": left_out, "unlisted": unlisted}
     text = injections.render("session_facts_plugins", variables, app=None, session_id="")
     assert "- Fixture Plain (fixture-plain, connector, off): A test connector" in text
     assert "- tariff-calc [lab]: Landed cost of imported goods" in text
     assert "offer_plugin asks them" in text and "more not listed here" not in text
     assert len(text) < 1200  # about 300 tokens for five rows (CF-D4)
     monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "2")
-    rows, total, left_out = plugin_offer.offerable_facts(app, "sess_a")
-    variables = {"plugins": rows, "total": total, "left_out": left_out}
+    rows, total, left_out, unlisted = plugin_offer.offerable_facts(app, "sess_a")
+    variables = {"plugins": rows, "total": total, "left_out": left_out, "unlisted": unlisted}
     text = injections.render("session_facts_plugins", variables, app=None, session_id="")
     assert "(5, 2 shown)" in text
-    assert "3 more not listed here; offer_plugin with search or category finds them." in text
-    assert plugin_offer.offerable_facts(app, "") == ([], 0, 0)
+    # The rest are counted by category (OL-F4), so the agent knows what a search reaches.
+    assert sum(c["count"] for c in unlisted) == 3
+    counted = "; ".join(
+        f"{c['category'] or 'uncategorized'} {c['count']}: {', '.join(c['names'])}"
+        for c in unlisted
+    )
+    assert (
+        f"3 more not listed here ({counted}); offer_plugin with search or category finds them."
+        in text
+    )
+    assert plugin_offer.offerable_facts(app, "") == ([], 0, 0, [])
     monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "-1")
     with pytest.raises(ValueError):
         plugin_offer.offer_listed()
@@ -564,7 +574,7 @@ def test_many_clio_kit_connectors_never_hide_the_library(
     try:
         rows = plugin_offer.offerable(app, "sess_a")
         monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "8")
-        listed, total, _left_out = plugin_offer.offerable_facts(app, "sess_a")
+        listed, total, _left_out, _unlisted = plugin_offer.offerable_facts(app, "sess_a")
     finally:
         RECORDS.pop()
     assert [row["id"] for row in rows[:7]] == [
