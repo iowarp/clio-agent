@@ -1,0 +1,218 @@
+/* "CLIO doing science": one capture per field, laid out like the capability
+   tabs above it. The stage keeps a fixed 16:10 frame and every caption shares
+   one grid cell, so changing slide never moves the page. */
+
+.sc {
+	margin-top: 56px;
+	display: grid;
+	grid-template-columns: minmax(0, 1.75fr) minmax(260px, 1fr);
+	gap: 56px;
+	align-items: center;
+	padding: 28px;
+	border: 1px solid var(--line);
+	border-radius: 22px;
+	background: var(--surface);
+	text-align: left;
+	width: 100%;
+}
+.sc:focus-visible {
+	outline: 2px solid var(--brand-blue);
+	outline-offset: 4px;
+	border-radius: 22px;
+}
+
+.sc-stage {
+	position: relative;
+	aspect-ratio: 16 / 10;
+	border-radius: var(--radius);
+	border: 1px solid var(--line);
+	overflow: hidden;
+	background: var(--paper-2);
+	touch-action: pan-y;
+	user-select: none;
+}
+.sc-track {
+	display: flex;
+	height: 100%;
+	transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.sc-slide {
+	flex: 0 0 100%;
+	height: 100%;
+	margin: 0;
+}
+.sc-slide img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	object-position: top left;
+}
+.sc-slide[data-themed] .sc-dark {
+	display: none;
+}
+:root[data-theme='dark'] .home .sc-slide[data-themed] .sc-light {
+	display: none;
+}
+:root[data-theme='dark'] .home .sc-slide[data-themed] .sc-dark {
+	display: block;
+}
+
+.sc-side {
+	display: flex;
+	flex-direction: column;
+	gap: 32px;
+	padding-right: 16px;
+}
+.sc-copies {
+	display: grid;
+}
+.sc-copy {
+	grid-area: 1 / 1;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	visibility: hidden;
+}
+.sc-copy[data-active] {
+	visibility: visible;
+}
+.sc-copy h3 {
+	font-size: 34px;
+}
+.sc-copy p:not(.h-eyebrow) {
+	color: var(--ink-2);
+}
+.sc-copy a {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 500;
+	color: var(--brand-navy);
+	text-decoration: none;
+}
+.sc-copy a:hover {
+	text-decoration: underline;
+	text-underline-offset: 4px;
+}
+
+.sc-controls {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+.sc-arrow {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	flex: none;
+	border: 1px solid var(--line-strong);
+	border-radius: 999px;
+	background: var(--surface);
+	color: var(--ink);
+	cursor: pointer;
+	transition:
+		background 0.15s ease,
+		border-color 0.15s ease;
+}
+.sc-arrow:hover {
+	background: var(--paper-2);
+	border-color: var(--ink-soft);
+}
+.sc-dots {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.sc-dots button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 44px;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+}
+/* The current slide is a longer, filled bar; the others are hollow rings, so
+   the position reads from shape as well as colour. */
+.sc-dots button::before {
+	content: '';
+	width: 10px;
+	height: 10px;
+	border-radius: 999px;
+	border: 1.5px solid var(--ink-soft);
+	transition:
+		width 0.2s ease,
+		background 0.2s ease;
+}
+.sc-dots button:hover::before {
+	border-color: var(--ink);
+}
+.sc-dots button[aria-current='true'] {
+	width: 34px;
+}
+.sc-dots button[aria-current='true']::before {
+	width: 26px;
+	background: var(--ink);
+	border-color: var(--ink);
+}
+.sc-count {
+	margin-left: auto;
+	font: 500 14px/1 var(--sans);
+	color: var(--ink-soft);
+	font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1180px) {
+	.sc {
+		grid-template-columns: 1fr;
+		gap: 28px;
+	}
+	.sc-side {
+		padding-right: 0;
+	}
+}
+
+@media (max-width: 640px) {
+	.sc {
+		margin-top: 36px;
+		padding: 14px;
+		border-radius: 18px;
+		gap: 20px;
+	}
+	.sc-side {
+		padding: 0 6px 6px;
+		gap: 22px;
+	}
+	.sc-copy h3 {
+		font-size: 28px;
+	}
+	.sc-controls {
+		gap: 8px;
+	}
+	.sc-dots {
+		gap: 0;
+	}
+	.sc-dots button {
+		width: 16px;
+	}
+	.sc-dots button[aria-current='true'] {
+		width: 28px;
+	}
+	.sc-dots button[aria-current='true']::before {
+		width: 20px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.sc-track {
+		transition: none;
+	}
+}
