@@ -71,8 +71,8 @@ def test_the_person_is_asked_even_in_bypass_and_the_allow_is_for_that_command(
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(call)
         row = _pending(app, future)
-        assert row["summary"].startswith("Run this command outside CLIO's sandbox?")
-        assert "the sandbox blocks apt" in row["summary"]
+        assert row["summary"] == "Run this command outside CLIO's sandbox?"
+        assert row["tool_call"]["input"]["access_reason"].endswith("the sandbox blocks apt.")
         assert row["tool_call"]["input"]["command"] == command
         assert row["actions"] == ["allow", "deny"]  # once, never a standing rule
         refused = client.post(f"/v1/permissions/{row['id']}", json={"action": "allow_session"})

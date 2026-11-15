@@ -62,7 +62,7 @@ def take(command: str) -> bool:
 
 
 def card_summary(args: Mapping[str, Any]) -> str:
-    """The permission card's title for an outside-the-sandbox command."""
-    reason = str(args.get("access_reason") or "").strip()
-    head = "Run this command outside CLIO's sandbox?"
-    return f"{head} {reason}"[:500] if reason else head
+    """The permission card's title for an outside-the-sandbox command: the question only;
+    the card shows the agent's ``access_reason`` beside it as the reason."""
+    del args
+    return "Run this command outside CLIO's sandbox?"
