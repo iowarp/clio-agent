@@ -29,6 +29,7 @@ work starts.
 | ID | Decision | Where | Status |
 | --- | --- | --- | --- |
 | FA-D1 | **The plan's mechanisms are a starting point; what works on a real board wins.** If a fixed measuring script cannot measure a board reliably, the agent writes the measurement itself from the board's STEP, and the skill teaches how to measure rather than which script to run. Where a render of the board or the case improves a measurement or a fit check, the skill says when to take one and what to look for. Each such change is recorded here and the plan is updated in the same change (message 1) | plan EN1, EN3, EN4; skills `pcb-enclosure`, `pcb-footprints` | open |
+| FA-D2 | **The fork's own footprint tools are hidden from CLIO, not deleted** (message 2). `lib_generate_footprint_ipc7351` (generic IPC-7351B formulas, no 3D body, no connectors or modules), `lib_validate_footprint_ipc7351` (two-terminal chip passives against the IPC nominal) and `lib_certify_footprint` (pad count, documentation layers) duplicate a weaker part of Library Tools. Deleting them would change about 30 upstream files; as with the `sim_` tools (KiCad ledger KA6), the CLIO entry hides them and the fork's upstream code stays. FP1, FQ8 and Done 1 amended | plan FP1, FQ8, Done; clio-agent `catalogs/connectors/kicad.yaml` | open |
 
 ## Decisions
 
@@ -47,3 +48,9 @@ work starts.
 > tho implement the plan based on wha tyou see, if the script idea fails and the agent is the
 > one that needs to build the script to measure the distances that is okay, if an image taken
 > from teh rendering works to improve that, then bring that up on the skill, etc
+
+### Message 2 (15 Nov 2026)
+
+Asked whether the old tools should be deleted (FP1) or hidden (the KiCad ruling on a small fork diff), after an explanation of what each does:
+
+> hide them, go ahead

@@ -4,7 +4,9 @@
 # checks, stackup, parts) with KICAD_MCP_ENABLE_APPS=1, and attaches to or starts the
 # KiCad it uses with KICAD_MCP_KICAD_INSTANCE=auto (KiCad plan KC1, KI1 to KI7).
 # Circuit simulation is the spice connector's, so the fork's own sim_* tools are hidden
-# (plan KT2, amended: ledger KA6). kicad.svg is KiCad's own application mark, from
+# (plan KT2, amended: ledger KA6). Footprints and their 3D bodies come from KiCad Library
+# Tools, so the fork's own IPC-7351 generator and checkers are hidden too (footprints plan
+# FP1, amended: ledger FA-D2). kicad.svg is KiCad's own application mark, from
 # resources/bitmaps_png/sources/light/icon_kicad.svg in gitlab.com/kicad/code/kicad
 # (KiCad's licences page names GPLv3 and CC-BY-SA; kicad ledger, "Logo").
 - id: kicad
@@ -44,7 +46,11 @@
       DIGIKEY_CLIENT_ID: ${need.digikey_id}
       DIGIKEY_CLIENT_SECRET: ${need.digikey_secret}
       MOUSER_API_KEY: ${need.mouser_key}
-  hide_tools: [sim_*]
+  hide_tools:
+    - sim_*
+    - lib_generate_footprint_ipc7351
+    - lib_validate_footprint_ipc7351
+    - lib_certify_footprint
   needs:
     - key: kicad_cli
       kind: value

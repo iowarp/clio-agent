@@ -70,6 +70,8 @@ The megachange rules and the rules of the KiCad plugin plan carry over. Three mo
 
 **FP1. KiCad Library Tools is the engine.** It is what KiCad's own library is generated with, it follows the KLC, and it produces the 3D model with the footprint. The fork's homegrown geometry duplicates part of it, so the homegrown geometry is deleted.
 
+*Amended (FA-D2, 15 Nov 2026):* the fork's homegrown tools are **hidden from CLIO's agent, not deleted**, as the KiCad plan did for the `sim_` tools: deleting them changes about 30 upstream files and conflicts with every later upstream change. The CLIO connector entry hides the three tools; upstream's code, parity rows and docs stay. In the table below, "Removed" means removed from what CLIO's agent is offered.
+
 | Removed from the fork | Replaced by |
 | --- | --- |
 | `lib_generate_footprint_ipc7351` and its geometry code | `lib_generate_footprint` |
@@ -211,7 +213,7 @@ Fixtures: the design brief board from the KiCad plugin plan (USB-C, ESP32-C3, te
 | FQ5 | A datasheet whose land pattern has one pad 0.3 mm off from the generated footprint (an altered fixture) | `lib_check_footprint` fails and names the pad |
 | FQ6 | The part with no 3D model | An envelope body is built and assigned. The board's STEP contains it |
 | FQ7 | Start the enclosure with one body removed | The enclosure work refuses and names the part |
-| FQ8 | Search the fork for `lib_generate_footprint_ipc7351`, `lib_certify_footprint` and `lib_validate_footprint_ipc7351` | Nothing outside the changelog |
+| FQ8 | *Amended (FA-D2):* list the tools that reach CLIO's agent | None of `lib_generate_footprint_ipc7351`, `lib_certify_footprint` and `lib_validate_footprint_ipc7351` |
 | FQ9 | Search the fork for Library Tools code | None is copied. The tools run it as a child process |
 
 **Envelope and enclosure.**
@@ -238,7 +240,7 @@ Nothing in the first two tables may be blocked. A failing scenario there is fixe
 
 ## Done
 
-1. Every decision is implemented. The fork's own footprint generator and checkers are gone.
+1. Every decision is implemented. The fork's own footprint generator and checkers no longer reach CLIO's agent (FA-D2).
 2. The fork's checks pass, and `ruff check` and `ruff format --check` are clean on touched paths.
 3. Every scenario in the first two tables passes, each shown with commands, handles and the screenshots read. Local-phase rows say so.
 4. The ledger holds every decision with its evidence and every fact listed above.
