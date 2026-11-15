@@ -80,6 +80,11 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {"legacy_transcript": await run_off_loop(legacy_transcript, app, sid)}
 
     def _session_not_found(sid: str) -> HTTPException:
+        from clio_agent.gact.message_submission_errors import session_not_found  # noqa: PLC0415
+
+        return session_not_found(sid)
+
+    def _plain_not_found(sid: str) -> HTTPException:
         return HTTPException(
             status_code=404,
             detail=ErrorEnvelope(

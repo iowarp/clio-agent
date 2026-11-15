@@ -7,7 +7,13 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
 def session_not_found(sid: str) -> HTTPException:
-    """Build the typed session not found response."""
+    """Build the typed session not found response (503 for a damaged record, FN-14)."""
+    from clio_agent.gact.session_record_damage import missing_session  # noqa: PLC0415
+
+    return missing_session(sid, _not_found(sid))
+
+
+def _not_found(sid: str) -> HTTPException:
     return HTTPException(
         status_code=404,
         detail=ErrorEnvelope(

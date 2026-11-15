@@ -215,6 +215,13 @@ class ClioCorePutRefused(RuntimeError):
         super().__init__(f"clio-core AsyncPutBlob({name!r}) returned code {code}")
 
 
+def ensure_room(store: Any, name: str) -> None:
+    """Refuse a write while the metadata log's disk is nearly full (FN-14 torn logs)."""
+    from clio_agent.arc.clio_core_disk_guard import ensure_room as guard  # noqa: PLC0415
+
+    guard(store, name)
+
+
 class AsyncPutTag:
     """A ``Tag``-shaped writer over ``AsyncPutBlob`` (for :func:`put_blob_with_retry`).
 
@@ -222,12 +229,15 @@ class AsyncPutTag:
     as the blocking ``Tag.PutBlob`` the retry helper was written for.
     """
 
-    def __init__(self, client: Any, tag_id: Any) -> None:
+    def __init__(self, client: Any, tag_id: Any, store: Any = None) -> None:
         self._client = client
         self._tag_id = tag_id
+        self._store = store
 
     def PutBlob(self, name: str, data: bytes, off: int = 0) -> None:  # noqa: N802 - native shape
         """Write ``data`` to blob ``name`` and wait for the runtime's answer."""
+        if self._store is not None:
+            ensure_room(self._store, name)
         future = await_future(
             self._client.AsyncPutBlob(self._tag_id, name, data, off), op_name="put"
         )
@@ -249,6 +259,7 @@ def store_put_if_absent(store: Any, kind: str, name: str, body: bytes) -> bool:
     """
     import clio_cte_core_ext as cte  # noqa: PLC0415 - loaded with the client
 
+    ensure_room(store, name)
     tag_id = store._tag_ids.get(kind)
     future = await_future(store._client.AsyncPutBlobIfAbsent(tag_id, name, body, 0), op_name="put")
     code = future.wait(0)
@@ -327,7 +338,7 @@ def store_put(store: Any, kind: str, name: str, body: bytes, offset: int = 0) ->
 
     tag_id = store._tag_ids.get(kind)
     put_blob_with_retry(
-        AsyncPutTag(store._client, tag_id),
+        AsyncPutTag(store._client, tag_id, store),
         name,
         body,
         offset=offset,
@@ -361,20 +372,27 @@ def store_put_many(
 
     tag_id = store._tag_ids.get(kind)
     at = offsets or {}
+    try:  # one check for the batch: a refused batch goes down each blob's retry ladder
+        ensure_room(store, blobs[0][0] if blobs else "")
+        held: RuntimeError | None = None
+    except ClioCorePutRefused as refused:
+        held = refused
     issued = [
-        (name, data, client.AsyncPutBlob(tag_id, name, data, at.get(name, 0)))
+        (name, data, None if held else client.AsyncPutBlob(tag_id, name, data, at.get(name, 0)))
         for name, data in blobs
     ]
     lost: dict[str, RuntimeError] = {}
     for name, data, future in issued:
         try:
+            if future is None and held is not None:
+                raise held
             code = await_future(future, op_name="put").wait(0)
             if code != 0:
                 raise ClioCorePutRefused(name, code)
         except RuntimeError as refused:
             try:
                 put_blob_with_retry(
-                    AsyncPutTag(client, tag_id),
+                    AsyncPutTag(client, tag_id, store),
                     name,
                     data,
                     offset=at.get(name, 0),
@@ -390,6 +408,7 @@ def store_put_many(
 
 def store_delete(store: Any, kind: str, name: str) -> bool:
     """Delete one blob of ``store`` (a missing one is a no-op), GIL-free."""
+    ensure_room(store, name)
     return delete_blob(store._client, store._tag_ids.get(kind), name)
 
 
@@ -400,6 +419,7 @@ def store_delete_together(store: Any, kind: str, names: Sequence[str]) -> None:
     :func:`await_future`, so a stalled reply raises :class:`ClioCoreFutureTimeout`
     itself, typed for the caller's stall watch (which reruns the whole delete).
     """
+    ensure_room(store, names[0] if names else "")
     tag_id = store._tag_ids.get(kind)
     futures = [store._client.AsyncDelBlob(tag_id, name) for name in names]
     for future in futures:
@@ -408,6 +428,7 @@ def store_delete_together(store: Any, kind: str, names: Sequence[str]) -> None:
 
 def store_delete_many(store: Any, kind: str, names: Sequence[str]) -> None:
     """Issue independent deletes together and await every submitted operation."""
+    ensure_room(store, names[0] if names else "")
     tag_id = store._tag_ids.get(kind)
     futures = [store._client.AsyncDelBlob(tag_id, name) for name in names]
     errors: list[Exception] = []

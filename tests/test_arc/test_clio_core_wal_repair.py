@@ -190,13 +190,17 @@ def test_the_scratch_sweep_removes_nothing_when_the_restore_failed(
 
 
 def test_the_health_row() -> None:
-    assert probe_clio_core_metadata_restore(outcomes=[], failures=[]) == []
+    assert probe_clio_core_metadata_restore(outcomes=[], failures=[], damaged={}) == []
     (repaired,) = probe_clio_core_metadata_restore(
-        outcomes=[{"reason": wal.REPAIRED, "path": "x", "start": 1, "end": 2}], failures=[]
+        outcomes=[{"reason": wal.REPAIRED, "path": "x", "start": 1, "end": 2}],
+        failures=[],
+        damaged={},
     )
     assert repaired.state == IntegrationState.READY
     assert repaired.details["reason"] == wal.REPAIRED
-    (failed,) = probe_clio_core_metadata_restore(outcomes=[], failures=["TransactionLog::Load"])
+    (failed,) = probe_clio_core_metadata_restore(
+        outcomes=[], failures=["TransactionLog::Load"], damaged={}
+    )
     assert failed.state == IntegrationState.UNAVAILABLE
     assert failed.details["reason"] == wal.RESTORE_FAILED
 

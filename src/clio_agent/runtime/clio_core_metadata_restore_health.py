@@ -18,15 +18,22 @@ _SOURCE = "runtime:clio_core_metadata_log"
 
 
 def probe_clio_core_metadata_restore(
-    *, outcomes: list[dict[str, Any]] | None = None, failures: list[str] | None = None
+    *,
+    outcomes: list[dict[str, Any]] | None = None,
+    failures: list[str] | None = None,
+    damaged: dict[str, str] | None = None,
 ) -> list[IntegrationStatus]:
     """One row for this process's metadata-log findings, else none.
 
     Args:
         outcomes: Injected repair outcomes for testing; defaults to this process's.
         failures: Injected daemon restore-failure lines; defaults to the spawned daemon's.
+        damaged: Injected unreadable session records; defaults to this process's.
     """
     from clio_agent.arc import clio_core_wal_repair as wal  # noqa: PLC0415
+    from clio_agent.gact.session_record_damage import unreadable_sessions  # noqa: PLC0415
+
+    damaged = unreadable_sessions() if damaged is None else damaged
 
     found = wal.outcomes() if outcomes is None else outcomes
     failed = wal.restore_failures() if failures is None else failures
@@ -49,8 +56,33 @@ def probe_clio_core_metadata_restore(
                     "do not delete the store."
                 ),
                 fallback="none",
-                details={"reason": reason, "daemon_log": failed[:5], "logs": unreadable},
+                details={
+                    "reason": reason,
+                    "daemon_log": failed[:5],
+                    "logs": unreadable,
+                    "sessions_unreadable": damaged,
+                },
                 required=True,
+            )
+        ]
+    if damaged:
+        return [
+            IntegrationStatus(
+                name=_NAME,
+                state=IntegrationState.DEGRADED,
+                summary=(
+                    f"{len(damaged)} conversation record(s) read back damaged from clio-core "
+                    "and cannot open; they are kept, not deleted (their folders and "
+                    "transcripts stay)."
+                ),
+                config_source=_SOURCE,
+                next_action=(
+                    "Do not delete the store. Report the session ids in the details with "
+                    "the clio-core metadata.log.* and storage.bin_node0.alloc_log files."
+                ),
+                fallback="none",
+                details={"reason": "session_record_unreadable", "sessions_unreadable": damaged},
+                required=False,
             )
         ]
     if repaired:
