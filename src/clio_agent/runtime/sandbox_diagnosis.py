@@ -80,7 +80,12 @@ DENIAL_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
 #: #2139: AppKit LibreOffice aborts (SIGABRT) under the macOS shell fence.
 _OFFICE_COMMAND = re.compile(r"\b(?:soffice|libreoffice)\b", re.IGNORECASE)
 _ABORT_EXIT_CODES = (134, -6)
-_ELEVATION_TEXT = re.compile(r"requires elevation|\bERROR_ELEVATION_REQUIRED\b", re.IGNORECASE)
+_ELEVATION_TEXT = re.compile(
+    r"requires elevation|\bERROR_ELEVATION_REQUIRED\b"
+    # sudo asking for a password a confined, terminal-less command cannot give (macOS, Linux)
+    r"|sudo: (?:a terminal is required|a password is required|no tty present)",
+    re.IGNORECASE,
+)
 #: Quoted text in a denial line (straight and typographic quotes, as GNU tools print).
 _QUOTED = re.compile(r"'([^'\r\n]+)'|\"([^\"\r\n]+)\"|‘([^’\r\n]+)’|“([^”\r\n]+)”")
 #: Each quote kind alone, so a path quoted inside another quote (a ``repr``) is found too.
@@ -204,7 +209,7 @@ def diagnose_boundary(
             kind=KIND_ELEVATION_REQUIRED,
             confidence=CONFIRMED,
             mechanism=mechanism,
-            message=_elevation_message(),
+            message=_elevation_message(platform),
             signature="ERROR_ELEVATION_REQUIRED",
         )
     if (
@@ -621,11 +626,31 @@ def _office_message() -> str:
     )
 
 
-def _elevation_message() -> str:
+def _elevation_message(platform: str = sys.platform) -> str:
+    """Administrator rights go through the person twice: CLIO's card, then the OS's own
+    prompt, which takes any password itself. CLIO never sees a password."""
+    ask = (
+        "This needs administrator rights, which no folder grant gives. Call shell_bash again "
+        "with outside_sandbox=true and an access_reason: CLIO asks the person first, then runs "
+        "the command outside the sandbox"
+    )
+    if platform.startswith("win"):
+        how = ", and Windows shows them its own approval prompt (UAC)."
+    elif platform == "darwin":
+        how = (
+            ' wrapped as osascript -e \'do shell script "<command>" with administrator '
+            "privileges', and macOS asks them for their password in its own dialog. Don't use "
+            "sudo: a sandboxed command has no terminal to type into."
+        )
+    else:
+        how = (
+            " wrapped as pkexec <command>, and the system asks them to authenticate in its own "
+            "dialog. Where there is no graphical session, give the person the exact sudo "
+            "command to run in their own terminal instead."
+        )
     return (
-        "This needs administrator rights. CLIO's sandbox can't elevate a command, so no "
-        "permission prompt can be shown from here. Tell the person the exact file to run and "
-        "that Windows will ask them to approve the change. Don't try other ways to elevate."
+        f"{ask}{how} If they decline, tell them the exact command or file to run themselves. "
+        "Never ask for a password in the conversation and don't try other ways to elevate."
     )
 
 

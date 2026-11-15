@@ -223,9 +223,31 @@ def test_elevation_is_its_own_kind(exit_code: int, stderr: str) -> None:
     assert diagnosis is not None
     assert diagnosis.kind == sd.KIND_ELEVATION_REQUIRED
     assert diagnosis.request_roots == ()
-    assert "Tell the person the exact file to run" in diagnosis.message
-    assert "Don't try other ways to elevate." in diagnosis.message
+    assert "outside_sandbox=true" in diagnosis.message
+    assert "UAC" in diagnosis.message
+    assert "don't try other ways to elevate." in diagnosis.message
     assert "access_paths" not in diagnosis.message
+
+
+@pytest.mark.parametrize(
+    ("platform", "wrapper"),
+    [("darwin", "with administrator privileges"), ("linux", "pkexec <command>")],
+)
+def test_sudo_wanting_a_password_is_elevation_through_the_os_dialog(
+    platform: str, wrapper: str, tmp_path: Path
+) -> None:
+    diagnosis = sd.diagnose_boundary(
+        exit_code=1,
+        stderr="sudo: a terminal is required to read the password; either use the -S option",
+        command="sudo apt install kicad",
+        cwd=tmp_path,
+        write_roots=(tmp_path,),
+        mechanism="seatbelt" if platform == "darwin" else "landlock",
+        platform=platform,
+    )
+    assert diagnosis is not None and diagnosis.kind == sd.KIND_ELEVATION_REQUIRED
+    assert wrapper in diagnosis.message and "outside_sandbox=true" in diagnosis.message
+    assert "Never ask for a password" in diagnosis.message
 
 
 def test_a_folder_the_person_cannot_write_either_is_not_the_fence(
