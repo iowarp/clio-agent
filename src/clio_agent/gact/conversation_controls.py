@@ -15,6 +15,7 @@ from clio_agent.arc.task_types import (
     TaskProgress,
     TaskSnapshot,
 )
+from clio_agent.gact.assignment_pending import uncertain_call
 from clio_agent.gact.native_work import now
 from clio_agent.gact.session_input import withdraw_assignment_input
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
@@ -377,6 +378,12 @@ async def _cancel_subtree(
     else:
         selected_members = await self.history.io.run(membership)
     handles = tuple(sorted(selected_members - {assignment.handle}))
+    # A call already uncertain when the stop arrived (cut off by a restart, never
+    # resubmitted) is no work the stop can cancel: it keeps its own recorded status
+    # and does not hold the stop unconfirmed for ever.
+    orphaned = await self.history.io.run(
+        lambda: {h for h in handles if uncertain_call(self.history.task_snapshot(h))}
+    )
     changed, loop = asyncio.Event(), asyncio.get_running_loop()
     retirement = asyncio.create_task(self.runner.stop(sid))
 
@@ -388,7 +395,7 @@ async def _cancel_subtree(
 
     async def request_member(handle: str) -> None:
         task = self.history.task_snapshot(handle)
-        if task is None or task.terminal_at is not None:
+        if task is None or task.terminal_at is not None or handle in orphaned:
             errors.pop(handle, None)
             return
         try:
@@ -451,15 +458,19 @@ async def _cancel_subtree(
             if (
                 retired_cleanly
                 and not startup_error
-                and all(_member_settled(task) for task in states)
+                and all(
+                    _member_settled(task) or handle in orphaned
+                    for handle, task in zip(handles, states, strict=True)
+                )
             ):
                 break
             uncertain = [
                 handle
                 for handle, task in zip(handles, states, strict=True)
-                if task is None
-                or (
-                    task.status == "task_state_uncertain"
+                if handle not in orphaned
+                and (
+                    task is None
+                    or task.status == "task_state_uncertain"
                     or task.terminal_at is not None
                     and not _member_settled(task)
                 )

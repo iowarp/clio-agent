@@ -21,14 +21,24 @@ from __future__ import annotations
 from typing import Any
 
 
+def uncertain_call(task: Any) -> bool:
+    """A call (not an assignment) recorded ``task_state_uncertain``: nothing runs it.
+
+    Recovery never resubmits it and nothing moves it again. It is not work a wait can
+    expect, an owner can finish or a stop can cancel; it stays recorded for inspection.
+    """
+
+    return (
+        task is not None
+        and task.status == "task_state_uncertain"
+        and task.kind not in {"Session", "Subagent"}
+    )
+
+
 def orphaned_uncertainty(history: Any, task: Any, settling: str = "") -> bool:
     """An uncertain call whose owning assignment has settled, or is ``settling`` now."""
 
-    if (
-        task is None
-        or task.status != "task_state_uncertain"
-        or task.kind in {"Session", "Subagent"}
-    ):
+    if not uncertain_call(task):
         return False
     if settling and task.owner.assignment_id == settling:
         return True
@@ -47,4 +57,4 @@ def pending_work(history: Any, session_id: str, own_handle: str) -> list[Any]:
     return [row for row in rows if not orphaned_uncertainty(history, row, own_handle)]
 
 
-__all__ = ["orphaned_uncertainty", "pending_work"]
+__all__ = ["orphaned_uncertainty", "pending_work", "uncertain_call"]
