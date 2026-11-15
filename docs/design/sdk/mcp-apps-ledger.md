@@ -1023,6 +1023,37 @@ clio-agent `85489b8e4` (then `a73c48e01`, which does not touch the turn path). T
 
 Nothing was re-recorded: the committed goldens are the ones CI's frozen lock needs. They change again, digest only, when the clio-schemas pin moves to the release carrying `clio.mcp-app.v1` (GT-O4). The editable installs were restored afterwards (clio-kit, clio-schemas and paraview-mcp from the `conn-values` worktrees). `test_a2ui_mcp_app_arguments.py` also passes with the released 0.7.0 (8 passed; its whole-dashboard case skips, with its reason, because 0.7.0's catalog has no `clio.mcp-app.v1`).
 
+#### Develop sync 2 (GT-S2)
+
+Not to be confused with GT-S2 above (the eight handlers). Stream `sync2`, worktree `/home/user/wt/conn-values` on `ws/conn-values`, from the integration heads clio-agent `21debef92`, gact-tui `e866c7370`, marketplace `d5ca114`, clio-kit `90605532`, clio-schemas `3b9c5e4`. `origin/develop` had moved: clio-agent 42 commits (stop and restart, spawn invocation, flow execution view, provider routes, fetch), gact-tui 53 (the stop-children dialog, flow step details), marketplace 12 (deep-research). clio-kit was 0 behind `origin/main` and clio-schemas 0 behind `origin/develop` (its `origin/main` has two develop-merge commits with no content change), so neither was merged. The clio-agent gates ran in a rebuilt `.venv-ci` (`uv sync --frozen --extra dev --extra optimizers --extra claude-code --extra copilot` into `.venv-ci`: released clio-kit 2.12.7, clio-schemas 0.7.0); `UV_PROJECT_ENVIRONMENT` was not exported for any test.
+
+| Repo | Merge | File | Resolution |
+| --- | --- | --- | --- |
+| marketplace | `4aa201e` | none | clean merge of develop `cea9142` |
+| gact-tui | `c57ca341e` | `web/src/locales/*/messages.po` (all five) | develop's catalogs, then `i18n:extract` (9,739 messages). This branch's es, ja and el translations restored from the pre-merge catalogs for the 263 messages develop lacks (keyed by context and id); no message had a translation on both sides that differed, so none of develop's was replaced. Check: every message translated in either side's catalog is translated in the merged one. 18 messages per locale stay untranslated, the same 18 that were untranslated before the merge (S3 source fields, the live-view recording notes, the store-refusal copy); develop's catalogs had none missing |
+| clio-agent | `0e6827127` | `external/gact-tui`, `external/clio-agent-marketplace` | `c57ca341e` and `4aa201e`; develop's pins `b8394c3d8` and `cea9142` are ancestors of both (`merge-base --is-ancestor`) |
+| clio-agent | | `plugins/service.py` | `DEFAULT_MARKETPLACE_COMMIT = "4aa201e3090ef8cd793d8581abfabc23ce083278"`, equal to the gitlink |
+| clio-agent | | `docs/ENVIRONMENT.md` | regenerated with `gen_env_reference.py`: this branch's `CLIO_KIT_CACHE_DIR` row (it adds `connectors/kit_readiness.py`) is the generated one; `.env.example` and `config.defaults.yaml` unchanged |
+| clio-agent | | `scripts/cloud/ui_check.mjs` | both sides had added `--scale` (same option, same default): one definition, develop's comment and usage line; this branch's `--theme` colour scheme kept |
+| clio-agent | | `test_decomposition_guardrails.py` | 480 plus develop's `GET /v1/sessions/{sid}/stop-scope`: 481 |
+| clio-agent | | wire goldens | not re-recorded: `test_turn_transcript_equivalence.py` passes unchanged (the marketplace change is deep-research only) |
+
+| Repo | Gate | Head | Result |
+| --- | --- | --- | --- |
+| marketplace | unit, model pins, skill literals | `4aa201e` | passed (25 tests) |
+| marketplace | plugin check, `testing` | `4aa201e` with clio-agent `0e6827127` (`.venv-ci`) | 66/66, 8/8 |
+| marketplace | plugin tests with `trimesh`, `adios2`, `netCDF4` | `4aa201e` | 386 passed |
+| gact-tui | `pnpm lint` (copy and catalog checks), `pnpm typecheck` (`NODE_OPTIONS=--max-old-space-size=4096`) | `c57ca341e` | passed |
+| gact-tui | core, hdf5-viewer, desktop | `c57ca341e` | 371, 38, 76 passed |
+| gact-tui | web `vitest run --maxWorkers=2`, `brand.config.local.json` moved aside | `c57ca341e` | 792 files, 5,563 tests passed (22 min) |
+| gact-tui | brand descriptor, Go size, media policy | `c57ca341e` | passed |
+| clio-agent | ruff, format, the nine `scripts/check_*.py` guards in `ci.yml`, `compile_model_overlay --check`, `bash -n homelab-env.sh` | `0e6827127` | passed |
+| clio-agent | mypy | `0e6827127` | 1 error, the known release dependency (GF-D1: `s3` in `gact/storage/service.py:226` with clio-schemas 0.7.0), 1,738 files |
+| clio-agent | `uv lock --check`, `check_bundle_matches_lock.py --resolve` | `0e6827127` | passed |
+| clio-agent | `test_default_marketplace_pin`, PL/LZ `test_a_catalog_plugin_is_followed_by_a_marketplace_plugin_with_skills`, route guard, env reference | `0e6827127` | 35 passed |
+| clio-agent | focused: develop's 14 changed test files, `tests/test_flows`, `test_plugins`, `test_connectors`, the wire goldens, `test_startup_imports` (`-n 2`, `-W error::DeprecationWarning`) | `0e6827127` | 664 passed |
+| clio-agent | full unit suite | `0e6827127` | 16,924 passed, 127 skipped, 11 failed in 1 h 11 min (`run_tests.py tests/ -m "not integration" -W error::DeprecationWarning -n 2 --dist worksteal -p no:cacheprovider`, `.venv-ci`). Run because develop's commits reach the turn and tool path (`dspy_native_tool`, `clio_react`, code-mode dispatch, spawn, `lm/factory`). **Release dependency (GF-D1):** `test_s3_source` (1) and `test_a2ui_bound_files` (1), which pass with the editable clio-schemas (10 passed). **Load:** `test_context_api` (1), `test_memory_service` (4), `test_memory_tools_and_routes` (3), as in GF. **Run flag:** `test_test_runtime_isolation` (1) fails only under `-p no:cacheprovider` (GT-S3). Rerun alone without the flag: 62 passed. No failure is new against GF |
+
 ### Final qualification (FQ, stack N=29)
 
 Stream `final` on `ws/conn-values` after merging the integration branch (`claude/parallel-agents-plan-uzpzm0`) in clio-agent, gact-tui, the marketplace and clio-kit. Stack N=29 (agent 8829, UI 5229), `CLIO_CLOUD_ISOLATE=1`, `CLIO_ARC_CTE_FILE_CAPACITY=128MB`, CLIO brand (logo read in the first shot); clio-kit and clio-schemas editable, paraview-mcp 3.1.0 re-installed editable (it had dropped out of the venv). Three configurations of the one stack, each from an emptied `.cloud-run/xdg`: (1) the first-run journeys and the offer card, nothing enabled; (2) the same config restarted with `connector-fixtures.env.sh` for AQ1 to AQ12, AQ38, comments and permissions (transcripts kept in `.cloud-run/fq-parta/`); (3) a fresh config for the website shots (ParaView enabled with "Command to run first" `export PATH=/opt/pv6/bin:$PATH`, workspace `wave-study` with a 72³, 12-step version of the wave fixture). Cluster: clio-kit `cluster.sh up` with `CLIO_PV_CLUSTER_PREFIX=clio-pv-fq`, ports 21922/21923, subnet 10.208.29, `CLIO_PV_CLUSTER_STATE=~/.ssh/clio-pv-fq`. Step files: `journey.mjs`, `connector_offer.mjs` (`OFFER_VIEW_PLUGIN`), `connectors_extensions.mjs`, `connectors_api.sh`, `connector_card.mjs` (`CARD_ACTION=decline`), `comments_look.mjs`, `website_shots.mjs` (new); `ui_check.mjs` takes `--scale` and `--theme`. Screenshots in `/home/user/wt/gallery/final/fq-*` and `/home/user/wt/gallery/website/`, every one listed read. `consoleErrors` and `failedRequests` were empty unless the row says otherwise. Requests are plain unless the row says otherwise.
