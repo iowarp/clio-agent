@@ -995,3 +995,19 @@ def test_archive_retains_resolved_permissions_only_from_its_session(
     assert interactions[0]["id"] == "permission:p"
     assert interactions[0]["status"] == "answered"
     assert interactions[0]["source"]["invocation_id"] == "approved-call"
+
+
+def test_a_renderer_larger_than_thirty_megabytes_is_accepted() -> None:
+    """The offline renderer is the UI's own bundle; its size follows the UI build."""
+    from clio_agent.gact.routes.session_export import VisualExport
+
+    request = VisualExport.model_validate(
+        {
+            "visual_review": {
+                "javascript": "x" * 40_000_000,
+                "stylesheet": "y" * 6_000_000,
+                "snapshot": {},
+            }
+        }
+    )
+    assert len(request.visual_review.javascript) == 40_000_000
