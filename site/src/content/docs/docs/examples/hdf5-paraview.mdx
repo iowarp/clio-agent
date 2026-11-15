@@ -4,7 +4,7 @@ description: Use public ERA5 reanalysis of Hurricane Helene to inspect HDF5 file
 lastUpdated: false
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, LinkCard } from '@astrojs/starlight/components';
 import PreviewGuide from '../../../../components/docs/PreviewGuide.astro';
 import Capture from '../../../../components/overview/Capture';
 import { captureImage } from '../../../../lib/captures';
@@ -194,20 +194,18 @@ the centre, an ice plume to the northeast, and two separate systems in the same 
 - **Step the dashboard.** Choose a point on the track and check that the 3D view, the
   curves and the table move to that time.
 
-## Download the conversation
+## Open the dashboard
 
-The conversation and the dashboard were exported with CLIO's own export: the
-conversation menu's **Export**, then **Download HTML**, and the dashboard's
-**HTML dashboard** download. Each opens on its own in a browser, without CLIO. The 3D
-view needs ParaView running, so the saved files show its recording instead.
+The dashboard was saved with its own **HTML dashboard** download. It opens on its own
+in a browser, without CLIO, with its data, map, charts and table. The 3D view needs
+ParaView running, so the saved file shows its recording instead.
 
-| Download | What it holds | Size |
-| --- | --- | --- |
-| [Conversation](https://github.com/iowarp/clio-agent/releases/download/helene-hdf5-2026-11-15/Hurricane-Helene-in-ERA5.html) | All nine requests and answers, 138 recorded tool calls, the loaded skills and the saved views | 110 MB |
-| [Dashboard](https://github.com/iowarp/clio-agent/releases/download/helene-hdf5-2026-11-15/Hurricane-Helene-dashboard.html) | The shared dashboard with its data and the 3D view's recording | 21 MB |
+<LinkCard title="Open the Helene dashboard" description="The shared dashboard from this run, with the 3D cloud view's recording. 21 MB." href="/conversations/hdf5/helene-dashboard/" />
 
-The conversation is large because it keeps every result the agent read, including
-four reads of a whole field, 2.8 million values each, and the viewer that draws them.
+The conversation itself was exported too, with the conversation menu's **Export**,
+then **Download HTML**. It is not published here: that export kept every result the
+agent read, including four reads of a whole field of 2.8 million values each, and
+came to 110 MB. The picture below is that export opened from a file.
 
 <Capture client:visible image={await captureImage(offline)}
   alt="The exported conversation open in a browser, Results tab: the dashboard's cloud section shows an eight-second recording of the 3D series with a play button, and the note that this is the live view's recording"

@@ -57,7 +57,7 @@ is a fresh take on develop (`sess_255e12e2e60d`), with these differences from th
   `helene_offline.mjs` and `helene_dashboard_export.mjs` open them from `file://`; the 3D view
   shows its recording there. Exporting needs the offline renderer built in a source UI
   (`pnpm --filter @clio/workspace build:offline`), and the agent now admits a renderer of its
-  current size (about 37 MB).
+  current size (about 37 MB). Each saved tool output is now embedded once in that export.
 
 ## Run it
 
