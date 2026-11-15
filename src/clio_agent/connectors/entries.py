@@ -57,6 +57,8 @@ class Need:
     default: str | None = None
     agent_settable: bool = False
     options: tuple[str, ...] = ()
+    #: A heading the card groups this need under ("" for none).
+    group: str = ""
 
     @property
     def substituted(self) -> bool:
@@ -79,6 +81,8 @@ class Entry:
     plugin: str = ""
     #: The server tools offered (``tools`` in the entry); empty offers every tool.
     tools: tuple[str, ...] = ()
+    #: Glob patterns of server tools this connector does not offer (``hide_tools``).
+    hide_tools: tuple[str, ...] = ()
     source: Literal["catalog", "custom"] = "catalog"
     folder: str = ""
     #: The domain Discover groups it under ("" for none, LZ-D9).
@@ -131,6 +135,7 @@ class Entry:
                         "default": need.default,
                         "agent_settable": need.agent_settable or None,
                         "options": list(need.options) or None,
+                        "group": need.group or None,
                     }.items()
                     if value is not None
                 }
@@ -138,6 +143,7 @@ class Entry:
             ],
             **({"plugin": self.plugin} if self.plugin else {}),
             **({"tools": list(self.tools)} if self.tools else {}),
+            **({"hide_tools": list(self.hide_tools)} if self.hide_tools else {}),
         }
 
 
@@ -260,6 +266,7 @@ def entry_from_raw(
                 default=str(row["default"]) if row.get("default") is not None else None,
                 agent_settable=bool(row.get("agent_settable", False)),
                 options=tuple(str(value) for value in row.get("options") or ()),
+                group=str(row.get("group") or ""),
             )
             for row in raw.get("needs") or ()
         ),
@@ -267,6 +274,7 @@ def entry_from_raw(
         logo_dark=str(raw.get("logo_dark") or ""),
         plugin=str(raw.get("plugin") or ""),
         tools=tuple(str(name) for name in raw.get("tools") or ()),
+        hide_tools=tuple(str(pattern) for pattern in raw.get("hide_tools") or ()),
         source=source,
         folder=folder,
         group=str(raw.get("group") or ""),

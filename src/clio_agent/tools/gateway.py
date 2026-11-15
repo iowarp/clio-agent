@@ -266,7 +266,7 @@ def build_gateway(
     else:
         make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
-    from clio_agent.tools import mcp_task_routing  # noqa: PLC0415
+    from clio_agent.tools import hidden_tools, mcp_task_routing  # noqa: PLC0415
 
     # Attached to the gateway object (not a module map keyed by id(gw)): it
     # dies with the gateway, id-reuse cannot alias a stale registry, and a
@@ -299,7 +299,7 @@ def build_gateway(
             # Only stdio specs honor cwd; http specs are shared and ignore it.
             spec_cwd = cwd if spec.transport == "stdio" else None
             proxy = make_proxy(spec, spec_cwd) if accepts_cwd else make_proxy(spec)
-            _mount_with_namespace(gw, proxy, name)
+            _mount_with_namespace(gw, hidden_tools.apply(proxy, spec.connector), name)
             existing.add(name)
             registry[name] = proxy
             specs_registry[name] = spec

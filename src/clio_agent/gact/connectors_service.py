@@ -96,6 +96,7 @@ def need_row(found: Entry, choice: state.Choice, need: Need) -> dict[str, Any]:
         "agent_settable": need.agent_settable,
         "default": need.default,
         "options": list(need.options),
+        "group": need.group or None,
         "value": value,
         "has_value": has_value(found, choice, need),
     }

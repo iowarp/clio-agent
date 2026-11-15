@@ -1,0 +1,71 @@
+# KiCad: JaimeCernuda/kicad-mcp-pro, a fork of oaslananka/kicad-mcp-pro (MIT), pinned to
+# the commit qualified here. CLIO starts it as its own process through uvx and never
+# bundles or imports it. The fork serves six MCP Apps views (board, schematic, BOM,
+# checks, stackup, parts) with KICAD_MCP_ENABLE_APPS=1, and attaches to or starts the
+# KiCad it uses with KICAD_MCP_KICAD_INSTANCE=auto (KiCad plan KC1, KI1 to KI7).
+# Circuit simulation is the spice connector's, so the fork's own sim_* tools are hidden
+# (plan KT2, amended: ledger KA6). kicad.svg is KiCad's own application mark, from
+# resources/bitmaps_png/sources/light/icon_kicad.svg in gitlab.com/kicad/code/kicad
+# (KiCad's licences page names GPLv3 and CC-BY-SA; kicad ledger, "Logo").
+- id: kicad
+  name: KiCad
+  group: Electronics
+  logo: kicad.svg
+  description: Design circuit boards in KiCad and see the board, schematic, BOM, checks and parts in a tab
+  server:
+    command: uvx
+    args:
+      - --from
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@c1f27d4c229920d1b42981030f90b7e092bd5488
+      - kicad-mcp-pro
+      - --transport
+      - stdio
+    env:
+      KICAD_MCP_PROFILE: full
+      KICAD_MCP_OPERATING_MODE: experimental
+      KICAD_MCP_ENABLE_APPS: "1"
+      KICAD_MCP_KICAD_INSTANCE: auto
+      KICAD_MCP_FILTER_RUNTIME_TOOLS: "false"
+      KICAD_CLI_PATH: ${need.kicad_cli}
+      NEXAR_CLIENT_ID: ${need.nexar_id}
+      NEXAR_CLIENT_SECRET: ${need.nexar_secret}
+      DIGIKEY_CLIENT_ID: ${need.digikey_id}
+      DIGIKEY_CLIENT_SECRET: ${need.digikey_secret}
+      MOUSER_API_KEY: ${need.mouser_key}
+  hide_tools: [sim_*]
+  needs:
+    - key: kicad_cli
+      kind: value
+      label: Where KiCad is
+      required: false
+      agent_settable: true
+      help: Leave empty to find KiCad on this machine. Otherwise the path to kicad-cli; the server then uses only that install.
+    - key: nexar_id
+      kind: value
+      label: Nexar client ID
+      required: false
+      group: Part catalogs
+      help: Optional. Parts search uses jlcsearch (JLCPCB's catalog, no key) by default. Nexar (Octopart) adds every distributor, full specs and lifecycle.
+    - key: nexar_secret
+      kind: secret
+      label: Nexar client secret
+      required: false
+      group: Part catalogs
+    - key: digikey_id
+      kind: value
+      label: DigiKey client ID
+      required: false
+      group: Part catalogs
+      help: Optional. Adds DigiKey stock, pricing and parametric data.
+    - key: digikey_secret
+      kind: secret
+      label: DigiKey client secret
+      required: false
+      group: Part catalogs
+    - key: mouser_key
+      kind: secret
+      label: Mouser API key
+      required: false
+      group: Part catalogs
+      help: Optional. Adds Mouser stock, pricing and attributes.
+  plugin: kicad

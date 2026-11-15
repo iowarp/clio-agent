@@ -403,7 +403,9 @@ async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> 
 # -------------------------------------------------------------------- the tool
 
 
-async def offer_plugin(reason: str, plugin: str = "") -> dict[str, Any]:
+async def offer_plugin(
+    reason: str, plugin: str = "", needs: list[str] | None = None
+) -> dict[str, Any]:
     """Offer to add a plugin or connector to this conversation; wait for Add or Not now.
 
     ``reason`` is required (schema: no default, at least one character): the card shows
@@ -422,14 +424,21 @@ async def offer_plugin(reason: str, plugin: str = "") -> dict[str, Any]:
         }
     rows = await asyncio.to_thread(offerable, app, session_id)
     if not plugin.strip():
+        from clio_agent.gact.connector_needs_offer import optional_needs  # noqa: PLC0415
+
         return {
             "offerable": rows,
+            "optional_needs": await asyncio.to_thread(optional_needs, app, session_id),
             "message": f"{len(rows)} plugin{'s' if len(rows) != 1 else ''} and connectors "
             "the person can add to this conversation."
             if rows
             else "Nothing more can be added to this conversation.",
         }
     kind, found = await asyncio.to_thread(_match, app, plugin)
+    if kind == "connector" and needs:
+        from clio_agent.gact.connector_needs_offer import offer_needs  # noqa: PLC0415
+
+        return await offer_needs(found, reason, needs)
     if kind == "connector":
         return await connector_offer.offer_connector(connector=found.id, reason=reason)
     if kind == "plugin":
@@ -456,7 +465,9 @@ def build_offer_plugin_tool() -> Any:
             "yourself. A connector's card also turns it on and asks for what it needs. On "
             "Add its tools and skills are yours from your next step and you continue the "
             "request; on Not now you get a refusal and nothing changed. With no plugin it "
-            "lists everything the person can add."
+            "lists everything the person can add, and the optional needs (such as API keys) "
+            "of the connectors already here. With needs it asks the person for those of a "
+            "connector already here, when a tool's result shows they would help."
         ),
         args={
             "plugin": {
@@ -469,6 +480,14 @@ def build_offer_plugin_tool() -> Any:
                 "description": (
                     "Required. One sentence for the person, shown on the card: why this "
                     "request needs it and what it would do here."
+                ),
+            },
+            "needs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional. Keys of a connector's optional needs to ask for (from "
+                    "optional_needs), for a connector already in this conversation."
                 ),
             },
         },
