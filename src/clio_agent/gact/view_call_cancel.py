@@ -20,6 +20,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from fastapi import HTTPException
+
+from clio_agent.errors import CancellationError
+
 logger = logging.getLogger(__name__)
 
 VIEW_CALL_CANCELLED = "mcp_app_call_cancelled"
@@ -101,6 +105,12 @@ async def run(app: Any, invoke: Callable[[], Any], *, request: Any = None) -> An
     watcher = asyncio.ensure_future(_watch(request, event)) if request is not None else None
     try:
         return await asyncio.shield(work)
+    except CancellationError as exc:
+        # The request that asked went away: answer it typed, not as an unhandled error
+        # (nobody reads the answer, but the server's log and the error path stay typed).
+        if request is None or not event.is_set():
+            raise
+        raise HTTPException(status_code=409, detail=VIEW_CALL_CANCELLED_TEXT) from exc
     except asyncio.CancelledError:
         logger.info("%s reason=caller_cancelled", VIEW_CALL_CANCELLED)
         event.set()

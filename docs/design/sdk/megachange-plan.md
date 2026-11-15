@@ -157,7 +157,7 @@ Run these live scenarios against `bash scripts/cloud/stack.sh start`, which defa
 | L3 | Run `council` on a question | Three child handles exist, then one synthesized answer |
 | L4 | A plan with a critic editor | The critic proposes a node, the approval Question appears, and the node runs after approval |
 | L5 | Restart the server mid-plan | The run resumes on the same handles, and `query_tasks` shows no duplicate tasks |
-| L6 | Stop during a flow, then `cancel_tasks` on it | Stop leaves the flow running; cancel settles its subtree |
+| L6 | Stop during a flow, then `cancel_tasks` on it | Stop with `children: keep` leaves the flow running; cancel, or Stop with `children: stop`, settles its subtree ([stop-and-restart.md](../stop-and-restart.md)) |
 | L7 | `clio-agent plugin check` on a broken plugin | A missing prompt file, a tool collision and a hook cycle each fail with a clear message |
 | L8 | Install clio-kit `main` as a marketplace through the importer, including its federated clio-coder marketplace after the trust step | `clio-agent plugin check` passes for every imported plugin, or reports a typed reason per plugin. An agent with `clio-hdf5` added calls an HDF5 tool that runs `clio-kit mcp-server hdf5`. `clio-dataset-report`'s hook fires. A `clio-agents` subagent runs with mapped tools. |
 | L10 | A trusted plugin with an `Answer` hook is added to a conversation, and a question is asked | The hook's note and check show under the answer, attributed to the hook; its revision replaces the answer under a "Revised by" line, with the original one click away |

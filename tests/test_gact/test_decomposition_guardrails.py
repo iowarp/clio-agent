@@ -273,7 +273,8 @@ from clio_agent.gact.app import build_app
 # {app_id}/shown and POST {app_id}/looks/{call_id}.
 # 478 -> 480: client-rendered file views (gact/file_view_routes.py, FV-D3): PUT
 # /v1/sessions/{sid}/file-views/{view_id} and POST .../{view_id}/looks/{call_id}.
-EXPECTED_ROUTE_METHOD_PAIRS = 480
+# 480 -> 481: what a stop reaches (routes/sessions.py, docs/design/stop-and-restart.md): GET /v1/sessions/{sid}/stop-scope.
+EXPECTED_ROUTE_METHOD_PAIRS = 481
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -324,6 +325,7 @@ def test_build_app_registers_expected_route_count() -> None:
         ("/v1/sessions/{sid}/message-state", "GET"),
         ("/v1/workspaces/{wid}/sources/{source_id}/operations/{handle}/cancel", "POST"),
         ("/v1/sessions/{sid}/legacy-transcript", "GET"),
+        ("/v1/sessions/{sid}/stop-scope", "GET"),
     } <= set(route_pairs)
     assert ("/v1/infrastructure/models/details", "GET") in route_pairs
     assert ("/v1/html-renderer", "GET") not in route_pairs

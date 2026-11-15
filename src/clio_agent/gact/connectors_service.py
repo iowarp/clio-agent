@@ -266,6 +266,8 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         # downloaded when it is first enabled (LZ-D1).
         "group": found.group or None,
         "kit": found.kit or None,
+        # What must already be on this machine, in words (LZ-O4, SL-D8).
+        "requires": found.requires or None,
         "enabled": choice.enabled,
         "plugin": _plugin(records, found),
         # What a conversation's plugin picker adds for this connector (CN9 *Amended*).

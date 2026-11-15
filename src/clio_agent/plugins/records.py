@@ -202,6 +202,9 @@ class PluginRecord:
     executable_digest: str = ""
     text_digest: str = ""
     keywords: tuple[str, ...] = ()
+    #: The category its marketplace entry declares (a Claude Code marketplace's
+    #: ``category``), else empty: what ``offer_plugin`` searches by category (OL-D11).
+    category: str = ""
     #: Python parts present but not imported, because the plugin is not trusted yet.
     python_pending: bool = False
     #: Tool disclosure from the ``ai.iowarp.clio`` extension: ``defer`` for the whole
@@ -295,6 +298,7 @@ class PluginRecord:
             executable_digest=data.get("executable_digest") or "",
             text_digest=data.get("text_digest") or "",
             keywords=tuple(data.get("keywords") or ()),
+            category=str(data.get("category") or ""),
             python_pending=bool(data.get("python_pending")),
             disclosure=dict(data.get("disclosure") or {}),
             follows=str(data.get("follows") or ""),

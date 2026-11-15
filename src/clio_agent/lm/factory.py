@@ -139,7 +139,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         model=model_name,
         # A keyless local server has no credential: an empty key is omitted, never sent.
         **({"api_key": config.api_key} if config.api_key else {}),
-        max_tokens=config.max_tokens or None,
+        max_tokens=_output_cap(config),
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
         # always lands in dspy.settings.usage_tracker (cache_hits
@@ -148,6 +148,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         # more than the small spend saved on duplicate questions.
         cache=False,
         **connection,
+        **_engine_kwargs(config),
         **extras,
     )
     # Only the Anthropic Messages API takes images/documents inside a tool result;
@@ -348,15 +349,74 @@ def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
     strip ``/v1`` because LiteLLM's native provider appends ``/api/chat``
     (iowarp/clio-agent#1413) -- sent every turn to ``/chat/completions`` at
     the host root, a 404. A base saved either way is normalized here.
+
+    The ``anthropic`` provider runs on DSPy's native Messages engine (see
+    :func:`_engine_kwargs`), which POSTs ``<api_base>/messages``: its base is
+    the versioned ``<host>/v1``. A host root saved without ``/v1`` is
+    normalized to it. (LiteLLM's Anthropic route appends ``/v1/messages``
+    itself; it is not used for this provider.)
     """
     if not config.api_base:
         return {}
     api_base = config.api_base
-    if _resolved_litellm_prefix(config) == "ollama_chat":
+    prefix = _resolved_litellm_prefix(config)
+    if prefix in {"ollama_chat", "anthropic"}:
         from clio_agent.providers.api_base import native_root  # noqa: PLC0415
 
         api_base = native_root(api_base) + "/v1"
     return {"api_base": api_base}
+
+
+def _output_cap(config: LMProviderConfig) -> int | None:
+    """The ``max_tokens`` to send, or ``None`` to send no cap.
+
+    CLIO sends no output cap unless one is configured (``lm.max_tokens``). The
+    Anthropic Messages API requires one, though, and DSPy's engine then fills in
+    its own class default (16,384 tokens, thinking included), a cap nobody chose:
+    long researcher replies were cut off (``finish_reason=length``) on
+    claude-sonnet-5-5, whose real output limit is 128,000 (2026-11-14). For that
+    API an unset cap is the model's discovered output limit instead. When no
+    catalog knows the model, the engine's default applies and is logged.
+    """
+    if config.max_tokens:
+        return config.max_tokens
+    if _resolved_litellm_prefix(config) != "anthropic":
+        return None
+    from clio_agent.config import resolve_effective_max_tokens  # noqa: PLC0415
+    from clio_agent.providers.handshake.sources import resolve_output_limit  # noqa: PLC0415
+
+    limit = resolve_output_limit(config.model, "anthropic")
+    if not limit:
+        logger.warning(
+            "output_cap_unknown provider=anthropic model=%s reason=no_catalog_output_limit "
+            "detail=the Messages API requires max_tokens; the engine default applies",
+            config.model,
+        )
+        return None
+    return resolve_effective_max_tokens(
+        user_max_tokens=0,
+        provider_default=limit,
+        output_limit=limit,
+        context_window=getattr(config, "context_window", None),
+    )
+
+
+def _engine_kwargs(config: LMProviderConfig) -> dict[str, str]:
+    """Pin the engine where DSPy's automatic choice would depend on the environment.
+
+    The ``anthropic`` provider always runs on DSPy's native Messages engine,
+    which streams extended thinking with the signatures Anthropic needs back
+    across tool turns. Left on ``auto``, DSPy moves an ``anthropic/`` model to
+    its LiteLLM engine whenever ``ANTHROPIC_BASE_URL`` or ``ANTHROPIC_API_BASE``
+    is set in the process environment (a Claude Code gateway, for one). CLIO
+    passes its own address, so that variable never chose the endpoint, only the
+    engine; and the LiteLLM engine refuses streamed ``thinking_blocks``, which
+    failed every thinking turn (2026-11-14). Pinned, a setting the native engine
+    cannot carry is refused with a typed error instead of changing engines.
+    """
+    if _resolved_litellm_prefix(config) == "anthropic":
+        return {"engine": "lm15"}
+    return {}
 
 
 def _resolve_model_name(config: LMProviderConfig) -> str:

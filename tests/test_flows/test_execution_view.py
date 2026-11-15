@@ -122,7 +122,7 @@ def test_recorded_output_rejection_does_not_become_successful_audit() -> None:
     )
     row = next(row for row in rows if row["id"] == "critic")
     assert row["status"] == "output_rejected"
-    assert "child returned" in row["detail"]
+    assert "found problems in the answer" in row["detail"]
     assert "Invalid requirement ID" in row["detail"]
 
 
@@ -269,3 +269,122 @@ def test_a_named_child_shows_its_name_and_planned_question() -> None:
     assert {"Anthropic PTC docs", "Sandbox audit logs", "critic"} <= set(labels)
     assert labels["Anthropic PTC docs"]["question"] == "What is PTC?"
     assert "question" not in labels["Sandbox audit logs"]
+
+
+def _call(key: str, target: str, together: str) -> dict[str, Any]:
+    return {
+        "invocation": f"run:subagent:key={key}:abc:0",
+        "target": target,
+        "status": "completed",
+        "together": together,
+        "handle": key,
+        "label": key,
+    }
+
+
+def test_deep_research_shows_the_coordinator_between_rounds() -> None:
+    content: dict[str, Any] = {
+        "flow": "deep-research",
+        "status": "completed",
+        "steps": {"p": {"name": "DeepResearch._plan"}, "w": {"name": "DeepResearch._write"}},
+        "events": {
+            "c1": {
+                "event": "coordinated",
+                "round": 1,
+                "rounds_left": 1,
+                "across": 2,
+                "follow_ups": ["Who ruled?"],
+                "open_questions": 0,
+            },
+            "c2": {
+                "event": "coordinated",
+                "round": 2,
+                "rounds_left": 0,
+                "across": 3,
+                "follow_ups": [],
+                "open_questions": 1,
+            },
+        },
+    }
+    rows = execution_view(
+        content,
+        [
+            _call("research:d1", "researcher", "r1"),
+            _call("research:d2", "researcher", "r1"),
+            _call("verify:1:d1", "critic", "v1"),
+            _call("verify:1:d2", "critic", "v1"),
+            _call("research:g2.1", "researcher", "r2"),
+            _call("verify:2:g2.1", "critic", "v2"),
+        ],
+    )
+    by_id = {row["id"]: row for row in rows}
+    first, second = by_id["run:coordinate:1"], by_id["run:coordinate:2"]
+    assert first["label"] == "Coordinate" and first["status"] == "completed"
+    assert first["after"] == [
+        "run:subagent:key=verify:1:d1:abc:0",
+        "run:subagent:key=verify:1:d2:abc:0",
+    ]
+    assert first["detail"].startswith("Chose 1 follow-up direction.")
+    assert first["detail"].endswith("Follow-ups: (1) Who ruled?")
+    assert "\n" not in first["detail"]
+    assert by_id["run:subagent:key=research:g2.1:abc:0"]["after"] == ["run:coordinate:1"]
+    assert second["after"] == ["run:subagent:key=verify:2:g2.1:abc:0"]
+    assert second["detail"] == (
+        "No research rounds left. 3 findings across the verified evidence. 1 question left open."
+    )
+    assert by_id["run:draft"]["after"] == ["run:coordinate:2"]
+
+
+def test_a_failed_coordinator_is_shown_failed_with_its_reason() -> None:
+    content: dict[str, Any] = {
+        "flow": "deep-research",
+        "status": "completed",
+        "steps": {"p": {"name": "DeepResearch._plan"}, "w": {"name": "DeepResearch._write"}},
+        "events": {
+            "f": {"event": "coordinator_failed", "round": 1, "reason": "ValueError: bad shape"}
+        },
+    }
+    rows = execution_view(
+        content,
+        [_call("research:d1", "researcher", "r1"), _call("verify:1:d1", "critic", "v1")],
+    )
+    (row,) = [row for row in rows if row["label"] == "Coordinate"]
+    assert row["status"] == "failed" and row["detail"] == "ValueError: bad shape"
+
+
+def test_an_unreadable_review_shows_failed_not_rejected() -> None:
+    content: dict[str, Any] = {
+        "flow": "deep-research",
+        "status": "completed",
+        "steps": {"p": {"name": "DeepResearch._plan"}, "w": {"name": "DeepResearch._write"}},
+        "events": {
+            "r": {
+                "event": "report_review",
+                "status": "review_unreadable",
+                "issues": [],
+                "reason": "ValueError: issues.6.excerpt Field required",
+            }
+        },
+    }
+    rows = execution_view(content, [_call("research:d1", "researcher", "r1")])
+    (review,) = [row for row in rows if row["id"] == "run:review"]
+    assert review["status"] == "failed"
+    assert review["detail"].endswith("ValueError: issues.6.excerpt Field required")
+
+
+def test_a_run_stopped_on_request_ends_cancelled_not_failed() -> None:
+    stopped = {"reason": "stopped", "stopped_by": "person", "message": "Stopped on request."}
+    research = execution_view(
+        {"flow": "deep-research", "status": "cancelled", "result": stopped},
+        [{"invocation": "a", "status": "cancelled"}],
+    )
+    assert ("Stopped", "cancelled") in [(row["label"], row["status"]) for row in research]
+    assert not [row for row in research if row["status"] == "failed"]
+    custom = execution_view(
+        {"flow": "custom", "status": "cancelled", "result": stopped},
+        [{"invocation": "a", "status": "cancelled"}],
+    )
+    assert [(row["label"], row["status"]) for row in custom][-2:] == [
+        ("Stopped", "cancelled"),
+        ("Result", "not_run"),
+    ]

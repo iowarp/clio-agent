@@ -16,6 +16,7 @@ from clio_agent.gact.task_publication import publish_control_outcome
 
 if TYPE_CHECKING:
     from clio_agent.gact.conversations import Conversations
+    from clio_agent.gact.task_history import TaskHistory
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,10 @@ async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[
     if handle in self._restarting:
         return {"handle": handle, "restart_requested": True, "pending": True}
     self._restarting.add(handle)
+    interrupted: dict[str, object] = {}
     try:
         if current.terminal_at is None:
+            interrupted = await self.history.io.run(_running_work, self.history, current)
             await self.cancel(caller, handle)
         cancellation, verify_descendants = await prepare_terminal_restart(self, current)
     except Exception:
@@ -78,6 +81,7 @@ async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[
                 latest = self.history.latest_assignment(previous.owner.session_id)
                 if latest is None or latest.handle != previous.handle:
                     raise ValueError("Assignment acquired a successor while restart waited")
+                resume_stopped_parent(self, previous)
                 task = self._new_assignment(
                     previous.owner.session_id,
                     previous.description or "Retained assignment",
@@ -145,7 +149,42 @@ async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[
             self._restarting.discard(handle)
 
     self.retain_control("restart:" + handle, asyncio.create_task(restart_once()))
-    return {"handle": handle, "restart_requested": True, "pending": True}
+    return {"handle": handle, "restart_requested": True, "pending": True, **interrupted}
+
+
+def _running_work(history: TaskHistory, assignment: TaskSnapshot) -> dict[str, object]:
+    """What restarting a still-running assignment cancels, told to whoever asked.
+
+    A running target (one the service resumed after its own restart is running) is
+    cancelled before its successor starts. The answer says so and names the open work
+    it ends, so the caller does not mistake the loss for something else.
+    """
+
+    rows = []
+    with history.read_view():
+        for member in history.tree_handles(assignment.owner.session_id):
+            task = history.task_snapshot(member)
+            if (
+                task is None
+                or task.terminal_at is not None
+                or task.handle == assignment.handle
+                or task.owner.parent_handle != assignment.handle
+            ):
+                continue
+            rows.append({"handle": task.handle, "kind": task.kind, "label": task.label})
+    names = ", ".join(row["label"] or row["handle"] for row in rows)
+    return {
+        "was_running": True,
+        "cancelled_unfinished": rows,
+        "note": (
+            "This task was still running when the restart was asked for, so the restart "
+            "cancelled its unfinished work first"
+            + (f" ({names})" if names else "")
+            + ". Finished calls keep their results; the cancelled work runs again in the "
+            "successor. To keep work in progress, observe or wait on a running task instead "
+            "of restarting it."
+        ),
+    }
 
 
 async def prepare_terminal_restart(
@@ -188,3 +227,38 @@ async def prepare_terminal_restart(
             )
 
     return cancellation, verify_settled
+
+
+def resume_stopped_parent(owner: Conversations, child: TaskSnapshot) -> TaskSnapshot | None:
+    """Give a child restarted after its conversation was stopped a live conversation.
+
+    Stop with ``children: stop`` cancels the conversation's assignment, which closes
+    admission for everything under it. Restarting one of its children then needs a
+    parent that can receive the result: the stopped conversation gets a linked
+    successor assignment (``restart-child:<handle>``). The successor sends no input
+    of its own; the child's result wakes it, as any task result does. Ancestors
+    stopped the same way are resumed first. Called under ``history.serialized()``.
+    """
+
+    if not child.owner.parent_handle:
+        return None
+    parent = owner.history.task_snapshot(child.owner.parent_handle)
+    if parent is None:
+        return None
+    latest = owner.history.latest_assignment(parent.owner.session_id)
+    if (
+        latest is None
+        or latest.terminal_at is None
+        or latest.cancellation_requested_at is None
+        or latest.owner.human_id != child.owner.human_id
+        or not owner.supports_execution(latest)
+    ):
+        return None
+    resume_stopped_parent(owner, latest)
+    return owner._new_assignment(
+        latest.owner.session_id,
+        latest.description or "Retained assignment",
+        latest.owner.human_id,
+        predecessor=latest,
+        invocation_id="restart-child:" + child.handle,
+    )

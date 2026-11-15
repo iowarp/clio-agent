@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from clio_agent.arc.task_types import (
@@ -415,6 +415,7 @@ def _record_interrupted_calls(
     """Record uncertainty for orphaned call observations without replay or history copying."""
     segments = self.history.arc.context_view(boundary.session_id, boundary.scope).segments
     from clio_agent.arc.context_restore import unanswered_calls
+    from clio_agent.gact.spawn_invocation import started_tasks
 
     for offset, (position, call) in enumerate(unanswered_calls(segments)):
         identity = call.content["id"]
@@ -425,6 +426,9 @@ def _record_interrupted_calls(
                     "error": "operation_outcome_uncertain",
                     "message": "The service restarted before this tool observation was saved. Inspect task handles and effects before deciding whether to retry.",
                     "resubmitted": False,
+                    **_started_by_call(
+                        started_tasks(self.history, task.owner.session_id, identity)
+                    ),
                 }
             ),
             "is_error": True,
@@ -443,6 +447,33 @@ def _record_interrupted_calls(
                 turn_id="recovery:" + task.handle,
             )
         )
+
+
+def _started_by_call(tasks: list[TaskSnapshot]) -> dict[str, Any]:
+    """What an interrupted call had already started, as recorded (empty when nothing).
+
+    The call's observation was lost, not its work: naming the task lets the agent
+    observe or wait on it instead of starting the same work again. It reports the
+    record; the agent decides.
+    """
+    if not tasks:
+        return {}
+    rows = [
+        {"handle": row.handle, "kind": row.kind, "label": row.label, "status": row.status}
+        for row in tasks
+    ]
+    names = "; ".join(
+        f"{row['label']} ({row['kind']} {row['handle']}, {row['status']})" for row in rows
+    )
+    return {
+        "started_tasks": rows,
+        "started_note": (
+            f"Before the restart this call had already started: {names}. It was not "
+            "started again. Observe, wait on or restart that task by handle rather than "
+            "starting the same work a second time. A task the service resumed is running "
+            "again: restarting it cancels the work it has in progress."
+        ),
+    }
 
 
 logger = logging.getLogger(__name__)

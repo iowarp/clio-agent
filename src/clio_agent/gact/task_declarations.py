@@ -320,7 +320,7 @@ def build_task_tools() -> list[Any]:
                 control,
                 name,
                 {"handle": {"type": "string"}},
-                "Control a conversation assignment. Pause holds model execution while background work continues; restart creates a linked handle only after necessary settlement.",
+                "Control a conversation assignment. Pause holds model execution while background work continues; restart creates a linked handle only after necessary settlement. Restarting a started flow or workflow continues its run: finished calls keep their results and only unfinished ones run again. A target that is still running, including one the service resumed after its own restart, is cancelled first and loses the unfinished work in progress; observe or wait on a running task instead unless that work should be discarded.",
             )
         )
     return tools

@@ -31,7 +31,11 @@ from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.dashboard_reports import register_dashboard_report_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
-from clio_agent.gact.routes.session_cancellation import cancel_session_state_async
+from clio_agent.gact.routes.session_cancellation import (
+    StopRequest,
+    cancel_session_state_async,
+    stop_scope,
+)
 from clio_agent.gact.routes.session_creation import register_session_creation_route
 from clio_agent.gact.routes.session_delete import active_work, session_has_active_work
 from clio_agent.gact.routes.session_delete import delete_session as delete_session_record
@@ -546,11 +550,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- POST /v1/sessions/{sid}/cancel (BBB20) -----------------------
 
     @app.post("/v1/sessions/{sid}/cancel")
-    async def cancel_session(sid: str) -> Response:
+    async def cancel_session(sid: str, body: StopRequest | None = None) -> Response:
         """Request Stop; keep the session reserved until its worker actually retires.
 
-        Accepted background work continues. Shared task cancellation is separate.
-        Return 204 even when the session is already idle.
+        ``children`` (default ``keep``) says what happens to the work the conversation
+        started: ``keep`` leaves it running, ``stop`` cancels it too
+        (``docs/design/stop-and-restart.md``). Return 204 even when already idle.
         """
-        await cancel_session_state_async(app, deps, sid)
+        await cancel_session_state_async(app, deps, sid, (body or StopRequest()).children)
         return Response(status_code=204)
+
+    @app.get("/v1/sessions/{sid}/stop-scope")
+    async def session_stop_scope(sid: str) -> dict[str, Any]:
+        """The open work a Stop with ``children: stop`` would reach."""
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(status_code=404, detail="Session unavailable")
+        rows = await app.state.task_history.io.run(stop_scope, app, sid)
+        return {"session_id": sid, "open_children": rows}

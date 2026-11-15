@@ -31,7 +31,6 @@ connection (below). People never see that plugin; they add the connector.
   - burette.svg
   - earthdata.yaml
   - geo.yaml
-  - globe.yaml
   - home-assistant.yaml
   - paraview.yaml
   - paraview.svg
@@ -221,9 +220,19 @@ it may change with `set_connector_value`. See [Plugin reference](/docs/sdk/plugi
 In a conversation, the agent sees the connectors and plugins it does not have yet:
 every connector first, then the plugins of the marketplaces the person added, the most
 recently added marketplace first, up to `plugins.offer_listed` (default 20) with the
-total. Each is listed by name with the start of its description, about 100 characters.
+total. The person can change that list (Settings, "Plugins CLIO can offer", or
+`GET`/`PUT`/`DELETE /v1/plugins/offer-list`): their ticks are kept as an overlay on the
+default, `exclude` inside the first 20 and `include` beyond them, in the user
+`config.yaml` under `plugins.offer`. Each is listed by name with the start of its
+description, about 100 characters.
 Put what it does in those first words, so the agent can tell when a request needs it.
-The agent offers one with `offer_plugin`; the person's **Add** is the consent.
+The facts say how many more there are, and how many of those the person left out.
+`offer_plugin` with `search` (words matched against the id, name, summary, category and
+keywords) or `category` (a connector's Discover group, a plugin's marketplace category)
+finds the others, each marked whether it is listed and whether the person left it out;
+with nothing named it gives the categories and counts. Give a plugin `keywords` and a
+`category` so it can be found. The agent offers one with `offer_plugin`; the person's
+**Add** is the consent.
 
 A connector can work without an optional need and better with it: a parts search with
 no key, and more catalogs with one. `offer_plugin` with no plugin also lists

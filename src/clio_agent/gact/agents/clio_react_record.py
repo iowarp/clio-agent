@@ -349,6 +349,8 @@ class StepRecorder:
                 if firing:
                     record["firing_id"] = firing
                     firings.add(firing)
+                if pieces := getattr(text, "pieces", ()):  # attributed spans (prompt_pieces)
+                    record["pieces"] = [dict(piece) for piece in pieces]
                 self._write("user", record, 0, "")
                 included_ids.update(identities)
                 emit_injection(source, str(text), agent_id=self.expert_id)

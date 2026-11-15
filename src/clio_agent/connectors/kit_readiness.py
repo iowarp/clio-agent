@@ -47,11 +47,12 @@ def cache_root() -> Path:
 def _environment_name(component: str) -> str | None:
     """``<dir>-<project sha[:24]>`` for a server component folder (hashing its files)."""
 
-    try:
-        import clio_kit as kit  # noqa: PLC0415
+    import click  # noqa: PLC0415
+    import clio_kit as kit  # noqa: PLC0415
 
+    try:
         identity = kit.locked_server_project_identity(Path(component), "python")
-    except Exception as exc:  # noqa: BLE001 - surfaced as the typed "unknown" answer
+    except (OSError, click.ClickException) as exc:  # unreadable or refused: "unknown"
         trace.event("TOOLS", "kit_readiness_unknown component=%s error=%s", component, exc)
         return None
     return f"{Path(component).name}-{str(identity['project_sha256'])[:24]}"

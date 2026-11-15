@@ -66,6 +66,28 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
         assert timing["terminal_at"] == snapshot.terminal_at
 
 
+def test_gather_can_leave_each_members_workflow_state_on_its_own_result(
+    flow_app: TestClient,
+) -> None:
+    sid = new_session(flow_app, "clio/statefanner")
+    post(flow_app, sid, "go")
+    _answer(flow_app, sid)
+    run = _checkpoint(flow_app, sid)
+    assert run["status"] == "completed", run.get("result")
+    result = run["result"]
+    # The merged gather records the second member's different packet as a conflict;
+    # merge_state=False reads each packet from its own result and records nothing.
+    assert result["merged_conflicts"] == 1
+    events = [e for e in run["events"].values() if e["event"] == "workflow_state_conflict"]
+    assert len(events) == 1
+    assert [row["from"] for row in result["own_packets"]] == [
+        "STATE 0",
+        "STATE 1",
+        "STATE again 0",
+        "STATE again 1",
+    ]
+
+
 def test_gather_member_failure_never_cancels_the_others(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/tolerater")
     post(flow_app, sid, "go")

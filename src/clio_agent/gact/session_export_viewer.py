@@ -50,6 +50,40 @@ def _page(title: str, body: str, *, stylesheet: str = "", scripts: tuple[str, ..
     )
 
 
+def tool_output_payload(
+    archive: zipfile.ZipFile, manifest: dict[str, Any]
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Each saved tool output once: the viewer's text, or the exact bytes when not text.
+
+    ``tool_output_text`` (keyed by source path) is what the offline viewer and the
+    script-free document show. A transcript has no sibling files, so
+    ``embedded_tool_outputs`` (keyed by archive path) makes every output recoverable
+    byte for byte: UTF-8 text by reference to its ``tool_output_text`` entry, anything
+    else as base64. Storing both copies of a large result made one session's export
+    110 MB, most of it four whole-array reads held twice.
+    """
+    text: dict[str, str] = {}
+    embedded: dict[str, dict[str, str]] = {}
+    transcript = manifest["mode"] == "transcript"
+    for item in manifest.get("tool_output_files", []):
+        raw = archive.read(item["archive_path"])
+        try:
+            text[item["source_path"]] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            if transcript:
+                embedded[item["archive_path"]] = {
+                    "encoding": "base64",
+                    "data": base64.b64encode(raw).decode(),
+                }
+            continue
+        if transcript:
+            embedded[item["archive_path"]] = {
+                "encoding": "tool_output_text",
+                "key": item["source_path"],
+            }
+    return text, embedded
+
+
 def write_archive_review(
     archive: zipfile.ZipFile,
     transcript: dict[str, Any],
@@ -70,21 +104,8 @@ def write_archive_review(
 
     title = transcript["session"]["title"]
     snapshot = dict(visual_review["snapshot"]) if visual_review else {}
-    # Transcript has no sibling files: saved outputs must be readable here too.
-    output_text: dict[str, str] = {}
-    for item in manifest.get("tool_output_files", []):
-        output_text[item["source_path"]] = archive.read(item["archive_path"]).decode(
-            "utf-8", errors="replace"
-        )
+    output_text, embedded_outputs = tool_output_payload(archive, manifest)
     snapshot["tool_output_text"] = output_text
-    embedded_outputs = (
-        {
-            item["archive_path"]: base64.b64encode(archive.read(item["archive_path"])).decode()
-            for item in manifest.get("tool_output_files", [])
-        }
-        if manifest["mode"] == "transcript"
-        else {}
-    )
     evidence = embedded_evidence(transcript, manifest, snapshot)
     if visual_review is None:
         raw = json.dumps(

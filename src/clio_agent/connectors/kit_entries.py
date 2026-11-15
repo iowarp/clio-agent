@@ -124,6 +124,16 @@ def _groups(data: Mapping[str, Any], packages: Mapping[str, Any]) -> dict[str, s
     return out
 
 
+def _requires(record: Any) -> str:
+    """The catalogue's prerequisite note for a server: what must be on the machine."""
+
+    if not isinstance(record, Mapping):
+        return ""
+    prerequisites = record.get("prerequisites")
+    note = prerequisites.get("note") if isinstance(prerequisites, Mapping) else None
+    return " ".join(str(note).split())[:_DESCRIPTION_MAX] if note else ""
+
+
 def _description(packages: Mapping[str, Any], server: str) -> str:
     for package in packages.values():
         servers = dict(package.get("servers") or {})
@@ -152,18 +162,21 @@ def derived_raw(folder: Path) -> list[dict[str, Any]]:
     names = dict(data.get("names") or {})
     logos = dict(data.get("logos") or {})
     groups = _groups(data, packages)
+    servers = dict(catalogue.get("servers") or {})
     rows = []
-    for server in sorted(catalogue.get("servers") or {}):
-        rows.append(
-            {
-                "id": server,
-                "name": str(names.get(server) or _words(server)),
-                "description": _description(packages, server),
-                "server": {"command": LAUNCHER, "args": ["mcp-server", server]},
-                "group": groups.get(server, OTHER_GROUP),
-                **_logo_fields(logos.get(server)),
-            }
-        )
+    for server in sorted(servers):
+        row = {
+            "id": server,
+            "name": str(names.get(server) or _words(server)),
+            "description": _description(packages, server),
+            "server": {"command": LAUNCHER, "args": ["mcp-server", server]},
+            "group": groups.get(server, OTHER_GROUP),
+            **_logo_fields(logos.get(server)),
+        }
+        requires = _requires(servers[server])
+        if requires:
+            row["requires"] = requires
+        rows.append(row)
     return rows
 
 

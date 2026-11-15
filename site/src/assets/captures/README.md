@@ -295,7 +295,9 @@ provider). Nothing is painted or composited.
 | `chat-approval.png` | 1440 x 1000 | The first-use question for Keenable. |
 | `chat-web-results.png`, `chat-literature-results.png` | 1440 x 1000 | Opened search rows from the same conversation. |
 | `deep-mode-menu.png` | 1440 x 1000, cropped | The composer's mode menu. |
-| `deep-running.png`, `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: in progress (the conversation reopened 6 minutes in), the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
+| `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
+| `deep-run-graph.png` | 1440 x 1000 at 2x | A finished Deep research run (deep-research 0.6.0, Sonnet 5.5) from a plain request under Ask first, shown full screen: three named directions, a check per researcher, Coordinate, and three follow-ups. The run took 11 minutes, verified 106 claims and wrote a 5,441-word report. Captured 14 November 2026 from gact-tui develop `63c67331`. |
+| `article-*.png` | 1440 x 1000 at 2x | The worked example [Research a question in depth](../../content/docs/docs/examples/deep-research.mdx), from one plain Deep research request under Ask first (deep-research 0.6.0, Sonnet 5.5, captured 14 November 2026 from gact-tui develop `63c67331`): `article-running` the run at six minutes, `article-check-step` and `article-coordinate` the finished run full screen with a step selected, `article-answer-end` the end of the answer, `article-report` the report opened. The run took 16 minutes: four directions, three follow-ups, 143 verified and 44 rejected claims, a 6,078-word report delivered with open review notes. `article-approval` is the literature-source question from an earlier run of the same question in the same profile (the final run's sources were already allowed). |
 
 The chat requests were plain questions with no tool or step named. The capture script
 answered the search approvals and allowed the search tools for the session, as a person
@@ -355,3 +357,35 @@ plugins shown as what they are), on a fresh stack.
 Reproduce with `bash scripts/cloud/stack.sh start` (`CLIO_CLOUD_ISOLATE=1`) and
 `node scripts/cloud/ui_check.mjs --theme dark --steps scripts/cloud/checks/apps/docs_capture.mjs`
 with the `DOCS_MODE` the step file describes.
+
+## Hurricane Helene in HDF5 and ParaView — 15 November 2026
+
+The `helene/` images belong to the worked example
+[Explore a hurricane in HDF5 data](../../content/docs/docs/examples/hdf5-paraview.mdx). They are
+untouched light-mode browser captures of one live run on the cloud stack (`claude_code`
+provider, Sonnet 5.5, CLIO brand), 1440 x 900 at two device pixels per CSS pixel unless
+the table says otherwise: workspace `Helene`, conversation `sess_255e12e2e60d`.
+`capture-manifest.json` (`helene_hdf5_paraview`) records each file's checksum, size, the
+agent, UI and marketplace revisions, and the step file that took it. Dark-mode and phone
+copies of the hero shots are in the session's gallery, not on the site.
+
+The data are the ERA5 files `scripts/demo/helene/fetch_era5.py` downloads from the public
+NSF NCAR bucket, each cropped to 5–45° N, 105–60° W (all variables and attributes kept) to
+fit the recording machine's disk. The requests are the plain requests of
+`scripts/cloud/checks/apps/helene_hdf5.mjs`; the clouds request names ParaView and the look,
+and the last request ("put it back: from above, tilted a little") was added for the
+captures after the walkthrough's final beat had turned the 3D view away from the storm.
+
+| File | What it shows | Step file |
+| --- | --- | --- |
+| `helene/field-msl.png` | `/MSL` opened from the person's reference, at 26 Sep 12 UTC (step 612 of 720), canvas maximized. | `helene_hero.mjs` |
+| `helene/track-answer.png` | The track answer and its caveats beside the field; the next request with `@sst_2024-09.nc › /SSTK` in the composer. | `helene_hdf5.mjs` |
+| `helene/deepen-answer.png` | The deepening and sea-surface temperature answer, with its limits. | `helene_hdf5.mjs` |
+| `helene/clouds-first-view.png` | The agent's first ParaView view of the 26th, after the person added ParaView from the offer card. | `helene_hdf5.mjs` |
+| `helene/dashboard.png` | The shared dashboard (second version), maximized, its track and charts at the 3D view's time. | `helene_hero.mjs` |
+| `helene/dashboard-3d-linked.png` | The same dashboard at its live ParaView view, step 23 of 32, time linked both ways. | `helene_hero.mjs` |
+| `helene/paraview.png` | The ParaView view in its tab, maximized, from above and tilted, 26 Sep 18 UTC. | `helene_hero.mjs` |
+| `helene/export-offline-recording.png` | 1440 x 900 at one pixel per CSS pixel: the conversation export opened from `file://`; the 3D view shows its recording. | `helene_offline.mjs` |
+
+Reproduce with the steps in `docs/demos/helene-hdf5.md`, then
+`WS=… SID=… node scripts/cloud/ui_check.mjs --scale 2 --theme light --steps scripts/cloud/checks/apps/helene_hero.mjs`.

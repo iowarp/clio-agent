@@ -281,13 +281,16 @@ def register_task_routes(app: FastAPI) -> None:
     @app.get("/v1/sessions/{sid}/tasks/{handle}/flow")
     async def flow(sid: str, handle: str) -> dict[str, Any]:
         """The flow run checkpointed under this task: the live plan, calls, events, outcome."""
-        from clio_agent.flows.run_view import flow_run
+        from clio_agent.flows.run_view import flow_run, restarted_as
         from clio_agent.gact.fleet.run_usage import call_models, run_spend
 
         def read() -> tuple[str, dict[str, Any] | None]:
             task = TaskAccess(app.state.task_history, caller(sid)).require(handle, "read")
             run = flow_run(app.state.task_history, task.handle, reconcile_children=True)
             if run is not None:
+                successor = restarted_as(app.state.task_history, task.handle)
+                if successor:
+                    run["restarted_as"] = successor
                 run["usage"] = {"calls": call_models(app, run["calls"])}
                 # The diagram needs timestamps, not one full agent projection per node.
                 # Read these from the same authorized task view and history lane.

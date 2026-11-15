@@ -106,8 +106,14 @@ def conversation_connectors(app: Any, session_id: str) -> dict[str, list[str]] |
     except (SessionAgentUnavailable, RuntimeError) as exc:
         trace.event("TOOLS", "connector_offer_agent_unresolved session=%s (%s)", session_id, exc)
         return None
+    return followed_by(resolution.plugins)
+
+
+def followed_by(plugins: Any) -> dict[str, list[str]]:
+    """The connectors a resolution's plugin rows follow, with those plugins' ids."""
+
     out: dict[str, list[str]] = {}
-    for row in resolution.plugins:
+    for row in plugins:
         if row.get("follows"):
             out.setdefault(str(row["follows"]), []).append(str(row["id"]))
     return out
@@ -116,11 +122,17 @@ def conversation_connectors(app: Any, session_id: str) -> dict[str, list[str]] |
 def offerable(app: Any, session_id: str) -> list[Any]:
     """The connectors whose plugin this conversation does not have, on or off, by name."""
 
-    from clio_agent.connectors import state  # noqa: PLC0415
-
     here = conversation_connectors(app, session_id)
     if here is None:
         return []
+    return offerable_beside(here)
+
+
+def offerable_beside(here: Mapping[str, Any]) -> list[Any]:
+    """The connectors offerable beside ``here`` (connector id -> its plugins present)."""
+
+    from clio_agent.connectors import state  # noqa: PLC0415
+
     on = {cid for cid, choice in state.choices().items() if choice.enabled}
     # A plugin of the agent that declares a connector's clio-kit server keeps its skills
     # while the connector is off, but not the server (LZ-D8): still offerable to enable.
@@ -138,6 +150,7 @@ def _brief(found: Any) -> dict[str, Any]:
         "name": found.name,
         "description": found.description,
         "enabled": state.choice(found.id).enabled,
+        "requires": found.requires or None,
     }
 
 

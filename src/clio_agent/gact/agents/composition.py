@@ -58,7 +58,9 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
         lines.append(fact("_workspace", {}))
         if allowed_roots:
             lines.append(fact("_write_roots", {"roots": ", ".join(allowed_roots)}))
-    return "\n".join(line for line in [*lines, *tail] if line)
+    from clio_agent.gact.prompt_pieces import join  # noqa: PLC0415
+
+    return join([*lines, *tail])  # the offer list's span rides along (prompt_pieces)
 
 
 def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
@@ -77,10 +79,30 @@ def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
         lines.append(fact("_resources", {"resources": resources, "total": total}))
     from clio_agent.gact.plugin_offer import offerable_facts  # noqa: PLC0415
 
-    plugins, total = offerable_facts(app, session_id)
+    plugins, total, left_out = offerable_facts(app, session_id)
     if total:
-        lines.append(fact("_plugins", {"plugins": plugins, "total": total}))
+        lines.append(_offer_piece(app, session_id, fact, plugins, total, left_out))
     return lines
+
+
+def _offer_piece(
+    app: Any, session_id: str, fact: Any, plugins: list[Any], total: int, left_out: int = 0
+) -> Any:
+    """The offer list as a piece the context view attributes on its own: one item per
+    row, sized on the template (``injections.item_chars``), never read back from text."""
+    from clio_agent.gact.prompt_pieces import OFFER_PIECE, Piece  # noqa: PLC0415
+
+    text = fact("_plugins", {"plugins": plugins, "total": total, "left_out": left_out})
+    if not text:
+        return text
+    sizes = injections.item_chars(
+        "session_facts_plugins",
+        lambda k: {"plugins": plugins[:k], "total": k, "left_out": 0},
+        len(plugins),
+        app=app,
+        session_id=session_id,
+    )
+    return Piece(text, OFFER_PIECE, zip((str(p["name"]) for p in plugins), sizes, strict=False))
 
 
 def _session_scratch_lines(app: Any, session_id: str) -> list[str | None]:

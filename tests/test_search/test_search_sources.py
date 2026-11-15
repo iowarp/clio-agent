@@ -158,6 +158,24 @@ def test_crossref_preprint_relation_becomes_a_version() -> None:
     assert record.readable_url.startswith("https://doi.org/10.26434/")
 
 
+def test_crossref_title_carries_its_subtitle() -> None:
+    row = {
+        "DOI": "10.14778/3551793.3551852",
+        "title": ["Chimp"],
+        "subtitle": ["efficient lossless floating point compression for time series databases"],
+    }
+    record = literature_sources.crossref_record(row)
+    assert record.title == (
+        "Chimp: efficient lossless floating point compression for time series databases"
+    )
+    already = {
+        **row,
+        "title": ["Chimp: efficient lossless floating point compression for time series databases"],
+    }
+    assert literature_sources.crossref_record(already).title == record.title
+    assert literature_sources.crossref_record({**row, "subtitle": []}).title == "Chimp"
+
+
 def test_arxiv_feed_records_point_to_readable_abstract_pages() -> None:
     records = literature_sources.arxiv_records(fixture("arxiv", "search_ok")["body"])
     assert records and all(r.found_in == ["arxiv"] for r in records)
