@@ -109,6 +109,7 @@ export default defineConfig({
 						{ label: 'Use the browser', slug: 'docs/browser' },
 						{ label: 'Apps', slug: 'docs/apps' },
 						{ label: 'Design a board with KiCad', slug: 'docs/kicad' },
+						{ label: 'Quantum programs with IBM Quantum', slug: 'docs/ibm-quantum' },
 						{ label: 'Scripts and background work', slug: 'docs/scripts' },
 						{ label: 'Watch something live', slug: 'docs/live-sources' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },

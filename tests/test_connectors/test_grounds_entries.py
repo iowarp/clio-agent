@@ -39,7 +39,15 @@ def test_shipped_entries_load_without_diagnostics() -> None:
         ("via", False, True),
         ("prepare", False, True),
     ]
-    for entry in (burette, paraview):
+    quantum = catalog.entries["ibm-quantum"]
+    assert quantum.plugin == "ibm-quantum" and quantum.logo == "ibm-quantum.svg"
+    assert [(n.key, n.kind, n.required) for n in quantum.needs] == [
+        ("token", "secret", False),
+        ("instance", "value", False),
+    ]
+    assert quantum.server["env"]["QISKIT_MCP_NO_SAVED_ACCOUNT"] == "1"
+    assert quantum.server["env"]["QISKIT_IBM_TOKEN"] == "${need.token}"
+    for entry in (burette, paraview, quantum):
         logo = entry.logo_path
         assert logo is not None and logo.read_text().lstrip().startswith(("<svg", "<?xml"))
 
