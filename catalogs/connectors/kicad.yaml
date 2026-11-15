@@ -35,8 +35,9 @@
       KICAD_MCP_KICAD_INSTANCE: auto
       KICAD_MCP_FILTER_RUNTIME_TOOLS: "false"
       # FreeRouting and its Java runtime, installed once into the plugin's own data folder
-      # (writable to plugin servers, shared by every workspace) rather than each workspace's temp.
-      KICAD_MCP_TOOLS_HOME: ${PLUGIN_DATA}/tools
+      # (writable to plugin servers, shared by every workspace); empty outside a plugin (the
+      # Extensions probe), where the server keeps its own temp folder.
+      KICAD_MCP_TOOLS_HOME: ${PLUGIN_DATA:-}
       KICAD_CLI_PATH: ${need.kicad_cli}
       NEXAR_CLIENT_ID: ${need.nexar_id}
       NEXAR_CLIENT_SECRET: ${need.nexar_secret}

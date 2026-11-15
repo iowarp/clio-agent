@@ -84,8 +84,15 @@ def references_variable(value: Any, name: str) -> bool:
     return False
 
 
+#: ``${PLUGIN_ROOT}`` / ``${PLUGIN_DATA}``, also with a ``:-default`` the plugin's own value
+#: replaces: a connector entry writes ``${PLUGIN_DATA:-}`` so that outside a plugin (its
+#: Extensions probe) the generic expansion takes the default instead of failing as unset.
+_PLUGIN_PATHS = re.compile(r"\$\{(PLUGIN_ROOT|PLUGIN_DATA)(?::-[^}]*)?\}")
+
+
 def _expand(value: str, root: str, data: str, supplied: Mapping[str, str]) -> str:
-    value = value.replace("${PLUGIN_ROOT}", root).replace("${PLUGIN_DATA}", data)
+    paths = {"PLUGIN_ROOT": root, "PLUGIN_DATA": data}
+    value = _PLUGIN_PATHS.sub(lambda match: paths[match.group(1)], value)
     return _SUPPLIED.sub(lambda match: supplied.get(match.group(1), match.group(0)), value)
 
 
