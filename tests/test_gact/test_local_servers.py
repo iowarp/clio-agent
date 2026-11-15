@@ -429,3 +429,39 @@ def test_the_bound_runtime_follows_its_saved_address(
         "/v1/providers/servers", json={"preset_id": "vllm", "address": "127.0.0.1:9999"}
     )
     assert "binding" not in pinned.json() and len(binds) == 2
+
+
+def test_a_saved_custom_server_lists_its_models_by_its_own_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conversation pinned to a saved server asks for its models by the server's id.
+
+    ``GET /v1/providers/server-<slug>/models`` answered 404 because only the catalog
+    presets were looked up, so the composer of such a conversation logged errors. It is
+    now discovered at the server's own address under its own id.
+    """
+    from types import SimpleNamespace
+
+    from clio_agent.providers import handshake
+
+    asked: list[tuple[str, str, str]] = []
+
+    async def fake_handshake(context: Any, force: bool = False) -> Any:
+        asked.append((context.provider_id, context.provider_kind, context.api_base))
+        return SimpleNamespace(
+            models_wire=lambda: {"models": [{"id": "rainfall-model"}], "source": "live_handshake"}
+        )
+
+    monkeypatch.setattr(handshake, "run_handshake", fake_handshake)
+    added = client.post(
+        "/v1/providers/servers", json={"address": "gpu-7:9999", "label": "Lab model server"}
+    ).json()
+    assert added["id"] == "server-lab-model-server"
+
+    response = client.get("/v1/providers/server-lab-model-server/models")
+
+    assert response.status_code == 200
+    assert response.json()["models"] == [{"id": "rainfall-model"}]
+    assert asked == [("server-lab-model-server", "openai", "http://gpu-7:9999/v1")]
+    # An id that is neither a preset nor a saved server still names no provider.
+    assert client.get("/v1/providers/server-unknown/models").status_code == 404
