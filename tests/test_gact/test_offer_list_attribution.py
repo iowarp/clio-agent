@@ -40,8 +40,8 @@ def test_the_composed_facts_carry_the_list_span_with_one_item_per_row() -> None:
     listed = facts[span["start"] : span["end"]]
     assert listed.startswith("Plugins and connectors the person has")
     # The footer that says how many more there are is inside the span (OL-D11).
-    assert "3 more not listed here (Earth science 2; uncategorized 1); offer_plugin" in listed
-    assert listed.rstrip().endswith("as when the person asks for it by name.")
+    assert "plugins installed (Earth science 2; uncategorized 1); offer_plugin" in listed
+    assert listed.rstrip().endswith("offer_plugin offers them the same way.")
     assert [item["label"] for item in span["items"]] == ["HDF5", "tariff-calc"]
     # Each row's size is its own line in the text, measured on the template.
     hdf5_line = next(line for line in listed.splitlines() if line.startswith("- HDF5"))

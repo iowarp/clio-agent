@@ -83,12 +83,15 @@ def test_untick_inside_the_cap_and_tick_beyond_it(capped: Any) -> None:
     variables = {"plugins": rows, "total": total, "left_out": left_out, "unlisted": unlisted}
     text = injections.render("session_facts_plugins", variables)
     assert "(5, 2 shown)" in text and "Fixture Secret" not in text and "tariff-calc" in text
-    # The footer names where the person chose and that naming one still offers it (OL-F5).
+    # The footer names where the person chose, as a fact that does not discourage an
+    # offer (OL-F5, OL-F6).
     assert text.rstrip().endswith(
-        "offer_plugin with search or category finds them. 1 of them is left out by the "
-        f"person in {offer_list.SETTINGS_PLACE}, where they can tick it again; offer_plugin "
-        "with the name still offers one, as when the person asks for it by name."
+        "offer_plugin with search or category finds every one of them. 1 of them is not "
+        f"in your plugin list (the person's choice in {offer_list.SETTINGS_PLACE}); "
+        "offer_plugin offers it the same way."
     )
+    for discouraging in ("by name", "tick it again", "left out by"):
+        assert discouraging not in text
 
 
 def test_redundant_and_unknown_ticks_are_dropped_and_a_conflict_is_typed(capped: Any) -> None:
@@ -147,11 +150,11 @@ def test_offer_plugin_finds_the_unticked_marked_and_offers_one_named(
     assert rows["fixture-secret"]["listed"] is False and rows["fixture-plain"]["listed"] is True
     assert "left_out_by_person" not in rows["fixture-plain"]
     assert found["message"].endswith(
-        f"1 of these is left out by the person in {offer_list.SETTINGS_PLACE}, where they "
-        "can tick it again; offer_plugin with the name still offers one, as when the person "
-        "asks for it by name."
+        f"1 of these is not in your plugin list (the person's choice in "
+        f"{offer_list.SETTINGS_PLACE}); offer_plugin offers it the same way."
     )
     assert offer_list.SETTINGS_PLACE in overview["message"]
+    assert "which offer_plugin offers the same way" in overview["message"]
 
     offered: list[str] = []
 
@@ -169,10 +172,10 @@ def test_the_search_note_marks_an_unticked_row(capped: Any) -> None:
     rows = plugin_offer.offerable_matching(capped, "sess_a", "fixture-secret and fixture-plain")
     note = plugin_offer.search_note(rows)
     assert (
-        'Fixture Secret (connector, id "fixture-secret", left out by the person in '
-        f"{offer_list.SETTINGS_PLACE})" in note
+        'Fixture Secret (connector, id "fixture-secret", not in your plugin list (the '
+        f"person's choice in {offer_list.SETTINGS_PLACE}))" in note
     )
-    assert note.endswith("offer_plugin with the name still offers one left out.")
+    assert note.endswith("it offers one not in your plugin list the same way.")
     assert 'Fixture Plain (connector, id "fixture-plain")' in note
 
 

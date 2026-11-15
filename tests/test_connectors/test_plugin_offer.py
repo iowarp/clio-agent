@@ -164,12 +164,14 @@ def test_the_facts_are_capped_say_so_and_cost_little(
     # The rest are counted by category (OL-F4), so the agent knows what a search reaches.
     assert sum(c["count"] for c in unlisted) == 3
     counted = "; ".join(
-        f"{c['category'] or 'uncategorized'} {c['count']}: {', '.join(c['names'])}"
+        f"{c['category'] or 'uncategorized'} {c['count']}"
+        + (f": {', '.join(c['names'])}" if c["names"] else "")
         for c in unlisted
     )
     assert (
-        f"3 more not listed here ({counted}); offer_plugin with search or category finds them."
-        in text
+        "3 more not listed here, counted by category, naming only the connectors turned on "
+        f"and the plugins installed ({counted}); offer_plugin with search or category finds "
+        "every one of them." in text
     )
     assert plugin_offer.offerable_facts(app, "") == ([], 0, 0, [])
     monkeypatch.setenv("CLIO_PLUGINS_OFFER_LISTED", "-1")

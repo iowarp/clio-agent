@@ -7,8 +7,9 @@ untick an entry inside the default cap, or tick one beyond it. Their choice is
 an overlay on the default, never a copy of the list, so entries that arrive later
 (a new marketplace, a connector) still follow the default order:
 
-* ``exclude``: entries the person unticked. The session facts and ``offer_plugin``
-  with no plugin leave them out; naming one explicitly still offers it.
+* ``exclude``: entries the person unticked. Unticking only removes an entry from the
+  list the agent is shown (the session facts); ``offer_plugin`` still finds it by search
+  or category and offers it the same way as any other (OL-D11, OL-F6).
 * ``include``: entries the person ticked beyond the default cap.
 
 The listed set is (the first ``offer_listed`` candidates, minus ``exclude``) plus

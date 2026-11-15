@@ -1135,6 +1135,10 @@ def test_catalog_skill_map_fragment_inlines_map_point_and_data_query(tmp_path: P
     assert '"$ref": "#/$defs/MapPoint"' not in out
     assert '"$ref": "#/$defs/DataQuery"' not in out
     assert '"$ref": "#/$defs/CatalogComponentCommon"' not in out
+    # The component's own description leads its long schema (OL-F4b), so a preview of it
+    # still says what the map is: flat, with interactive globes from a plugin.
+    head = out[: out.index('"allOf"')]
+    assert "flat (2D) map" in head and "3D globes come from a plugin" in head
 
 
 def test_catalog_skill_fragment_inlines_defs_at_every_nesting_depth(tmp_path: Path) -> None:

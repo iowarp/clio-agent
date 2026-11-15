@@ -167,40 +167,61 @@ def test_uncategorized_is_a_category_the_facts_name() -> None:
     variables = {"plugins": [], "total": 3, "left_out": 0}
     variables["unlisted"] = offer_search.categories(rows)
     text = injections.render("session_facts_plugins", variables)
-    assert f"3 more not listed here (Research 1; {offer_search.UNCATEGORIZED} 2);" in text
+    assert f"(Research 1; {offer_search.UNCATEGORIZED} 2);" in text
 
 
-def test_the_unlisted_are_named_by_category_and_the_left_out_only_counted() -> None:
-    """OL-F4: past the listed rows the facts name what a search would reach, by category;
-    an entry the person left out is counted and never named."""
+def test_beyond_the_list_only_what_is_on_or_installed_is_named() -> None:
+    """OL-D17: past the listed rows the facts count every entry by category and name only
+    the connectors turned on and the plugins installed; a connector that is off, and an
+    entry the person left out, are counted and never named."""
+
+    def connector(name: str, category: str, *, on: bool) -> dict[str, Any]:
+        return {"kind": "connector", "id": name.lower(), "name": name, "summary": "",
+                "category": category, "enabled": on}  # fmt: skip
 
     rows = [
-        _row("Geo", category="Earth science"),
+        connector("Geo", "Earth science", on=True),
+        connector("Terrain", "Earth science", on=False),
         _row("Quakes", category="Earth science"),
-        _row("Slurm", category="HPC"),
+        _row("Tides", category="Earth science"),
+        connector("Slurm", "HPC", on=False),
         _row("loose"),
     ]
     found = offer_search.unlisted(rows, {"plugin:lab/quakes"})
     assert found == [
-        {"category": "Earth science", "count": 2, "names": ["Geo"]},
-        {"category": "HPC", "count": 1, "names": ["Slurm"]},
+        {"category": "Earth science", "count": 4, "names": ["Geo", "Tides"]},
+        {"category": "HPC", "count": 1, "names": []},
         {"category": "", "count": 1, "names": ["loose"]},
     ]
     from clio_agent import injections
 
     text = injections.render(
-        "session_facts_plugins", {"plugins": [], "total": 4, "left_out": 1, "unlisted": found}
+        "session_facts_plugins", {"plugins": [], "total": 6, "left_out": 1, "unlisted": found}
     )
     assert (
-        "4 more not listed here (Earth science 2: Geo; HPC 1: Slurm; uncategorized 1: loose);"
-        in text
+        "6 more not listed here, counted by category, naming only the connectors turned on "
+        "and the plugins installed (Earth science 4: Geo, Tides; HPC 1; uncategorized 1: "
+        "loose); offer_plugin with search or category finds every one of them." in text
     )
-    assert "Quakes" not in text
+    for unnamed in ("Terrain", "Slurm", "Quakes"):
+        assert unnamed not in text
+    # Hundreds of catalog entries that are off cost a count, not their names.
+    catalog = [connector(f"Kit{i}", "Earth science", on=False) for i in range(200)]
+    many = injections.render(
+        "session_facts_plugins",
+        {
+            "plugins": [],
+            "total": 200,
+            "left_out": 0,
+            "unlisted": offer_search.unlisted(catalog, set()),
+        },
+    )
+    assert "(Earth science 200)" in many and "Kit1" not in many
 
 
 def test_the_agent_is_told_where_the_list_is_chosen() -> None:
     """OL-F5: the search note, the footer, a search's message and the tool description name
-    the real setting and that a left-out entry is still offered by name; the settings
+    the real setting and that a left-out entry is offered the same way (OL-F6); the settings
     row's title in gact-tui is "Plugins <agent> can offer" under Extensions."""
 
     from pathlib import Path
@@ -213,10 +234,14 @@ def test_the_agent_is_told_where_the_list_is_chosen() -> None:
     assert offer_list.SETTINGS_PLACE in template
     tool = plugin_offer.build_offer_plugin_tool()
     assert offer_list.SETTINGS_PLACE in tool.desc
-    assert "the unlisted too" in tool.desc and "still offered by its name" in tool.desc
+    assert "the unlisted too" in tool.desc
+    # OL-F6: one the person took out of the list is offered the same way as any other.
+    assert "offered with this call the same way as any other" in tool.desc
+    for discouraging in ("by its name", "by name", "left out of the list"):
+        assert discouraging not in tool.desc
     # FN-12: the card is how the agent asks; a suggestion in prose adds nothing.
     assert "The card is how you ask" in tool.desc and "asks the person nothing" in tool.desc
-    assert offer_search.left_out_fact(2).startswith(
-        f"2 of these are left out by the person in {offer_list.SETTINGS_PLACE}, where they "
-        "can tick them again"
+    assert offer_search.left_out_fact(2) == (
+        f"2 of these are not in your plugin list (the person's choice in "
+        f"{offer_list.SETTINGS_PLACE}); offer_plugin offers them the same way"
     )

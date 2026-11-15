@@ -13,10 +13,10 @@ The session facts name only some of the plugins and connectors a conversation co
 
 Both reach every candidate, the ones the person left out in Settings too: each row says
 whether the session facts list it (``listed``) and marks a left-out one
-(``left_out_by_person``), so the agent can say it exists and leave the choice to the
-person. The result names where that choice is made and that a left-out entry is still
-offered by name (OL-F5). Results are capped at ``plugins.offer_listed``, with how many
-``more``.
+(``left_out_by_person``). Leaving an entry out only removes it from the list the agent
+is shown; ``offer_plugin`` offers it the same way as any other (OL-F6), and the result
+says so as a fact, with where the person made that choice (OL-F5). Results are capped at
+``plugins.offer_listed``, with how many ``more``.
 """
 
 from __future__ import annotations
@@ -35,14 +35,15 @@ _ROW_FIELDS = ("kind", "id", "name", "summary", "category", "marketplace", "enab
 
 
 def left_out_fact(count: int) -> str:
-    """What ``count`` left-out entries mean for the person and for ``offer_plugin``: where
-    the choice is made, and that naming one still offers it. Facts, not advice (OL-F5)."""
+    """What ``count`` left-out entries are: not in the agent's plugin list, by the person's
+    choice in Settings, and offered the same way as any other. Facts that neither forbid
+    nor discourage an offer (OL-F5, OL-F6)."""
 
     one = count == 1
     return (
-        f"{count} of these {'is' if one else 'are'} left out by the person in "
-        f"{SETTINGS_PLACE}, where they can tick {'it' if one else 'them'} again; "
-        "offer_plugin with the name still offers one, as when the person asks for it by name"
+        f"{count} of these {'is' if one else 'are'} not in your plugin list (the person's "
+        f"choice in {SETTINGS_PLACE}); offer_plugin offers {'it' if one else 'them'} the "
+        "same way"
     )
 
 
@@ -97,10 +98,18 @@ def categories(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def named_beyond(row: Mapping[str, Any]) -> bool:
+    """Whether the session facts name ``row`` past the list (OL-D17): a connector the
+    person turned on, or a plugin they installed (every plugin row is one of their
+    library). The rest are only counted, so a catalog of hundreds costs a few words."""
+
+    return row.get("kind") != "connector" or bool(row.get("enabled"))
+
+
 def unlisted(rows: Sequence[Mapping[str, Any]], left_out: set[str]) -> list[dict[str, Any]]:
     """The categories of ``rows`` (the entries the session facts do not list) with their
-    counts and the names of the ones the person did not leave out (OL-F4): what a search
-    would reach, at a few words per entry. A left-out entry is counted, never named."""
+    counts, and the names of the ones the person turned on or installed and did not leave
+    out (:func:`named_beyond`, OL-D17). Every other entry is counted, never named."""
 
     out = categories(rows)
     for group in out:
@@ -109,6 +118,7 @@ def unlisted(rows: Sequence[Mapping[str, Any]], left_out: set[str]) -> list[dict
             str(row.get("name") or row.get("id"))
             for row in rows
             if str(row.get("category") or "").casefold() == wanted
+            and named_beyond(row)
             and entry_key(row) not in left_out
         ]
     return out
@@ -180,8 +190,9 @@ def overview(
         "left_out": left,
         "message": (
             f"{len(rows)} plugins and connectors can be added to this conversation "
-            f"({listed_count} listed in the session facts, {left} left out by the person in "
-            f"{SETTINGS_PLACE}). offer_plugin with search (words) or category finds them."
+            f"({listed_count} in your plugin list in the session facts; {left} not in it, "
+            f"by the person's choice in {SETTINGS_PLACE}, which offer_plugin offers the same "
+            "way). offer_plugin with search (words) or category finds them."
             if rows
             else "Nothing more can be added to this conversation."
         ),

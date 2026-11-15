@@ -240,8 +240,9 @@ def offerable_facts(
     (:mod:`clio_agent.gact.offer_list`): unticked ones left out, ones ticked beyond the
     cap added, in order. The total counts every candidate (left-out ones too): the facts
     say how many more there are and that ``offer_plugin`` finds them (OL-D11). The
-    categories of those (with counts, uncategorized last, and the names of the ones not
-    left out) say what a search would reach, at a few words per entry (OL-F4).
+    categories of those (with counts, uncategorized last, and the names of the ones the
+    person turned on or installed and did not leave out) say what a search would reach, at
+    a few words per entry, however large the catalog (OL-F4, OL-D17).
     """
 
     # No session store (an app built without one) means no conversation to offer to.
@@ -294,8 +295,9 @@ def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, 
 
 
 def search_note(rows: list[dict[str, Any]]) -> str:
-    """What a tool search found to add rather than to call; a row the person left out in
-    Settings says so (OL-D11)."""
+    """What a tool search found to add rather than to call; a row the person left out of
+    the list in Settings says so, as a fact that is no reason not to offer it (OL-D11,
+    OL-F6)."""
 
     from clio_agent.gact.offer_list import (  # noqa: PLC0415
         SETTINGS_PLACE,
@@ -304,7 +306,7 @@ def search_note(rows: list[dict[str, Any]]) -> str:
     )
 
     left_out = overlay_or_default().exclude
-    mark = f", left out by the person in {SETTINGS_PLACE}"
+    mark = f", not in your plugin list (the person's choice in {SETTINGS_PLACE})"
 
     def named(row: dict[str, Any]) -> str:
         note = mark if entry_key(row) in left_out else ""
@@ -314,7 +316,7 @@ def search_note(rows: list[dict[str, Any]]) -> str:
     return (
         f"Not in this conversation, but it can be added: {'; '.join(named(r) for r in rows)}. "
         "offer_plugin asks the person to add it; its tools join this conversation once they "
-        "accept" + ("; offer_plugin with the name still offers one left out." if left else ".")
+        "accept" + ("; it offers one not in your plugin list the same way." if left else ".")
     )
 
 
@@ -512,7 +514,7 @@ async def offer_plugin(
             "error": "plugin_offer_no_conversation",
             "message": "No conversation can show the offer.",
         }
-    if plugin.strip():  # named: offered even when left out of the list (OL-D3)
+    if plugin.strip():  # offered whether or not it is in the list (OL-D3, OL-F6)
         kind, found = await asyncio.to_thread(_match, app, plugin)
         if kind == "connector" and needs:
             from clio_agent.gact.connector_needs_offer import offer_needs  # noqa: PLC0415
@@ -571,9 +573,10 @@ def build_offer_plugin_tool() -> Any:
             "tools and skills are yours from your next step and you continue the request; "
             "on Not now you get a refusal and nothing changed. The session facts list some "
             "of them and count the rest by category; search (words) or category reaches "
-            "every one, the unlisted too, and asks the person nothing: each row is marked "
-            "listed or not and whether the person left it out of the list in "
-            f"{SETTINGS_PLACE} (one left out is still offered by its name). With nothing "
+            "every one, the unlisted too, and asks the person nothing: each row says whether "
+            "it is in your plugin list. The person chooses that list in "
+            f"{SETTINGS_PLACE}; one they took out of it is offered with this call the same "
+            "way as any other. With nothing "
             "named it gives the categories and counts, and the optional needs (such as API "
             "keys) of the connectors already here. With needs it asks the person for those "
             "of a connector already here, when a tool's result shows they would help."
