@@ -141,12 +141,13 @@ Who can invoke it:
    script makes (`run_code`) carries the id of the model call that ran the
    script. External MCP tasks keep their own `TASK_CALL` id.
 2. **The interrupted-call observation names what the call started.**
-   `_record_interrupted_calls` looks up the conversation's direct tasks whose
-   invocation carries the unanswered call's id and adds them to the
-   `operation_outcome_uncertain` observation (`started_tasks`: handle, kind,
-   label, status), with text saying the task exists, was not started again and
-   can be observed or waited on. It reports what is recorded; it does not
-   decide for the model.
+   `agents/context_repair.repair_unanswered_calls` runs before a forward's first
+   fold (restart or not, whatever state the assignment settled in, FN-16). It
+   looks up the conversation's direct tasks whose invocation carries the
+   unanswered call's id and adds them to the `operation_outcome_uncertain`
+   observation (`started_tasks`: handle, kind, label, status), with text saying
+   the task exists, was not started again and can be observed or waited on. It
+   reports what is recorded; it does not decide for the model.
 3. **Flow tasks carry the flow's name.** A started flow's child conversation is
    titled `<flow id> flow` unless a name was given, so its task label and
    `query_tasks(query=...)` find it.

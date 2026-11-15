@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
-from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from clio_agent.arc.task_types import (
     AssignmentDetails,
-    ContextBoundary,
     MailItem,
     TaskProgress,
     TaskSnapshot,
@@ -332,8 +329,8 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
             boundary = committed.boundary if committed is not None else details.context
             if boundary is not None and scope_epoch(boundary.scope) != details.context_epoch:
                 boundary = None
-            if boundary is not None:
-                self._record_interrupted_calls(task, boundary)
+            # A call left without a result is given one when the next forward folds the
+            # scope (agents.context_repair), whatever state the assignment settled in.
             detail_ref = self.history.write_content(
                 task.owner.session_id,
                 details.model_copy(update={"context": boundary}).model_dump(mode="json"),
@@ -407,73 +404,6 @@ def _startup_unconfirmed(self: Conversations, handle: str, message: str) -> None
         )
         self.history.record_snapshot(observed, observation_id=uuid4().hex)
         publish_task_notice(self.history, observed, episode=observed.attention_episode or "")
-
-
-def _record_interrupted_calls(
-    self: Conversations, task: TaskSnapshot, boundary: ContextBoundary
-) -> None:
-    """Record uncertainty for orphaned call observations without replay or history copying."""
-    segments = self.history.arc.context_view(boundary.session_id, boundary.scope).segments
-    from clio_agent.arc.context_restore import unanswered_calls
-    from clio_agent.gact.spawn_invocation import started_tasks
-
-    for offset, (position, call) in enumerate(unanswered_calls(segments)):
-        identity = call.content["id"]
-        observation = {
-            "call_id": identity,
-            "text": json.dumps(
-                {
-                    "error": "operation_outcome_uncertain",
-                    "message": "The service restarted before this tool observation was saved. Inspect task handles and effects before deciding whether to retry.",
-                    "resubmitted": False,
-                    **_started_by_call(
-                        started_tasks(self.history, task.owner.session_id, identity)
-                    ),
-                }
-            ),
-            "is_error": True,
-        }
-        from clio_agent.gact.agents.clio_react_record import _token_estimate
-
-        self.history.confirm_write(
-            partial(
-                self.history.arc.insert_segment,
-                task.owner.session_id,
-                boundary.scope,
-                position + offset,
-                "observation",
-                observation,
-                token_count=_token_estimate(observation),
-                turn_id="recovery:" + task.handle,
-            )
-        )
-
-
-def _started_by_call(tasks: list[TaskSnapshot]) -> dict[str, Any]:
-    """What an interrupted call had already started, as recorded (empty when nothing).
-
-    The call's observation was lost, not its work: naming the task lets the agent
-    observe or wait on it instead of starting the same work again. It reports the
-    record; the agent decides.
-    """
-    if not tasks:
-        return {}
-    rows = [
-        {"handle": row.handle, "kind": row.kind, "label": row.label, "status": row.status}
-        for row in tasks
-    ]
-    names = "; ".join(
-        f"{row['label']} ({row['kind']} {row['handle']}, {row['status']})" for row in rows
-    )
-    return {
-        "started_tasks": rows,
-        "started_note": (
-            f"Before the restart this call had already started: {names}. It was not "
-            "started again. Observe, wait on or restart that task by handle rather than "
-            "starting the same work a second time. A task the service resumed is running "
-            "again: restarting it cancels the work it has in progress."
-        ),
-    }
 
 
 logger = logging.getLogger(__name__)

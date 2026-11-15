@@ -539,11 +539,13 @@ async def _run_turn_in_background(
         # (never the top-level error) to project the typed reason onto a
         # spawned child's AgentTask record (agent_tasks.ERROR_REASONS carries
         # the typed reason strings, not error_type strings).
+        # An error whose details name no reason (a context fold/read/write failure) is
+        # given its own stable code there, which the client shows (FN-16).
         payload = exc.to_dict()
         state.error_info = ErrorInfo(
             error="agent_error",
             message=payload["message"],
-            details=payload["details"],
+            details={"reason": payload["error"], **(payload["details"] or {})},
             recoverable=True,
         )
         state.answer_text = ""
