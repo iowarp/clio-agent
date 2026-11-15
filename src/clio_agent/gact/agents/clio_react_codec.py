@@ -22,6 +22,7 @@ from dspy.lm15 import (
     ToolResultPart,
 )
 
+from clio_agent.gact import prompt_pieces
 from clio_agent.gact.agents.context_errors import ContextFoldError
 from clio_agent.gact.agents.recorded_media import result_part
 
@@ -101,7 +102,11 @@ def user_from_record(record: Mapping[str, Any]) -> Message:
     """
     text = _text(record.get("text"))
     if record.get("actor") == "algorithm":  # CLIO's addition; a steer is the user's own
+        recorded = len(text)
         text = f"[clio: {_text(record.get('source'))}]\n{text}"
+        if spans := prompt_pieces.recorded(record.get("pieces")):
+            # The context view finds the attributed pieces in the request by this text.
+            prompt_pieces.note(text, spans, offset=len(text) - recorded)
     parts: list[Any] = [TextPart(text=text)]
     for item in record.get("media") or []:
         if not isinstance(item, Mapping):
