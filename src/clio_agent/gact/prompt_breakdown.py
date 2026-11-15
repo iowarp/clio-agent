@@ -9,12 +9,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from clio_agent.gact.prompt_pieces import FRAME_ITEM, OFFER_CATEGORY, OFFER_PIECE, pieces_for
+
 
 class PromptSectionItem(BaseModel):
-    """A named prompt contribution; never a second copy of its private body."""
+    """A named prompt contribution; never a second copy of its private body.
+
+    ``id`` marks an item the interface names itself (the offer list's own lines).
+    """
 
     label: str
     tokens_estimated: int = Field(ge=0)
+    id: str | None = None
 
 
 class PromptSection(BaseModel):
@@ -40,6 +46,8 @@ LABELS = {
     "system": "System prompt",
     "tools": "Tool definitions",
     "skills": "Skills",
+    # The session facts' list of plugins and connectors the agent can offer (OL-D8).
+    "offerable": "Plugins you can add",
     "messages": "Messages",
     "results": "Tool results",
     "reasoning": "Reasoning",
@@ -108,11 +116,31 @@ def request_breakdown(entry: Mapping[str, Any]) -> PromptBreakdown | None:
     media = 0
     calls: dict[str, Any] = {}
 
-    def add(category: str, label: str, text: str) -> None:
-        if text:
+    def add_chars(category: str, label: str, chars: int, item: str | None = None) -> None:
+        if chars > 0:
+            tokens = max(1, (chars + 3) // 4)
             groups[category].append(
-                PromptSectionItem(label=label, tokens_estimated=max(1, (len(text) + 3) // 4))
+                PromptSectionItem(label=label, tokens_estimated=tokens, id=item)
             )
+
+    def add(category: str, label: str, text: str) -> None:
+        add_chars(category, label, len(text))
+
+    def user(text: str) -> None:
+        """A user message; the offer list's span in it (``prompt_pieces``) has its own
+        category, found by the message's recorded pieces, not by its words."""
+        rest = len(text)
+        for piece in pieces_for(text):
+            if piece["id"] != OFFER_PIECE:
+                continue
+            span = piece["end"] - piece["start"]
+            rows = 0
+            for row in piece["items"]:
+                rows += row["chars"]
+                add_chars(OFFER_CATEGORY, row["label"], row["chars"])
+            add_chars(OFFER_CATEGORY, "List heading and closing line", span - rows, FRAME_ITEM)
+            rest -= span
+        add_chars("messages", "User messages", rest)
 
     def system(text: str) -> None:
         for label, content in _system_sections(text):
@@ -161,14 +189,14 @@ def request_breakdown(entry: Mapping[str, Any]) -> PromptBreakdown | None:
                 )
             if role in {"system", "developer"}:
                 system(_text(content))
+            elif role == "user":
+                user(_text(content))
             else:
                 add(
                     "results" if role == "tool" else "messages",
                     "Tool response"
                     if role == "tool"
-                    else {"user": "User messages", "assistant": "Assistant messages"}.get(
-                        role, "Messages"
-                    ),
+                    else {"assistant": "Assistant messages"}.get(role, "Messages"),
                     _text(content),
                 )
             continue
@@ -216,19 +244,19 @@ def request_breakdown(entry: Mapping[str, Any]) -> PromptBreakdown | None:
                 add("reasoning", "Retained reasoning", _text(part))
             elif role in {"system", "developer"}:
                 system(_text(part))
+            elif role == "user":
+                user(_text(part))
             else:
-                add(
-                    "messages",
-                    "User messages" if role == "user" else "Assistant messages",
-                    _text(part),
-                )
+                add("messages", "Assistant messages", _text(part))
     sections = []
     for key, items in groups.items():
         if not items:
             continue
-        merged: dict[str, int] = {}
+        merged: dict[tuple[str, str | None], int] = {}
         for item in items:
-            merged[item.label] = merged.get(item.label, 0) + item.tokens_estimated
+            merged[(item.label, item.id)] = (
+                merged.get((item.label, item.id), 0) + item.tokens_estimated
+            )
         sections.append(
             PromptSection(
                 id=key,
@@ -236,8 +264,10 @@ def request_breakdown(entry: Mapping[str, Any]) -> PromptBreakdown | None:
                 tokens_estimated=sum(merged.values()),
                 count=len(items),
                 items=[
-                    PromptSectionItem(label=label, tokens_estimated=tokens)
-                    for label, tokens in sorted(merged.items(), key=lambda pair: -pair[1])
+                    PromptSectionItem(label=label, tokens_estimated=tokens, id=item_id)
+                    for (label, item_id), tokens in sorted(
+                        merged.items(), key=lambda pair: -pair[1]
+                    )
                 ],
             )
         )
