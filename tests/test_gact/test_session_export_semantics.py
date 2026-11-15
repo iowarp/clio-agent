@@ -995,3 +995,86 @@ def test_archive_retains_resolved_permissions_only_from_its_session(
     assert interactions[0]["id"] == "permission:p"
     assert interactions[0]["status"] == "answered"
     assert interactions[0]["source"]["invocation_id"] == "approved-call"
+
+
+def test_a_renderer_larger_than_thirty_megabytes_is_accepted() -> None:
+    """The offline renderer is the UI's own bundle; its size follows the UI build."""
+    from clio_agent.gact.routes.session_export import VisualExport
+
+    request = VisualExport.model_validate(
+        {
+            "visual_review": {
+                "javascript": "x" * 40_000_000,
+                "stylesheet": "y" * 6_000_000,
+                "snapshot": {},
+            }
+        }
+    )
+    assert len(request.visual_review.javascript) == 40_000_000
+
+
+def _export_data(page: str) -> dict[str, Any]:
+    packed = re.search(r'window\.CLIO_EXPORT_DATA="([^"]+)"', page)
+    assert packed is not None
+    return json.loads(gzip.decompress(base64.b64decode(packed.group(1))))
+
+
+def test_each_saved_tool_output_is_embedded_once(
+    export_app: tuple[FastAPI, str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Text is held once, where the viewer reads it; other bytes once, exactly."""
+    from clio_agent.gact.session_export_archive import build_session_export
+
+    monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "home"))
+    app, sid, wid = export_app
+    folder = spill_directory(app.state.workspaces.get(wid).root_path, session_id=sid)
+    folder.mkdir(parents=True)
+    text = "".join(f"{value:.6f}, " for value in range(20_000))  # a large array read
+    binary = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 40
+    (folder / "read.json").write_text(text, encoding="utf-8")
+    (folder / "view.png").write_bytes(binary)
+    for call, name in (("read", "read.json"), ("view", "view.png")):
+        emit(
+            app,
+            sid,
+            "tool.call.completed",
+            {
+                "call_id": call,
+                "tool": "shell",
+                "result": {"stdout_spill": {"status": "spilled", "path": str(folder / name)}},
+            },
+        )
+    visual = {"javascript": "render()", "stylesheet": "", "snapshot": {}}
+    path = build_session_export(app, build_transcript(app, sid), "transcript", visual)
+    try:
+        data = _export_data(path.read_text(encoding="utf-8"))
+    finally:
+        path.unlink()
+    files = {Path(item["source_path"]).name: item for item in data["manifest"]["tool_output_files"]}
+    read, view = files["read.json"], files["view.png"]
+    assert data["snapshot"]["tool_output_text"] == {read["source_path"]: text}
+    embedded = data["embedded_tool_outputs"]
+    assert embedded[read["archive_path"]] == {
+        "encoding": "tool_output_text",
+        "key": read["source_path"],
+    }
+    assert embedded[view["archive_path"]]["encoding"] == "base64"
+    assert base64.b64decode(embedded[view["archive_path"]]["data"]) == binary
+    assert json.dumps(data).count("19999.000000") == 1
+
+
+def test_zip_exports_keep_outputs_as_files_only() -> None:
+    import io
+
+    from clio_agent.gact.session_export_viewer import tool_output_payload
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("tool-output/a.txt", b"complete output")
+        manifest = {
+            "mode": "effects",
+            "tool_output_files": [{"source_path": "/s/a.txt", "archive_path": "tool-output/a.txt"}],
+        }
+        text, embedded = tool_output_payload(archive, manifest)
+    assert text == {"/s/a.txt": "complete output"}
+    assert embedded == {}

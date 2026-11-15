@@ -295,5 +295,82 @@
         "origin": "fresh"
       }
     ]
+  },
+  "helene_hdf5_paraview": {
+    "captured": "2026-11-15",
+    "theme": "light",
+    "viewport": "1440x900",
+    "model_run": true,
+    "source": "one live run of the Helene walkthrough (docs/demos/helene-hdf5.md) on the cloud stack, claude_code provider, Sonnet 5.5, CLIO brand; workspace ws_728764091b4b, conversation sess_255e12e2e60d",
+    "agent_base": "df31e5072041bb70b481567efde55d29d9b38138",
+    "ui_revision": "8b1f29c60a8d63ddb8e3fc2e16a273e7aa4ce522",
+    "marketplace_revision": "0df40fcebd0fbb8f152a79af8e8883bcf51b72bc",
+    "data": "ERA5 files from fetch_era5.py (NSF NCAR public bucket), each cropped to 5-45N, 255-300E (105-60W) with all variables and attributes kept, to fit the recording machine's disk",
+    "captures": [
+      {
+        "file": "helene/field-msl.png",
+        "sha256": "271515217fd080b5b08bba015c812f4bd02ffcf45267f556aca5b5bce79bf062",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, hero, field reopened from the person's /MSL reference, step 612 (26 Sep 12 UTC), canvas maximized",
+        "step_file": "scripts/cloud/checks/apps/helene_hero.mjs"
+      },
+      {
+        "file": "helene/track-answer.png",
+        "sha256": "8854765c17c3020e932f24e62668ffa99a51e0c60e29db0fd407ac5725ac403a",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, take2 turn 2 answer (track and central pressure) with the field viewer open; the composer holds the next request with @sst_2024-09.nc › /SSTK",
+        "step_file": "scripts/cloud/checks/apps/helene_hdf5.mjs"
+      },
+      {
+        "file": "helene/deepen-answer.png",
+        "sha256": "43275a7bf67d6ac39747d9abe0c0f7e2fbe6b2f03482fab10b1b2fa2476a5a60",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, take2 turn 3 answer (deepening and sea-surface temperature)",
+        "step_file": "scripts/cloud/checks/apps/helene_hdf5.mjs"
+      },
+      {
+        "file": "helene/clouds-first-view.png",
+        "sha256": "8bebda7e720e44ad51081c71f589c47410b864cdb43dc97b829e55ce245171fd",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, take2 turn 4: the agent's first ParaView view of 26 Sep after the person added ParaView from the offer card",
+        "step_file": "scripts/cloud/checks/apps/helene_hdf5.mjs"
+      },
+      {
+        "file": "helene/dashboard.png",
+        "sha256": "577a61bbd243d5ebe1648670a654696b5c6c05914ab87d081315122a257c83bf",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, hero, latest dashboard (v2) maximized; time linked to the 3D view at 26 Sep 18 UTC",
+        "step_file": "scripts/cloud/checks/apps/helene_hero.mjs"
+      },
+      {
+        "file": "helene/dashboard-3d-linked.png",
+        "sha256": "a64bb0daf89594a0b84edb6400120a3f9a3740521bc92d9a6639a0d7b3904e01",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, hero, the same dashboard scrolled to its live ParaView view, step 23 of 32",
+        "step_file": "scripts/cloud/checks/apps/helene_hero.mjs"
+      },
+      {
+        "file": "helene/paraview.png",
+        "sha256": "20110de34cea9be8471461010aab05b7629a1da2a4001e09079157bd0e955b68",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "sess_255e12e2e60d, hero, the ParaView view in its tab, maximized, after the last request (from above, tilted, 26 Sep 18 UTC)",
+        "step_file": "scripts/cloud/checks/apps/helene_hero.mjs"
+      },
+      {
+        "file": "helene/export-offline-recording.png",
+        "sha256": "06075201fbae2ec28f3b7a6e27ff84d43914a3aeddc12d372ebd1482376f52c6",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "sess_255e12e2e60d, the conversation export (Download HTML, 110 MB) opened from file:// with nothing running: the dashboard's 3D view shows its recording",
+        "step_file": "scripts/cloud/checks/apps/helene_offline.mjs"
+      }
+    ]
   }
 }

@@ -20,13 +20,15 @@ export default async (page, shot) => {
   if (!sid) throw new Error("EXPORT_SID is required");
   mkdirSync(out, { recursive: true });
 
-  await page.goto(`${UI}/workspaces/${ws}/sessions/${sid}`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(4000);
+  // A conversation with live views never goes network-idle: wait for its composer instead.
+  await page.goto(`${UI}/workspaces/${ws}/sessions/${sid}`, { waitUntil: "domcontentloaded" });
+  await page.locator('textarea, [contenteditable="true"]').last().waitFor({ timeout: 180000 });
+  await page.waitForTimeout(8000);
   const triggers = page.getByRole("button", { name: /^Actions for / });
   await triggers.nth((await triggers.count()) - 1).click();
-  await page.getByRole("menuitem", { name: /Export session/ }).hover();
+  await page.getByRole("menuitem", { name: /^Export( session)?$/ }).hover();
   if (mode === "zip") {
-    await page.getByRole("menuitemcheckbox", { name: /Include session artifacts/ }).click();
+    await page.getByRole("menuitemcheckbox", { name: /^(Include session )?[Aa]rtifacts/ }).click();
   }
   await shot(`export-menu-${mode}`);
   const download = page.waitForEvent("download", { timeout: 180000 });

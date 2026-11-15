@@ -20,10 +20,14 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
 class VisualReview(BaseModel):
-    """Frontend renderer and its captured, credential-free visual dependencies."""
+    """Frontend renderer and its captured, credential-free visual dependencies.
 
-    javascript: str = Field(min_length=1, max_length=30_000_000)
-    stylesheet: str = Field(max_length=5_000_000)
+    The renderer is the UI build's own offline bundle, so its size follows the UI;
+    a fixed cap here refused every export once the bundle outgrew it.
+    """
+
+    javascript: str = Field(min_length=1)
+    stylesheet: str
     snapshot: dict[str, Any]
 
 
