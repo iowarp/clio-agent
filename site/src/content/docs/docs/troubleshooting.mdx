@@ -17,6 +17,35 @@ You do not need to open a terminal for every problem.
 | A tool failed | Expand its result to read the error. Ask CLIO to explain the failure and propose a different approach. |
 | The result looks wrong | Ask for the source values, units and assumptions, then [check the evidence](/docs/evidence/). |
 | Desktop cannot connect to its service | Use the connection/startup message and **Open logs** when offered; confirm whether you intended a local or lab service. |
+| A reply says "This reply didn't load" | Choose **Report this** on that line, then copy or download the report (see below). |
+
+## Report a problem
+
+When something goes wrong and someone is helping you, send them a report from
+the app instead of running commands. Open **Settings → Report a problem**. It is
+also in the CLIO menu at the top left, under the agent you are talking to, in
+**Help** in the Desktop app's menu, and on a failed reply as **Report this**.
+
+The report holds:
+
+- the CLIO version, your operating system, whether you use Desktop or a web
+  browser, and the provider and model in use;
+- the health checks from **Settings → Health**;
+- the last 500 lines of CLIO's log, the same files `clio logs` shows. **Show more**
+  adds earlier lines;
+- optionally, one conversation you pick: how its recent replies ended and their
+  error messages. Its messages are left out unless you tick **Include this
+  conversation's messages**.
+
+Passwords, API keys, tokens, cookies, sign-in codes, saved connector secrets and
+passwords in web addresses are removed by the CLIO service before the report
+reaches the page, and your home folder is shown as `~`. The last line of the
+preview says how many secrets were removed. Read the preview before you send it.
+
+Choose **Copy report** to paste it into a message, or **Download report** to save
+it as a text file you can attach. Both carry exactly what the preview shows. If
+the page says no log file was found, the service was started from a terminal,
+and its log is in that terminal window.
 
 ## Terminal and server diagnostics
 
@@ -94,7 +123,7 @@ Check that `claude --version` works in a terminal, then sign in once with `claud
 
 ## Report a bug
 
-Run `clio report` and attach its output to an issue at [github.com/iowarp/clio-agent/issues](https://github.com/iowarp/clio-agent/issues). Remove anything private first. The report includes versions, your environment, backend health, and the last 40 lines of each log.
+Use [Report a problem](#report-a-problem) in the app, or run `clio report`, and attach the result to an issue at [github.com/iowarp/clio-agent/issues](https://github.com/iowarp/clio-agent/issues). Read it before you send it. `clio report` includes versions, your environment, backend health, and the last 40 lines of each log.
 
 ## Next steps
 

@@ -43,8 +43,8 @@ from clio_agent.gact.routes.health_projection import (
     integration_to_wire,
     unconfigured_provider_report,
 )
-from clio_agent.gact.routes.latest_release import register_latest_release_routes
 from clio_agent.gact.routes.provider_probe_env import runtime_provider_probe_env
+from clio_agent.gact.routes.system_support import register_system_support_routes
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
     _latency_stat,
@@ -372,7 +372,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
     retention-estimate helpers are module-private to this concern.
     """
 
-    register_latest_release_routes(app)
+    register_system_support_routes(app)
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse | JSONResponse:

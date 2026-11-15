@@ -26,6 +26,9 @@ UI_PORT="${UI_PORT:-5173}"
 FIXTURE_PORT="${FIXTURE_PORT:-8790}"
 FIXTURE_TLS_PORT="${FIXTURE_TLS_PORT:-8791}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
+# The agent's log file, as the installed `clio` launcher names it with CLIO_LOG, so the
+# service's "Report a problem" page finds the same file `stack.sh logs` shows.
+export CLIO_LOG="${CLIO_LOG:-$STATE/agent.log}"
 export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-sonnet-5-5}"
 # CLIO_CLOUD_ISOLATE=1 gives this stack its own CLIO config, data, state and cache
 # folders under .cloud-run/xdg, so several stacks (one per worktree, on their own
