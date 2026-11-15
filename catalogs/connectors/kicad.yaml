@@ -16,7 +16,7 @@
     command: uvx
     args:
       - --from
-      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@9548cdb8aacccc0619f1532732e329b7ca9b4c1e
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@2e86d2556fd2b57c9e39c85accce71c9b09915a7
       - kicad-mcp-pro
       - --transport
       - stdio
