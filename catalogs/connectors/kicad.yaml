@@ -26,7 +26,7 @@
       - --with
       - install-jdk>=1.1,<2
       - --from
-      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@1f73a8a5d1ae7851ff27133ab0d3ff44f14c80a6
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@383d21d86322715182cc7e9479b0830351bd8798
       - kicad-mcp-pro
       - --transport
       - stdio
@@ -40,6 +40,9 @@
       # (writable to plugin servers, shared by every workspace); empty outside a plugin (the
       # Extensions probe), where the server keeps its own temp folder.
       KICAD_MCP_TOOLS_HOME: ${PLUGIN_DATA:-}
+      # The project kicad_set_project chose, kept for when CLIO restarts the server (an
+      # idle server is reaped, a configuration change rebuilds it): ledger FN-8.
+      KICAD_MCP_STATE_DIR: ${PLUGIN_DATA:-}
       KICAD_CLI_PATH: ${need.kicad_cli}
       NEXAR_CLIENT_ID: ${need.nexar_id}
       NEXAR_CLIENT_SECRET: ${need.nexar_secret}

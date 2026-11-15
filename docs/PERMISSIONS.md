@@ -448,6 +448,13 @@ reported as a typed `grant_restart_deferred_busy`, never silently — #1033). A 
 `policy_violation` carries the boundary diagnosis' message as its `next_action`, so
 the model may *ask* and the user decides.
 
+**CLIO's own folders are outside the shell's territory.** The shell writes the
+workspace, granted roots, its scratch and temp, and the workspace's state and cache
+folders, where its tool caches are redirected. CLIO's cache and config folders (the
+servers' environments, settings, hook trust, credentials, the plugin store) are the
+servers' only, so a shell command cannot break a running server, widen its own limits or
+replace a credential (`runtime/sandbox_roots.py`; KiCad ledger FN-3).
+
 **Boundary feedback in the result (#1905).** A denial is diagnosed once, in the
 confinement layer (`runtime/sandbox_diagnosis.py`): a per-platform denial signature
 in stderr (PowerShell "Access to the path … is denied", `UnauthorizedAccessException`,
