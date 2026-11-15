@@ -22,8 +22,8 @@ const releases = 'https://github.com/iowarp/clio-agent/releases/download/';
 const exports = 'https://raw.githubusercontent.com/JaimeCernuda/clio-exports/32bc650e38af894e7e74b5091b2842c855bec314/';
 const quantumExports = 'https://raw.githubusercontent.com/JaimeCernuda/clio-exports/a9dbcf3d3072523b41f39c7aa6c18f8ec097e64f/';
 
-// The Helene dashboard, added to clio-exports at its own commit.
-const hdf5Exports = 'https://raw.githubusercontent.com/JaimeCernuda/clio-exports/57b5f302788943e3aac32c9eba2fbe015fa0e901/';
+// The Helene dashboard and its conversation, at the clio-exports commit that holds both.
+const hdf5Exports = 'https://raw.githubusercontent.com/JaimeCernuda/clio-exports/2491664fae6e48cc8d040228a56dfdd0f0dda0e1/';
 
 /** Every published conversation, served at /conversations/<collection>/<slug>/. */
 export const conversationCollections: readonly ConversationCollection[] = [
@@ -71,12 +71,14 @@ export const conversationCollections: readonly ConversationCollection[] = [
     ],
   },
   {
-    // HDF5 and ParaView: the shared dashboard from the Hurricane Helene example.
+    // HDF5 and ParaView: the Hurricane Helene example's shared dashboard and conversation.
     id: 'hdf5',
     release: `${hdf5Exports}hdf5/`,
     conversations: [
       { slug: 'helene-dashboard', file: 'Hurricane-Helene-dashboard.html', bytes: 20628335,
         sha256: '5bfa67c2d99e08dddd1c214ccecd9898441597142922d267f06e23f3b4bd344b' },
+      { slug: 'helene-conversation', file: 'Hurricane-Helene-conversation.html', bytes: 64518605,
+        sha256: '9064e3203011a2f4a02e5e2107490348bac67e1d8bbd0904cff6b9a0c815fdac' },
     ],
   },
 ];
