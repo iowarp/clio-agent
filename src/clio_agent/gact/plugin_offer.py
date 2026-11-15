@@ -5,7 +5,8 @@ servers) while this conversation does not carry it. The agent learns which plugi
 could offer from the ``session_facts_plugins`` piece of the session facts
 (:func:`offerable_facts`): every plugin of the person's library this conversation does
 not have, and every connector whose plugin it does not have, on or off, each as
-``name (id): one-line summary``, capped (``plugins.offer_listed``) with the total. It
+``name (id): one-line summary``, capped (``plugins.offer_listed``) with the total, and
+with the person's choice over that list (:mod:`clio_agent.gact.offer_list`). It
 offers one with the native tool ``offer_plugin(plugin, reason)``. The model decides
 whether a request needs one; CLIO never adds a plugin by itself.
 
@@ -120,12 +121,49 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
     row ``{kind: plugin, id, ref, name, marketplace, summary}``.
     """
 
-    from clio_agent.connectors import state  # noqa: PLC0415
     from clio_agent.gact.connector_offer import offerable as connectors  # noqa: PLC0415
 
     here = _here(app, session_id)
     if here is None:
         return []
+    return _ordered(app, connectors(app, session_id), here)
+
+
+def default_offerable(app: Any) -> list[dict[str, Any]]:
+    """What a new conversation with the person's default agent could take, in order.
+
+    The default agent is resolved without pinning (no session is touched). Raises
+    :class:`~clio_agent.gact.agents.resolution.SessionAgentUnavailable` (typed) when it
+    does not resolve.
+    """
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        default_agent_ref,
+        plugin_service,
+    )
+    from clio_agent.gact.connector_offer import followed_by, offerable_beside  # noqa: PLC0415
+    from clio_agent.plugins.resolve import ResolutionError  # noqa: PLC0415
+    from clio_agent.plugins.service import AgentNotFound  # noqa: PLC0415
+
+    ref = default_agent_ref(app)
+    try:
+        resolution = plugin_service(app).resolve(ref, pin=False)
+    except AgentNotFound as exc:
+        raise SessionAgentUnavailable(ref, exc.reason, [{"code": exc.reason}]) from exc
+    except ResolutionError as exc:
+        diagnostics = [row.to_dict() for row in exc.diagnostics]
+        raise SessionAgentUnavailable(ref, "agent_resolution_failed", diagnostics) from exc
+    here = {str(row["id"]) for row in resolution.plugins}
+    return _ordered(app, offerable_beside(followed_by(resolution.plugins)), here)
+
+
+def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict[str, Any]]:
+    """The rows for ``found_connectors`` and the library plugins not in ``here``, ordered
+    as the session facts list them."""
+
+    from clio_agent.connectors import state  # noqa: PLC0415
+
     rows: list[dict[str, Any]] = [
         {
             "kind": "connector",
@@ -135,7 +173,7 @@ def offerable(app: Any, session_id: str) -> list[dict[str, Any]]:
             "enabled": state.choice(found.id).enabled,
             "kit": bool(found.kit),
         }
-        for found in connectors(app, session_id)
+        for found in found_connectors
     ]
     # Grouped by marketplace, the most recently added first: a marketplace the person
     # just added is not hidden behind the cap by an older, larger one (CF-D4).
@@ -189,7 +227,12 @@ def _followed(app: Any) -> set[str]:
 
 
 def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int]:
-    """The rows the session facts name (at most ``offer_listed``), and how many there are."""
+    """The rows the session facts name, and how many the person did not untick.
+
+    The first ``offer_listed`` rows, with the person's choice over them
+    (:mod:`clio_agent.gact.offer_list`): unticked ones left out, ones ticked beyond the
+    cap added, in order.
+    """
 
     # No session store (an app built without one) means no conversation to offer to.
     if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
@@ -202,7 +245,10 @@ def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], in
     except (StoreError, ConnectorStateError) as exc:  # unreadable stores: no facts this step
         trace.event("TOOLS", "plugin_offer_facts_unavailable (%s)", type(exc).__name__)
         return [], 0
-    return rows[: offer_listed()], len(rows)
+    from clio_agent.gact.offer_list import listed, not_excluded, overlay_or_default  # noqa: PLC0415
+
+    chosen = overlay_or_default()
+    return listed(rows, offer_listed(), chosen), len(not_excluded(rows, chosen))
 
 
 def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, Any]]:
@@ -420,7 +466,11 @@ async def offer_plugin(reason: str, plugin: str = "") -> dict[str, Any]:
             "error": "plugin_offer_no_conversation",
             "message": "No conversation can show the offer.",
         }
-    rows = await asyncio.to_thread(offerable, app, session_id)
+    from clio_agent.gact.offer_list import not_excluded, overlay_or_default  # noqa: PLC0415
+
+    # The list leaves out what the person unticked; naming one still offers it (OL-D3).
+    chosen = await asyncio.to_thread(overlay_or_default)
+    rows = not_excluded(await asyncio.to_thread(offerable, app, session_id), chosen)
     if not plugin.strip():
         return {
             "offerable": rows,

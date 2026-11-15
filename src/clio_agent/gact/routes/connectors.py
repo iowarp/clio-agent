@@ -43,7 +43,11 @@ def _error(exc: service.ConnectorError) -> HTTPException:
 
 
 def register_connector_routes(app: FastAPI) -> None:
-    """Register the connector routes."""
+    """Register the connector routes, and those of the list the agent may offer."""
+
+    from clio_agent.gact.routes.offer_list import register_offer_list_routes  # noqa: PLC0415
+
+    register_offer_list_routes(app)
 
     @app.get("/v1/connectors")
     async def list_connectors(refresh: bool = False) -> dict[str, Any]:
