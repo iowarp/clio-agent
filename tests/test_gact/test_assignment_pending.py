@@ -49,3 +49,22 @@ def test_running_work_and_uncertain_assignments_always_count() -> None:
     history = _history(rows)
     assert not orphaned_uncertainty(history, rows["shell"])
     assert not orphaned_uncertainty(history, rows["child"])
+
+
+def test_its_own_uncertain_call_does_not_hold_a_finishing_assignment_open() -> None:
+    """The researcher answered after the restart without an explicit disposition.
+
+    SABOTAGE: drop the ``settling`` branch and its own uncertain search keeps it
+    ``yielded`` forever (the live crash acceptance of a deep-research run).
+    """
+    rows = {
+        "researcher": _task("researcher", "Subagent", "active", "flow"),
+        "search": _task("search", "MCP", "task_state_uncertain", "researcher"),
+        "fetch": _task("fetch", "MCP", "running", "researcher"),
+        "child": _task("child", "Subagent", "task_state_uncertain", "researcher"),
+    }
+    history = _history(rows)
+    pending = pending_work(history, "s", "researcher")
+    assert sorted(row.handle for row in pending) == ["child", "fetch"]
+    # For an ancestor the live researcher is the pending work; its call still counts too.
+    assert "search" in {row.handle for row in pending_work(history, "s", "flow")}
