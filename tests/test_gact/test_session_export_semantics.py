@@ -995,3 +995,15 @@ def test_archive_retains_resolved_permissions_only_from_its_session(
     assert interactions[0]["id"] == "permission:p"
     assert interactions[0]["status"] == "answered"
     assert interactions[0]["source"]["invocation_id"] == "approved-call"
+
+
+def test_visual_review_accepts_the_shipped_renderer_size() -> None:
+    """The offline renderer is about 37 MB; the bound admits it and still refuses runaway input."""
+    from pydantic import ValidationError
+
+    from clio_agent.gact.routes.session_export import RENDERER_MAX_CHARS, VisualReview
+
+    renderer = "x" * 38_000_000
+    assert VisualReview(javascript=renderer, stylesheet="", snapshot={}).javascript is renderer
+    with pytest.raises(ValidationError):
+        VisualReview(javascript="x" * (RENDERER_MAX_CHARS + 1), stylesheet="", snapshot={})
