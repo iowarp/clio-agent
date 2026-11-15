@@ -66,6 +66,7 @@ async function settle(page, sid, log, shot, name, minutes = 25) {
       n += 1;
       if (n % 6 === 0 || done) await shot(`${name}-${String(n).padStart(2, "0")}`);
       if (done) {
+        await declineOptionalPlugins(page);
         await toLatest(page);
         mark(`${name}-answered`);
         return true;
@@ -77,6 +78,19 @@ async function settle(page, sid, log, shot, name, minutes = 25) {
     settled = true;
     await watcher;
   }
+}
+
+/**
+ * The agent's own optional plugins (an offer that says the agent works without them): the
+ * person answers Not now, so the card does not stay open over the rest of the walkthrough.
+ */
+async function declineOptionalPlugins(page) {
+  const card = page.locator("[data-interaction-kind]").filter({ hasText: /works without (it|them)/ });
+  const notNow = card.getByRole("button", { name: /^Not now/ }).locator("visible=true").first();
+  if (!(await notNow.isVisible().catch(() => false))) return;
+  await page.waitForTimeout(800);
+  await notNow.click({ timeout: 5000 }).catch(() => {});
+  console.log("DECLINED optional plugins");
 }
 
 async function acceptOffers(page, shot, name) {
@@ -134,9 +148,9 @@ async function openFieldFromAnswer(page, shot) {
     console.log(`STEP_SKIPPED ${name}`);
     return false;
   };
-  if (!(await field.count())) {
-    // Opened on the file: show its tree and choose the field.
-    await press("Explorer");
+  // Opened on the file: show its tree and choose the field. A file with one field opens
+  // on that field, with no tree to open.
+  if (!(await field.count()) && (await press("Explorer"))) {
     await viewer.getByText("MSL", { exact: true }).first().click({ timeout: 5000 });
     await page.waitForTimeout(1500);
     // In the docked canvas the tree covers the viewer: close it to see the field.
@@ -164,6 +178,19 @@ async function openFieldFromAnswer(page, shot) {
     // Measured: the track is not the box; 0.75 of it is step ~612 (26 Sep 12Z).
     await page.mouse.move(box.x + 2 + (box.width - 2) * 0.7516, box.y + box.height / 2, { steps: 25 });
     await page.mouse.up();
+    // The track's share of the box depends on the panel's width: finish with the arrow
+    // keys on the focused slider, as a person nudging it would.
+    for (let k = 0; k < 120; k += 1) {
+      // A range input: its value, else an ARIA slider's.
+      const now = Number(
+        await slider
+          .evaluate((el) => ("value" in el ? el.value : el.getAttribute("aria-valuenow")))
+          .catch(() => NaN),
+      );
+      if (!Number.isFinite(now) || now === 612) break;
+      await page.keyboard.press(now < 612 ? "ArrowRight" : "ArrowLeft");
+      await page.waitForTimeout(40);
+    }
     await page.waitForTimeout(4000);
   }
   await shot("field-image");
