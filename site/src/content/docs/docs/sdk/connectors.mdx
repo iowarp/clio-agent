@@ -218,7 +218,11 @@ it may change with `set_connector_value`. See [Plugin reference](/docs/sdk/plugi
 In a conversation, the agent sees the connectors and plugins it does not have yet:
 every connector first, then the plugins of the marketplaces the person added, the most
 recently added marketplace first, up to `plugins.offer_listed` (default 20) with the
-total. Each is listed by name with the start of its description, about 100 characters.
+total. The person can change that list (Settings, "Plugins CLIO can offer", or
+`GET`/`PUT`/`DELETE /v1/plugins/offer-list`): their ticks are kept as an overlay on the
+default, `exclude` inside the first 20 and `include` beyond them, in the user
+`config.yaml` under `plugins.offer`. Each is listed by name with the start of its
+description, about 100 characters.
 Put what it does in those first words, so the agent can tell when a request needs it.
 The agent offers one with `offer_plugin`; the person's **Add** is the consent.
 
