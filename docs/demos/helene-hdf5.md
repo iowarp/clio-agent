@@ -41,6 +41,24 @@ The view is limited by the data. ERA5 is a 0.25° (about 28 km) reanalysis, so t
 storm's inner core is smoothed. Fine eyewall structure, as in kilometre-scale model
 output, is not in these fields.
 
+## Rerun for the website (15 November 2026)
+
+The worked example [Explore a hurricane in HDF5 data](../../site/src/content/docs/docs/examples/hdf5-paraview.mdx)
+is a fresh take on develop (`sess_255e12e2e60d`), with these differences from the take above:
+
+- Each ERA5 file was cropped to 5–45° N, 255–300° E after download (about 200 MB in all), to fit
+  a small disk. The agent noticed that `grid_specification` still describes the global grid.
+- The first answer did not link `MSL` as a dataset; the field was opened from the person's file
+  reference. A file with one field opens on that field, so the step file no longer needs the tree.
+- After the last beat had turned the storm out of view, one more plain request asked the agent to
+  put it back ("from above, tilted a little, on the 26th at 18 UTC"). The hero captures are from
+  `scripts/cloud/checks/apps/helene_hero.mjs`.
+- The conversation export (`Download HTML`) is 110 MB and the dashboard's HTML export 21 MB.
+  `helene_offline.mjs` and `helene_dashboard_export.mjs` open them from `file://`; the 3D view
+  shows its recording there. Exporting needs the offline renderer built in a source UI
+  (`pnpm --filter @clio/workspace build:offline`), and the agent now admits a renderer of its
+  current size (about 37 MB).
+
 ## Run it
 
 Use a cloud session or a local source checkout with ParaView 6 (`pvpython`) available.

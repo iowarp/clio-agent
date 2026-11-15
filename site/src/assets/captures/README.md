@@ -357,3 +357,35 @@ plugins shown as what they are), on a fresh stack.
 Reproduce with `bash scripts/cloud/stack.sh start` (`CLIO_CLOUD_ISOLATE=1`) and
 `node scripts/cloud/ui_check.mjs --theme dark --steps scripts/cloud/checks/apps/docs_capture.mjs`
 with the `DOCS_MODE` the step file describes.
+
+## Hurricane Helene in HDF5 and ParaView — 15 November 2026
+
+The `helene/` images belong to the worked example
+[Explore a hurricane in HDF5 data](../../content/docs/docs/examples/hdf5-paraview.mdx). They are
+untouched light-mode browser captures of one live run on the cloud stack (`claude_code`
+provider, Sonnet 5.5, CLIO brand), 1440 x 900 at two device pixels per CSS pixel unless
+the table says otherwise: workspace `Helene`, conversation `sess_255e12e2e60d`.
+`capture-manifest.json` (`helene_hdf5_paraview`) records each file's checksum, size, the
+agent, UI and marketplace revisions, and the step file that took it. Dark-mode and phone
+copies of the hero shots are in the session's gallery, not on the site.
+
+The data are the ERA5 files `scripts/demo/helene/fetch_era5.py` downloads from the public
+NSF NCAR bucket, each cropped to 5–45° N, 105–60° W (all variables and attributes kept) to
+fit the recording machine's disk. The requests are the plain requests of
+`scripts/cloud/checks/apps/helene_hdf5.mjs`; the clouds request names ParaView and the look,
+and the last request ("put it back: from above, tilted a little") was added for the
+captures after the walkthrough's final beat had turned the 3D view away from the storm.
+
+| File | What it shows | Step file |
+| --- | --- | --- |
+| `helene/field-msl.png` | `/MSL` opened from the person's reference, at 26 Sep 12 UTC (step 612 of 720), canvas maximized. | `helene_hero.mjs` |
+| `helene/track-answer.png` | The track answer and its caveats beside the field; the next request with `@sst_2024-09.nc › /SSTK` in the composer. | `helene_hdf5.mjs` |
+| `helene/deepen-answer.png` | The deepening and sea-surface temperature answer, with its limits. | `helene_hdf5.mjs` |
+| `helene/clouds-first-view.png` | The agent's first ParaView view of the 26th, after the person added ParaView from the offer card. | `helene_hdf5.mjs` |
+| `helene/dashboard.png` | The shared dashboard (second version), maximized, its track and charts at the 3D view's time. | `helene_hero.mjs` |
+| `helene/dashboard-3d-linked.png` | The same dashboard at its live ParaView view, step 23 of 32, time linked both ways. | `helene_hero.mjs` |
+| `helene/paraview.png` | The ParaView view in its tab, maximized, from above and tilted, 26 Sep 18 UTC. | `helene_hero.mjs` |
+| `helene/export-offline-recording.png` | 1440 x 900 at one pixel per CSS pixel: the conversation export opened from `file://`; the 3D view shows its recording. | `helene_offline.mjs` |
+
+Reproduce with the steps in `docs/demos/helene-hdf5.md`, then
+`WS=… SID=… node scripts/cloud/ui_check.mjs --scale 2 --theme light --steps scripts/cloud/checks/apps/helene_hero.mjs`.
