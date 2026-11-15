@@ -1,7 +1,9 @@
 # Circuit simulation with ngspice or LTspice: cognitohazard/ltspice-mcp, GPL-3.0-or-later.
 # CLIO starts it as its own process through uvx and never bundles or imports it.
 # The version is pinned to the release qualified here (0.8.0, the 9455f38 merge).
-# The server finds ngspice or LTspice on this machine itself; it has no needs.
+# The server finds ngspice or LTspice on this machine itself; "Where the simulator is" points
+# it at one installed outside PATH (a user-folder install; the spice plugin's
+# install-simulator skill). ltspice-mcp skips an empty value.
 # ltspice-mcp ships no mark, so its logo, spice.svg, is ours: a circuit chip drawn for
 # CLIO (apps ledger, "Connector logos (LG)").
 - id: spice
@@ -12,4 +14,13 @@
   server:
     command: uvx
     args: [ltspice-mcp==0.8.0]
-  needs: []
+    env:
+      LTSPICE_MCP_SIMULATOR_EXE: ${need.simulator}
+  needs:
+    - key: simulator
+      kind: value
+      label: Where the simulator is
+      required: false
+      agent_settable: true
+      help: Leave empty to find ngspice or LTspice on this machine. Otherwise the path to the ngspice or LTspice program to use.
+  plugin: spice
