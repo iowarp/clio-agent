@@ -99,7 +99,7 @@ const SLIDES: readonly SlideSource[] = [
 		field: 'Electronics',
 		title: 'A circuit board in KiCad',
 		body: 'For a small USB-C sensor node, CLIO routed the board in KiCad. The live board opens in KiCad’s view inside CLIO, where CLIO can run the design rule check.',
-		alt: 'The KiCad view inside CLIO, marked Ready: Board, Move, Rotate 90°, Run DRC and Refill zones controls, Revision 3 from the live KiCad, and the PCB tab showing the routed sensor-node board with red and blue copper tracks between the USB-C connector, the ESP32-C3 module and the other parts',
+		alt: 'CLIO with the sensor-node conversation on the left, where the agent reports the routed board (231 tracks, 13 vias, 19 footprints) and runs the design rule check, and the KiCad view open in a tab on the right, marked Ready, showing the routed board with red and blue copper tracks between the USB-C connector, the ESP32-C3 module and the other parts',
 		link: { href: '/docs/kicad/', text: 'Design a circuit board with KiCad' },
 		light: routedBoard,
 	},
