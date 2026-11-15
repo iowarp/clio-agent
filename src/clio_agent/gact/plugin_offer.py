@@ -230,19 +230,24 @@ def _followed(app: Any) -> set[str]:
     }
 
 
-def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], int, int]:
-    """The rows the session facts name, how many could be added, and how many of those
-    the person left out in Settings.
+def offerable_facts(
+    app: Any, session_id: str
+) -> tuple[list[dict[str, Any]], int, int, list[dict[str, Any]]]:
+    """The rows the session facts name, how many could be added, how many of those the
+    person left out in Settings, and the categories of the ones not named.
 
     The first ``offer_listed`` rows, with the person's choice over them
     (:mod:`clio_agent.gact.offer_list`): unticked ones left out, ones ticked beyond the
     cap added, in order. The total counts every candidate (left-out ones too): the facts
-    say how many more there are and that ``offer_plugin`` finds them (OL-D11).
+    say how many more there are and that ``offer_plugin`` finds them (OL-D11). The
+    categories of those (with counts, uncategorized last, and the names of the ones the
+    person turned on or installed and did not leave out) say what a search would reach, at
+    a few words per entry, however large the catalog (OL-F4, OL-D17).
     """
 
     # No session store (an app built without one) means no conversation to offer to.
     if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
-        return [], 0, 0
+        return [], 0, 0, []
     from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415
 
@@ -250,14 +255,23 @@ def offerable_facts(app: Any, session_id: str) -> tuple[list[dict[str, Any]], in
         rows = offerable(app, session_id)
     except (StoreError, ConnectorStateError) as exc:  # unreadable stores: no facts this step
         trace.event("TOOLS", "plugin_offer_facts_unavailable (%s)", type(exc).__name__)
-        return [], 0, 0
-    from clio_agent.gact.offer_list import listed, not_excluded, overlay_or_default  # noqa: PLC0415
+        return [], 0, 0, []
+    from clio_agent.gact.offer_list import (  # noqa: PLC0415
+        entry_key,
+        listed,
+        not_excluded,
+        overlay_or_default,
+    )
+    from clio_agent.gact.offer_search import unlisted  # noqa: PLC0415
 
     chosen = overlay_or_default()
+    shown = listed(rows, offer_listed(), chosen)
+    named = {entry_key(row) for row in shown}
     return (
-        listed(rows, offer_listed(), chosen),
+        shown,
         len(rows),
         len(rows) - len(not_excluded(rows, chosen)),
+        unlisted([row for row in rows if entry_key(row) not in named], set(chosen.exclude)),
     )
 
 
@@ -281,21 +295,28 @@ def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, 
 
 
 def search_note(rows: list[dict[str, Any]]) -> str:
-    """What a tool search found to add rather than to call; a row the person left out in
-    Settings says so (OL-D11)."""
+    """What a tool search found to add rather than to call; a row the person left out of
+    the list in Settings says so, as a fact that is no reason not to offer it (OL-D11,
+    OL-F6)."""
 
-    from clio_agent.gact.offer_list import entry_key, overlay_or_default  # noqa: PLC0415
+    from clio_agent.gact.offer_list import (  # noqa: PLC0415
+        SETTINGS_PLACE,
+        entry_key,
+        overlay_or_default,
+    )
 
     left_out = overlay_or_default().exclude
+    mark = f", not in your plugin list (the person's choice in {SETTINGS_PLACE})"
 
     def named(row: dict[str, Any]) -> str:
-        mark = ", left out by the person in Settings" if entry_key(row) in left_out else ""
-        return f'{row["name"]} ({row["kind"]}, id "{row["id"]}"{mark})'
+        note = mark if entry_key(row) in left_out else ""
+        return f'{row["name"]} ({row["kind"]}, id "{row["id"]}"{note})'
 
+    left = any(entry_key(row) in left_out for row in rows)
     return (
         f"Not in this conversation, but it can be added: {'; '.join(named(r) for r in rows)}. "
         "offer_plugin asks the person to add it; its tools join this conversation once they "
-        "accept."
+        "accept" + ("; it offers one not in your plugin list the same way." if left else ".")
     )
 
 
@@ -493,7 +514,7 @@ async def offer_plugin(
             "error": "plugin_offer_no_conversation",
             "message": "No conversation can show the offer.",
         }
-    if plugin.strip():  # named: offered even when left out of the list (OL-D3)
+    if plugin.strip():  # offered whether or not it is in the list (OL-D3, OL-F6)
         kind, found = await asyncio.to_thread(_match, app, plugin)
         if kind == "connector" and needs:
             from clio_agent.gact.connector_needs_offer import offer_needs  # noqa: PLC0415
@@ -533,6 +554,7 @@ async def offer_plugin(
 
 
 def build_offer_plugin_tool() -> Any:
+    from clio_agent.gact.offer_list import SETTINGS_PLACE  # noqa: PLC0415
     from clio_agent.gact.plugin_offer_presentation import present, present_start  # noqa: PLC0415
 
     return native_tool(
@@ -542,16 +564,22 @@ def build_offer_plugin_tool() -> Any:
         title="Offer plugin",
         desc=(
             "Offer to add one of the plugins or connectors the person has that this "
-            "conversation does not, when the person's request needs what it brings. The "
-            "person sees its name and your reason and chooses Add or Not now; you never add "
-            "it yourself. A connector's card also turns it on and asks for what it needs. On "
-            "Add its tools and skills are yours from your next step and you continue the "
-            "request; on Not now you get a refusal and nothing changed. The session facts "
-            "list some of them; search (words) or category finds the others, each marked "
-            "listed or not and whether the person left it out in Settings. With nothing "
+            "conversation does not, when the person's request needs or would be better "
+            "served by what it brings. The person sees its name and your reason and chooses "
+            "Add or Not now; you never add it yourself. The card is how you ask: the person "
+            "cannot add a plugin from your text, so a plugin you would suggest is offered "
+            "with this call (alongside what you deliver), not as a sentence in your answer. "
+            "A connector's card also turns it on and asks for what it needs. On Add its "
+            "tools and skills are yours from your next step and you continue the request; "
+            "on Not now you get a refusal and nothing changed. The session facts list some "
+            "of them and count the rest by category; search (words) or category reaches "
+            "every one, the unlisted too, and asks the person nothing: each row says whether "
+            "it is in your plugin list. The person chooses that list in "
+            f"{SETTINGS_PLACE}; one they took out of it is offered with this call the same "
+            "way as any other. With nothing "
             "named it gives the categories and counts, and the optional needs (such as API "
-            "keys) of the connectors already here. With needs it asks the person for those of "
-            "a connector already here, when a tool's result shows they would help."
+            "keys) of the connectors already here. With needs it asks the person for those "
+            "of a connector already here, when a tool's result shows they would help."
         ),
         args={
             "plugin": {
