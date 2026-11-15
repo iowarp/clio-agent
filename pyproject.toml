@@ -73,7 +73,9 @@ dependencies = [
     "fastmcp-tasks==4.1.2",
     "mcp==2.2.0",  # reviewed native Tasks wire/client contract
     "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
-    "clio-schemas==0.7.0",
+    # Develop builds clio-schemas from git (the tool.uv.sources entry below); a
+    # release pins the published PyPI version instead (release-clio).
+    "clio-schemas==0.8.0b1",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -397,3 +399,12 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp==2.2.0"]
+
+[tool.uv.sources]
+# Develop pins clio-schemas to the merged develop commit so its unreleased work
+# (clio.mcp-app.v1 with recordingUri, the s3 connected-source provider) runs without
+# a release. A release removes this entry and pins the published PyPI version
+# (release-clio; docs/design/sdk/mcp-apps-ledger.md, GP). uv only: the built
+# wheel's metadata keeps the plain specifier above. clio-kit stays on PyPI: a git
+# build fetches its changed components from release assets that do not exist yet (GP).
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "baa9d9048d5b7a7516cde679be4d37342d65124e" }
