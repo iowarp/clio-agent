@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -101,6 +102,7 @@ async def intervene(
     action: str,
     *,
     message: str = "",
+    reason: str = "",
     stop_reservation: threading.Event | None = None,
     stop_reservation_captured: bool = False,
 ) -> dict[str, Any]:
@@ -118,6 +120,8 @@ async def intervene(
         "actor_human": caller.human_id,
         "requested_at": stamp,
         "message": message,
+        # Why the person acted, when an operation names it (``conversation_stop``).
+        **({"reason": reason} if reason else {}),
     }
 
     def record(phase: str, effect: dict[str, Any] | None = None) -> None:
@@ -129,7 +133,8 @@ async def intervene(
         await history.io.run(record, "intent")
 
     if action == "cancel":
-        effect = (await app.state.task_operations.cancel(caller, handle))["outcomes"][0]
+        named = replace(caller, intent=reason) if reason else caller
+        effect = (await app.state.task_operations.cancel(named, handle))["outcomes"][0]
     elif action in {"pause", "resume", "restart"}:
         effect = await getattr(app.state.conversations, action)(caller, handle)
     elif action == "stop":

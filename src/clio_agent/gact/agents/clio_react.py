@@ -560,7 +560,7 @@ class _Loop:
         from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
         from clio_agent.tools.tool_observation import call_identity_scope  # noqa: PLC0415
 
-        slot: dict[str, str] = {}
+        slot: dict[str, str] = {"model_call_id": str(call.id or "")}  # links started work
         carried: list[Any] = []
         media: list[dict[str, Any]] = []
         slot_token = MODEL_CALL_SLOT.set(slot)

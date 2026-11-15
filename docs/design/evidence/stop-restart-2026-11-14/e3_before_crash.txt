@@ -1,0 +1,28 @@
+task_835c7adc0 Session  active       busy       Restart after a crash        msg_user_0a43122a5fe1
+task_dbc5e0f8b Subagent active       busy       deep-research flow           flow:call_8de5f5bdb143~call_63c25d97_0
+task_1c116ef79 Subagent completed               ZFP filter ID and modes      flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_c2a27d54f Subagent completed               SZ3 filter ID and modes      flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_45a442e8e MCP      completed               search                       call_dc58d0a4d92b
+task_bd13ddb3c MCP      completed               search                       call_f42cf87be6f8
+task_120bbebd1 MCP      completed               search                       call_886af5e9d3a1
+task_ea7411fec MCP      completed               search                       call_eb6c35887258
+task_e76957c3e MCP      completed               search                       call_7d6930c1dd6f
+task_251f7aaae MCP      completed               search                       call_da1c7b26db7b
+task_77e24e4ce MCP      completed               search                       call_7bf43d45a9b6
+task_20371072d MCP      completed               fetch                        call_3f18fe1d56d1
+task_e7d18a1db MCP      completed               fetch                        call_f1f62564f140
+task_665da4542 MCP      completed               fetch                        call_c6ab0d9623b4
+task_484ce977f MCP      completed               fetch                        call_dbac9720a51f
+task_07e44b843 MCP      completed               fetch                        call_b91fc8913dba
+task_5bea106b0 MCP      completed               fetch                        call_7e65b6f699d0
+task_d67a5027c MCP      completed               fetch                        call_e32190972962
+task_6b2b7cd9a MCP      completed               fetch                        call_682dcd59eee0
+task_483812bb5 MCP      completed               fetch                        call_87d800a87f8a
+task_0c7fd0ad3 MCP      completed               fetch                        call_75a46c8d6dd8
+task_f9da0d3ce Subagent active       busy       Check: ZFP filter ID and mod flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_8d21c0bd3 Subagent active       busy       Check: SZ3 filter ID and mod flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_92db34647 MCP      accepted                fetch                        call_138a8a677bbd
+task_3a8df0d4d MCP      accepted                fetch                        call_1d73dfb94eed
+task_3b14fd86e MCP      accepted                fetch                        call_4c31f6559063
+total 26
+stop-scope: [('deep-research flow', 'Subagent', 'active')]

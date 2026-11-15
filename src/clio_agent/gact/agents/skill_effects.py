@@ -766,9 +766,8 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
 async def apply_spawn_skill_effect(ref: "SkillRef", *, agent_id: str, task: str) -> dict[str, Any]:
     """Launch a declared skill through the shared conversation assignment owner."""
     import asyncio
-    from uuid import uuid4
 
-    from clio_agent.tools.task_call_context import TASK_CALL
+    from clio_agent.gact.spawn_invocation import spawn_invocation_id
 
     effect = parse_skill_effect(ref.meta)
     if effect is None or effect.kind != EFFECT_SPAWN_SUBAGENT:
@@ -782,7 +781,7 @@ async def apply_spawn_skill_effect(ref: "SkillRef", *, agent_id: str, task: str)
         caller,
         task,
         effect.agent or agent_id,
-        TASK_CALL.get().invocation_id or uuid4().hex,
+        spawn_invocation_id(),
         launch_context={"skill_id": ref.id, "instructions": body},
     )
     return {**spawned, "skill_effect": effect.kind, "skill_id": ref.id}

@@ -245,7 +245,10 @@ class Dispatcher:
         # A native tool may declare the group it shares a concurrency cap with (the browser).
         group = group or str(getattr(getattr(target, "func", None), CONCURRENCY_GROUP_ATTR, ""))
         sink: list[tuple[str | None, Any]] = []
-        MODEL_CALL_SLOT.set({})  # this call's own observer id, not the script's
+        # This call's own observer id, not the script's; the model call that ran the
+        # script still owns what it starts (``gact/spawn_invocation.py``).
+        model_call = (MODEL_CALL_SLOT.get() or {}).get("model_call_id")
+        MODEL_CALL_SLOT.set({"model_call_id": model_call} if model_call else {})
         INLINE_COLLECTION.set(None)  # the script reads the reply, not the model
         RESULT_SINK.set(sink)
         started = time.monotonic()

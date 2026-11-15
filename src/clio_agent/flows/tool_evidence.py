@@ -14,8 +14,15 @@ if TYPE_CHECKING:
 
 
 def _require_root(ctx: FlowContext, handle: str) -> None:
+    """``handle`` is in this run's subtree, or in an earlier run it resumes.
+
+    A restarted run keeps its predecessors' finished calls (``journal.resume_from``),
+    so their evidence is this run's own; read authorization is still checked.
+    """
     history = ctx.app.state.task_history
-    if handle not in history.descendant_handles(ctx.root_handle):
+    journal = getattr(ctx, "journal", None)
+    roots = [ctx.root_handle, *(root for root, _ in getattr(journal, "resume_from", ()))]
+    if not any(handle in history.descendant_handles(root) for root in roots):
         raise CallRefused(
             "Tool evidence must belong to this flow's assignment subtree", handle=handle
         )

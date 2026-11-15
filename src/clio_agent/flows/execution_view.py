@@ -7,6 +7,7 @@ never from an agent's prose. Other flows retain their actual call batches.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -43,6 +44,8 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
     stopped = content.get("status") not in {"running", "completed"}
     outcome = content.get("result") if stopped else {}
     outcome = outcome if isinstance(outcome, dict) else {"message": str(outcome)}
+    # A run stopped on request did not fail: its end node reads cancelled, not failed.
+    ended = "cancelled" if content.get("status") == "cancelled" else "failed"
     if research and any(name.endswith("._plan") for name in names):
         previous = [add("run:plan", "Plan", "completed", previous)]
     if stopped and not calls:
@@ -57,6 +60,29 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
         ]
     batch: list[str] = []
     group = ""
+    coordinations = _coordinations(content) if research else {}
+    coordinated: set[int] = set()
+
+    def coordinate(round_no: int) -> None:
+        """One row for the coordinator's decision after a round's checks, from its event."""
+        nonlocal previous, batch, group
+        event = coordinations.get(round_no)
+        if event is None or round_no in coordinated:
+            return
+        coordinated.add(round_no)
+        previous = batch or previous
+        batch, group = [], ""
+        failed = event.get("event") == "coordinator_failed"
+        previous = [
+            add(
+                f"run:coordinate:{round_no}",
+                "Coordinate",
+                "failed" if failed else "completed",
+                previous,
+                detail=str(event.get("reason") or "") if failed else _coordination_detail(event),
+            )
+        ]
+
     rejected_outputs = {
         str(event["critic"]): event.get("problems") or []
         for event in (content.get("events") or {}).values()
@@ -65,6 +91,9 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
     for index, call in enumerate(call for call in calls if call.get("kind") != "ask"):
         invocation = str(call.get("invocation") or "")
         site = invocation.split(":", 2)[-1].rsplit(":", 2)[0]
+        follow_up = re.fullmatch(r"key=research:g(\d+)\.\d+", site)
+        if follow_up:
+            coordinate(int(follow_up[1]) - 1)  # it decided these follow-ups
         direction = planned.get(site) if call.get("target") == "researcher" else None
         # The name the flow gave this child (a research direction's name) comes first.
         label = str(call.get("label") or "") or (
@@ -124,15 +153,17 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             kind=call.get("kind", "agent"),
             **({"question": question} if question else {}),
             detail=(
-                "The child returned, but the flow rejected its audit and requested a repair:\n"
-                + "\n".join(str(problem) for problem in rejection)
+                "It answered, but the flow found problems in the answer and asked for a "
+                "correction:\n" + "\n".join(str(problem) for problem in rejection)
                 if rejection
-                else "The child returned. Its output still requires the flow's review."
+                else "It answered. The flow checks the answer before using it."
                 if status == "returned"
                 else ""
             ),
         )
         batch.append(key)
+    for round_no in sorted(coordinations):
+        coordinate(round_no)
     previous = batch or previous
     if research and stopped:
         for site, (number, planned_direction) in planned.items():
@@ -165,19 +196,26 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             ]
         elif stopped:
             previous = [
-                add("run:stop", "Stopped", "failed", previous, detail=outcome.get("message", ""))
+                add("run:stop", "Stopped", ended, previous, detail=outcome.get("message", ""))
             ]
             previous = [add("run:draft", "Draft report", "not_run", previous)]
         review = reviews[-1] if reviews else None
         if review:
             rejected = review.get("status") != "accepted_by_reviewer"
+            # No verdict could be read: the review did not happen, it did not reject.
+            unreadable = review.get("status") == "review_unreadable"
             issues = review.get("issues") or []
-            detail = "\n".join(str(issue.get("reason") or "") for issue in issues)
+            detail = (
+                "The review could not be completed, so the report was delivered unreviewed.\n"
+                + str(review.get("reason") or "")
+                if unreadable
+                else "\n".join(str(issue.get("reason") or "") for issue in issues)
+            )
             previous = [
                 add(
                     "run:review",
                     "Report review",
-                    "rejected" if rejected else "completed",
+                    "failed" if unreadable else "rejected" if rejected else "completed",
                     previous,
                     detail=detail,
                 )
@@ -187,7 +225,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
                 add(
                     "run:review",
                     "Report review",
-                    "failed" if report_reached else "not_run",
+                    ended if report_reached else "not_run",
                     previous,
                     detail=outcome.get("message", "") if report_reached else "",
                 )
@@ -233,7 +271,7 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
             add(
                 "run:stop",
                 f"Stopped at {location}" if location else "Stopped",
-                "failed",
+                ended,
                 previous,
                 detail=outcome.get("message", ""),
             )
@@ -242,3 +280,40 @@ def execution_view(content: dict[str, Any], calls: list[dict[str, Any]]) -> list
     elif content.get("status") == "completed":
         add("run:result", "Result", "completed", previous)
     return rows
+
+
+def _coordinations(content: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """The deep-research coordinator's recorded decision (or failure) for each round."""
+    rows: dict[int, dict[str, Any]] = {}
+    for event in (content.get("events") or {}).values():
+        if event.get("event") in {"coordinated", "coordinator_failed"} and isinstance(
+            event.get("round"), int
+        ):
+            rows[event["round"]] = event
+    return rows
+
+
+def _coordination_detail(event: dict[str, Any]) -> str:
+    """What the coordinator decided, in words, from its typed event.
+
+    One paragraph, counts first: step details are shown as inline text, so line
+    breaks and list markers would run together.
+    """
+    follow_ups = [str(question).strip() for question in event.get("follow_ups") or []]
+    parts = [
+        f"Chose {len(follow_ups)} follow-up direction{'s' if len(follow_ups) != 1 else ''}."
+        if follow_ups
+        else "No follow-up research needed."
+        if event.get("rounds_left")
+        else "No research rounds left."
+    ]
+    across = int(event.get("across") or 0)
+    if across:
+        parts.append(f"{across} finding{'s' if across != 1 else ''} across the verified evidence.")
+    opened = int(event.get("open_questions") or 0)
+    if opened:
+        parts.append(f"{opened} question{'s' if opened != 1 else ''} left open.")
+    if follow_ups:
+        numbered = " ".join(f"({n}) {question}" for n, question in enumerate(follow_ups, 1))
+        parts.append(f"Follow-ups: {numbered}")
+    return " ".join(parts)

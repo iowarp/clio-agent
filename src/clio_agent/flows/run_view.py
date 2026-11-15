@@ -80,6 +80,37 @@ def flow_run(
     return projected
 
 
+def restarted_as(history: Any, handle: str) -> str | None:
+    """The newest restart that continues this run, or ``None``.
+
+    A restart opens a linked assignment in the same session (``restart:`` invocation,
+    ``predecessor`` chain) and checkpoints the continued run under it. Reading back from
+    the session's latest assignment finds it, so the stopped run's card can follow it.
+    """
+
+    from clio_agent.arc.task_types import AssignmentDetails  # noqa: PLC0415
+
+    task = history.task_snapshot(handle)
+    if task is None:
+        return None
+    current = history.latest_assignment(task.owner.session_id)
+    newest: str | None = None
+    seen: set[str] = set()
+    while current is not None and current.handle != handle and current.handle not in seen:
+        seen.add(current.handle)
+        if (
+            newest is None
+            and current.invocation_id.startswith("restart:")
+            and history.workflow_checkpoint(current.handle) is not None
+        ):
+            newest = current.handle
+        if current.details is None:
+            return None
+        previous = AssignmentDetails.model_validate(history.read_content(current.details))
+        current = history.task_snapshot(previous.predecessor) if previous.predecessor else None
+    return newest if current is not None and current.handle == handle else None
+
+
 def _confirmed_children(
     history: Any, handle: str, content: dict[str, Any], calls: dict[str, Any]
 ) -> dict[str, Any]:

@@ -1,0 +1,8 @@
+task_835c7adc0 Session  active       busy       Restart after a crash        msg_user_0a43122a5fe1
+task_dbc5e0f8b Subagent active       busy       deep-research flow           flow:call_8de5f5bdb143~call_63c25d97_0
+task_1c116ef79 Subagent completed               ZFP filter ID and modes      flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_c2a27d54f Subagent completed               SZ3 filter ID and modes      flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_f9da0d3ce Subagent active       busy       Check: ZFP filter ID and mod flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+task_8d21c0bd3 Subagent active       busy       Check: SZ3 filter ID and mod flowrun_b3156f35f9965a1ec1012c6a:subagent:ke
+total 26
+stop-scope: [('deep-research flow', 'Subagent', 'active')]

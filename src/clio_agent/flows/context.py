@@ -46,6 +46,7 @@ from clio_agent.flows.outcomes import (
     TaskStateUncertain,
     run_ending,
 )
+from clio_agent.flows.stop import raise_if_stopped, stop_requested, stopped_ending
 from clio_agent.flows.values import CallResult, FlowWorkspace, _as_prediction, _plain, render_input
 from clio_agent.sdk.flow import Flow
 
@@ -354,6 +355,7 @@ class FlowContext:
         limit: int | None = None,
         return_when: str = "all",
         return_exceptions: bool = False,
+        merge_state: bool = True,
     ) -> list[Any]:
         """Run calls concurrently (at most ``limit`` at once) and return their results.
 
@@ -364,6 +366,10 @@ class FlowContext:
         member's outcome once all have settled. Successful results' typed
         ``workflow_state`` merges into ``ctx.workflow_state`` in call order, and a
         key two members set differently is recorded in ``ctx.conflicts``.
+        ``merge_state=False`` skips that merge, for a flow that reads each
+        member's ``workflow_state`` from its own result: members that each
+        return the same key (one researcher's ``packet`` per call) are separate
+        answers, not conflicting writes.
         """
 
         if return_when not in {"all", "any"}:
@@ -396,7 +402,8 @@ class FlowContext:
 
             await quiesce_gather(self, items, tasks)
             raise
-        await self.merge_results(results)
+        if merge_state:
+            await self.merge_results(results)
         if not return_exceptions and any(isinstance(r, FlowOutcome) for r in results):
             raise GatherFailed(
                 f"{sum(isinstance(r, FlowOutcome) for r in results)} of {len(results)} gathered "
@@ -534,6 +541,7 @@ class FlowContext:
         row = self.journal.step(invocation)
         if row is not None:
             return row.get("result")
+        await raise_if_stopped(self.app, self.root_handle, name)
         if inspect.iscoroutinefunction(fn):
             result = await fn(*args, **kwargs)
         else:
@@ -541,6 +549,10 @@ class FlowContext:
             result = await asyncio.to_thread(context.run, fn, *args, **kwargs)
         await self.journal.record_step(invocation, {"name": name, "result": _plain(result)})
         return result
+
+    async def stop_requested(self) -> bool:
+        """Whether this run was asked to stop (``flows/stop.py``)."""
+        return await stop_requested(self.app, self.root_handle)
 
     async def permission_receipts(self, *, refresh: bool = False) -> dict[str, Any]:
         """Snapshot attributable tool-permission history for this run and its children.
@@ -759,7 +771,8 @@ class FlowContext:
             value = await self.flow.forward(self.task, self)
         except Exception as error:
             if self._opened:
-                await self.journal.finish(*run_ending(error))
+                ending = await stopped_ending(self.app, self.root_handle, run_ending(error))
+                await self.journal.finish(*ending)
             raise
         if self._opened:
             await self.journal.finish("completed", _plain(value))

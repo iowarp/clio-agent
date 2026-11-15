@@ -34,8 +34,13 @@ MAX_EXTRACT_CHARS = 2_000_000
 #: Seconds the local extraction may take before the hosted reader is asked instead.
 EXTRACT_TIMEOUT_S = 30.0
 #: HTML-to-Markdown runs here, never on the server's event loop: a large page takes
-#: seconds of CPU, and the in-process web server shares the API's loop.
-_EXTRACTORS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-fetch-extract")
+#: seconds of CPU, and the in-process web server shares the API's loop. One worker:
+#: trafilatura's lxml extraction is not safe to run twice at once in one process. On
+#: 2026-11-14 a server running two deep-research runs segfaulted with both extractor
+#: threads inside ``trafilatura.extract`` (faulthandler: lxml ``text_content`` and
+#: ``xmltotxt``), after an earlier ``double free or corruption`` under the same load.
+#: Pages queue here; one that takes too long still goes to the hosted reader.
+_EXTRACTORS = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-fetch-extract")
 #: Below this much extracted text an HTML page counts as script-only or empty.
 MIN_TEXT_CHARS = 200
 #: Local answers a hosted reader may fix (blocked, rate-limited, unavailable).
