@@ -384,15 +384,27 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
                 state, config_path, on_failure=_deregister_client
             )
         starting = pidfile_live_pid(_daemon_pidfile())
+
+        def spawn(at: int) -> None:
+            # Stopgap for clio-core#1355; removal tracked in iowarp/clio-agent#2038.
+            core_control_port.hold_control_port(at)
+            _spawn_runtime_daemon(iowarp_core, config_path, log_level)
+
         with runtime_stop.kill_spawned_daemon_on_failure():
             if starting is None:
-                # Stopgap for clio-core#1355; removal tracked in iowarp/clio-agent#2038.
-                core_control_port.hold_control_port(port)
-                _spawn_runtime_daemon(iowarp_core, config_path, log_level)
-                _wait_for_daemon_start(port, state)
+                spawn(port)
+            # A daemon still starting (left running at a ceiling) is adopted, not doubled;
+            # either way it is attached to only once it holds its port (FN-14).
+            moved = runtime_ownership.confirm_own_daemon_on_port(
+                port if starting is None else _resolve_runtime_port(running),
+                config_path,
+                state,
+                alive=_runtime_alive,
+                wait=lambda at: _wait_for_daemon_start(at, state),
+                respawn=spawn,
+            )
+            if starting is None or moved:
                 return config_path
-            # A daemon still starting (left running at a ceiling) is adopted, not doubled.
-            _wait_for_daemon_start(_resolve_runtime_port(running), state)
         return daemon_version.resolve_effective_config(
             state, config_path, on_failure=_deregister_client
         )

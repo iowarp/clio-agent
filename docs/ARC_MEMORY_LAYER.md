@@ -314,6 +314,16 @@ values, never share a daemon (`arc/runtime_ownership.py`):
   across restarts. A hand-written config (`arc.store_config`, a workspace
   `.clio/core/cte.yaml`) is never rewritten: the attach fails with
   `clio_core_foreign_daemon_on_port` and names the setting to change.
+- The same holds after a spawn. Two homes that both find the port free spawn at
+  once, and the loser's `clio_run` exits on the bound port ("Failed to initialize
+  Clio runtime"). Its wait used to return as soon as anything answered on the port,
+  so the loser attached to the winner's daemon and store: its conversations were
+  written into the other home's data and answered 404 once a restart put it on its
+  own daemon (FN-14). After the wait, `confirm_own_daemon_on_port` checks that the
+  listener is this home's pidfile daemon; if not, it logs
+  `clio_core_spawn_lost_port_to_foreign_daemon`, moves to a free block as above and
+  spawns once more. Losing twice, or a hand-written config, fails typed
+  (`clio_core_foreign_daemon_on_port`).
 - A stop (last client out, crashed-client replacement, log-flood replacement,
   the opt-in recycle) runs `clio_run stop` only against this home's own daemon.
   Without one it stops nothing (`StopOutcome.path == "not_owned"`); when another
