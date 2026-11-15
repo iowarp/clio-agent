@@ -74,6 +74,11 @@ does not use ParaView never carries ParaView's tools.
    **Setup**, choose **Save**, then **Enable**. Choosing a card's name opens the same
    card, with its settings and **Turn off**. Enabling puts it in no conversation.
 
+   A connector that works with a program you install yourself says so on its card
+   while it is off, after what enabling does: for example, "Downloads its tools when
+   you enable it. Needs the program installed on this machine." CLIO does not install
+   that program for you.
+
    <Capture client:visible image={await captureImage(connectorCard)}
      alt="The Geo connector's card beside the Discover list: Ready, 12 tools, Kind Connector (an MCP server), It needs nothing from you, and In conversations: Enabled, with how to add it to a conversation and a Turn off button"
      caption="A connector's card. Enabled means installed and ready; each conversation adds it when it needs it."
@@ -151,6 +156,10 @@ it. The card has four rows:
 
 Rows it requires, such as an address or a token, appear on the card above the buttons,
 filled in when you have already given them.
+
+A connector that needs a program already installed on this machine has one more line
+while it is off, **On this machine**, saying what that is. The agent-load card ends
+the same row with it.
 
 Choose **Add** and the connector or plugin joins this conversation only, enabled first
 if it was off, and the agent continues your request in the same reply, with the new

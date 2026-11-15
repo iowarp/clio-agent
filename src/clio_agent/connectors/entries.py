@@ -85,6 +85,9 @@ class Entry:
     group: str = ""
     #: The clio-kit server it runs, when its server is ``clio-kit mcp-server <name>``.
     kit: str = ""
+    #: What must already be on this machine for it to work, in words ("" for nothing
+    #: known): a written ``requires``, else the clio-kit catalogue's prerequisite note.
+    requires: str = ""
 
     def need(self, key: str) -> Need | None:
         return next((need for need in self.needs if need.key == key), None)
@@ -138,6 +141,7 @@ class Entry:
             ],
             **({"plugin": self.plugin} if self.plugin else {}),
             **({"tools": list(self.tools)} if self.tools else {}),
+            **({"requires": self.requires} if self.requires else {}),
         }
 
 
@@ -271,6 +275,7 @@ def entry_from_raw(
         folder=folder,
         group=str(raw.get("group") or ""),
         kit=kit_entries.kit_server(raw["server"]),
+        requires=str(raw.get("requires") or ""),
     )
 
 
@@ -343,8 +348,9 @@ def derive_kit() -> bool:
 def add_derived(folder: Path, catalog: Catalog) -> None:
     """Add a connector for every server of the pinned clio-kit (:mod:`.kit_entries`).
 
-    A hand-written entry of the same id wins and takes only the derived group; its
-    logo is its own (``logos`` in ``derive.yaml`` is for derived entries, LG-D2).
+    A hand-written entry of the same id wins and takes only the derived group and,
+    when it says none, the derived ``requires``; its logo is its own (``logos`` in
+    ``derive.yaml`` is for derived entries, LG-D2).
     """
 
     derive_folder = folder / kit_entries.DERIVE_DIR
@@ -352,8 +358,13 @@ def add_derived(folder: Path, catalog: Catalog) -> None:
         entry_id = str(raw["id"])
         written = catalog.entries.get(entry_id)
         if written is not None:
-            if not written.group and raw.get("group"):
-                catalog.entries[entry_id] = replace(written, group=str(raw["group"]))
+            taken = {
+                key: str(raw[key])
+                for key in ("group", "requires")
+                if raw.get(key) and not getattr(written, key)
+            }
+            if taken:
+                catalog.entries[entry_id] = replace(written, **taken)
             continue
         errors = validate_entry(raw, folder=derive_folder)
         if errors:

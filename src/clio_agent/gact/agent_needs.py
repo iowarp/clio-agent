@@ -129,6 +129,7 @@ def items_for(resolution: Any) -> list[dict[str, Any]]:
                 "plugins": sorted(plugins),
                 **found.logo_urls(),
                 "group": found.group or None,
+                "requires": found.requires or None,
                 "reasons": reasons,
                 "enabled": choice.enabled,
                 # True: enabling downloads its tools; None: clio-kit's, not known.
