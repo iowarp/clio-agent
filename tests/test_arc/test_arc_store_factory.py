@@ -14,6 +14,7 @@ import threading
 import time
 
 import msgspec
+import psutil
 import pytest
 
 from clio_agent.arc import clio_core_attach, runtime_ownership, runtime_stop, storage
@@ -220,7 +221,11 @@ def test_ensure_runtime_daemon_spawns_when_down(monkeypatch, tmp_path):
 
     def spawn(*a, **k):
         calls["spawn"] += 1
+        # A real spawn records its daemon, which then holds the port (FN-14 checks it).
+        me = psutil.Process(os.getpid())
+        storage._daemon_pidfile().write_text(f"{me.pid} {me.create_time()!r}", encoding="utf-8")
 
+    monkeypatch.setattr(runtime_ownership, "listener_belongs_to", lambda _pid, _port: True)
     monkeypatch.setattr(storage, "_spawn_runtime_daemon", spawn)
     storage._ensure_runtime_daemon(object(), "", "error")
     assert calls["spawn"] == 1

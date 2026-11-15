@@ -32,6 +32,10 @@ STORE_NOT_READY_REASON = "session_scratch_store_not_ready"
 #: Seconds the sweep waits for the session store, and how often it looks.
 _READY_WAIT_S = 300.0
 _READY_POLL_S = 0.5
+#: Typed reason: clio-core's metadata restore failed this boot; no folder is swept.
+RESTORE_SUSPECT_REASON = "session_scratch_store_restore_suspect"
+#: Typed reason: a session in the index whose record does not read back; its folder is kept.
+RECORD_UNREADABLE_REASON = "session_scratch_record_unreadable"
 #: Typed reason: a session's activity timestamp is unreadable; its folder is kept.
 ACTIVITY_UNREADABLE_REASON = "session_scratch_activity_unreadable"
 
@@ -46,16 +50,26 @@ def _epoch(stamp: str) -> float | None:
     return when.timestamp()
 
 
-def last_activity(sessions: Any, session_id: str) -> float | None:
+def last_activity(
+    sessions: Any, session_id: str, indexed: "frozenset[str]" = frozenset()
+) -> float | None:
     """The session's last activity in epoch seconds; ``None`` when it no longer exists.
 
     An unreadable timestamp counts as activity now, so its folder is kept (recorded with
-    :data:`ACTIVITY_UNREADABLE_REASON`) rather than removed on a guess.
+    :data:`ACTIVITY_UNREADABLE_REASON`) rather than removed on a guess. So does a
+    session still in the index (``indexed``) whose record does not read back
+    (:data:`RECORD_UNREADABLE_REASON`): it exists, its record is damaged (FN-14).
     """
 
     session = sessions.get(session_id)
     if session is None:
-        return None
+        if session_id not in indexed:
+            return None
+        logger.warning(
+            "session scratch kept reason=%s session=%s", RECORD_UNREADABLE_REASON, session_id
+        )
+        trace.event("SCRATCH", "%s session=%s", RECORD_UNREADABLE_REASON, session_id)
+        return float("inf")
     stamp = str(getattr(session, "last_interaction_at", "") or getattr(session, "created_at", ""))
     when = _epoch(stamp)
     if when is None:
@@ -67,10 +81,25 @@ def last_activity(sessions: Any, session_id: str) -> float | None:
 
 
 def sweep_sessions(sessions: Any) -> list[str]:
-    """Sweep against ``sessions`` (the session store); return the removed session ids."""
+    """Sweep against ``sessions`` (the session store); return the removed session ids.
 
+    Nothing is swept when clio-core's metadata restore failed this boot (FN-14): the
+    store then lacks sessions that still exist, and their folders would go as "gone".
+    """
+
+    from clio_agent.arc import clio_core_wal_repair  # noqa: PLC0415
+
+    suspect = clio_core_wal_repair.restore_suspect()
+    if suspect:
+        logger.warning(
+            "session scratch sweep skipped reason=%s cause=%s", RESTORE_SUSPECT_REASON, suspect
+        )
+        trace.event("SCRATCH", "%s cause=%s", RESTORE_SUSPECT_REASON, suspect)
+        return []
     try:
-        return session_scratch.sweep(lambda sid: last_activity(sessions, sid))
+        index = getattr(sessions, "index", None)
+        indexed = frozenset(index.ids()) if index is not None else frozenset()
+        return session_scratch.sweep(lambda sid: last_activity(sessions, sid, indexed))
     except (TranscriptNotReadyError, OSError) as exc:  # typed reason; retried next boot
         logger.warning("session scratch sweep stopped reason=%s error=%r", SWEEP_FAILED_REASON, exc)
         trace.event("SCRATCH", "%s error=%r", SWEEP_FAILED_REASON, exc)
@@ -103,6 +132,8 @@ def start(app: "FastAPI") -> None:
 
 __all__ = [
     "ACTIVITY_UNREADABLE_REASON",
+    "RECORD_UNREADABLE_REASON",
+    "RESTORE_SUSPECT_REASON",
     "STORE_NOT_READY_REASON",
     "SWEEP_FAILED_REASON",
     "last_activity",

@@ -28,14 +28,12 @@ from typing import Any, Optional, get_args
 
 from clio_agent.gact.message_marks import merge_session_metadata
 from clio_agent.gact.session_records import (
-    ROW_UNREADABLE_REASON,
     PageQuery,
     SessionRecords,
     cache_capacity,
     record_columns,
 )
 from clio_agent.gact.types import Session as _WireSession
-from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
@@ -301,14 +299,11 @@ class SessionStore:
         try:
             return Session(**json.loads(body))
         except (TypeError, ValueError) as exc:
-            # Schema drift (a field renamed between releases): this one row is
-            # unreadable; every other session keeps working.
-            stream_audit(
-                ROW_UNREADABLE_REASON,
-                reason=ROW_UNREADABLE_REASON,
-                session_id=sid,
-                error=type(exc).__name__,
-            )
+            # Schema drift, or a record clio-core damaged (FN-14): this one row is
+            # unreadable and reported; every other session keeps working.
+            from clio_agent.gact.session_record_damage import note_unreadable  # noqa: PLC0415
+
+            note_unreadable(sid, exc)
             return None
 
     def _remember(self, session: Session) -> Session:
