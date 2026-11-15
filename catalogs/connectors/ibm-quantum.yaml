@@ -17,7 +17,7 @@
     command: uvx
     args:
       - --from
-      - git+https://github.com/JaimeCernuda/ibm-quantum-mcp-servers@1ab4649dbcfd4624b244dc1b1a51aec9e4b4ec10#subdirectory=ibm-quantum-mcp-server
+      - git+https://github.com/JaimeCernuda/ibm-quantum-mcp-servers@79918c9852243c80cd4a2a5ffd737d530e57cac4#subdirectory=ibm-quantum-mcp-server
       - ibm-quantum-mcp-server
     env:
       QISKIT_IBM_TOKEN: ${need.token}
