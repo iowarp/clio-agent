@@ -489,11 +489,19 @@ class WorkflowCheckpoint(TaskRecord):
 
 
 class QuestionOption(TaskRecord):
-    """One displayed option and its exact answer value."""
+    """One displayed option and its exact answer value (the label when none is given)."""
 
     label: str
     value: str
     description: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _value_defaults_to_label(cls, data: Any) -> Any:
+        # An agent that lists only labels had its whole question refused and asked again.
+        if isinstance(data, Mapping) and not data.get("value") and data.get("label"):
+            return {**data, "value": data["label"]}
+        return data
 
 
 class QuestionDefinition(TaskRecord):
