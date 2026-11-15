@@ -1,8 +1,8 @@
 """Server tools a connector does not offer (``hide_tools`` in its entry).
 
 A connector entry can leave out tools of the server it runs, by glob pattern
-(``sim_*``): the KiCad connector, for example, offers circuit simulation through the
-spice connector, not the server's own. The connector's proxy then lists none of them
+(``sim_*``): a connector whose server also simulates circuits, for example, can leave
+simulation to the spice connector. The connector's proxy then lists none of them
 and refuses each by name, so they reach no agent. Nothing is matched against what a
 tool says or does; only its name, against the patterns the entry declares.
 """

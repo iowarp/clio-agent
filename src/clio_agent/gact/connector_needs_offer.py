@@ -1,7 +1,7 @@
-"""The agent asks for optional needs of a connector that is already on (KiCad plan KC5).
+"""The agent asks for optional needs of a connector that is already on (connector plan KC5).
 
-A connector can work without an optional need and work better with it: the KiCad
-connector searches parts on jlcsearch with no key, and Nexar, DigiKey or Mouser keys add
+A connector can work without an optional need and work better with it: a parts
+search can answer from a free catalog with no key, while distributor keys add
 their catalogs. When a tool's result shows a key would help, the agent calls
 ``offer_plugin(plugin, reason, needs=[keys])``. CLIO raises the connector's own setup
 card (kind ``connector_setup``, ``intent: "values"``) with only those rows and the

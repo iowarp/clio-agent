@@ -15,7 +15,7 @@ no context of its own reads the session's stored report of the view
 (:mod:`clio_agent.gact.mcp_app_context`) and says so. A mark the browser could not picture
 carries ``snapshot_refused`` and the entry states that reason instead of a crop; parts of
 the view the snapshot could not paint (``snapshot_skipped``) are listed too. A view that
-offers ``describe_region`` (KiCad plan KF2) says what lies under each mark
+offers ``describe_region`` (connector plan KF2) says what lies under each mark
 (``region.under``), listed as "Under the mark"; one that does not leaves ``region.note``.
 """
 
