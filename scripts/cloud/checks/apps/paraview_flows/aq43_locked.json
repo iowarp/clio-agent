@@ -1,0 +1,7 @@
+[
+ {"open": "pv-locked"},
+ {"shell": "bash scripts/cloud/checks/apps/paraview_ssh.sh count", "label": "AQ43 our ssh before"},
+ {"send": "Connect to the ParaView on the host called locked and open /home/researcher/data/wavelet.vti there."},
+ {"shell": "bash scripts/cloud/checks/apps/paraview_ssh.sh list | grep -E 'ssh|front' ; pgrep -af 'ssh .*locked' || echo 'no ssh to locked'", "label": "AQ43 after the turn"},
+ {"shot": "aq43-answer"}
+]

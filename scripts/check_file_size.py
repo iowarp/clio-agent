@@ -726,7 +726,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 930,  # Row identity/merging moved to tool_call_merge.
+    "src/clio_agent/gact/tool_observer.py": 923,  # Structured-content bound moved to structured_wire_bound.
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -923,7 +923,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (tools/harness_notes.py).
     # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
     # comma dropped from one observer call freed 6.
-    "src/clio_agent/tools/execution.py": 986,
+    "src/clio_agent/tools/execution.py": 985,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1107,7 +1107,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,
     "src/clio_agent/tools/gateway.py": 805,
-    "src/clio_agent/tools/mcp_prepare.py": 1226,
+    "src/clio_agent/tools/mcp_prepare.py": 1221,
 }
 
 # Root of the source tree to scan, relative to the repository root.

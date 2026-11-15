@@ -23,7 +23,7 @@
       {
         "name": "dataUri",
         "required": false,
-        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries.",
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live source the view follows: a named artifact at its latest version, artifact://<workspace>/<name>@latest, which updates when a new version of that file is recorded; or a study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries.",
         "type": "string"
       },
       {
@@ -124,7 +124,7 @@
       {
         "name": "dataUri",
         "required": false,
-        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries.",
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live source the view follows: a named artifact at its latest version, artifact://<workspace>/<name>@latest, which updates when a new version of that file is recorded; or a study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries.",
         "type": "string"
       },
       {
@@ -189,7 +189,7 @@
       {
         "name": "dataUri",
         "required": false,
-        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries. Requires latitudeField/longitudeField/labelField; a referenced dataset is bounded by dataQuery/limit, not the inline point cap.",
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live source the view follows: a named artifact at its latest version, artifact://<workspace>/<name>@latest, which updates when a new version of that file is recorded; or a study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries. Requires latitudeField/longitudeField/labelField; a referenced dataset is bounded by dataQuery/limit, not the inline point cap.",
         "type": "string"
       },
       {
@@ -428,6 +428,41 @@
         "name": "upAxis",
         "required": false,
         "description": "The axis treated as vertical when framing and orbiting the model.",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.mcp-app.v1": {
+    "description": "An MCP App view opened by a tool call, with its state linked to the surface's data model.",
+    "properties": [
+      {
+        "name": "arguments",
+        "required": false,
+        "description": "The arguments the opening tool is called with.",
+        "type": "object"
+      },
+      {
+        "name": "height",
+        "required": false,
+        "description": "Height of the view in pixels, from 160 to 2000.",
+        "type": "integer"
+      },
+      {
+        "name": "server",
+        "required": true,
+        "description": "The MCP server whose tool opens the view, as CLIO names it.",
+        "type": "string"
+      },
+      {
+        "name": "state",
+        "required": false,
+        "description": "State channels linking the view to data-model paths.",
+        "type": "array"
+      },
+      {
+        "name": "tool",
+        "required": true,
+        "description": "The server's tool that opens the view (it declares a ui:// resource).",
         "type": "string"
       }
     ]
@@ -1143,7 +1178,7 @@
       {
         "name": "activeChild",
         "required": false,
-        "description": "Child id of the displayed slide. Bind it when another control should navigate the carousel or retain its position.",
+        "description": "Child id of the displayed slide; bind it to retain or coordinate navigation.",
         "type": "value"
       },
       {
@@ -1343,7 +1378,7 @@
       {
         "name": "activeTab",
         "required": false,
-        "description": "",
+        "description": "Exactly a tabs[].child id, optionally bound to a data-model path. For tabs=[{title:'Lifecycle',child:'lifecycleFrame'}], use 'lifecycleFrame', not a nested diagram id or the title. Bind it for agent-driven tab review and shared dashboard navigation.",
         "type": "value"
       },
       {

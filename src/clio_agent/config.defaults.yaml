@@ -375,6 +375,18 @@ limits.shell_max_timeout_s: 0.0
 # the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
+# CLIO_TOOL_RESULT_RECORD_BYTES  (int)  <- src/clio_agent/tools/recorded_results.py
+# Largest tool result, in JSON bytes, a call's record keeps inline (at least
+# 1024); past it the record keeps the result's head and the whole result in
+# a file.
+limits.tool_result_record_bytes: 524288
+
+# CLIO_TOOL_STRUCTURED_BYTES  (int)  <- src/clio_agent/gact/structured_wire_bound.py
+# Byte bound on a tool result's structured content in the transcript and
+# trace (a script still receives the whole value); larger payloads are
+# recorded as an envelope with reason structured_content_over_wire_cap.
+limits.tool_structured_bytes: 262144
+
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
 # Comma-separated backoff delays (seconds) between retries of a transient
 # provider error; set empty to disable these retries.
@@ -438,6 +450,18 @@ agents.react_extract.after_steps: 3
 # strict one-call-per-step contract.
 agents.react_extract.enabled: true
 
+# CLIO_CONNECTOR_CATALOG_DIRS  (str)  <- src/clio_agent/connectors/entries.py
+# More folders of connector entries, separated like PATH, read after the
+# shipped catalogs/connectors; a later folder cannot replace an entry. Set
+# it for test fixtures.
+# connectors.catalog_dirs:  # default unset; resolved in code
+
+# CLIO_CONNECTOR_DERIVE_KIT  (bool)  <- src/clio_agent/connectors/entries.py
+# Every MCP server of the clio-kit CLIO pins is a connector in Discover,
+# derived from that clio-kit's catalogue. Set false to list only the hand-
+# written catalog entries.
+connectors.derive_kit: true
+
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
 # asking. Unset accounts follow their billing: subscriptions and free
@@ -492,6 +516,12 @@ fleet.usage_poll_seconds: 300
 # uses the bundled marketplace, else the pinned default URL. Point it at a
 # mirror or an offline copy.
 # plugins.default_marketplace:  # default unset; resolved in code
+
+# CLIO_PLUGINS_OFFER_LISTED  (int)  <- src/clio_agent/gact/plugin_offer.py
+# How many plugins and connectors not in a conversation the session facts
+# name, so the agent can offer one; the total is always given and
+# offer_plugin with no plugin lists them all.
+plugins.offer_listed: 20
 
 # CLIO_PLUGIN_STORE  (str)  <- src/clio_agent/plugins/service.py
 # Folder holding installed marketplaces, plugin snapshots, user agents and
@@ -732,6 +762,27 @@ gact.live_edge_streaming: false
 # Undelivered peer-message ceiling per session; 0 means unlimited. Task
 # results and human input are exempt, and delivered history is retained.
 gact.mailbox.max_pending_messages: 0
+
+# CLIO_MCP_APP_DOWNLOAD_MAX_BYTES  (int)  <- src/clio_agent/gact/mcp_app_downloads.py
+# Byte ceiling on one file download an interactive tool view saves into the
+# workspace.
+gact.mcp_apps.download_max_bytes: 67108864
+
+# CLIO_MCP_APP_REGISTRY_LIMIT  (int)  <- src/clio_agent/gact/mcp_apps.py
+# How many interactive tool views shown in the conversation stay open at
+# once; views in a tab or a dashboard are not counted.
+gact.mcp_apps.registry_limit: 64
+
+# CLIO_MCP_APP_REGISTRY_TTL_S  (float)  <- src/clio_agent/gact/mcp_apps.py
+# Seconds after which an unused interactive tool view in the conversation
+# closes; views in a tab or a dashboard never close on a timer.
+gact.mcp_apps.registry_ttl_s: 3600.0
+
+# CLIO_MCP_APP_SANDBOX_HOST  (str)  <- src/clio_agent/gact/mcp_app_sandbox_origin.py
+# Host name (or *.pattern for one host per server) that interactive tool
+# views load from when CLIO is reached over the network; it must reach CLIO
+# and differ from the name the web UI uses.
+# gact.mcp_apps.sandbox_host:  # default unset; resolved in code
 
 # CLIO_GACT_MEDIA_CACHE_BYTES  (int)  <- src/clio_agent/gact/agents/media_cache.py
 # Bytes of rehydrated tool media (viewed images, PDFs) kept for reuse across
@@ -1726,8 +1777,9 @@ tools.recall_result_chars: 16000
 tools.result_share: 0.125
 
 # CLIO_TOOLS_SCRIPT_MEDIA_MAX  (int)  <- src/clio_agent/gact/model_media.py
-# Most images or PDFs one script may attach to its result for the model to
-# see.
+# Images or PDFs one run_code script may attach to its result by viewing
+# them (view_image, view_pdf); they reach the model's next step. Views past
+# this count are refused with a typed reason. At least 1.
 tools.script_media_max: 8
 
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py

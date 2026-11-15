@@ -1,0 +1,15 @@
+[
+ {"session": "sess_d29eac082d09", "workspace": "ws_6ee8bb9d5d52"},
+ {"showTab": true},
+ {"view": true},
+ {"shot": "fin-pvr-before-restart"},
+ {"restart": true},
+ {"view": true},
+ {"status": "after restart"},
+ {"shot": "fin-pvr-restarted"},
+ {"maximize": true},
+ {"panel": "Pipeline"},
+ {"shot": "fin-pvr-hero-restarted-pipeline"},
+ {"closePanel": true},
+ {"restore": true}
+]

@@ -86,5 +86,214 @@
         "sha256": "9bfbacb1bd7eedaedf7a9561b61fddee036cb0f87b65e4f953fff744ed476bfe"
       }
     ]
+  },
+  "connectors_and_apps": {
+    "captured": "2026-11-14",
+    "theme": "dark",
+    "viewport": "1440x900",
+    "model_run": true,
+    "source": "live development sessions on the cloud stack (claude_code provider, Sonnet 5.5), docs/design/sdk/mcp-apps-ledger.md (DOCS rows and the streams named)",
+    "captures": [
+      {
+        "file": "apps/geo-card-inline.png",
+        "sha256": "264c1c709a6605fbecf2fcd8f865b27ac23da1af7ee330dc18b40bb6f818fbc7",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C1 (sess_48226da0e0c8)",
+        "origin": "fresh"
+      },
+      {
+        "file": "apps/geo-in-tab.png",
+        "sha256": "1c55fa72cd728cee70a86af29d48f69703d56b6bb250de5316d262472604452e",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C1",
+        "origin": "fresh"
+      },
+      {
+        "file": "apps/geo-maximized.png",
+        "sha256": "8821fa4a9b6806b759a189a880092a0e7c80457537872c2591d56db93c744d72",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C1",
+        "origin": "fresh"
+      },
+      {
+        "file": "apps/geo-look.png",
+        "sha256": "59e07b52019f82c621dece2c797f5ffbf970711b67fe3c9b21a073c25cc69ad8",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C2 (sess_988418b35934)",
+        "origin": "fresh"
+      },
+      {
+        "file": "apps/geo-reopened.png",
+        "sha256": "df164d1d09e3312a9840eb0b399babc9723dd3b6de39260f513b568898959e15",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C2, after a restart",
+        "origin": "fresh"
+      },
+      {
+        "file": "apps/geo-dashboard-linked.png",
+        "sha256": "2a1fb258f7edaf4b7e98d855ff556eff3e8d0e83a367cf2aefff4f7a5ed139d3",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "geo-globe, GG3",
+        "origin": "gallery/website/geo-globe-dark-desktop.png"
+      },
+      {
+        "file": "apps/paraview-in-tab.png",
+        "sha256": "db645422f56ac9013f0b713fc530c98c7dc06717c1f520c92d854c9cc0836cf1",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "final, FQ-WEB",
+        "origin": "gallery/website/paraview-view-dark-desktop.png"
+      },
+      {
+        "file": "apps/paraview-region-comment.png",
+        "sha256": "7c0fd705139eaceac4a4db7a7c33c122cc5a220deb0e56c5fc03bbfbcdc5e9ec",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "final, FQ-WEB",
+        "origin": "gallery/website/region-comment-dark-desktop.png"
+      },
+      {
+        "file": "apps/paraview-region-comment-answer.png",
+        "sha256": "85dd62959c83877f0c4625dc3fa125e34b72de70cf06de1a309deb6fe4f26212",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "final, FQ-WEB",
+        "origin": "gallery/website/region-comment-answer-dark-desktop.png"
+      },
+      {
+        "file": "apps/paraview-dashboard-time-linked.png",
+        "sha256": "82adc1a0eed3fe81223809897cf68c8b50ed9e2cbea5b9483634b234300c41ec",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "source": "final, FQ-WEB (JR-P5, plain request)",
+        "origin": "gallery/website/dashboard-dark-desktop.png"
+      },
+      {
+        "file": "apps/pdf-dashboard-table.png",
+        "sha256": "1a938f8a53f5e73cc51baeeff0697981d1413cffdd3d30582a3c4d82aa2c5a8d",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "more-conn, MC4-F6",
+        "origin": "gallery/more-conn/mc4-pdf-f6-dashboard-viewer-and-table-hero-desktop.png"
+      },
+      {
+        "file": "connectors/discover-catalog.png",
+        "sha256": "85cf43c40d1f59c26fa59773512421e0178931bd2011f7e963d7c624b647264d",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "discover, DC (the catalog as cards by domain, each with Enable in sight)",
+        "origin": "gallery/discover/dc-docs-discover-catalog-dark-desktop.png"
+      },
+      {
+        "file": "connectors/agent-load-card.png",
+        "sha256": "34730544fff9e8890981ec7a1828258cdf0040510c8676fbbb9ce5ae67400c50",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "logos, LG (Geo and NDP with their logos)",
+        "origin": "gallery/logos/lg-docs-agent-load-card-dark-desktop.png"
+      },
+      {
+        "file": "connectors/connector-card.png",
+        "sha256": "5b2d8fcccfd919e8091453d50fc339e39b6e4f45710103cd9c65a17e3dd558ea",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C9",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/add-plugin-picker.png",
+        "sha256": "968ac14a85694c692c44124c525375fb89625b6d3628b5735696fd92392b4653",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C10 (sess_50e98966a0ab)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/add-plugin-picker-plugins.png",
+        "sha256": "e0a0dab5d972eb85ebbbc0e90c5eeae87349224df356ff884fb83777c3e48c83",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C10",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/offer-connector-geo.png",
+        "sha256": "00b6358702e0fa1e00c561fd5d2f4ed2498f9f1dd77c018eed32956d2bcac4d6",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "prefinal, PF-C2 (sess_f45672057bde)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/offer-plugin.png",
+        "sha256": "8a47d8a6e317d896e10df797d399f7a57acaf9e7bd93247fef4f39e9c7727d85",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "prefinal, PF-C1 (sess_df445bf80c6d, Home Assistant demo instance; DOCS-F7 compact card)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/offer-view-plugin.png",
+        "sha256": "46f7de61d15079654dfc51b6dbe6f848e3bd8a49a29cecf6a18fad766ab1856d",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C13 (sess_4b5c4e6dd90e)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/offer-plugin-answered.png",
+        "sha256": "f74fdcd5a5ce0ed2bf19bed3e9dbcaa4c375a9617dcf38ad22aaaf5f0d5aa7a4",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C13 (sess_27d580bb861d)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/add-by-command.png",
+        "sha256": "9d9138844a07698f5893e8bac701191d267a9f96dd21bb9199019adf71662871",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C11 (form filled, not added)",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/marketplaces.png",
+        "sha256": "9fb3294254d83da7396dc8739e284d8e26203f74deaa0bb8c85520e697f1bc98",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C11",
+        "origin": "fresh"
+      },
+      {
+        "file": "connectors/earthdata-results.png",
+        "sha256": "515b67e800ebb8c1ae0d1422ab9c26ec0eac399aba69b385888a7c59fba937b8",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "docs, DOCS-C3 (sess_bbd66c42132c)",
+        "origin": "fresh"
+      },
+      {
+        "file": "files/cad-step-assembly.png",
+        "sha256": "a961ec26f2c43f0ac97801543f1ad3275afeda63bc4016335af9f39a274f16ef",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "cad, CAD2",
+        "origin": "gallery/website/cad-dark-desktop.png"
+      },
+      {
+        "file": "files/cad-region-comment.png",
+        "sha256": "688af68161409a5e0c47dff76730bf71b457d8b5af2c3c5fd612ec643b891fd1",
+        "pixels": "1440x900",
+        "scale": 1,
+        "source": "fileview, FV-Q1 (sess_95bdfe75e964)",
+        "origin": "fresh"
+      }
+    ]
   }
 }

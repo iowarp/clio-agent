@@ -128,6 +128,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_USER_CHARS` | `compaction.keep.user_chars` | int | `80000` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_WORKING_STATE` | `compaction.keep.working_state` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
+| `CLIO_CONNECTOR_CATALOG_DIRS` | `connectors.catalog_dirs` | str | _(unset)_ | `src/clio_agent/connectors/entries.py` |
+| `CLIO_CONNECTOR_DERIVE_KIT` | `connectors.derive_kit` | bool | `true` | `src/clio_agent/connectors/entries.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS` | `gact.context_references.evidence_sessions` | int | `5000` | `src/clio_agent/gact/context_reference_evidence.py` |
 | `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
@@ -232,6 +234,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_MAX_FORKS_PER_TASK` | `agent_tasks.max_forks_per_task` | int | `0` | `src/clio_agent/gact/agent_task_limits.py` |
 | `CLIO_MAX_LM_CALL_S` | `limits.lm_call_s` | float | `1800.0` | `src/clio_agent/runtime/lm_activity.py` |
+| `CLIO_MCP_APP_DOWNLOAD_MAX_BYTES` | `gact.mcp_apps.download_max_bytes` | int | `67108864` | `src/clio_agent/gact/mcp_app_downloads.py` |
+| `CLIO_MCP_APP_REGISTRY_LIMIT` | `gact.mcp_apps.registry_limit` | int | `64` | `src/clio_agent/gact/mcp_apps.py` |
+| `CLIO_MCP_APP_REGISTRY_TTL_S` | `gact.mcp_apps.registry_ttl_s` | float | `3600.0` | `src/clio_agent/gact/mcp_apps.py` |
+| `CLIO_MCP_APP_SANDBOX_HOST` | `gact.mcp_apps.sandbox_host` | str | _(unset)_ | `src/clio_agent/gact/mcp_app_sandbox_origin.py` |
 | `CLIO_MCP_CACHE_MAX_AGE_DAYS` | `tools.mcp_cache.max_age_days` | float | `14.0` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_MAX_BYTES` | `tools.mcp_cache.max_bytes` | int | `2147483648` | `src/clio_agent/tools/mcp_cache.py` |
 | `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |
@@ -266,6 +272,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
+| `CLIO_PLUGINS_OFFER_LISTED` | `plugins.offer_listed` | int | `20` | `src/clio_agent/gact/plugin_offer.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_PORT` | `gact.port` | int | `17800` | `src/clio_agent/server_port.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |
@@ -382,7 +389,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_WITHHELD` | `tools.withheld` | list | _(unset)_ | `src/clio_agent/gact/agents/native_tool_registry.py` |
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
+| `CLIO_TOOL_RESULT_RECORD_BYTES` | `limits.tool_result_record_bytes` | int | `524288` | `src/clio_agent/tools/recorded_results.py` |
 | `CLIO_TOOL_RESULT_SHARE` | `tools.result_share` | float | `0.125` | `src/clio_agent/tools/result_room.py` |
+| `CLIO_TOOL_STRUCTURED_BYTES` | `limits.tool_structured_bytes` | int | `262144` | `src/clio_agent/gact/structured_wire_bound.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_UNKNOWN_WINDOW_RESULT_TOKENS` | `tools.unknown_window_result_tokens` | int | `25000` | `src/clio_agent/tools/result_room.py` |
@@ -431,7 +440,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_HOME_IMPORT_EXPORTER` | unmigrated | `src/clio_agent/arc/home_import.py` |
 | `CLIO_INSTALL_DOWNLOADS` | unmigrated | `src/clio_agent/runtime/document_stack/office.py` |
 | `CLIO_INSTALL_KIT_READY` | unmigrated | `src/clio_agent/runtime/install_tool_servers.py` |
-| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
+| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/connectors/kit_readiness.py`, `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |

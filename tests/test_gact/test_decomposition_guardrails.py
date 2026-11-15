@@ -260,7 +260,21 @@ from clio_agent.gact.app import build_app
 # /v1/search/query and PUT/DELETE /v1/search/engine-keys/{engine} with GET/PATCH
 # /v1/search/providers, PUT/DELETE /v1/search/providers/{source}/key, POST
 # /v1/search/openalex-key and the search-service POST /v1/search, POST /v1/fetch, GET /v1/limits.
-EXPECTED_ROUTE_METHOD_PAIRS = 448
+# 447 -> 455: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
+# /v1/connectors, POST /v1/connectors, GET and DELETE /v1/connectors/{id}, GET .../logo,
+# PUT .../values, POST .../enable and POST .../disable.
+# 455 -> 471: MCP Apps surfaces, all under /v1/sessions/{sid}/mcp-apps/ in owner modules:
+# PUT {app_id}/display-mode, POST {app_id}/downloads, PUT {app_id}/pin (mcp_app_routes.py);
+# GET {app_id}/live, POST reopen (mcp_app_calls.py); PUT {app_id}/app-tools, POST
+# {app_id}/app-tool-results/{call_id} (mcp_app_tool_routes.py); the service proxy
+# {app_id}/service/{data_ref} GET and HEAD, and .../{path:path} GET, HEAD, POST, PUT, PATCH,
+# DELETE and OPTIONS (mcp_app_service_proxy.py).
+# 471 -> 473: looking at a view (gact/mcp_app_look_routes.py, CM1): PUT
+# {app_id}/shown and POST {app_id}/looks/{call_id}.
+# 478 -> 480: client-rendered file views (gact/file_view_routes.py, FV-D3): PUT
+# /v1/sessions/{sid}/file-views/{view_id} and POST .../{view_id}/looks/{call_id}.
+# 480 -> 481: what a stop reaches (routes/sessions.py, docs/design/stop-and-restart.md): GET /v1/sessions/{sid}/stop-scope.
+EXPECTED_ROUTE_METHOD_PAIRS = 481
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

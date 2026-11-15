@@ -107,7 +107,9 @@ git -C external/clio-agent-marketplace rev-parse 'vX.Y.Z^{}'
 ```
 
 Pin clio-schemas to the verified published PyPI version in pyproject.toml and
-uv.lock, including the registry artifact hashes. Gitlinks store commit IDs;
+uv.lock, including the registry artifact hashes. Develop may build clio-schemas from git
+(a `[tool.uv.sources]` entry at a merged develop commit): remove that entry so the
+lock records the registry package, not the git commit. Gitlinks store commit IDs;
 record the corresponding release tags and main provenance in the handoff.
 Never stage a dependency preparation branch as the release pin.
 

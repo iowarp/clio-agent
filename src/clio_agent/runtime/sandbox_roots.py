@@ -168,6 +168,14 @@ def _platform_tool_cache_dirs() -> list[Path]:
             home / ".npm",
         ]
     )
+    # A fence rules only on existing paths, and clio-kit servers create their data folder
+    # on first use (the ParaView node half lives there): create clio-kit's own folders so
+    # the first launch on a fresh machine can write them.
+    for owned in (
+        Path(platformdirs.user_data_dir("clio-kit", appauthor=False)),
+        Path(platformdirs.user_cache_dir("clio-kit", appauthor=False)),
+    ):
+        _create_granted_root(owned)
     return dirs
 
 

@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<VTKFile type="Collection" version="0.1">
+<Collection>
+<DataSet timestep="0" part="0" file="wave_0000.vti"/>
+<DataSet timestep="0.1" part="0" file="wave_0001.vti"/>
+<DataSet timestep="0.2" part="0" file="wave_0002.vti"/>
+<DataSet timestep="0.3" part="0" file="wave_0003.vti"/>
+<DataSet timestep="0.4" part="0" file="wave_0004.vti"/>
+<DataSet timestep="0.5" part="0" file="wave_0005.vti"/>
+</Collection>
+</VTKFile>

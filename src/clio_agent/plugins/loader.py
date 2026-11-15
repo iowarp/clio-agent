@@ -760,6 +760,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         keywords=tuple(manifest.get("keywords") or ()),
         python_pending=has_python and not trusted,
         disclosure={key: ext[key] for key in ("defer", "servers") if key in ext},
+        follows=str(ext.get("follows") or ""),
     )
     if kind == "pack":
         content = [

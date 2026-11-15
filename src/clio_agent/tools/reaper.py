@@ -40,6 +40,8 @@ from typing import Any, Callable
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.tools.fleet_close_listeners import fleet_closed
+from clio_agent.tools.fleet_key import fleet_root, fleet_variant, keys_at
 
 _DEFAULT_TTL_S = 120.0
 _DEFAULT_MAX_RESIDENT = 2
@@ -171,7 +173,7 @@ class WorkspaceExecutorReaper:
                         self._pending_restarts.discard(root)
                         continue
                     try:
-                        busy = bool(executor.busy) or self._leases.get(root, 0) > 0
+                        busy = bool(executor.busy) or self._leases.get(fleet_root(root), 0) > 0
                     except Exception as exc:  # noqa: BLE001 - can't prove idle → keep deferred
                         trace.event(
                             "TOOLS",
@@ -191,7 +193,7 @@ class WorkspaceExecutorReaper:
                     try:
                         expired = (
                             not executor.busy
-                            and self._leases.get(root, 0) == 0
+                            and self._leases.get(fleet_root(root), 0) == 0
                             and not self._recently_resolved(root, now)
                             and executor.idle_for() >= self._ttl_s
                         )
@@ -212,7 +214,7 @@ class WorkspaceExecutorReaper:
                         try:
                             if (
                                 not ex.busy
-                                and self._leases.get(root, 0) == 0
+                                and self._leases.get(fleet_root(root), 0) == 0
                                 and not self._recently_resolved(root, now)
                             ):
                                 candidates.append((root, ex, ex.idle_for()))
@@ -235,6 +237,8 @@ class WorkspaceExecutorReaper:
                 # #1230: a torn-down root's resolve-activity marker goes with it —
                 # never left to protect a FUTURE (unrelated) resident at this root.
                 self._resolved_at.pop(root, None)
+                # CV-N2: the application's connections retained on its proxies go too.
+                fleet_closed(root, executor, reason)
                 try:
                     executor.close()
                 except Exception as exc:  # noqa: BLE001 - close error is typed below
@@ -248,12 +252,12 @@ class WorkspaceExecutorReaper:
                     # closed on the error path, or their listeners leak toward _MAX_CHILD_CHANNELS
                     # (the next lazy rebuild overwrites the (root,namespace) ids, orphaning them).
                     # Mirrors request_restart, which closes channels even after a close error.
-                    self._close_channels(root)
+                    self._close_channels_if_last(root)
                     continue
                 # #1033: a torn-down fleet's per-child net channels go with it —
                 # closing them here wires the previously-unused close_child_channel
                 # seam so per-child listeners stop leaking. Typed, never fatal.
-                self._close_channels(root)
+                self._close_channels_if_last(root)
                 reaped.append(root)
                 trace.event(
                     "TOOLS",
@@ -278,6 +282,33 @@ class WorkspaceExecutorReaper:
             )
             return 0
 
+    def _close_channels_if_last(self, key: str) -> int:
+        """Close the workspace's net channels once no fleet of that workspace is left.
+
+        The channels are filed by workspace root and namespace, not by fleet, so while
+        another fleet of the same workspace (another conversation's connector values,
+        CV-D3) is resident they stay (typed), and go with the last one.
+        """
+
+        root = fleet_root(key)
+        with self._lock:
+            others = keys_at(self._registry, root)
+        if others:
+            trace.event(
+                "TOOLS",
+                "workspace_fleet_channels_kept root=%s reason=other_fleet_resident fleets=%d",
+                root,
+                len(others),
+            )
+            return 0
+        return self._close_channels(root)
+
+    def note_resolved_root(self, root: str) -> None:
+        """:meth:`note_resolved` for every fleet of workspace ``root`` (lock held)."""
+
+        for key in keys_at(list(self._registry), root) or [root]:
+            self.note_resolved(key)
+
     def defer_restart_if_active(self, root: str, executor: Any, leases: dict[str, int]) -> bool:
         """Defer an invalidation restart when ``root``'s fleet is in live use (#1244).
 
@@ -292,7 +323,7 @@ class WorkspaceExecutorReaper:
         """
 
         try:
-            active = bool(getattr(executor, "busy", False)) or leases.get(root, 0) > 0
+            active = bool(getattr(executor, "busy", False)) or leases.get(fleet_root(root), 0) > 0
         except Exception:  # noqa: BLE001 - can't prove idle -> never close inline
             active = True
         if not active:
@@ -329,7 +360,7 @@ class WorkspaceExecutorReaper:
 
         MUST be called with the shared registry lock held.
         """
-        return self._leases.get(root, 0) - self.residency.get(root, 0) > 0
+        return self._leases.get(fleet_root(root), 0) - self.residency.get(fleet_root(root), 0) > 0
 
     def request_restart(self, workspace_root: str) -> str:
         """Request a drain-aware restart of ``workspace_root``'s resident fleet (#1033).
@@ -385,9 +416,28 @@ class WorkspaceExecutorReaper:
             trace.event(
                 "TOOLS", "workspace_fleet_restart_close_failed root=%s reason=%s", root, exc
             )
-        self._close_channels(root)
+        self._close_channels_if_last(root)
+        fleet_closed(root, to_close, "restart")  # CV-N2
         trace.event("TOOLS", "workspace_fleet_restarted root=%s reason=grant_applied_live", root)
         return RESTART_RESTARTED_LIVE
+
+
+def restart_every_fleet_at(agent: Any, reaper: WorkspaceExecutorReaper, root: str) -> str:
+    """:meth:`WorkspaceExecutorReaper.request_restart` for every fleet of ``root`` (CV-D3).
+
+    A workspace root restarts its plain fleet and each conversation-values fleet; a
+    fleet key restarts that fleet. The outcome is deferred when any fleet deferred,
+    restarted when any restarted, and no resident otherwise.
+    """
+
+    lock, executors, _leases = agent._workspace_state()
+    with lock:
+        keys = [root] if fleet_variant(root) else (keys_at(list(executors), root) or [root])
+    outcomes = {reaper.request_restart(key) for key in keys}
+    for outcome in (RESTART_DEFERRED_BUSY, RESTART_RESTARTED_LIVE):
+        if outcome in outcomes:
+            return outcome
+    return RESTART_NO_RESIDENT
 
 
 @contextmanager

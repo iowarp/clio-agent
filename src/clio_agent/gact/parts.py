@@ -280,6 +280,9 @@ class Part(DocumentPartFields):
     data_ref: str = ""
     mime_type: str = ""
     height: int = 0
+    #: ``inline`` or ``fullscreen`` (a workbench tab) when the part was made (MA1);
+    #: the descriptor carries the record's current mode.
+    display_mode: str = ""
 
     # file_diff (BBB21): a file the agent changed with fs_write_file / fs_edit_file,
     # recorded ``applied`` (gact/file_changes.py). The session's diff ledger, not the

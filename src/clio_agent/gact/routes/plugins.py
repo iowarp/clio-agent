@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent.gact import plugin_authoring, session_warmup
+from clio_agent.gact import connector_plugins, plugin_authoring, session_warmup
 from clio_agent.gact.agents import prompt_basis
 from clio_agent.gact.agents.resolution import (
     AGENT_DELTA_KEY,
@@ -133,13 +133,38 @@ def plugin_row(record: PluginRecord, *, trusted: bool, pending: bool = False) ->
         "trusted": trusted,
         "pending_trust": pending,
         "diagnostics": [row.to_dict() for row in record.diagnostics],
+        # Follows a connector (CN9 *Amended*): a conversation adds it while that
+        # connector is on; the listing adds ``connector`` (``gact.connector_plugins``).
+        "follows": record.follows,
     }
 
 
 def resolution_view(resolution: Resolution) -> dict[str, Any]:
-    """A resolution with the composed prompt's sections attributed to their plugins."""
+    """A resolution with the composed prompt's sections attributed to their plugins.
 
-    return {**resolution.to_dict(), "tool_names": resolution.tool_names}
+    A connector's plugin (CN9 *Amended*) keeps its own provenance (the person added it)
+    and names its connector, ``{id, name, logo_url, logo_dark_url}``.
+    """
+
+    view = {**resolution.to_dict(), "tool_names": resolution.tool_names}
+    if any(row.get("follows") for row in view["plugins"]):
+        from clio_agent.connectors.state import all_entries  # noqa: PLC0415
+
+        entries = all_entries()
+
+        def brief(connector_id: str) -> dict[str, Any]:
+            found = entries.get(connector_id)
+            return {
+                "id": connector_id,
+                "name": found.name if found is not None else "",
+                **(found.logo_urls() if found is not None else {"logo_url": None}),
+            }
+
+        view["plugins"] = [
+            {**row, "connector": brief(row["follows"])} if row.get("follows") else row
+            for row in view["plugins"]
+        ]
+    return view
 
 
 def _delta_from(body: Mapping[str, Any]) -> Delta:
@@ -175,7 +200,9 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             service.ready()
             store = service.store
             pending = store.pending()
-            plugins = [plugin_row(r, trusted=store.trusted(r)) for r in store.records()]
+            plugins = connector_plugins.catalog_rows(
+                app, store.records(), plugin_row, store.trusted
+            )
             plugins.extend(plugin_row(r, trusted=False, pending=True) for r in pending)
             return {"plugins": plugins, "default_marketplace_error": service.ready_error}
 
@@ -191,6 +218,8 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         def inspect() -> dict[str, Any]:
             service.ready()
             records = service.store.pending() if pending else service.store.records()
+            if not pending:
+                records = [*records, *connector_plugins.carrier_records(records)]
             record = next((row for row in records if f"{row.marketplace}/{row.id}" == ref), None)
             if record is None:
                 raise StoreError("plugin_not_found", f"Plugin {ref!r} is not installed")

@@ -100,3 +100,32 @@ def test_a_literal_mesh_path_is_exported_too(tmp_path: Path, monkeypatch: Any) -
     )
     assert created["rendered"] is True, created
     assert created["exported_artifacts"][0]["property"] == "meshUri"
+
+
+def test_a_live_views_recording_path_is_exported(tmp_path: Path, monkeypatch: Any) -> None:
+    """A dashboard's live view names its exported animation by workspace path; it is
+    registered like any viewer file, so the surface can play it when the view cannot run."""
+    from clio_agent.gact.a2ui_producer import _mcp_app_reference
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    # The view tool's existence has its own tests; here only the recording's path matters.
+    monkeypatch.setattr(_mcp_app_reference, "validate_mcp_app_components", lambda *a, **k: None)
+    (tmp_path / "clip.mp4").write_bytes(b"\0\0\0\x18ftypmp42" + b"\0" * 64)
+    created = build_create_a2ui_surface_tool()(
+        surface_id="dash",
+        components=[
+            {
+                "id": "root",
+                "component": "clio.mcp-app.v1",
+                "server": "paraview",
+                "tool": "open_view",
+                "arguments": {"scene": "helene"},
+                "recordingUri": "clip.mp4",
+            },
+        ],
+    )
+    assert created["rendered"] is True, created
+    [exported] = created["exported_artifacts"]
+    assert exported["property"] == "recordingUri"
+    assert exported["uri"].startswith("artifact://")

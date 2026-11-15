@@ -15,11 +15,12 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Optional, cast
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact import view_call_transcript
 from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
-from clio_agent.gact.call_effects import pop_previous_content, record_call_effects
+from clio_agent.gact.call_effects import effects_result, record_call_effects
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
@@ -35,6 +36,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.structured_wire_bound import wire_structured
 from clio_agent.gact.task_wait_presentation import completed_after_cancel_error, completion_status
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_call_merge import (
@@ -88,10 +90,8 @@ from clio_agent.gact.tool_event_identity import (
 def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscript]":
     """The open TurnTranscript ledger for ``sid``, or ``None`` (#767 PR1).
 
-    Since PR2 every production turn opens a ledger, so during a turn the
-    live-part helpers below shim into it (the ledger owns identity/order/
-    events); with none open — out-of-band tool calls outside any turn — they
-    fall back to the legacy ``app.state`` dict path, byte-for-byte unchanged.
+    Every production turn opens one; the live-part helpers below shim into it. With none
+    open (calls outside any turn) they use the legacy ``app.state`` dict path, unchanged.
     """
 
     registry = getattr(app.state, "turn_transcripts", None)
@@ -280,12 +280,12 @@ def _ensure_live_assistant_message(app: "FastAPI", sid: str) -> str:
 def _append_live_assistant_part(app: "FastAPI", sid: str, part: Part) -> None:
     """Publish and remember a real runtime part for the active assistant turn."""
 
+    if view_call_transcript.hold(app, sid, part):
+        return  # a view's own call: never inside an open turn
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
-        # #767 PR1: append through the single-writer ledger — it closes its own
-        # open text, mints ids, and publishes message.part.added itself.
-        # Each phase owns one row; the terminal return remains a later event. The row
-        # lands behind the step's streamed text still queued, never inside it.
+        # #767 PR1: the single-writer ledger closes its open text, mints ids and publishes;
+        # one row per phase, behind the step's queued streamed text, never inside it.
         def append() -> None:
             if part.type == "expert_handoff":
                 transcript.upsert_delegation_part(part)
@@ -344,10 +344,11 @@ def _append_live_assistant_part_once(
     calls/results under it, not repeat the same route banner for every call.
     """
 
+    if view_call_transcript.hold(app, sid, part):
+        return True
     transcript = _session_turn_transcript(app, sid)
     if transcript is not None:
-        # #767 PR1: the idempotency key is turn-scoped ledger state. A duplicate key
-        # never closes streamed text — the boundary close runs only when the key is fresh.
+        # #767 PR1: turn-scoped key; a duplicate never closes streamed text (fresh key only).
         if transcript.has_part_key(key):
             return False
 
@@ -649,7 +650,7 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
-            prev = pop_previous_content(result)  # Undo's pre-write copy: never on a wire
+            prev, whole = effects_result(result)  # the write's record, before any bounding
             if completion_error is None and result is not None:
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
@@ -662,16 +663,8 @@ def _make_tool_observer(app: "FastAPI"):
             # A native tool may DECLARE its typed structured payload (P5; the model's
             # return value is unchanged). Read + cleared once per completed call so it
             # never leaks onto a later call; else the MCP-shaped extraction below.
-            declared_structured = pop_declared_structured_content()
-            structured_content = (
-                declared_structured
-                if declared_structured is not None
-                else (
-                    result.get("structuredContent")
-                    if isinstance(result, Mapping) and "structuredContent" in result
-                    else None
-                )
-            )
+            # The caller already holds the full value; the wire and trace copies are bounded.
+            structured_content, result = wire_structured(pop_declared_structured_content(), result)
             result, presentation = completed_presentation(
                 name,
                 args,
@@ -800,7 +793,7 @@ def _make_tool_observer(app: "FastAPI"):
                         ),
                     )
                 # A write that ran is on disk even if the turn was cancelled meanwhile.
-                record_call_effects(app, sid, name, call_id, error, result, prev, invoking_expert)
+                record_call_effects(app, sid, name, call_id, error, whole, prev, invoking_expert)
         return None
 
     return observe

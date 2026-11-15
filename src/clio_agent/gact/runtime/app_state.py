@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.connector_setup import with_connector_setup
 from clio_agent.tools.execution import ToolRuntimeHooks
 
 
@@ -39,7 +40,7 @@ def resolve_tool_runtime() -> ToolRuntimeHooks | None:
     if state is None:
         return None
     return ToolRuntimeHooks(
-        permission_gate=getattr(state, "pending_permission_gate", None),
+        permission_gate=with_connector_setup(app, getattr(state, "pending_permission_gate", None)),
         tool_observer=getattr(state, "pending_tool_observer", None),
         tool_interceptor=getattr(state, "pending_tool_interceptor", None),
         cancellation_checker=getattr(state, "pending_cancellation_checker", None),

@@ -1,0 +1,80 @@
+[
+ {
+  "session": "sess_467c4f8fdcd6",
+  "workspace": "ws_3a043b270ad3"
+ },
+ {
+  "showTab": true
+ },
+ {
+  "view": true
+ },
+ {
+  "maximize": true
+ },
+ {
+  "theme": "light"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "visible": "Threshold8",
+  "on": false
+ },
+ {
+  "visible": "Threshold7",
+  "on": false
+ },
+ {
+  "row": "Contour4"
+ },
+ {
+  "panel": "Camera"
+ },
+ {
+  "press": "Look along −Z"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "shot": "hero-light-pipeline"
+ },
+ {
+  "panel": "Add filter"
+ },
+ {
+  "press": "Contour"
+ },
+ {
+  "shot": "hero-light-contour-form"
+ },
+ {
+  "panel": "Display"
+ },
+ {
+  "shot": "hero-light-display"
+ },
+ {
+  "theme": "dark"
+ },
+ {
+  "shot": "hero-dark-display"
+ },
+ {
+  "panel": "Camera"
+ },
+ {
+  "shot": "hero-dark-camera"
+ },
+ {
+  "panel": "Information"
+ },
+ {
+  "closePanel": true
+ },
+ {
+  "shot": "hero-dark-collapsed"
+ }
+]

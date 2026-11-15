@@ -152,9 +152,15 @@ def native_gate(tool: Any, name: str, args: Mapping[str, Any]) -> Iterator[str]:
     """Apply the layers to a call of a CLIO built-in or a plugin's Python tool.
 
     Those tools do not pass the permission gate on their own (MCP and gateway tools do,
-    in their call path), so without a rule or a default they run as before. A deny
-    refuses the call (yields the refusal text); an ask asks the person, as the gate
-    does, with a ``run_code`` script's grant shown. Yields ``""`` when the call may run.
+    in their call path). A tool that declares it acts outside CLIO's own records
+    (``native_tool(outside=True)``, not read-only: a view's tool, ``set_connector_value``)
+    passes the whole gate, as an MCP tool does: the session's approval mode decides it
+    (asked in ``ask`` with allow once, for this session or for this workspace; run in
+    ``bypass``), under the same rules, defaults, hooks and script grant. Any other
+    built-in runs unless a rule or its default denies or asks: a deny refuses the call
+    (yields the refusal text); an ask asks the person, with a ``run_code`` script's grant
+    shown. Both read the approval mode the gate reads (a script keeps its accepted mode).
+    Yields ``""`` when the call may run.
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
@@ -163,23 +169,67 @@ def native_gate(tool: Any, name: str, args: Mapping[str, Any]) -> Iterator[str]:
     if app is None or not sid or not _native(tool):
         yield ""
         return
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        acts_outside,
+        callable_title,
+    )
+
+    context = {"kind": "native", "summary": callable_title(tool) or f"Use {name}"}
+    refused: str | None
+    if acts_outside(tool):
+        refused = _gated(app, name, args, context)
+    else:
+        refused = _layered(app, sid, name, args, context)
+    if refused is None:
+        yield ""
+        return
+    if refused:
+        yield refused
+        return
+    token = _ANSWERED.set(name)
+    try:
+        yield ""
+    finally:
+        _ANSWERED.reset(token)
+
+
+def _gated(app: Any, name: str, args: Mapping[str, Any], context: Mapping[str, Any]) -> str:
+    """The whole gate for a built-in that acts outside: ``""`` when it may run (the
+    gate's answer stands for the tool's own nested checks), else the refusal text."""
+    from clio_agent.gact.permission_context import _invoke_permission_gate  # noqa: PLC0415
+
+    gate = getattr(app.state, "pending_permission_gate", None) or app.state.make_permission_gate()
+    decision = _invoke_permission_gate(gate, name, args, context)
+    if decision == "allow":
+        return ""
+    message = str(getattr(decision, "deny_message", "") or "") or (
+        f"{name} was not run: the person or a permission setting did not allow it."
+    )
+    _refused(name, args, message, decision)
+    return message
+
+
+def _layered(
+    app: Any, sid: str, name: str, args: Mapping[str, Any], context: Mapping[str, Any]
+) -> str | None:
+    """Rules and defaults for a CLIO bookkeeping built-in: ``None`` runs it unasked,
+    ``""`` runs it after a person approved, any other text refuses it."""
     from clio_agent.gact import permission_gate as gate  # noqa: PLC0415
     from clio_agent.gact.runtime.permission_policies import (  # noqa: PLC0415
         _permission_path_from_args,
     )
 
     session = app.state.sessions.get(sid)
-    mode = str(getattr(session, "approval_mode", "") or "ask")
+    mode = gate.script_grants.approval_mode(session)  # as the gate: a script keeps its mode
     rule = person_rule(app, session, sid, name, _permission_path_from_args(args))
     layered = decide(rule, tool_default(app, sid, name), approval_mode=mode)
     if layered.action == "deny":
         gate._layered_deny(app, sid, name, args, "native tool", layered, "")
-        yield f"{name} was not run: a permission setting blocks it."
-        return
+        message = f"{name} was not run: a permission setting blocks it."
+        _refused(name, args, message, "deny")
+        return message
     if layered.action != "ask":
-        yield ""
-        return
-    context = {"kind": "native", "summary": f"Use {name}"}
+        return None
     with gate.script_grants.question():
         decision = gate._ask_person(
             app,
@@ -194,15 +244,14 @@ def native_gate(tool: Any, name: str, args: Mapping[str, Any]) -> Iterator[str]:
         )
     if decision != "allow":
         message = f"{name} was not run: the person did not approve it."
-        # Close the waiting row the request opened as a denied call.
-        from clio_agent.tools.execution import current_tool_runtime  # noqa: PLC0415
-        from clio_agent.tools.tool_observation import notify_refused_call  # noqa: PLC0415
+        _refused(name, args, message, decision)
+        return message
+    return ""
 
-        notify_refused_call(current_tool_runtime().tool_observer, name, args, message)
-        yield message
-        return
-    token = _ANSWERED.set(name)
-    try:
-        yield ""
-    finally:
-        _ANSWERED.reset(token)
+
+def _refused(name: str, args: Mapping[str, Any], message: str, decision: Any) -> None:
+    """Close the waiting row the request opened as a refused (or cancelled) call."""
+    from clio_agent.tools.execution import current_tool_runtime  # noqa: PLC0415
+    from clio_agent.tools.tool_observation import notify_refused_call  # noqa: PLC0415
+
+    notify_refused_call(current_tool_runtime().tool_observer, name, args, message, decision)

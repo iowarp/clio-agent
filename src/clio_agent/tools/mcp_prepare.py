@@ -1006,14 +1006,9 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
         return PROVISION_UNSUPPORTED_LAUNCHER
     _write_marker(plan)
     if result is not None:
-        trace.event(
-            "TOOLS",
-            "mcp_prepare_kit_result namespace=%s status=%s environment=%s kit_seconds=%s",
-            namespace,
-            result.get("status"),
-            result.get("environment", ""),
-            result.get("seconds", ""),
-        )
+        from clio_agent.tools import spawn_diet_transport  # noqa: PLC0415 - VF-D9; lazy fastmcp
+
+        spawn_diet_transport.record_prepared(namespace, result)  # traced; drops a stale plan
         if result.get("status") == "not_applicable":
             return PROVISION_NOT_APPLICABLE
     trace.event(

@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from clio_agent import conf
 from clio_agent.arc.task_types import QuestionReply
 from clio_agent.errors import ClioError
+from clio_agent.gact import agent_needs, connector_setup
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
@@ -166,10 +167,16 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
     )
     tool_input = tool_call.get("input")
     tool_input = tool_input if isinstance(tool_input, Mapping) else {}
-    execution = {
-        "computer": platform.node(),
-        "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
-    }
+    # An external MCP tool runs in its own server, often on another machine (a connector
+    # reaching a cluster node), so the workspace's host and folder would name the wrong place.
+    execution = (
+        {}
+        if row.get("kind") == "external_mcp"
+        else {
+            "computer": platform.node(),
+            "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
+        }
+    )
     status: Literal["pending", "answered", "denied", "cancelled", "expired"] = "pending"
     if row.get("status") == "timeout":
         status = "expired"
@@ -208,7 +215,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         payload={
             "permission_id": str(row.get("id") or ""),
             "tool_call": dict(tool_call),
-            "execution": execution,
+            **({"execution": execution} if execution else {}),
             **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
             **({"script": row["script"]} if isinstance(row.get("script"), Mapping) else {}),
         },
@@ -444,6 +451,9 @@ def project_pending_interactions(
         if str(permission.get("session_id") or "") in owners:
             row = _permission_interaction(app, permission)
             (pending if row.status == "pending" else resolved).append(row)
+    agent_needs.ensure_card_safely(app, root_session_id)  # after a restart (LZ-D2)
+    for row in connector_setup.projected(app, owners):
+        (pending if row.status == "pending" else resolved).append(row)
     ordered_owners = _owners_newest_first(app, owners)
     limit = interactions_projection_limit()
     if limit > 0 and len(ordered_owners) > limit:
@@ -503,6 +513,7 @@ def recorded_session_interactions(app: FastAPI, session_id: str) -> list[dict[st
         for permission in app.state.permissions.values()
         if str(permission.get("session_id") or "") == session_id
     )
+    rows.extend(connector_setup.projected(app, {session_id}))
     surfaces, _ = _a2ui_interactions(app, session_id)
     rows.extend(surfaces)
     rows.sort(key=lambda row: (row.created_at, row.id))
@@ -633,6 +644,15 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             return {
                 "interaction": _interaction_wire(_permission_interaction(app, updated_permission))
             }
+
+        if interaction_id.startswith(connector_setup.PREFIX):
+            try:
+                answered = await connector_setup.respond(
+                    app, scope, interaction_id, request.action, request.values, request.metadata
+                )
+            except connector_setup.SetupResponseError as exc:
+                raise _error(exc.status, exc.code, str(exc), **exc.details) from None
+            return {"interaction": _interaction_wire(answered)}
 
         for owner in scope:
             prefix = f"a2ui:{owner}:"

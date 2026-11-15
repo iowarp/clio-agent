@@ -12,8 +12,10 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.connectors.materialize import in_use
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
+from clio_agent.gact.workspaces import default_workspace_root
 from clio_agent.tools import mcp_prepare
 from clio_agent.tools.mcp_config import (
     MCPTransportError,
@@ -121,7 +123,7 @@ async def _probe_user_mcp_server(
     if (
         spec.get("auth")
         and not DurableFileTokenStorage(
-            str(spec.get("url") or ""),
+            str(in_use(spec).get("url") or ""),
             connection_id=(spec.get("auth") or {}).get("connection_id"),
         ).has_tokens()
     ):
@@ -140,7 +142,8 @@ async def _probe_user_mcp_server(
         if normalized.transport == "stdio" and mcp_prepare.builds_outside_fence():
             # The probe starts the server confined; build its environment first (#1991).
             await asyncio.to_thread(mcp_prepare.provision, normalized.name, normalized)
-        transport = transport_for(normalized)
+        # FP-D3: a probed server starts in the conversations' folder, not the launch folder.
+        transport = transport_for(normalized, cwd=default_workspace_root())
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
         ):
@@ -322,6 +325,9 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
     from clio_agent.gact.routes.mcp_prepare_routes import register_mcp_prepare_routes
 
     register_mcp_prepare_routes(app)  # plugin-server reconnect (B3)
+    from clio_agent.gact.routes.connectors import register_connector_routes
+
+    register_connector_routes(app)  # connectors (CN1 to CN12)
 
     @app.get("/v1/mcp/configuration")
     async def list_mcp_configuration() -> dict[str, Any]:
@@ -392,7 +398,7 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if removed and previous and previous.get("url") and previous.get("auth"):
             storage = DurableFileTokenStorage(
-                str(previous["url"]),
+                str(in_use(previous)["url"]),
                 connection_id=previous["auth"].get("connection_id"),
             )
             await asyncio.to_thread(storage.clear)

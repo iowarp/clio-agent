@@ -399,8 +399,6 @@ HARDCODED | CONSOLE_SSE_READ_TIMEOUT_SECONDS=30.0 | src/clio_agent/tools/relay_c
 HARDCODED | _OUTER_TIMEOUT_MARGIN_S=15.0 | src/clio_agent/gact/agent_elicitation.py:206 | | Grace margin added to elicitation turn timeout; hardcoded — tunable margin
 HARDCODED | _CONTEXT_EXCERPT_MAX_CHARS=6000 | src/clio_agent/gact/agent_elicitation.py:207 | | Char cap on context excerpt injected into elicitation answer prompt; hardcoded
 HARDCODED | DEFAULT_MAX_GOAL_ITERS=25 | src/clio_agent/gact/goal.py:70 | | Default max iterations for goal-monitoring loop; hardcoded — tunable default
-HARDCODED | _MCP_REGISTRY_LIMIT=64 | src/clio_agent/gact/mcp_apps.py:59 | | MCP app instance registry cap; hardcoded — tunable for high-concurrency MCP app workloads
-HARDCODED | _MCP_REGISTRY_TTL_S=3600 | src/clio_agent/gact/mcp_apps.py:60 | | TTL for MCP app registry entries; hardcoded — tunable for long-lived MCP apps
 
 ---
 

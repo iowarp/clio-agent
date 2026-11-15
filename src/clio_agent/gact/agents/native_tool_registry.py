@@ -102,6 +102,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool  # noqa: PLC0415
     from clio_agent.gact.browser.tools import BUILDERS as BROWSER_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import build_run_code_tool  # noqa: PLC0415
+    from clio_agent.gact.connector_tool import build_set_connector_value_tool  # noqa: PLC0415
     from clio_agent.gact.document_tools import (  # noqa: PLC0415
         build_prepare_document_runtime_tool,
         build_prepare_document_tool,
@@ -126,9 +127,11 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_latex_outline_tool,
     )
     from clio_agent.gact.loop_control import build_set_loop_tool  # noqa: PLC0415
+    from clio_agent.gact.mcp_app_look import build_look_at_view_tool  # noqa: PLC0415
     from clio_agent.gact.memory.tool_builders import BUILDERS as MEMORY_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.plan_mode import build_plan_exit_tool  # noqa: PLC0415
     from clio_agent.gact.plugin_authoring import build_make_plugin_tool  # noqa: PLC0415
+    from clio_agent.gact.plugin_offer import build_offer_plugin_tool  # noqa: PLC0415
     from clio_agent.gact.recall_context_tool import build_recall_context_tool  # noqa: PLC0415
     from clio_agent.gact.science_log.tools import BUILDERS as SCIENCE_LOG_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.search_assistant import (  # noqa: PLC0415
@@ -227,6 +230,9 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "run_flow": build_run_flow_tool,
         "run_workflow": build_run_workflow_tool,
         "make_plugin": build_make_plugin_tool,
+        "set_connector_value": build_set_connector_value_tool,
+        "offer_plugin": build_offer_plugin_tool,
+        "look_at_view": build_look_at_view_tool,
     }
 
 
@@ -282,6 +288,9 @@ _SINGLE_NAMES = frozenset(
         "run_flow",
         "run_workflow",
         "make_plugin",
+        "set_connector_value",
+        "offer_plugin",
+        "look_at_view",
         *_A2UI_PRODUCERS,
         *SCIENCE_LOG_TOOLS,
         *BROWSER_TOOLS,
@@ -390,7 +399,7 @@ def build_native_tools(
     wanted = {str(name) for name in requested} & NATIVE_TOOL_NAMES
     withheld: dict[str, str] = {}
     if not supports_vision:
-        for name in ("view_image", "capture_a2ui_surface"):
+        for name in ("view_image", "capture_a2ui_surface", "look_at_view"):
             if name in wanted:
                 withheld[name] = "model_lacks_image_input"
     if not supports_pdf and "view_pdf" in wanted:

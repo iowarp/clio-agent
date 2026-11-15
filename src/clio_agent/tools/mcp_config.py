@@ -12,16 +12,14 @@ a simple ``name: <command-or-url>`` map — no JSON, no nested objects required:
       notion: https://mcp.notion.com/mcp
 
 The value is either a **command string** (split into command + args, by Windows
-rules on Windows and POSIX shell rules elsewhere; stdio)
-or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
+rules on Windows and POSIX shell rules elsewhere; stdio) or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
 For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
 Scopes: workspace ``mcp.yaml`` > user config > the session's plugin servers > built-ins.
 
-This module is parsing only; ``transport_for`` is the single FastMCP glue that
-turns a spec into a transport the existing ``execution.py`` machinery accepts.
+Parsing only; ``transport_for`` turns a spec into a transport ``execution.py`` accepts.
 """
 
 from __future__ import annotations
@@ -40,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 
+from clio_agent.connectors.materialize import connector_spec, fill_declaration
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.tools import desktop_mcp_runtime as dmr
 from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
@@ -69,11 +68,8 @@ __all__ = [
     "unreadable_mcp_yaml_snapshot",
 ]
 
-# clio-agent's built-in universal defaults (always present, not declarations).
-# These MUST match what ``tools.gateway._mount_builtins`` actually mounts: a name
-# listed here but not mounted is silently un-mountable as a user server (the
-# gateway skips it as "builtin") — that phantom ``"web"`` bug is why this set is
-# kept in lockstep with the mounts, not aspirational.
+# Built-in defaults, in lockstep with ``tools.gateway._mount_builtins``: a name listed but not
+# mounted is silently un-mountable as a user server (the phantom ``"web"`` bug).
 BUILTIN_SERVER_NAMES = frozenset({"fs", "shell", "web", "literature"})
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}")
@@ -162,7 +158,7 @@ class MCPServerSpec:
     transport: Literal["stdio", "http"]
     command: str = ""
     args: tuple[str, ...] = ()
-    env: Mapping[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)
     url: str = ""
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     auth: MCPAuthConfig | None = field(default=None, repr=False)
@@ -176,6 +172,7 @@ class MCPServerSpec:
     #: (``command``/``args``/``url``); ``tools.mcp_redaction`` serves it in their
     #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    connector: str = ""  # the connector this connection was saved for
 
     @property
     def usable(self) -> bool:
@@ -398,6 +395,8 @@ def spec_from_declaration(
     env: Mapping[str, str] | None = None,
 ) -> MCPServerSpec:
     """Normalize one ``mcp_servers`` value (string command/url, or mapping)."""
+    if isinstance(value, Mapping) and value.get("connector"):  # needs left unfilled (CV-D2)
+        value = fill_declaration(value)
     if isinstance(value, str):
         spec = _spec_from_string(name, value, source=source, env=env)
     elif isinstance(value, Mapping):
@@ -411,6 +410,8 @@ def spec_from_declaration(
                 f"unsupported mcp_servers value for {name!r}: {type(value).__name__}",
             ),
         )
+    if isinstance(value, Mapping) and value.get("connector"):  # its secrets (CN8)
+        spec = connector_spec(spec, str(value["connector"]))
     name_error = _validate_server_name(name)
     if name_error:
         spec = replace(spec, validation_errors=(name_error, *spec.validation_errors))
@@ -554,8 +555,6 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     """
     if spec.transport == "stdio":
         cwd = os.path.abspath(cwd) if cwd else cwd
-        from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
-
         # Fail-loud preflight (iowarp/clio-agent MCP spawn diagnosability): catch the
         # two preconditions that otherwise make the subprocess die post-spawn with a
         # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` is
@@ -617,7 +616,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         # otherwise the declared command spawns and — when eligible — a learn
         # scan is scheduled against that live chain. Both outcomes are typed
         # inside spawn_diet.
-        from clio_agent.tools import spawn_diet  # noqa: PLC0415
+        from clio_agent.tools import spawn_diet, spawn_diet_transport  # noqa: PLC0415
 
         diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(resolved_args), env)
         if diet is not None:
@@ -648,7 +647,8 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
 
             register_namespace_child(cwd, spec.name, sandbox_net_child)
-        transport = StdioTransport(
+        # A dieted launch re-declares itself once its plan is dropped (VF-D9).
+        transport = spawn_diet_transport.stdio_transport(spec, cwd, diet is not None)(
             command=confined.command,
             args=confined.args,
             env={**env, **confined.env_overlay},

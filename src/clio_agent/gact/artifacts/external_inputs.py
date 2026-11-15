@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.tools.file_policy import _is_relative_to
+from clio_agent.tools.tool_path_contract import ACCESS_READ, MACHINE_LOCAL, declared_args
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +91,16 @@ _PATH_SCHEMA_ARG_NAMES = frozenset(
 
 
 def external_file_input_args(tool_name: str) -> frozenset[str]:
-    """Return file-consuming argument names for an exact tool contract."""
+    """Return file-consuming argument names for an exact tool contract.
 
-    return _EXTERNAL_FILE_INPUT_ARGS.get(tool_name, frozenset())
+    The contract is CLIO's own table for its tools, plus the arguments the called tool's
+    server declared as ``local`` ``read`` paths in its definition's ``_meta``
+    (:mod:`clio_agent.tools.tool_path_contract`). A path the server declared on another
+    machine is never a local input (:mod:`clio_agent.gact.artifacts.declared_path_edges`).
+    """
+
+    declared = declared_args(tool_name, machine=MACHINE_LOCAL, access=ACCESS_READ)
+    return _EXTERNAL_FILE_INPUT_ARGS.get(tool_name, frozenset()) | declared
 
 
 def declared_consumed_file_paths(tool_name: str, args: Mapping[str, Any]) -> set[str]:

@@ -100,6 +100,11 @@ def test_mcp_handshake_scopes_plugin_servers_to_the_session_agent(
 ) -> None:
     """The handshake never warms a plugin's servers merely because it is installed."""
 
+    from clio_agent.connectors import state
+
+    # A clio-kit server is mounted only while its connector is on (LZ-D8).
+    for connector in ("geo", "ndp"):
+        state.update(connector, enabled=True)
     custom_marketplace(
         tmp_path,
         monkeypatch,

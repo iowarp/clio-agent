@@ -14,6 +14,9 @@
 #                              (this release cannot open it; it is kept, never deleted)
 #   --progress json            with --desktop: one JSON event per line on stdout (each
 #                              step's begin/end and seconds, bytes, a summary)
+#   --prepare-tool-servers     also prepare the agents' clio-kit tool servers now, for
+#                              offline or air-gapped use (by default each is downloaded
+#                              when you first enable it in CLIO)
 #
 # --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
 # checkout in place, on whatever branch it is; streamed (`curl ... | bash`) it clones.
@@ -72,6 +75,7 @@ OPT_DOWNLOAD_ONLY=""
 OPT_DESKTOP_PACKAGE="${CLIO_DESKTOP_PACKAGE:-}"
 OPT_DESKTOP_SHA256="${CLIO_DESKTOP_SHA256:-}"
 OPT_RESET_OLD_DATA=0
+OPT_PREPARE_TOOL_SERVERS=0
 OPT_PROGRESS="${CLIO_INSTALL_PROGRESS:-human}"
 # Provider SDKs installed with the managed packages (empty: none); claude_code's is
 # otherwise installed by the first Claude Code turn.
@@ -89,6 +93,7 @@ while [ $# -gt 0 ]; do
     --desktop-sha256) OPT_DESKTOP_SHA256="${2:?--desktop-sha256 needs a SHA-256}"; shift ;;
     --download-only|-DownloadOnly) OPT_DOWNLOAD_ONLY="${2:?--download-only needs a directory}"; shift ;;
     --reset-old-data|-ResetOldData) OPT_RESET_OLD_DATA=1 ;;
+    --prepare-tool-servers|-PrepareToolServers) OPT_PREPARE_TOOL_SERVERS=1 ;;
     --progress|-Progress) OPT_PROGRESS="${2:?--progress needs human or json}"; shift ;;
     --progress=*) OPT_PROGRESS="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;
@@ -2137,6 +2142,22 @@ fi
 # ---------- provision clio-kit MCP runtime ----------------------------
 # Started alongside the Python install (start_clio_kit, above); reported here.
 finish_clio_kit
+
+# ---------- tool servers, only when asked (--prepare-tool-servers) ----
+# Nothing is built here by default: CLIO asks when an agent needs a server that is not
+# enabled, and enabling it downloads its tools then. For offline or air-gapped use the
+# agents' clio-kit servers can be prepared now instead.
+if [ "$OPT_PREPARE_TOOL_SERVERS" = 1 ]; then
+  if has_module clio_agent.runtime.install_tool_servers 'def main'; then
+    say "Preparing the agents' tool servers now, for offline use (--prepare-tool-servers)"
+    kit_bin="${KIT_TOOL_DIR:+$KIT_TOOL_DIR/bin}"
+    [ -n "$kit_bin" ] || kit_bin="$(uv tool dir --bin 2>/dev/null || true)"
+    PATH="${kit_bin:+$kit_bin:}$PATH" "$VENV/bin/python" -m clio_agent.runtime.install_tool_servers \
+      || warn "some tool servers were not prepared; each is prepared when you first enable it"
+  else
+    warn "clio-agent $CLIO_INSTALLED_VERSION cannot prepare tool servers at install; they are prepared on first use"
+  fi
+fi
 
 # ---------- install the released Web frontend -------------------------
 if [ "$OPT_SOURCE" = 0 ]; then

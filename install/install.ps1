@@ -13,6 +13,10 @@
 #                                the same, running the setup silently with its defaults
 #   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
 #                                (this release cannot open it; it is kept, never deleted)
+#   install.ps1 -PrepareToolServers
+#                                also prepare the agents' clio-kit tool servers now, for
+#                                offline or air-gapped use (by default each is downloaded
+#                                when you first enable it in CLIO)
 #   install.ps1 -EnableLongPaths turn on Windows long path support without asking first
 #                                (one Windows admin prompt for that setting only);
 #                                -SkipLongPaths never asks. Unset, an interactive run
@@ -637,6 +641,7 @@ $OptRef = ''
 $OptDesktop = $false
 $OptDownloadOnly = ''
 $OptResetOldData = $false
+$OptPrepareToolServers = $false
 $OptUnattended = $false
 $OptLongPaths = if ($env:CLIO_LONG_PATHS) { $env:CLIO_LONG_PATHS.Trim().ToLower() } else { 'ask' }
 $OptProgress =  if ($env:CLIO_INSTALL_PROGRESS) { $env:CLIO_INSTALL_PROGRESS } else { 'human' }
@@ -651,6 +656,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^(--desktop|-Desktop)$' { $OptDesktop = $true; continue }
         '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
         '^(--reset-old-data|-ResetOldData)$' { $OptResetOldData = $true; continue }
+        '^(--prepare-tool-servers|-PrepareToolServers)$' { $OptPrepareToolServers = $true; continue }
         '^(--unattended|-Unattended)$' { $OptUnattended = $true; continue }
         '^(--enable-long-paths|-EnableLongPaths)$' { $OptLongPaths = 'enable'; continue }
         '^(--skip-long-paths|-SkipLongPaths)$' { $OptLongPaths = 'skip'; continue }
@@ -832,6 +838,8 @@ function Install-ClioDesktopRelease([string]$repo) {
         $previousLog = $env:CLIO_INSTALL_LOG
         $prepareLog = Join-Path $scratch 'prepare.log'
         $env:CLIO_INSTALL_LOG = $prepareLog
+        # Only -PrepareToolServers asks its --prepare-runtime to build the tool servers too.
+        if ($OptPrepareToolServers) { $env:CLIO_INSTALL_PREPARE_TOOL_SERVERS = '1' }
         try {
             if ($setupArgs.Count) { $setup = Start-Process -FilePath $installer.File -ArgumentList $setupArgs -PassThru }
             else { $setup = Start-Process -FilePath $installer.File -PassThru }
@@ -1588,9 +1596,11 @@ function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
         $script:DocsMigrate = $FreshHome -and (Select-String -LiteralPath $docInstall -SimpleMatch '_run_store_migrations' -Quiet)
         $providerFlag = ''
         if ($ProviderSupport -and (Select-String -LiteralPath $docInstall -SimpleMatch 'provider-support' -Quiet)) { $providerFlag = " --provider-support $ProviderSupport" }
-        # The agents' clio-kit tool servers are built in this step too, once the clio-kit
-        # launcher installed below is ready (Write-ClioKitReady tells it).
-        if (Select-String -LiteralPath $docInstall -SimpleMatch 'prepare-tool-servers' -Quiet) {
+        # Only when asked (-PrepareToolServers, for offline use) are the agents' clio-kit
+        # tool servers built in this step too, once the clio-kit launcher installed below
+        # is ready (Write-ClioKitReady tells it). By default each is downloaded when the
+        # person first enables it in CLIO.
+        if ($OptPrepareToolServers -and (Select-String -LiteralPath $docInstall -SimpleMatch 'prepare-tool-servers' -Quiet)) {
             $script:KitReadyFile = Join-Path ([System.IO.Path]::GetTempPath()) "clio-kit-ready-$([guid]::NewGuid()).json"
             $env:CLIO_INSTALL_KIT_READY = $script:KitReadyFile
             $providerFlag += ' --prepare-tool-servers'
@@ -1606,8 +1616,8 @@ function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
     Initialize-ClioUv (Join-Path $Venv 'bin')
     $runtimePython = Join-Path $Venv 'python\python.exe'
     # clio-kit installs (for the runtime's Python version, as below) while the
-    # environment is finished: the managed-package step waits for it to build the
-    # agents' tool servers, so it no longer starts after these steps.
+    # environment is finished: with -PrepareToolServers the managed-package step waits
+    # for it to build the agents' tool servers, so it no longer starts after these steps.
     $kitUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($kitUv -and -not $script:KitJob -and -not $script:KitKept) {
         $script:py = (& $runtimePython -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
@@ -2111,8 +2121,8 @@ function Complete-ClioMigrate {
 # deleting envs under running servers (astral-sh/uv#11694). `uv tool install`
 # is idempotent (re-run is a no-op / version pin). Needs uv; without it the
 # packs' tools simply stay unprovisioned until uv is installed.
-# It is completed before the managed-package step, which then builds the agents'
-# tool servers with it (Write-ClioKitReady).
+# It is completed before the managed-package step, which with -PrepareToolServers then
+# builds the agents' tool servers with it (Write-ClioKitReady).
 # Write-ClioKitReady READY: tell the managed-package step whether clio-kit is installed,
 # with the folders that put it and uv on its PATH.
 function Write-ClioKitReady([bool]$Ready) {
@@ -2163,7 +2173,7 @@ if ($KitJob -or $KitKept -or (Have uv)) {
 } else {
     Warn "uv not found - skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
 }
-if (-not $DocJob -and -not $KitReadyFile -and (Test-Path $VenvPython)) {
+if ($OptPrepareToolServers -and -not $DocJob -and -not $KitReadyFile -and (Test-Path $VenvPython)) {
     & $VenvPython -c "import importlib.util, sys; s = importlib.util.find_spec('clio_agent.runtime.document_install'); sys.exit(0 if s and '--prepare-tool-servers' in open(s.origin, encoding='utf-8').read() else 3)"
     if ($LASTEXITCODE -eq 0) {
         $KitReadyFile = Join-Path ([System.IO.Path]::GetTempPath()) "clio-kit-ready-$([guid]::NewGuid()).json"

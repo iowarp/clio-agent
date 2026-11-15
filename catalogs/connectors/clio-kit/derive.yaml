@@ -1,0 +1,73 @@
+# Connectors derived from the clio-kit CLIO pins (apps ledger, "Lazy install, ask on
+# agent load (LZ)", LZ-D7). Every MCP server of the pinned clio-kit's shipped catalogue
+# (clio_kit/_components.json) becomes a connector: its id is the server name, its
+# description the server package's own, its command `clio-kit mcp-server <name>`. A
+# hand-written entry in the folder above with the same id wins (ParaView, Geo), taking
+# only the group from here. This file holds what the catalogue cannot say: a readable
+# name where the id read as words is wrong, and a group label for each clio-kit
+# workflow package, whose dependencies place every server in a domain, and the logos below.
+# A name or group whose server the pinned clio-kit does not ship yet derives nothing.
+names:
+  adios: ADIOS2
+  arxiv: arXiv
+  chronolog: ChronoLog
+  darshan: Darshan
+  hdf5: HDF5
+  jarvis: Jarvis
+  lmod: Lmod
+  ndp: National Data Platform
+  node-hardware: Node hardware
+  pandas: pandas
+  parallel-sort: Log sort
+  paraview: ParaView
+  parquet: Parquet
+  scientific-catalog: Scientific catalog
+  slicer: 3D-print slicer
+  slurm: Slurm
+  spack: Spack
+  web: Web fetch
+# In this order: a server in two workflows takes the first group listed.
+groups:
+  clio-scientific-io: Data formats
+  clio-analysis: Analysis and plots
+  clio-geoscience: Earth science
+  clio-hpc: HPC
+  clio-performance: Performance
+  clio-fabrication: Fabrication
+  clio-research: Research
+# Logos, served like a hand-written entry's `logo` (an SVG beside this file) and, as
+# {light, dark}, its `logo_dark` (apps ledger, "Connector logos (LG)", LG-D2). A hand-written
+# entry of the same id keeps its own (ParaView, Geo). Sources and terms, per logo:
+# - ndp: the National Data Platform emblem, cut (pixels 0..166 x 0..114, not redrawn or
+#   recoloured) from NDP's official horizontal artwork, the files CLIO already ships as
+#   gact-tui branding/provider-logos/ndp-light.png and ndp-dark.png (retrieved from
+#   nationaldataplatform.org on 2026-10-18). NDP publishes no emblem-only file and no logo
+#   terms; its use to identify the NDP integration follows the provider logos (LG-T1).
+# - every other one: drawn for CLIO, our own (a tile in its group's colour with a white
+#   glyph), not a project's mark. Official marks were not used where their published terms
+#   do not clearly allow a third-party interface: pandas (no licence; full colour only on
+#   white, at least 55 px), Parquet (ASF: without permission only as a link to the project),
+#   arXiv (prohibited for products), HDF5 and Slurm (trademarks, no published logo terms
+#   found); the rest publish no logo terms either (LG-T2).
+logos:
+  adios: adios.svg
+  arxiv: arxiv.svg
+  chronolog: chronolog.svg
+  compression: compression.svg
+  darshan: darshan.svg
+  hdf5: hdf5.svg
+  jarvis: jarvis.svg
+  lmod: lmod.svg
+  ndp: {light: ndp.svg, dark: ndp-dark.svg}
+  node-hardware: node-hardware.svg
+  pandas: pandas.svg
+  parallel-sort: parallel-sort.svg
+  parquet: parquet.svg
+  plot: plot.svg
+  scientific-catalog: scientific-catalog.svg
+  seismology: seismology.svg
+  slicer: slicer.svg
+  slurm: slurm.svg
+  spack: spack.svg
+  terrain: terrain.svg
+  web: web.svg

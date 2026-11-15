@@ -22,8 +22,9 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import harness_notes, task_descriptions, tool_presentation
+from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
+from clio_agent.tools import tool_path_contract as tool_paths
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,
     AsyncMCPToolExecutor,
@@ -364,10 +365,9 @@ def _declared_mcp_permission_context(
     namespace, separator, _bare_name = name.partition("_")
     if not separator or namespace not in namespace_servers:
         return None
-    return {
-        "kind": "external_mcp",
-        "annotations": dict(_tool_annotations(tool)),
-    }
+    title = tool.get("title") if isinstance(tool, Mapping) else getattr(tool, "title", None)
+    context = {"kind": "external_mcp", "annotations": dict(_tool_annotations(tool))}
+    return {**context, "title": title} if title else context  # a view-only tool's own title
 
 
 def create_async_tool_executor(
@@ -484,7 +484,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         self._inflight = 0
         self._inflight_lock = threading.Lock()
 
-        app_loop = task_calls.application_loop()
+        app_loop = task_calls.executor_loop()  # sessions on the app loop
         self._owns_loop = app_loop is None
         self._loop = app_loop or asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -613,10 +613,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         # The call runs exactly as the agent asked (relative paths resolve against the
         # workspace root); a failed call gets a "did you mean" hint, never a rewrite.
-        effective_args = _ground_output_paths(
-            dict(args),
-            _tool_input_schema(self._mcp_tools.get(name)),  # fastmcp-4 snake-case-aware read
-            get_active_tool_workspace_root(),
+        definition = tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
+        effective_args = _ground_output_paths(  # fastmcp-4 snake-case-aware schema read
+            dict(args), _tool_input_schema(definition), get_active_tool_workspace_root()
         )
         if refusal := _node_output_refusal(effective_args):  # outside an isolated node's folder
             raise notify_refused_call(tool_observer, name, effective_args, refusal)
@@ -729,7 +728,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 injections.note("path_hint", hint)
             from clio_agent.tools.tool_hooks import boundary_error_note  # noqa: PLC0415
 
-            if note := boundary_error_note(error_text):  # #1905: why a fenced server refused
+            if note := boundary_error_note(name, effective_args):  # #1905: fence refusal
                 exc.add_note(note)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
                 if warning := self._record_tool_failure(name, error_text):
@@ -742,8 +741,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             raise
         finally:
             task_calls.TASK_CALL.reset(task_call_token)
-        # Bound output on the caller's thread so spills retain workspace custody.
-        result = bounded_model_tool_result(outcome.model_text)
+        result = bounded_model_tool_result(outcome.model_text)  # caller's thread: workspace custody
+        mcp_result_media.show_to_model(outcome.raw_result, name)  # its images reach the model
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
         )

@@ -28,6 +28,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
             "agents",
             "agent_tasks",
             "plugins",
+            "connectors",
             "workflows",
             "goal",
             "plan",
@@ -207,6 +208,22 @@ KEY_NOTES: dict[str, str] = {
         "Read from the user config.yaml only (a workspace file cannot move it). Precedence: "
         "--port > gact.port > CLIO_PORT > 17800."
     ),
+    "gact.mcp_apps.registry_limit": (
+        "How many interactive tool views shown in the conversation stay open at once; views "
+        "in a tab or a dashboard are not counted."
+    ),
+    "gact.mcp_apps.registry_ttl_s": (
+        "Seconds after which an unused interactive tool view in the conversation closes; "
+        "views in a tab or a dashboard never close on a timer."
+    ),
+    "gact.mcp_apps.sandbox_host": (
+        "Host name (or *.pattern for one host per server) that interactive tool views load "
+        "from when CLIO is reached over the network; it must reach CLIO and differ from the "
+        "name the web UI uses."
+    ),
+    "gact.mcp_apps.download_max_bytes": (
+        "Byte ceiling on one file download an interactive tool view saves into the workspace."
+    ),
     "gact.mailbox.max_pending_messages": (
         "Undelivered peer-message ceiling per session; 0 means unlimited. Task results and human "
         "input are exempt, and delivered history is retained."
@@ -247,9 +264,22 @@ KEY_NOTES: dict[str, str] = {
         "Worker slots for background run_code scripts; each running script holds one for its "
         "life. Default 10000: nothing bounds how many scripts run, the person stops them."
     ),
+    "plugins.offer_listed": (
+        "How many plugins and connectors not in a conversation the session facts name, so the "
+        "agent can offer one; the total is always given and offer_plugin with no plugin lists "
+        "them all."
+    ),
     "plugins.store_root": (
         "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
         "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
+    ),
+    "connectors.catalog_dirs": (
+        "More folders of connector entries, separated like PATH, read after the shipped "
+        "catalogs/connectors; a later folder cannot replace an entry. Set it for test fixtures."
+    ),
+    "connectors.derive_kit": (
+        "Every MCP server of the clio-kit CLIO pins is a connector in Discover, derived from "
+        "that clio-kit's catalogue. Set false to list only the hand-written catalog entries."
     ),
     "plugins.default_marketplace": (
         "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "
@@ -826,6 +856,15 @@ KEY_NOTES: dict[str, str] = {
     "limits.shell_max_timeout_s": (
         "Optional operator ceiling in seconds on any shell command; 0 (default) means no "
         "ceiling. When set, a call without a timeout runs up to this ceiling."
+    ),
+    "limits.tool_structured_bytes": (
+        "Byte bound on a tool result's structured content in the transcript and trace (a "
+        "script still receives the whole value); larger payloads are recorded as an envelope "
+        "with reason structured_content_over_wire_cap."
+    ),
+    "limits.tool_result_record_bytes": (
+        "Largest tool result, in JSON bytes, a call's record keeps inline (at least 1024); "
+        "past it the record keeps the result's head and the whole result in a file."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
@@ -1423,9 +1462,6 @@ KEY_NOTES: dict[str, str] = {
         "Tools never deferred behind search_tools whatever a plugin declares (the core loop); "
         "an entry ending in * names a prefix, such as fs_*."
     ),
-    "tools.script_media_max": (
-        "Most images or PDFs one script may attach to its result for the model to see."
-    ),
     "tools.result_share": (
         "Share of the model's context window (0-1] one tool result may use before it is saved "
         "to a file and the model gets its head; never more than the room left before "
@@ -1435,6 +1471,11 @@ KEY_NOTES: dict[str, str] = {
     "tools.unknown_window_result_tokens": (
         "Tokens of one tool result the model is shown when its context window is unknown (no "
         "handshake or catalog entry); a longer result is saved to a file with its head."
+    ),
+    "tools.script_media_max": (
+        "Images or PDFs one run_code script may attach to its result by viewing them "
+        "(view_image, view_pdf); they reach the model's next step. Views past this count are "
+        "refused with a typed reason. At least 1."
     ),
     "tools.recall_result_chars": (
         "Characters of a recall_context result shown inline (default 16000, about 4,000 "

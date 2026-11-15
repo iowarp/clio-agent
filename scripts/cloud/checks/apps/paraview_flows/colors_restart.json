@@ -1,0 +1,91 @@
+[
+ {
+  "open": "pvui4"
+ },
+ {
+  "send": "Open /home/user/wt/pv-ui/clio-agent/.cloud-run/apps-work/pvui4/wavelet.vti in ParaView and show me an isosurface of RTData at 150, coloured with the Viridis colour map and a colour legend."
+ },
+ {
+  "view": true
+ },
+ {
+  "maximize": true
+ },
+ {
+  "theme": "dark"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "row": "wavelet.vti"
+ },
+ {
+  "filter": "Slice",
+  "axis": "Z"
+ },
+ {
+  "choose": "Color map",
+  "item": "Inferno"
+ },
+ {
+  "panel": "Display"
+ },
+ {
+  "panelText": "slice before restart"
+ },
+ {
+  "shot": "colors-dark-display-before-restart-hero"
+ },
+ {
+  "theme": "light"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "shot": "colors-light-pipeline-before-restart-hero"
+ },
+ {
+  "restore": true
+ },
+ {
+  "restart": true
+ },
+ {
+  "view": true
+ },
+ {
+  "maximize": true
+ },
+ {
+  "theme": "light"
+ },
+ {
+  "panel": "Pipeline"
+ },
+ {
+  "panelText": "pipeline after restart"
+ },
+ {
+  "row": "iso"
+ },
+ {
+  "panel": "Display"
+ },
+ {
+  "panelText": "isosurface after restart"
+ },
+ {
+  "shot": "colors-light-display-after-restart-hero"
+ },
+ {
+  "theme": "dark"
+ },
+ {
+  "closePanel": true
+ },
+ {
+  "shot": "colors-dark-collapsed-after-restart-hero"
+ }
+]

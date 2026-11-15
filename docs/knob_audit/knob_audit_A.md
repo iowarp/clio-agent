@@ -71,7 +71,6 @@ HARDCODED | _OUTER_TIMEOUT_MARGIN_S / _CONTEXT_EXCERPT_MAX_CHARS | gact/agent_el
 HARDCODED | RELAY_PROBE_TIMEOUT_SECONDS | gact/relay_status.py:12 | - | relay TCP probe timeout 3s, raw
 HARDCODED | _RELAY_DISCOVERY_FAILURE_TTL_SECONDS | gact/relay_wiring.py:37 | - | relay discovery negative-cache TTL 20s, raw (tool_surfaces_ttl IS resolved)
 HARDCODED | _MAX_MODEL_CONTEXT_BYTES / _MAX_PRIVATE_RESULT_BYTES | gact/mcp_apps.py:62,61 | - | mcp-app model-context cap 128KiB / private-result cap 1MiB, raw
-HARDCODED | _REGISTRY_LIMIT / _REGISTRY_TTL_S | gact/mcp_apps.py:59-60 | - | mcp-app registry size 64 / TTL 3600s, raw
 HARDCODED | _BLUEPRINT_FILE_LIMIT / _BLUEPRINT_TEXT_FILE_LIMIT_BYTES | gact/agent_blueprint_files.py:60-61 | - | blueprint file count 5000 / text-file 2MiB caps, raw
 HARDCODED | MAX_OBSERVE_LIMIT / DEFAULT_OBSERVE_LIMIT / OBSERVE_EXCERPT_MAX_CHARS / OBSERVE_MATCH_MAX_CHARS | gact/agents/observe_runtime.py:40-48 | - | observe-tool limits (200/40/600/4000), raw
 HARDCODED | _PROCESSOR_WRITE_TIMEOUT_FLOOR_S / _PROCESSOR_MIN_UPLOAD_BYTES_PER_S | gact/resource_processing.py:38-39 | - | processor write-timeout floor 60s / min upload rate 1MiB/s, raw (other processor timeouts ARE resolved)

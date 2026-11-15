@@ -48,6 +48,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from clio_agent.gact.auth import has_valid_bearer
 from clio_agent.gact.cors import gact_allowed_hosts, gact_cors_origins
+from clio_agent.gact.mcp_app_sandbox_origin import is_sandbox_host, sandbox_route_allowed
+from clio_agent.gact.mcp_app_service_declaration import is_service_path
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,7 @@ DESKTOP_WEBVIEW_ORIGINS = frozenset(
 )
 """The Desktop WebView's own origins (macOS/Linux, Windows, Windows HTTPS scheme)."""
 
-TrustReason = Literal["host_not_allowed", "origin_not_allowed"]
+TrustReason = Literal["host_not_allowed", "origin_not_allowed", "sandbox_origin_refused"]
 
 _MESSAGES: dict[TrustReason, str] = {
     "host_not_allowed": (
@@ -70,6 +72,10 @@ _MESSAGES: dict[TrustReason, str] = {
     "origin_not_allowed": (
         "This request came from a web page this CLIO does not trust. Add its origin to "
         "gact.cors.origins, or send a bearer token."
+    ),
+    "sandbox_origin_refused": (
+        "An interactive tool's sandbox host serves only that tool's view and its service; "
+        "use CLIO's own address for every other request."
     ),
 }
 
@@ -135,6 +141,25 @@ def browser_origin_allowed(origin: str, scope: Scope, headers: Headers) -> bool:
     return origin == f"{scheme}://{host}"
 
 
+def sandbox_host_refusal(scope: Scope) -> TrustRefusal | None:
+    """Refuse every route but the sandbox document and service on a sandbox host.
+
+    An MCP App view runs same-origin with its sandbox host
+    (:mod:`clio_agent.gact.mcp_app_sandbox_origin`), so that host carries no API
+    authority, with or without a bearer token.
+    """
+
+    headers = Headers(scope=scope)
+    hostname = host_name(headers.get("host", ""))
+    if not is_sandbox_host(hostname):
+        return None
+    method = "GET" if scope["type"] == "websocket" else str(scope.get("method") or "").upper()
+    path = str(scope.get("path") or "")
+    if sandbox_route_allowed(path, method):
+        return None
+    return TrustRefusal("sandbox_origin_refused", f"host={hostname!r} path={path!r}")
+
+
 def trust_refusal(scope: Scope) -> TrustRefusal | None:
     """Return why a token-less request must be refused, or ``None`` to admit it.
 
@@ -146,10 +171,18 @@ def trust_refusal(scope: Scope) -> TrustRefusal | None:
     """
 
     headers = Headers(scope=scope)
+    if is_sandbox_host(host_name(headers.get("host", ""))):
+        # Only the sandbox document and service route reach here (sandbox_host_refusal);
+        # the service route is bound by the capability in its path.
+        return None
     if not host_allowed(headers):
         return TrustRefusal("host_not_allowed", f"host={headers.get('host')!r}")
     method = "GET" if scope["type"] == "websocket" else str(scope.get("method") or "").upper()
     if method not in STATE_CHANGING_METHODS:
+        return None
+    if is_service_path(str(scope.get("path") or "")):
+        # An app's service route (MA23) is bound by the capability in its path, and
+        # its sandboxed view sends ``Origin: null``; the capability is the guard.
         return None
     origin = headers.get("origin")
     fetch_site = headers.get("sec-fetch-site", "").lower()
@@ -203,17 +236,20 @@ class OriginGuardMiddleware:
         if scope["type"] not in ("http", "websocket"):
             await self._app(scope, receive, send)
             return
-        if not has_valid_bearer(scope, getattr(self._state, "bearer_token", None)):
+        refusal = sandbox_host_refusal(scope)
+        if refusal is None and not has_valid_bearer(
+            scope, getattr(self._state, "bearer_token", None)
+        ):
             refusal = trust_refusal(scope)
-            if refusal is not None:
-                logger.warning(
-                    "gact request refused: reason=%s type=%s method=%s path=%s %s",
-                    refusal.reason,
-                    scope["type"],
-                    scope.get("method"),
-                    scope.get("path"),
-                    refusal.detail,
-                )
-                await _refuse(scope, receive, send, refusal)
-                return
+        if refusal is not None:
+            logger.warning(
+                "gact request refused: reason=%s type=%s method=%s path=%s %s",
+                refusal.reason,
+                scope["type"],
+                scope.get("method"),
+                scope.get("path"),
+                refusal.detail,
+            )
+            await _refuse(scope, receive, send, refusal)
+            return
         await self._app(scope, receive, send)

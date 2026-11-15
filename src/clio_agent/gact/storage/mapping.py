@@ -36,6 +36,9 @@ def mapping_options(service: StorageService, record: SourceRecord) -> dict[str, 
     elif provider == "ndp":
         allowed = False
         reason = "NDP originals cannot be changed through this connection."
+    elif provider == "s3":
+        allowed = False
+        reason = "S3 objects are linked read-only; results are written to the workspace."
     elif provider in {"github", "google_drive"} and not service.auth.connected(record):
         allowed = False
         reason = "Sign in with an account that can edit this folder to enable publishing."

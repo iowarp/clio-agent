@@ -16,6 +16,7 @@ from clio_agent.gact.a2ui import (
 from clio_agent.gact.a2ui_actions.dispatcher import dispatch_action
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_capabilities import register_a2ui_capabilities_routes
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_catalogs import register_a2ui_catalog_routes
+from clio_agent.gact.a2ui_catalogs.validation import A2UIMcpAppArgumentsError
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import A2UI_V091
 from clio_agent.gact.routes._body import json_body
@@ -136,6 +137,8 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 catalog_id=exc.catalog_id,
             )
             raise _error(422, "a2ui_function_not_in_catalog", str(exc)) from exc
+        except A2UIMcpAppArgumentsError as exc:
+            raise _error(422, exc.reason, str(exc)) from exc
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
         # Sibling of the model tool's ``created`` flag: the same fold-derived

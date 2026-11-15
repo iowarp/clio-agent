@@ -306,3 +306,54 @@ real: earlier development runs from the same network had used OpenAlex's keyless
 allowance. Reproduce with `scripts/cloud/capture_search_docs.mjs` against a stack started
 with `bash scripts/cloud/stack.sh start` and a fresh `CLIO_AGENT_HOME`.
 
+## Connectors and apps
+
+Untouched screenshots of real development sessions on the cloud stack (`claude_code`
+provider, Sonnet 5.5), dark mode, 1440 x 900, CLIO brand. Files at 2880 x 1800 were taken
+at two device pixels per CSS pixel; the rest at one. `capture-manifest.json`
+(`connectors_and_apps`) records each file's checksum, size and source. The record of each
+run is in `docs/design/sdk/mcp-apps-ledger.md`: the `DOCS` rows (stack N=35, 14 November
+2026) for the fresh captures, the `PF` rows (stack N=38) for the two offer cards
+retaken after the compact-card fix, and the stream named below for those copied from
+the qualification gallery. Requests are plain unless a row says otherwise; permission prompts
+were answered "This session" and offer cards "Add" by the harness,
+`scripts/cloud/checks/apps/docs_capture.mjs`.
+
+The station list `example_stations_rainier.csv` is example data (ten made-up codes at
+real places). The Home Assistant captures use ha-mcp's public demo instance
+(`https://ha-mcp-demo-server.qc-h.net`, token `demo`, reset weekly) with read requests
+only; its sensors are demo sensors. `wave.pvd` is synthetic test data. The Extensions,
+picker and offer captures were retaken after the `plugins` stream (connectors and
+plugins shown as what they are), on a fresh stack.
+
+| File | What it shows | Source |
+| --- | --- | --- |
+| `apps/geo-card-inline.png` | Geo's globe in its card in the conversation, workspace `cascadia`. | `docs`, DOCS-C1 |
+| `apps/geo-in-tab.png` | The same view in a workbench tab; the card reads Open in a tab. | `docs`, DOCS-C1 |
+| `apps/geo-maximized.png` | The view maximized, navigation collapsed. | `docs`, DOCS-C1 |
+| `apps/geo-look.png` | The agent's answer after looking at the globe in its tab. | `docs`, DOCS-C2 |
+| `apps/geo-reopened.png` | The view reopened in its tab after CLIO restarted. | `docs`, DOCS-C2 |
+| `apps/geo-dashboard-linked.png` | The globe and a station table in one dashboard, selection linked both ways. | `geo-globe`, GG3 |
+| `apps/paraview-in-tab.png` | The ParaView plugin's view in a tab, workspace `wave-study`. | `final`, FQ-WEB |
+| `apps/paraview-region-comment.png` | A region comment being written on the ParaView view. | `final`, FQ-WEB |
+| `apps/paraview-region-comment-answer.png` | The agent's answer to that comment. | `final`, FQ-WEB |
+| `apps/paraview-dashboard-time-linked.png` | ParaView and two charts in one dashboard, linked by time, from a plain request. | `final`, FQ-WEB |
+| `apps/pdf-dashboard-table.png` | The PDF viewer in a dashboard beside a table built from the paper. | `more-conn`, MC4 |
+| `connectors/discover-catalog.png` | Discover: the catalog as cards grouped by domain, each with its logo, what it brings, its description, where it comes from and its + (Enable). | `discover`, DC |
+| `connectors/agent-load-card.png` | The agent-load card: EarthScope asks to enable Geo and National Data Platform, each with its logo. | `logos`, LG |
+| `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, Connector (an MCP server), In conversations. | `docs`, DOCS-C9 |
+| `connectors/add-plugin-picker.png` | A new conversation's Add plugin menu: Connectors, then Packs. | `docs`, DOCS-C10 |
+| `connectors/add-plugin-picker-plugins.png` | The same menu scrolled: the Plugins group with Home Assistant. | `docs`, DOCS-C10 |
+| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector, with View connector. | `prefinal`, PF-C2 |
+| `connectors/offer-plugin.png` | The compact offer card for the Home Assistant plugin; its saved address and token wait under Settings (2). | `prefinal`, PF-C1 |
+| `connectors/offer-view-plugin.png` | View plugin over the waiting card: two skills, one MCP server. | `docs`, DOCS-C13 |
+| `connectors/offer-plugin-answered.png` | The reply after Add: a skill loaded and the plugin's tools used. | `docs`, DOCS-C13 |
+| `connectors/add-by-command.png` | Add by URL or command, filled for a local command; not added. | `docs`, DOCS-C11 |
+| `connectors/marketplaces.png` | Installed marketplaces, with clio-kit from GitHub. | `docs`, DOCS-C11 |
+| `connectors/earthdata-results.png` | A NASA Earthdata granule search, and a download refused without a login. | `docs`, DOCS-C3 |
+| `files/cad-step-assembly.png` | A two-part STEP assembly in the file viewer, with its size and parts list. | `cad`, CAD2 |
+| `files/cad-region-comment.png` | A region comment on the whistle's section, a 1.60 mm wall measured. | `fileview`, FV-Q1 |
+
+Reproduce with `bash scripts/cloud/stack.sh start` (`CLIO_CLOUD_ISOLATE=1`) and
+`node scripts/cloud/ui_check.mjs --theme dark --steps scripts/cloud/checks/apps/docs_capture.mjs`
+with the `DOCS_MODE` the step file describes.

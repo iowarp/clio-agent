@@ -26,7 +26,25 @@ UI_PORT="${UI_PORT:-5173}"
 FIXTURE_PORT="${FIXTURE_PORT:-8790}"
 FIXTURE_TLS_PORT="${FIXTURE_TLS_PORT:-8791}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
-export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-haiku-5-5}"
+export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-sonnet-5-5}"
+# CLIO_CLOUD_ISOLATE=1 gives this stack its own CLIO config, data, state and cache
+# folders under .cloud-run/xdg, so several stacks (one per worktree, on their own
+# ports) can run side by side without sharing sessions or saved connections.
+# HOME is left alone, so the signed-in Claude CLI keeps working.
+if [ "$UI_PORT" != "5173" ] && [ -z "${CLIO_GACT_CORS_ORIGINS:-}" ]; then
+  # A UI on another port must be a trusted browser origin of this stack's agent.
+  export CLIO_GACT_CORS_ORIGINS="http://127.0.0.1:$UI_PORT,http://localhost:$UI_PORT"
+fi
+if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
+  for role in CONFIG DATA STATE CACHE; do
+    dir="$STATE/xdg/$(echo "$role" | tr '[:upper:]' '[:lower:]')"
+    mkdir -p "$dir"
+    export "XDG_${role}_HOME=$dir"
+  done
+  # Several stacks share one cloud disk: keep each clio-core store small (it
+  # preallocates about 1 GB otherwise).
+  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-128MB}"
+fi
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
 export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"
 
@@ -63,6 +81,10 @@ start_ui() {
   if alive "$STATE/ui.pid"; then echo "ui: already running"; return 0; fi
   local web="$ROOT/external/gact-tui/web"
   [ -f "$web/package.json" ] || { echo "ui: $web missing (run scripts/cloud/session_start.sh)"; return 1; }
+  # Run the UI as CLIO (logo, name, accent), as the release builds do, not the
+  # neutral GACT profile. The override is gitignored in gact-tui.
+  local brand="$ROOT/external/gact-tui/brand.config.local.json"
+  [ -f "$brand" ] || printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$ROOT" > "$brand"
   launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
   if wait_http "http://127.0.0.1:$UI_PORT/" 120; then
     echo "ui: http://127.0.0.1:$UI_PORT"

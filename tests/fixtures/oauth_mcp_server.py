@@ -182,6 +182,15 @@ def application(port: int, *, stdio: bool = False) -> Any:
             f"""<!doctype html><html><head><title>Synthetic MCP sign-in</title></head><body style="font:18px system-ui;background:#f5fafb;color:#142b35;padding:8vh 24px"><main style="max-width:36rem;margin:auto;background:white;border:1px solid #cadce3;border-radius:16px;padding:32px"><p>CLIO · OAuth protocol fixture</p><h1>Connect the test account?</h1><p>This is a synthetic account for qualification. It exposes one read-only tool and cannot access Home Assistant or other services.</p><p><strong>{html.escape(client.client_name or "CLIO")}</strong> requests access to read the fixture status.</p><p><a style="display:inline-block;background:#007e8c;color:white;padding:12px 20px;border-radius:8px;text-decoration:none" href="?id={nonce}&amp;decision=allow">Allow test connection</a> <a href="?id={nonce}&amp;decision=deny">Deny</a></p></main></body></html>"""
         )
 
+    @mcp.custom_route("/fixture-revoke", methods=["POST"])
+    async def revoke(_request: Request) -> JSONResponse:
+        """Revoke every issued credential on the server's side (CLIO still holds its own)."""
+        revoked = len(auth.access) + len(auth.refresh)
+        auth.access = {k: v for k, v in auth.access.items() if k == "qualification-header-token"}
+        auth.refresh.clear()
+        auth.counts["revoked"] = auth.counts.get("revoked", 0) + revoked
+        return JSONResponse({"revoked": revoked})
+
     @mcp.custom_route("/fixture-counters", methods=["GET"])
     async def counters(_request: Request) -> JSONResponse:
         return JSONResponse(auth.counts)
