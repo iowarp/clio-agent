@@ -134,8 +134,14 @@ def test_a_started_call_with_no_recorded_outcome_is_reported_unknown_after_resta
     assert lost["input"] == {"record_id": "lost"}
     assert lost["metadata"]["outcome"]["reason"] == TOOL_OUTCOME_UNRECORDED
     assert lost["metadata"]["started_at"] == "2026-11-03T10:00:00+00:00"
+    # Either closing row says why the turn ended (CC-F1: the incomplete row kept its
+    # parts but carried no reason, so a turn cut mid answer read as a finished one).
+    assert closing["stop_reason"] == "error"
+    assert closing["error_info"]["error"] == "server_restart_interrupted"
+    assert closing["error_info"]["details"]["turn_id"] == _TURN
     if sealed:  # the turn's own incomplete row keeps its sealed part, verbatim, first
-        assert closing["id"] == "msg_asst_crash" and closing["stop_reason"] == "incomplete"
+        assert closing["id"] == "msg_asst_crash"
+        assert closing["metadata"]["transcript_incomplete"]["message_id"] == "msg_asst_crash"
         assert [(part["type"], part["call_id"]) for part in closing["parts"]] == [
             ("tool_call", "done"),
             ("tool_result", "done"),
@@ -147,8 +153,6 @@ def test_a_started_call_with_no_recorded_outcome_is_reported_unknown_after_resta
         assert restored["metadata"]["outcome"]["reason"] == TOOL_RESULT_RESTORED
         assert not restored.get("is_error")
         assert '"n": "done"' in restored["content"][0]["text"]
-    else:
-        assert closing["error_info"]["error"] == "server_restart_interrupted"
 
     # What the client reads: the call's outcome is unknown, never a success or a gap.
     tools = {tool["id"]: tool for tool in snapshot["tools"]}
