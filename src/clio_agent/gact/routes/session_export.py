@@ -18,15 +18,11 @@ from clio_agent.gact.session_export_downloads import ExportDownloads
 from clio_agent.gact.session_export_review import review_summary
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
-# The offline renderer inlines its fonts, map worker and viewers: about 37 MB in November
-# 2026, so a 30 MB bound refused every export with a 422.
-RENDERER_MAX_CHARS = 64_000_000
-
 
 class VisualReview(BaseModel):
     """Frontend renderer and its captured, credential-free visual dependencies."""
 
-    javascript: str = Field(min_length=1, max_length=RENDERER_MAX_CHARS)
+    javascript: str = Field(min_length=1, max_length=30_000_000)
     stylesheet: str = Field(max_length=5_000_000)
     snapshot: dict[str, Any]
 
