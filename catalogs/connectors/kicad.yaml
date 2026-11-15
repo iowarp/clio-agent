@@ -15,8 +15,12 @@
   server:
     command: uvx
     args:
+      # cairosvg turns the schematic's SVG into the PNG sch_render_png returns; the fork
+      # keeps it in its dev extra only, so without it the agent cannot look at a schematic.
+      - --with
+      - cairosvg>=2.9.1,<3
       - --from
-      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@78d23a29bf82d2cf3545b932353da3f8b7051b88
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@03f7a0752ca38b77c50207cbc0a48f8da67bc592
       - kicad-mcp-pro
       - --transport
       - stdio
