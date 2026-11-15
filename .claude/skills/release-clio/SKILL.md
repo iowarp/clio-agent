@@ -175,6 +175,23 @@ test `tests/test_scripts/test_mcp_mem_budget.py` pins the recorded values at
 or under the #930 campaign targets (1.8 GB peak / 1.3 GB post-idle) — any
 raise past that line fails plain CI.
 
+**Conversation continuity gate (release-gating).** A conversation must survive a
+restart and an update: it reopens with its messages and tool results, a turn the
+transition cut reads as interrupted with a reason, and a new plain message gets an
+answer that uses the earlier turns. Install the previous release in its own venv
+(`uv venv` plus `uv pip install -r` an export of that tag's lock and
+`clio-agent==<previous>`; uv hardlinks from its cache, so check `df` first), start
+an isolated cloud stack (`CLIO_CLOUD_ISOLATE=1`, own ports), then:
+```sh
+python3 scripts/acceptance/continuity_check.py grid --cells A,B,C,D --states 1,2,3a,3b \
+    --old-agent-bin <previous-release venv>/bin/clio-agent --out .cloud-run/continuity
+```
+Every cell must print PASS (it spends real model calls). `--states` also takes `3s`, `4`,
+`5`, `7`, `8`, `9r` and `9f` (stopped, waiting, child task, compacted, rewound, forked).
+Open a sample of the conversations with `scripts/cloud/checks/continuity_open.mjs` and
+read the screenshots. Grid and history: the "Conversation continuity (CC)" section of
+`docs/design/sdk/mcp-apps-ledger.md`. Remove the old venv afterwards.
+
 ### 5. Integrate the qualified CLIO correction into main
 
 Commit the verified pins, CLIO version/lock/install metadata, changelog and

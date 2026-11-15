@@ -8,6 +8,13 @@
 #   bash scripts/cloud/stack.sh restart
 #   bash scripts/cloud/stack.sh status
 #   bash scripts/cloud/stack.sh logs      # last lines of both logs
+#   bash scripts/cloud/stack.sh agent-start|agent-stop   # the agent server alone
+#   bash scripts/cloud/stack.sh ui-start|ui-stop         # the web UI alone
+#
+# CLIO_AGENT_BIN runs another clio-agent executable (a released version in its own
+# venv) on the same state folders and ports, as an update does
+# (scripts/acceptance/continuity_check.py); CLIO_UI_DIR does the same for the web UI
+# with another gact-tui checkout.
 #
 # Ports: AGENT_PORT (default 8787, the UI's default service address) and
 # UI_PORT (default 5173); FIXTURE_PORT (default 8790) serves the browser fixture
@@ -68,8 +75,14 @@ wait_http() {  # wait_http <url> <seconds>
 
 start_agent() {
   if alive "$STATE/agent.pid"; then echo "agent: already running"; return 0; fi
+  local bin=(uv run --no-sync clio-agent)
+  [ -n "${CLIO_AGENT_BIN:-}" ] && bin=("$CLIO_AGENT_BIN")
+  # Keep the log of the run before this one (agent.log.all), for reading traces
+  # across a restart.
+  [ -f "$STATE/agent.log" ] && cat "$STATE/agent.log" >> "$STATE/agent.log.all"
+  echo "=== $(date -u +%FT%TZ) start ${bin[*]}" >> "$STATE/agent.log.all"
   launch "$STATE/agent.pid" "$STATE/agent.log" "$ROOT" \
-    uv run --no-sync clio-agent serve --host 127.0.0.1 --port "$AGENT_PORT"
+    "${bin[@]}" serve --host 127.0.0.1 --port "$AGENT_PORT"
   if wait_http "http://127.0.0.1:$AGENT_PORT/v1/health" 180; then
     echo "agent: http://127.0.0.1:$AGENT_PORT (provider $CLIO_LM_PROVIDER, model $CLIO_LM_MODEL)"
   else
@@ -79,11 +92,13 @@ start_agent() {
 
 start_ui() {
   if alive "$STATE/ui.pid"; then echo "ui: already running"; return 0; fi
-  local web="$ROOT/external/gact-tui/web"
+  # CLIO_UI_DIR runs another gact-tui checkout (a released tag) in the same place.
+  local tui="${CLIO_UI_DIR:-$ROOT/external/gact-tui}"
+  local web="$tui/web"
   [ -f "$web/package.json" ] || { echo "ui: $web missing (run scripts/cloud/session_start.sh)"; return 1; }
   # Run the UI as CLIO (logo, name, accent), as the release builds do, not the
   # neutral GACT profile. The override is gitignored in gact-tui.
-  local brand="$ROOT/external/gact-tui/brand.config.local.json"
+  local brand="$tui/brand.config.local.json"
   [ -f "$brand" ] || printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$ROOT" > "$brand"
   launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
   if wait_http "http://127.0.0.1:$UI_PORT/" 120; then
@@ -136,6 +151,10 @@ case "${1:-status}" in
   stop) stop_one ui; stop_one agent; stop_one fixture ;;
   restart) stop_one ui; stop_one agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
   status) status ;;
+  agent-start) start_agent ;;
+  agent-stop) stop_one agent ;;
+  ui-start) start_ui ;;
+  ui-stop) stop_one ui ;;
   logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" "$STATE/fixture.log" 2>/dev/null ;;
-  *) echo "usage: $0 start|stop|restart|status|logs"; exit 2 ;;
+  *) echo "usage: $0 start|stop|restart|status|logs|agent-start|agent-stop|ui-start|ui-stop"; exit 2 ;;
 esac
