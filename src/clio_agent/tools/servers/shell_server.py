@@ -468,6 +468,12 @@ async def bash(
     access_reason: Annotated[
         str, Field(description="Explain why this command needs the declared external paths.")
     ] = "",
+    outside_sandbox: Annotated[
+        bool,
+        Field(
+            description="Run this one command outside CLIO's sandbox. Use it only when the sandbox, not the account, blocked the command (a boundary of kind privilege_denied, or a system install the sandbox cannot run even with folders allowed), and give access_reason. CLIO shows the person the exact command and runs it only if they allow; it never takes a password."
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 
@@ -487,7 +493,13 @@ async def bash(
             "native_submission_required", "Background shell must use the native MCP task client."
         )
     return await execute_shell(
-        ctx, command, cwd, timeout_s, max_output_bytes, access_paths=access_paths
+        ctx,
+        command,
+        cwd,
+        timeout_s,
+        max_output_bytes,
+        access_paths=access_paths,
+        outside_sandbox=outside_sandbox,
     )
 
 
@@ -510,15 +522,20 @@ async def execute_shell(
     *,
     cleanup: ShellCleanupObserver | None = None,
     access_paths: list[str] | None = None,
+    outside_sandbox: bool = False,
 ) -> dict[str, Any]:
-    """Execute the retained confined workload, shared by both native shell modes."""
+    """Execute the retained confined workload, shared by both native shell modes.
+
+    ``outside_sandbox`` runs the command unfenced, only with a person's allow for exactly
+    this command (:mod:`clio_agent.runtime.sandbox_outside`); without one it is refused.
+    """
     if not isinstance(command, str) or not command.strip():
         return _error(
             "invalid_command",
             "command must be a non-empty string.",
             details={"field": "command"},
         )
-    if access_paths:
+    if access_paths and not outside_sandbox:
         # Declaring a path never grants it; execution rechecks actual folder rights.
         from clio_agent.gact.folder_access import requested_folders
 
@@ -577,8 +594,33 @@ async def execute_shell(
     # the shell seam carries no pdeathsig today, so it stays off here.
     from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
 
+    if outside_sandbox:
+        from clio_agent.runtime import sandbox_outside  # noqa: PLC0415
+
+        if not sandbox_outside.take(command):
+            return _error(
+                sandbox_outside.REASON_NOT_APPROVED,
+                "Running outside the sandbox needs the person's allow for this exact command. "
+                "Call shell_bash with outside_sandbox and access_reason; CLIO asks them.",
+            )
+        logger.warning(
+            "shell command running outside the sandbox with the person's allow call=%s", call_id
+        )
+        confined = sandbox.ConfinedSpawn(
+            command=argv[0],
+            args=list(argv[1:]),
+            env_overlay={},
+            popen_kwargs={},
+            result=sandbox.SandboxResult(
+                mechanism=sandbox.MECHANISM_NONE,
+                active=False,
+                reason="outside_sandbox_allowed",
+            ),
+        )
+    else:
+        confined = None
     try:
-        confined = sandbox.wrap_confined(
+        confined = confined or sandbox.wrap_confined(
             argv[0],
             argv[1:],
             write_roots=sandbox.effective_write_roots(

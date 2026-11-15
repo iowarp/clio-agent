@@ -470,8 +470,24 @@ retry. A confirmed `write_denied` with folders to ask for also raises the folder
 card (`gact/sandbox_folder_offer.py`, `origin: sandbox_boundary`): a pending permission
 that parks no call, so the session needs the person; allowing grants the folders, and a
 grant made another way (`POST /v1/workspaces/{wid}/grants`) settles the card (owner's
-review, CT41). No automatic rerun, no elevated lane;
-`artifact.policy_violation` reads the same diagnosis.
+review, CT41). No automatic rerun; `artifact.policy_violation` reads the same diagnosis.
+
+**Outside the sandbox, one command at a time.** Some blocks no folder grant lifts: the
+fenced child runs without the server account's privileges, so a server running as root
+still cannot replace files another account owns inside a granted folder (a package
+manager's download folders). A denial inside the territory on a path a root server may
+write is diagnosed as `privilege_denied` (`possible`); its message tells the agent that more
+folders will not help and how to ask. The agent then calls `shell_bash` with
+`outside_sandbox: true` and an `access_reason`. The gate always asks the person for that
+call, whatever the approval mode, the person's rules or the AI reviewer would do (a deny
+from a rule or the mode still wins); the card's title says the command runs outside CLIO's
+sandbox, shows the exact command and the reason, and offers only **allow** (this command,
+once) or **deny**, never a standing rule. An allow is recorded for exactly that command
+(`runtime/sandbox_outside.py`) and the shell takes it once, within ten minutes, then runs
+the command unfenced (mechanism `none`, reason `outside_sandbox_allowed`, logged). The
+shell refuses `outside_sandbox` without a recorded allow (`outside_sandbox_not_approved`), so
+a path that skipped the gate fails closed. CLIO never takes a password: a command that needs
+one (`sudo` on a desktop) is still the person's to run, as `elevation_required` says.
 
 ### Provenance tiers under the fence (#980)
 

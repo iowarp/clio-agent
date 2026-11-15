@@ -41,6 +41,11 @@ from typing import Any, Literal
 
 KIND_WRITE_DENIED = "write_denied"
 KIND_ELEVATION_REQUIRED = "elevation_required"
+#: Blocked inside the write roots, on a path the server's own account may write: the
+#: sandboxed child lacks the account's privileges there (a root server's child cannot
+#: replace another account's files), so no folder grant helps; the command may run
+#: outside the sandbox with the person's allow (:mod:`.sandbox_outside`).
+KIND_PRIVILEGE_DENIED = "privilege_denied"
 KIND_OFFICE_IN_SHELL = "office_in_shell"
 CONFIRMED = "confirmed"
 POSSIBLE = "possible"
@@ -132,6 +137,7 @@ class BoundaryDiagnosis:
             KIND_WRITE_DENIED,
             KIND_ELEVATION_REQUIRED,
             KIND_OFFICE_IN_SHELL,
+            KIND_PRIVILEGE_DENIED,
         ):
             return None
         return cls(
@@ -232,6 +238,17 @@ def diagnose_boundary(
     outside = [p for p in resolved if not within_roots(p, write_roots, platform=platform)]
     blocked = [p for p in outside if _person_could_write(p, flavor)]
     if not blocked:
+        inside = [p for p in resolved if p not in outside]
+        privileged = [p for p in inside if _account_may_write(p, flavor)]
+        if privileged and not narrowed:
+            return BoundaryDiagnosis(
+                kind=KIND_PRIVILEGE_DENIED,
+                confidence=POSSIBLE,
+                mechanism=mechanism,
+                paths=tuple(privileged),
+                message=_privilege_message(privileged, seam),
+                signature=signature,
+            )
         return None  # an ordinary permission error inside the territory, or outside the fence
     if narrowed:
         return BoundaryDiagnosis(
@@ -413,6 +430,38 @@ def _person_could_write(path: str, flavor: _Flavor) -> bool:
     return not _is_dir(parent) or os.access(parent, os.W_OK)
 
 
+def _server_is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _account_may_write(path: str, flavor: _Flavor) -> bool:
+    """Whether the server, running as root, may write this path its child could not.
+
+    A root server may write files another account owns; its sandboxed child runs without
+    those privileges. A server running as an ordinary account gives its child the same
+    rights, so a denial inside the territory there is an ordinary permission error.
+    Windows' ``os.access`` ignores ACLs, so nothing is claimed there.
+    """
+    if not flavor.native or flavor.windows or not _server_is_root():
+        return False
+    target = Path(path)
+    if not target.exists():
+        target = Path(nearest_existing_parent(path))
+    return os.access(target, os.W_OK)
+
+
+def _privilege_message(paths: Sequence[str], seam: Seam) -> str:
+    where = "this command" if seam == "shell" else "this step"
+    return (
+        f"The sandbox blocked {where} inside folders it may already write "
+        f"({_folders(paths)}): commands run there without this account's full privileges, "
+        "so allowing more folders will not help. If the step really needs it (installing "
+        "system software, changing files another account owns), call shell_bash again with "
+        "outside_sandbox=true and an access_reason: CLIO shows the person the exact command "
+        "and runs it outside the sandbox only if they allow. Never ask for a password."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Signatures and candidate paths.                                              #
 # --------------------------------------------------------------------------- #
@@ -448,6 +497,14 @@ def _line_candidates(lines: Sequence[str], flavor: _Flavor) -> list[str]:
             for match in _BEFORE_STRERROR.finditer(line):
                 token = match.group(1).strip(_TRIM)
                 if _path_like(token, flavor, quoted=False):
+                    found.append(token)
+    if not found and not flavor.windows:
+        # A tool that names the path earlier in the line ("Problem unlinking the file
+        # /var/lib/apt/... - PrepareFiles (13: Permission denied)"): absolute paths only.
+        for line in lines:
+            for token in line.split():
+                token = token.strip(_TRIM)
+                if token.startswith("/") and _path_like(token, flavor, quoted=False):
                     found.append(token)
     return found
 

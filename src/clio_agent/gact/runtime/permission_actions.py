@@ -47,6 +47,6 @@ def offered(row: Mapping[str, Any], action: str) -> bool:
     if action not in ANSWERS:
         return False
     extra = row.get("actions")
-    if action in STANDARD_ANSWERS:
-        return row.get("kind") != "folder_access" or action in (extra or ())
-    return action in (extra or ())
+    if extra:  # a question that names its answers takes only those
+        return action in extra
+    return action in STANDARD_ANSWERS and row.get("kind") != "folder_access"

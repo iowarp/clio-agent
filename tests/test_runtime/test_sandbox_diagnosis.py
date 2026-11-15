@@ -16,6 +16,13 @@ import pytest
 from clio_agent.runtime import sandbox_diagnosis as sd
 
 
+@pytest.fixture(autouse=True)
+def ordinary_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These cases model a server running as an ordinary account, whoever runs the tests
+    (a root server's own case is in ``test_gact/test_outside_sandbox.py``)."""
+    monkeypatch.setattr(sd, "_server_is_root", lambda: False)
+
+
 @pytest.fixture
 def territory(tmp_path: Path) -> tuple[Path, Path]:
     workspace = tmp_path / "ws"
