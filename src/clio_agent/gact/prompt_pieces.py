@@ -2,7 +2,7 @@
 
 The session facts reach the model as one user message, but one of their pieces, the
 list of plugins and connectors the agent can offer (``clio.reminder.session_facts_plugins``),
-has its own category in the context view: "Plugins you can add" (OL-D8). The piece is
+has its own category in the context view: "Plugin list" (OL-D8, OL-D12). The piece is
 identified structurally, where the facts are composed:
 
 1. :func:`join` composes the facts from their rendered pieces and returns a

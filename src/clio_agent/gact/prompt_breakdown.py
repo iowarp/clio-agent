@@ -47,7 +47,7 @@ LABELS = {
     "tools": "Tool definitions",
     "skills": "Skills",
     # The session facts' list of plugins and connectors the agent can offer (OL-D8).
-    "offerable": "Plugins you can add",
+    "offerable": "Plugin list",
     "messages": "Messages",
     "results": "Tool results",
     "reasoning": "Reasoning",

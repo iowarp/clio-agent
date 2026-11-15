@@ -27,6 +27,74 @@ def _listed(row: Mapping[str, Any]) -> str:
     return "\n".join(lines) or "None"
 
 
+def _found(row: Mapping[str, Any]) -> str:
+    lines = []
+    for item in row.get("matches") or []:
+        kind = "Connector" if item.get("kind") == "connector" else "Plugin"
+        mark = ", left out in Settings" if item.get("left_out_by_person") else ""
+        summary = f": {item['summary']}" if item.get("summary") else ""
+        lines.append(f"{item.get('name')} ({kind}{mark}){summary}")
+    return "\n".join(lines) or "Nothing matches"
+
+
+def _query_head(args: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """``Search plugins <words>`` or ``Plugins in <category>``, and its subject block."""
+
+    words, category = str(args.get("search") or "").strip(), str(args.get("category") or "")
+    blocks: list[dict[str, Any]] = []
+    if words:
+        blocks.append({"id": "query", "type": "text", "text": words})
+        if category.strip():
+            blocks.append(
+                {"id": "category", "type": "text", "label": "Category", "text": category.strip()}
+            )
+        return {"action": "Search plugins", "subject": "query"}, blocks
+    blocks.append({"id": "category", "type": "text", "text": category.strip()})
+    return {"action": "Plugins in", "subject": "category"}, blocks
+
+
+def _searched(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
+    head, blocks = _query_head(
+        {
+            "search": row.get("search", args.get("search")),
+            "category": row.get("category", args.get("category")),
+        }
+    )
+    count = int(row.get("count") or 0)
+    blocks.append(
+        {
+            "id": "matches",
+            "type": "text",
+            "label": f"Found ({count})" if count else "Found",
+            "text": _found(row),
+        }
+    )
+    if more := int(row.get("more") or 0):
+        blocks.append({"id": "more", "type": "text", "label": "Not shown", "text": f"{more} more"})
+    return {**head, "summary": str(row.get("message") or ""), "blocks": blocks}
+
+
+def _overview(row: Mapping[str, Any]) -> dict[str, Any]:
+    lines = [
+        f"{item.get('category') or 'No category'}: {item.get('count')}"
+        for item in row.get("categories") or []
+    ]
+    return {
+        "action": "List",
+        "subject": "listed",
+        "summary": str(row.get("message") or ""),
+        "blocks": [
+            {"id": "listed", "type": "text", "text": "plugin categories"},
+            {
+                "id": "categories",
+                "type": "text",
+                "label": f"Categories ({int(row.get('total') or 0)} in all)",
+                "text": "\n".join(lines) or "None",
+            },
+        ],
+    }
+
+
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """The finished call's row and blocks."""
 
@@ -34,6 +102,10 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
 
     row = structured if isinstance(structured, Mapping) else result
     row = row if isinstance(row, Mapping) else {}
+    if "matches" in row and not row.get("error"):
+        return _searched(args, row)
+    if "categories" in row and not row.get("error"):
+        return _overview(row)
     if "offerable" in row and not row.get("error"):
         return {
             "action": "List",
@@ -70,6 +142,10 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         if row.get("offerable"):
             blocks.append(
                 {"id": "offerable", "type": "text", "label": "Can be added", "text": _listed(row)}
+            )
+        elif row.get("matches"):
+            blocks.append(
+                {"id": "matches", "type": "text", "label": "Closest", "text": _found(row)}
             )
         status = "cancelled" if row.get("outcome") == "cancelled" else "failed"
         return {**head, "status": status, "blocks": blocks}
@@ -127,6 +203,11 @@ def present_start(args: Mapping[str, Any]) -> dict[str, Any]:
     """While the card waits: "Offer <plugin>" with the agent's reason."""
 
     name = str(args.get("plugin") or "")
+    if not name and (
+        str(args.get("search") or "").strip() or str(args.get("category") or "").strip()
+    ):
+        head, blocks = _query_head(args)
+        return {**head, "summary": "", "blocks": blocks}
     if not name:
         return {
             "action": "List",

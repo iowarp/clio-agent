@@ -450,4 +450,5 @@ def import_claude_plugin(
         executable_digest=exec_digest,
         text_digest=text_digest,
         keywords=tuple(str(k) for k in entry.get("keywords") or manifest.get("keywords") or ()),
+        category=str(entry.get("category") or manifest.get("category") or ""),
     )
