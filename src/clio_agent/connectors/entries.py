@@ -358,7 +358,7 @@ def add_derived(folder: Path, catalog: Catalog) -> None:
         entry_id = str(raw["id"])
         written = catalog.entries.get(entry_id)
         if written is not None:
-            taken = {
+            taken: dict[str, Any] = {
                 key: str(raw[key])
                 for key in ("group", "requires")
                 if raw.get(key) and not getattr(written, key)
