@@ -43,8 +43,12 @@ export async function allowPending(sessionId, log) {
   for (const row of listed.permissions || listed.items || []) {
     const id = row.id || row.permission_id;
     if (!id) continue;
-    log.push(`allowed: ${row.summary || row.title || row.tool_name || id}`);
-    await api("POST", `/v1/permissions/${id}`, { action: "allow_session" });
+    // The broadest answer the question offers: a command outside the sandbox offers only
+    // allow (once) or deny, a folder allow_workspace or deny, most calls allow_session.
+    const offered = row.actions || ["allow", "deny", "allow_session", "allow_workspace"];
+    const action = ["allow_session", "allow_workspace", "allow"].find((a) => offered.includes(a)) || "allow";
+    log.push(`allowed (${action}): ${row.summary || row.title || row.tool_name || id}`);
+    await api("POST", `/v1/permissions/${id}`, { action });
   }
 }
 
