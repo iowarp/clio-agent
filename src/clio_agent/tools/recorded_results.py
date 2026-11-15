@@ -32,8 +32,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import mcp_types
-
 from clio_agent import conf
 from clio_agent.runtime import trace
 from clio_agent.tools import view_only_results
@@ -154,6 +152,8 @@ def ledger_reply(reply: Any) -> Any:
     if len(body) <= record_bytes():
         return reply
     stored = _store(body)
+    import mcp_types  # noqa: PLC0415 - the MCP SDK loads on first use (#702)
+
     update: dict[str, Any] = {
         "content": [
             mcp_types.TextContent(type="text", text=f"{_note(stored)}\n\n{_head(content)}".rstrip())

@@ -27,8 +27,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-import mcp_types
-
 from clio_agent.tools.tool_ui_metadata import _tool_visible_to_model
 
 #: Typed reason on every compact record (trace, task ledger).
@@ -151,6 +149,8 @@ def stored_reply(reply: Any) -> Any:
         "isError": is_error,
     }
     record = _record(tool, wire, is_error=is_error)
+    import mcp_types  # noqa: PLC0415 - the MCP SDK loads on first use (#702)
+
     update: dict[str, Any] = {
         "content": [mcp_types.TextContent(type="text", text=_summary(record))],
         "structured_content": {"view_only_result": record},
