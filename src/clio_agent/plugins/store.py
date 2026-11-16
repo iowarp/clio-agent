@@ -460,7 +460,8 @@ class PluginStore:
             known = digests.get(record.id)
             if trusted and known == record.executable_digest:
                 record = self._load_trusted(record, market, diagnostics)
-            elif trusted:
+            elif trusted and record.has_executable_parts:
+                # Text needs no trust step: only executable parts wait for it.
                 held.append(record.id)
                 if known:
                     # Executable parts changed since trust: hold the update, keep the old record.

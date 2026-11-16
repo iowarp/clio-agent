@@ -1,6 +1,6 @@
 ---
 name: clio
-description: Answer questions about CLIO itself from the documentation of the installed version - what CLIO can do, how to do something in it, what a feature, setting or message means, and why it behaved some way. Use when the person asks "how do I...", "can CLIO...", "where is...", "what does ... mean" or "why did CLIO..." about the app, not about their data.
+description: Answer questions about CLIO itself from the documentation of the installed version - what CLIO can do, how to do or set up something in it, which of its features fit a goal, what a feature, setting or message means, and why it behaved some way. Use when the person asks "how do I...", "can CLIO...", "how should I set up CLIO for...", "what's the best way to ... in CLIO", "where is...", "what does ... mean" or "why did CLIO..." about the app, not about their data. For advice on setting CLIO up, the docs describe the options to choose from.
 ---
 
 # Answering questions about CLIO
@@ -25,8 +25,9 @@ A question that needs more than two or three pages ("how should I set up CLIO fo
 my lab's analysis?", "what is the best way to automate this?") goes to the
 `clio-guide` subagent with the person's question in their words. It reads what it
 needs in its own context and returns the answer, the pages it used, and the steps
-and screenshots that belong in the reply. Show its answer; do not read the same
-pages again.
+and screenshots that belong in the reply. Present its answer the way "Show instead
+of tell" below describes: its steps with the screenshots it named, as Markdown
+images under their steps, and its diagram as a diagram. Do not read the same pages again.
 
 ## The person's words and the page that answers
 
@@ -50,23 +51,26 @@ The map's descriptions are the final word: use them when a row above does not fi
 
 ## Show instead of tell
 
-Render with the components of the `clio-workspace` catalog when a picture helps
-more than prose. Load the `a2ui-catalog-clio-workspace` skill for their fields.
+Show when a picture helps more than prose. The pages carry their screenshots as
+Markdown images (`![alt](plugin-asset://guide/captures/<name>.webp)`); put the ones
+that help into your answer exactly as the page writes them, next to the step they
+show. They render in the conversation from the installed docs, offline.
 
-- **A how-to with more than three actions in the app:** a `clio.steps.v1` view with
-  one step per action, followed by the page's captures of those screens as `Image`
-  components (`url` is the `plugin-asset://guide/captures/<name>.webp` reference the
-  page shows, `description` is its alt text).
-- **Where something is in the app:** the page's capture of that screen, as an
-  `Image`.
+- **A how-to with more than three actions in the app:** numbered steps, one action
+  each, with the screenshot of each screen under its step when the page has one. In
+  a client that renders interactive views, a `clio.steps.v1` view followed by the
+  captures as `Image` components (`url` is the same `plugin-asset://` reference) can
+  replace the list; load the `a2ui-catalog-clio-workspace` skill for its fields.
+- **Where something is in the app:** the page's screenshot of that screen.
 - **How parts fit together** (a plugin's parts, a flow's shape, what calls what): a
-  `clio.mermaid.v1` diagram.
+  Mermaid diagram (a `mermaid` code block, or `clio.mermaid.v1`).
 - **A choice the person has to make** (which part type, which marketplace, which
-  model): a `ChoicePicker` with one option per choice and what each means.
+  model): a `ChoicePicker` with one option per choice and what each means, or a short
+  table.
 
-Use a capture only when the page you answer from shows it, and only the ones that
+Use a screenshot only when the page you answer from shows it, and only the ones that
 help: one screen is often enough. A short answer stays prose. Never link an image
-from the web; every capture the docs have is bundled.
+from the web; every screenshot the docs have is bundled.
 
 ## Questions about this installation
 

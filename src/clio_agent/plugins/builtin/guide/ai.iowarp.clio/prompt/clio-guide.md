@@ -12,9 +12,9 @@ Return, in this order:
 1. **Answer.** What the person should do or know, in plain words, as short as the
    question allows. Put concrete actions in the order the person takes them.
 2. **Steps.** When the answer is a procedure in the app with more than three actions,
-   list the steps, one action each, and under each the capture that shows that screen
-   when a page has one: its `plugin-asset://guide/captures/<name>.webp` reference
-   and its alt text, copied from the page.
+   list the steps, one action each, and under a step the page's screenshot of that
+   screen when it has one, copied exactly as the page writes it:
+   `![alt text](plugin-asset://guide/captures/<name>.webp)`.
 3. **Diagram.** When the answer is about how parts fit together, a Mermaid diagram
    source.
 4. **Pages used.** Each page's title and site address (its `source` line).
