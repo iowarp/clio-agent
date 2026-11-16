@@ -41,6 +41,7 @@ ARC_INIT_DEGRADE_REASONS = (
     CLIO_CORE_DAEMON_CONFIG_UNKNOWN,  # daemon's recorded config is unreadable: refused
     FOREIGN_DAEMON_ON_PORT,  # another home's daemon holds a hand-written config's port
     "clio_core_not_durable",  # no durable tier: a restart would lose every record
+    "clio_core_metadata_log_unreadable",  # a restart would lose every later record (FN-14)
     "cte_store_location_in_use",  # a moved store's old or new location is still in use
     "cte_store_location_mismatch",  # the store names a location that cannot be relocated
     "clio_core_init_error",  # any other clio-core initialization failure

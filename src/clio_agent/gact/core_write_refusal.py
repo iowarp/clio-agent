@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from clio_agent.arc.clio_core_disk_guard import DISK_LOW
 from clio_agent.arc.clio_core_retry import last_lost_put_write, last_lost_put_write_ever
 from clio_agent.gact.session_records import WRITE_FAILED_REASON
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -36,6 +37,11 @@ NO_ROOM_CODES = frozenset({12, 13})
 MESSAGE = (
     "CLIO's conversation store is refusing writes, so nothing new can be recorded. "
     "Free disk space or give the store more room, then restart CLIO."
+)
+MESSAGE_DISK_LOW = (
+    "The disk that holds CLIO's conversation store is nearly full, so CLIO stopped "
+    "writing to it before the store could be damaged. Free disk space; writing resumes "
+    "by itself."
 )
 MESSAGE_NO_ROOM = (
     "CLIO's conversation store is full, so nothing new can be recorded. "
@@ -64,11 +70,17 @@ def _refusal(route: str) -> ErrorInfo | None:
             lost.native_code,
             lost.name,
         )
+    disk_low = DISK_LOW in lost.error  # CLIO's own refusal (FN-14), not clio-core's
     return ErrorInfo(
         error=CORE_WRITES_REFUSED,
-        message=MESSAGE_NO_ROOM if lost.native_code in NO_ROOM_CODES else MESSAGE,
+        message=MESSAGE_DISK_LOW
+        if disk_low
+        else MESSAGE_NO_ROOM
+        if lost.native_code in NO_ROOM_CODES
+        else MESSAGE,
         details={
             "reason": lost.reason,
+            "cause": DISK_LOW if disk_low else "",
             "native_code": lost.native_code,
             "lost_at": lost.occurred_at,
             "lost_payload_bytes": lost.payload_bytes,

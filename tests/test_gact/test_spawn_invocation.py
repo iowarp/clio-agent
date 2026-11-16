@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from clio_agent.gact.agents.context_repair import started_by_call as _started_by_call
 from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT
-from clio_agent.gact.conversation_recovery import _started_by_call
 from clio_agent.gact.spawn_invocation import spawn_invocation_id, started_by
 
 
@@ -57,13 +57,16 @@ def test_recovery_names_the_flow_an_interrupted_call_started(monkeypatch) -> Non
     """A crash after run_flow accepted, before its observation: the uncertainty names it."""
     import json
 
-    from clio_agent.arc.task_types import ContextBoundary
-    from clio_agent.gact import conversation_recovery
+    from clio_agent.gact import context
+    from clio_agent.gact.agents import context_repair
 
     monkeypatch.setattr(
         "clio_agent.gact.agents.clio_react_record._token_estimate", lambda _value: 1
     )
-    call = SimpleNamespace(status="live", kind="tool_call", content={"id": "toolu_7"})
+    monkeypatch.setattr(context_repair, "_report", lambda *_args: None)
+    call = SimpleNamespace(
+        status="live", kind="tool_call", content={"id": "toolu_7"}, step=0, turn_id="t"
+    )
     flow = SimpleNamespace(
         handle="task_flow",
         kind="Subagent",
@@ -99,10 +102,11 @@ def test_recovery_names_the_flow_an_interrupted_call_started(monkeypatch) -> Non
         task_snapshot=rows.get,
         confirm_write=lambda write: write(),
     )
-    owner = SimpleNamespace(history=history)
-    assignment = SimpleNamespace(handle="task_parent", owner=SimpleNamespace(session_id="parent"))
-    boundary = ContextBoundary(session_id="parent", scope="s", logical_time=0)
-    conversation_recovery._record_interrupted_calls(owner, assignment, boundary)
+    token = context.set_app(SimpleNamespace(state=SimpleNamespace(task_history=history)))
+    try:
+        context_repair.repair_unanswered_calls(history.arc, "parent", "s")
+    finally:
+        context.reset(token)
 
     body = json.loads(inserted[0]["text"])
     assert body["error"] == "operation_outcome_uncertain" and body["resubmitted"] is False

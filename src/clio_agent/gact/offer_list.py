@@ -2,13 +2,14 @@
 
 The session facts name the plugins and connectors a conversation could take
 (:func:`clio_agent.gact.plugin_offer.offerable`), the first ``plugins.offer_listed`` of
-them by default. The person can change that list in Settings ("Plugins the agent can
-offer"): untick an entry inside the default cap, or tick one beyond it. Their choice is
+them by default. The person can change that list in Settings (:data:`SETTINGS_PLACE`):
+untick an entry inside the default cap, or tick one beyond it. Their choice is
 an overlay on the default, never a copy of the list, so entries that arrive later
 (a new marketplace, a connector) still follow the default order:
 
-* ``exclude``: entries the person unticked. The session facts and ``offer_plugin``
-  with no plugin leave them out; naming one explicitly still offers it.
+* ``exclude``: entries the person unticked. Unticking only removes an entry from the
+  list the agent is shown (the session facts); ``offer_plugin`` still finds it by search
+  or category and offers it the same way as any other (OL-D11, OL-F6).
 * ``include``: entries the person ticked beyond the default cap.
 
 The listed set is (the first ``offer_listed`` candidates, minus ``exclude``) plus
@@ -40,6 +41,9 @@ from clio_agent.user_config_document import (
 
 #: Where the overlay is kept in the user ``config.yaml``.
 SECTION, KEY = "plugins", "offer"
+#: Where the person chooses the list, as the agent names it (OL-F5): the Extensions tab's
+#: row, titled "Plugins <agent> can offer" with the CLIO brand's agent name.
+SETTINGS_PLACE = 'Settings → Extensions → "Plugins CLIO can offer"'
 #: Typed: the user configuration could not be read, so the default list applies.
 OVERLAY_UNREADABLE = "offer_list_overlay_unreadable"
 

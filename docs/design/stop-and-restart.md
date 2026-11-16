@@ -141,12 +141,13 @@ Who can invoke it:
    script makes (`run_code`) carries the id of the model call that ran the
    script. External MCP tasks keep their own `TASK_CALL` id.
 2. **The interrupted-call observation names what the call started.**
-   `_record_interrupted_calls` looks up the conversation's direct tasks whose
-   invocation carries the unanswered call's id and adds them to the
-   `operation_outcome_uncertain` observation (`started_tasks`: handle, kind,
-   label, status), with text saying the task exists, was not started again and
-   can be observed or waited on. It reports what is recorded; it does not
-   decide for the model.
+   `agents/context_repair.repair_unanswered_calls` runs before a forward's first
+   fold (restart or not, whatever state the assignment settled in, FN-16). It
+   looks up the conversation's direct tasks whose invocation carries the
+   unanswered call's id and adds them to the `operation_outcome_uncertain`
+   observation (`started_tasks`: handle, kind, label, status), with text saying
+   the task exists, was not started again and can be observed or waited on. It
+   reports what is recorded; it does not decide for the model.
 3. **Flow tasks carry the flow's name.** A started flow's child conversation is
    titled `<flow id> flow` unless a name was given, so its task label and
    `query_tasks(query=...)` find it.
@@ -161,6 +162,20 @@ Who can invoke it:
 5. **A restarted run reads its kept calls' evidence.** The subtrees of the runs
    it resumes are its own (`flows/tool_evidence.py`); read authorization still
    applies.
+6. **A graceful stop is a restart, not a failure.** `clio stop` signals the server's
+   whole process group, so a provider's command-line child can die with the same
+   SIGTERM and its turn end in an error before the drain cancels it. Once the server
+   is stopping, such a turn reads `cancelled` with `reason: server_shutdown`
+   (`stream_failures.forward_error_info`) and its assignment is left open like a
+   drained one (`turn_cancellation_info.ended_by_shutdown`) and retired as
+   `interrupted`, not `stopped`, so the restart resumes it in place, a child task
+   included. A tool call it stops tells the model the service was shutting down, not
+   that the client cancelled it. The reply the recovery produces carries
+   `resumes_turn`, the turn it continues, so the client shows the interrupted reply
+   with "Show where it continued" instead of Retry. A transcript the restart closes says why in
+   either case: `server_restart_interrupted` after a kill, `server_shutdown` after a
+   stop. Qualified live by the continuity grid (`scripts/acceptance/continuity_check.py`;
+   apps ledger, "Conversation continuity (CC)").
 
 ## 4. UI (gact-tui)
 

@@ -28,7 +28,8 @@ def _facts() -> prompt_pieces.Composed:
         return injections.render(f"session_facts{piece}", variables)
 
     head = fact("", {"root": "/work/project"})
-    piece = _offer_piece(None, "", fact, ROWS, 5, 2)
+    unlisted = [{"category": "Earth science", "count": 2}, {"category": "", "count": 1}]
+    piece = _offer_piece(None, "", fact, ROWS, 5, 2, unlisted)
     return prompt_pieces.join([head, piece, "Machine: lab-7."])
 
 
@@ -39,10 +40,8 @@ def test_the_composed_facts_carry_the_list_span_with_one_item_per_row() -> None:
     listed = facts[span["start"] : span["end"]]
     assert listed.startswith("Plugins and connectors the person has")
     # The footer that says how many more there are is inside the span (OL-D11).
-    assert listed.rstrip().endswith(
-        "3 more not listed here (2 of them left out by the person in Settings); "
-        "offer_plugin with search or category finds them."
-    )
+    assert "plugins installed (Earth science 2; uncategorized 1); offer_plugin" in listed
+    assert listed.rstrip().endswith("offer_plugin offers them the same way.")
     assert [item["label"] for item in span["items"]] == ["HDF5", "tariff-calc"]
     # Each row's size is its own line in the text, measured on the template.
     hdf5_line = next(line for line in listed.splitlines() if line.startswith("- HDF5"))

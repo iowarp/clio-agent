@@ -359,7 +359,7 @@ def test_restart_after_a_restart_and_stop_ignores_a_cut_off_call(
 def test_a_started_flow_is_linked_to_the_model_call_that_started_it(
     flow_app: TestClient,
 ) -> None:
-    from clio_agent.gact.conversation_recovery import _started_by_call
+    from clio_agent.gact.agents.context_repair import started_by_call as _started_by_call
     from clio_agent.gact.spawn_invocation import started_tasks
 
     gate = threading.Event()

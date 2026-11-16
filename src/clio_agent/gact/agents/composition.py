@@ -79,25 +79,32 @@ def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
         lines.append(fact("_resources", {"resources": resources, "total": total}))
     from clio_agent.gact.plugin_offer import offerable_facts  # noqa: PLC0415
 
-    plugins, total, left_out = offerable_facts(app, session_id)
+    plugins, total, left_out, unlisted = offerable_facts(app, session_id)
     if total:
-        lines.append(_offer_piece(app, session_id, fact, plugins, total, left_out))
+        lines.append(_offer_piece(app, session_id, fact, plugins, total, left_out, unlisted))
     return lines
 
 
 def _offer_piece(
-    app: Any, session_id: str, fact: Any, plugins: list[Any], total: int, left_out: int = 0
+    app: Any,
+    session_id: str,
+    fact: Any,
+    plugins: list[Any],
+    total: int,
+    left_out: int = 0,
+    unlisted: list[Any] | None = None,
 ) -> Any:
     """The offer list as a piece the context view attributes on its own: one item per
     row, sized on the template (``injections.item_chars``), never read back from text."""
     from clio_agent.gact.prompt_pieces import OFFER_PIECE, Piece  # noqa: PLC0415
 
-    text = fact("_plugins", {"plugins": plugins, "total": total, "left_out": left_out})
+    rest = {"left_out": left_out, "unlisted": unlisted or []}
+    text = fact("_plugins", {"plugins": plugins, "total": total, **rest})
     if not text:
         return text
     sizes = injections.item_chars(
         "session_facts_plugins",
-        lambda k: {"plugins": plugins[:k], "total": k, "left_out": 0},
+        lambda k: {"plugins": plugins[:k], "total": k, "left_out": 0, "unlisted": []},
         len(plugins),
         app=app,
         session_id=session_id,

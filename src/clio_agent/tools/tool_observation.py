@@ -190,7 +190,7 @@ def notify_refused_call(
         error = _tool_cancellation_error(
             name,
             "permission_wait",
-            message=f"tool call cancelled by client before it was approved: {name!r} did not run",
+            before_approval=f"{name!r} did not run",
         )
         notify_tool_observer(observer, name, args, "completed", str(error))
         return error

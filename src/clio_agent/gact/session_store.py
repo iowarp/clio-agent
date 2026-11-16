@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
     from clio_agent.arc.task_types import MailItem
     from clio_agent.gact.task_history import TaskHistory
-    from clio_agent.gact.types import Message
+    from clio_agent.gact.types import ErrorInfo, Message
 
 logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------------- #
@@ -194,6 +194,26 @@ def _append_session_message(
     retain_message_sources(app, message)
 
 
+def restart_error_info(session_id: str, turn_id: str) -> "ErrorInfo":
+    """The typed reason a turn the restart interrupted carries (``server_restart_interrupted``)."""
+
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    return ErrorInfo(
+        error="server_restart_interrupted",
+        message=(
+            "The agent service restarted before this response completed. "
+            "Your request was preserved and can be retried."
+        ),
+        details={
+            "reason": "server_restart_interrupted",
+            "session_id": session_id,
+            "turn_id": turn_id,
+        },
+        recoverable=True,
+    )
+
+
 def _interrupted_assistant_row(
     app: "FastAPI", session_id: str, last_user_message: "Message"
 ) -> "Message":
@@ -226,23 +246,10 @@ def _interrupted_assistant_row(
         assemble_session_messages,
         has_atoms,
     )
-    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
     now = time.time()
     turn_id = last_user_message.turn_id or last_user_message.id
-    error_info = ErrorInfo(
-        error="server_restart_interrupted",
-        message=(
-            "The agent service restarted before this response completed. "
-            "Your request was preserved and can be retried."
-        ),
-        details={
-            "reason": "server_restart_interrupted",
-            "session_id": session_id,
-            "turn_id": turn_id,
-        },
-        recoverable=True,
-    )
+    error_info = restart_error_info(session_id, turn_id)
 
     arc = getattr(app.state, "arc", None)
     recorded = arc is not None and getattr(arc, "_segments", None) is not None

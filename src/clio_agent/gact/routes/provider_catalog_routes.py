@@ -132,6 +132,9 @@ def register_provider_catalog_routes(
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
         """Read the startup catalog; explicit provider checks own live verification."""
+        from clio_agent.gact.provider_catalog_snapshot import (  # noqa: PLC0415
+            saved_server_preset,
+        )
         from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.handshake import (  # noqa: PLC0415
             HandshakeContext,
@@ -141,8 +144,11 @@ def register_provider_catalog_routes(
         # provider_id names a preset's own id, never its wire KIND (#1418):
         # nine presets share kind "openai", so a kind-based fallback here
         # silently returned the FIRST such preset (by catalog order) rather
-        # than the one actually configured.
-        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        # than the one actually configured. A saved custom server is its own
+        # provider (``server-<slug>``), as in the catalog and a pinned conversation.
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None) or (
+            saved_server_preset(provider_id)
+        )
         if preset is None:
             raise HTTPException(
                 status_code=404,

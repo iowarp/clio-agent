@@ -274,7 +274,12 @@ from clio_agent.gact.app import build_app
 # 478 -> 480: client-rendered file views (gact/file_view_routes.py, FV-D3): PUT
 # /v1/sessions/{sid}/file-views/{view_id} and POST .../{view_id}/looks/{call_id}.
 # 480 -> 481: what a stop reaches (routes/sessions.py, docs/design/stop-and-restart.md): GET /v1/sessions/{sid}/stop-scope.
-EXPECTED_ROUTE_METHOD_PAIRS = 481
+# 481 -> 484: GET, PUT and DELETE /v1/plugins/offer-list, the person's choice of the plugins
+# the agent may offer (a8e4dca76, routes/offer_list.py, registered from routes/connectors.py);
+# merged with #2364 without a recount.
+# 484 -> 486: Report a problem (routes/problem_report.py, registered with the release check
+# from routes/system_support.py): GET /v1/system/problem-report and .../download.
+EXPECTED_ROUTE_METHOD_PAIRS = 486
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

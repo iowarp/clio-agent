@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 for (const width of [360, 390, 412]) {
   test(`mobile docs index remains complete and usable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
+    // These follow the system scheme on purpose; with nothing stored the site is dark.
+    await page.addInitScript(() => localStorage.setItem('starlight-theme', ''));
     await page.emulateMedia({ colorScheme: width === 390 ? 'dark' : 'light' });
     await page.goto('/docs/');
     const index = page.getByRole('button', { name: 'Docs index', exact: true });

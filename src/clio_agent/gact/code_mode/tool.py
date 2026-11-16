@@ -110,7 +110,7 @@ def _approve(app: Any, code: str) -> None:
         raise _tool_cancellation_error(
             "run_code",
             "permission_wait",
-            message="tool call cancelled by client before it was approved: the script did not run",
+            before_approval="the script did not run",
         )
     # The gate's own reason when it gave one (a deny policy, the plan ACL, a read-only
     # session's ACL), as the execution boundary gives it for any other tool.

@@ -104,6 +104,20 @@ def _inline_local_defs(document: Any, node: Any, *, expanding: frozenset[str] = 
     return node
 
 
+def _described_first(node: Any) -> Any:
+    """``node`` with its own ``title`` and ``description`` as its first keys.
+
+    A catalog file stores keys sorted, so a component's ``description`` (what it is for,
+    and what it is not) follows its whole ``allOf`` body; a long schema shown as a
+    preview would end before it. Moving the two keys first changes the order only.
+    """
+
+    if not isinstance(node, Mapping):
+        return node
+    head = {key: node[key] for key in ("title", "description") if key in node}
+    return {**head, **{key: value for key, value in node.items() if key not in head}}
+
+
 def _parse_bundled_json_document(file_path: str, raw_text: str) -> Any:
     """Parse ``raw_text`` as the JSON document backing a ``#`` fragment.
 
@@ -182,7 +196,7 @@ def resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) 
 
     document = _parse_bundled_json_document(file_path, raw_text)
     node = _walk_pointer(document, file_path, fragment)
-    inlined = _inline_local_defs(document, node)
+    inlined = _described_first(_inline_local_defs(document, node))
     rendered = json.dumps(inlined, indent=2, sort_keys=False)
     refs = sorted(_collect_ref_targets(inlined))
     # A local ref (bare "#/...") that inlining did not expand (e.g. it points
@@ -286,7 +300,7 @@ def resolve_json_pointer_fragments_shared(
         _collect_local_def_names(document, node, needed)
     bodies: list[str] = []
     for node in nodes:
-        rendered = json.dumps(node, indent=2, sort_keys=False)
+        rendered = json.dumps(_described_first(node), indent=2, sort_keys=False)
         refs = sorted(_collect_ref_targets(node))
         # $defs refs are satisfied by the shared block the caller appends
         # once; a ref elsewhere in this same document (not a $defs one) or

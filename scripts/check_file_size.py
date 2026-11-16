@@ -1100,7 +1100,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,
-    "src/clio_agent/gact/sessions.py": 844,
+    "src/clio_agent/gact/sessions.py": 839,
     "src/clio_agent/gact/turn_finalize.py": 803,
     "src/clio_agent/gact/types.py": 802,
     # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to

@@ -30,6 +30,8 @@ def completed_tool_outcome(error: str | None, result: Any, *, refused: bool) -> 
         return "cancelled"  # a CancellationError's typed trace (tools/execution.py)
     if error in {"CancelledError", "cancelled"} or "cancelled by client" in error:
         return "cancelled"
+    if "because the agent service is shutting down" in error:  # foreground_cancellation
+        return "cancelled"
     return None
 
 

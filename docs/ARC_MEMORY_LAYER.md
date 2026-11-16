@@ -314,6 +314,16 @@ values, never share a daemon (`arc/runtime_ownership.py`):
   across restarts. A hand-written config (`arc.store_config`, a workspace
   `.clio/core/cte.yaml`) is never rewritten: the attach fails with
   `clio_core_foreign_daemon_on_port` and names the setting to change.
+- The same holds after a spawn. Two homes that both find the port free spawn at
+  once, and the loser's `clio_run` exits on the bound port ("Failed to initialize
+  Clio runtime"). Its wait used to return as soon as anything answered on the port,
+  so the loser attached to the winner's daemon and store: its conversations were
+  written into the other home's data and answered 404 once a restart put it on its
+  own daemon (FN-14). After the wait, `confirm_own_daemon_on_port` checks that the
+  listener is this home's pidfile daemon; if not, it logs
+  `clio_core_spawn_lost_port_to_foreign_daemon`, moves to a free block as above and
+  spawns once more. Losing twice, or a hand-written config, fails typed
+  (`clio_core_foreign_daemon_on_port`).
 - A stop (last client out, crashed-client replacement, log-flood replacement,
   the opt-in recycle) runs `clio_run stop` only against this home's own daemon.
   Without one it stops nothing (`StopOutcome.path == "not_owned"`); when another
@@ -321,6 +331,67 @@ values, never share a daemon (`arc/runtime_ownership.py`):
   (`foreign_listener_kill`).
 
 The rules are the same on Linux, macOS and Windows.
+
+### A torn metadata record (`arc/clio_core_wal_repair.py`)
+
+clio-core keeps blob and tag metadata in write-ahead logs beside the data tier
+(`metadata.log.blob.<N>`, `metadata.log.tag.<N>`: the magic `2LAW`, then records of a
+13-byte header, `<u8 type><u64 seq><u32 length>`, and the payload). A daemon that dies
+while it appends (a crash, or a stop that ran out of time and was killed) leaves the
+last record torn. iowarp-core 2.4.1 then reports it on the next start
+(`TransactionLog::Load: ... claiming N bytes but only M remain; ignoring it and
+everything after`) and appends after the torn bytes without cutting them off. From the
+start after that, the torn record's length swallows the new records and the reader stops
+inside one (`claiming 2147483839 bytes`): every record written since the tear is lost,
+at every later start (FN-14).
+
+Right before this home spawns its daemon (under the spawn lock; no daemon uses the
+files), CLIO walks each log by its lengths. A log that ends exactly at a record is left
+alone. A torn record followed by records whose sequence numbers continue from the last
+good one, or a torn tail with nothing after it, is cut out; the cut bytes are kept as
+`<log>.torn-<UTC time>` and the cut is logged as `clio_core_metadata_log_repaired`.
+Bytes that are not records with nothing readable after them refuse the attach
+(`clio_core_metadata_log_unreadable`) and change nothing. A log without the `2LAW` magic
+is left to clio-core (`clio_core_metadata_log_format_unknown`). The daemon's own
+restore-failure lines after the spawn are read back too: the `clio_core_metadata_restore`
+health row (inside `cte_metadata_log`) reports a repair, an unreadable log or a failed
+restore (`clio_core_metadata_restore_failed`), and the boot scratch sweep removes no
+session folder while the restore is in doubt (`session_scratch_store_restore_suspect`),
+nor the folder of a session the index still lists whose record does not read back
+(`session_scratch_record_unreadable`).
+
+**What tears a log.** A full file system: with the metadata log on a 3 MB file system
+and four writers, iowarp-core 2.4.1 left both busy logs ending inside a record, answered
+every put as a success and logged nothing. A clean stop under write load, CLIO's own kill
+of a daemon still stopping past its ceiling, and a SIGKILL of the daemon while it wrote
+left every log whole in every trial (appends survive the process). So every put and
+delete CLIO sends first checks the free space of the metadata log's file system
+(`arc/clio_core_disk_guard.py`) and refuses below `arc.cte.metadata_disk_reserve`
+(`CLIO_ARC_CTE_METADATA_DISK_RESERVE`, default 256MB) with `clio_core_metadata_disk_low`.
+The refusal is a lost write (`clio_core_put_write_lost`), so a message answers
+`503 core_writes_refused` with the cause, and writing resumes once space is freed.
+
+**The allocation log** (`arc/clio_core_alloc_log.py`). clio-core logs block allocations
+apart from the metadata, in `<file tier>_node<N>.alloc_log` (40-byte entries:
+`<u64 op><u64 class><u64 offset><u64 size><u64 0>`, op 1 allocates, op 2 frees). A
+delete logs its free there before its metadata record. When that record is torn, the
+restart restores the blob still pointing at the freed block, the next new blob is
+given the block, and the restored blob's next write overwrites it (reproduced: a new
+conversation record read back as `1`). So when the repair cuts a torn put or delete, the
+frees at the end of the allocation log are withheld: moved, unchanged, to
+`<alloc_log>.withheld-<time>` (`clio_core_alloc_log_frees_withheld`); the blocks stay
+with the restored blob, and a withheld free of a delete whose record is whole only leaks
+space. A torn put logs allocations, not frees, and only leaks them
+(`clio_core_alloc_log_unchanged`); a log that is not whole entries is reported
+(`clio_core_alloc_log_unverified`) and left alone.
+
+**When a record still reads back damaged** (for example after a tear CLIO did not see,
+such as a power loss mid-write with frees not at the end of the log): a session the index
+lists whose record does not decode answers `503 session_record_unreadable` instead of
+404, is logged once and listed in the `clio_core_metadata_restore` health row, and its
+folder and transcript are kept (`gact/session_record_damage.py`). The defects themselves
+(no cut before appending; a full disk accepted silently; allocation and metadata not
+committed together) belong to clio-core.
 
 ### Explicit homes get their own daemon (`arc/home_runtime.py`)
 

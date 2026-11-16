@@ -279,6 +279,16 @@ def _saved_servers() -> list[tuple[str, "LMProviderPreset"]]:
     ]
 
 
+def saved_server_preset(provider_id: str) -> "LMProviderPreset | None":
+    """A saved custom server's own catalog provider (``server-<slug>``), or ``None``.
+
+    The catalog, the fleet and a conversation pinned to the server all name it by
+    this id, so per-provider routes resolve it here as well as among the presets.
+    """
+
+    return next((preset for _, preset in _saved_servers() if preset.id == provider_id), None)
+
+
 def _is_saved_server_row(row: Any) -> bool:
     return isinstance(row, dict) and bool(row.get("saved_server"))
 
