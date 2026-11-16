@@ -54,7 +54,13 @@ def merge_session_metadata(metadata: Mapping[str, Any], patch: Mapping[str, Any]
 def validated_session_metadata(
     app: FastAPI, session_id: str, metadata: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    """Validate a client's mark patch before any session fields are changed."""
+    """Validate a client's mark patch before any session fields are changed.
+
+    Keys only the server sets (``agent_flow``, ``unattended``, ...) are refused, typed.
+    """
+    from clio_agent.gact.session_run_setup import refuse_reserved_metadata  # noqa: PLC0415
+
+    refuse_reserved_metadata(metadata)
     if metadata is None or MARKS_KEY not in metadata:
         return metadata
     try:

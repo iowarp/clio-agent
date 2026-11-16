@@ -8,7 +8,7 @@ of shelling out to a platform-specific launcher.
 Two entry points:
 
 * :func:`ensure_server` — probe ``GET /v1/health``; **attach** (return the base URL) if a
-  server already answers, otherwise **spawn** ``clio-agent-gact --port <port>`` detached,
+  server already answers, otherwise **spawn** ``clio-agent serve --port <port>`` detached,
   wait for health, and return the base URL. Only servers *we* spawn are recorded as
   managed-by-us in the pidfile.
 * :func:`stop_server` — stop a server *we* spawned (never an attached external one) and
@@ -65,7 +65,10 @@ _SHUTDOWN_PATH = "/v1/server/shutdown"
 _SERVE_MANAGED_ENV = "CLIO_SERVE_MANAGED"
 #: The one-use bearer a spawned server enforces (``gact/auth.py``).
 _AUTH_TOKEN_ENV = "CLIO_AUTH_TOKEN"
-_SERVER_BIN = "clio-agent-gact"
+_SERVER_BIN = "clio-agent"
+#: Set on a server a script starts: it stops when its last attached client leaves
+#: (``gact/attached_clients.py``).
+_STOP_WITH_LAST_CLIENT_ENV = "CLIO_STOP_WITH_LAST_CLIENT"
 #: HTTP status codes that mean "the server process is answering" (up), even when it
 #: reports a degraded/unavailable subsystem. ``/v1/health`` returns 200 (ready/degraded)
 #: or 503 (unavailable) — both prove the process is alive and serving.
@@ -97,7 +100,7 @@ _SERVE_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "binary_not_found": {
         "managed": False,
-        "detail": "the clio-agent-gact server binary could not be located on this system",
+        "detail": "the clio-agent console script could not be located on this system",
     },
     "stopped": {
         "managed": True,
@@ -171,7 +174,7 @@ class ServeError(RuntimeError):
 
 
 class ServerBinaryNotFound(ServeError):
-    """The ``clio-agent-gact`` server binary could not be located."""
+    """The ``clio-agent`` console script could not be located."""
 
 
 class ServerStartTimeout(ServeError):
@@ -253,7 +256,7 @@ def _pid_alive(pid: int, recorded_create_time: float | None) -> bool:
 
 
 def _server_bin() -> str:
-    """Locate the ``clio-agent-gact`` console-script binary.
+    """Locate the ``clio-agent`` console-script binary (its ``serve`` verb runs the server).
 
     Prefers the binary colocated with the running interpreter (the active venv's
     ``Scripts``/``bin`` dir), then falls back to ``PATH``.
@@ -352,13 +355,14 @@ def ensure_server(
     host: str = "127.0.0.1",
     *,
     timeout_s: float = 90.0,
+    stop_with_last_client: bool = False,
 ) -> str:
     """Connect to a running gact server on ``host``/``port``, or spawn one if none is up.
 
     Probes ``GET /v1/health``. If a server answers (200 or 503), **attaches** and returns
     its base URL without spawning — an external server is left entirely alone (never
     recorded as ours, so :func:`stop_server` will not touch it). Otherwise spawns
-    ``clio-agent-gact --port <port>`` **detached** (POSIX: new session; Windows: detached
+    ``clio-agent serve --port <port>`` **detached** (POSIX: new session; Windows: detached
     new process group), records it in the pidfile, and polls ``/v1/health`` until healthy
     or ``timeout_s`` elapses.
 
@@ -366,13 +370,15 @@ def ensure_server(
         port: TCP port to probe/serve on; ``None`` uses the configured ``gact.port``.
         host: Bind/probe host. Defaults to ``127.0.0.1``.
         timeout_s: Max seconds to wait for a freshly spawned server to become healthy.
+        stop_with_last_client: A server this call spawns stops itself when its last
+            attached client leaves (a script's server); otherwise it runs until stopped.
 
     Returns:
         The server base URL (``http://<host>:<port>``). Inspect :func:`last_action` for the
         structured outcome (attached vs spawned vs already-running).
 
     Raises:
-        ServerBinaryNotFound: If ``clio-agent-gact`` cannot be located.
+        ServerBinaryNotFound: If ``clio-agent`` cannot be located.
         ServerStartTimeout: If a spawned server does not become healthy in time (the
             partially-started process is torn down before this is raised).
     """
@@ -430,11 +436,12 @@ def ensure_server(
         **os.environ,
         _AUTH_TOKEN_ENV: secrets.token_urlsafe(32),
         _SERVE_MANAGED_ENV: "1",
+        **({_STOP_WITH_LAST_CLIENT_ENV: "1"} if stop_with_last_client else {}),
     }
     log_fh = open(log_path, "ab")  # noqa: SIM115 - closed in finally after Popen
     try:
         proc = subprocess.Popen(
-            [server_bin, "--host", host, "--port", str(port)],
+            [server_bin, "serve", "--host", host, "--port", str(port)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=log_fh,

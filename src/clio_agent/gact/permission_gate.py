@@ -82,6 +82,7 @@ from clio_agent.gact.permission_context import (
 from clio_agent.gact.permission_context import (
     _normalize_mcp_tool_annotations as _normalize_mcp_tool_annotations,
 )
+from clio_agent.gact import unattended
 from clio_agent.gact.permission_delivery import (
     permission_summary,
     publish_permission_event,
@@ -489,19 +490,11 @@ def _ask_person(
     cancelled: Any,
 ) -> str:
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
-    running = call_identity_claimed()
-    holder: dict[str, Any] = {}
+    if (refused := unattended.refuse_ask(app, sid, name, args, approval_mode)) is not None:
+        return refused  # nobody to ask in an unattended run: denied, typed
+    running, holder = call_identity_claimed(), {}
     decision = _ask_and_wait(
-        app,
-        sid,
-        name,
-        args,
-        context,
-        subject,
-        approval_mode,
-        policy_action,
-        cancelled,
-        holder,
+        app, sid, name, args, context, subject, approval_mode, policy_action, cancelled, holder
     )
     # A call that was already running while it waited reads as running again.
     if running and decision == "allow" and holder.get("row"):

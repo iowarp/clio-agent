@@ -40,19 +40,38 @@ def _flows(app: Any, session_id: str) -> list[dict[str, Any]]:
     return list(session_resolution(app, session_id).flows)
 
 
-def _options_refused(
-    app: Any, session_id: str, flow_id: str, options: dict[str, Any] | None
+def flow_refusal(
+    resolution: Any, flow_id: str, options: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    """The typed refusal for options of the wrong shape, before anything is accepted."""
+    """The typed refusal for starting ``flow_id`` with ``options`` on ``resolution``.
+
+    ``None`` when the flow is resolved and its options load. One check for every way a
+    flow starts: ``run_flow``/``run_workflow`` in a turn and a session created with
+    ``flow`` (``POST /v1/sessions``), so both refuse with the same typed reason.
+    """
 
     from clio_agent.flows.runner import FlowUnavailable, load_flow  # noqa: PLC0415
-    from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
 
+    if not any(row["id"] == flow_id for row in resolution.flows):
+        names = ", ".join(sorted(row["id"] for row in resolution.flows)) or "none"
+        return {
+            "accepted": False,
+            "reason": "flow_not_resolved",
+            "error": f"no resolved plugin provides flow {flow_id!r}; available: {names}",
+        }
     try:
-        load_flow(session_resolution(app, session_id), flow_id, options)
+        load_flow(resolution, flow_id, options)
     except FlowUnavailable as exc:
         return {"accepted": False, "reason": exc.reason, "error": str(exc)}
     return None
+
+
+def _session_flow_refusal(
+    app: Any, session_id: str, flow_id: str, options: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
+
+    return flow_refusal(session_resolution(app, session_id), flow_id, options)
 
 
 async def permit_flow(
@@ -139,16 +158,8 @@ async def _start_flow(
     refused = await permit_flow(app, caller, flow_id, flow_input, options)
     if refused is not None:
         return refused
-    available = await app.state.task_history.io.run(_flows, app, caller.session_id)
-    if not any(row["id"] == flow_id for row in available):
-        names = ", ".join(sorted(row["id"] for row in available)) or "none"
-        return {
-            "accepted": False,
-            "reason": "flow_not_resolved",
-            "error": f"no resolved plugin provides flow {flow_id!r}; available: {names}",
-        }
     refused = await app.state.task_history.io.run(
-        _options_refused, app, caller.session_id, flow_id, options
+        _session_flow_refusal, app, caller.session_id, flow_id, options
     )
     if refused is not None:
         return refused

@@ -174,7 +174,7 @@ class ModelRef(_WireModel):
 
 
 class AgentRef(_WireModel):
-    id: str = "main"
+    id: str = ""
     mode: str = ""
 
 
