@@ -204,7 +204,7 @@ def test_a_catalog_plugin_is_followed_by_a_marketplace_plugin_with_skills() -> N
     ("connector", "env", "keys"),
     [
         ("ase", {"NWCHEM_COMMAND", "ORCA_COMMAND", "HF_TOKEN"}, ["nwchem", "orca", "hf_token"]),
-        ("fdmnes", {"FDMNES_COMMAND"}, ["fdmnes"]),
+        ("fdmnes", {"FDMNES_COMMAND", "MP_API_KEY"}, ["fdmnes", "mp_api_key"]),
         ("graspa", {"GRASPA_COMMAND"}, ["graspa"]),
     ],
 )
