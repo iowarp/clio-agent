@@ -204,6 +204,20 @@ def record_approved(app: Any, session_id: str, prompt: str, answer: dict[str, An
     app.state.sessions.update(root.id, metadata_patch={APPROVED_KEY: rows})
 
 
+def _settings(app: Any, marketplace: str) -> list[dict[str, Any]]:
+    """What each plugin of ``marketplace`` reads from the environment, and its state."""
+
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+    from clio_agent.plugins.settings_report import plugin_settings  # noqa: PLC0415
+
+    return [
+        {"plugin": record.id, **setting}
+        for record in plugin_service(app).store.records()
+        if record.marketplace == marketplace
+        for setting in plugin_settings(record.mcp_servers)
+    ]
+
+
 def record_trusted(app: Any, session_id: str, plugin: str, *, marketplace: str = "") -> None:
     """Record on the run's root that ``plugin`` was trusted for it (and log it)."""
 
@@ -219,6 +233,7 @@ def record_trusted(app: Any, session_id: str, plugin: str, *, marketplace: str =
             "marketplace": marketplace or plugin,
             "session_id": session_id,
             "trusted_at": datetime.now(timezone.utc).isoformat(),
+            "settings": _settings(app, marketplace or plugin),
         }
     )
     logger.warning(

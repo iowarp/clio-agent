@@ -236,10 +236,14 @@ def print_approved(question: str, answer: dict[str, Any]) -> None:
     print(f"clio: approved for this run: {question} ({chosen}).", file=sys.stderr, flush=True)
 
 
-def print_trusted(plugin: str) -> None:
-    """Announce a plugin trusted during a run, on stderr."""
+def print_trusted(plugin: str, settings: list[dict[str, Any]] | None = None) -> None:
+    """Announce a plugin trusted during a run, and what each of its settings is, on stderr."""
 
-    print(f"clio: trusted plugin {plugin} for this run.", file=sys.stderr, flush=True)
+    from clio_agent.plugins.settings_report import describe  # noqa: PLC0415
+
+    lines = [f"clio: trusted plugin {plugin} for this run."]
+    lines += [f"clio:   {row['plugin']}: {describe(row)}" for row in settings or []]
+    print("\n".join(lines), file=sys.stderr, flush=True)
 
 
 __all__ = [

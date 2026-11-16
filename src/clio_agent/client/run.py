@@ -200,12 +200,13 @@ class RunEngine:
     def _announce_trusted(self, metadata: dict[str, Any]) -> list[str]:
         from clio_agent.client.connection import print_trusted  # noqa: PLC0415
 
-        names = [str(row.get("plugin")) for row in metadata.get("unattended_trusted") or []]
-        for name in names:
+        rows = list(metadata.get("unattended_trusted") or [])
+        for row in rows:
+            name = str(row.get("plugin"))
             if name not in self.announced and self.client.options.banner:
-                print_trusted(name)
+                print_trusted(name, list(row.get("settings") or []))
             self.announced.add(name)
-        return names
+        return [str(row.get("plugin")) for row in rows]
 
     def result(self, completed: MessageCompleted | None) -> RunResult:
         """The result from the server's records once the turn completed (or the feed ended)."""
