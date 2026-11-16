@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from clio_agent.gact import conversation_stop_hold
 from clio_agent.gact.events import Event
 from clio_agent.gact.human_controls import intervene
 
@@ -162,6 +163,7 @@ async def cancel_session_state_async(
     )
     effect = {**effect, "composer_autostart": composer, "children": children}
     if children == "stop":
+        await app.state.task_history.io.run(conversation_stop_hold.stop, app.state.sessions, sid)
         effect.update(await _stop_children(app, sid, assignment), accepted_tasks_continue=False)
     await app.state.task_history.io.run(app.state.sessions.update, sid, status=effect["status"])
     app.state.bus.publish(
