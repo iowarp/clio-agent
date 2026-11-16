@@ -245,7 +245,6 @@ def write(
     _ensure_index(store_root)
     versions = list(record["versions"]) if record else []
     version = {
-        "version": len(versions) + 1,
         "session_id": session_id,
         "digest": folder_digest(folder),
         "files": file_hashes(folder),
@@ -253,11 +252,12 @@ def write(
         "variation_of": variation_of or (versions[-1].get("variation_of", "") if versions else ""),
         "diff": _diff(before, _read_texts(folder)) if versions else None,
     }
+    versions.append(version)
+    # An authorship version is its position in the plugin's history, counting from 1.
+    version["version"] = len(versions)
     path = _record_path(store_root, name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"name": name, "versions": [*versions, version]}, indent=2), encoding="utf-8"
-    )
+    path.write_text(json.dumps({"name": name, "versions": versions}, indent=2), encoding="utf-8")
     return folder, version
 
 
