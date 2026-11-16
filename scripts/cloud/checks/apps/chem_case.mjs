@@ -12,6 +12,11 @@
 //   {"press": "#region"}               click an element inside a view, by selector
 //   {"viewdrag": {"in": "#overlay", "from": [fx, fy], "to": [fx, fy]}}  drag inside a view's
 //                                      element, at fractions 0..1 of its box
+//   {"pickatoms": [0, 1, 2, 3]}        click those atoms (file order) in the Burette view, as
+//                                      a person clicks them, where the viewer draws them
+//   {"fill": {"in": "#edit-value", "text": "60"}}  type into a view's input
+//   {"allow": true}                    answer pending permission prompts now (a view's own
+//                                      call, such as an edit's Apply, asks before it runs)
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
 //   {"shot": "name"} / {"hero": "name"} a screenshot / a maximized-view screenshot
 //   {"wait": seconds}
@@ -19,7 +24,7 @@
 // agent's own questions are answered from CASE_ANSWERS, a JSON map from a word in the
 // question to the option the person picks; unmatched questions stay pending.
 // Prints one JSON line: session, workspace, per turn the new tool calls and the answer.
-import { api, appFrames, heroShot, openConversation, send, showLastApp, waitIdle } from "./_lib.mjs";
+import { allowPending, api, appFrames, heroShot, openConversation, send, showLastApp, waitIdle } from "./_lib.mjs";
 
 const words = (text) => (text || "").replace(/\s+/gu, " ").trim();
 
@@ -88,7 +93,15 @@ export default async function (page, shot) {
         report.log, Number(process.env.CASE_WAIT_MIN || 15),
         JSON.parse(process.env.CASE_ANSWERS || "null"),
       );
-      const turn = turnOf(await messages(sessionId), before);
+      let turn = turnOf(await messages(sessionId), before);
+      // The session can read idle before the reply starts (a view's call settling first):
+      // keep waiting until the reply is there.
+      for (let k = 0; k < 3 && !turn.answer && !turn.tools.length; k += 1) {
+        await page.waitForTimeout(10000);
+        await waitIdle(page, sessionId, report.log, Number(process.env.CASE_WAIT_MIN || 15),
+          JSON.parse(process.env.CASE_ANSWERS || "null"));
+        turn = turnOf(await messages(sessionId), before);
+      }
       report.turns.push({
         sent: step.send,
         idle,
@@ -130,6 +143,28 @@ export default async function (page, shot) {
       await page.mouse.move(...at(step.viewdrag.to), { steps: 15 });
       await page.mouse.up();
       await page.waitForTimeout(1500);
+    } else if (step.pickatoms) {
+      const frame = await viewFrame(page, "#stage");
+      const outer = await frame.parentFrame()?.frameElement();
+      await outer?.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.waitForTimeout(800);
+      const origin = await (await frame.frameElement()).boundingBox();
+      for (const index of step.pickatoms) {
+        const at = await frame.evaluate((i) => window.__buretteViewer.screenOf(i), index);
+        await page.mouse.click(origin.x + at.x, origin.y + at.y);
+        await page.waitForTimeout(700);
+      }
+      await page.waitForTimeout(1000);
+    } else if (step.fill) {
+      const frame = await viewFrame(page, step.fill.in);
+      await frame.locator(step.fill.in).first().fill(String(step.fill.text));
+      await frame.locator(step.fill.in).first().press("Enter");
+      await page.waitForTimeout(1000);
+    } else if (step.allow) {
+      for (let k = 0; k < 10; k += 1) {
+        await allowPending(sessionId, report.log);
+        await page.waitForTimeout(1000);
+      }
     } else if (step.pagedrag) {
       await page.mouse.move(...step.pagedrag.from);
       await page.mouse.down();
