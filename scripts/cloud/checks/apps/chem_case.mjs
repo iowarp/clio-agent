@@ -9,6 +9,10 @@
 //   {"drag": {"app": -1, "from": [x, y], "to": [x, y]}}
 //   {"scroll": {"x": 1100, "y": 600, "dy": 500}}  wheel-scroll the page at a point
 //   {"pageclick": {"x": 1100, "y": 600}}  click the page itself (a chart, a button)
+//   {"press": "#region"}               click an element inside a view, by selector
+//   {"viewdrag": {"in": "#overlay", "from": [fx, fy], "to": [fx, fy]}}  drag inside a view's
+//                                      element, at fractions 0..1 of its box
+//   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
 //   {"shot": "name"} / {"hero": "name"} a screenshot / a maximized-view screenshot
 //   {"wait": seconds}
 // Permission questions are answered with the broadest allow they offer and logged.
@@ -32,6 +36,14 @@ function turnOf(rows, before) {
       .map((p) => (p.type === "mcp_app" ? `app:${p.tool_name}` : p.tool_name)),
     answer: words(parts.filter((p) => p.type === "text").map((p) => p.text).join(" ")),
   };
+}
+
+/** The view frame (inside an app's sandbox) that holds `selector`. */
+async function viewFrame(page, selector) {
+  for (const frame of page.frames()) {
+    if ((await frame.locator(selector).count().catch(() => 0)) > 0) return frame;
+  }
+  throw new Error(`no view holds ${selector}`);
 }
 
 async function frameBox(page, index) {
@@ -94,6 +106,28 @@ export default async function (page, shot) {
     } else if (step.scroll) {
       await page.mouse.move(step.scroll.x, step.scroll.y);
       await page.mouse.wheel(0, step.scroll.dy);
+      await page.waitForTimeout(1500);
+    } else if (step.press) {
+      const frame = await viewFrame(page, step.press);
+      await frame.locator(step.press).first().click();
+      await page.waitForTimeout(1500);
+    } else if (step.viewdrag) {
+      const frame = await viewFrame(page, step.viewdrag.in);
+      const outer = await frame.parentFrame()?.frameElement();
+      await outer?.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.waitForTimeout(800);
+      const box = await frame.locator(step.viewdrag.in).first().boundingBox();
+      const at = ([fx, fy]) => [box.x + fx * box.width, box.y + fy * box.height];
+      await page.mouse.move(...at(step.viewdrag.from));
+      await page.mouse.down();
+      await page.mouse.move(...at(step.viewdrag.to), { steps: 15 });
+      await page.mouse.up();
+      await page.waitForTimeout(1500);
+    } else if (step.pagedrag) {
+      await page.mouse.move(...step.pagedrag.from);
+      await page.mouse.down();
+      await page.mouse.move(...step.pagedrag.to, { steps: 15 });
+      await page.mouse.up();
       await page.waitForTimeout(1500);
     } else if (step.pageclick) {
       await page.mouse.click(step.pageclick.x, step.pageclick.y);
