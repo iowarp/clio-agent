@@ -143,7 +143,13 @@ def test_an_unknown_summons_is_refused_and_nothing_starts(market: Path) -> None:
         error = resp.json()["error"]
         assert error["error"] == "summon_unknown_target"
         assert error["details"]["unknown"] == [{"target_kind": "subagent", "target": "nobody"}]
-        assert error["details"]["subagents"] == ["explore", "review"]
+        assert error["details"]["subagents"] == [
+            "capture-reviewer",
+            "clio-guide",
+            "explore",
+            "optimize-scanner",
+            "review",
+        ]
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
 
 
