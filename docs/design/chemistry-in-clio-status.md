@@ -10,7 +10,7 @@ clio-agent-marketplace `develop`, clio-kit `main` (4b5e6e3 — clio-agent pins
 | Repo | Branch | Commit | State |
 |---|---|---|---|
 | iowarp/clio-kit | claude/chemistry-in-clio | 0cec300 feat(pubchem), afa7dbf feat(decimer), 38c30df feat(ase) | pushed |
-| JaimeCernuda/Burette | claude/chemistry-in-clio | c0f4ab9 (plist lint only where plutil exists), b258155..8e3513d clio-burette | pushed; 3D geometry editing in progress |
+| JaimeCernuda/Burette | claude/chemistry-in-clio | c0f4ab9 (plist lint only where plutil exists), b258155..8e3513d clio-burette, 9b8f27f..77a4740 geometry editing | pushed |
 | iowarp/clio-agent | claude/chemistry-in-clio | this status file and the deferred list | pushed |
 | iowarp/clio-agent-marketplace | — | none | nothing changed yet |
 
@@ -37,7 +37,9 @@ app tools, Ketcher round trip. Launcher: `uvx --from "git+https://github.com/Jai
 (bundled Node from nodejs-wheel-binaries; no npm step). Checks: (a) one process — yes;
 (b) Mol* 3D geometry editing — NO; the user chose a geometry-edit mode in the Burette
 view (torsion/angle/bond handles, atom drag, server-side rigid fragment move, new file)
-over a streamed Avogadro 2; (c) unit cell for magnetite —
+over a streamed Avogadro 2 — built at 77a4740: `set_geometry`/`move_atom` tools and an
+Edit bar in the view, each edit a new `name.editN.ext` file reported to the agent
+(ethylene glycol O-C-C-O 180°→60.0° measured from the written file; ring bonds refused); (c) unit cell for magnetite —
 yes after server-side packing to P1. Not yet tried inside live CLIO.
 
 ## Remaining
