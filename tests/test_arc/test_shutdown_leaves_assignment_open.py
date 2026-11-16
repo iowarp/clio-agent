@@ -27,7 +27,8 @@ async def test_an_error_while_the_server_stops_leaves_the_assignment_for_recover
     arc: ARCMemory, tmp_path: Path, stopping: bool
 ) -> None:
     """SABOTAGE: drop ``ended_by_shutdown`` from ``Conversations``' segment loop and the
-    stopping case settles the assignment ``failed`` and terminal, which recovery skips.
+    stopping case settles the assignment ``failed`` and terminal, which recovery skips;
+    drop the shutdown check in ``_retired_segment`` and it reads ``stopped``.
     """
     app, owner, root = await create_environment(arc, tmp_path)
     sid = root.owner.session_id
@@ -57,6 +58,9 @@ async def test_an_error_while_the_server_stops_leaves_the_assignment_for_recover
             # Open, as a drained turn leaves it: the restart resumes it in place.
             assert task.terminal_at is None, task
             assert task.status != "failed"
+            # Interrupted, which recovery resumes; not "stopped", which reads as a
+            # person's Stop and is left alone (seen live: a child never resumed).
+            assert task.activity == "interrupted", task.activity
         else:
             # An ordinary failure still settles, with its outcome.
             assert task.terminal_at is not None and task.status == "failed"

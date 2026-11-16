@@ -558,6 +558,7 @@ async def _retired_segment(
     """Reconcile Stop once, after physical retirement and before slot release."""
     from clio_agent.gact.conversation_assignments import observe_child_lifecycle
     from clio_agent.gact.read_only_outcomes import outcomes_recorded
+    from clio_agent.gact.runtime.turn_cancellation_info import turn_cancelled_by_shutdown
 
     await outcomes_recorded(self.app)  # read-only calls' records, written behind replies
     task = self.history.task_snapshot(segment.assignment.handle)
@@ -569,6 +570,10 @@ async def _retired_segment(
     identity = "stop:" + segment.turn_id
     self._model_recording.setdefault(sid, set()).add(identity)
 
+    # The service stopping (uvicorn asked to exit) reads like the owner's own close,
+    # even before the drain sets it: interrupted, resumed after the restart (CC-F4).
+    closing = self._closing or turn_cancelled_by_shutdown(self.app)
+
     def record() -> None:
         with self.history.serialized():
             self.note_startup_interruption(sid)
@@ -578,7 +583,7 @@ async def _retired_segment(
                 return
             if current.cancellation_requested_at is not None:
                 withdraw_assignment_input(self.history, sid, handle)
-            elif not self._closing and not self.model_paused(sid):
+            elif not closing and not self.model_paused(sid):
                 pending = self.history.mail_item(sid, segment.trigger.id)
                 if (
                     pending == segment.trigger
@@ -597,7 +602,7 @@ async def _retired_segment(
                             "activity": "cancelling"
                             if current.cancellation_requested_at
                             else "interrupted"
-                            if self._closing
+                            if closing
                             else "paused"
                             if self.model_paused(sid)
                             else "stopped",
