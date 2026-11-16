@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
 #: Seconds to wait for a provider that is still configuring before calling it missing.
 PROVIDER_SETTLE_S = 60.0
+#: Seconds to wait for a server that answers health but is still starting its services.
+READY_TIMEOUT_S = 300.0
 
 
 class ServerSetupError(ClioSDKError):
@@ -97,10 +99,26 @@ def _start(options: ClioOptions) -> bool:
 
 
 def _register(http: httpx.Client) -> str | None:
-    response = http.post(
-        "/v1/server/clients",
-        json={"kind": "sdk", "pid": os.getpid(), "label": " ".join(sys.argv)[:200]},
-    )
+    """Register with the attached-client count, once the server's services are up.
+
+    ``/v1/health`` answers as soon as the process serves, before its task runtime
+    (and so every session route) is ready: a 503 that says so is waited out, bounded
+    by :data:`READY_TIMEOUT_S`, and the wait is announced once on stderr.
+    """
+
+    deadline = time.monotonic() + READY_TIMEOUT_S
+    announced = False
+    while True:
+        response = http.post(
+            "/v1/server/clients",
+            json={"kind": "sdk", "pid": os.getpid(), "label": " ".join(sys.argv)[:200]},
+        )
+        if response.status_code != 503 or time.monotonic() > deadline:
+            break
+        if not announced:
+            print("clio: waiting for the CLIO server to finish starting...", file=sys.stderr)
+            announced = True
+        time.sleep(1.0)
     if response.status_code == 404:
         return None  # an older server without the count: attach only, never stop it
     if not response.is_success:
