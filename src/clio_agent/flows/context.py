@@ -201,7 +201,7 @@ class FlowContext:
             )
 
             root = _runtime_workspace_catalog_cwd(self.app, session_id=self.session_id)
-        return FlowWorkspace(root)
+        return FlowWorkspace(root, app=self.app, session_id=self.session_id)
 
     def _site(self) -> str:
         frame = inspect.currentframe()

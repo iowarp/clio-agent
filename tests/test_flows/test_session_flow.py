@@ -125,3 +125,29 @@ def test_unlimited_session_is_never_stopped(flow_app: TestClient) -> None:
     sid = _create(flow_app).json()["id"]
     for _ in range(5):
         check_before_step(flow_app.app, sid)
+
+
+def test_a_file_a_flow_writes_is_an_artifact_of_its_session(
+    flow_app: TestClient, tmp_path: Any
+) -> None:
+    from pathlib import Path
+
+    from clio_agent.flows.values import FlowWorkspace
+
+    sid = _create(flow_app).json()["id"]
+    root = Path(tmp_path)
+    written = FlowWorkspace(root, app=flow_app.app, session_id=sid).write(
+        "deep-research/report.md", "# Report\n"
+    )
+    assert Path(written).read_text(encoding="utf-8") == "# Report\n"
+    rows = flow_app.get(f"/v1/sessions/{sid}/artifacts").json()["artifacts"]
+    found = [row for row in rows if row["name"].endswith("report.md")]
+    assert found, rows
+    producer = found[0]["versions"][-1]["producer"]
+    assert producer["tool"] == "flow.workspace.write" and producer["session_id"] == sid
+    # Appending to a log is not an output.
+    FlowWorkspace(root, app=flow_app.app, session_id=sid).append("runs.jsonl", {"x": 1})
+    names = [
+        row["name"] for row in flow_app.get(f"/v1/sessions/{sid}/artifacts").json()["artifacts"]
+    ]
+    assert not any(name.endswith("runs.jsonl") for name in names)
