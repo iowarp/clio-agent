@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import inspect
 import io
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,8 +35,9 @@ from clio_agent.gact.agents.resolution import session_agent_def
 from clio_agent.tools.execution import tool_workspace_context
 from tests.test_gact.test_a2ui_producer import _advertise_workspace_catalog, _session
 
-#: The capture's default timeout, the longest a request can wait to be claimed.
-CAPTURE_TIMEOUT: float = inspect.signature(A2UIVisualFeedback.capture).parameters["timeout"].default
+#: How long the test waits for a pool thread to post its request (a loaded runner starts
+#: threads late); the capture itself has no time limit.
+CLAIM_WAIT_S = 15.0
 
 
 def png() -> str:
@@ -67,9 +67,9 @@ def claim(bridge: A2UIVisualFeedback, report: ViewerReport, sid: str = "sid") ->
     """Wait for a real request to be assigned by the bridge, with a bounded budget.
 
     The capture runs on a pool thread, which a loaded runner can start seconds late, so the
-    budget is the capture's own default timeout: a request it has not posted by then is gone.
+    test waits CLAIM_WAIT_S for the request to appear.
     """
-    deadline = time.monotonic() + CAPTURE_TIMEOUT
+    deadline = time.monotonic() + CLAIM_WAIT_S
     while time.monotonic() < deadline:
         requests = bridge.report(sid, report)
         if requests:
@@ -136,8 +136,8 @@ def test_unavailable_stale_timeout_failure_and_malformed_pixels() -> None:
     bridge.report("sid", viewer())
     with pytest.raises(VisualFeedbackError, match="expected definition"):
         bridge.capture("sid", "surface", 2, view_revision=0)
-    with pytest.raises(VisualFeedbackError, match="capture budget"):
-        bridge.capture("sid", "surface", 1, timeout=0.02)
+    with pytest.raises(VisualFeedbackError, match="was stopped"):
+        bridge.capture("sid", "surface", 1, stopped=lambda: True)
     for changes, reason in [
         ({"error": "Map tiles failed."}, "tiles failed"),
         ({"png_base64": "AA=="}, "cannot identify"),
@@ -183,7 +183,7 @@ def test_changed_state_requires_new_epoch_and_updated_renderer_can_catch_up() ->
     with pytest.raises(VisualFeedbackError, match="new view epoch"):
         bridge.report("sid", viewer(state={"camera": {"zoom": 8}}))
     with ThreadPoolExecutor(1) as pool:
-        future = pool.submit(bridge.capture, "sid", "surface", 2, timeout=2)
+        future = pool.submit(bridge.capture, "sid", "surface", 2)
         updated = viewer(revision=2, view_revision=1)
         job = claim(bridge, updated)
         bridge.complete("sid", reply(job, updated))
@@ -210,10 +210,41 @@ def test_capture_is_only_auto_attached_for_a_vision_capable_model(
 
 
 def test_unready_view_never_returns_previous_pixels() -> None:
+    """An unready view is waited for (no time limit), never answered with old pixels; the
+    wait ends when the call is stopped."""
     bridge = A2UIVisualFeedback()
     bridge.report("sid", viewer(ready=False))
-    with pytest.raises(VisualFeedbackError, match="did not become ready"):
-        bridge.capture("sid", "surface", 1, timeout=0.02)
+    with pytest.raises(VisualFeedbackError, match="was stopped") as stopped:
+        bridge.capture("sid", "surface", 1, stopped=lambda: True)
+    assert stopped.value.reason == "a2ui_capture_stopped"
+
+
+def test_a_slow_view_is_captured_however_long_it_takes() -> None:
+    """Found live (KQ18): app views in a workbench took longer than the old 15 s budget, the
+    capture failed and the view's late reply was refused (409). The capture now waits."""
+    bridge = A2UIVisualFeedback()
+    report = viewer(ready=False)
+    bridge.report("sid", report)
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(bridge.capture, "sid", "surface", 1)
+        time.sleep(0.6)  # still loading: the capture waits, it does not give up
+        assert not future.done()
+        ready = viewer()
+        request = claim(bridge, ready)
+        bridge.complete(
+            "sid",
+            CaptureReply.model_validate(
+                {
+                    "request_id": request["request_id"],
+                    "viewer_id": ready.viewer_id,
+                    "revision": 1,
+                    "view_revision": 0,
+                    "png_base64": png(),
+                }
+            ),
+        )
+        data, _ = future.result(timeout=5)
+    assert data.startswith(b"\x89PNG")
 
 
 def test_saved_view_control_requires_its_owner_and_advancing_epoch() -> None:

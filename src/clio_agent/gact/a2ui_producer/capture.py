@@ -20,6 +20,7 @@ from clio_agent.gact.artifacts.minting import (
 )
 from clio_agent.gact.artifacts.records import ArtifactKind, Mechanism
 from clio_agent.gact.artifacts.storage import ingest_artifact_identity
+from clio_agent.gact.cancellation_check import make_cancellation_checker
 from clio_agent.gact.view_image_tool import VIEW_IMAGE_DESCRIPTOR_TYPE
 from clio_agent.tools.execution import tool_workspace_context
 
@@ -34,7 +35,6 @@ def build_capture_a2ui_surface_tool() -> Any:
         viewer_id: str = "",
         expected_view_revision: int | None = None,
         artifact_id: str = "",
-        timeout_seconds: float = 15,
     ) -> dict[str, Any]:
         """Inspect real pixels from an open widget or named saved dashboard version.
 
@@ -86,7 +86,7 @@ def build_capture_a2ui_surface_tool() -> Any:
                 viewer_id=viewer_id,
                 view_revision=expected_view_revision,
                 artifact_id=artifact_id,
-                timeout=timeout_seconds,
+                stopped=make_cancellation_checker(app),  # no time limit; Stop ends the wait
             )
             current = app.state.a2ui_store.get(sid, surface_id)
             if not artifact_id and (current is None or current.revision != expected_revision):
@@ -178,10 +178,6 @@ def build_capture_a2ui_surface_tool() -> Any:
             "artifact_id": {
                 "type": "string",
                 "description": "Immutable saved dashboard version id, or empty for live surface.",
-            },
-            "timeout_seconds": {
-                "type": "number",
-                "description": "Capture budget in seconds, at most 20.",
             },
         },
     )
