@@ -239,7 +239,7 @@ class RunAPI:
 def _agent_fix(agent: str | None, exc: ClioAPIError) -> str:
     reason = str(exc.details.get("reason") or exc.error)
     return (
-        f"Agent {agent!r} cannot run: {exc.info.message} ({reason}). Use an agent the "
+        f"{exc.info.message} ({reason}). Use an agent the "
         "server lists (GET /v1/agents, or the + menu in CLIO), install the marketplace "
         "that provides it (clio-agent plugin install <source>), or name it as "
         "<marketplace>/<id> to use one from an installed marketplace that is not trusted "
