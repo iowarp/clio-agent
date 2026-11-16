@@ -14,6 +14,7 @@ https://clio.iowarp.ai/docs/<path>/ (an `index` page is its folder).
 - `docs/examples/check-a-dataset.md`: **Your first analysis: check a small dataset**. Bring a small CSV into CLIO, ask one answerable question and inspect the evidence before keeping the result.
 - `docs/workspace-panels.md`: **Your workspace: conversation, data and results**. Find your files, open a result beside the conversation and keep track of work that needs you.
 - `docs/versions.md`: **Features and versions**. Understand why a guide can look different from your installed app and how to check what is available.
+- `docs/ask-clio.md`: **Ask CLIO how to use CLIO**. Ask how to do something in CLIO, or whether it can, and get the answer from the documentation of the version you have, with its screenshots.
 
 ## Bring your data
 
@@ -91,6 +92,7 @@ https://clio.iowarp.ai/docs/<path>/ (an `index` page is its folder).
 
 - `docs/connectors.md`: **Connectors**. Find connectors and plugins, bring them into the conversations that need them, let the agent offer the one a request needs, and add your own MCP server.
 - `docs/agents-and-plugins.md`: **Agents and plugins**. Choose the agent for a conversation, add or remove its plugins, save your own agent, and read the prompt it receives.
+- `docs/capture.md`: **Turn your work into a plugin**. Use /capture to turn what you did in a conversation into a plugin you can reuse, and /optimize to improve a plugin from the conversations that used it.
 - `docs/extensions.md`: **MCPs, skills and plugins**. Discover extensions, connect an MCP, inspect skill files, and combine them into a plugin you can reuse.
 - `docs/marketplaces/index.md`: **Plugin marketplaces**. Where agents and plugins come from, what the shipped clio marketplace holds, and how Claude Code marketplaces fit in.
 - `docs/marketplaces/manage.md`: **Add and manage marketplaces**. Add a marketplace from a folder or a git repository, trust it, update it, remove it, and check its plugins.

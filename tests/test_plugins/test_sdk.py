@@ -37,6 +37,8 @@ def test_spec_flattens_class_chain_with_layers() -> None:
     assert [(str(p.ref), p.layer) for p in spec.plugins] == [
         ("core", "agent"),
         ("memory", "agent"),
+        ("guide", "agent"),
+        ("builder", "agent"),
         ("documents", "science"),
         ("shell", "science"),
         ("manufacturing@^1", "factorio"),

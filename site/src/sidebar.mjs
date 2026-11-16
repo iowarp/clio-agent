@@ -16,6 +16,7 @@ export const sidebar = [
 			{ label: 'Your first analysis', slug: 'docs/examples/check-a-dataset' },
 			{ label: 'Your workspace', slug: 'docs/workspace-panels' },
 			{ label: 'Features and versions', slug: 'docs/versions' },
+			{ label: 'Ask CLIO how to use CLIO', slug: 'docs/ask-clio' },
 		],
 	},
 	{
@@ -116,6 +117,7 @@ export const sidebar = [
 		items: [
 			{ label: 'Connectors', slug: 'docs/connectors' },
 			{ label: 'Agents and plugins', slug: 'docs/agents-and-plugins' },
+			{ label: 'Turn your work into a plugin', slug: 'docs/capture' },
 			{ label: 'Extensions preview', slug: 'docs/extensions' },
 			{ label: 'Plugin marketplaces', slug: 'docs/marketplaces' },
 			{ label: 'Add and manage marketplaces', slug: 'docs/marketplaces/manage' },

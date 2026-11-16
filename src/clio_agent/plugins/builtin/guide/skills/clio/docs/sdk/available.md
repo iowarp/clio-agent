@@ -22,8 +22,10 @@ These plugins ship inside CLIO, in the `clio-builtin` marketplace, and are alway
 |---|---|
 | `core` | Carried by every agent and never removable. Requires `fleet` and `streaming`. The `react` and `workflow` flows; the operating guidelines, rendering and task-lifecycle prompt fragments; the `planning` skill; the `clio-workspace` interactive catalog; and the conversation tools listed below. |
 | `memory` | Long-term memory of the person, their projects and how they work, and recall of past conversations. Carried by the base `Agent`, and removable. |
+| `guide` | CLIO's own documentation for the installed version, with its screenshots: the `clio` skill and the `clio-guide` subagent (fleet role `guide`). Carried by the base `Agent`, and removable. See [Ask CLIO how to use CLIO](docs/ask-clio.md). |
+| `builder` | Requires `guide`. `/optimize` and the `capture` skill (also `/capture`), which turn conversations into the person's plugins in the `private-local` marketplace; `make_plugin`, `session_record`, `optimize_scope` and `optimize_report_shown`; the `capture-reviewer` and `optimize-scanner` subagents and the `optimize-scan` flow. Carried by the base `Agent`, and removable. See [Turn your work into a plugin](docs/capture.md). |
 | `fleet` | The models work can run on and what each account has left. The `update-models` skill. |
-| `orchestration` | Requires `delegation`. The `run_flow` and `run_workflow` tools that start flows and workflows as background work, `make_plugin`, which writes a flow plugin the person can review and trust, the `council` and `arena` flows, and the `author-a-flow` skill. |
+| `orchestration` | Requires `delegation`. The `run_flow` and `run_workflow` tools that start flows and workflows as background work, and the `council` and `arena` flows. |
 | `streaming` | Required by `core`, so every agent has it. Streams: named tables whose newest rows a script writes many times a second and a dashboard shows live. The `open_stream`, `read_stream` and `stop_stream` tools, the `stream` [script binding](docs/sdk/plugins.md#script-bindings), the `live-status` skill and its prompt fragment. See [Watch something live](docs/live-sources.md). |
 
 ## Flows
@@ -34,6 +36,7 @@ These plugins ship inside CLIO, in the `clio-builtin` marketplace, and are alway
 | `workflow` | `core` | Runs a [workflow](docs/sdk/workflows.md): steps that start as soon as the steps they wait on finish, with optional editors. | None; its input holds `workflow`, `task`, `editors`, `max_added_steps`, `max_edit_rounds`, `allowed_targets` and `approve_edits` |
 | `council` | `orchestration` | Several members answer the same question independently, then one synthesis says where they agree and resolves where they differ. | `members` (targets; default three of `self`), `perspectives` (one per member), `models` (one per member), `synthesizer` (a target; empty synthesizes inside the flow), `synthesizer_model` |
 | `arena` | `orchestration` | Contestants attempt the same task, then a judge compares the entries and picks one, with its reasons. The votes are appended to `arena/votes.jsonl` in the workspace. | `contestants` (targets; default three of `self`), `models` (one per contestant) |
+| `optimize-scan` | `builder` | Reads sessions for `/optimize` in parallel, one `optimize-scanner` child per session, and returns each session's findings with evidence, or why its scan did not finish. | `concurrency` (sessions read at once, default 4) |
 | `deep-research` | `deep-research` in `clio` | Plans research directions, researches them in parallel, has an independent critic verify every claim against fetched sources, researches the gaps it names, then writes a report separating verified facts, supplied context and proposals. | `max_directions` (default 6, at most 12), `max_rounds` (gap rounds, default 2, at most 5), `concurrency` (researchers at once; 0 runs a round together), `researcher_model`, `critic_model` |
 
 Call any of them from a flow with `ctx.call("council", question)` or `ctx.call(Flow("arena", models=[...]), task)`, start them from the model with `run_flow`, or use them as a workflow step.
@@ -136,7 +139,8 @@ Each tool belongs to one plugin. Require that plugin to give your plugin or suba
 | `memory` | `memory_search`, `memory_read`, `create_memory`, `update_memory`, `forget_memory`, `propose_memory_change`, `session_search`, `session_read_summary`, `session_read_context_frame` |
 | `fleet` | `list_models`, `usage`, `refresh_provider_models` |
 | `streaming` | `open_stream`, `read_stream`, `stop_stream` |
-| `orchestration` | `run_flow`, `run_workflow`, `make_plugin` |
+| `orchestration` | `run_flow`, `run_workflow` |
+| `builder` | `make_plugin`, `session_record`, `optimize_scope`, `optimize_report_shown` |
 | `workspace` | `fs_read_file`, `fs_list_directory`, `fs_search_text`, `fs_write_file`, `fs_edit_file`, `view_image` |
 | `shell` | `shell_bash`, `prepare_execution_runtime` |
 | `web` | `web_search`, `web_fetch` |

@@ -117,6 +117,8 @@ def test_external_marketplace_needs_the_trust_step(tmp_path: Path) -> None:
     assert resolution.plugin_ids == [
         "core",
         "memory",
+        "guide",
+        "builder",
         "documents",
         "pdf",
         "xlsx",
