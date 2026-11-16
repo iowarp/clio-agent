@@ -14,7 +14,7 @@ from fastmcp.client.transports import FastMCPTransport, SSETransport, StdioTrans
 from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
-from clio_agent.gact import view_call_cancel, view_call_ledger
+from clio_agent.gact import external_plain_calls, view_call_cancel, view_call_ledger
 from clio_agent.tools import fleet_close_listeners
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
@@ -357,3 +357,10 @@ async def close_connections(self: ExternalTasks) -> None:
         await asyncio.shield(asyncio.gather(*tuple(self._retiring)))
     for host in tuple(self.connections.values()):
         await retire_connection(self, host, shutdown=True)
+
+
+async def plain_call_started(
+    self: ExternalTasks, handle: str, rpc: asyncio.Task[Any], written_ahead: bool
+) -> None:
+    """A plain call was sent: running, and cancellable by its handle (external_plain_calls)."""
+    await external_plain_calls.started(self, handle, rpc, written_ahead=written_ahead)

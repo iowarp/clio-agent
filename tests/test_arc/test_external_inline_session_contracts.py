@@ -187,18 +187,30 @@ async def test_concurrent_legacy_callbacks_have_bound_invocations_and_retire_pro
                 assert acknowledgement["settlement"] == "unknown"
                 assert acknowledgement["recording"] == "unconfirmed"
                 assert external.recovery.is_pending("external-cancel:" + invocation.handle)
+                continue  # a cancelled call is cancelled on the wire: nothing is answered
             value = "answer-" + invocation.invocation_id.removeprefix("legacy-")
             await asyncio.to_thread(
                 app.state.questions.answer,
                 question.handle,
                 QuestionReply(metadata={"value": value}, responder_human="human"),
             )
-        results = await asyncio.gather(*calls)
-        assert [result.structured_content for result in results] == [
+        if cancel_before_reply:
+            # Cancelling a plain call cancels it (notifications/cancelled), it does not
+            # wait for the reply; its record ends cancelled, outcome unknown.
+            outcomes = await asyncio.gather(*calls, return_exceptions=True)
+            assert all(isinstance(item, asyncio.CancelledError) for item in outcomes), outcomes
+            for question in posted:
+                assert question.owner.parent_handle is not None
+                ended = await asyncio.to_thread(history.task_snapshot, question.owner.parent_handle)
+                assert ended is not None and ended.status == "cancelled"
+                assert ended.raw_status == "mcp_call_cancelled"
+                assert ended.settlement == "unknown"
+        results = [] if cancel_before_reply else await asyncio.gather(*calls)
+        assert cancel_before_reply or [result.structured_content for result in results] == [
             {"tag": "first", "value": "answer-first"},
             {"tag": "second", "value": "answer-second"},
         ]
-        for question in posted:
+        for question in [] if cancel_before_reply else posted:
             assert question.owner.parent_handle is not None
             invocation = await asyncio.to_thread(
                 history.task_snapshot, question.owner.parent_handle

@@ -72,10 +72,11 @@ async def _stop_children(app: Any, sid: str, assignment: Any) -> dict[str, Any]:
         if assignment is not None
         else None
     )
-    if current is not None and current.terminal_at is None:
-        targets = [current.handle] if scope else []  # nothing open: the turn stop is all
-    else:
-        targets = [row["handle"] for row in scope]
+    # Everything open, each by its own handle: a turn's cancel does not reach a tool call
+    # the turn is waiting on (that call outlives the reply on "Stop reply only").
+    targets = [row["handle"] for row in scope]
+    if current is not None and current.terminal_at is None and scope:
+        targets.insert(0, current.handle)
     requests: list[dict[str, Any]] = []
     for handle in targets:
         try:

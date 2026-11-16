@@ -409,6 +409,7 @@ class ExternalTasks:
         rpc = asyncio.create_task(submit())
         host.rpcs.add(rpc)
         rpc.add_done_callback(lambda finished: self._rpc_retired(host, finished))
+        await external_task_connections.plain_call_started(self, handle, rpc, lazy is None)
         stopped = False
         while True:
             try:
