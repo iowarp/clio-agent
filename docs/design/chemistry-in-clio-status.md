@@ -54,8 +54,15 @@ yes after server-side packing to P1. Not yet tried inside live CLIO.
 3. marketplace: computational-chemistry (L1), ase, pubchem, graspa, fdmnes, decimer,
    nwchem, orca, burette plugins, alembic plugin + `agents/alembic.py`; `.lint-l3` +
    `lint-denylist.txt` on each.
-4. Live qualification of the remaining C-cases (plain requests only), ledger.
-5. Showcase screenshots for the website from every live case (deviceScaleFactor 2, at
+4. Avogadro 2 as a streamed view, the way ParaView is streamed (user decision, 2026-11-16:
+   the goal is a good CLIO chemistry stack, not only the SC demos). Burette stays the light
+   in-conversation viewer and quick internal-coordinate editor; Avogadro 2 is for building
+   and remodelling in 3D (fragments, element changes, auto-optimize while dragging, crystals,
+   surfaces, supercells). First check it installs and streams on a Linux node; its saved
+   file returns to the agent as a workspace structure; work out how its selection reaches
+   the agent; add a burette-views/avogadro skill on which to use when.
+5. Live qualification of the remaining C-cases (plain requests only), ledger.
+6. Showcase screenshots for the website from every live case (deviceScaleFactor 2, at
    1440x900 and 390x844), saved under `site/src/assets/tutorials/chemistry/` per
    `site/WRITING.md`, alongside the ledger's evidence screenshots. Only screenshots of
    the real CLIO interface (Web or Desktop) go on the website; test-harness captures are
