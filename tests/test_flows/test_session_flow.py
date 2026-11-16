@@ -80,6 +80,8 @@ def test_unattended_flow_question_is_answered_at_once(flow_app: TestClient) -> N
     assert text_of(_answer(flow_app, sid)) == "declined"
     questions = flow_app.get(f"/v1/sessions/{sid}/questions").json()["questions"]
     assert questions and all(q["status"] != "pending" for q in questions)
+    # The run answered it, not a person: the UI must not say "You answered".
+    assert {q.get("answered_by") for q in questions} == {"unattended"}
 
 
 def test_attended_flow_question_still_waits(flow_app: TestClient) -> None:

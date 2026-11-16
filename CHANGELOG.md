@@ -22,6 +22,7 @@ TUI/HTTP surface aren't tracked here.
   listing them in the session's `unattended_trusted`. A tool's own input request
   (search asking to use a source) takes the default the tool declares, listed in
   `unattended_approved`; one with no default is declined.
+  A Question it answered reports `answered_by: "unattended"`, not a person.
   A run limit fails the next
   model step of the tree with `run_limit_reached`.
 - `GET /v1/sessions/{sid}/usage`: model turns, tokens and cost over a session tree.
