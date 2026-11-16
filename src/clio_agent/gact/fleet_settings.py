@@ -20,7 +20,14 @@ from clio_agent.user_config_document import (
 )
 
 JudgeRole = Literal[
-    "goals", "variants", "permissions", "memory_extract", "memory_consolidate", "explore"
+    "goals",
+    "variants",
+    "permissions",
+    "memory_extract",
+    "memory_consolidate",
+    "explore",
+    "guide",
+    "optimize",
 ]
 ROLES: tuple[JudgeRole, ...] = (
     "goals",
@@ -29,6 +36,8 @@ ROLES: tuple[JudgeRole, ...] = (
     "memory_extract",
     "memory_consolidate",
     "explore",
+    "guide",
+    "optimize",
 )
 
 

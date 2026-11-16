@@ -35,6 +35,8 @@ from clio_agent.sdk.versions import PluginRef, VersionRangeError
 CORE_PLUGIN = "core"
 #: Long-term memory and session recall: carried by every agent, removable by a delta.
 MEMORY_PLUGIN = "memory"
+#: CLIO's own documentation for the installed version: carried by every agent, removable.
+GUIDE_PLUGIN = "guide"
 
 
 class AgentDefinitionError(ValueError):
@@ -136,7 +138,7 @@ def _flow_selection(value: Any) -> dict[str, Any]:
 
 
 class Agent:
-    """Base class for shipped agents. The base carries ``core`` and ``memory``."""
+    """Base class for shipped agents. The base carries ``core``, ``memory`` and ``guide``."""
 
     id: ClassVar[str] = ""
     version: ClassVar[str] = "0.0.0"
@@ -144,7 +146,7 @@ class Agent:
     role: ClassVar[str] = ""
     description: ClassVar[str] = ""
     flow: ClassVar[Any] = "react"
-    plugins: ClassVar[list[str]] = [CORE_PLUGIN, MEMORY_PLUGIN]
+    plugins: ClassVar[list[str]] = [CORE_PLUGIN, MEMORY_PLUGIN, GUIDE_PLUGIN]
     requires: ClassVar[Requires] = Requires()
     prefers: ClassVar[Prefers] = Prefers()
     #: A bare agent's model sees only the conversation: no system prompt, no tools or

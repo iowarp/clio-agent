@@ -14,11 +14,13 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 
 def register_artifact_reference_routes(app: FastAPI) -> None:
-    """Register ``GET /v1/sessions/{sid}/references/resolve`` on ``app``."""
+    """Register ``GET /v1/sessions/{sid}/references/resolve`` and the plugin-asset bytes."""
 
+    from clio_agent.gact import plugin_assets  # noqa: PLC0415
     from clio_agent.gact.artifacts.references import (  # noqa: PLC0415
         ReferenceResolutionError,
         resolve_reference,
@@ -28,6 +30,15 @@ def register_artifact_reference_routes(app: FastAPI) -> None:
         _audit,
         _session_workspace_id,
     )
+
+    def _typed(exc: ReferenceResolutionError) -> Exception:
+        return _artifact_error(
+            status_code=exc.status_code,
+            error=exc.error,
+            message=exc.message,
+            details=exc.details,
+            recoverable=exc.status_code < 500,
+        )
 
     @app.get("/v1/sessions/{sid}/references/resolve")
     async def resolve_session_reference(sid: str, uri: str) -> dict[str, Any]:
@@ -50,17 +61,32 @@ def register_artifact_reference_routes(app: FastAPI) -> None:
                 details={"session_id": sid},
             )
         try:
-            resolved = await resolve_reference(app, uri, session_workspace_id=workspace_id)
+            if plugin_assets.is_plugin_asset(uri):
+                resolved = plugin_assets.resolve(app, sid, uri)
+            else:
+                resolved = await resolve_reference(app, uri, session_workspace_id=workspace_id)
         except ReferenceResolutionError as exc:
-            raise _artifact_error(
-                status_code=exc.status_code,
-                error=exc.error,
-                message=exc.message,
-                details=exc.details,
-                recoverable=exc.status_code < 500,
-            ) from exc
+            raise _typed(exc) from exc
         _audit(app, route="resolve_session_reference", session_id=sid, kind=resolved["kind"])
         return resolved
+
+    @app.get("/v1/sessions/{sid}/plugin-assets/{plugin}/{path:path}")
+    async def read_plugin_asset(sid: str, plugin: str, path: str) -> FileResponse:
+        """The bytes of a file under ``plugin``'s ``assets/`` folder, for a viewer of
+        ``sid``: only a plugin that session's agent resolves (``plugin_assets``)."""
+
+        if _session_workspace_id(app, sid) is None:
+            raise _artifact_error(
+                status_code=404,
+                error="not_found",
+                message=f"session not found: {sid}",
+                details={"session_id": sid},
+            )
+        try:
+            target = plugin_assets.asset_file(app, sid, plugin, path)
+        except ReferenceResolutionError as exc:
+            raise _typed(exc) from exc
+        return FileResponse(target, media_type=plugin_assets.media_type(target))
 
 
 __all__ = ["register_artifact_reference_routes"]
