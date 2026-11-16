@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
-from typing import Literal
 from urllib.parse import urlsplit
 
-ApprovalMode = Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"]
-APPROVAL_MODES: tuple[str, ...] = ("ask", "auto-edits", "bypass", "ai-review", "spotter-ai")
 #: The variable for a bearer token set by hand.
 TOKEN_ENV = "CLIO_GACT_BEARER_TOKEN"
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
@@ -32,7 +29,10 @@ def default_url() -> str:
 @dataclass(frozen=True)
 class ClioOptions:
     """Everything a script sets once; ``run``/``run_flow``/``session`` may override
-    ``agent``, ``model``, ``approval_mode``, ``max_turns`` and ``max_budget_usd``.
+    ``agent``, ``model``, ``max_turns`` and ``max_budget_usd``.
+
+    A script run approves every permission and asks nothing (the server runs it
+    under ``bypass``); a person's explicit deny rules still apply.
 
     Attributes:
         url: Where to look for a CLIO server. Default: the configured local port.
@@ -45,9 +45,6 @@ class ClioOptions:
             server's default agent.
         model: ``account/model`` id, as ``list_models`` gives it. Default: the
             session default.
-        approval_mode: ``ask``, ``auto-edits``, ``bypass``, ``ai-review`` or
-            ``spotter-ai``. Default ``bypass``: nothing is asked; a person's deny
-            rules still apply. Anything a narrower mode would ask is denied.
         max_turns: Most model turns (model steps) a run may take, over its whole
             session tree. Unset: no limit.
         max_budget_usd: Most a run may spend, over its whole session tree.
@@ -60,17 +57,11 @@ class ClioOptions:
     workspace: str = "."
     agent: str | None = None
     model: str | None = None
-    approval_mode: ApprovalMode = "bypass"
     max_turns: int | None = None
     max_budget_usd: float | None = None
     banner: bool = True
 
     def __post_init__(self) -> None:
-        if self.approval_mode not in APPROVAL_MODES:
-            raise ValueError(
-                f"approval_mode must be one of {', '.join(APPROVAL_MODES)}; "
-                f"got {self.approval_mode!r}"
-            )
         if self.max_turns is not None and self.max_turns < 1:
             raise ValueError(f"max_turns must be at least 1; got {self.max_turns}")
         if self.max_budget_usd is not None and self.max_budget_usd <= 0:
@@ -139,4 +130,4 @@ def _recorded_token(port: int) -> str | None:
     return token if isinstance(token, str) and token else None
 
 
-__all__ = ["APPROVAL_MODES", "TOKEN_ENV", "ApprovalMode", "ClioOptions", "default_url"]
+__all__ = ["TOKEN_ENV", "ClioOptions", "default_url"]

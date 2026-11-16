@@ -24,13 +24,12 @@ from clio_agent.client import connection as conn
 def test_options_defaults_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CLIO_GACT_BEARER_TOKEN", raising=False)
     options = ClioOptions(url="http://127.0.0.1:9", token=None)
-    assert options.approval_mode == "bypass" and options.launch is True
+    assert options.launch is True
     assert options.is_local and options.port == 9
     assert not ClioOptions(url="https://clio.example.org").is_local
     assert ClioOptions(url="https://clio.example.org").port == 443
     assert options.with_overrides(agent="factorio", model=None).agent == "factorio"
     for bad in (
-        {"approval_mode": "yolo"},
         {"max_turns": 0},
         {"max_budget_usd": 0},
         {"model": "no-account"},
@@ -124,7 +123,7 @@ def test_attached_server_is_never_stopped(monkeypatch: pytest.MonkeyPatch, capsy
     assert opened.started is False and opened.client_id == "client_1"
     banner = capsys.readouterr().err
     assert "attached to the CLIO server at http://127.0.0.1:9" in banner
-    assert "nothing will be asked" in banner and "Approval mode: bypass" in banner
+    assert "nothing will be asked: every permission is granted" in banner
     assert conn.close_connection(opened, http)["stopped"] is None
 
 

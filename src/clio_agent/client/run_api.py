@@ -1,11 +1,11 @@
 """The run surface of :class:`~clio_agent.client.ClioClient`: ``run``, ``run_flow``,
 ``stream_flow`` and ``session``.
 
-Every run creates (or continues) an *unattended* session: the server answers its
-questions "the user is not available", denies anything the approval mode would ask a
-person, and trusts the plugins it needs (:mod:`clio_agent.gact.unattended`). The
-options' ``agent``, ``model``, ``approval_mode``, ``max_turns`` and
-``max_budget_usd`` apply unless a call overrides them.
+Every run creates (or continues) an *unattended* session: the server grants every
+permission, answers its questions "the user is not available", takes a tool's declared
+defaults and trusts the plugins it needs (:mod:`clio_agent.gact.unattended`). The
+options' ``agent``, ``model``, ``max_turns`` and ``max_budget_usd`` apply unless a call
+overrides them.
 
 A refused flow (an unknown flow, options that do not load) and every failed run
 return ``status="failed"`` with the server's typed error. Errors in the script's own
@@ -79,7 +79,6 @@ class RunAPI:
         files: list[str] | None = None,
         agent: str | None = None,
         model: str | None = None,
-        approval_mode: str | None = None,
         max_turns: int | None = None,
         max_budget_usd: float | None = None,
     ) -> RunResult:
@@ -92,7 +91,6 @@ class RunAPI:
         handle = self.session(
             agent=agent,
             model=model,
-            approval_mode=approval_mode,
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             title=prompt,
@@ -107,7 +105,6 @@ class RunAPI:
         agent: str | None = None,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-        approval_mode: str | None = None,
         max_turns: int | None = None,
         max_budget_usd: float | None = None,
     ) -> RunResult:
@@ -120,7 +117,6 @@ class RunAPI:
             agent=agent,
             options=options,
             model=model,
-            approval_mode=approval_mode,
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
         ):
@@ -135,7 +131,6 @@ class RunAPI:
         agent: str | None = None,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-        approval_mode: str | None = None,
         max_turns: int | None = None,
         max_budget_usd: float | None = None,
     ) -> Iterator[Any]:
@@ -146,7 +141,6 @@ class RunAPI:
             handle = self.session(
                 agent=agent,
                 model=model,
-                approval_mode=approval_mode,
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
                 flow={"id": flow_id, "options": dict(options or {})},
@@ -165,7 +159,6 @@ class RunAPI:
         id: str | None = None,  # noqa: A002 - the session id to continue
         agent: str | None = None,
         model: str | None = None,
-        approval_mode: str | None = None,
         max_turns: int | None = None,
         max_budget_usd: float | None = None,
         flow: dict[str, Any] | None = None,
@@ -182,7 +175,6 @@ class RunAPI:
         chosen = self.options.with_overrides(
             agent=agent,
             model=model,
-            approval_mode=approval_mode,
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
         )
@@ -193,7 +185,6 @@ class RunAPI:
                 title=" ".join(title.split())[:80],
                 agent=chosen.agent,
                 model=chosen.model,
-                approval_mode=chosen.approval_mode,
                 flow=flow,
                 unattended=True,
                 max_turns=chosen.max_turns,

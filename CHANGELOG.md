@@ -16,12 +16,12 @@ TUI/HTTP surface aren't tracked here.
   anything. See `src/clio_agent/client/README.md`.
 - `POST /v1/sessions` accepts `flow` (`{id, options}`: the session runs that flow as
   its own work, checked with `run_flow`'s own check and its typed refusals),
-  `unattended`, `max_turns` and `max_budget_usd`. An unattended run answers every
-  Question at once ("the user is not available"), denies what its approval mode
-  would ask a person (`unattended_no_person`) and trusts the plugins it needs,
+  `unattended`, `max_turns` and `max_budget_usd`. An unattended run runs under `bypass`
+  whatever was asked (deny rules still apply) and grants folder access, answers every
+  Question at once ("the user is not available") and trusts the plugins it needs,
   listing them in the session's `unattended_trusted`. A tool's own input request
-  (search asking to use a source) takes the default the tool declares, in every
-  approval mode, listed in `unattended_approved`; one with no default is declined.
+  (search asking to use a source) takes the default the tool declares, listed in
+  `unattended_approved`; one with no default is declined.
   A run limit fails the next
   model step of the tree with `run_limit_reached`.
 - `GET /v1/sessions/{sid}/usage`: model turns, tokens and cost over a session tree.
@@ -36,9 +36,9 @@ TUI/HTTP surface aren't tracked here.
 - `metadata` on session create and update refuses server-owned keys (`agent_flow`,
   `unattended`, `run_limits`, ...) with `metadata_reserved`.
 - A flow refuses options it does not declare (`flow_options_invalid`).
-- `clio-agent -q` runs through the library: tools run under `--approval-mode`
-  (default `bypass`), questions get the not-available reply, and new `--agent`,
-  `--model` and `--workspace` flags apply. Its JSON drops `selected_expert`.
+- `clio-agent -q` runs through the library: every permission is granted, questions
+  get the not-available reply, and new `--agent`, `--model` and `--workspace` flags
+  apply. Its JSON drops `selected_expert`.
 - `serve.ensure_server` starts `clio-agent serve`, not `clio-agent-gact`.
 
 ### Removed

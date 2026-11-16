@@ -125,12 +125,6 @@ def request_folder_access(
     wid = str(getattr(session, "workspace_id", "") or "")
     if not sid or not wid or app.state.workspaces.get(wid) is None:
         return DenyDecision("Folder access needs an active workspace and user approval")
-    from clio_agent.gact.unattended import refuse_ask
-
-    mode = str(getattr(session, "approval_mode", ""))
-    refused = refuse_ask(app, sid, name, args, mode, person_only=True)
-    if refused is not None:
-        return refused  # folder access needs a person; an unattended run has none
     cancelled = app.state.cancel_events.get(sid)
     for folder in folders:
         if (
@@ -186,6 +180,10 @@ def request_folder_access(
             "scope": "workspace",
         },
     }
+    from clio_agent.gact.unattended import grant_folders  # noqa: PLC0415
+
+    if grant_folders(app, sid, row):
+        return "allow"  # a script run: every permission is granted (deny rules held above)
     # Human resolution may run immediately after the row becomes visible.
     app.state.permission_events[pid] = event
     app.state.permissions[pid] = row

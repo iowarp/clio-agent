@@ -804,13 +804,11 @@ def run_query(
     agent: str | None = None,
     model: str | None = None,
     workspace: str = ".",
-    approval_mode: str = "bypass",
 ) -> int:
     """``clio-agent -q``: one unattended run through the library (``ClioClient.run``).
 
-    Nothing is asked: tools run under ``approval_mode`` (``bypass`` by default), a
-    question gets the "user is not available" reply. Prints the answer (or JSON) and
-    returns 0 when the run completed.
+    Nothing is asked: every permission is granted, a question gets the "user is not
+    available" reply. Prints the answer (or JSON) and returns 0 when it completed.
     """
     import json
 
@@ -822,7 +820,6 @@ def run_query(
             workspace=workspace,
             agent=agent,
             model=model,
-            approval_mode=approval_mode,  # type: ignore[arg-type]
         )
         with ClioClient(options) as client:
             result = client.session(title=session_title).run(query)
@@ -940,12 +937,6 @@ def main() -> None:
     parser.add_argument("--agent", help="With --query: the agent id (default: the server's)")
     parser.add_argument("--model", help="With --query: an account/model id")
     parser.add_argument("--workspace", default=".", help="With --query: the workspace folder")
-    parser.add_argument(
-        "--approval-mode",
-        default="bypass",
-        choices=["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"],
-        help="With --query: what runs without asking; asks are denied (default: bypass)",
-    )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=None, help="Server port (default: gact.port)")
     parser.add_argument(
@@ -1001,7 +992,6 @@ def main() -> None:
                 agent=args.agent,
                 model=args.model,
                 workspace=args.workspace,
-                approval_mode=args.approval_mode,
             )
         )
     else:

@@ -39,8 +39,8 @@ Run it with `python my_script.py`. Nothing asks anyone anything.
   client is attached; otherwise the server keeps running and stops with its last
   client. A server the client attached to is never stopped by it.
 - **The banner.** Opening prints one line pair to stderr: attached (and where) or
-  started (and on which port), the model provider, that nothing will be asked, and the
-  approval mode. Each plugin trusted during a run is printed as it is trusted.
+  started (and on which port), the model provider, and that nothing will be asked. Each
+  plugin trusted during a run is printed as it is trusted.
 - **Configuration** comes from the environment, as for `clio-agent serve`: set
   `CLIO_LM_PROVIDER` and the provider's key variables (CI secrets, not files).
 
@@ -54,20 +54,19 @@ Run it with `python my_script.py`. Nothing asks anyone anything.
 | `workspace` | Folder the runs work in (on the server's machine for a remote URL) | `.` |
 | `agent` | Agent id (`factorio`) or `marketplace/id` | The server's default agent |
 | `model` | `account/model`, as `list_models` gives it | The session default |
-| `approval_mode` | `ask`, `auto-edits`, `bypass`, `ai-review`, `spotter-ai` | `bypass` |
 | `max_turns` | Most model turns (steps) over the run's session tree | No limit |
 | `max_budget_usd` | Most the run may spend over its session tree | No limit |
 
 `run`, `run_flow`, `stream_flow` and `session` override `agent`, `model`,
-`approval_mode`, `max_turns` and `max_budget_usd` per call.
+`max_turns` and `max_budget_usd` per call.
 
 ## Nothing is asked
 
 A script's sessions are *unattended*:
 
-- Tools run under the approval mode (`bypass`: all of them). A person's explicit deny
-  rules still apply. Anything a narrower mode would ask about is denied, typed
-  `unattended_no_person`, never left waiting.
+- Every permission is granted: the run's sessions run under `bypass`, and a folder
+  outside the workspace is granted for it (printed and listed in `RunResult.approved`).
+  A person's explicit deny rules still apply.
 - A question (`ask_user`, a flow's `ctx.ask`) is answered at once: the user is not
   available, go ahead on your best judgment. A choice-only question is declined with
   that reply (`ctx.ask(..., schema=bool)` returns `False`).
@@ -75,7 +74,7 @@ A script's sessions are *unattended*:
   other than the default (name such an agent `marketplace/id`). Each is listed in
   `RunResult.trusted`.
 - A tool's own input request (search asking to use a source) takes the default the
-  tool declares, in every approval mode. It is printed to stderr and listed in
+  tool declares. It is printed to stderr and listed in
   `RunResult.approved`. A request with no default (a key, an account) is declined:
   supply that value through the environment or CLIO's settings before the run.
 

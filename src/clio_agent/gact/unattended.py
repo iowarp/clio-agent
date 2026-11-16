@@ -5,14 +5,14 @@ library sends) and every session spawned beneath it never wait on a person:
 
 * **Questions** (``ask_user``, a flow's ``ctx.ask``, any Question task) are answered
   at once with :data:`NOT_AVAILABLE_REPLY`; the agent goes ahead on its own judgment.
-* **Permission asks** the approval mode would put to a person are denied, typed
-  ``unattended_no_person``. (The library's default mode is ``bypass``, which asks
-  nothing; a person's deny rules still apply before any mode.)
+* **Permissions** are all granted: the session runs under ``bypass`` whatever the
+  request asked for, and a folder outside the workspace is granted for it. A person's
+  explicit deny rules still apply. (A child whose role narrows it, such as a read-only
+  reviewer, has its asks denied, typed ``unattended_no_person``, never left waiting.)
 * **Plugins** an agent or flow needs are trusted and added, and each trust is recorded
   on the run's root session (``unattended_trusted``) so the script can report it.
 * **A tool's own input request** (an MCP form, such as search asking to send queries
-  to a source) is accepted with the defaults the tool declares, in every approval
-  mode, and recorded on the root (``unattended_approved``). A script run is never
+  to a source) is accepted with the defaults the tool declares, and recorded on the root (``unattended_approved``). A script run is never
   interactive: a form with no default (a key, an account) is declined with the
   not-available reply, and its value has to come from the environment or settings.
 
@@ -137,17 +137,15 @@ def _tool_defaults(definition: Any) -> dict[str, Any] | None:
     }
 
 
-def refuse_ask(
-    app: Any, sid: str, name: str, args: Any, approval_mode: str, *, person_only: bool = False
-) -> Any:
+def refuse_ask(app: Any, sid: str, name: str, args: Any, approval_mode: str) -> Any:
     """A typed deny for a permission ask in an unattended run, else ``None``.
 
-    A tool ask under ``ai-review`` is answered by its reviewer, not a person, so it is
-    left to it; ``person_only`` asks (folder access) have no reviewer.
+    A script run runs under ``bypass``, so an ask reaches here only from a child whose
+    role narrows it (a read-only reviewer): that limit is the role's, and the call is
+    denied rather than left waiting for a person.
     """
 
-    reviewed = approval_mode == "ai-review" and not person_only
-    if reviewed or not is_unattended(app, sid):
+    if not is_unattended(app, sid):
         return None
     from clio_agent.gact.permission_delivery import record_resolved_permission  # noqa: PLC0415
     from clio_agent.gact.permission_gate import DenyDecision  # noqa: PLC0415
@@ -166,6 +164,24 @@ def refuse_ask(
         f"{name} was denied: approval mode {approval_mode!r} would ask a person, and this "
         "run has nobody to ask. Continue without it or choose another approach."
     )
+
+
+def grant_folders(app: Any, session_id: str, row: dict[str, Any]) -> bool:
+    """Grant a folder-access request in an unattended run, as Allow for workspace does.
+
+    A script run approves every permission (its deny rules were already checked); the
+    folders join the workspace's permitted folders and the grant is recorded on the
+    run like any approval. ``False`` outside an unattended run.
+    """
+
+    if not is_unattended(app, session_id):
+        return False
+    from clio_agent.gact.folder_access import apply_folder_permission  # noqa: PLC0415
+
+    apply_folder_permission(app, row, "allow_workspace", "user")
+    folders = ", ".join(row["access"]["folders"])
+    record_approved(app, session_id, f"Folder access: {folders}", {"granted": "workspace"})
+    return True
 
 
 def record_approved(app: Any, session_id: str, prompt: str, answer: dict[str, Any]) -> None:
@@ -221,6 +237,7 @@ __all__ = [
     "TRUSTED_KEY",
     "UNATTENDED_KEY",
     "auto_reply",
+    "grant_folders",
     "is_unattended",
     "record_approved",
     "record_trusted",

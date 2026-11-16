@@ -218,17 +218,12 @@ def print_banner(connection: Connection, options: ClioOptions, provider: dict[st
         else f"attached to the CLIO server at {connection.base_url}"
     )
     model = provider.get("model") or "the session default"
-    tools = (
-        "every tool and plugin is approved"
-        if options.approval_mode in ("bypass", "spotter-ai")
-        else f"plugins are approved, and any tool {options.approval_mode!r} would ask about "
-        "is denied"
-    )
     print(
         f"clio: {how} (model provider: {provider.get('provider') or 'configured'}, "
         f"{model}).\n"
-        f"clio: nothing will be asked: {tools}; questions are answered 'the user is not "
-        f"available'. Approval mode: {options.approval_mode}.",
+        "clio: nothing will be asked: every permission is granted (your deny rules still "
+        "apply), plugins are trusted, tools take their defaults and questions are answered "
+        "'the user is not available'.",
         file=sys.stderr,
         flush=True,
     )

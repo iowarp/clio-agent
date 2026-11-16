@@ -1071,7 +1071,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
-    "src/clio_agent/ui/cli.py": 1012,
+    "src/clio_agent/ui/cli.py": 1002,
     # (agent_elicitation.py's entry retired, #1331 review round: the file was a
     # NEW god-file at 1001 lines, never a legitimate baseline target -- the 800
     # cap is a backstop, not a license. Split by behavior into owner modules

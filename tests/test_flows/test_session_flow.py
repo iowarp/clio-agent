@@ -187,7 +187,7 @@ def _search_consent(flow_app: TestClient, sid: str, *, default: str | None = "ap
 def test_bypass_run_approves_a_tools_input_request_with_its_default(
     flow_app: TestClient,
 ) -> None:
-    sid = _create(flow_app, unattended=True, approval_mode="bypass").json()["id"]
+    sid = _create(flow_app, unattended=True).json()["id"]
     task = _search_consent(flow_app, sid)
     from clio_agent.arc.task_types import QuestionReply
 
@@ -219,3 +219,27 @@ def test_every_mode_takes_the_tools_default_and_no_default_is_declined(
         assert stored.action == action, body
         approved = flow_app.app.state.sessions.get(sid).metadata.get("unattended_approved")
         assert bool(approved) == (action == "accept"), body
+
+
+def test_a_script_run_grants_every_permission(flow_app: TestClient, tmp_path: Any) -> None:
+    from clio_agent.gact.folder_access import request_folder_access
+
+    created = _create(flow_app, unattended=True, approval_mode="ask").json()
+    assert created["approval_mode"] == "bypass"  # whatever the request asked for
+    app = flow_app.app
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    session = app.state.sessions.get(created["id"])
+    decision = request_folder_access(
+        app,
+        created["id"],
+        session,
+        "fs_read_file",
+        {"path": str(outside / "a.txt")},
+        [str(outside)],
+    )
+    assert decision == "allow"
+    approved = app.state.sessions.get(created["id"]).metadata["unattended_approved"]
+    assert approved[-1]["question"] == f"Folder access: {outside}"
+    attended = _create(flow_app, approval_mode="ask").json()
+    assert attended["approval_mode"] == "ask"

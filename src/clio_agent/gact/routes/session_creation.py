@@ -79,9 +79,10 @@ def register_session_creation_route(app: FastAPI) -> None:
                 routing_mode=(
                     req.routing_mode if "routing_mode" in supplied else defaults.routing_mode
                 ),
-                approval_mode=(
-                    req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
-                ),
+                # A script run approves every permission: nobody is there to ask.
+                approval_mode="bypass"
+                if req.unattended
+                else (req.approval_mode if "approval_mode" in supplied else defaults.approval_mode),
             )
             timer = bringup_timing.timer_for_session(app, sess.id)
             timer.start_phase("session.create")
