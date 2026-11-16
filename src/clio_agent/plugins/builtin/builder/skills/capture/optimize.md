@@ -31,7 +31,10 @@ works across all recent sessions.
 5. **Write.** A plugin Clio wrote: `make_plugin` with the same name makes its next
    version, with the diff recorded. A plugin from any other marketplace (including
    CLIO's own, such as `core`): the person's variation under a new name, with
-   `variation_of="<marketplace>/<plugin>"`. The original is never edited.
+   `variation_of="<marketplace>/<plugin>"`. The original is never edited. When the
+   original brings tools or servers, a copy would collide with it: the variation then
+   requires the original and adds only the change, and still names it in
+   `variation_of`.
 6. **Review** as in step 7 of capture.
 7. **Trial: old against new.** The tasks come from the sessions where the current
    version fell short. Run each with the current version and with the new one, side by
