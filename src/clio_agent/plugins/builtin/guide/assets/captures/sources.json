@@ -1,0 +1,882 @@
+{
+  "add-by-command": {
+    "source": "site/src/assets/captures/connectors/add-by-command.png",
+    "hash": "5e631442a72b3f2a"
+  },
+  "add-plugin-picker": {
+    "source": "site/src/assets/captures/connectors/add-plugin-picker.png",
+    "hash": "1f319b76897894ad"
+  },
+  "add-plugin-picker-plugins": {
+    "source": "site/src/assets/captures/connectors/add-plugin-picker-plugins.png",
+    "hash": "73a04af479699d28"
+  },
+  "agent-load-card": {
+    "source": "site/src/assets/captures/connectors/agent-load-card.png",
+    "hash": "8d9e2b0992a483a4"
+  },
+  "alta-native-results": {
+    "source": "site/src/assets/tutorials/ndp/alta-native-results.png",
+    "hash": "d7af937884dc775b"
+  },
+  "article-answer-end": {
+    "source": "site/src/assets/captures/search/article-answer-end.png",
+    "hash": "e639ae05e016f94d"
+  },
+  "article-approval": {
+    "source": "site/src/assets/captures/search/article-approval.png",
+    "hash": "79d8d0a6bf358471"
+  },
+  "article-check-step": {
+    "source": "site/src/assets/captures/search/article-check-step.png",
+    "hash": "8a68cc419e410597"
+  },
+  "article-coordinate": {
+    "source": "site/src/assets/captures/search/article-coordinate.png",
+    "hash": "e897f8f19d176b7c"
+  },
+  "article-report": {
+    "source": "site/src/assets/captures/search/article-report.png",
+    "hash": "cc1d0dba35915e55"
+  },
+  "article-running": {
+    "source": "site/src/assets/captures/search/article-running.png",
+    "hash": "f51a96f295bb1ac4"
+  },
+  "at-popover": {
+    "source": "site/src/assets/captures/commands/at-popover.png",
+    "hash": "d6e6b5edf5a25812"
+  },
+  "at-popover-typed": {
+    "source": "site/src/assets/captures/commands/at-popover-typed.png",
+    "hash": "a7a5e95e230fe091"
+  },
+  "boundary-answer": {
+    "source": "site/src/assets/tutorials/hybrid-qml/boundary-answer.png",
+    "hash": "5bcd3cd33837bc33"
+  },
+  "cad-region-comment": {
+    "source": "site/src/assets/captures/files/cad-region-comment.png",
+    "hash": "9df025778bca00f0"
+  },
+  "cad-step-assembly": {
+    "source": "site/src/assets/captures/files/cad-step-assembly.png",
+    "hash": "6f9613c0c7056049"
+  },
+  "catalog-collapsed": {
+    "source": "site/src/assets/tutorials/ndp/catalog-collapsed.png",
+    "hash": "4353ac35627e89f5"
+  },
+  "catalog-expanded": {
+    "source": "site/src/assets/tutorials/ndp/catalog-expanded.png",
+    "hash": "898fe811e4be7b5e"
+  },
+  "chat-approval": {
+    "source": "site/src/assets/captures/search/chat-approval.png",
+    "hash": "a8b9466c4801098e"
+  },
+  "chat-literature-results": {
+    "source": "site/src/assets/captures/search/chat-literature-results.png",
+    "hash": "8313a36c582aae03"
+  },
+  "chat-permission": {
+    "source": "site/src/assets/captures/search/chat-permission.png",
+    "hash": "7634c951cf80f4b8"
+  },
+  "chat-web-results": {
+    "source": "site/src/assets/captures/search/chat-web-results.png",
+    "hash": "d7fda156aab4cc25"
+  },
+  "chip-in-draft": {
+    "source": "site/src/assets/captures/commands/chip-in-draft.png",
+    "hash": "b6d5cf6b841a0e8b"
+  },
+  "clouds-first-view": {
+    "source": "site/src/assets/captures/helene/clouds-first-view.png",
+    "hash": "6ba31415bde8c6d4"
+  },
+  "comment-a2ui-map-region": {
+    "source": "site/src/assets/captures/comments/comment-a2ui-map-region.png",
+    "hash": "5cd27024fbd9fd2b"
+  },
+  "comment-browser-element-editor": {
+    "source": "site/src/assets/captures/comments/comment-browser-element-editor.png",
+    "hash": "c6c0384c46f71c5a"
+  },
+  "comment-human-note": {
+    "source": "site/src/assets/captures/comments/comment-human-note.png",
+    "hash": "980b5022ed1bb54c"
+  },
+  "comment-markdown-text-editor": {
+    "source": "site/src/assets/captures/comments/comment-markdown-text-editor.png",
+    "hash": "f2cfe92d8c94bf30"
+  },
+  "comment-pdf-three-marks": {
+    "source": "site/src/assets/captures/comments/comment-pdf-three-marks.png",
+    "hash": "70d904ba2a21c663"
+  },
+  "comment-phone-touch-region-editor": {
+    "source": "site/src/assets/captures/comments/comment-phone-touch-region-editor.png",
+    "hash": "b06cc9cd8a1afd1a"
+  },
+  "comment-text-on-markdown-sent": {
+    "source": "site/src/assets/captures/comments/comment-text-on-markdown-sent.png",
+    "hash": "7a8fb5c592d71511"
+  },
+  "connector-card": {
+    "source": "site/src/assets/captures/connectors/connector-card.png",
+    "hash": "0b1c0aa510f8c03a"
+  },
+  "current-dashboard": {
+    "source": "site/src/assets/captures/current-dashboard.png",
+    "hash": "3af5a6ac799ab952"
+  },
+  "current-data": {
+    "source": "site/src/assets/captures/current-data.png",
+    "hash": "616025cb80abe8aa"
+  },
+  "current-lineage": {
+    "source": "site/src/assets/captures/current-lineage.png",
+    "hash": "6b779cefbea1f242"
+  },
+  "current-report": {
+    "source": "site/src/assets/captures/current-report.png",
+    "hash": "007d8aed26202ccf"
+  },
+  "dashboard": {
+    "source": "site/src/assets/captures/helene/dashboard.png",
+    "hash": "7dbb818fb8f0ded2"
+  },
+  "dashboard-3d-linked": {
+    "source": "site/src/assets/captures/helene/dashboard-3d-linked.png",
+    "hash": "48265f22b7fdee63"
+  },
+  "deep-delivered": {
+    "source": "site/src/assets/captures/search/deep-delivered.png",
+    "hash": "1e70e663a983faba"
+  },
+  "deep-mode-menu": {
+    "source": "site/src/assets/captures/search/deep-mode-menu.png",
+    "hash": "bce461bb1d6a641e"
+  },
+  "deep-report": {
+    "source": "site/src/assets/captures/search/deep-report.png",
+    "hash": "3e48d75733de7835"
+  },
+  "deep-run-graph": {
+    "source": "site/src/assets/captures/search/deep-run-graph.png",
+    "hash": "edb8a479b42c7938"
+  },
+  "deepen-answer": {
+    "source": "site/src/assets/captures/helene/deepen-answer.png",
+    "hash": "17e5c67866511f7f"
+  },
+  "discover-catalog": {
+    "source": "site/src/assets/captures/connectors/discover-catalog.png",
+    "hash": "695210f6ca675e66"
+  },
+  "docs-agent-fork": {
+    "source": "site/src/assets/captures/docs-agent-fork.png",
+    "hash": "d7092521823c896f"
+  },
+  "docs-agent-plugins": {
+    "source": "site/src/assets/captures/docs-agent-plugins.png",
+    "hash": "d091b476dfbc7020"
+  },
+  "docs-answer-hook": {
+    "source": "site/src/assets/captures/docs-answer-hook.png",
+    "hash": "94f08ac879c13ffb"
+  },
+  "docs-best-of-n": {
+    "source": "site/src/assets/captures/docs-best-of-n.png",
+    "hash": "a2a7f351155ee558"
+  },
+  "docs-browser-panel": {
+    "source": "site/src/assets/captures/docs-browser-panel.png",
+    "hash": "f90c591e618ec18e"
+  },
+  "docs-case-browser": {
+    "source": "site/src/assets/captures/docs-case-browser.png",
+    "hash": "d3f2dbf105b0ed50"
+  },
+  "docs-child-followup": {
+    "source": "site/src/assets/captures/docs-child-followup.png",
+    "hash": "0dd8fc32e328442c"
+  },
+  "docs-child-tab": {
+    "source": "site/src/assets/captures/docs-child-tab.png",
+    "hash": "e59c0554b06d1ca2"
+  },
+  "docs-compact-work": {
+    "source": "site/src/assets/captures/docs-compact-work.png",
+    "hash": "88f022c18f291b67"
+  },
+  "docs-conversation-branch-control": {
+    "source": "site/src/assets/captures/docs-conversation-branch-control.png",
+    "hash": "0ef7e87a2e720bde"
+  },
+  "docs-conversation-branch-result": {
+    "source": "site/src/assets/captures/docs-conversation-branch-result.png",
+    "hash": "7cf678e28833006c"
+  },
+  "docs-conversation-family-gantt": {
+    "source": "site/src/assets/captures/docs-conversation-family-gantt.png",
+    "hash": "5c838ffc8940b844"
+  },
+  "docs-conversation-menu": {
+    "source": "site/src/assets/captures/docs-conversation-menu.png",
+    "hash": "c5e710457b7de94e"
+  },
+  "docs-conversation-output-lineage": {
+    "source": "site/src/assets/captures/docs-conversation-output-lineage.png",
+    "hash": "c221cf0782e01f65"
+  },
+  "docs-conversation-relationships": {
+    "source": "site/src/assets/captures/docs-conversation-relationships.png",
+    "hash": "7f6a622eddef7646"
+  },
+  "docs-conversation-rewind-confirm": {
+    "source": "site/src/assets/captures/docs-conversation-rewind-confirm.png",
+    "hash": "721c079f2f4c89ea"
+  },
+  "docs-conversation-rewind-result": {
+    "source": "site/src/assets/captures/docs-conversation-rewind-result.png",
+    "hash": "79ff413b1163be54"
+  },
+  "docs-dashboard-export": {
+    "source": "site/src/assets/captures/docs-dashboard-export.png",
+    "hash": "50d96cfc6eb02587"
+  },
+  "docs-dashboard-export-menu": {
+    "source": "site/src/assets/captures/docs-dashboard-export-menu.png",
+    "hash": "e4c99c102f2a58de"
+  },
+  "docs-fleet-judges": {
+    "source": "site/src/assets/captures/docs-fleet-judges.png",
+    "hash": "5007c1b2fc6be341"
+  },
+  "docs-flow-council": {
+    "source": "site/src/assets/captures/docs-flow-council.png",
+    "hash": "757574e830ede199"
+  },
+  "docs-flow-fork": {
+    "source": "site/src/assets/captures/docs-flow-fork.png",
+    "hash": "9c668432afa92c0a"
+  },
+  "docs-flow-workflow": {
+    "source": "site/src/assets/captures/docs-flow-workflow.png",
+    "hash": "a157b408d145ebea"
+  },
+  "docs-fork-checkpoint": {
+    "source": "site/src/assets/captures/docs-fork-checkpoint.png",
+    "hash": "f64e0d22f2f8f910"
+  },
+  "docs-goal-completed": {
+    "source": "site/src/assets/captures/docs-goal-completed.png",
+    "hash": "04ae83840f95c410"
+  },
+  "docs-goal-injections": {
+    "source": "site/src/assets/captures/docs-goal-injections.png",
+    "hash": "5de975cbbfafdde7"
+  },
+  "docs-injection-collection": {
+    "source": "site/src/assets/captures/docs-injection-collection.png",
+    "hash": "0b8b0ff1e0a2e635"
+  },
+  "docs-injection-collection-open": {
+    "source": "site/src/assets/captures/docs-injection-collection-open.png",
+    "hash": "ee0adf74d5fe0857"
+  },
+  "docs-injection-goal": {
+    "source": "site/src/assets/captures/docs-injection-goal.png",
+    "hash": "f45210e20af052c1"
+  },
+  "docs-loop-injections": {
+    "source": "site/src/assets/captures/docs-loop-injections.png",
+    "hash": "ef29f73c49b465da"
+  },
+  "docs-marked-messages": {
+    "source": "site/src/assets/captures/docs-marked-messages.png",
+    "hash": "c39d3e727e48e8d2"
+  },
+  "docs-mcp-saved": {
+    "source": "site/src/assets/captures/docs-mcp-saved.png",
+    "hash": "d7becab06eeca750"
+  },
+  "docs-memory-document": {
+    "source": "site/src/assets/captures/docs-memory-document.png",
+    "hash": "774f99d08f796cbe"
+  },
+  "docs-memory-documents": {
+    "source": "site/src/assets/captures/docs-memory-documents.png",
+    "hash": "3158d1cf582906ff"
+  },
+  "docs-memory-history": {
+    "source": "site/src/assets/captures/docs-memory-history.png",
+    "hash": "9641728e8b4efe36"
+  },
+  "docs-memory-inbox": {
+    "source": "site/src/assets/captures/docs-memory-inbox.png",
+    "hash": "8cf154d500a95ba2"
+  },
+  "docs-memory-notice": {
+    "source": "site/src/assets/captures/docs-memory-notice.png",
+    "hash": "1d5814504a743c67"
+  },
+  "docs-memory-off": {
+    "source": "site/src/assets/captures/docs-memory-off.png",
+    "hash": "bec44919c2ce7cb0"
+  },
+  "docs-memory-popover": {
+    "source": "site/src/assets/captures/docs-memory-popover.png",
+    "hash": "0312337ecd5a7875"
+  },
+  "docs-memory-search": {
+    "source": "site/src/assets/captures/docs-memory-search.png",
+    "hash": "712f47aa824915be"
+  },
+  "docs-message-preview": {
+    "source": "site/src/assets/captures/docs-message-preview.png",
+    "hash": "1425e2c3dc5a9a5f"
+  },
+  "docs-open-questions": {
+    "source": "site/src/assets/captures/docs-open-questions.png",
+    "hash": "1ea640cc0f9754a7"
+  },
+  "docs-panel-evidence": {
+    "source": "site/src/assets/captures/docs-panel-evidence.png",
+    "hash": "c0885da0fe7fb73e"
+  },
+  "docs-panel-file-preview": {
+    "source": "site/src/assets/captures/docs-panel-file-preview.png",
+    "hash": "56014b8470d401c0"
+  },
+  "docs-permissions-allow-dialog": {
+    "source": "site/src/assets/captures/docs-permissions-allow-dialog.png",
+    "hash": "ff4442a74dc9ab34"
+  },
+  "docs-permissions-allowed-folders": {
+    "source": "site/src/assets/captures/docs-permissions-allowed-folders.png",
+    "hash": "4bbbb4db7840a0c9"
+  },
+  "docs-permissions-blocked-notice": {
+    "source": "site/src/assets/captures/docs-permissions-blocked-notice.png",
+    "hash": "8a0a32f56a75394c"
+  },
+  "docs-permissions-folder-card": {
+    "source": "site/src/assets/captures/docs-permissions-folder-card.png",
+    "hash": "b84c508a482e99ec"
+  },
+  "docs-plugin-command": {
+    "source": "site/src/assets/captures/docs-plugin-command.png",
+    "hash": "681078d7b266320d"
+  },
+  "docs-plugins-marketplaces": {
+    "source": "site/src/assets/captures/docs-plugins-marketplaces.png",
+    "hash": "4d21b33d32438d82"
+  },
+  "docs-question-comment-current": {
+    "source": "site/src/assets/captures/docs-question-comment-current.png",
+    "hash": "ad9954a82478f8e6"
+  },
+  "docs-question-different-answer-current": {
+    "source": "site/src/assets/captures/docs-question-different-answer-current.png",
+    "hash": "7c0d2feb888ad940"
+  },
+  "docs-refinement": {
+    "source": "site/src/assets/captures/docs-refinement.png",
+    "hash": "50c614a6bcda2673"
+  },
+  "docs-refinement-revised": {
+    "source": "site/src/assets/captures/docs-refinement-revised.png",
+    "hash": "f5c2214896f51532"
+  },
+  "docs-response-rating-comment": {
+    "source": "site/src/assets/captures/docs-response-rating-comment.png",
+    "hash": "d274f4f0cb82e0cb"
+  },
+  "docs-response-rating-menu": {
+    "source": "site/src/assets/captures/docs-response-rating-menu.png",
+    "hash": "c155e7e38452b1c7"
+  },
+  "docs-schedule-injection": {
+    "source": "site/src/assets/captures/docs-schedule-injection.png",
+    "hash": "598e930882331c91"
+  },
+  "docs-science-log-conflict": {
+    "source": "site/src/assets/captures/docs-science-log-conflict.png",
+    "hash": "6d987c70fe2412f7"
+  },
+  "docs-science-log-graph": {
+    "source": "site/src/assets/captures/docs-science-log-graph.png",
+    "hash": "648c5330a01e292e"
+  },
+  "docs-science-log-sources": {
+    "source": "site/src/assets/captures/docs-science-log-sources.png",
+    "hash": "693f5c7613143544"
+  },
+  "docs-science-log-tab": {
+    "source": "site/src/assets/captures/docs-science-log-tab.png",
+    "hash": "bfecc592753c655b"
+  },
+  "docs-science-log-tree": {
+    "source": "site/src/assets/captures/docs-science-log-tree.png",
+    "hash": "b14535f270eacfc1"
+  },
+  "docs-science-log-views": {
+    "source": "site/src/assets/captures/docs-science-log-views.png",
+    "hash": "322de70cf36ccad0"
+  },
+  "docs-search-assistant": {
+    "source": "site/src/assets/captures/docs-search-assistant.png",
+    "hash": "74d34c1f482fd19e"
+  },
+  "docs-search-destination": {
+    "source": "site/src/assets/captures/docs-search-destination.png",
+    "hash": "f5289cb80ec005be"
+  },
+  "docs-search-phrase": {
+    "source": "site/src/assets/captures/docs-search-phrase.png",
+    "hash": "4f5bf11c95ba71ea"
+  },
+  "docs-search-results": {
+    "source": "site/src/assets/captures/docs-search-results.png",
+    "hash": "6b24738bf31ed307"
+  },
+  "docs-session-export-menu": {
+    "source": "site/src/assets/captures/docs-session-export-menu.png",
+    "hash": "e1f334e8ead68d8c"
+  },
+  "docs-session-export-zip": {
+    "source": "site/src/assets/captures/docs-session-export-zip.png",
+    "hash": "7f4fe60d536d23dd"
+  },
+  "docs-session-review": {
+    "source": "site/src/assets/captures/docs-session-review.png",
+    "hash": "7d0062585241875b"
+  },
+  "docs-subagents-explore": {
+    "source": "site/src/assets/captures/docs-subagents-explore.png",
+    "hash": "656f31f93294138e"
+  },
+  "docs-todos-completed": {
+    "source": "site/src/assets/captures/docs-todos-completed.png",
+    "hash": "10f64f7d4439c5d1"
+  },
+  "docs-todos-current": {
+    "source": "site/src/assets/captures/docs-todos-current.png",
+    "hash": "eb84ad73fa50d84c"
+  },
+  "docs-tool-collapsed": {
+    "source": "site/src/assets/captures/docs-tool-collapsed.png",
+    "hash": "25d417c10264bf5e"
+  },
+  "docs-tool-command-output": {
+    "source": "site/src/assets/captures/docs-tool-command-output.png",
+    "hash": "20f303ffcfeb7de3"
+  },
+  "docs-wait-all-result": {
+    "source": "site/src/assets/captures/docs-wait-all-result.png",
+    "hash": "a571b080dbb789e0"
+  },
+  "docs-work-goal": {
+    "source": "site/src/assets/captures/docs-work-goal.png",
+    "hash": "b74a938b79004a43"
+  },
+  "docs-work-questions-todos": {
+    "source": "site/src/assets/captures/docs-work-questions-todos.png",
+    "hash": "edf050c88f0dd65b"
+  },
+  "earthdata-results": {
+    "source": "site/src/assets/captures/connectors/earthdata-results.png",
+    "hash": "e0f6f5b6cfc54d03"
+  },
+  "endpoint-ssh": {
+    "source": "site/src/assets/tutorials/ndp/endpoint-ssh.png",
+    "hash": "231f0259d6ac3929"
+  },
+  "endpoint-stream-capture": {
+    "source": "site/src/assets/tutorials/ndp/endpoint-stream-capture.jpg",
+    "hash": "1479ff48430476fc"
+  },
+  "export-offline-recording": {
+    "source": "site/src/assets/captures/helene/export-offline-recording.png",
+    "hash": "e4fbe3ee355838e6"
+  },
+  "extensions-backup": {
+    "source": "site/src/assets/captures/extensions-backup.png",
+    "hash": "fef00e2f39366fbd"
+  },
+  "extensions-compose": {
+    "source": "site/src/assets/captures/extensions-compose.png",
+    "hash": "f07a48897ee75694"
+  },
+  "extensions-connect": {
+    "source": "site/src/assets/captures/extensions-connect.png",
+    "hash": "2c4b7059303b31e2"
+  },
+  "extensions-library": {
+    "source": "site/src/assets/captures/extensions-library.png",
+    "hash": "33301d4f17a20d0f"
+  },
+  "extensions-sign-in": {
+    "source": "site/src/assets/captures/extensions-sign-in.png",
+    "hash": "5d2e7b5e491db1c5"
+  },
+  "extensions-skill": {
+    "source": "site/src/assets/captures/extensions-skill.png",
+    "hash": "df178b2e06446c64"
+  },
+  "field-msl": {
+    "source": "site/src/assets/captures/helene/field-msl.png",
+    "hash": "a513cde72f1c0f6a"
+  },
+  "geo-card-inline": {
+    "source": "site/src/assets/captures/apps/geo-card-inline.png",
+    "hash": "04955ac9c94a15ca"
+  },
+  "geo-dashboard-linked": {
+    "source": "site/src/assets/captures/apps/geo-dashboard-linked.png",
+    "hash": "3668e6adcbf1b61d"
+  },
+  "geo-in-tab": {
+    "source": "site/src/assets/captures/apps/geo-in-tab.png",
+    "hash": "d746c627e7d087fc"
+  },
+  "geo-look": {
+    "source": "site/src/assets/captures/apps/geo-look.png",
+    "hash": "2013b2968dbe29dd"
+  },
+  "geo-maximized": {
+    "source": "site/src/assets/captures/apps/geo-maximized.png",
+    "hash": "1bbdd7d85b33d54b"
+  },
+  "geo-reopened": {
+    "source": "site/src/assets/captures/apps/geo-reopened.png",
+    "hash": "dc1d81c52b23d55e"
+  },
+  "guide-connect": {
+    "source": "site/public/media/guide-connect.jpg",
+    "hash": "c28451dd8923448d"
+  },
+  "guide-context-menu": {
+    "source": "site/public/media/guide-context-menu.jpg",
+    "hash": "9a57558e4be538ad"
+  },
+  "guide-link-warning": {
+    "source": "site/public/media/guide-link-warning.jpg",
+    "hash": "63219f40d5769b10"
+  },
+  "guide-remove-source": {
+    "source": "site/public/media/guide-remove-source.jpg",
+    "hash": "2fb2bbef28dee5f1"
+  },
+  "guide-source-management": {
+    "source": "site/public/media/guide-source-management.jpg",
+    "hash": "2583dc6a9d754533"
+  },
+  "knowledge-connect": {
+    "source": "site/public/media/knowledge-connect.jpg",
+    "hash": "6c5cecaca7ffd54a"
+  },
+  "knowledge-existing": {
+    "source": "site/public/media/knowledge-existing.jpg",
+    "hash": "26b6f09c5d478f8c"
+  },
+  "knowledge-files": {
+    "source": "site/public/media/knowledge-files.jpg",
+    "hash": "9f8003fa237d184c"
+  },
+  "knowledge-graph": {
+    "source": "site/public/media/knowledge-graph.jpg",
+    "hash": "8cb48b6aebb5bf3c"
+  },
+  "knowledge-overview": {
+    "source": "site/public/media/knowledge-overview.jpg",
+    "hash": "5fed3eedff9370d6"
+  },
+  "knowledge-settings": {
+    "source": "site/public/media/knowledge-settings.jpg",
+    "hash": "df074561a82c128b"
+  },
+  "knowledge-source-info": {
+    "source": "site/public/media/knowledge-source-info.jpg",
+    "hash": "9dc19ea00e742bb8"
+  },
+  "knowledge-sync": {
+    "source": "site/public/media/knowledge-sync.jpg",
+    "hash": "e0a650fdd5f0e63a"
+  },
+  "knowledge-tools": {
+    "source": "site/public/media/knowledge-tools.jpg",
+    "hash": "298f598b2f0f1ee9"
+  },
+  "konza-association": {
+    "source": "site/src/assets/tutorials/ndp/konza-association.png",
+    "hash": "c056cc8582fb03bd"
+  },
+  "latex-paper-pdf-only": {
+    "source": "site/src/assets/captures/papers/latex-paper-pdf-only.png",
+    "hash": "74bf9d98b4367fb5"
+  },
+  "latex-workspace-phone": {
+    "source": "site/src/assets/captures/papers/latex-workspace-phone.png",
+    "hash": "0534e0f9e2ef5a29"
+  },
+  "latex-workspace-problems": {
+    "source": "site/src/assets/captures/papers/latex-workspace-problems.png",
+    "hash": "5b2906531f8782ec"
+  },
+  "latex-workspace-source-to-pdf": {
+    "source": "site/src/assets/captures/papers/latex-workspace-source-to-pdf.png",
+    "hash": "85b6b7237c5ca1d6"
+  },
+  "marketplaces": {
+    "source": "site/src/assets/captures/connectors/marketplaces.png",
+    "hash": "94259691b674f4bc"
+  },
+  "mcp-prompt-sent": {
+    "source": "site/src/assets/captures/commands/mcp-prompt-sent.png",
+    "hash": "b7654dee33cba17d"
+  },
+  "ndp-catalog": {
+    "source": "site/src/assets/tutorials/ndp/ndp-catalog.jpg",
+    "hash": "42f3fb9187cd52fb"
+  },
+  "observations-inspected": {
+    "source": "site/src/assets/tutorials/branched-study/observations-inspected.png",
+    "hash": "d8600b0b6c64097b"
+  },
+  "offer-connector-geo": {
+    "source": "site/src/assets/captures/connectors/offer-connector-geo.png",
+    "hash": "728d9df934d0715f"
+  },
+  "offer-plugin": {
+    "source": "site/src/assets/captures/connectors/offer-plugin.png",
+    "hash": "87fcfa58fbdb9b08"
+  },
+  "offer-plugin-answered": {
+    "source": "site/src/assets/captures/connectors/offer-plugin-answered.png",
+    "hash": "9afc4095edecb112"
+  },
+  "offer-view-plugin": {
+    "source": "site/src/assets/captures/connectors/offer-view-plugin.png",
+    "hash": "a150186c5b530164"
+  },
+  "paper-card-in-reply": {
+    "source": "site/src/assets/captures/papers/paper-card-in-reply.png",
+    "hash": "9d689addd14b3f43"
+  },
+  "paper-comment-on-pdf": {
+    "source": "site/src/assets/captures/papers/paper-comment-on-pdf.png",
+    "hash": "7bf7d89e42706823"
+  },
+  "paper-lineage": {
+    "source": "site/src/assets/captures/papers/paper-lineage.png",
+    "hash": "728ebe7219c73e4a"
+  },
+  "paper-marks-on-both-panes": {
+    "source": "site/src/assets/captures/papers/paper-marks-on-both-panes.png",
+    "hash": "00389164cc693d5a"
+  },
+  "paper-opened": {
+    "source": "site/src/assets/captures/papers/paper-opened.png",
+    "hash": "c717cd349bb58a6e"
+  },
+  "paper-outline-to-pdf": {
+    "source": "site/src/assets/captures/papers/paper-outline-to-pdf.png",
+    "hash": "b83dc36eb2a67e67"
+  },
+  "paper-threads-on-v2": {
+    "source": "site/src/assets/captures/papers/paper-threads-on-v2.png",
+    "hash": "bdd27ce424ada9d2"
+  },
+  "paper-venue-checks": {
+    "source": "site/src/assets/captures/papers/paper-venue-checks.png",
+    "hash": "71f3339436b69e08"
+  },
+  "paraview": {
+    "source": "site/src/assets/captures/helene/paraview.png",
+    "hash": "e199e56bca5f5651"
+  },
+  "paraview-dashboard-time-linked": {
+    "source": "site/src/assets/captures/apps/paraview-dashboard-time-linked.png",
+    "hash": "cf3051d1a95b04e8"
+  },
+  "paraview-in-tab": {
+    "source": "site/src/assets/captures/apps/paraview-in-tab.png",
+    "hash": "35c8143b4ff2d9c6"
+  },
+  "paraview-region-comment": {
+    "source": "site/src/assets/captures/apps/paraview-region-comment.png",
+    "hash": "7117d589bcc6625a"
+  },
+  "paraview-region-comment-answer": {
+    "source": "site/src/assets/captures/apps/paraview-region-comment-answer.png",
+    "hash": "90bd10ca7c690e59"
+  },
+  "pdf-dashboard-table": {
+    "source": "site/src/assets/captures/apps/pdf-dashboard-table.png",
+    "hash": "174e6a7a80b48b4e"
+  },
+  "question-answer-phone": {
+    "source": "site/src/assets/captures/tasks/question-answer-phone.png",
+    "hash": "eeaecf5c3ffcf882"
+  },
+  "question-cancel-confirmation-desktop": {
+    "source": "site/src/assets/captures/tasks/question-cancel-confirmation-desktop.png",
+    "hash": "0121198f4d7647b1"
+  },
+  "question-wait-desktop": {
+    "source": "site/src/assets/captures/tasks/question-wait-desktop.png",
+    "hash": "170de5e88df56a5d"
+  },
+  "results-view": {
+    "source": "site/src/assets/tutorials/hybrid-qml/results-view.png",
+    "hash": "740cfa542c329aa0"
+  },
+  "selected-image": {
+    "source": "site/src/assets/tutorials/hybrid-qml/selected-image.png",
+    "hash": "40a4287663256329"
+  },
+  "settings-literature": {
+    "source": "site/src/assets/captures/search/settings-literature.png",
+    "hash": "0bd20addfc38394a"
+  },
+  "settings-web": {
+    "source": "site/src/assets/captures/search/settings-web.png",
+    "hash": "a24ffb173e136443"
+  },
+  "settings-web-phone": {
+    "source": "site/src/assets/captures/search/settings-web-phone.png",
+    "hash": "33cdbf7f25fd32b0"
+  },
+  "slash-menu": {
+    "source": "site/src/assets/captures/commands/slash-menu.png",
+    "hash": "03ca8107c82d361d"
+  },
+  "slash-menu-prompts": {
+    "source": "site/src/assets/captures/commands/slash-menu-prompts.png",
+    "hash": "8e365e21a639393c"
+  },
+  "slash-menu-same-name": {
+    "source": "site/src/assets/captures/commands/slash-menu-same-name.png",
+    "hash": "b22b123a55159bf8"
+  },
+  "stream-earthquake-map": {
+    "source": "site/src/assets/tutorials/ndp/stream-earthquake-map.jpg",
+    "hash": "191f1f26d91195c1"
+  },
+  "stream-sample-form": {
+    "source": "site/src/assets/tutorials/ndp/stream-sample-form.png",
+    "hash": "2d66ce2618b3d61b"
+  },
+  "stream-saved-result": {
+    "source": "site/src/assets/tutorials/ndp/stream-saved-result.png",
+    "hash": "36e8ea02cd3478dc"
+  },
+  "study-graph": {
+    "source": "site/src/assets/tutorials/branched-study/study-graph.png",
+    "hash": "648c5330a01e292e"
+  },
+  "study-view-boards": {
+    "source": "site/src/assets/tutorials/branched-study/study-view-boards.png",
+    "hash": "b921322b2327dca2"
+  },
+  "study-view-strategies": {
+    "source": "site/src/assets/tutorials/branched-study/study-view-strategies.png",
+    "hash": "cd8ca927a1f9942e"
+  },
+  "summon-not-started": {
+    "source": "site/src/assets/captures/commands/summon-not-started.png",
+    "hash": "fa939de6f2052590"
+  },
+  "summoned-server": {
+    "source": "site/src/assets/captures/commands/summoned-server.png",
+    "hash": "9107dcdb9b373369"
+  },
+  "summoned-subagent": {
+    "source": "site/src/assets/captures/commands/summoned-subagent.png",
+    "hash": "2dbd5e36a2b16389"
+  },
+  "tahoe-native-area": {
+    "source": "site/src/assets/tutorials/ndp/tahoe-native-area.png",
+    "hash": "1b7e53d6c88966f9"
+  },
+  "tasks-current-cancel-phone": {
+    "source": "site/public/media/tasks-current-cancel-phone.png",
+    "hash": "a86bff704156e63a"
+  },
+  "tasks-current-inspect-desktop": {
+    "source": "site/public/media/tasks-current-inspect-desktop.png",
+    "hash": "b1908515b1ca4350"
+  },
+  "tasks-current-inspect-phone": {
+    "source": "site/public/media/tasks-current-inspect-phone.png",
+    "hash": "2eeb0ffd6af470ec"
+  },
+  "tasks-current-paused-desktop": {
+    "source": "site/public/media/tasks-current-paused-desktop.png",
+    "hash": "06faa843f35dccc9"
+  },
+  "tasks-current-work-phone": {
+    "source": "site/public/media/tasks-current-work-phone.png",
+    "hash": "531951541bccb999"
+  },
+  "tasks-restart-confirmation-desktop": {
+    "source": "site/public/media/tasks-restart-confirmation-desktop.png",
+    "hash": "756caa2ab892dee1"
+  },
+  "tasks-session-access-current": {
+    "source": "site/public/media/tasks-session-access-current.jpg",
+    "hash": "caf681d228302ae1"
+  },
+  "tasks-session-grant-desktop-current": {
+    "source": "site/public/media/tasks-session-grant-desktop-current.jpg",
+    "hash": "23bea13dc439c7cf"
+  },
+  "tasks-session-revoke-phone-current": {
+    "source": "site/public/media/tasks-session-revoke-phone-current.jpg",
+    "hash": "42eb7cd8c89cfc54"
+  },
+  "tasks-session-runs-desktop": {
+    "source": "site/public/media/tasks-session-runs-desktop.jpg",
+    "hash": "0de311ba74f53b6d"
+  },
+  "tasks-workflow-work": {
+    "source": "site/public/media/tasks-workflow-work.png",
+    "hash": "6a610bf2d958fc0f"
+  },
+  "track-answer": {
+    "source": "site/src/assets/captures/helene/track-answer.png",
+    "hash": "67420b12e66fd0c0"
+  },
+  "training-dashboard": {
+    "source": "site/src/assets/tutorials/hybrid-qml/training-dashboard.png",
+    "hash": "4724facc0e4495a7"
+  },
+  "two-chips-phone": {
+    "source": "site/src/assets/captures/commands/two-chips-phone.png",
+    "hash": "40041f28817e48fe"
+  },
+  "wtfp-commands": {
+    "source": "site/src/assets/captures/papers/wtfp-commands.png",
+    "hash": "c3e903baf505f743"
+  },
+  "wtfp-comment-applied": {
+    "source": "site/src/assets/captures/papers/wtfp-comment-applied.png",
+    "hash": "1c15060020d58243"
+  },
+  "wtfp-new-paper": {
+    "source": "site/src/assets/captures/papers/wtfp-new-paper.png",
+    "hash": "6de39ec45e981afe"
+  },
+  "wtfp-plan-and-check": {
+    "source": "site/src/assets/captures/papers/wtfp-plan-and-check.png",
+    "hash": "d73accd951ff96ac"
+  },
+  "wtfp-roles": {
+    "source": "site/src/assets/captures/papers/wtfp-roles.png",
+    "hash": "0b7ca718ec386f01"
+  }
+}

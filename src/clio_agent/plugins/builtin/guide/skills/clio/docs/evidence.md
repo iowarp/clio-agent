@@ -1,0 +1,137 @@
+---
+title: "Check answers and sources"
+description: "Review the source data, tool results and saved versions behind a finding."
+source: https://clio.iowarp.ai/docs/evidence/
+---
+
+# Check answers and sources
+
+Review the source data, tool results and saved versions behind a finding.
+
+For a tour of Data, Work, Timeline, Gantt, and Context, see
+[Your workspace](docs/workspace-panels.md). To inspect operations
+while CLIO is working, see [Follow work in progress](docs/following-work.md).
+The [background work guides](docs/tasks/index.md) explain task handles, observation,
+waiting, and messages between permitted sessions.
+
+CLIO records the inputs, actions and outputs of a session so you can check how
+a result was produced. Start with the source files and expanded tool results,
+then follow the artifact versions and declared input relationships.
+
+[What CLIO remembers](docs/memory.md) has its own guide: finding earlier
+conversation excerpts, understanding session summaries, and checking compaction.
+
+## Data and Work
+
+Use the **Evidence layout** button in the session toolbar to show the compact panels. **Data** contains context usage, sources and artifacts. **Work** contains tool calls and agent activity. You can move these panels to the top or bottom, show both, or hide them to give the transcript more room.
+
+Choose **Open full details** to inspect the record in the canvas. Its tabs are **Evidence**, **Timeline**, **Gantt** and **Context**.
+
+![Artifacts panel listing the bike example's source table, derived tables, findings report and dashboard](plugin-asset://guide/captures/current-data.webp)
+*Open a source or output from Artifacts to inspect its preview, versions and lineage.*
+
+### Evidence
+
+Evidence lists what the run touched:
+
+- Files the agent read, and files it changed.
+- Changed files, each with a diff.
+- Artifacts the run created.
+
+### Read a tool result
+
+Expand a tool row in the transcript or Work panel to read its result. Supported tools show a human-readable view, such as a command and its output, an artifact name and version, or an environment summary. Use the information button for recorded arguments and technical result details.
+
+Failures retain their recorded error and exit status. A sandbox launch failure means the command could not start; it does not establish that the command itself ran and failed. Inspect the expanded result before deciding what to retry.
+
+### Timeline and Gantt
+
+**Timeline** lists recorded activity in order, with a named strand for each agent. Select an agent name to filter its activity. Select an event to open its transcript or artifact; child-agent rows open the child conversation.
+
+**Gantt** starts with an overview of agent durations, fitted to the recorded execution interval. Expand an agent to see its tool calls on separate rows. Select a row or bar to read its timing and outcome, then open the related conversation when available. **Fit** restores the execution overview after zooming.
+
+When a conversation has user branches, **Gantt** starts with the conversation
+family: named rows, recorded response durations and saved branch creation
+diamonds. **Execution details** opens the latest execution's tools. The
+**Relationships** button swaps to a navigable ancestry graph, with solid user
+branch arrows and dashed delegated-agent arrows. Select a node to open its
+conversation or fork source. Open an output and choose **Lineage** to trace its
+inputs. See the [branching walkthrough and screenshots](docs/branch-and-rewind.md#find-and-compare-related-conversations).
+
+### Context
+
+The Context tab shows the context the agent is working with, for the agent you select.
+
+### Inspect additions and recovered context
+
+When CLIO adds instructions or recovers earlier conversation context, an
+**Injection** row appears in the activity collection. Expand that row to read
+the supplied content, or choose **Open exact details** to inspect it in a
+separate window. See [Updates during a conversation](docs/injections.md).
+
+Recovery uses the complete saved context records when available, including recorded tool inputs, results and loaded instructions. If only a transcript is available, the receipt identifies that reconstruction and its missing continuation state. A normal restart with retained context does not need a recovery receipt.
+
+The receipt distinguishes a restored context from a reconstructed transcript.
+
+## Changed files and diffs
+
+The agent writes files itself. Whether you are asked first depends on the conversation's confirmation policy: **Ask first** asks before each write, and **Workspace edits** lets the agent write in the workspace without asking. See [Permissions and sandbox](docs/permissions.md).
+
+Every file the agent changed is listed with its diff, in the transcript where the change happened and under **Changed files** in Evidence. Open a change and choose **Undo** to put a file back as it was before that change, or to delete a file the agent created. Undo only runs while the file is still exactly what the agent wrote. If you or the agent changed it since, Undo refuses and says so. Changes to files over 256 KiB, and changes made before the server last restarted, cannot be undone.
+
+## Artifacts
+
+When a run produces a file you may want to keep, such as a report or a plot, it is registered as an artifact. Each artifact has:
+
+- A content hash (SHA-256), so you can tell whether a file is the one the run produced.
+- Versions. Changing the artifact creates a new version, and earlier versions are kept.
+- Lineage, which shows the inputs and earlier artifacts it was derived from.
+
+Open an artifact to see a preview and its **Versions** and **Lineage** tabs.
+
+### Follow artifact lineage
+
+Open **Lineage** on the findings report. In this synthetic example, `bike-stations.csv` supplies station snapshots to three independent checks: `station-balance.csv`, `availability-check.csv` and `capacity-check.csv`. Their declared input relationships join in `morning-findings.md`.
+
+![Artifact lineage graph with bike-stations.csv, its create_artifact actions, the three checks and morning-findings.md connected by arrows](plugin-asset://guide/captures/current-lineage.webp)
+*Follow the arrows from the source table through the checks to the findings report. Select an artifact to inspect its saved version.*
+
+Read the graph from the source toward the result:
+
+1. **Used** connects an input version to an action that declared it as an input.
+2. **Generated** connects that action to the file it produced.
+3. Select a related artifact to inspect its preview and recorded versions. Use **Fit view** to bring the whole graph into view.
+
+The graph records declared relationships and hashed versions. It does not prove that an interpretation is scientifically correct, and it does not invent missing inputs. An older artifact with no recorded input relationships may appear by itself. That gap remains visible.
+
+## Charts, maps, and tables
+
+Charts, maps, and tables render inside the session. When a series is too large to draw in full, the chart is downsampled and says so, for example "1,000 evenly sampled rows from 857,957 total". Tables show how many rows are visible out of the total. You always see how much of the data the view represents.
+
+## Provenance export
+
+CLIO records provenance for every run. By default it keeps a durable local record in a file-based format (JSONL). To send the record to Flowcept as well, set the list of providers:
+
+```sh
+export CLIO_PROVENANCE_PROVIDERS=jsonl,flowcept
+```
+
+Or in your configuration file:
+
+```yaml
+provenance:
+  agentic:
+    providers: [jsonl, flowcept]
+```
+
+The accepted provider names are `jsonl` and `flowcept`; `file` and `native` are accepted as other names for `jsonl`. Set the path of the JSONL record with `CLIO_PROVENANCE_JSONL_PATH`. To see which providers are active and whether each is healthy, use `GET /v1/provenance/providers`.
+
+> **Note**
+>
+> Provenance records describe what the agent did, including network domains contacted and files written. Review them before sharing them outside your team.
+
+## Next steps
+
+- [What CLIO remembers](docs/memory.md): Find earlier decisions and understand where summaries come from.
+- [Start and steer a conversation](docs/sessions.md): Control how much the agent may do on its own.
+- [Explore ground motion](docs/examples/ground-motion.md): Try a public-data investigation and inspect its evidence.

@@ -1,0 +1,111 @@
+---
+title: "MCPs, skills and plugins"
+description: "Discover extensions, connect an MCP, inspect skill files, and combine them into a plugin you can reuse."
+source: https://clio.iowarp.ai/docs/extensions/
+---
+
+# MCPs, skills and plugins
+
+Discover extensions, connect an MCP, inspect skill files, and combine them into a plugin you can reuse.
+
+> **Note: Development preview**
+>
+> These controls are being qualified for the next release in [CLIO #1854](https://github.com/iowarp/clio-agent/pull/1854) and [GACT #681](https://github.com/iowarp/gact-tui/pull/681). The captures below show that development build.
+
+Open **Settings → Extensions**, or choose **Browse extensions** from the conversation's plugin menu.
+Choose **Marketplaces**, **MCP connections**, **Skills**, or **Plugins**. Each has its own Add actions. Marketplaces manages source trust and updates; the other views provide **Yours**, **Discover**, and search. MCP discovery searches the [MCP Registry](https://registry.modelcontextprotocol.io).
+
+In the development build, **Connectors** are listed first, and **Add by URL or command** replaces **Add MCP**. See [Connectors](docs/connectors.md).
+
+Browsing the directory starts no servers. A saved connection, a trusted source, and a plugin enabled in a conversation are separate choices.
+
+![CLIO Extensions in light mode with separate Marketplaces, MCP connections, Skills and Plugins views](plugin-asset://guide/captures/extensions-library.webp)
+*Separate views and Add actions, with shared inspection and installation underneath.*
+
+## Connect an MCP
+
+1. Open **MCP connections → Add MCP → MCP server URL**. Enter a name and the endpoint supplied by your server.
+
+2. Choose **Connect**. CLIO saves the connection and checks whether the MCP answers. A failed check remains visible as a failed check.
+
+3. If the server requires OAuth, choose **Sign in** and finish in the browser window. Return to the original CLIO window to see the connection result and available tools.
+
+![Add an MCP connection, showing only a name, server URL, advanced settings and Connect](plugin-asset://guide/captures/extensions-connect.webp)
+*Start with a name and address. Transport and credential settings stay under Advanced.*
+
+**Advanced connection settings** holds request headers and legacy SSE transport. Streamable HTTP is the default. For a server that uses an API key, enter its documented request header. Saved header values are hidden in connection details.
+
+OAuth uses the MCP SDK's discovery, PKCE and token exchange. Automatic client registration is used when supported. **Advanced sign-in settings** accepts an existing OAuth client or a published client metadata URL when your server requires one. See the [MCP authorization specification](https://modelcontextprotocol.io/specification/latest/basic/authorization).
+
+![The synthetic OAuth qualification account asking for consent to expose one read-only MCP tool](plugin-asset://guide/captures/extensions-sign-in.webp)
+*A real browser consent round trip against a clearly labelled test account. This capture is not a Home Assistant account authorization.*
+
+Closing a pending sign-in cancels that attempt. Declining access does not mark the connection successful. **Sign out** removes CLIO's stored authorization; provider-side access is managed in the provider's account settings.
+
+Open a saved connection and choose **Check connection** to see its live tools, descriptions and expandable inputs. A server that requires authorization shows **Sign-in required** instead of an empty successful inventory.
+
+For a local server, choose **Add MCP → Local MCP command**. The command runs on the connected agent host. Arguments are separate strings, for example `["ha-mcp"]` with `uvx`. Environment variables have a table and a raw input mode.
+
+By default, a new library connection is available through plugins that include it. **Conversation access → Available in every conversation** makes it available globally instead.
+
+## Add and explore skills
+
+In **Skills**, choose **Add skill → Repository or host folder** to import an Agent Skills source. Native Agent Plugins and Claude Code plugins use the same install and trust lifecycle. **Upload skill ZIP** opens a clickable drop zone: drop a skill folder containing `SKILL.md` and its references, or click to choose the ZIP. Uploads accept up to 128 UTF-8 files and 2 MiB uncompressed; use a repository or host folder for larger packages or binary assets. The Plugins view offers a separate **Upload plugin ZIP** for a folder containing `plugin.json` or `.claude-plugin/plugin.json`.
+
+To write your own instructions, choose **Create a skill**. Give it a name, description and instructions. This writes local files without a model call.
+
+Click a skill to open its own `SKILL.md` and reference tree directly. Open a plugin from Plugins to inspect the capabilities it combines. Both use the shared file reader for rendered and source views, copy and download.
+
+![Home Assistant Best Practices open in the shared inspector with its skill file and references](plugin-asset://guide/captures/extensions-skill.webp)
+*A skill opens its instructions and supporting files, rather than the repository's CI and evaluation folders.*
+
+**Edit a local variation** lets you change the source and save under a new name. The installed original stays unchanged. CLIO refuses to save a variation from a truncated or incomplete source view and retains inherited license and notice files for skill copies.
+
+Inspect a new source before choosing **Trust source**. Trust allows that source's plugins to load code on the agent host; adding the plugin to a conversation is a separate step.
+
+## Combine tools and instructions
+
+Choose **Plugins → Add plugin → Compose a plugin**. Select installed skills or plugins and the saved MCP connections they should use. **Save to private marketplace** saves the bundle to your **Private local marketplace**. The bundle records references to those capabilities. Connection credentials remain on the agent host and are not copied into the plugin manifest.
+
+![Compose a plugin with an installed Home Assistant skill and a named read-only qualification connection](plugin-asset://guide/captures/extensions-compose.webp)
+*Compose instructions and a named connection. The connection shown here is the qualification fixture.*
+
+Add the resulting plugin from the conversation's **+** plugin menu. **Save as agent** keeps that composition for future conversations.
+
+## Your private marketplace and GitHub backup
+
+Skills and plugins you create or upload share one private marketplace on the agent host. They are not published. Open **Marketplaces** to inspect its source location and manage trust. Importing an upstream repository retains that repository as a separate source.
+
+Choose **Back up with GitHub** to download the marketplace's source ZIP. Unpack it and upload the files to a private repository you control. Another host can install that repository through **Add marketplace**, using its own GitHub access. Install any referenced upstream sources and configure the named MCP connections there as well.
+
+This is a manual backup: later local edits are not automatically pushed to GitHub. Saved MCP connections and their credentials are not included. Restored source requires the normal trust step.
+
+![Private marketplace backup dialog with a source ZIP download and steps for a private GitHub repository](plugin-asset://guide/captures/extensions-backup.webp)
+*Portable source files with an explicit manual backup workflow.*
+
+### Example: Home Assistant
+
+1. Set up [Home Assistant MCP](https://github.com/homeassistant-ai/ha-mcp) using its deployment instructions, then add your deployment's MCP endpoint to CLIO.
+2. Import [homeassistant-ai/skills](https://github.com/homeassistant-ai/skills). Inspect **home-assistant-best-practices** and its reference files, then trust the source.
+3. Compose a plugin from that skill package and your saved Home Assistant connection.
+4. Add the plugin to the conversation where you want to use it.
+
+The skill import, inspection and composition were exercised with the real public repository. Browser OAuth and tool execution are qualified separately against a read-only fixture; connecting your Home Assistant account is your own sign-in step.
+
+For plugin authors, a named connection is a CLIO extension to the portable manifest:
+
+```json title="plugin.json"
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "home-assistant",
+  "version": "1.0.0",
+  "extensions": {
+    "ai.iowarp.clio": {
+      "requires": ["home-assistant-skills/home-assistant-skills"],
+      "connections": {"home": "home-assistant"}
+    }
+  }
+}
+```
+
+Here `home` is the tool namespace and `home-assistant` is the saved connection name on that agent host. A host without that connection must configure it before the plugin can run.

@@ -1,0 +1,156 @@
+---
+title: "Choose a model"
+description: "Choose where CLIO gets its language model, from a local server to a cloud API or a subscription."
+source: https://clio.iowarp.ai/docs/connect-a-model/
+---
+
+# Choose a model
+
+Choose where CLIO gets its language model, from a local server to a cloud API or a subscription.
+
+The **model** is the AI that interprets your question and plans the work. CLIO
+runs the tools and keeps the results. Installing CLIO does not supply a model,
+a provider account or model usage.
+
+*An interactive example is shown on the site version of this page.*
+
+Use the connection you already have:
+
+| You have | What to choose |
+| --- | --- |
+| A lab-provided model | Ask your administrator for its provider, address and model name. |
+| A supported subscription | Choose Codex or Claude Code and follow its sign-in flow. |
+| A cloud API account | Choose that provider and supply its API key. Provider charges and limits apply. |
+| A model running on your computer | Start its local server, then choose LM Studio, Ollama, llama.cpp or vLLM. |
+
+You can change models later. For a first analysis, choose a model that supports
+using tools, rather than one limited to text completion.
+
+## Choose a provider in the app
+
+In Desktop or the web workspace, open **Settings → Models**:
+
+1. Under **Provider and model**, choose the provider.
+2. Complete its sign-in or key fields. An **Endpoint / API base** is the address
+   of the model service; use your lab's address or the local server's address.
+3. Choose a model. **Refresh model catalog** reloads the models the provider reports.
+4. Choose **Apply provider and model**. The model control below the message box
+   shows the connection used for that conversation.
+
+Use the model settings in Desktop or Web. The legacy terminal UI is frozen and unsupported; do not use its old configuration shortcuts.
+
+CLIO discovers the available models from the provider when it can. You can also type a model id yourself. CLIO has no built-in model list to go stale.
+
+## Providers
+
+The supported connections below have different account and setup requirements.
+
+### On your machine
+
+These providers can run on your own hardware. With a local server address, model
+requests go to that local server. Tools can still contact outside services when
+your task needs them; see [Where your data goes](docs/privacy.md). Start the model
+server before you connect.
+
+| Provider | What it needs | Default address |
+|---|---|---|
+| LM Studio | The LM Studio local server running, with a model loaded | `http://127.0.0.1:1234/v1` |
+| Ollama | Ollama running | `http://127.0.0.1:11434` |
+| llama.cpp server | A llama.cpp server running | `http://127.0.0.1:8088/v1` |
+| vLLM | A vLLM server running | `http://127.0.0.1:8000/v1` |
+
+Leave the model empty and CLIO uses the model the server reports as loaded. If your server listens on a different port or machine, change the base URL.
+
+### Cloud APIs
+
+| Provider | What it needs |
+|---|---|
+| OpenAI API | An API key (`OPENAI_API_KEY`) |
+| Anthropic API | An API key (`ANTHROPIC_API_KEY`) |
+| Azure OpenAI | An API key (`AZURE_API_KEY`), your resource URL, and an API version |
+| Google Gemini | An API key (`GOOGLE_API_KEY`) |
+| Google Vertex AI | Google Cloud credentials already set up on the machine, a project, and a location |
+| AWS Bedrock | AWS credentials already set up on the machine, and a region (a profile name is optional) |
+| NVIDIA NIM | An API key (`NVIDIA_NIM_API_KEY`) |
+| OpenRouter | An API key (`OPENROUTER_API_KEY`) |
+
+For Vertex AI and Bedrock, CLIO uses the credentials your machine already has (Google Application Default Credentials and the AWS credential chain). You do not paste a key.
+
+### Subscriptions
+
+| Provider | What it needs |
+|---|---|
+| Codex | Sign in with your ChatGPT or Codex account. Usage counts against your Codex plan. |
+| Claude Code | A Claude Code subscription, signed in once on this machine. CLIO can start the sign-in from the provider settings, or run `claude auth login` in a terminal. |
+
+### Research computing
+
+| Provider | What it needs |
+|---|---|
+| ALCF Sophia | A Globus sign-in with your ALCF or Argonne identity |
+| ALCF Metis | The same Globus sign-in as Sophia |
+
+## Notes for specific providers
+
+### LM Studio and Ollama
+
+Start the local server first. In LM Studio, load a model and start its server. In Ollama, make sure the Ollama service is running and you have pulled a model.
+
+### Claude Code
+
+Check that `claude --version` works in a terminal, then sign in once: CLIO offers this in the provider settings, or run `claude auth login` in a terminal. CLIO uses your subscription through Claude Code, so no API key is needed.
+
+### Codex
+
+Choose Codex and sign in with your account when prompted. CLIO calls Codex directly. You do not need the Codex command-line tool.
+
+### ALCF Sophia and Metis
+
+CLIO signs in through Globus. Authenticate once per machine. The install script includes the support this needs. From a terminal, run the following using the Python in CLIO's environment:
+
+```sh
+# macOS
+~/Library/Application\ Support/clio-agent/data/app/clio-agent/.venv/bin/python -m clio_agent.providers.argonne_auth authenticate
+# Linux
+~/.local/share/clio-agent/app/clio-agent/.venv/bin/python -m clio_agent.providers.argonne_auth authenticate
+```
+
+On Windows, use `%LOCALAPPDATA%\clio\clio-agent\.venv\Scripts\python.exe` in place of that path. Tokens refresh automatically afterward.
+
+## For administrators: environment variables
+
+For a headless server or a Docker container, set the provider before the backend starts.
+
+| Variable | Meaning |
+|---|---|
+| `CLIO_LM_PROVIDER` | Provider id, such as `lm_studio` or `openai` (see the ids below) |
+| `CLIO_LM_API_BASE` | Override the provider's base URL |
+| `CLIO_LM_MODEL` | The model id to use |
+| `CLIO_LM_API_KEY` | A fallback API key |
+
+Provider ids: `lm_studio`, `ollama`, `llama_cpp`, `vllm`, `openai`, `anthropic`, `azure_openai`, `gemini`, `vertex_ai`, `bedrock`, `nvidia_nim`, `openrouter`, `codex`, `claude_code`, `argonne_sophia`, `argonne_metis`.
+
+```sh
+CLIO_LM_PROVIDER=openai OPENAI_API_KEY=sk-... clio start
+```
+
+## For administrators: configuration files
+
+You can also set the provider in `config.yaml` with the keys `lm.provider`, `lm.api_base`, and `lm.model`. A value in the file wins over the environment variable. API keys are never read from config files. See [Configuration](docs/configuration.md).
+
+## How API keys are stored
+
+When you save a key in the app, CLIO writes it to `provider_api_keys.json` in your user configuration folder, readable only by you. For each provider, CLIO looks for a key in this order:
+
+1. The key saved in the app.
+2. The provider's own environment variable, such as `OPENAI_API_KEY`.
+3. `CLIO_LM_API_KEY`.
+
+> **Note**
+>
+> Saved keys are stored as plain text in that file, protected by file permissions. Keep your user configuration folder private.
+
+## Next steps
+
+- [Your first analysis](docs/examples/check-a-dataset.md): Try one small, checkable question with a fictional CSV.
+- [Troubleshooting](docs/troubleshooting.md): Fix a provider that will not connect.

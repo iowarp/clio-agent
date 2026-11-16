@@ -1,0 +1,53 @@
+---
+title: "Install with your AI assistant"
+description: "Give your AI assistant one link and it installs CLIO for you, on Windows, macOS or Linux."
+source: https://clio.iowarp.ai/docs/install-with-ai/
+---
+
+# Install with your AI assistant
+
+Give your AI assistant one link and it installs CLIO for you, on Windows, macOS or Linux.
+
+If you use an AI assistant that can run commands on your computer, such as Claude Code,
+Codex, Cursor or Gemini CLI, it can install CLIO for you. Paste this into it:
+
+```text
+Install CLIO on this computer by following https://clio.iowarp.ai/install.md
+```
+
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
+## What the assistant does
+
+The page at [`/install.md`](https://clio.iowarp.ai/install.md) is written for assistants. Following it, the
+assistant:
+
+1. asks whether you want the Desktop app or a Web/service install, unless you said so;
+2. checks your operating system and processor;
+3. runs the same commands as [Install CLIO](docs/install.md), checking Desktop downloads
+   against the release's published checksums;
+4. checks the result with `clio doctor` and `clio status`, or by finding the app;
+5. stops at the first error and shows it to you.
+
+It does not ask for model accounts or API keys. CLIO asks which model to use when it first
+opens; see [Choose a model](docs/connect-a-model.md).
+
+> **Note: Steps that need you**
+>
+> The desktop app on Linux asks for your password to install its package, and on Windows
+> the installer window opens for you to click through. The assistant tells you when.
+
+## Say what you want
+
+Add details to the prompt to skip the questions:
+
+```text
+Install the CLIO desktop app on this computer by following https://clio.iowarp.ai/install.md
+```
+
+```text
+Install the CLIO service and Web on this server, latest beta, by following https://clio.iowarp.ai/install.md
+```
+
+- [Install CLIO](docs/install.md): Every method, by operating system, if you prefer to run the steps yourself.
+- [Choose a model](docs/connect-a-model.md): Connect an account, a local model, or a model your lab provides.

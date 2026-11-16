@@ -1,0 +1,208 @@
+---
+title: "What CLIO remembers"
+description: "Find earlier decisions and understand what a conversation summary can leave out."
+source: https://clio.iowarp.ai/docs/memory/
+---
+
+# What CLIO remembers
+
+Find earlier decisions and understand what a conversation summary can leave out.
+
+Use past-session search to find an earlier decision or result and return to the
+conversation that recorded it. What CLIO keeps about you across conversations
+(preferences, projects, accounts) is [long-term memory](docs/long-term-memory.md). For example, search for **Fernhill** to find why a report says
+that a station was first recorded empty at 8:15.
+
+For the main search menu, highlighted passage navigation, and the Fleet-backed
+CLIO Search assistant, see [Search your work](docs/search.md).
+
+Memory retrieves what was recorded. Before reusing a finding, open its source
+message and check the dataset, interval and qualifications. [Evidence and
+lineage](docs/evidence.md) explains how to inspect the files and actions behind it.
+
+## Find an earlier conversation
+
+1. Open **Settings → Memory** and scroll to **Past sessions**. Choose the session
+   under **Search in session**.
+
+2. Enter a distinctive word or phrase under **Find earlier evidence or
+   decisions**, then choose **Search**. Search starts within the selected session.
+
+3. Read the matching excerpt and its session label. Use **Open** on the result
+   to return to the matching message in the conversation.
+
+4. To include other sessions in the same workspace, select **Include related
+   sessions in this workspace** and submit the search again.
+
+![Memory settings with Fernhill entered, workspace recall unchecked, and a matching excerpt linked to its source message](plugin-asset://guide/captures/docs-memory-search.webp)
+*Open returns to the matching source message. Relevance 100% means the query term matched; it does not verify the claim.*
+
+Search matches words in retained conversation text, recorded reasoning and
+errors. Try the name, unit or term used in the original conversation if a
+paraphrase finds nothing. An empty result means no retained text matched the
+query; it does not establish that the work never happened.
+
+## Agent access uses Tasks
+
+In the Tasks candidate, agents discover permitted sessions with `query_tasks`
+and inspect their transcripts, recorded summaries and linked artifacts with
+`observe_tasks`. See [Session coordination](docs/tasks/session-coordination.md).
+The same task surface lets a parent inspect a failed child's work before
+messaging it to continue.
+
+The `session_search`, `session_read_summary` and `session_read_context_frame`
+tools let an agent search and read earlier sessions the same way. Turn them off
+with **Search past sessions** on the memory page; a conversation started with
+memory off does not get them either.
+
+## Where does the session summary come from?
+
+The tool called **Read session summary** builds a small overview directly from
+the retained conversation. **It does not ask a model to write a new summary.**
+It returns:
+
+- The session title, state, workspace and timestamps.
+- The retained message count and message identifiers.
+- Text excerpts from the **last five messages**, up to **360 characters per
+  message**. A message with no text, reasoning or error contributes no excerpt.
+- The most recent rollback information, including excluded message identifiers.
+
+This is a recent-message overview. It can omit an important decision from the
+beginning of a long session. Search for that decision and open the matching
+message rather than assuming the overview covers the entire analysis.
+
+The returned source label is `gact_visible_transcript_summary`. The tool's
+recorded arguments and result are available through its information button;
+the excerpt includes the original message identifier and time.
+
+<details>
+<summary>Inspect an actual returned overview</summary>
+
+The [recorded tool result](https://clio.iowarp.ai/examples/memory-session-overview.json) comes from
+the fictional refinement session used in the [comparison guide](docs/best-of-n.md).
+Its 12 retained messages produce three text excerpts from the last five
+messages, because two of those messages contain no qualifying text. The final
+excerpt retains the limitation about individual journeys.
+
+</details>
+
+## Compaction creates a different summary
+
+When a conversation becomes too large for the model's working context, CLIO can
+**compact** older context. This creates a model-written summary to carry earlier
+work forward while keeping the context within its budget.
+
+| Record | Where it comes from | What to use it for |
+| --- | --- | --- |
+| **Read session summary** | Session metadata and excerpts from the last five retained messages; no new model call. | Orient yourself before opening the conversation. |
+| **Compaction summary** | A model call over the older context selected for replacement, using CLIO's built-in compaction instructions. | Understand what was carried into the model's continuing context. |
+| **Context frame** | A saved description of the sources and items assembled for a turn. | Check which items were included, their source identifiers and the reasons recorded. |
+
+Compaction uses the session's selected model. When a session has no separate
+model selection, it uses the active host model. An unavailable selected model
+or an empty response produces a reported failure; CLIO does not silently switch
+to another model to summarize that session.
+
+Open **Settings → Memory → Session retention** to inspect context usage and
+**Compaction history**. A retained summary has a link back to its conversation.
+For additions to a turn's context, expand the receipt in the transcript or choose
+**Open exact details**; see [context inspection](docs/evidence.md#inspect-additions-and-recovered-context).
+
+The compaction summary is a model interpretation. Check consequential details
+against the original messages, files and tool results. Compaction is not
+independent validation of the scientific finding.
+
+## When the context fills
+
+A compaction never deletes anything. The full record of the conversation stays
+stored and searchable; only what the agent reads from then on changes.
+
+**When it happens.** CLIO compacts automatically when the context reaches a share of
+the model's context window, 85% by default (`autocompact.pct` in
+[Configuration](docs/configuration.md)). Change it for one conversation in
+**Observability → Context → Compaction settings**: **Automatic compaction** turns it
+on or off, the slider sets the threshold from 50% to 95%, and **Compact now** compacts
+at once.
+
+**What the agent reads afterwards.** Its instructions, then the summary, then what is
+kept word for word, then the steps that follow. By default CLIO keeps word for word:
+
+- the messages you typed, newest first, as many as fit in 80,000 characters
+  (`compaction.keep.user_chars`); a message too long for what is left is summarized,
+  and older ones that still fit are kept;
+- the request the agent is working on now;
+- its newest step, so the output it was using stays exact;
+- the [session plan](docs/following-work.md#follow-the-session-plan), its todo list and
+  the conversation's facts, such as its workspace folder, which are offered again.
+
+The `compaction.keep.*` settings change these defaults.
+
+**The summary.** The model that runs the conversation writes it, under fixed headings:
+the objective in your words, your requirements, progress, findings with their
+sources, decisions, files, open threads and the next step. The instructions for it are
+part of CLIO. The earlier `compaction.prompt_file` setting is no longer read: if it is
+still set, compaction fails and reports `compaction_prompt_invalid`, so remove it from
+your configuration.
+
+When a compaction fails, or the context is still over the threshold just after one,
+the conversation shows a notice. The agent does not see these notices.
+
+### Recall what a summary replaced
+
+The summary's last line names its compaction. With `recall_context`, the agent gets
+back the steps a summary replaced, as they were recorded: your messages, messages
+and reports delivered to it, each tool call and each result, oldest first. A summary
+that replaced an earlier summary leads back to that one's steps. Where CLIO's storage
+can search, the agent can also search earlier steps for words and get the matching
+ones, best match first, at most 50.
+
+Recall returns only what the agent's own context would have shown: a result still
+waiting for its authorization reads as such, and input not yet given to the agent is
+left out. A recall result has a fixed size, 16,000 characters
+(`tools.recall_result_chars`). A longer result is saved to a file, and the agent gets
+its beginning and the file, which it can search and read on. Recall does not return
+the model's reasoning.
+
+## Ask CLIO to recall earlier work
+
+Make the source and scope explicit:
+
+```text
+In this workspace, find the earlier conversation about Fernhill becoming empty.
+Show the matching message and the interval it describes before reusing the finding.
+```
+
+The three memory tools come from the `memory` plugin. An agent can use them only
+when it carries that plugin. The standard agent does not, so first add `memory`
+to the conversation with the [+ menu](docs/agents-and-plugins.md#add-or-remove-plugins).
+
+| Tool | What it actually returns |
+| --- | --- |
+| `session_search` | Ranked matching excerpts with session, message and part identifiers. Ranking measures matching query terms, not factual confidence. |
+| `session_read_summary` | The recent-message overview described above. |
+| `session_read_context_frame` | A saved frame's metadata and up to 50 item descriptions, including source identifiers, inclusion and reasons. It is not the full text of every source. |
+
+Default tool calls stay within the current session. Workspace recall expands
+to related sessions in the same workspace. **Global** recall refers to sessions
+in CLIO's global workspace; it does not mean every workspace on the computer.
+Read requests targeting another ordinary workspace are rejected.
+
+## Check what recall can leave out
+
+Keyword retrieval can miss synonyms; a recent-message overview can miss older
+decisions; model-written compaction can omit details. Open the original message
+and supporting files before relying on a recalled claim.
+
+<details>
+<summary>Implementation references</summary>
+
+- [Summary projection and memory routes](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/routes/session_recall.py): constructs the overview from retained messages and records policy decisions.
+- [Transcript search](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/runtime/session_recall_search.py): word matching, ranking and bounded excerpts.
+- [Agent memory tools](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/session_recall_tools.py): the callable tools, scope and supplied user-intent checks.
+- [Memory route tests](https://github.com/iowarp/clio-agent/blob/develop/tests/test_gact/test_memory_stats.py) and [summary contract tests](https://github.com/iowarp/clio-agent/blob/develop/tests/test_gact/test_memory_summary_contract.py).
+- [Compaction model selection](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/compaction_lm.py) and its [tests](https://github.com/iowarp/clio-agent/blob/develop/tests/test_gact/test_compaction_lm.py).
+
+The service checks the scope and intent supplied by the calling tool. These
+fields are not a separate human approval mechanism.
+
+</details>

@@ -1,0 +1,87 @@
+---
+title: "Contributing"
+description: "Set up a development environment, run the checks, and send a change to CLIO."
+source: https://clio.iowarp.ai/docs/contributing/
+---
+
+# Contributing
+
+Set up a development environment, run the checks, and send a change to CLIO.
+
+CLIO is open source under the BSD 3-Clause license and is developed by the Gnosis Research Center at Illinois Institute of Technology, as part of [IOWarp](https://iowarp.ai). It is in beta, so expect rough edges. Fixes, tests, documentation, and bug reports are all welcome.
+
+## The repositories
+
+| Repository | What it holds |
+|---|---|
+| [iowarp/clio-agent](https://github.com/iowarp/clio-agent) | The Python backend, the install scripts, Docker files, and this website (in `site/`) |
+| [iowarp/gact-tui](https://github.com/iowarp/gact-tui) | The Web and Desktop workspace interfaces, plus frozen legacy TUI source |
+| [iowarp/clio-agent-marketplace](https://github.com/iowarp/clio-agent-marketplace) | The default marketplace of agents and plugins |
+
+The backend repository includes the other two as git submodules, pinned to released tags. Do not change a submodule pin in a feature pull request. Pins are updated as part of a release.
+
+## Workflow
+
+CLIO uses gitflow:
+
+1. Branch off `develop`.
+2. Open a pull request into `develop`.
+3. Releases merge `develop` into `main` and tag `vX.Y.Z`.
+
+Write commit messages in conventional style, such as `feat:`, `fix:`, `docs:`, `test:`, or `refactor:`. In the pull request, explain the problem and the fix, link any issue, and include the output of the checks below. Add or update tests for changes in behavior.
+
+## Set up
+
+You need [uv](https://docs.astral.sh/uv/) and Python 3.13.
+
+```sh
+git clone --recurse-submodules https://github.com/iowarp/clio-agent
+cd clio-agent
+uv sync --extra dev --extra optimizers
+```
+
+## Run the checks
+
+Run these before opening a pull request:
+
+```sh
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+uv run mypy src/
+uv run pytest tests/ -m "not integration"
+```
+
+The file tool tests write into the system temp folder, so that folder must be an allowed root:
+
+```sh
+CLIO_ALLOWED_ROOTS="$TMPDIR:$PWD" uv run pytest tests/
+```
+
+## Run the backend from source
+
+```sh
+uv run clio-agent serve
+```
+
+Then connect an interface to it. Run the backend on its default port, 8100, or pass `--port`.
+
+> **Note**
+>
+> Run only one backend at a time against the same user configuration folder. See [Install](docs/install.md#desktop-app).
+
+## The interfaces
+
+Web and Desktop live in [gact-tui](https://github.com/iowarp/gact-tui). Follow its build and test steps for those interfaces. The retained legacy TUI is frozen and unsupported; it is not a current CLIO installation or verification path.
+
+## Improve this website
+
+The website lives in the `site/` folder of the backend repository. It is built with Astro and Starlight, and each page is a Markdown or MDX file under `site/src/content/docs/`. Read `site/WRITING.md` first. It sets the voice and the accuracy rules: every command, path, and variable on a page must match the source. See `site/README.md` for how to run the site locally. The "Edit page" link at the bottom of each page opens the file on GitHub.
+
+## Report a problem
+
+Run `clio report` and attach its output to a new issue at [github.com/iowarp/clio-agent/issues](https://github.com/iowarp/clio-agent/issues). Remove anything private first. Say what you did, what you expected, and what happened.
+
+## Next steps
+
+- [Troubleshooting](docs/troubleshooting.md): Gather the details a good bug report needs.
+- [Command line](docs/cli.md): The clio and clio-agent commands.

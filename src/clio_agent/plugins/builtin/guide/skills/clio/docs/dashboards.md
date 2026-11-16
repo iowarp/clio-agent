@@ -1,0 +1,139 @@
+---
+title: "Explore charts and dashboards"
+description: "Read a finding alongside linked plots, maps and the underlying table."
+source: https://clio.iowarp.ai/docs/dashboards/
+---
+
+# Explore charts and dashboards
+
+Read a finding alongside linked plots, maps and the underlying table.
+
+A dashboard brings a finding, its figures, and the underlying records into one
+report beside your conversation. Use it when a colleague needs to explore an
+analysis rather than read a single answer.
+
+> **Preview:** The saved-dashboard and export controls (in development builds). Availability depends on your build.
+
+## Build a report from a file
+
+1. [Attach your dataset](docs/files/attach.md) in a session. To follow this example,
+   use the [fictional station counts](https://clio.iowarp.ai/datasets/bike-stations.csv).
+
+2. Describe the question and the views that will help you answer it.
+
+   ```text
+   Build a dashboard from bike-stations.csv. When is Fernhill first recorded
+   empty? Compare the change from 6 to 9 am by station. Put the time chart,
+   station comparison, map, and exact counts together. Keep units and capacities
+   visible. These are fictional dock counts, not individual bike journeys.
+   ```
+
+3. Open the resulting dashboard in the side panel. Expand the canvas if the
+   report needs more room. Start with its finding, then check the figures and
+   source table.
+
+![Fictional bike-station dashboard with the finding, two charts, map, and five-station comparison visible](plugin-asset://guide/captures/current-dashboard.webp)
+*The complete report overview. Fernhill first reaches zero at 8:15 am; Hill loses 37 bikes while Downtown gains 37. The counts alone do not identify journeys.*
+
+## Explore and revise the same report
+
+Select a station in the map, chart, or comparison table. In this example, the
+same station is highlighted across the connected views. Open **Every source
+snapshot** to inspect all six recorded times instead of just the first and last.
+
+Use **Reference this** to carry selected records into your next question, or
+**Capture labelled regions** to mark a visible area. Then ask for a specific
+revision: “Explain this station's decline,” or “Keep the main comparison visible
+and move the detailed table below it.” [See the reference controls in action](docs/widgets/interaction.md).
+
+Related views only share a selection when their data and controls are connected.
+Tell CLIO which records should move together. **Versions** retains earlier
+reports; **Lineage** shows the inputs and recorded steps behind the saved result.
+
+## A dashboard over many cases
+
+The agent lays a dashboard out for what you will read in it. Asked for a way to
+browse a 48-case topology-optimization sweep and look at each design, it built a
+parameter grid and a table of cases that both select a case, and gave the one 3D
+view of the selected design most of the page. See
+[Linked data](docs/widgets/linked-data.md#one-viewer-that-follows-the-selection) for
+how a viewer follows the selection.
+
+![Dashboard titled Topology optimization sweep: case browser, with a heatmap of surface area by volume fraction and filter radius, a table of cases, and a large 3D view of the selected design](plugin-asset://guide/captures/docs-case-browser.webp)
+*The agent's case browser for a 48-case sweep, asked for in plain words. The heatmap and the table select a case, and the 3D view shows its design; here case 12.*
+
+## Live sources
+
+Most dashboards show data fixed when they were built. A dashboard can also read a
+**live source** and update by itself while it is open:
+
+- a **stream**, written by a background script that watches a job, an instrument or a
+  device;
+- a file followed at its newest version, so the view moves to each new version.
+
+Ask for it in plain words, such as "keep an eye on the run and show me how it's
+doing". A view bound to a stream that has stopped says so and shows its last rows. See
+[Watch something live](docs/live-sources.md).
+
+## Find the export buttons
+
+The dashboard viewer's toolbar has one **Download** button, which saves the
+original dashboard definition. Open the menu beside **Open in a browser tab** to
+find **Export to…** for the other formats.
+
+![Dashboard viewer open menu showing Export to PNG image and Export to HTML dashboard](plugin-asset://guide/captures/docs-dashboard-export-menu.webp)
+*Choose Export to PNG image (displayed view) or Export to HTML dashboard (all tabs and data). The Download button beside it saves the editable dashboard definition.*
+
+| Choose | What you receive | Use it for |
+| --- | --- | --- |
+| **PNG image (displayed view)** | An image of the currently rendered report and selected state. | A slide, paper draft, or quick visual review. |
+| **HTML dashboard (all tabs and data)** | One HTML file containing the report, captured records, and supported interactions. | A colleague who needs to explore the results without CLIO. |
+| **Original file** | The saved dashboard definition. | Keeping an editable definition; it is not the portable interactive report. |
+
+### An image you can put in a slide
+
+Set the filters and selections you want before choosing **PNG image**. Check the
+downloaded image for readable labels and complete figures before sharing it.
+
+![Actual PNG downloaded from the fictional bike-station dashboard](plugin-asset://guide/captures/docs-dashboard-export.webp)
+*This is the downloaded PNG itself, including the report below the first screen. It preserves the charts, map, comparison, and visible source-table columns. It is an image: recipients cannot change filters or select stations.*
+
+[Download this example PNG](https://clio.iowarp.ai/examples/bike-dashboard.png).
+
+### A report your colleague can explore
+
+Choose **HTML dashboard**, then open the downloaded file in a browser. Selecting
+Fernhill updates the saved charts and tables, including when you are offline.
+
+*Recording on the site: Download the report. Explore the saved HTML..* All five stations and their counts remain available offline, and selection reaches both charts. External map tiles are not bundled: the map reports that its background is unavailable while its station markers remain usable.
+
+[Open the saved example HTML](https://clio.iowarp.ai/examples/bike-dashboard.html) ·
+[Download the source counts](https://clio.iowarp.ai/datasets/bike-stations.csv).
+
+Files the report shows, such as the meshes behind a 3D view, are embedded in the
+HTML, so a 48-case sweep of 3D designs makes a file of a few hundred megabytes. An
+export larger than `artifacts.dashboard_export_max_bytes` (2 GiB by default) is
+refused with a message naming its size; raise the limit in
+[Configuration](docs/configuration.md) if you need a larger file.
+
+The saved report cannot call a live agent. External services and uncaptured media
+do not become available merely because you export it. A chart bound to a live source
+keeps the rows its source had saved when you exported it, and does not update. If the recipient also
+needs your questions, the recorded work, and supporting files,
+[export the session](docs/exports.md) instead.
+
+## Check the report before sharing
+
+Ask CLIO to inspect each relevant view, then review it yourself at the size your
+colleague will use. Look for clipped labels, crowded legends, missing units,
+and a finding that is not supported by the counts. A successful publication
+does not establish that a visual check completed.
+
+```text
+Check this dashboard at side-panel size. Inspect each tab for clipped labels
+and overlapping legends. Keep the source data intact, correct unclear views,
+and tell me which views you actually inspected.
+```
+
+Continue with [Save and share your work](docs/exports.md) to send the investigation,
+or [Check answers and sources](docs/evidence.md) to follow its history.

@@ -1,0 +1,111 @@
+---
+title: "Open and edit documents"
+description: "Read a file beside the conversation, request a revision and keep the editable original."
+source: https://clio.iowarp.ai/docs/working-with-files/
+---
+
+# Open and edit documents
+
+Read a file beside the conversation, request a revision and keep the editable original.
+
+Open a file beside the conversation to read it, check a result, or ask for a
+change. This guide covers the file viewer. To bring in new material or choose
+what CLIO should use, see [Files and sources](docs/files/index.md).
+
+## Open a file
+
+Open **Files** in the workspace canvas and select a file. You can also open a
+file from its attachment or reference in the conversation. Choose **Preview**
+to read it, and expand the canvas when you need more space.
+
+*Recording on the site: Open and read a PDF.* Select a report in Files, expand the canvas and scroll through its pages. The recording uses a fictional sensor report.
+
+## Read the preview
+
+Scroll through PDF pages and document slides continuously. Use the zoom controls
+in the upper toolbar for small text or figure detail; the page count is at the
+bottom. Images fit the available space and can be opened fullscreen.
+
+Word documents and PowerPoint presentations can have a saved PDF preview for
+reading inside CLIO. The editable file remains available to open or download.
+If a preview is unavailable, download the original and open it in your editor.
+
+## View 3D models
+
+STEP (`.step`, `.stp`), STL, 3MF, OBJ, PLY and glTF files open as a 3D view, whether
+you or the agent made them. Drag to turn the model, right-drag to move it, and scroll
+or pinch to zoom. **Fit to view** brings the whole model back, and **Standard views**
+shows it from the top, front, right or at an angle.
+
+The toolbar shows the model's size in millimetres, as width × depth × height. STL
+files carry no unit, so their
+numbers are read as millimetres. A model with several parts, such as a STEP
+assembly, shows each part in its own colour and lists the parts by the names in the
+file. Clear a part's box to hide it; the size then covers the parts still shown.
+**File actions** turns the edges and the parts list on or off.
+
+![A STEP file, whistle_assembly.step, open full width in the file viewer: the toolbar reads 63.0 × 20.0 × 24.0 mm and 2 parts, the parts list shows body in orange and plug in blue, both ticked, and the model is drawn in those colours with its edges](plugin-asset://guide/captures/cad-step-assembly.webp)
+*A two-part STEP assembly the agent wrote with CadQuery, with its size and parts list.*
+
+The toolbar also holds the usual CAD tools, each with a key when the view has focus:
+
+- **Measure** (M): click two points for the distance and its X, Y and Z parts. Points
+  snap to corners and edges. **Radius** reads a round edge, such as a hole's rim, and
+  **Angle** the angle between two faces. Esc cancels a half-made measurement.
+- **Section** (S): cut the model across X, Y or Z, move the plane with the slider and
+  **Flip** the kept side. Cut faces are filled, so walls and channels read as solid.
+- **Explode** (E): move the parts apart from the assembly's centre with a slider.
+- Click a part, or its name in the parts list, to see its own size and triangle count,
+  and to ghost or isolate the other parts.
+
+Under **File actions**, **Orthographic** and **Inches** change the projection and the
+unit. The axis buttons in the corner look
+along an axis; click the same one again to look from the other side.
+
+**Download** keeps the original file. The menu beside it adds **Export to…** rows that
+save the model as a binary STL for a slicer, as a GLB for other 3D viewers, or as a PNG
+picture of the current view. STEP files are read in the browser by OpenCASCADE, which
+loads only when you open one. On a narrow screen the size shows in the view's lower
+left corner, the parts list and the CAD tools are under **File actions**, and a tool's
+controls open as a sheet along the bottom of the view.
+
+In a conversation, choose **Comments** in the toolbar and drag over the model to mark
+a region, then write your question. CLIO sends the agent a picture of the view as you
+see it, measurement labels included, with the camera, section, exploded view,
+selected part and measurements in words. Ask about the model you have open and the
+agent can also look at it itself while it is on screen.
+
+![The whistle's STEP assembly cut through its air channel, seen from the front: a 1.60 mm measurement across the floor wall, a region marked S1 around it, and the comment editor reading “Is this wall thick enough to print?”](plugin-asset://guide/captures/cad-region-comment.webp)
+*A region comment on a section of a model, with a wall measured.*
+
+## Ask about the file
+
+Type **@** in your message and select the file, then say what you want to know or
+change. For example: “Explain the chart on page 2” or “Shorten the conclusion and
+keep the tables.” See [@ references](docs/files/references.md) for finding files
+and adding them to a message.
+
+To point at an exact sentence, figure area or table instead, choose **Comment** in the
+viewer's toolbar and mark it; see [Comment on results](docs/comments.md). For a LaTeX
+paper, see [Write a paper](docs/papers.md).
+
+After a revision, open the updated result and check the change. For saved
+artifacts, **Versions** shows earlier results and **Lineage** shows the inputs
+and steps behind them.
+
+## Open or download the original
+
+Use **Download file** in the toolbar to keep the original file. For an Office
+document, **Open in** offers its PDF preview and available editors. In Desktop,
+this can include Word, PowerPoint or Excel when installed. In the browser,
+**Copy path** copies the path of an editable working copy.
+
+Open **File actions** (the three dots) for **Copy to another workspace** and
+**File information**.
+
+For a complete authoring and revision walkthrough, continue to the
+[report and presentation example](docs/examples/reports-and-slides.md).
+
+To share a conversation together with its outputs or workspace, see
+[Save and share your work](docs/exports.md). For a report combining several visual
+outputs, see the development [dashboard workflow](docs/dashboards.md).

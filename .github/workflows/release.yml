@@ -56,6 +56,10 @@ jobs:
           echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
           echo "version=$pkg" >> "$GITHUB_OUTPUT"
 
+      - name: The bundled guide docs are this commit's docs
+        # The wheel ships the guide plugin's Markdown export of site/; fail when it is stale.
+        run: node site/scripts/export-docs-markdown.mjs --check
+
       - name: Build sdist + wheel
         run: uv build
 

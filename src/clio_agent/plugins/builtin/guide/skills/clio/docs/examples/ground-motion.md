@@ -1,0 +1,75 @@
+---
+title: "Explore ground motion near Palm Springs"
+description: "Ask CLIO for the GNSS stations nearest Palm Springs, choose one on a map, chart its motion, and check the evidence behind the result."
+source: https://clio.iowarp.ai/docs/examples/ground-motion/
+---
+
+# Explore ground motion near Palm Springs
+
+Ask CLIO for the GNSS stations nearest Palm Springs, choose one on a map, chart its motion, and check the evidence behind the result.
+
+In this tutorial you ask a question about real data and follow CLIO from the question to a chart. You will find the five EarthScope GNSS stations nearest Palm Springs, California, choose one from a map, plot its position over time, and look at the evidence CLIO kept. GNSS stations measure their own position continuously, so their time series show how the ground moves.
+
+You need a computer where you can install the desktop app and a model you can connect. The analysis pulls public data, so it needs an internet connection.
+
+1. Install the desktop app.
+
+   Follow [Install](docs/install.md) and open CLIO.
+
+2. Connect a model.
+
+   Follow [Connect a model](docs/connect-a-model.md). Choose a model that supports tools. If a step fails, inspect the recorded error before retrying.
+
+3. Start a session with the EarthScope agent.
+
+   Choose the plus button at the top of the sidebar, then **New session**. Name the session, choose a workspace, and open the **Agent** list. Choose **EarthScope**. Then choose **Create session**.
+
+   EarthScope comes from the `clio` marketplace that ships with CLIO. If it is not in the list, open Settings, choose **Plugins & marketplaces**, and check that the `clio` marketplace is installed and has no problems. See [Agents and plugins](docs/agents-and-plugins.md).
+
+   Under the message box, leave **Execute** as the execution mode and **Ask first** as the confirmation policy. You may be asked to approve some actions as the run goes. Review each requested action. **Allow once** applies only to that action; **Allow for session** grants broader matching permission for this conversation. See [Permissions and sandbox](docs/permissions.md).
+
+4. Ask the question.
+
+   The welcome screen offers starter prompts, including an EarthScope one about Los Angeles. For this tutorial, type this prompt instead:
+
+   ```text
+   Find the five EarthScope GNSS stations nearest Palm Springs, California, show them on a map, and wait for me to choose one.
+   ```
+
+   The agent works out where Palm Springs is, searches for EarthScope station data, ranks the nearest stations, and stops. Expand a tool call to read its result; use its information button for the technical arguments and result record.
+
+   When it is ready, a banner above the message box says that a response is needed, and an interactive map appears with the stations labeled and ranked.
+
+   Your station names and order depend on the data CLIO finds.
+
+5. Choose a station.
+
+   Select a station in the list on the map and confirm your choice. The picker may let you select more than one station. Choose one for this tutorial. The agent continues with the station you picked.
+
+6. Ask for the time series.
+
+   Type a follow-up in the same session:
+
+   ```text
+   Plot the east, north, and up time series for that station.
+   ```
+
+   The agent stages the station's data and draws a chart in the session. Look for a title that names the station, three lines for east, north, and up, and a line under the title that tells you how much of the data the chart shows. Long records are downsampled for display, and the chart says so, for example "1,000 evenly sampled rows from 857,957 total". Hover the lines to read values at a point in time.
+
+7. Inspect the evidence.
+
+   Use **Evidence layout** in the session toolbar to show **Data** and **Work**. Data lists sources and outputs; Work lets you inspect tool results. Choose **Open full details** for the **Evidence**, **Timeline**, **Gantt** and **Context** tabs.
+
+   Open a generated artifact and choose **Lineage** to inspect recorded inputs and producing actions. An input only appears when the run recorded that relationship. See the [current evidence and lineage walkthrough](docs/evidence.md#follow-artifact-lineage).
+
+## What to expect
+
+Model output varies. The agent may word its answers differently, take a different number of steps, or ask you something this tutorial does not mention. What should stay the same is the shape of the work: a question that stops for your choice, a chart built from data CLIO fetched, and a record of each step. If the agent says it could not find data, read its explanation, then ask it to try again or to use a different station from the list.
+
+If a tool fails to start, see [Troubleshooting](docs/troubleshooting.md).
+
+## Next steps
+
+- Ask for a second station and compare the two charts.
+- Read how evidence, artifacts, and lineage work in [Check answers and sources](docs/evidence.md).
+- [Create a report or presentation](docs/examples/reports-and-slides.md) from findings you have reviewed.

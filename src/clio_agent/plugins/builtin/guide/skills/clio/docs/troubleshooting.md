@@ -1,0 +1,134 @@
+---
+title: "Troubleshooting"
+description: "Check your install, read the logs, and fix the problems people hit most often."
+source: https://clio.iowarp.ai/docs/troubleshooting/
+---
+
+# Troubleshooting
+
+Check your install, read the logs, and fix the problems people hit most often.
+
+Start with the message in the app and the step you were trying to perform.
+You do not need to open a terminal for every problem.
+
+| What you see | First check |
+| --- | --- |
+| A control in a guide is missing | [Features and versions](docs/versions.md), then your Desktop and connected Agent versions. |
+| No model is selected or the model will not connect | [Choose a model](docs/connect-a-model.md): provider, sign-in, server address and model. |
+| A file is missing | The selected workspace, connected service and attachment chip. A lab service uses its host's files. |
+| CLIO is waiting | The pending question, permission request or **Work** view. Answer the specific request when ready. |
+| A tool failed | Expand its result to read the error. Ask CLIO to explain the failure and propose a different approach. |
+| The result looks wrong | Ask for the source values, units and assumptions, then [check the evidence](docs/evidence.md). |
+| Desktop cannot connect to its service | Use the connection/startup message and **Open logs** when offered; confirm whether you intended a local or lab service. |
+| A reply says "This reply didn't load" | Choose **Report this** on that line, then copy or download the report (see below). |
+
+## Report a problem
+
+When something goes wrong and someone is helping you, send them a report from
+the app instead of running commands. Open **Settings → Report a problem**. It is
+also in the CLIO menu at the top left, under the agent you are talking to, in
+**Help** in the Desktop app's menu, and on a failed reply as **Report this**.
+
+The report holds:
+
+- the CLIO version, your operating system, whether you use Desktop or a web
+  browser, and the provider and model in use;
+- the health checks from **Settings → Health**;
+- the last 500 lines of CLIO's log, the same files `clio logs` shows. **Show more**
+  adds earlier lines;
+- optionally, one conversation you pick: how its recent replies ended and their
+  error messages. Its messages are left out unless you tick **Include this
+  conversation's messages**.
+
+Passwords, API keys, tokens, cookies, sign-in codes, saved connector secrets and
+passwords in web addresses are removed by the CLIO service before the report
+reaches the page, and your home folder is shown as `~`. The last line of the
+preview says how many secrets were removed. Read the preview before you send it.
+
+Choose **Copy report** to paste it into a message, or **Download report** to save
+it as a text file you can attach. Both carry exactly what the preview shows. If
+the page says no log file was found, the service was started from a terminal,
+and its log is in that terminal window.
+
+## Terminal and server diagnostics
+
+If you installed the command-line tools, these commands help you or your
+administrator inspect the installation:
+
+```sh
+clio doctor          # is the install complete?
+clio-agent doctor    # deeper checks: file policy, model provider, memory, tools, API
+clio logs            # follow service logs
+clio report          # a summary to paste into a bug report
+```
+
+`clio doctor` checks the install layout and exits with an error if something required is missing. `clio-agent doctor` checks the running configuration. `clio status` shows whether the backend is healthy and where its logs are. See [Command line](docs/cli.md) for all commands.
+
+## The backend is not healthy after about 90 seconds
+
+The first start is slower than later ones, but if `clio start` gives up, read the backend log with `clio logs`. The log shows why startup stopped. Run `clio status` to see the port and log paths. If something else is using port 17800, set `CLIO_PORT` to another port.
+
+## "server binary not found"
+
+CLIO is not installed, or the `clio` command is looking in the wrong folder. Run the [install script](docs/install.md), or set `CLIO_PREFIX` to the folder you installed into.
+
+## "web bundle not found"
+
+`clio --web` could not find the web UI files. Reinstall with the install script (unpacking the bundle needs `unzip`), or point `CLIO_WEB_DIR` at a built web UI folder.
+
+## The Docker web UI says host_not_allowed
+
+You opened the UI with a name other than `localhost`. Set `CLIO_GACT_ALLOWED_HOSTS` to that host name (names only, no port, comma-separated) and restart the container. See [Install](docs/server-setup.md#docker).
+
+## clio-kit is missing
+
+Tool servers from marketplace plugins start through `clio-kit`. If the install script warned that it could not provision `clio-kit`, or those tools fail to start, install it and make sure its folder is on your `PATH`:
+
+```sh
+uv tool install clio-kit==2.10.6
+uv tool dir --bin
+```
+
+Add the folder that `uv tool dir --bin` prints to your `PATH`. The install script skips this step when `uv` is not installed.
+
+## outside_allowed_roots
+
+A tool tried to use a file outside the folders CLIO allows. Move the file into your workspace, or add its folder to `CLIO_ALLOWED_ROOTS`. See [Configuration](docs/configuration.md).
+
+## The desktop app and the command line clash
+
+Check which service address each interface uses. A managed Desktop service can
+use a different port from a service started in a terminal. To see the same work,
+connect both interfaces to the intended existing service. Do not stop an unrelated
+service that may have active work. See [Server and terminal setup](docs/server-setup.md).
+
+## The sandbox is not active
+
+Open **Infrastructure → CLIO hosts → Protected execution** on the connected
+computer. Setup shows its current step and elapsed time; it continues if you
+leave the page. Wait for the result, approve a Windows prompt if one appears,
+and restart CLIO if requested. For a command-line installation, use
+`clio sandbox setup`, then `clio sandbox status`.
+
+**Bypass checks** only skips action approvals. It does not disable the protection
+needed to keep connected-source credentials and restricted files out of tool
+processes. See [Choose what CLIO may do](docs/permissions.md#windows-setup-and-progress).
+
+## The Claude Code provider fails
+
+Check that `claude --version` works in a terminal, then sign in once with `claude auth login`. See [Connect a model](docs/connect-a-model.md#claude-code).
+
+## A model provider will not connect
+
+- For LM Studio, Ollama, llama.cpp, or vLLM, make sure the server is running and the base URL matches its address.
+- For a cloud provider, check that the API key is saved in the app or set in the provider's environment variable before the backend started.
+- A value in `config.yaml` beats an environment variable. See [Configuration](docs/configuration.md).
+
+## Report a bug
+
+Use [Report a problem](#report-a-problem) in the app, or run `clio report`, and attach the result to an issue at [github.com/iowarp/clio-agent/issues](https://github.com/iowarp/clio-agent/issues). Read it before you send it. `clio report` includes versions, your environment, backend health, and the last 40 lines of each log.
+
+## Next steps
+
+- [Command line](docs/cli.md): Every clio command.
+- [Uninstall](docs/uninstall.md): Remove CLIO and start clean.

@@ -1,0 +1,256 @@
+---
+title: "Install CLIO"
+description: "Install CLIO on Windows, macOS or Linux, as the desktop app, from a terminal, on a remote computer, or with your AI assistant."
+source: https://clio.iowarp.ai/docs/install/
+---
+
+# Install CLIO
+
+Install CLIO on Windows, macOS or Linux, as the desktop app, from a terminal, on a remote computer, or with your AI assistant.
+
+Most people want the **desktop app**: one installer with the CLIO service included.
+Use the **install script** on a server, an HPC login node, or a computer without a
+desktop. If your lab already runs CLIO, you only need its address; see
+[connect to a lab service](#connect-to-a-lab-service).
+
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
+## Choose how to install
+
+| Method | Windows | macOS | Linux | Use it for |
+|---|---|---|---|---|
+| [Desktop app download](#desktop-app) | x64 (ARM through emulation) | Apple Silicon, macOS 14+ | x86_64 and aarch64: `.deb`, `.rpm` or Arch package | Your own computer |
+| [Desktop app from a terminal](#desktop-app-from-a-terminal) | yes | Apple Silicon | `apt`, `dnf`, `zypper` or `pacman` systems | The same app, installed by one command |
+| [Install script](#install-script) | yes | Apple Silicon and Intel | any | Servers, HPC, browsers |
+| [A remote computer, from the desktop app](#a-remote-computer-from-the-desktop-app) | the app runs here | the app runs here | the app runs here | Running CLIO where the data is |
+| [Docker](docs/server-setup.md#docker) | yes | yes | yes | Containers and shared servers |
+| [Your AI assistant](docs/install-with-ai.md) | yes | yes | yes | Letting an assistant do the steps |
+
+There is no desktop app for Intel Macs yet, nor for RHEL, Rocky and AlmaLinux 9, which do not
+ship the WebKitGTK 4.1 the app uses. Use the [install script](#install-script) there and open
+CLIO in your browser.
+
+## Desktop app
+
+**Windows**
+
+1. On the [download section](https://clio.iowarp.ai/#download), choose **Windows** and **Download installer**.
+   The installer includes the CLIO service.
+
+2. Run it. Its pages ask about your model provider and the computers CLIO may use;
+   you can change both later in the app.
+
+3. Open **CLIO Desktop** from the Start menu.
+
+Windows on ARM runs the same x64 installer through emulation.
+**macOS**
+
+1. On the [download section](https://clio.iowarp.ai/#download), choose **Download for Apple Silicon**. The
+   disk image includes the CLIO service. macOS 14 or newer is required.
+
+2. Open the disk image and drag **CLIO Desktop** into **Applications**.
+
+3. Open **CLIO Desktop**. The app is ad-hoc signed, not notarized, so the first time
+   you open a copy downloaded in a browser, macOS says it cannot verify the app.
+   Choose **Done** (not **Move to Trash**). On macOS 15 and newer, Control-click →
+   **Open** no longer skips this check. Instead:
+   1. Open **System Settings → Privacy & Security** and scroll to **Security**.
+   2. Next to "CLIO Desktop was blocked to protect your Mac", choose **Open Anyway**,
+      then enter your password.
+   3. Choose **Open Anyway** again in the dialog that follows.
+
+   macOS remembers the approval for this copy. The terminal installer downloads with
+   `curl`, which adds no quarantine flag, so this prompt does not appear for it.
+**Linux**
+
+1. On the [download section](https://clio.iowarp.ai/#download), choose your distribution's package. The package
+   includes the CLIO service.
+
+   | Distribution | Package |
+   |---|---|
+   | Ubuntu 22.04+, Debian 12+, Mint 21+ | `.deb` |
+   | Fedora, openSUSE | `.rpm` |
+   | Arch, Manjaro, EndeavourOS | Arch package (`.pkg.tar.zst`) |
+
+2. Install it with your package manager, which also installs the system libraries it needs:
+
+   ```sh
+   sudo apt install ./CLIO.Desktop_*-bundled.deb
+   ```
+
+   or, for the `.rpm`:
+
+   ```sh
+   sudo dnf install ./CLIO.Desktop-*-bundled.rpm
+   sudo zypper install --allow-unsigned-rpm ./CLIO.Desktop-*-bundled.rpm  # openSUSE
+   ```
+
+   or, for the Arch package:
+
+   ```sh
+   sudo pacman -U ./CLIO.Desktop-*-bundled.pkg.tar.zst
+   ```
+
+3. Open **CLIO Desktop** from your applications menu, or run `clio-desktop`.
+
+The first launch prepares CLIO's tools and takes longer than later launches. Then CLIO
+asks which model to use: see [Choose a model](docs/connect-a-model.md).
+
+### Desktop app from a terminal
+
+The install script installs the same desktop app. It checks the download against the
+release's published checksums first, and needs no Python, uv or Node.
+
+**Windows**
+
+```powershell
+irm https://clio.iowarp.ai/desktop.ps1 | iex
+```
+
+The installer window opens, with its pages for your model provider and computers.
+**macOS**
+
+```sh
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
+```
+
+Installs **CLIO Desktop** into `~/Applications`, keeping a previous version beside it.
+Set `CLIO_DESKTOP_DIR` to another absolute folder, such as `/Applications`.
+**Linux**
+
+```sh
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
+```
+
+Installs the `.deb` with `apt`, the `.rpm` with `dnf` or `zypper`, or the Arch package with
+`pacman`, asking for your password through `sudo`. On a distribution without WebKitGTK 4.1
+(RHEL, Rocky and AlmaLinux 9) it stops before downloading the app and says so.
+
+On macOS and Linux the script then prepares the app's tools as you, the way the Windows
+installer does, so the first launch is quick. No connector or scientific tool server is
+downloaded then: when an agent needs one, the conversation asks before downloading it
+(see [Connectors](docs/connectors.md#when-an-agent-needs-what-is-not-enabled)). For a
+machine that will be offline, add `--prepare-tool-servers` (`-PrepareToolServers` on
+Windows) to prepare the installed agents' servers now. Add `--download-only DIR`
+(`-DownloadOnly DIR` on Windows) to keep the verified installer without installing it.
+
+## Install script
+
+The script installs the CLIO service and the `clio` command into your home folder. It
+needs only `curl`, or PowerShell on Windows: it brings its own `uv` and Python, and never
+needs `sudo`.
+
+**Windows**
+
+```powershell
+irm https://clio.iowarp.ai/install.ps1 | iex
+```
+**macOS**
+
+```sh
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
+```
+**Linux**
+
+```sh
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
+```
+
+Run it with `bash`, not `sh`.
+
+Then:
+
+| Command | What it does |
+|---|---|
+| `clio` | starts the service if needed and opens Web |
+| `clio --web` | opens the workspace in your browser at `http://127.0.0.1:17800` |
+| `clio start`, `clio stop`, `clio status` | manage the service |
+| `clio doctor` | checks the installation |
+
+Running the script again upgrades or repairs the same installation. Install folders,
+environment variables and the full command list are in
+[Server and terminal setup](docs/server-setup.md#install-script).
+
+> **Caution: Upgrading from 0.9.5.1 or earlier**
+>
+> This release cannot open the conversations, memory and artifacts that CLIO 0.9.5.1, or an
+> earlier development build, saved. There is no converter. Files in your workspaces are
+> not affected.
+>
+> The install script checks before it changes anything. If your data was written by
+> 0.9.5.1 or older, it says so and asks **Move it aside now?** The answer is yes by
+> default. Without a terminal, or with `--reset-old-data` (`-ResetOldData` on Windows), it
+> moves the data and prints where. If it cannot tell which version wrote the data, it moves
+> nothing unless you answer yes.
+>
+> Nothing is deleted. The data is renamed, on the same disk, to a `cte-before-<version>-<date>`
+> folder in CLIO's data folder, so it can be moved back or converted later.
+>
+> If you upgraded another way, CLIO says so when it starts. Stop CLIO with `clio stop` (or
+> quit CLIO Desktop) and run `clio reset-store`. To do it by hand instead, rename the `cte`
+> folder in CLIO's data folder, for example to `cte-before-upgrade`. The folder is
+> `~/.local/share/clio-agent/cte` on Linux,
+> `~/Library/Application Support/clio-agent/data/cte` on macOS, and
+> `%LOCALAPPDATA%\clio-agent\data\cte` on Windows, or the folder set as `arc.cte.dir` in
+> your configuration. `clio store-check` prints the exact folders.
+
+### Choose a release
+
+Both the install script and its desktop form take these options: after `bash -s --` on
+macOS and Linux (`curl -fsSL https://clio.iowarp.ai/desktop.sh | bash -s -- --dev`), and on
+Windows with `& ([scriptblock]::Create((irm https://clio.iowarp.ai/desktop.ps1))) -Dev`.
+
+| Option | Installs |
+|---|---|
+| none | the latest stable release |
+| `--dev` | the newest release, betas included |
+| `--version <version>` | one release, for example `--version 0.9.7` |
+| `--source` | the source code on `main`, built on your computer |
+| `--dev --source` | the source code on `develop` |
+
+```sh
+curl -fsSL https://clio.iowarp.ai/install.sh | bash -s -- --dev
+```
+
+Source installs need `git`, and are meant for people working on CLIO; see
+[Contributing](docs/contributing.md).
+
+## A remote computer, from the desktop app
+
+To run CLIO on a computer you reach over SSH, such as a lab server or an HPC login node,
+let the desktop app install it there.
+
+1. On the start page of the desktop app, choose **Deploy CLIO**.
+
+2. Choose **Remote host**, then a saved SSH host or **Add SSH host**.
+
+3. Choose **Deploy and connect**. The app connects over SSH, installs the same CLIO
+   version as the app, starts it, and connects through a private tunnel. If CLIO is
+   already installed there, the app asks whether to connect to it, update it, or start
+   a new one.
+
+For a step-by-step walkthrough, including reaching an HPC compute node through its login
+node, see [Remote deployment with CLIO](https://clio.iowarp.ai/tutorials/guides/remote-deployment/).
+
+## Connect to a lab service
+
+If your lab already runs CLIO, install the desktop app, then connect to the address your
+administrator gave you; or open that address in a browser. You need nothing else.
+
+## After installing
+
+Installing CLIO does not install an AI model or provide a model account.
+[Choose a model](docs/connect-a-model.md) using an account, a local model, or a model
+your lab provides. Then follow [Your first analysis](docs/examples/check-a-dataset.md).
+
+> **Caution: Coming from a release before 0.9.5**
+>
+> This release replaces agent blueprints with plugins and does not carry over data from earlier releases: saved sessions, blueprint agents, settings, and installed marketplaces. Before installing it, uninstall the earlier release with `clio uninstall --purge` and delete the folders listed under [What stays behind](docs/uninstall.md#what-stays-behind), including each workspace's `.clio` folder. Then install as on a new machine. Export any conversation you want to keep first; see [Exports](docs/exports.md).
+
+The desktop app updates itself. Under **Settings → Desktop → App updates**, **Enable beta
+updates** also offers published beta releases. To remove CLIO, see
+[Remove CLIO](docs/uninstall.md).
+
+- [Install with your AI assistant](docs/install-with-ai.md): Give your assistant one link and it installs CLIO for you.
+- [Server and terminal setup](docs/server-setup.md): Install folders, environment variables, Docker, and headless services.
+- [When something goes wrong](docs/troubleshooting.md): Find the problem from the message in the app.

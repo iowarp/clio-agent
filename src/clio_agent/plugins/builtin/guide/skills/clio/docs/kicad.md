@@ -1,0 +1,100 @@
+---
+title: "Design a circuit board with KiCad"
+description: "Turn on the KiCad connector, let the agent design a board from a brief, and watch and steer it in the board, schematic, BOM, checks, stackup and parts views."
+source: https://clio.iowarp.ai/docs/kicad/
+---
+
+# Design a circuit board with KiCad
+
+Turn on the KiCad connector, let the agent design a board from a brief, and watch and steer it in the board, schematic, BOM, checks, stackup and parts views.
+
+> **Note: Development build**
+>
+> The KiCad connector is in the development build.
+
+The KiCad connector lets the agent design a printed circuit board in
+[KiCad](https://www.kicad.org/): choose parts, read their datasheets, draw the
+schematic, place and route the board, check it and prepare the files a board house
+needs. The agent does the design work through KiCad's own tools. You watch it in views
+of the board, the schematic, the bill of materials, the checks, the stackup and the
+parts, and steer it from there.
+
+## Turn it on
+
+1. Open **Extensions** and choose **KiCad**. Its card lists what it can use:
+   - **Where KiCad is**: leave it empty and the connector finds KiCad on this machine.
+   - **Part catalogs**: optional keys for Nexar (Octopart), DigiKey and Mouser. Without
+     them, parts search uses jlcsearch, JLCPCB's catalog, which needs no key and is what
+     you want when JLCPCB assembles the board.
+2. Turn it on. Or just ask for a board: the agent offers the connector, and **Add** turns
+   it on for that conversation.
+
+The connector finds a running KiCad with your board open and works in it, so you see
+every edit in KiCad's own window. If none is running it starts one itself: KiCad 11's
+headless server, or KiCad's PCB editor on a virtual display when there is no screen. A
+KiCad it starts uses its own settings folder, never yours, and stops when the
+connector does.
+
+If KiCad is not installed, the first board tool says so and where to get it. The agent
+can install it for you where it is allowed to: it asks before running the install, and a
+sandbox asks you for the folders an install writes. An install that needs your password
+is yours to run; the agent gives you the command and never asks for the password.
+
+## Ask for a board
+
+Describe what you want, as you would to a colleague:
+
+> A USB-C powered board with an ESP32-C3, a temperature sensor and a status LED, inside
+> the outline in `enclosure.dxf`.
+
+The agent searches parts by their specifications, reads each chip's datasheet and checks
+its pins against the symbol before layout, draws the schematic and checks it, simulates
+power stages with the SPICE connector, takes the board outline and mounting holes from
+the DXF, places and routes the board, and runs the design rule checks until they are
+clean. It does not ask you to place or route anything. Preparing the release package for
+a board house is yours to approve.
+
+## The views
+
+The agent opens the views as it works, each in a tab that follows every edit, whoever
+made it: the agent, you in a view, or you in KiCad's window.
+
+| View | What you can do there |
+| --- | --- |
+| **Board** | Toggle layers, double-click a net to grey the rest, see it in 3D. Drag a footprint, rotate it, move it to the other side, lock it, highlight a net in KiCad, refill zones, run the checks. |
+| **Schematic** | Go through the sheets, select symbols, mark a part not fitted. |
+| **BOM** | See stock, price, lifecycle and the key specs of each row. Show alternates and choose one, mark parts not fitted, reprice for a number of boards, open a datasheet. |
+| **Checks** | See design rule and electrical rule violations grouped by rule, and run them again. |
+| **Stackup** | See the layers, materials, thicknesses and net classes; change a thickness and check the stackup. |
+| **Parts** | Filter parts by their specifications, choose the columns, compare parts side by side, and pick one for a symbol. |
+
+Every change you make in a view is made by KiCad, the same way the agent's are. A
+locked footprint does not move.
+
+At the start of a design the agent can open the **workbench**: the board, the BOM and
+the checks side by side, linked. Select a BOM row and its footprints light up on the
+board; select a violation and the board shows where it is; select a footprint and its
+BOM row is selected. A chart below follows the placement passes.
+
+## Steer it
+
+What you select in a view reaches the agent with your next message. Select U1 and type
+"move this closer to J1": the agent knows which part you mean. Ask "show me the
+decoupling for U1" and it points the board view at it.
+
+To point at an area, use **Comments** on the view and draw a mark: the agent gets a
+picture of the area and the list of what is in it, the footprints, pads, tracks and nets
+with their layers and positions.
+
+## Part catalogs and keys
+
+Every parts search says which catalogs answered. When jlcsearch fails or runs out of
+results and a key would help, the agent may ask you for one: the KiCad card appears in
+the conversation with only those fields and the agent's reason. Type the key there,
+never in the chat. Choose **Not now** and the agent carries on with what it has; it does
+not ask again in that conversation. You can add or change the keys any time on the
+KiCad card in **Extensions**.
+
+- [Connectors](docs/connectors.md): Turn connectors on and give them what they need.
+- [Apps](docs/apps.md): Cards, tabs, dashboards and comments on a live view.
+- [Science log](docs/science-log.md): How the agent records placement passes as a study.

@@ -1,0 +1,69 @@
+---
+title: "Features and versions"
+description: "Understand why a guide can look different from your installed app and how to check what is available."
+source: https://clio.iowarp.ai/docs/versions/
+---
+
+# Features and versions
+
+Understand why a guide can look different from your installed app and how to check what is available.
+
+CLIO's documentation covers the current development version as well as the
+published app. **Development build** means the feature is implemented in the
+source being prepared for a release. It does not mean your installed app has
+already received it.
+
+## If a screenshot does not match your app
+
+1. Check the app's version in its About or update information.
+2. Open **Settings → Desktop → App updates** to inspect available updates.
+3. Look for the **Version note** in the guide; it names the CLIO version the
+   pictured controls need.
+   Where an image names a UI revision and capture date, those identify the
+   pictured interface. An **Earlier demo** label identifies an older example;
+   the website's version does not change the version shown in that image.
+4. If you use a lab service, ask its administrator which Agent version is running.
+   Updating Desktop alone does not update a remote lab service.
+
+The current stable release is
+[v0.9.7](https://github.com/iowarp/clio-agent/releases/tag/v0.9.7), and these
+guides describe it. The previous stable release was
+[v0.9.6.6](https://github.com/iowarp/clio-agent/releases/tag/v0.9.6.6).
+App updates offer stable releases only; to try a beta, install it from its release
+page. Use the [release list](https://github.com/iowarp/clio-agent/releases) for
+subsequent releases. Draft releases are not available through normal app updates.
+
+## Guides with newer controls
+
+These guides describe controls that v0.9.5.1 does not have. They need v0.9.6.1
+or later.
+
+| Guide | What v0.9.5.1 lacks |
+| --- | --- |
+| [Use the browser with CLIO](docs/browser.md) | The browser panel the agent uses, signing in to sites yourself and choosing which sites it may load. |
+| [Commands and @ mentions](docs/commands.md) | Bringing a subagent, workflow, flow or tool server into the conversation with **@**. |
+| [Comment on results](docs/comments.md) | Marking part of a document, figure or web page and saying what to change. Comments on answers are in v0.9.5.1. |
+| [Write a paper](docs/papers.md) | LaTeX papers built beside their source, comments on either and their versions. |
+| [Scripts and background work](docs/scripts.md) | Scripts that call the agent's tools, their approval, and scripts that keep running in the background. |
+| [Watch something live](docs/live-sources.md) | Dashboards that update by themselves from a job, an instrument or a device. |
+| [Explore charts and dashboards](docs/dashboards.md) | Live sources for dashboards. |
+| [Follow work in progress](docs/following-work.md) | The session plan in the **Plan** section of **Work**. |
+| [Choose what CLIO may do](docs/permissions.md) | Default permissions for each tool and the approval of scripts. |
+| [Updates during a conversation](docs/injections.md) | The **Reminders** tab in **Settings → Prompts and commands**. |
+| [National Data Platform](docs/files/ndp.md) | The **NDP** agent. In v0.9.5.1 the standard agent searches NDP itself. |
+| [Build with the SDK](docs/sdk/index.md) | Script bindings, plugin server settings, per-tool permissions and `host_call`. v0.9.5.1 includes the rest of the SDK. |
+
+You can still use ordinary conversations, attach supported files and review the
+outputs your installation provides. Follow the labels you actually see; a missing
+preview feature is not evidence that your data or model is configured incorrectly.
+
+## A feature may depend on the connection
+
+The selected model, connected CLIO service and installed tools determine which
+features can run. For example, a local model connection does not automatically
+provide model-attention records, and a specialist agent can need an
+institutional service or credentials. Read its requirements before selecting it.
+
+For a supported source build, your administrator can use
+[Server and terminal setup](docs/server-setup.md#from-source).
+You do not need to build CLIO from source to follow the basic introduction.

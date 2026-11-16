@@ -1,0 +1,178 @@
+---
+title: "Connect tools and services"
+description: "Add capabilities from a trusted tool server, with technical setup for your administrator."
+source: https://clio.iowarp.ai/docs/mcp-servers/
+---
+
+# Connect tools and services
+
+Add capabilities from a trusted tool server, with technical setup for your administrator.
+
+Agents act through tools. CLIO has a small set of built-in tools, and everything else comes from MCP servers. MCP, the Model Context Protocol, is an open standard for giving AI applications tools, data, and reusable prompts. Any server that speaks it can be connected to CLIO.
+
+For a service CLIO knows, such as ParaView or Burette, turn on its [connector](docs/connectors.md) instead: it asks for what it needs on one card.
+
+## Built-in tools
+
+CLIO ships two built-in tool servers:
+
+- File system tools, such as `fs_read_file`, `fs_write_file` and `fs_edit_file`.
+- Shell tools, such as `shell_bash`.
+
+Domain tools are not built in. They come from MCP servers: the ones an agent's plugins declare, clio-kit servers for scientific data, and servers you add yourself. The installer provisions clio-kit for you when `uv` is available, and plugins start its servers with commands such as `clio-kit mcp-server geo`. Each clio-kit server is also a connector in **Discover**, and its tools are downloaded when you enable it, not at install.
+
+A tool's name starts with its server's name. A server named `geo` that offers a geocoding tool shows up as `geo_geocode`. For that reason, a server name can only contain lowercase letters, digits, and hyphens, with no underscores.
+
+Whether a tool needs your approval depends on the [permissions](docs/permissions.md) in force, not on where the tool came from.
+
+## Add a server from the interface
+
+> **Note: Next-release interface**
+>
+> The [Extensions preview](docs/extensions.md) shows the new shared library, custom MCP setup,
+> browser sign-in and skill/plugin composition, with captures from the development build.
+> The steps below describe the released interface.
+
+1. Open Settings and choose **MCP tools**.
+
+2. Choose **Connect MCP**.
+
+3. Give the service a name, then choose a **Connection type**: **Remote service** takes a service address, and **Local command** takes an executable, its arguments, and optional environment variables.
+
+4. Leave **Available in every conversation** checked to give its tools to every conversation's agent. Clear it to give them only to a conversation that asks for that service.
+
+5. Choose **Connect MCP** to confirm. CLIO saves the service, checks it, and says whether it answered.
+
+A saved service stays across restarts. **Your MCP services** lists each one with the command or address it uses and whether every conversation gets it. **Remove** takes it away from new conversations; one that is using it keeps it until its turn ends.
+
+![Settings, MCP tools: the built-in Workspace files and Local commands services, and under Your MCP services, colab-mcp run by uvx from its GitHub repository, available in every conversation](plugin-asset://guide/captures/docs-mcp-saved.webp)
+*A saved service shows what it runs. This one is Google's Colab MCP server, started with uvx straight from its repository.*
+
+A server that `uvx` or `npx` downloads and builds on its first start can take a minute to answer the first time. CLIO waits for it and, if it still has not answered, saves it and says the launcher may still be preparing it, so you can check again shortly.
+
+## Add a server from a terminal
+
+`clio-agent mcp` manages the same saved services, on the machine that runs CLIO. Everything after `--` is the server's own command line:
+
+```sh
+clio-agent mcp add colab -- uvx git+https://github.com/googlecolab/colab-mcp
+clio-agent mcp add catalog --url https://tools.example.org/mcp
+clio-agent mcp add lab-data --env LAB_STATE=/data/lab -- uvx lab-data-mcp serve
+clio-agent mcp check colab
+clio-agent mcp list
+clio-agent mcp remove colab
+```
+
+`check` starts the server and lists its tools. `--only-when-asked` saves a service without giving it to every conversation.
+
+## Add a server in mcp.yaml
+
+You can also declare servers in a file. The file has one top-level key, `mcp_servers`, that maps a server name to how to reach it.
+
+```yaml title=".clio/mcp.yaml"
+mcp_servers:
+  weather: uvx weather-mcp serve
+  notion: https://mcp.notion.com/mcp
+```
+
+The short form is a single string:
+
+- A command, split on spaces into a program and its arguments, starts a local server over standard input and output. Quote arguments that contain spaces.
+- A URL starting with `http://` or `https://` connects to a remote server.
+
+### Environment variables
+
+`${VAR}` is replaced with the value of an environment variable, and `${VAR:-default}` uses `default` when the variable is unset or empty. A variable with no default that is unset marks that server as invalid, with a message naming the variable, and the other servers are not affected.
+
+```yaml
+mcp_servers:
+  files: npx -y @modelcontextprotocol/server-filesystem ${DATA_DIR:-/data}
+```
+
+Expansion applies to the command, its arguments, `env` values, the URL, and header values.
+
+### Mapping form
+
+Use a mapping when a server needs environment variables, headers, or other settings.
+
+A local server:
+
+```yaml
+mcp_servers:
+  lab-data:
+    command: uvx
+    args: [lab-data-mcp, serve]
+    env:
+      LAB_API_TOKEN: ${LAB_API_TOKEN}
+    timeout: 60000
+```
+
+A remote server:
+
+```yaml
+mcp_servers:
+  catalog:
+    url: https://tools.example.org/mcp
+    headers:
+      Authorization: Bearer ${CATALOG_TOKEN}
+```
+
+The keys:
+
+| Key | Applies to | Meaning |
+|---|---|---|
+| `command` | Local | The program to run. Required for a local server. |
+| `args` | Local | A list, or a single string that is split on spaces. |
+| `env` | Local | A mapping of environment variables for the server process. |
+| `url` | Remote | The service address. Required for a remote server. |
+| `headers` | Remote | A mapping of HTTP headers. |
+| `auth` | Remote | An OAuth block, with `type: oauth` and `client_metadata`. |
+| `type` | Both | `stdio`, `http`, `streamable-http`, or `sse`. If omitted, a mapping with a `url` and no `command` is remote and any other mapping is local. |
+| `timeout` | Both | A time limit in milliseconds. |
+| `probe_timeout_retries` | Both | How many times to retry when the first check of the server times out. A whole number, 0 or more. |
+| `always_load` | Both | `true` to load the server's tools up front. `alwaysLoad` also works. |
+
+> **Caution**
+>
+> Do not put secrets directly in the file. Reference them with `${VAR}` and set the variable in the environment that starts CLIO.
+
+## Where servers are declared
+
+The same server name can be declared in several places. They are merged by name, and the first of these wins:
+
+1. The workspace file, `<workspace>/.clio/mcp.yaml`.
+2. The user file, `mcp.yaml` in your CLIO configuration folder.
+3. The servers of the conversation's plugins, declared in each plugin's `mcp.json`.
+4. The built-in tools.
+
+```text
+my-workspace/
+  .clio/
+    mcp.yaml servers for this workspace only
+    hooks.json
+```
+
+Put a server in the workspace file when only one project needs it, and in the user file when you want it everywhere. A file that cannot be read is skipped with a warning, and the rest still load.
+
+## Servers from plugins
+
+A plugin lists the servers it needs in its `mcp.json` file, in the Agent Plugins format. See [Agents and plugins](docs/agents-and-plugins.md). Every agent that carries the plugin can use the tools those servers provide. A server starts the first time one of its tools is used, in the session workspace. Two plugins in one conversation cannot declare servers with the same name. A plugin from a marketplace you added starts its servers only after the [trust step](docs/marketplaces/manage.md#run-the-trust-step).
+
+## Lifecycle
+
+Workspace tools can start their servers on demand, and idle workspace clients
+can be recycled. An accepted task has a longer lifetime: CLIO retains its task
+connection while submission, input or result observation still needs it. This
+includes a local stdio server carrying active task work.
+
+The built-in Shell and connected-storage task servers belong to the running CLIO
+service. An idle workspace client or a stopped agent response does not shut down
+their accepted background work. During service shutdown, CLIO settles its owned
+local work before closing those servers. An external server may keep its jobs
+running independently; reconnection uses their original identities and does not
+repeat the original tool call. See [Tools and sources](docs/tasks/tools-and-sources.md)
+for recovery limits, including memory-backed work that cannot survive shutdown.
+
+If a local server fails to start, CLIO reports the cause when it can, such as a command that is not on your `PATH` or a working directory that does not exist. Install the program, or give the full path in `command`, and reconnect the server.
+
+If a server will not connect, see [Troubleshooting](docs/troubleshooting.md).

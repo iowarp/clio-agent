@@ -1,0 +1,125 @@
+---
+title: "Configuration"
+description: "Where CLIO keeps its files, how config.yaml and environment variables combine, and the settings that matter most."
+source: https://clio.iowarp.ai/docs/configuration/
+---
+
+# Configuration
+
+Where CLIO keeps its files, how config.yaml and environment variables combine, and the settings that matter most.
+
+CLIO keeps three kinds of files in three places: your user configuration folder, each workspace's `.clio` folder, and the install folder.
+
+## Where things live
+
+### User configuration folder
+
+This folder holds what is shared across all your workspaces: saved provider keys, installed marketplaces and plugins, your saved agents, hooks, tool server settings, and your `config.yaml`.
+
+| System | Location |
+|---|---|
+| Linux | `~/.config/clio-agent` (follows `XDG_CONFIG_HOME` if set) |
+| macOS | `~/Library/Application Support/clio-agent` |
+| Windows | `%LOCALAPPDATA%\clio-agent` |
+
+Set `CLIO_USER_DIR` to use a different folder on any system. CLIO also keeps a regenerable cache (for example a model catalog) and durable data in the standard cache and data folders for your system; the cache is safe to delete.
+
+```text
+clio-agent/
+  config.yaml Your settings
+  provider_api_keys.json API keys saved in the app
+  mcp.yaml Tool servers for all workspaces
+  hooks.json Hooks for all workspaces
+```
+
+### Workspace folder
+
+Each workspace has a `.clio` folder in its root. It holds that workspace's own settings and the state CLIO records while working there.
+
+```text
+my-project/
+  .clio/
+    config.yaml Settings for this workspace
+    mcp.yaml Tool servers for this workspace
+    hooks.json Hooks for this workspace
+    agent/ Sessions, traces, and memory for this workspace
+    core/ Storage settings and file tiers
+```
+
+### Install folder
+
+The install script puts the backend, interfaces, and logs in one folder.
+
+| System | Install folder |
+|---|---|
+| macOS | `~/Library/Application Support/clio-agent/data/app` |
+| Linux | `~/.local/share/clio-agent/app` |
+| Windows | `%LOCALAPPDATA%\clio-agent\data\app` |
+
+Installs made before 0.9.5 keep using `~/.local/share/clio` (`%LOCALAPPDATA%\clio` on Windows).
+
+Set `CLIO_PREFIX` before installing to change it. See [Install](docs/install.md).
+
+## config.yaml
+
+Settings come from `config.yaml` in two places, and CLIO merges them. The workspace file `.clio/config.yaml` is merged over the user file `config.yaml`, so a workspace can override your defaults.
+
+For every setting, CLIO uses the first value it finds in this order:
+
+1. The config file (workspace, then user).
+2. The environment variable.
+3. The built-in default.
+
+> **Caution**
+>
+> A value in a config file beats the environment variable. If you set a variable and nothing changes, check whether a `config.yaml` already sets that key.
+
+Secrets are the exception: API keys and access tokens are read only from the environment (or saved through the app), never from a config file.
+
+Keys are nested. For example, the model provider settings look like this:
+
+```yaml
+lm:
+  provider: lm_studio
+  model: ""
+tools:
+  file_policy:
+    allowed_roots:
+      - ~/projects
+```
+
+## Environment variables
+
+These are the settings most people need. Each is read when the backend starts.
+
+| Variable | Config key | What it does |
+|---|---|---|
+| `CLIO_LM_PROVIDER` | `lm.provider` | Model provider id. Default `lm_studio`. See [Connect a model](docs/connect-a-model.md). |
+| `CLIO_LM_API_BASE` | `lm.api_base` | Override the provider's base URL. |
+| `CLIO_LM_MODEL` | `lm.model` | Model id to use. Empty means use the provider's default or loaded model. |
+| `CLIO_LM_API_KEY` | none | Fallback API key. Environment only. |
+| `CLIO_PORT` | none | Port used by the `clio` command and the desktop app. Default 17800. `clio-agent serve` takes `--port` instead. |
+| `CLIO_USER_DIR` | none | Replaces the user configuration folder. |
+| `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | Folders the agent's file tools may use. Separate several with commas or your system's path separator. |
+| `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | Largest file the file tools will read. Default 1 GiB. Accepts suffixes such as `K`, `M`, and `G`. |
+| `CLIO_DASHBOARD_EXPORT_MAX_BYTES` | `artifacts.dashboard_export_max_bytes` | Largest HTML dashboard export, including the files it embeds. Default 2 GiB. A larger export is refused with its size. |
+| `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | Let file tools follow symbolic links. Default off. |
+| `CLIO_GACT_ALLOWED_HOSTS` | `gact.allowed_hosts` | Extra host names the backend accepts from clients without a token, for LAN or Docker use. Names only, comma-separated. |
+| `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | Browser origins allowed to call the backend. See [Data and network](docs/privacy.md). |
+| `CLIO_NO_UPDATE_CHECK` | none | Set to `1` to turn off the `clio` command's daily update check (macOS and Linux). |
+| `CLIO_ACCEPT_UNSANDBOXED` | none | Set to `1` to acknowledge the `clio` command's start-up warning when protected execution (the OS sandbox) is off, instead of answering its prompt (macOS and Linux). |
+
+By default the file tools can use the workspace folder, the folder CLIO was started in, and your system's temp folder. A path outside the allowed folders fails with `outside_allowed_roots`.
+
+## Other files
+
+| File | Purpose |
+|---|---|
+| `mcp.yaml` | Tool servers. See [Tools and MCP servers](docs/mcp-servers.md). |
+| `hooks.json` | Hooks. See [Hooks](docs/hooks.md). |
+| `provider_api_keys.json` | API keys you saved in the app. Readable only by you. |
+
+## Next steps
+
+- [Data and network](docs/privacy.md): What stays on your machine and what does not.
+- [Permissions and sandbox](docs/permissions.md): What the agent may read, write, and run.

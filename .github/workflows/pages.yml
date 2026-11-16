@@ -20,6 +20,7 @@ on:
       - "install/desktop.sh"
       - "install/desktop.ps1"
       - "site/**"
+      - "src/clio_agent/plugins/builtin/guide/**"
       - "pyproject.toml"
       - "src/clio_agent/gact/builtin_skills/present-interactive-analysis/**"
       - "external/clio-agent-marketplace"
@@ -31,6 +32,7 @@ on:
       - "install/desktop.sh"
       - "install/desktop.ps1"
       - "site/**"
+      - "src/clio_agent/plugins/builtin/guide/**"
       - "src/clio_agent/gact/builtin_skills/present-interactive-analysis/**"
       - "external/clio-agent-marketplace"
       - ".github/workflows/pages.yml"
@@ -96,6 +98,8 @@ jobs:
         working-directory: site/video
       - run: pnpm test
       - run: pnpm check
+      # The guide plugin bundles this Markdown export; a page change re-exports it.
+      - run: node scripts/export-docs-markdown.mjs --check
       # The one-line installers are served from the site so the commands stay short:
       # `irm https://clio.iowarp.ai/install.ps1 | iex`, `.../desktop.ps1`, `.../install.sh`,
       # `.../desktop.sh`. They are copied from install/ at this commit, never kept twice.

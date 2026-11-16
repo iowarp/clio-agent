@@ -1,0 +1,218 @@
+---
+title: "SDK reference"
+description: "Every class and function in clio_agent.sdk, the flow runtime's ctx, call results and the typed errors a flow can see."
+source: https://clio.iowarp.ai/docs/sdk/reference/
+---
+
+# SDK reference
+
+Every class and function in clio_agent.sdk, the flow runtime's ctx, call results and the typed errors a flow can see.
+
+Signatures as they are in the source, with a line on each. The guides explain how they fit together: [Build your first plugin](docs/sdk/build-a-plugin.md), [Write a flow](docs/sdk/flows.md) and [Workflows as data](docs/sdk/workflows.md).
+
+> **Caution: Development build**
+>
+> The SDK is included from CLIO v0.9.5. These pages describe v0.9.6.1; see [Features and versions](docs/versions.md) for what v0.9.5.1 lacks.
+
+```python
+from clio_agent.sdk import (
+    Agent, AgentSpec, AgentDefinitionError, Flow, Workflow, Step, WorkflowError,
+    Plugin, Pack, PluginRef, Requires, Prefers, Subagent, PromptFile,
+    tool, native_tool, host_call, hook, HookEvent, HOOK_EVENTS,
+)
+```
+
+## Agents
+
+### `Agent`
+
+Base class for agents. Set the class attributes; see [Agent reference](docs/sdk/agents.md#fields).
+
+| Attribute | Type | Default |
+|---|---|---|
+| `id` | `str` | Required |
+| `version` | `str` | `"0.0.0"` |
+| `name` | `str` | The `id` |
+| `role` | `str` | `""` |
+| `description` | `str` | The docstring |
+| `flow` | `str`, a `Flow` class, or `Flow(id, **options)` | `"react"` |
+| `plugins` | `list[str]` of plugin references | `["core", "memory"]` |
+| `requires` | `Requires` | `Requires()` |
+| `prefers` | `Prefers` | `Prefers()` |
+
+`Agent.spec() -> AgentSpec` flattens the class chain into a frozen description. It raises `AgentDefinitionError` when the id is empty, `core` is missing, a reference does not parse, or one class lists a plugin twice.
+
+### `AgentSpec`
+
+The frozen description: `id`, `version`, `name`, `role`, `description`, `flow` (`{"id", "options"}`), `plugins` (each reference with the layer that added it), `layers`, `requires`, `prefers` and `source`. `checksum` is a SHA-256 of its content. `to_dict()` includes the checksum, and `AgentSpec.from_dict(data)` raises `AgentDefinitionError` when the checksum does not match.
+
+### `Requires` and `Prefers`
+
+```python
+Requires(tool_calling=False, vision=False, context_tokens=0, output_tokens=0)
+Prefers(model="", provider="", effort="")
+```
+
+Unset fields require or prefer nothing. `Requires.union(other)` is the stricter of both, field by field. `from_dict` refuses unknown fields.
+
+## Plugins
+
+### `Plugin` and `Pack`
+
+```python
+class Spectroscopy(Plugin):
+    id = "spectroscopy"; version = "0.1.0"; requires = ["workspace"]
+    model = Requires(context_tokens=64_000)      # optional
+    prefers = Prefers(provider="...")             # optional
+
+pdf = Plugin("pdf", version="1.0.0", requires=["document-runtime"])
+documents = Pack("documents", ["pdf", "docx", "xlsx", "pptx"], version="1.0.0")
+```
+
+Declare one in `ai.iowarp.clio/plugin.py`, as a subclass or an instance. `describe()` returns the declaration as data.
+
+### `PluginRef`
+
+```python
+PluginRef.parse("clio/pdf@^1.2")   # PluginRef(id="pdf", range="^1.2", marketplace="clio")
+ref.accepts("1.4.0")               # True
+```
+
+Raises `VersionRangeError` (from `clio_agent.sdk.versions`) for an invalid id or range. See [Plugin references](docs/sdk/agents.md#plugin-references) for the range grammar.
+
+### `tool` and `native_tool`
+
+```python
+@tool
+def name(...): ...
+
+@tool(name="", description="", read_only=False, defer=None, callers=None, permission=None)
+def name(...): ...
+
+shell_bash = native_tool("shell_bash", defer=None, callers=None, permission=None)
+```
+
+`tool` turns a function into a tool; `name` and `description` default to the function's name and docstring. `native_tool(name)` claims one of CLIO's built-in tools for the plugin. Both take the same three options, each `None` by default:
+
+| Option | Values | Meaning |
+|---|---|---|
+| `defer` | `True`, `False` | `True` lists the tool by name only until the agent loads it with `search_tools`; `False` keeps it listed. `None` leaves it to the plugin's and CLIO's defaults. |
+| `callers` | `"direct"`, `"code"`, `"both"` | Who may call it: the agent itself, only `run_code` scripts (its schema stays out of the prompt), or both. `None` keeps the tool's own default, `both` unless it says otherwise. |
+| `permission` | `"allow"`, `"ask"`, `"deny"` | The tool's default permission. The person's rules override it, and it overrides the confirmation policy; `deny` hides the tool from the agent. `None` follows the tool's read-only flag. |
+
+An unknown value fails when the plugin loads. A deployment's `tools.callers` and `tools.permissions` settings override both.
+
+### `host_call`
+
+```python
+@host_call("__stream_write__")
+def write(args): ...
+```
+
+Declares the server side of a script binding's reserved call. The name is the full reserved name, `__<binding>_<name>__`; a name outside the binding's prefix is not bound. It lives in a binding's `host` module (see [Script bindings](docs/sdk/plugins.md#script-bindings)). The function receives the call's arguments as a mapping and runs in the CLIO backend without a tool call of its own: no permission question and no transcript row. Use it only for what a gated tool call already allowed.
+
+### `hook` and `HookEvent`
+
+```python
+@hook(event, *, id="", before=None, after=None, tools="", fail_closed=False)
+def name(ev: HookEvent): ...
+```
+
+`event` is a key of `HOOK_EVENTS`, which maps each SDK event to CLIO's event name (`"tool_call": "PreToolUse"`, ...). An unknown event raises `ValueError`. `HookEvent` has `event`, `session_id`, `turn_id`, `cwd`, `tool_name`, `tool_input`, `prompt`, `payload` and `answer`. See [Hooks](docs/sdk/plugins.md#hooks) for return values.
+
+### `Subagent` and `PromptFile`
+
+```python
+Subagent(id, prompt="", plugins=[], description="", tools=None, prefers=None,
+         flow="react", max_iters=0, structured_outputs={}, internal=False)
+PromptFile(path)
+```
+
+`prompt` is a `PromptFile` relative to the plugin's `ai.iowarp.clio/` folder, or text. See [Subagents](docs/sdk/plugins.md#subagents).
+
+## Flows
+
+### `Flow`
+
+```python
+class MyFlow(Flow):
+    id = "my-flow"
+    description = ""
+    shape = ""
+    model = ""
+    max_depth = 0; max_concurrency = 0; max_model_calls = 0; budget_tokens = 0
+
+    async def forward(self, task, ctx): ...
+```
+
+| Member | What it does |
+|---|---|
+| `Flow(id, **options)` | A selection of the flow `id` with options, for an agent's `flow` or a `ctx.call` target. |
+| `MyFlow.checked_options(options)` | Checks options against the class's annotations and returns them converted. Raises `FlowOptionsInvalid` (from `clio_agent.sdk.flow`), whose `problems` names each bad option. |
+| `reference()` | The selection as `{"id", "options"}`. |
+| `limits()` | The four limits after options. |
+
+### `ctx`
+
+| Call | Returns |
+|---|---|
+| `ctx.call(target, input=None, *, evidence=None, key="", model="", label="")` | An awaitable of a `CallResult`. |
+| `await ctx.start(target, input=None, *, evidence=None, key="", model="", label="")` | The child's task handle, once accepted. Not for tools. |
+| `await ctx.gather(calls, *, limit=None, return_when="all", return_exceptions=False)` | A list of results in call order. |
+| `ctx.as_completed(calls, *, limit=None)` | An async iterator of results or errors, in finishing order, each with `index`. |
+| `await ctx.ask(question, schema=str, *, options=None, reason="", key="")` | Text; a bool with `schema=bool`; the chosen option's lowercase value with `options`. |
+| `await ctx.step(fn, *args, **kwargs)` | `fn`'s result, recorded; a restart returns the record. |
+| `await ctx.react(task)` | This agent's `react` loop run on `task`. |
+| `await ctx.record_event(event)` | Records an event in the run. |
+| `await ctx.publish(view)` | Replaces the run's live view. |
+| `await ctx.permission_receipts(*, refresh=False)` | A recorded snapshot of the run's tool-permission history. |
+| `await ctx.tool_results(handle)` | The finished tool results of a child the flow called. |
+| `ctx.workspace` | The conversation's workspace: `read(path)`, `write(path, text)`, `append(path, value)`, `root`. |
+| `ctx.depth` | How many flows the run is nested in. |
+| `ctx.run_id` | The run's id. |
+
+### `CallResult`
+
+| Member | What it holds |
+|---|---|
+| `answer` | The final answer as text; empty for a tool. |
+| `value` | The raw result; for a tool, the returned value. |
+| `outputs` | The result as a mapping. |
+| `response_text` | The public response in order, with any addendum. |
+| `handle`, `target`, `kind`, `model`, `index` | The child's task handle, what was called, its kind (`agent`, `subagent`, `flow`, `tool`), the model it ran on, and its position in a gather. |
+| `workflow_state` | The child's typed `workflow_state`. |
+| `result.<name>` | An output, or else a `workflow_state` section. |
+| `result["<name>"]`, `len(result)`, `iter(result)` | The outputs, as a mapping. |
+| `str(result)` | The `answer`. |
+
+### Errors
+
+From `clio_agent.flows.outcomes`. Each is a `FlowOutcome` with `reason`, `handle`, `details` and `to_dict()`.
+
+| Error | `reason` |
+|---|---|
+| `CallFailed` | `call_failed` |
+| `CallAwaitingInput` (a `CallFailed`) | `call_awaiting_input` |
+| `CallStopped` (a `CallFailed`) | `call_stopped` |
+| `CallCancelled` | `call_cancelled` |
+| `CallInterrupted` | `call_interrupted` |
+| `TaskStateUncertain` | `task_state_uncertain` |
+| `CallRefused` | `call_refused` |
+| `FlowTargetUnknown` | `flow_target_unknown` |
+| `FlowNotTrusted` | `flow_not_trusted` |
+| `FlowLimitExceeded` | `flow_limit_exceeded` |
+| `FlowCheckpointLimit` | `flow_checkpoint_limit` |
+| `FlowReplayMismatch` | `flow_replay_mismatch` |
+| `FlowStall(stall, message, *, step="", predicate=None, observed=None, handle="")` | `flow_stall` |
+| `GatherFailed` | `gather_failed`; `results` holds every member's result or error |
+
+## Workflows
+
+```python
+Step(id, target, input=None, after=(), description="", options=None, model="")
+Workflow(steps=[...])
+Workflow.from_dict({"steps": [...]})   # or a list of steps
+workflow.to_dict()
+```
+
+`Workflow` checks its steps when built and raises `WorkflowError` naming the first problem: an invalid or repeated id, an empty target, an unknown dependency or a cycle. See [Workflows as data](docs/sdk/workflows.md).

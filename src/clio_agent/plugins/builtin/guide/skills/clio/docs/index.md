@@ -1,0 +1,77 @@
+---
+title: "Start here"
+description: "A practical introduction to CLIO for researchers, from a first question to a result you can inspect and share."
+source: https://clio.iowarp.ai/docs/
+---
+
+# Start here
+
+A practical introduction to CLIO for researchers, from a first question to a result you can inspect and share.
+
+CLIO is a workspace where you can ask questions about your data, work through an
+analysis, and create reports in a conversation. You describe the question and
+provide the relevant material. CLIO uses an AI model and tools to do the work.
+You review the assumptions, sources and results before using the findings.
+
+Start with a spreadsheet, a folder of measurements, research notes, or a document
+you want to revise. You do not need to write a Python script to ask a question.
+Some tasks still need a specialist tool, access to a service, or help from your
+lab's administrator.
+
+## Try one small investigation
+
+1. [Install CLIO](docs/install.md), then [choose a model](docs/connect-a-model.md).
+2. Create a conversation and attach a small dataset.
+3. Ask a specific question. Answer any clarification or permission request.
+4. Open the result, check the source and assumptions, then ask for a correction or save it.
+
+The [first analysis](docs/examples/check-a-dataset.md) gives you a small fictional
+dataset and a request you can adapt. It explains what to check if your answer
+looks different from the example.
+
+![A saved findings report in CLIO, with a conclusion, limitations and links to supporting tables](plugin-asset://guide/captures/current-report.webp)
+*A result should give you something to inspect: a finding, its limits and the supporting records. This example report was prepared in CLIO with fictional station counts.*
+
+For long operations, the [background work guides](docs/tasks/index.md) explain the
+development build's task handles, progress, automatic result delivery and
+subagent controls. [Session coordination](docs/tasks/session-coordination.md)
+covers messages, observations and waits between permitted sessions.
+
+For a question that needs experiments rather than reading, the CLIO Science agent
+can run a [study](docs/science-log.md): competing hypotheses tested in parallel
+branches, each result linked to the calls that produced it. [A branched
+study](docs/examples/branched-study.md) follows a recorded one.
+
+## Choose the guide that matches your work
+
+<nav aria-label="Choose a CLIO guide">
+- [Bring your data](docs/files/index.md): Add files and folders, connect a source, or refer to something already in CLIO.
+- [Work with CLIO](docs/sessions.md): Ask a useful question, steer the work and respond when CLIO needs you.
+- [Check a result](docs/evidence.md): Inspect the source, recorded actions and saved versions behind an answer.
+- [Follow a worked example](docs/examples/index.md): Explore data or notes, then create a report or presentation.
+</nav>
+
+## Four words you will see
+
+| In CLIO | What it means for you |
+| --- | --- |
+| **Model** | The AI you choose to interpret requests and propose the next step. It can run locally, in your institution, or through a cloud provider. |
+| **Workspace** | The project folder available to the connected CLIO service. It holds the files used for that body of work. |
+| **Session** | One saved conversation in a workspace. You can return to it and ask follow-up questions. |
+| **Artifact** | A saved output, such as a plot, table or report, with a recorded version you can open. |
+
+The CLIO service runs the tools. The model supplies the reasoning. They may run
+on different machines: a desktop window connected to a lab server uses the lab
+server's files and computing environment. [Your workspace](docs/workspace-panels.md)
+explains how to find the conversation, files and results.
+
+## Know what to trust
+
+An answer can be incomplete or wrong. A successful command does not establish
+that its interpretation is scientifically sound. Ask CLIO to identify missing
+information and link its evidence, then inspect the relevant files yourself.
+For consequential analyses, use your normal scientific validation procedures.
+
+CLIO is in beta. These guides include newer development features, marked where
+they occur. If a control is missing from your app, check
+[Features and versions](docs/versions.md) before spending time looking for it.

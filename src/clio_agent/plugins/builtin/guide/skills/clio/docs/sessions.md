@@ -1,0 +1,183 @@
+---
+title: "Start and steer a conversation"
+description: "Ask a question, set the scope, review decisions and keep work in one conversation."
+source: https://clio.iowarp.ai/docs/sessions/
+---
+
+# Start and steer a conversation
+
+Ask a question, set the scope, review decisions and keep work in one conversation.
+
+> **Preview:** Message marks, response comments and updated conversation-family views (in development builds). Availability depends on your build.
+
+A **session** is one saved conversation. Its **workspace** is the project folder
+available to the connected CLIO service. On a lab service, that folder is on the
+lab host, even when you use Desktop on your own computer.
+
+Start with a question and the relevant files. Explain the outcome you need, what
+CLIO may change and which decisions you want to review. You can send a follow-up
+in the same conversation instead of starting the explanation again.
+
+```text
+Inspect the measurements in this folder. Summarize missing values and compare the
+recorded groups. Preserve the original files. Ask me about units you cannot establish,
+and save a short report linking the tables behind your findings.
+```
+
+## Start a session
+
+1. Choose the plus button at the top of the sidebar, labeled "Create or import", then choose **New session**.
+
+2. Give the session a name, choose its workspace, and choose an **Agent**. **Default agent** uses your new session defaults, which start with CLIO's standard agent: a general-purpose agent with workspace files, a shell, the web, and documents. A specialist agent adds plugins with domain tools, skills, and instructions.
+
+3. Choose **Create session**, then type your question in the composer.
+
+To register a folder as a workspace, choose **New workspace** from the same menu. The same menu also imports a session and opens archived sessions.
+
+The agent is part of the session, so you can run different kinds of work side by side by starting sessions with different agents. To change what new sessions start with, open Settings and choose **New session defaults**. See [Agents and plugins](docs/agents-and-plugins.md) to choose a specialist agent or to add and remove plugins in a conversation.
+
+## The composer controls
+
+Below the message box, a row of controls sets how the next message is handled.
+
+| Control | What it does |
+|---|---|
+| Model | Shows the provider and model in use, for example "Codex / Luna". Choose it to change the model for this session. |
+| Reasoning effort | Shown only when the selected model offers thinking levels, such as "Medium". |
+| Execution mode | Execute, Plan, or Deep research. |
+| Confirmation policy | Ask first, Workspace edits, AI review, SPOTTER review, or Bypass checks. |
+
+To set up a model, see [Connect a model](docs/connect-a-model.md).
+
+### Execution mode
+
+| Mode | What the interface says it does |
+|---|---|
+| Execute | Act on the request and make supported changes. |
+| Plan | Develop a concrete approach before changing anything. |
+| Deep research | Investigate broadly through specialists and deliver a sourced report. See [Run deep research](docs/deep-research.md). |
+
+In Plan and Deep research, tools that write are refused. Plan mode may still write plan files in Markdown. Execute is the default.
+
+### Confirmation policy
+
+| Policy | What the interface says it does |
+|---|---|
+| Ask first | Pause before protected actions. |
+| Workspace edits | Make workspace edits without a separate confirmation. |
+| AI review | Continue for none, low or medium risk; ask you for high risk or an unavailable review. |
+| SPOTTER review | Require the configured SPOTTER policy. |
+| Bypass checks | Skip supported action approvals. Protected execution and source-access restrictions still apply. |
+
+"Ask first" is the cautious choice. What counts as a protected action, and the answers you can give when CLIO asks, are covered in [Permissions and sandbox](docs/permissions.md).
+
+> **Caution**
+>
+> "Bypass checks" removes the pauses that let you review actions before they run. Use it only in a workspace where you are comfortable with that.
+
+## When the agent asks you something
+
+CLIO can ask for text, a choice, a confirmation, or input through an interactive
+view. **Answer needed to continue** means the asking agent is waiting.
+**Answer when ready** leaves the question open while independent work can continue.
+Questions from child agents identify who is asking.
+
+See [Answering questions](docs/questions.md) for visual forms, connected-tool
+questions, and the open question list. Permission requests have separate
+[approval controls](docs/permissions.md).
+
+To inspect what CLIO is doing, use [Follow work in progress](docs/following-work.md)
+and [the workspace views](docs/workspace-panels.md).
+
+## Follow a run
+
+While the agent works, the transcript shows its steps as they happen: tool calls with their arguments and results, and the subagents it has called on. Open the observability panel with the panel button at the top right of the session. It has four tabs:
+
+- Evidence: files read, changed files, and artifacts.
+- Timeline: every step in order.
+- Gantt: recorded execution timing and tool calls. Conversations with user branches start with their family's recorded responses and branch points. **Relationships** swaps to the navigable conversation graph. See [branch and rewind](docs/branch-and-rewind.md#find-and-compare-related-conversations) for screenshots and examples.
+- Context: what is in the agent's working context.
+
+The status bar at the bottom of the window shows whether anything is running. See [Check answers and sources](docs/evidence.md) for how to read each tab.
+
+Expert agents run as child sessions. Click one to open its transcript in a workspace tab beside the parent. Shift-click opens it in the center; Enter and Shift+Enter provide the same choices from the keyboard. Use **Make central** in the child tab to move it to the center, or the back arrow in its header, labeled "Return to parent conversation", to return.
+
+Use **+ → Attach** to [add files, folders, or connected data](docs/files/attach.md). Use **+ → Reference**, or type **@**, to [point to existing files and evidence](docs/files/references.md). Inspect the selected items before sending; [downloads and links](docs/files/download-or-link.md) have different rules for edits.
+
+## Find and mark messages
+
+The slim rail on the left of the conversation helps you find an earlier message.
+Point to a line to see a **short bold title** and a few lines of context; select
+the line to jump there. A question's preview includes the following answer when
+one is available. These are excerpts of the recorded conversation, not new
+AI-generated summaries.
+
+![Message rail preview with a bold title, two lines of answer context, and a filled bookmark button](plugin-asset://guide/captures/docs-message-preview.webp)
+*A filled bookmark means this message is saved in your marked list.*
+
+Choose the bookmark in a preview, or **Mark message** beside a message's other
+actions. The bookmark above the rail opens **Marked messages**; select an entry
+to return to it. On a narrow window, open **Transcript outline** and choose
+**Marked**. Choose **Unmark message** to remove a mark.
+
+![Marked messages list opened from the bookmark above the conversation rail](plugin-asset://guide/captures/docs-marked-messages.webp)
+*Each entry keeps its title and a short excerpt, so you can choose where to return.*
+
+Marks are saved **with the conversation** and appear in other CLIO clients and
+session exports. An exported HTML review shows the bookmark beside marked
+messages; importing the transcript preserves them. Branching copies marks on
+the copied messages, and each branch can change its marks independently.
+Rewind and undo remove marks for messages they discard. Marking a message
+does not add it to the model's context or change its content.
+
+## Rate a response or attach a comment
+
+Open the thumb control below a finished response and choose **Good response** or
+**Bad response**. Select the checked option again to clear the rating.
+
+![Response feedback menu with Bad response checked and a plus action in the top-right corner](plugin-asset://guide/captures/docs-response-rating-menu.webp)
+*Choose the checked rating again to remove it. The top-right plus opens the comment editor.*
+
+Choose **+** to explain what worked or what could improve, then select **Save
+feedback**. A comment can be attached without a thumb rating. Reopen the menu to
+read or edit it. Clearing the thumb keeps the comment; clear its text and save
+to remove the comment separately.
+
+![Response feedback editor with Good and Bad choices, a comment field, Cancel and Save feedback](plugin-asset://guide/captures/docs-response-rating-comment.webp)
+*The comment remains in the editor if saving fails so you can retry.*
+
+Feedback is attached to that response and saved by the connected service. It
+does not send a follow-up to the agent. Use the composer to ask for a correction
+or steer ongoing work.
+
+## Steer or stop a run
+
+For repeated work with a finishing condition, delays and explicit limits, see
+[Continue work over time](docs/long-running-work.md).
+
+For alternative answers, see [Best of N and refinement](docs/best-of-n.md).
+For a report that connects several outputs in the side panel, see
+[Dashboards](docs/dashboards.md). Both guides identify development-build behavior.
+
+While the agent is working, a **Steer** button appears next to the composer. Type a message and choose it, and the message joins the active turn at the next safe boundary instead of waiting for it to finish.
+
+During a run the send button is labeled **Stop**. Choose it to interrupt the
+current response. In the [task development preview](docs/tasks/index.md), accepted
+background work continues and a later result can wake the agent again. Use
+**Cancel task** to stop that work, or **Pause** to hold a subagent's model while
+its accepted tasks continue. See [Subagent controls](docs/tasks/subagents.md).
+
+To compare another approach, or continue from an earlier message, see
+[Try another approach](docs/branch-and-rewind.md). The guide shows both
+controls, their effect on the model's context, and what happens to shared files.
+The session header also has actions to compact its history, share it, and undo.
+
+## Save or share the conversation
+
+Open the conversation's menu and choose **Export session**. Choose a readable
+conversation review, or include the files your colleague needs. Inspect the
+saved output before sharing it; research data and recorded instructions can be
+part of the export.
+
+[Save and share your work](docs/exports.md) explains the exact controls, the
+older Transcript/Effects/Full labels and what the recipient can open.

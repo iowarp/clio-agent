@@ -1,0 +1,97 @@
+---
+title: "Quantum programs with IBM Quantum"
+description: "Turn on the IBM Quantum connector, let the agent write and simulate Qiskit programs on this machine, see circuits, layouts, results and devices in views, and run on IBM quantum computers within your time."
+source: https://clio.iowarp.ai/docs/ibm-quantum/
+---
+
+# Quantum programs with IBM Quantum
+
+Turn on the IBM Quantum connector, let the agent write and simulate Qiskit programs on this machine, see circuits, layouts, results and devices in views, and run on IBM quantum computers within your time.
+
+> **Note: Development build**
+>
+> The IBM Quantum connector is in the development build.
+
+The IBM Quantum connector lets the agent write quantum programs with
+[Qiskit](https://www.ibm.com/quantum/qiskit) and run them. It simulates them on this
+machine with nothing to install and no account: exactly, with ideal shots, or with the
+noise of a real IBM device. When you add your IBM Quantum API key it can also run them on
+IBM's quantum computers, within the time your plan gives you. You see each circuit, how
+it lands on a device, its results and the device itself in views you can work in.
+
+## Turn it on
+
+1. Open **Extensions** and choose **IBM Quantum**. Its card lists two optional values:
+   - **IBM Quantum API key**: only for real hardware. Simulation needs none.
+   - **Instance CRN**: the instance to run on, from the Instances page of your IBM
+     Quantum account. It starts with `crn:v1`.
+2. Turn it on, and add it to a conversation from **Add plugin**. Or just ask for a
+   quantum program: the agent offers the connector, and **Add** brings it in.
+
+Leave both values empty to start. Everything except a run on a real device works without
+them. The key is kept in CLIO's credential store. The connector never reads or writes a
+Qiskit account saved on this computer.
+
+## Ask for a program
+
+Describe what you want:
+
+> Make a Bell state and simulate it.
+
+The agent writes the circuit, runs it and tells you what came out. Every run is kept as a
+job you can come back to, compare with others or open in a view. Where a circuit runs is
+up to you or the agent:
+
+| Backend | What it gives |
+| --- | --- |
+| `local_exact` | Exact results, with no shot noise |
+| `local_aer` | Ideal shots: the default |
+| `fake_fez` and the other fake devices | Shots with a real device's noise, connections and gates, from IBM's published calibration |
+| A real device, such as `ibm_fez` | The device itself. Needs the API key |
+
+Ask to compare them, for example "run it with the noise of a Heron device and compare
+with the ideal run", and the agent lines up the results and says how far apart they are.
+
+## The views
+
+- **Circuit**: the wires and gates by layer, with named parts shaded. Select a gate and
+  the agent knows which one you mean. **QASM 3** shows the program, **Analyze** its gate
+  counts.
+- **Layout**: the circuit beside a map of the device, with the physical qubits it uses
+  and the swaps the compiler added. Step through it layer by layer, compile it again at
+  another optimization level, compare levels, or pick another device.
+- **Results**: jobs side by side, as bars per outcome or as values per input, with how
+  far each is from the first. Run the same circuit on another backend from here.
+- **Backend**: a device's qubit map colored by coherence time, readout error or two-qubit
+  error, with its queue. Find the best chain of qubits for a circuit.
+
+Draw a mark on a view and ask about it: the agent reads the gates, qubits or connections
+under the mark. "Why is there a swap here?" works on the layout view.
+
+## A hybrid quantum-classical classifier
+
+Ask for a whole study in one request:
+
+> Build a hybrid quantum-classical classifier for MNIST 0 vs 1, compare it with a
+> classical baseline, and show me how hardware noise changes it.
+
+The agent builds a small network whose last layer is a two-qubit circuit, trains it
+beside a classical baseline in the background, and shows both training curves live in a
+dashboard. When training ends it evaluates both on test images: exactly, then with a
+device's noise, each as one batched job. The results view shows each image's value on
+both backends with the true labels and each model's accuracy, and the agent explains
+which images flipped class under noise and why. The comparison is kept as a study.
+
+[A hybrid quantum classifier](docs/examples/hybrid-qml.md) walks through a recorded
+session of this request, with its dashboard, its results view and the session itself.
+
+## Real hardware within your time
+
+The free Open Plan gives a limited amount of quantum execution time each period. Before
+any run on a real device, the connector reads the time you have left, and it refuses a
+job that would not fit, with both numbers. Each result says the seconds it used and the
+seconds left. It never creates an instance, picks a plan or uses an instance other than
+the one you set.
+
+If you ask for a real device without a key, the agent asks you for the key and the
+instance CRN in a card. **Not now** keeps the work on this machine.

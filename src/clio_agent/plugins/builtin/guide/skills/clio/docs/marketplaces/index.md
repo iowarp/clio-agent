@@ -1,0 +1,63 @@
+---
+title: "Plugin marketplaces"
+description: "Where agents and plugins come from, what the shipped clio marketplace holds, and how Claude Code marketplaces fit in."
+source: https://clio.iowarp.ai/docs/marketplaces/
+---
+
+# Plugin marketplaces
+
+Where agents and plugins come from, what the shipped clio marketplace holds, and how Claude Code marketplaces fit in.
+
+A **marketplace** is a collection of plugins, and often of agents built from them. It is a folder or a git repository. Installing one makes its plugins available in the + menu of every conversation, and its agents available in the **Agent** list when you start one. See [Agents and plugins](docs/agents-and-plugins.md) for how agents use plugins.
+
+Open Settings and choose **Plugins & marketplaces**. The page lists the installed marketplaces and, below them, every installed plugin and pack.
+
+## The shipped marketplaces
+
+Two sources are always present:
+
+- The `core` and `orchestration` plugins are part of CLIO itself. They do not appear as a marketplace you manage.
+- The `clio` marketplace is installed on first use and trusted, marked **Shipped**. It holds the standard agent, the shared plugins, and domain agents such as `earthscope`, `factorio`, `deep-researcher`, and `clio-data`.
+
+If the `clio` marketplace cannot be installed, for example when its source cannot be reached, the page says so. Other marketplaces keep working.
+
+## What a marketplace row shows
+
+Each marketplace shows its name, its source, and its format: **Agent Plugins format** for CLIO's own layout, or **Claude Code format** for an imported Claude Code marketplace. A git source also shows the commit that is installed. Status badges tell you whether it is **Trusted** or **Not trusted**, and how many problems were found when loading it; **Details** lists them.
+
+The installed plugin list groups plugins by marketplace. Each row shows the version, what the plugin contributes (tools, skills, servers, subagents, flows, hooks, commands, prompt fragments), the members a pack brings, and the plugins it needs. Badges mark a **Pack**, a plugin that is **Not trusted**, an **Update waits for trust**, and plugins **Imported** from a Claude Code marketplace. Use **Filter plugins** to search by name, description, marketplace, or pack member.
+
+Installed agents are listed separately, under Settings, **Agents**.
+
+## Trust and executable parts
+
+Plugins can contain text, such as skills and prompt fragments, and executable parts: MCP server commands, Python tools, and hooks. Executable parts run on the machine that runs CLIO.
+
+Until you trust a marketplace you added, CLIO loads only the text parts of its plugins, and does not load its agents. Its plugins appear in the + menu but cannot be added. The trust step records the executable parts as they are now. If a later update changes them, the new version waits for the trust step again and the version you trusted stays in use. An update that changes only text applies to the next conversation.
+
+[Add and manage marketplaces](docs/marketplaces/manage.md) covers the trust step.
+
+## Claude Code marketplaces
+
+CLIO installs Claude Code plugin marketplaces as they are, without converting them first. It reads `.claude-plugin/marketplace.json` and each plugin's folder:
+
+| In the Claude Code plugin | In CLIO |
+|---|---|
+| `.mcp.json` | The plugin's MCP servers, started when first used. |
+| `skills/` | Skills, unchanged. |
+| `agents/*.md` | Defined subagents of the plugin. Claude Code tool names are mapped to CLIO tools; a tool CLIO cannot map is left out of that subagent and reported, and the subagent still loads. |
+| `commands/*.md` (folders too) | Slash commands, named `/<plugin>:<name>` when two plugins share a name; see [Commands and @ mentions](docs/commands.md). A command runs as a turn of the conversation. `${CLAUDE_PLUGIN_ROOT}` in a command or subagent names the installed plugin's folder, and a line `@<file>` naming a file in the plugin brings that file's text in. Agents may read, never write, installed plugin files. |
+| `hooks/hooks.json` | Command hooks, mapped to CLIO hook events, including `UserPromptExpansion` before a command runs. An event with no CLIO equivalent is reported, not silently dropped. |
+| `output-styles/`, `lspServers` | Not used by CLIO, and reported when the plugin is checked. |
+| Dependencies only, no content | A pack, so you can remove its members one at a time. |
+| Dependencies and content of its own | Hard requirements. |
+
+A Claude Code marketplace brings plugins, not agents. Add its plugins to a conversation with the + menu, then choose **Save as agent** to keep that combination.
+
+A Claude Code marketplace can name other marketplaces in `.claude-plugin/federated-marketplaces.json`, each pinned to a commit. CLIO installs each one as a marketplace of its own, shown with a **Via** badge naming the marketplace that listed it. Each needs its own trust step. For example, the [clio-kit](https://github.com/iowarp/clio-kit) marketplace lists the `iowarp-clio-coder` marketplace, so installing clio-kit installs both.
+
+> **Caution**
+>
+> Trust only a marketplace whose source you know. Trusting it lets its plugins start servers, run commands, and run hooks on the CLIO service. Normal [permissions](docs/permissions.md) still apply to what the agent does with them.
+
+Continue with [Add and manage marketplaces](docs/marketplaces/manage.md) to add, trust, update, or remove one.
