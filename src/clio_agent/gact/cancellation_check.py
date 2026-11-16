@@ -31,4 +31,13 @@ def make_cancellation_checker(app: "FastAPI") -> Callable[[], bool]:
         event = app.state.cancel_events.get(sid)
         return bool(event is not None and event.is_set()) or sid in app.state.cancel_flags
 
+    def cause() -> str:
+        # Why a cancelled call was cancelled: the service stopping, or the person.
+        from clio_agent.gact.runtime.turn_cancellation_info import (  # noqa: PLC0415
+            turn_cancelled_by_shutdown,
+        )
+
+        return "server_shutdown" if turn_cancelled_by_shutdown(app) else ""
+
+    check.cause = cause  # type: ignore[attr-defined]  # read by tools.foreground_cancellation
     return check
