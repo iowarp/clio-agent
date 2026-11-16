@@ -15,6 +15,11 @@
 //   {"pickatoms": [0, 1, 2, 3]}        click those atoms (file order) in the Burette view, as
 //                                      a person clicks them, where the viewer draws them
 //   {"fill": {"in": "#edit-value", "text": "60"}}  type into a view's input
+//   {"attach": "/path/figure.png"}     add a file to the composer (sent with the next send)
+//   {"pressnear": {"sel": "[data-testid=bond]", "x": 498, "y": 219}}  click, among a
+//                                      view's elements matching sel, the one nearest that point
+//                                      in the view's own CSS pixels (a bond in the sketcher);
+//                                      "dry": true only logs the elements' view positions
 //   {"allow": true}                    answer pending permission prompts now (a view's own
 //                                      call, such as an edit's Apply, asks before it runs)
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
@@ -60,6 +65,8 @@ async function frameBox(page, index) {
   await row.element.scrollIntoViewIfNeeded().catch(() => {});
   return row.element.boundingBox();
 }
+
+const log = (report, line) => report.log.push(line);
 
 export default async function (page, shot) {
   const report = { turns: [], log: [] };
@@ -160,6 +167,23 @@ export default async function (page, shot) {
       await frame.locator(step.fill.in).first().fill(String(step.fill.text));
       await frame.locator(step.fill.in).first().press("Enter");
       await page.waitForTimeout(1000);
+    } else if (step.attach) {
+      await page.locator('input[type="file"][title="Upload files"]').first().setInputFiles(step.attach);
+      await page.waitForTimeout(2500);
+    } else if (step.pressnear) {
+      const { sel, x, y, dry } = step.pressnear;
+      const frame = await viewFrame(page, sel);
+      const outer = await frame.parentFrame()?.frameElement();
+      await outer?.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.waitForTimeout(800);
+      const centers = await frame.locator(sel).evaluateAll((els) =>
+        els.map((e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; }));
+      const origin = await (await frame.frameElement()).boundingBox();
+      const dist = ([cx, cy]) => Math.hypot(cx - x, cy - y);
+      const best = centers.reduce((b, c, i) => (dist(c) < dist(centers[b]) ? i : b), 0);
+      log(report, `pressnear ${sel}: ${JSON.stringify(centers.map((c) => c.map(Math.round)))} -> ${best}`);
+      if (!dry) await page.mouse.click(origin.x + centers[best][0], origin.y + centers[best][1]);
+      await page.waitForTimeout(1500);
     } else if (step.allow) {
       for (let k = 0; k < 10; k += 1) {
         await allowPending(sessionId, report.log);
