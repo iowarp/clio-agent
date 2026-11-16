@@ -20,6 +20,11 @@
 //                                      view's elements matching sel, the one nearest that point
 //                                      in the view's own CSS pixels (a bond in the sketcher);
 //                                      "dry": true only logs the elements' view positions
+//   {"secret": "CASE_SECRET"}          type the value of that environment variable into the
+//                                      setup card's masked key field (refused unless the field
+//                                      is a password input; the value is never logged)
+//   {"button": "Save"}                 click the page's button with that name
+//   {"settle": true}                   wait for the running turn to finish and record it
 //   {"allow": true}                    answer pending permission prompts now (a view's own
 //                                      call, such as an edit's Apply, asks before it runs)
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
@@ -184,6 +189,24 @@ export default async function (page, shot) {
       log(report, `pressnear ${sel}: ${JSON.stringify(centers.map((c) => c.map(Math.round)))} -> ${best}`);
       if (!dry) await page.mouse.click(origin.x + centers[best][0], origin.y + centers[best][1]);
       await page.waitForTimeout(1500);
+    } else if (step.secret) {
+      const field = page.locator('input[type="password"]').last();
+      if ((await field.count()) === 0) throw new Error("no masked key field on the page");
+      const value = process.env[step.secret];
+      if (!value) throw new Error(`${step.secret} is not set`);
+      await field.fill(value);
+      log(report, `typed ${step.secret} into the masked key field`);
+    } else if (step.button) {
+      await page.getByRole("button", { name: step.button, exact: false }).last().click();
+      await page.waitForTimeout(2000);
+    } else if (step.settle) {
+      const idle = await waitIdle(page, sessionId, report.log, Number(process.env.CASE_WAIT_MIN || 15),
+        JSON.parse(process.env.CASE_ANSWERS || "null"));
+      // The running turn's reply is the assistant messages after the last user message.
+      const rows = await messages(sessionId);
+      const lastUser = rows.findIndex((m) => m.role === "user");
+      const turn = turnOf(rows, new Set(rows.slice(lastUser).map((m) => m.id)));
+      report.turns.push({ sent: "(settled after the card)", idle, tools: turn.tools, answer: turn.answer.slice(0, 2000) });
     } else if (step.allow) {
       for (let k = 0; k < 10; k += 1) {
         await allowPending(sessionId, report.log);
