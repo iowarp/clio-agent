@@ -122,6 +122,24 @@ yes after server-side packing to P1. Not yet tried inside live CLIO.
 - **Found:** clio-agent's `DEFAULT_MARKETPLACE_COMMIT` (what an installed CLIO fetches) must
   follow the submodule pin; fixed in 95b83c6 (the earlier pin commits had not moved it).
 
+## C-case ledger (live, real UI; plain requests unless marked)
+
+Stack: `CLIO_CLOUD_ISOLATE=1 bash scripts/cloud/stack.sh start` (claude_code provider,
+claude-sonnet-5-5), restarted after each marketplace pin. Driver:
+`node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/apps/chem_case.mjs` (C1:
+`checks/apps/lazy_agent_card.mjs`). Screenshots: `.cloud-run/shots/<label>-*.png` (not
+committed). Results are judged against what the tools returned.
+
+| Case | Size | Session | Result |
+|---|---|---|---|
+| C1 card | 1440x900 | sess_005e047a21c4 | **pass**: card named all 7 chemistry connectors off, each "downloads its tools"; Settings listed each |
+| C1 enable all | 1440x900 | sess_005e047a21c4 | **partial**: ASE 7, Burette 14, DECIMER 2, FDMNES 5, PubChem 3 tools Ready; Avogadro and gRASPA failed in 4 s with clio-kit `--prepare` exit 1, shown as "does not know this server". Not reproduced (alone, concurrent in a fresh cache, or from the card again); the card dropped the command's output, fixed in clio-agent 3529ac5 |
+| C1 turn 3 ("dock a ligand") | 1440x900 | sess_005e047a21c4 | n/a (docking deferred): asked for receptor, ligand and site and offered to install Vina itself with uv; no `offer_plugin` |
+| C1 second conversation | 390x844 touch | sess_7bb1d072ae9f | **pass**: asked only about Avogadro and gRASPA; both Ready (5 tools each) |
+| C2 (first runs) | 1440x900 | sess_deceefcdc5b1, sess_fb8c9c24735d | turn 1 **fail**: built all three isomers, no PubChem, no question. Cause: Alembic's mission never reached the prompt (gated on `spawn_skill_task`, a tool the main agent no longer has; marketplace be59cb0 fixed the gate) |
+| C2 | 1440x900 | sess_7c6bedb1eeaf | **pass**: turn 1 loaded the study skill, `pubchem.resolve_name`, showed o/m/p with CIDs and asked; turn 2 PubChem 3D conformer (CID 7809) opened in Burette from the workspace file; turn 3 (methyl carbon selected in the view) answered from the selection (C7, its neighbours) with the methyl–methyl distance from `inspect_structure` (5.772 Å) |
+| C3 | 1440x900 | sess_8ff77ee117fb | turn 1 **fail** on the view: xTB converged (17 steps), trajectory in Burette, convergence as a table, no linked chart (also after burette-views gained "In a dashboard"). Mechanism verified with a tool-directed prompt, not evidence of agent judgement: dashboard with the live view and energy/force charts, "frame linked both ways"; picking step 1 on the chart moved the view to frame 1. Turn 2 first attempt ended with no answer; retry **pass** (answered from the view's frame, bond changes computed from frames 0 and 1; it sees the view's frame, not the chart's selection). Turn 3 **pass**: MACE from the picked frame; refused to compare absolute xTB vs MACE energies and compared the two geometries with MACE single points (0.0055 eV) |
+
 ## Remaining
 1. ~~clio-kit servers, Spack recipes, registration, bundle, plugins~~ — done (above).
 2. ~~clio-agent connectors and pins~~ — done (above). Was: `catalogs/connectors/clio-kit/derive.yaml` (group `clio-chemistry: Chemistry`,

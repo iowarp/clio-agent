@@ -7,6 +7,8 @@
 //   {"click": {"app": -1, "x": 120, "y": 80}}   click inside an app view (index into the app
 //                                      frames on the page, -1 = last), at CSS pixels in it
 //   {"drag": {"app": -1, "from": [x, y], "to": [x, y]}}
+//   {"scroll": {"x": 1100, "y": 600, "dy": 500}}  wheel-scroll the page at a point
+//   {"pageclick": {"x": 1100, "y": 600}}  click the page itself (a chart, a button)
 //   {"shot": "name"} / {"hero": "name"} a screenshot / a maximized-view screenshot
 //   {"wait": seconds}
 // Permission questions are answered with the broadest allow they offer and logged.
@@ -88,6 +90,13 @@ export default async function (page, shot) {
       await page.mouse.down();
       await page.mouse.move(box.x + tx, box.y + ty, { steps: 15 });
       await page.mouse.up();
+      await page.waitForTimeout(1500);
+    } else if (step.scroll) {
+      await page.mouse.move(step.scroll.x, step.scroll.y);
+      await page.mouse.wheel(0, step.scroll.dy);
+      await page.waitForTimeout(1500);
+    } else if (step.pageclick) {
+      await page.mouse.click(step.pageclick.x, step.pageclick.y);
       await page.waitForTimeout(1500);
     } else if (step.shot) {
       await shot(step.shot);
