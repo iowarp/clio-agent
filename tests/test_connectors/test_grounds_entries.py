@@ -206,6 +206,7 @@ def test_a_catalog_plugin_is_followed_by_a_marketplace_plugin_with_skills() -> N
         ("ase", {"NWCHEM_COMMAND", "ORCA_COMMAND", "HF_TOKEN"}, ["nwchem", "orca", "hf_token"]),
         ("fdmnes", {"FDMNES_COMMAND", "MP_API_KEY"}, ["fdmnes", "mp_api_key"]),
         ("graspa", {"GRASPA_COMMAND"}, ["graspa"]),
+        ("avogadro", {"AVOGADRO_COMMAND"}, ["avogadro"]),
     ],
 )
 def test_chemistry_servers_start_through_clio_kit_with_optional_program_paths(
