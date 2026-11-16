@@ -94,6 +94,9 @@ async def start(app: Any) -> None:
     app.state.questions.before_post = lambda task, definition: prepare_question_gate(
         app, task, definition
     )
+    from clio_agent.gact.unattended import auto_reply  # noqa: PLC0415
+
+    app.state.questions.auto_reply = lambda task, definition: auto_reply(app, task, definition)
     app.state.external_tasks = ExternalTasks(app)
 
     def authorize(submission: SubmissionContext) -> None:

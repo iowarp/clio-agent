@@ -424,6 +424,9 @@ class _Loop:
         from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
 
         _raise_if_cancelled()
+        from clio_agent.gact.run_limits import check_before_step  # noqa: PLC0415
+
+        check_before_step(active_app(), self.session)  # a script's max_turns / budget
         clock = _StepClock()  # CLIO's own time around the model call (stream audit)
         self._arrivals()
         self._refresh_tools()
