@@ -166,8 +166,12 @@ Who can invoke it:
    SIGTERM and its turn end in an error before the drain cancels it. Once the server
    is stopping, such a turn reads `cancelled` with `reason: server_shutdown`
    (`stream_failures.forward_error_info`) and its assignment is left open like a
-   drained one (`turn_cancellation_info.ended_by_shutdown`), so the restart resumes
-   it in place, a child task included. A transcript the restart closes says why in
+   drained one (`turn_cancellation_info.ended_by_shutdown`) and retired as
+   `interrupted`, not `stopped`, so the restart resumes it in place, a child task
+   included. A tool call it stops tells the model the service was shutting down, not
+   that the client cancelled it. The reply the recovery produces carries
+   `resumes_turn`, the turn it continues, so the client shows the interrupted reply
+   with "Show where it continued" instead of Retry. A transcript the restart closes says why in
    either case: `server_restart_interrupted` after a kill, `server_shutdown` after a
    stop. Qualified live by the continuity grid (`scripts/acceptance/continuity_check.py`;
    apps ledger, "Conversation continuity (CC)").
