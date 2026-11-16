@@ -346,6 +346,9 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
                     "assignment": task.description,
                     "confirmed_input": committed.id if committed is not None else None,
                     "context": boundary.model_dump(mode="json") if boundary else None,
+                    # The turn this recovery continues: its reply reads as resumed, not
+                    # as one to retry (CC-O1, ``task_runtime`` carries it to the reply).
+                    "resumes_turn": committed.turn_id or None if committed is not None else None,
                 },
             )
             identity = (

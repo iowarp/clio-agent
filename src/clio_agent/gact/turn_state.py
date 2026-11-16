@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.restart_interruptions import resumed_by_turn, resumed_turn_metadata
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import _semantic_trace_id
 
@@ -245,6 +246,13 @@ class TurnState:
     #: The session's per-model rollup after this turn (set once, so a retried flush is exact).
     publication_model_usage: dict[str, dict[str, Any]] | None = None
     assistant_metadata: dict[str, Any] = field(default_factory=dict)
+    #: Metadata the reply carries from its trigger (a recovery's ``resumes_turn``).
+    trigger_metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def carried_metadata(self) -> dict[str, Any]:
+        """What the reply carries: its trigger's, or a recovery this turn took in (CC-O1)."""
+        return {**resumed_by_turn(self.turn_id), **self.trigger_metadata}
 
 
 def new_turn_state(
@@ -336,4 +344,5 @@ def new_turn_state(
         retry_attempt_id=retry_attempt_id,
         native_images=native_images,
         native_files=native_files,
+        trigger_metadata=resumed_turn_metadata(user_msg.metadata),
     )

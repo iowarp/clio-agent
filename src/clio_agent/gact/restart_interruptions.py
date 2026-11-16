@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Optional
 
 from clio_agent.runtime import trace
@@ -49,7 +50,49 @@ RESTART_INTERRUPTED_REASON = "server_restart_interrupted"
 SETTLE_FAILED_REASON = "restart_interruption_settle_failed"
 TRANSCRIPT_PENDING = "pending"
 
+#: Metadata on a reply the restart's recovery produced: the turn id it continues. A
+#: client shows that interrupted turn as resumed, without Retry (CC-O1).
+RESUMES_TURN = "resumes_turn"
+
+
+def resumed_turn_metadata(metadata: object) -> dict[str, str]:
+    """The ``resumes_turn`` entry a recovery turn's input carries, for its reply."""
+
+    value = metadata.get(RESUMES_TURN) if isinstance(metadata, dict) else None
+    return {RESUMES_TURN: value} if isinstance(value, str) and value else {}
+
+
+def note_resumed_turn(history: object, items: Iterable[object], turn_id: str) -> None:
+    """Remember that ``turn_id`` took in a recovery that continues an interrupted turn.
+
+    The recovery input is not always the turn's trigger (a finished task's notice can
+    start the turn and the recovery arrive with it), so the turn that commits it is
+    the one that resumed the work. Its reply's metadata gets ``resumes_turn`` at
+    finalize (:func:`resumed_by_turn`), like the summons outcome, held per app.
+    """
+    from clio_agent.gact.runtime.app_state import per_app_dict  # noqa: PLC0415
+
+    for item in items:
+        if getattr(item, "kind", "") != "control":
+            continue
+        found = resumed_turn_metadata(history.read_content(item.content))  # type: ignore[attr-defined]
+        if found:
+            per_app_dict("resumed_turns")[turn_id] = found[RESUMES_TURN]
+
+
+def resumed_by_turn(turn_id: str) -> dict[str, str]:
+    """The ``resumes_turn`` metadata ``turn_id`` committed, once (finalize reads it)."""
+    from clio_agent.gact.runtime.app_state import per_app_dict  # noqa: PLC0415
+
+    value = per_app_dict("resumed_turns").pop(turn_id, None)
+    return {RESUMES_TURN: value} if value else {}
+
+
 __all__ = [
+    "RESUMES_TURN",
+    "resumed_turn_metadata",
+    "note_resumed_turn",
+    "resumed_by_turn",
     "RESTART_INTERRUPTED_REASON",
     "SETTLE_FAILED_REASON",
     "RestartInterruptions",

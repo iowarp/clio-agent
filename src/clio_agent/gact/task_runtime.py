@@ -20,6 +20,7 @@ from clio_agent.gact.obligations import Obligations
 from clio_agent.gact.question_events import QuestionEvents
 from clio_agent.gact.question_surface import prepare_question_gate
 from clio_agent.gact.questions import QuestionCommands
+from clio_agent.gact.restart_interruptions import RESUMES_TURN
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import prepare_child_session
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
@@ -264,6 +265,10 @@ async def start(app: Any) -> None:
                 if not isinstance(raw_metadata, dict):
                     raise ValueError("Trusted continuation metadata is malformed")
                 producer_metadata = raw_metadata
+            resumed = original.get("resumes_turn") if isinstance(original, dict) else None
+            if segment.trigger.kind == "control" and isinstance(resumed, str) and resumed:
+                # A restart's recovery continues the interrupted turn (CC-O1).
+                producer_metadata = {RESUMES_TURN: resumed}
             source = (
                 original.get("source", segment.trigger.kind)
                 if isinstance(original, dict)

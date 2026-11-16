@@ -260,7 +260,7 @@ def finalize_turn(
         if ledger is not None:
             ledger.pop(state.sid, None)
 
-    state.assistant_metadata = {}
+    state.assistant_metadata = dict(state.carried_metadata)  # a recovery's resumes_turn
     stamp_summon_outcome(state.app, state.turn_id, state.assistant_metadata)
     if state.turn_agent_id:
         state.assistant_metadata["turn_agent"] = {
