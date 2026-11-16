@@ -19,9 +19,10 @@ transcript that ends in the user's message. Two things follow, at different cost
     lands, so nothing is ever appended after a dangling user message.
 
   A turn whose own sealed parts are the transcript's last row (an incomplete
-  assistant message) keeps them. Either closing row also gets each call of the turn
-  that started with no recorded outcome, typed ``tool_outcome_unrecorded``
-  (:mod:`clio_agent.gact.interrupted_tool_calls`), so it reads as unknown.
+  assistant message) keeps them, and gets the same typed reason. Either closing row
+  also gets each call of the turn that started with no recorded outcome, typed
+  ``tool_outcome_unrecorded`` (:mod:`clio_agent.gact.interrupted_tool_calls`), so it
+  reads as unknown.
 
 The mark carries ``transcript: "pending"`` until the transcript is closed, so a stop
 before that resumes it on the next start. Nothing here is a new store: the pending set
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Optional
 
 from clio_agent.runtime import trace
@@ -48,7 +50,49 @@ RESTART_INTERRUPTED_REASON = "server_restart_interrupted"
 SETTLE_FAILED_REASON = "restart_interruption_settle_failed"
 TRANSCRIPT_PENDING = "pending"
 
+#: Metadata on a reply the restart's recovery produced: the turn id it continues. A
+#: client shows that interrupted turn as resumed, without Retry (CC-O1).
+RESUMES_TURN = "resumes_turn"
+
+
+def resumed_turn_metadata(metadata: object) -> dict[str, str]:
+    """The ``resumes_turn`` entry a recovery turn's input carries, for its reply."""
+
+    value = metadata.get(RESUMES_TURN) if isinstance(metadata, dict) else None
+    return {RESUMES_TURN: value} if isinstance(value, str) and value else {}
+
+
+def note_resumed_turn(history: object, items: Iterable[object], turn_id: str) -> None:
+    """Remember that ``turn_id`` took in a recovery that continues an interrupted turn.
+
+    The recovery input is not always the turn's trigger (a finished task's notice can
+    start the turn and the recovery arrive with it), so the turn that commits it is
+    the one that resumed the work. Its reply's metadata gets ``resumes_turn`` at
+    finalize (:func:`resumed_by_turn`), like the summons outcome, held per app.
+    """
+    from clio_agent.gact.runtime.app_state import per_app_dict  # noqa: PLC0415
+
+    for item in items:
+        if getattr(item, "kind", "") != "control":
+            continue
+        found = resumed_turn_metadata(history.read_content(item.content))  # type: ignore[attr-defined]
+        if found:
+            per_app_dict("resumed_turns")[turn_id] = found[RESUMES_TURN]
+
+
+def resumed_by_turn(turn_id: str) -> dict[str, str]:
+    """The ``resumes_turn`` metadata ``turn_id`` committed, once (finalize reads it)."""
+    from clio_agent.gact.runtime.app_state import per_app_dict  # noqa: PLC0415
+
+    value = per_app_dict("resumed_turns").pop(turn_id, None)
+    return {RESUMES_TURN: value} if value else {}
+
+
 __all__ = [
+    "RESUMES_TURN",
+    "resumed_turn_metadata",
+    "note_resumed_turn",
+    "resumed_by_turn",
     "RESTART_INTERRUPTED_REASON",
     "SETTLE_FAILED_REASON",
     "RestartInterruptions",
@@ -166,6 +210,7 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
     from clio_agent.gact.session_store import (  # noqa: PLC0415 - import cycle
         _interrupted_assistant_row,
         _replace_session_messages,
+        restart_error_info,
     )
 
     sessions = app.state.sessions
@@ -180,8 +225,15 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
             durable.append(closing)
         elif last is not None and last.role == "assistant" and last.stop_reason == "incomplete":
             # The turn's own sealed parts are the last row: it keeps them as they are,
-            # plus any call whose outcome was never recorded (interrupted_tool_calls).
-            closing = _with_unrecorded_calls(app, session_id, last)
+            # plus any call whose outcome was never recorded (interrupted_tool_calls),
+            # and says why it ended, as the row after a dangling user message does. A
+            # turn cut mid answer otherwise read as a reply that stopped for no reason.
+            closing = _with_unrecorded_calls(app, session_id, last).model_copy(
+                update={
+                    "stop_reason": "error",
+                    "error_info": restart_error_info(session_id, last.turn_id or last.id),
+                }
+            )
             durable[-1] = closing
         if closing is not None and closing is not last:
             # Through the sanctioned replace seam (undo/rewind use it too), so the

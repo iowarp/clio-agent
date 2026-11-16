@@ -37,6 +37,7 @@ from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.flow_restart import to_latest_flow_assignment
 from clio_agent.gact.native_work import now
 from clio_agent.gact.owner_loop import on_owner_loop
+from clio_agent.gact.runtime.turn_cancellation_info import ended_by_shutdown
 from clio_agent.gact.session_input import admission_trigger, input_delivery
 from clio_agent.gact.session_mail import WRITTEN_INPUT_KINDS, SessionMail, StagedInput
 from clio_agent.gact.sessions import SessionStore
@@ -690,7 +691,7 @@ class Conversations:
             if self.runner.cancellation(sid).is_set():
                 raise asyncio.CancelledError
             outcome = await self.run_segment(segment)
-            if self.runner.cancellation(sid).is_set():
+            if self.runner.cancellation(sid).is_set() or ended_by_shutdown(self.app, outcome):
                 raise asyncio.CancelledError
         except Exception as error:
             logger.exception(

@@ -105,6 +105,9 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
             }
     if used := memory_used_projection(metadata):
         projected["memory_used"] = used
+    resumes = metadata.get("resumes_turn")  # the turn a restart's recovery continued (CC-O1)
+    if isinstance(resumes, str) and resumes:
+        projected["resumes_turn"] = resumes
     return projected
 
 

@@ -18,6 +18,7 @@ from clio_agent.arc.task_types import (
     RecipientInput,
 )
 from clio_agent.gact.native_work import now
+from clio_agent.gact.restart_interruptions import note_resumed_turn
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_history import MailboxFull, TaskHistory
 from clio_agent.gact.task_publication import task_owner_recipient
@@ -324,6 +325,8 @@ class SessionMail:
                 human_input=any(item.kind in {"human", "composer"} for item in staged.items),
             )
             confirmed = self.history.record_input(record)
+        if turn_id:  # a restart's recovery delivered into this turn continues another
+            note_resumed_turn(self.history, staged.items, turn_id)
         if self.committed is not None:
             self.committed(staged)
         return confirmed

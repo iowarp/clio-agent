@@ -15,16 +15,54 @@ _CANCELLATION_POLL_SECONDS = 0.05
 _MCP_WIRE_CANCELLATION_SETTLE_SECONDS = 1.0
 
 
+#: Why a call was cancelled, as the cancellation checker reports it (``cause``).
+SERVER_SHUTDOWN = "server_shutdown"
+_SHUTDOWN_TEXT = "tool call stopped because the agent service is shutting down"
+
+
+def cancellation_cause() -> str:
+    """``server_shutdown`` when the agent service stopping cancels this call, else ``""``.
+
+    The live turn's cancellation checker carries the cause (``checker.cause``, set by
+    gact); a call the person stopped has none. Without it the model was told
+    "cancelled by client" for a call the shutdown stopped, and said so (CC-O2).
+    """
+    from clio_agent.tools.execution import current_tool_runtime  # noqa: PLC0415 - cycle
+
+    cause = getattr(current_tool_runtime().cancellation_checker, "cause", None)
+    return str(cause() or "") if callable(cause) else ""
+
+
 def _tool_cancellation_error(
     tool: str,
     stage: str,
     *,
     wire_settled: bool | None = None,
-    message: str = "tool call cancelled by client",
+    before_approval: str = "",
 ) -> CancellationError:
+    """The error a cancelled call raises, naming who cancelled it.
+
+    ``before_approval`` names what did not run when the call was cancelled while its
+    approval waited.
+    """
     execution_cancellation = "cooperative"
     wire_cancellation = "not_needed"
     details: dict[str, Any] = {"tool": tool, "stage": stage}
+    cause = cancellation_cause()
+    if cause == SERVER_SHUTDOWN:
+        details["cause"] = SERVER_SHUTDOWN
+        message = (
+            f"tool call stopped before it was approved because the agent service is "
+            f"shutting down: {before_approval}"
+            if before_approval
+            else _SHUTDOWN_TEXT
+        )
+    else:
+        message = (
+            f"tool call cancelled by client before it was approved: {before_approval}"
+            if before_approval
+            else "tool call cancelled by client"
+        )
     if wire_settled is not None:
         wire_cancellation = "requested" if wire_settled else "unavailable"
         if wire_settled:
