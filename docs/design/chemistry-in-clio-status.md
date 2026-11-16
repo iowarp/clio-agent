@@ -1,4 +1,4 @@
-# Chemistry in CLIO — handoff (2026-11-16)
+# Chemistry in CLIO — status (2026-11-16, second session)
 
 Scope for the next session: the plan "Chemistry in CLIO: conclusions (Nov 15, 2026)"
 with the parts listed in [chemistry-in-clio-deferred.md](chemistry-in-clio-deferred.md) removed. Bases: clio-agent `develop`,
@@ -42,11 +42,37 @@ Edit bar in the view, each edit a new `name.editN.ext` file reported to the agen
 (ethylene glycol O-C-C-O 180°→60.0° measured from the written file; ring bonds refused); (c) unit cell for magnetite —
 yes after server-side packing to P1. Not yet tried inside live CLIO.
 
+## Done in session_01BHQAwsRFSfrkkofcujtmYL
+
+| Repo | Branch | Commit | State |
+|---|---|---|---|
+| iowarp/clio-kit | claude/chemistry-in-clio | baf3c77 feat(fdmnes), 517dc52 feat(graspa), a9625c6 build(spack), 8f26ace feat(chemistry) registration + bundle, 0a33789 fdmnes manifests | pushed |
+
+- **fdmnes** (4 tools): run_xanes, read_spectrum, compare_spectra, fdmnes_status. FDMNES
+  found via FDMNES_COMMAND / FDMNES_EXE / PATH, never downloaded. 20 offline tests
+  (stand-in executable replaying a recorded Cu K-edge) + 2 integration tests against
+  real FDMNES (Cu fcc K edge: 1 inequivalent site, m3m, 16 s; FeO6 molecule read in Å),
+  passing with both a hand build and the Spack build.
+- **graspa** (5 tools): run_graspa, prepare_graspa (run folder for a GPU node),
+  read_graspa, rank_frameworks (uptake or working capacity; incomplete frameworks
+  excluded with the reason), graspa_status. Reads upstream gRASPA (block-average mol/kg
+  table, adsorbate taken by name; `-nan` error bars) and gRASPA-SYCL output. 10 tests
+  with stand-in executables replaying gRASPA's CO2-MFI example output and ChemGraph's
+  SYCL format. **gRASPA itself never ran: no GPU here.**
+- **Spack repo** `clio-kit/spack-repo/` (namespace clio, Spack 1.0 layout) + config scope
+  confining install tree, stage and caches to `$CLIO_SPACK_ROOT` (no ~/.spack written).
+  `spack install fdmnes` built and installed here (Spack 1.0.4); `graspa` +cuda/+rocm
+  audit and concretize but were not built (no GPU toolchain).
+- **Registration**: ase, decimer, fdmnes, graspa, pubchem 1.0.0 in `[servers]`, publish
+  list, icons, prerequisites, SERVER_TAGS, README, CI Python lanes; bundle
+  `clio-chemistry`; generated `plugins/clio-<name>/` and docs. Root suite 722 passed.
+  Launcher starts fdmnes and graspa over stdio and answers a tool call.
+  Generation also rewrote 22 unrelated docs pages and paraview's server.json (drift on
+  main) — left out. Generated titles read "CLIO Pubchem", "CLIO Ase", "CLIO Fdmnes"
+  (the generator title-cases names).
+
 ## Remaining
-1. clio-kit: `fdmnes` and `graspa` servers (graspa tested against ChemGraph mock_graspa;
-   no GPU), Spack recipes for gRASPA and FDMNES (sandbox-confined install tree/stage/caches),
-   register all servers in `mcp-server-versions.toml`, a `clio-chemistry` bundle and
-   per-server `plugins/clio-<name>/` (.mcp.json → `clio-kit mcp-server <name>`).
+1. ~~clio-kit servers, Spack recipes, registration, bundle, plugins~~ — done (above).
 2. clio-agent: `catalogs/connectors/clio-kit/derive.yaml` (group `clio-chemistry: Chemistry`,
    names ASE/PubChem/gRASPA/FDMNES/DECIMER), hand-written `fdmnes.yaml`, `graspa.yaml`,
    `ase.yaml` needs, replace `burette.yaml` with the fork command + `plugin: burette`,
