@@ -239,6 +239,8 @@ class RunEngine:
         ).json()
         found: list[Artifact] = []
         for row in body.get("artifacts", []):
+            if not _written_by_run(row):
+                continue  # an input the run read (``used-*``), not one it created or changed
             name = str(row.get("name") or "")
             root = self.workspace_root
             found.append(
@@ -251,6 +253,22 @@ class RunEngine:
                 )
             )
         return found
+
+
+def _written_by_run(row: dict[str, Any]) -> bool:
+    """Whether one of the run's sessions wrote a version of this record.
+
+    The listing also carries records the run only used (a file it read becomes a
+    ``used-script`` / ``used-granted-file`` version); those are not its artifacts.
+    """
+
+    sessions = set(row.get("producing_session_ids") or [])
+    for version in row.get("versions") or []:
+        producer = version.get("producer") or {}
+        written = not str(producer.get("designation") or "").startswith("used-")
+        if written and (not sessions or producer.get("session_id") in sessions):
+            return True
+    return False
 
 
 __all__ = [
