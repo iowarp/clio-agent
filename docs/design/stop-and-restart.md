@@ -161,6 +161,16 @@ Who can invoke it:
 5. **A restarted run reads its kept calls' evidence.** The subtrees of the runs
    it resumes are its own (`flows/tool_evidence.py`); read authorization still
    applies.
+6. **A graceful stop is a restart, not a failure.** `clio stop` signals the server's
+   whole process group, so a provider's command-line child can die with the same
+   SIGTERM and its turn end in an error before the drain cancels it. Once the server
+   is stopping, such a turn reads `cancelled` with `reason: server_shutdown`
+   (`stream_failures.forward_error_info`) and its assignment is left open like a
+   drained one (`turn_cancellation_info.ended_by_shutdown`), so the restart resumes
+   it in place, a child task included. A transcript the restart closes says why in
+   either case: `server_restart_interrupted` after a kill, `server_shutdown` after a
+   stop. Qualified live by the continuity grid (`scripts/acceptance/continuity_check.py`;
+   apps ledger, "Conversation continuity (CC)").
 
 ## 4. UI (gact-tui)
 
