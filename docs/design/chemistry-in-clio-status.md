@@ -71,16 +71,57 @@ yes after server-side packing to P1. Not yet tried inside live CLIO.
   main) — left out. Generated titles read "CLIO Pubchem", "CLIO Ase", "CLIO Fdmnes"
   (the generator title-cases names).
 
+| iowarp/clio-kit | claude/chemistry-in-clio | e8d097c feat(fdmnes): fetch_materials_project (plan: "Materials Project fetch"; MP_API_KEY) | pushed |
+| iowarp/clio-agent | claude/chemistry-in-clio | c5f53ca connectors (derive.yaml Chemistry group, ase/fdmnes/graspa entries, Burette fork entry), fa19ad1 / be5e99e marketplace pins, d788d71 MP key need; clio-kit pinned to e8d097c | pushed |
+| iowarp/clio-agent-marketplace | claude/chemistry-in-clio (from develop f860020) | 7699fa3 Alembic agent + plugins, e5430e9 skills named as in the plan | pushed |
+
+- **Marketplace** (item 3): `computational-chemistry` (L1: method-ladder, geometry-and-frequencies,
+  thermochemistry, xanes, adsorption, chemistry-views); `ase`, `fdmnes`, `graspa`, `burette`
+  follow their connectors; `pubchem`, `decimer` start clio-kit's servers (mcp.json, followed
+  automatically); `nwchem` (nwchem-dft, install-nwchem), `orca` (orca-dft, install-orca,
+  untested); `alembic` (mission + structure-from-name, molecule-properties, reaction-study,
+  adsorption-screen, xanes-comparison); `agents/alembic.py` (ScienceAgent + all of them +
+  slurm). Every plugin has `.lint-l3` and `lint-denylist.txt`. Checks: unittest OK, model pins
+  OK, skill literals OK, `clio-agent plugin check` 80/80, clio-agent connector/plugin tests 441
+  passed incl. the connector-following test, marketplace-marked tests 35 passed. Pre-existing
+  failures in abaqus, kicad, visuals plugin tests are unchanged (visuals fails without these
+  changes too).
+- **Plan source:** the C-cases and skill names are from the plan doc "Chemistry in CLIO:
+  conclusions" (Claude Docs artifact X6kLiZj1KKKABLg4rQKpm5), which is not in any repo.
+
+### Avogadro 2 (item 4): feasibility, checked 2026-11-16
+- **Install:** Ubuntu 24.04's archive has `avogadro` 1.99.0 (an Avogadro 2 pre-release;
+  `/usr/bin/avogadro2`). The official 2.1.0 AppImage downloaded fine but running a downloaded
+  prebuilt binary was refused by this session's permission policy, so 1.99 from apt was used.
+- **Runs headless:** under Xvfb with `QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1` (Mesa),
+  opening an XYZ. The AppImage ships only xcb/wayland platform plugins (no Qt VNC/WebGL), so
+  streaming is X → VNC → WebSocket.
+- **Streams:** `x11vnc -localhost` + `websockify` + noVNC (`apt install novnc`); in headless
+  Chromium a drag in the noVNC page rotated the molecule (interactive, not just pixels).
+- **Agent → Avogadro:** its RPC listener (MoleQueue JSON-RPC over the Unix socket
+  `$TMPDIR/avogadro`, 4-byte big-endian length framing) accepts `openFile`, `loadMolecule`
+  (format + content) and `saveGraphic` (PNG), all verified. The socket name is global per
+  TMPDIR, so each instance needs its own TMPDIR.
+- **Avogadro → agent, with the selection:** a Python command in
+  `~/.local/share/OpenChemistry/Avogadro/commands/` ("Extensions → CLIO → Send to CLIO")
+  receives the molecule as CJSON on stdin and writes it to a handoff folder; CJSON carries
+  `atoms.selected` (per-atom booleans) — verified with Select All. The command must echo the
+  `cjson` back, or Avogadro 1.99 replaces the molecule with an empty one (found and fixed).
+- **Not built yet:** the clio-kit `avogadro` server (start Xvfb/avogadro2/x11vnc/websockify per
+  workspace, MCP App view embedding noVNC through CLIO's loopback service, tools
+  open_in_avogadro / read_avogadro (latest handoff → XYZ/SDF + selected indices) /
+  avogadro_snapshot), its connector entry and the burette-views note on when to use which.
+
 ## Remaining
 1. ~~clio-kit servers, Spack recipes, registration, bundle, plugins~~ — done (above).
-2. clio-agent: `catalogs/connectors/clio-kit/derive.yaml` (group `clio-chemistry: Chemistry`,
+2. ~~clio-agent connectors and pins~~ — done (above). Was: `catalogs/connectors/clio-kit/derive.yaml` (group `clio-chemistry: Chemistry`,
    names ASE/PubChem/gRASPA/FDMNES/DECIMER), hand-written `fdmnes.yaml`, `graspa.yaml`,
    `ase.yaml` needs, replace `burette.yaml` with the fork command + `plugin: burette`,
    bump the clio-kit pin and marketplace submodule once pushed.
-3. marketplace: computational-chemistry (L1), ase, pubchem, graspa, fdmnes, decimer,
+3. ~~marketplace~~ — done (above). Was: computational-chemistry (L1), ase, pubchem, graspa, fdmnes, decimer,
    nwchem, orca, burette plugins, alembic plugin + `agents/alembic.py`; `.lint-l3` +
    `lint-denylist.txt` on each.
-4. Avogadro 2 as a streamed view, the way ParaView is streamed (user decision, 2026-11-16:
+4. Avogadro 2 as a streamed view — feasibility done (above); the server itself remains. Was:, the way ParaView is streamed (user decision, 2026-11-16:
    the goal is a good CLIO chemistry stack, not only the SC demos). Burette stays the light
    in-conversation viewer and quick internal-coordinate editor; Avogadro 2 is for building
    and remodelling in 3D (fragments, element changes, auto-optimize while dragging, crystals,
