@@ -95,6 +95,8 @@ Plain request ("a small board for a sensor node … all the way to a package I c
 
 | ID | Result | Evidence |
 | --- | --- | --- |
+| FQ8 | Pass | `scratchpad/fq8.py` builds CLIO's gateway from the saved KiCad connection (fork `491f4c9`, 16 Nov 2026): 400 KiCad tools reach the agent; none of `lib_generate_footprint_ipc7351`, `lib_certify_footprint`, `lib_validate_footprint_ipc7351` (hidden by the connector's declaration with `sim_*`, 14 tools, `connector_tools_hidden`); present: `lib_generate_footprint`, `lib_generate_footprint_custom`, `lib_check_footprint`, `lib_list_footprint_families`, `lib_get_footprint_3d_model`, `lib_assign_footprint` and the library readers |
+| FQ9 | Pass | `grep` over the fork's `src/` and `packages/` (outside the vendored viewer): no import of `KicadModTree`, `kilibs` or the generator scripts; `library_tools/runner.py` runs Library Tools' own `generate.py`, `check_footprint.py` and one-off scripts as child processes in their own folder through `run_to_end.run`; `install.py` only checks that Library Tools' Python imports `KicadModTree`. `utils/footprint_gen.py` and `footprint_validate.py` are upstream's IPC-7351 code (`1487947`, before this branch), the tools FQ8 hides |
 
 ## Appendix: the person's messages
 
