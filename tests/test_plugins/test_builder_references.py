@@ -9,6 +9,7 @@ these examples, so an example that fails the check teaches the builder to fail.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ PART_TYPES = {
     "command",
     "connection",
     "agent",
+    "view",
 }
 _BLOCK = re.compile(r"^```(\w+) (\S+)\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 
@@ -68,3 +70,25 @@ def test_the_built_in_plugin_passes_plugin_check(plugin: str, tmp_path: Path) ->
     service = PluginService(PluginStore(tmp_path / "store"), native_tools=native)
     report = check(BUILDER.parent / plugin, service=service, trusted=True)
     assert report.ok, [str(d) for d in report.diagnostics]
+
+
+async def test_the_view_example_serves_an_mcp_app(tmp_path: Path) -> None:
+    """The view reference's server is a working MCP App: its tool names the page,
+    the page is served as an app, and the tool's result carries the board's data."""
+
+    from fastmcp import Client  # noqa: PLC0415
+    from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
+
+    server = tmp_path / "server.py"
+    server.write_text(_example(REFERENCES / "view.md")["server.py"], encoding="utf-8")
+    transport = StdioTransport(command=sys.executable, args=[str(server)])
+    async with Client(transport) as client:
+        (tool,) = await client.list_tools()
+        uri = tool.meta["ui"]["resourceUri"]
+        assert uri.startswith("ui://")
+        (page,) = await client.read_resource(uri)
+        assert page.mimeType == "text/html;profile=mcp-app"
+        assert "ui/initialize" in page.text
+        runs = [{"run": "run_0412", "peak_k": 371.2}, {"run": "run_0413", "peak_k": 352.0}]
+        result = await client.call_tool(tool.name, {"runs": runs, "limit_k": 360})
+        assert result.structured_content == {"runs": runs, "limit_k": 360}

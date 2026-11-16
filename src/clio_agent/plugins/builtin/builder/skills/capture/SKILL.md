@@ -64,6 +64,7 @@ that kind of part, and below it the kinds you chose not to use and why. Use a
 | An external service reached through a saved connection | Named connection | `references/connection.md` |
 | A way the person wants to start the whole thing | Command | `references/command.md` |
 | The set of plugins the person works with | Agent (**Save as agent**) | `references/agent.md` |
+| A picture or view the person keeps asking for | Existing components; an MCP App when they cannot show it; a new built-in view only through a pull request to CLIO | `references/view.md` |
 
 - Never write an MCP server for something a `@tool` does, and never one for a service
   that already has a saved connection.
