@@ -242,10 +242,13 @@ class RunEngine:
             if not _written_by_run(row):
                 continue  # an input the run read (``used-*``), not one it created or changed
             name = str(row.get("name") or "")
+            head = (row.get("versions") or [{}])[-1]
             root = self.workspace_root
+            # The version records where the file is; the record's name is only its label.
+            fallback = os.path.join(root, name) if root and not os.path.isabs(name) else name
             found.append(
                 Artifact(
-                    path=os.path.join(root, name) if root and not os.path.isabs(name) else name,
+                    path=str(head.get("path") or fallback),
                     artifact_id=str(row.get("head_artifact_id") or ""),
                     version=int(row.get("latest_version") or 0),
                     name=name,
