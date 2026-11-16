@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.client import ClioClient, NotFoundError
+from clio_agent.client import ClioClient, ClioOptions, NotFoundError
 from tests.test_client.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
@@ -37,7 +37,7 @@ def gated_client(tmp_path: Path) -> Any:
         arc=_fresh_arc(tmp_path),
     )
     transport = StreamingASGITransport(app)
-    with ClioClient("http://testserver", transport=transport) as client:
+    with ClioClient(ClioOptions(url="http://testserver"), transport=transport) as client:
         yield client
     transport.close()
 

@@ -223,7 +223,15 @@ async def permit_untrusted_flow(
     found = await asyncio.to_thread(untrusted_flow, store, flow_id)
     if found is None:
         return None
-    decision = await asyncio.to_thread(_ask_to_run, app, session_id, flow_id, found, call)
+    from clio_agent.gact.unattended import is_unattended, record_trusted  # noqa: PLC0415
+
+    # An unattended run (a script) has nobody to ask: its plugins are trusted, recorded.
+    unattended = await asyncio.to_thread(is_unattended, app, session_id)
+    decision = (
+        "allow"
+        if unattended
+        else await asyncio.to_thread(_ask_to_run, app, session_id, flow_id, found, call)
+    )
     if str(decision) != "allow":
         return {
             "accepted": False,
@@ -233,7 +241,9 @@ async def permit_untrusted_flow(
         }
     session = app.state.sessions.get(session_id)
     reason = (
-        "authored_bypass"
+        "unattended_run"
+        if unattended
+        else "authored_bypass"
         if _authored_here(found, session_id) and getattr(session, "approval_mode", "") == "bypass"
         else "allowed_to_run"
     )
@@ -248,6 +258,8 @@ async def permit_untrusted_flow(
         )
     except (StoreError, SessionAgentUnavailable) as exc:
         return {"accepted": False, "reason": "flow_not_added", "error": str(exc)}
+    if unattended:
+        await asyncio.to_thread(record_trusted, app, session_id, found["plugin"])
     return {"trusted": True, "plugin": found["plugin"], "added": added}
 
 

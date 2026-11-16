@@ -23,7 +23,6 @@ def consume_turn(
     session_id: str,
     ack_message_id: str,
     *,
-    interactive: bool = True,
     status: Any = None,
     answered_question: str | None = None,
 ) -> tuple[Any, Any, dict[str, Any] | None]:
@@ -120,7 +119,7 @@ def consume_turn(
 
         if pause_kind == "waiting_user":
             abort, answered = cli._resolve_waiting_user(
-                session_id, interactive=interactive, status=status, question_id=question_id
+                session_id, status=status, question_id=question_id
             )
             if answered is not None:
                 owner = answered.owner_session_id or answered.session_id
@@ -129,9 +128,7 @@ def consume_turn(
                 else:
                     child_answers.append((owner, answered.id))
         else:
-            abort = cli._resolve_permission(
-                pause_permission, interactive=interactive, status=status
-            )
+            abort = cli._resolve_permission(pause_permission, status=status)
         if abort is not None:
             error_info = abort
             break
@@ -144,7 +141,7 @@ def consume_turn(
         cli._event_cursor = None
         try:
             _child, _message, child_error = cli._consume_turn(
-                owner, "", interactive=interactive, status=status, answered_question=handle
+                owner, "", status=status, answered_question=handle
             )
         finally:
             cli._event_cursor = cursor
@@ -169,7 +166,6 @@ def resolve_waiting_user(
     cli: ClioAgentCLI,
     session_id: str,
     *,
-    interactive: bool,
     status: Any = None,
     question_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, Any]:
@@ -189,16 +185,6 @@ def resolve_waiting_user(
         # Already resolved out-of-band — nothing to do; just resume.
         return None, None
     question = pending[0]
-
-    if not interactive:
-        return {
-            "error": "input_required",
-            "message": (
-                "The agent asked a clarifying question but the CLI is running "
-                "non-interactively and cannot prompt for an answer: "
-                f"{question.prompt}"
-            ),
-        }, None
 
     bundle = question.metadata.get("question_bundle")
     if isinstance(bundle, dict) and isinstance(bundle.get("questions"), list):

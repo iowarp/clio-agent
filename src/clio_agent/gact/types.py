@@ -43,6 +43,7 @@ from clio_agent.gact.lm_provider_types import LMProviderInfo as LMProviderInfo
 from clio_agent.gact.lm_provider_types import LMProviderPreset as LMProviderPreset
 from clio_agent.gact.lm_provider_types import LMProviderRequest as LMProviderRequest
 from clio_agent.gact.parts import CapabilityFlags, Part
+from clio_agent.gact.run_request import RunRequestFields
 from clio_agent.gact.workspace_types import (
     CreateWorkspaceRequest as CreateWorkspaceRequest,
 )
@@ -428,9 +429,9 @@ class ModelRef(BaseModel):
 
 
 class AgentRef(BaseModel):
-    """Per-session agent/persona selection reference."""
+    """Per-session agent selection: an installed agent (``id`` or ``marketplace/id``)."""
 
-    id: str = "main"
+    id: str = Field(min_length=1)
     mode: str = ""
 
 
@@ -476,8 +477,8 @@ class Session(BaseModel):
     archived: bool = False
 
 
-class CreateSessionRequest(BaseModel):
-    """POST /v1/sessions body — SPEC §6.2."""
+class CreateSessionRequest(RunRequestFields):
+    """POST /v1/sessions body — SPEC §6.2 plus the run fields (``gact/run_request.py``)."""
 
     workspace_id: str = "ws_default"
     title: str = ""
@@ -500,11 +501,7 @@ class UpdateSessionRequest(BaseModel):
     agent: Optional[AgentRef] = None
     mode: Optional[Literal["plan", "edit", "architect"]] = None  # P1.1 #1063: no ``chat``
     edit_mode: Optional[Literal["diff", "whole", "patch"]] = None
-    # routing_mode overrides the planner. "auto" runs the normal planner;
-    # "chat" forces every turn through chat so users don't need a /chat
-    # prefix; "experts" rejects direct chat/none routes; "reasoning_only"
-    # asks the planner to prefer tool/expert reasoning over deterministic
-    # shortcuts.
+    # routing_mode: the planner override (auto/chat/experts/reasoning_only).
     routing_mode: Optional[Literal["auto", "chat", "experts", "reasoning_only"]] = None
     approval_mode: Optional[Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"]] = (
         None  # #1034

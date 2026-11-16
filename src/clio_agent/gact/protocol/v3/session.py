@@ -111,6 +111,18 @@ def session_to_v3(session: Any) -> dict[str, Any]:
         )
         if delegation:
             public_metadata["delegation_origin"] = delegation
+    # A session whose own work is a flow (a script's run_flow) shows its runs' railroad.
+    own_flow = metadata.get("agent_flow")
+    if (
+        isinstance(own_flow, Mapping)
+        and own_flow.get("id")
+        and not {"input", "depth"} & own_flow.keys()
+    ):
+        options = own_flow.get("options")
+        public_metadata["agent_flow"] = {
+            "id": str(own_flow["id"]),
+            "options": dict(options) if isinstance(options, Mapping) else {},
+        }
     if public_metadata:
         row["metadata"] = public_metadata
     return row

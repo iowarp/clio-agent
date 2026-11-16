@@ -8,14 +8,14 @@ from clio_agent.client import ClioClient, NotFoundError, Session, UserQuestion
 
 
 def test_session_lifecycle_round_trip(client: ClioClient) -> None:
-    created = client.sessions.create(title="sdk lifecycle", mode="plan", routing_mode="chat")
+    created = client.sessions.create(title="sdk lifecycle", mode="plan", approval_mode="auto-edits")
 
     assert isinstance(created, Session)
     assert created.id.startswith("sess_")
     assert created.workspace_id == "ws_default"
     assert created.title == "sdk lifecycle"
     assert created.mode == "plan"
-    assert created.routing_mode == "chat"
+    assert created.metadata.get("unattended") is None
     assert created.status == "idle"
 
     fetched = client.sessions.get(created.id)

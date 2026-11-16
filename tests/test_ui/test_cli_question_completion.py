@@ -264,7 +264,7 @@ def test_cli_collects_bundle_fields_and_submits_one_atomic_answer(
     cli = ClioAgentCLI(client, console=_recording_console())
     answers = iter(["invalid", "table", "Uncertainty"])
     monkeypatch.setattr(cli, "_prompt", lambda *_args, **_kwargs: next(answers))
-    error, answered = cli._resolve_waiting_user("root", interactive=True, question_id="bundle")
+    error, answered = cli._resolve_waiting_user("root", question_id="bundle")
     assert error is None and answered.status == "answered"
     assert submitted == [
         {
@@ -307,6 +307,6 @@ def test_cli_preserves_single_question_choice_restriction(
     cli = ClioAgentCLI(client, console=_recording_console())
     replies = iter(["unlisted", "table"])
     monkeypatch.setattr(cli, "_prompt", lambda *_args, **_kwargs: next(replies))
-    error, answered = cli._resolve_waiting_user("root", interactive=True, question_id="choice")
+    error, answered = cli._resolve_waiting_user("root", question_id="choice")
     assert error is None and answered.status == "answered"
     assert submitted == [{"answer": "", "selected_options": ["table"]}]

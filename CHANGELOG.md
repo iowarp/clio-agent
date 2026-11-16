@@ -6,7 +6,48 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+
+- Run CLIO agents and flows from Python: `pip install clio-agent` ships the `clio`
+  module (`ClioClient`, `AsyncClioClient`, `ClioOptions`, `RunResult`). Opening a
+  client attaches to the CLIO server at `options.url` or starts one on this machine
+  (`clio-agent serve`); a server a script started stops when its last attached
+  client leaves. `run`, `run_flow`, `stream_flow` and `session` never ask anyone
+  anything. See `src/clio_agent/client/README.md`.
+- `POST /v1/sessions` accepts `flow` (`{id, options}`: the session runs that flow as
+  its own work, checked with `run_flow`'s own check and its typed refusals),
+  `unattended`, `max_turns` and `max_budget_usd`. An unattended run runs under `bypass`
+  whatever was asked (deny rules still apply) and grants folder access, answers every
+  Question at once ("the user is not available") and trusts the plugins it needs,
+  listing them in the session's `unattended_trusted`. A tool's own input request
+  (search asking to use a source) takes the default the tool declares, listed in
+  `unattended_approved`; one with no default is declined.
+  A Question it answered reports `answered_by: "unattended"`, not a person.
+  A run limit fails the next
+  model step of the tree with `run_limit_reached`.
+- `GET /v1/sessions/{sid}/usage`: model turns, tokens and cost over a session tree.
+- The 0.3 session projection publishes a session's own flow (`metadata.agent_flow`:
+  id and options), so the UI can show its runs' railroad.
+- `POST|GET /v1/server/clients`, `DELETE /v1/server/clients/{id}`: the attached-client
+  count. A server started with `CLIO_STOP_WITH_LAST_CLIENT=1` stops when its last
+  client leaves (or exits).
+- A file a flow writes with `ctx.workspace.write` is recorded as an artifact of the
+  flow's session.
+
 ### Changed
+
+- `metadata` on session create and update refuses server-owned keys (`agent_flow`,
+  `unattended`, `run_limits`, ...) with `metadata_reserved`.
+- A flow refuses options it does not declare (`flow_options_invalid`).
+- `clio-agent -q` runs through the library: every permission is granted, questions
+  get the not-available reply, and new `--agent`, `--model` and `--workspace` flags
+  apply. Its JSON drops `selected_expert`.
+- `serve.ensure_server` starts `clio-agent serve`, not `clio-agent-gact`.
+
+### Removed
+
+- `routing_mode` in the Python client, and the `"main"` default of a session
+  request's `agent.id`.
 
 - Pin `clio-kit==2.12.7`. Every MCP server picks up opentelemetry-api 1.45.2
   (CVE-2026-126360). The adios and paraview servers install ADIOS2 from wheels

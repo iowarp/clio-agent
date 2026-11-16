@@ -243,6 +243,15 @@ def test_help_lists_current_commands(client: ClioClient) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _free_port() -> int:
+    """A port nothing listens on, so the boot path tries to start a server."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 def test_boot_client_exits_structured_on_binary_not_found(monkeypatch: Any) -> None:
     payload = {
         "reason": "binary_not_found",
@@ -258,7 +267,7 @@ def test_boot_client_exits_structured_on_binary_not_found(monkeypatch: Any) -> N
     console = _recording_console()
 
     with pytest.raises(SystemExit) as excinfo:
-        boot_client(console=console)
+        boot_client(_free_port(), console=console)
 
     assert excinfo.value.code == 1
     out = console.export_text()
@@ -281,7 +290,7 @@ def test_boot_client_exits_structured_on_start_timeout(monkeypatch: Any) -> None
     console = _recording_console()
 
     with pytest.raises(SystemExit) as excinfo:
-        boot_client(console=console)
+        boot_client(_free_port(), console=console)
 
     assert excinfo.value.code == 1
     out = console.export_text()
@@ -290,9 +299,20 @@ def test_boot_client_exits_structured_on_start_timeout(monkeypatch: Any) -> None
 
 
 def test_boot_client_attaches_and_returns_client(monkeypatch: Any) -> None:
-    monkeypatch.setattr(serve, "ensure_server", lambda *a, **k: "http://127.0.0.1:8100")
-    client = boot_client()
+    from clio_agent.client import client as client_module
+    from clio_agent.client.connection import Connection
+
+    opened: list[str] = []
+
+    def _attach(options: Any, _http: Any) -> Connection:
+        opened.append(options.base_url)
+        return Connection(options.base_url, started=False, port=options.port)
+
+    monkeypatch.setattr(client_module, "open_connection", _attach)
+    monkeypatch.setattr(client_module, "close_connection", lambda *_a: {})
+    client = boot_client(8100)
     assert isinstance(client, ClioClient)
+    assert opened == ["http://127.0.0.1:8100"]
     client.close()
 
 
@@ -311,7 +331,7 @@ def test_main_doctor_runs_in_process_without_a_server(monkeypatch: Any) -> None:
     def _no_spawn(*_a: Any, **_k: Any) -> str:
         raise AssertionError("`clio-agent doctor` must not connect-or-spawn a server")
 
-    monkeypatch.setattr(cli_mod.serve, "ensure_server", _no_spawn)
+    monkeypatch.setattr(serve, "ensure_server", _no_spawn)
 
     ran = {"doctor": False}
 
@@ -341,7 +361,7 @@ def test_main_serve_runs_gact_server_in_foreground(monkeypatch: Any) -> None:
     def _no_spawn(*_a: Any, **_k: Any) -> str:
         raise AssertionError("`clio-agent serve` must not connect-or-spawn a client server")
 
-    monkeypatch.setattr(cli_mod.serve, "ensure_server", _no_spawn)
+    monkeypatch.setattr(serve, "ensure_server", _no_spawn)
     monkeypatch.setattr(cli_mod, "boot_client", _no_spawn)
 
     calls: list[dict[str, Any]] = []

@@ -68,8 +68,9 @@ class UserQuestion(BaseModel):
     # who actually produced the accepted answer. Absent means "human" (today's
     # implicit default, preserved byte-for-byte); "agent" only when the
     # session's agent's answer won the atomic transition and passed the
-    # server's own ``requestedSchema`` validation (the semantic firewall).
-    answered_by: Optional[Literal["human", "agent"]] = None
+    # server's own ``requestedSchema`` validation (the semantic firewall);
+    # "unattended" when a script run answered it because nobody was watching.
+    answered_by: Optional[Literal["human", "agent", "unattended"]] = None
 
     @model_validator(mode="after")
     def fill_interaction_session_ids(self) -> "UserQuestion":
@@ -138,7 +139,7 @@ class PendingInteraction(BaseModel):
         Literal["elicitation_routed_to_agent", "agent_elicitation_fallback_to_human"]
     ] = None
     fallback_detail: str = ""
-    answered_by: Optional[Literal["human", "agent"]] = None
+    answered_by: Optional[Literal["human", "agent", "unattended"]] = None
     source: PendingInteractionSource
     created_at: str
     #: Monotonic-per-row marker of the version this projection saw. A poll is a

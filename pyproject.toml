@@ -308,7 +308,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/clio_agent"]
+packages = ["src/clio_agent", "src/clio"]
 
 [tool.hatch.build.targets.wheel.force-include]
 # Connector entries and their logos ship with the release (connectors.entries.shipped_dir).
@@ -321,6 +321,7 @@ packages = ["src/clio_agent"]
 # balloon the sdist to >200 MB and get rejected ("400 File too large").
 include = [
     "src/clio_agent",
+    "src/clio",
     "catalogs/connectors",
     "pyproject.toml",
     "README.md",

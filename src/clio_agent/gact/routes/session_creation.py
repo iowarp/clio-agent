@@ -9,12 +9,20 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact import session_warmup
-from clio_agent.gact.agents.resolution import SessionAgentUnavailable, prepare_session_agent
+from clio_agent.gact.agents.resolution import SessionAgentUnavailable
 from clio_agent.gact.off_loop import join_on
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes.search_assistant import register_search_assistant_routes
+from clio_agent.gact.routes.session_usage import register_session_usage_route
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.session_defaults import apply_default_effort
+from clio_agent.gact.session_run_setup import (
+    FlowRefused,
+    flow_refused_envelope,
+    prepare_run,
+    record_run_trust,
+    refuse_reserved_metadata,
+)
 from clio_agent.gact.spotter_watcher import sync_watcher_for_mode
 from clio_agent.gact.types import CreateSessionRequest, ErrorEnvelope, ErrorInfo, Session
 
@@ -25,6 +33,7 @@ if TYPE_CHECKING:
 def register_session_creation_route(app: FastAPI) -> None:
     """Register creation only after the selected agent resolves."""
     register_search_assistant_routes(app)
+    register_session_usage_route(app)
 
     @app.post("/v1/sessions", response_model=Session)
     async def create_session(req: CreateSessionRequest, request: Request) -> Session | JSONResponse:
@@ -43,6 +52,7 @@ def register_session_creation_route(app: FastAPI) -> None:
             )
         defaults = app.state.session_defaults.get()
         supplied = req.model_fields_set
+        refuse_reserved_metadata(req.metadata)
         metadata = dict(req.metadata)
         apply_default_effort(metadata, defaults)  # provenance-stamped starting level
         requested = req.agent.id if req.agent is not None and req.agent.id else ""
@@ -56,7 +66,8 @@ def register_session_creation_route(app: FastAPI) -> None:
         def prepare_and_create() -> StoredSession:
             # One off-loop job on the creation executor: each hop through the shared
             # pool waited behind every queued read, which multiplied a flood's delay.
-            resolution = prepare_session_agent(app, metadata, requested)
+            prepared = prepare_run(app, req, metadata, requested)
+            resolution = prepared.resolution
             sess = app.state.sessions.create(
                 workspace_id=wid,
                 title=req.title,
@@ -68,21 +79,25 @@ def register_session_creation_route(app: FastAPI) -> None:
                 routing_mode=(
                     req.routing_mode if "routing_mode" in supplied else defaults.routing_mode
                 ),
-                approval_mode=(
-                    req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
-                ),
+                # A script run approves every permission: nobody is there to ask.
+                approval_mode="bypass"
+                if req.unattended
+                else (req.approval_mode if "approval_mode" in supplied else defaults.approval_mode),
             )
             timer = bringup_timing.timer_for_session(app, sess.id)
             timer.start_phase("session.create")
             # Session creation inherits territory and emits no fabricated grant (#979.2).
             sync_watcher_for_mode(app, sess)
             timer.end_phase("session.create")
+            record_run_trust(app, sess.id, prepared)
             return sess
 
         try:
             sess = await join_on(creation_executor(app), prepare_and_create)
         except SessionAgentUnavailable as exc:
             raise HTTPException(status_code=422, detail=agent_unavailable_envelope(exc)) from exc
+        except FlowRefused as exc:
+            raise HTTPException(status_code=422, detail=flow_refused_envelope(exc)) from exc
         # Start the session's servers now, not on its first message.
         session_warmup.start_session_warmup(app, sess.id, trigger="session_created")
         return project_for_request(

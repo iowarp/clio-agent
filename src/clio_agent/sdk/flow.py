@@ -54,6 +54,25 @@ def _type_name(hint: Any) -> str:
     return hint.__name__ if isinstance(hint, type) else repr(hint).replace("typing.", "")
 
 
+#: Flow attributes that describe it rather than configure a run.
+_NOT_OPTIONS = frozenset({"id", "description", "shape"})
+
+
+def _declared_option(cls: type, key: str, hints: Mapping[str, Any]) -> bool:
+    """Whether ``key`` is an option ``cls`` declares: annotated, or a plain class value
+    set on the flow (or a flow it extends), never a method or a dspy.Module internal."""
+
+    if key in _NOT_OPTIONS or key.startswith("_"):
+        return False
+    if key in hints:
+        return True
+    return any(
+        key in vars(klass) and not callable(vars(klass)[key])
+        for klass in cls.__mro__
+        if isinstance(klass, type) and issubclass(klass, Flow)
+    )
+
+
 class Flow(dspy.Module):
     """Base class for flows, and a by-id reference when instantiated directly."""
 
@@ -90,7 +109,9 @@ class Flow(dspy.Module):
         constraints (``Annotated[int, Field(ge=1)]``); a bool given for an int or float
         option is refused rather than read as 1 or 0. One of another shape raises
         :class:`FlowOptionsInvalid` naming it and the declared type. Options the flow
-        does not annotate pass unchanged; annotations that do not resolve are refused.
+        does not annotate but sets as a class attribute (``budget_tokens = 10``) pass
+        unchanged; a key the flow declares neither way is refused (a misspelled option
+        must not run the flow on its defaults); annotations that do not resolve are refused.
         """
 
         if not options:
@@ -103,6 +124,9 @@ class Flow(dspy.Module):
         checked: dict[str, Any] = {}
         problems: list[str] = []
         for key, value in (options or {}).items():
+            if not _declared_option(cls, key, hints):
+                problems.append(f"{key} is not an option of this flow")
+                continue
             hint = hints.get(key)
             if typing.get_origin(hint) is ClassVar:
                 hint = next(iter(typing.get_args(hint)), None)

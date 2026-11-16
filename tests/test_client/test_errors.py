@@ -19,6 +19,7 @@ import pytest
 from clio_agent.client import (
     ClioAPIError,
     ClioClient,
+    ClioOptions,
     InvalidRequestError,
     NotFoundError,
     PermissionDeniedError,
@@ -89,7 +90,7 @@ def test_agent_not_available_maps_to_service_unavailable(tmp_path: Path) -> None
     app = build_app(sessions_path=tmp_path / "sessions.json", arc=_fresh_arc(tmp_path))
     transport = StreamingASGITransport(app)
     try:
-        with ClioClient("http://testserver", transport=transport) as client:
+        with ClioClient(ClioOptions(url="http://testserver"), transport=transport) as client:
             sess = client.sessions.create(title="no agent")
             with pytest.raises(ServiceUnavailableError) as excinfo:
                 client.messages.post(sess.id, text="hello?")
