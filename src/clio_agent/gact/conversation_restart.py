@@ -205,15 +205,24 @@ async def prepare_terminal_restart(
         owner._control_holds.discard(handle)
         return cancellation, None
 
+    from clio_agent.gact.assignment_pending import uncertain_call
+
+    def already_cut_off() -> frozenset[str]:
+        return frozenset(
+            member for member in descendants if uncertain_call(owner.history.task_snapshot(member))
+        )
+
+    # A call an earlier crash or restart cut off (uncertain, never resubmitted) has no
+    # running work to settle; it stays recorded and does not block the restart (as for a
+    # stop). A call this restart's own cancellation leaves uncertain may still be running.
+    cut_off = await owner.history.io.run(already_cut_off)
+
     def settled() -> bool:
-        from clio_agent.gact.assignment_pending import uncertain_call
         from clio_agent.gact.conversation_controls import _member_settled
 
-        # A call a restart cut off (uncertain, never resubmitted) has no running work
-        # to settle; it stays recorded and does not block the restart (as for a stop).
         return all(
-            _member_settled(task) or uncertain_call(task)
-            for task in (owner.history.task_snapshot(member) for member in descendants)
+            member in cut_off or _member_settled(owner.history.task_snapshot(member))
+            for member in descendants
         )
 
     if await owner.history.io.run(settled):
