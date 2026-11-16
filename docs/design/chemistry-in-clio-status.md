@@ -107,10 +107,20 @@ yes after server-side packing to P1. Not yet tried inside live CLIO.
   receives the molecule as CJSON on stdin and writes it to a handoff folder; CJSON carries
   `atoms.selected` (per-atom booleans) — verified with Select All. The command must echo the
   `cjson` back, or Avogadro 1.99 replaces the molecule with an empty one (found and fixed).
-- **Not built yet:** the clio-kit `avogadro` server (start Xvfb/avogadro2/x11vnc/websockify per
-  workspace, MCP App view embedding noVNC through CLIO's loopback service, tools
-  open_in_avogadro / read_avogadro (latest handoff → XYZ/SDF + selected indices) /
-  avogadro_snapshot), its connector entry and the burette-views note on when to use which.
+- **Built (KiCad pattern, user direction 2026-11-16):** clio-kit 5a1a256 `avogadro` server —
+  finds Avogadro (Where Avogadro is / `avogadro2` on PATH) and starts Xvfb + Avogadro (private
+  TMPDIR/data, window sized to the screen, cwd `<workspace>/chemistry/avogadro`) + x11vnc +
+  a token-checked loopback service (stream page, vendored noVNC 1.5.0, `state`, WebSocket
+  bridge) declared as `ai.iowarp.clio/service`; tools avogadro_status, open_in_avogadro,
+  read_avogadro, avogadro_snapshot, close_avogadro. It never installs: marketplace 0181ab8
+  `avogadro` plugin's `install-avogadro` (official 2.1.0 AppImage + sha256, Xvfb/x11vnc via the
+  package manager with CLIO's sandbox/elevation prompts) and `avogadro-building`; clio-agent
+  2bfca4e `avogadro.yaml` connector. Semantics were worked out on Ubuntu's 1.99 package
+  (integration test + headless Chromium through the stream: Select All, Send to CLIO, state
+  reports the selection), then 1.99, x11vnc, noVNC, websockify, xdotool and their 92 new
+  dependencies were purged so the live run starts with CLIO installing 2.1.0.
+- **Found:** clio-agent's `DEFAULT_MARKETPLACE_COMMIT` (what an installed CLIO fetches) must
+  follow the submodule pin; fixed in 95b83c6 (the earlier pin commits had not moved it).
 
 ## Remaining
 1. ~~clio-kit servers, Spack recipes, registration, bundle, plugins~~ — done (above).
@@ -121,7 +131,7 @@ yes after server-side packing to P1. Not yet tried inside live CLIO.
 3. ~~marketplace~~ — done (above). Was: computational-chemistry (L1), ase, pubchem, graspa, fdmnes, decimer,
    nwchem, orca, burette plugins, alembic plugin + `agents/alembic.py`; `.lint-l3` +
    `lint-denylist.txt` on each.
-4. Avogadro 2 as a streamed view — feasibility done (above); the server itself remains. Was:, the way ParaView is streamed (user decision, 2026-11-16:
+4. ~~Avogadro 2 as a streamed view~~ — built (above); 2.1.0 to be installed and run by CLIO in the live cases. Was:, the way ParaView is streamed (user decision, 2026-11-16:
    the goal is a good CLIO chemistry stack, not only the SC demos). Burette stays the light
    in-conversation viewer and quick internal-coordinate editor; Avogadro 2 is for building
    and remodelling in 3D (fragments, element changes, auto-optimize while dragging, crystals,
