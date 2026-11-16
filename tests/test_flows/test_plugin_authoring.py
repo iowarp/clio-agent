@@ -88,7 +88,15 @@ def _session(client: TestClient, approval_mode: str) -> str:
 
 
 def _market(client: TestClient) -> dict[str, Any]:
-    return client.app.state.plugin_service.store.marketplaces()["tally"]
+    return client.app.state.plugin_service.store.marketplaces()["private-local"]
+
+
+def _trusted(client: TestClient) -> bool:
+    """Whether the installed tally Clio wrote may run (per plugin, not per marketplace)."""
+
+    store = client.app.state.plugin_service.store
+    rows = [r for r in store.installed_records() if r.id == "tally"]
+    return bool(rows) and store.trusted(rows[-1])
 
 
 def _delta(client: TestClient, sid: str) -> list[str]:
@@ -144,7 +152,9 @@ def test_make_plugin_installs_it_untrusted_and_names_its_flows(flow_app: TestCli
     sid = _session(flow_app, "ask")
     made = _made(flow_app, sid, done, "0.1.0")
     assert made["installed"] and made["flows"] == ["tally"], made
-    assert not _market(flow_app)["trusted"]
+    assert made["ref"] == "private-local/tally" and made["version"] == 1
+    assert made["executable"] and not made["trusted"]
+    assert not _trusted(flow_app)
     review = flow_app.get("/v1/plugins/tally/review").json()
     assert review["authored_by_clio"] is True
     assert review["flows"][0] == {
@@ -172,7 +182,8 @@ def test_running_a_flow_clio_wrote_asks_and_allow_trusts_adds_and_runs(
     started = wait_until(lambda: done.get("run tally"), timeout=60)
     assert started["accepted"], started
     assert _market(flow_app)["trust_reason"] == "allowed_to_run"
-    assert "tally/tally" in _delta(flow_app, sid)
+    assert _trusted(flow_app)
+    assert "private-local/tally" in _delta(flow_app, sid)
 
 
 def test_denying_the_run_leaves_it_untrusted(flow_app: TestClient) -> None:
@@ -183,8 +194,8 @@ def test_denying_the_run_leaves_it_untrusted(flow_app: TestClient) -> None:
     flow_app.post(f"/v1/permissions/{_permission(flow_app)['id']}", json={"action": "deny"})
     refused = wait_until(lambda: done.get("run tally"), timeout=60)
     assert refused["accepted"] is False and refused["reason"] == "flow_not_trusted"
-    assert not _market(flow_app)["trusted"]
-    assert "tally/tally" not in _delta(flow_app, sid)
+    assert not _trusted(flow_app)
+    assert "private-local/tally" not in _delta(flow_app, sid)
 
 
 def test_under_bypass_a_flow_clio_wrote_runs_on_the_record(flow_app: TestClient) -> None:
@@ -212,7 +223,7 @@ def test_another_conversations_bypass_does_not_run_a_flow_clio_wrote_elsewhere(
     assert "snapshot" not in row["tool_call"]["input"]
     flow_app.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
     assert wait_until(lambda: done.get("run tally"), timeout=60)["accepted"] is False
-    assert not _market(flow_app)["trusted"]
+    assert not _trusted(flow_app)
 
 
 def test_content_that_changed_after_review_is_not_trusted(flow_app: TestClient) -> None:
@@ -227,9 +238,9 @@ def test_content_that_changed_after_review_is_not_trusted(flow_app: TestClient) 
     post(flow_app, sid, "make version 0.2.0")
     assert wait_until(lambda: done.get("made 0.2.0"), timeout=60)["installed"]
     with pytest.raises(StoreError) as refused:
-        store.trust("tally", snapshot=reviewed)
+        store.trust("private-local", snapshot=reviewed, plugins=frozenset({"tally"}))
     assert refused.value.code == "trust_content_changed"
-    assert not _market(flow_app)["trusted"]
+    assert not _trusted(flow_app)
 
 
 def test_a_third_party_flow_is_asked_about_even_under_bypass(
@@ -251,17 +262,17 @@ def test_a_third_party_flow_is_asked_about_even_under_bypass(
 
 
 def test_a_file_changed_after_clio_wrote_it_makes_it_third_party(flow_app: TestClient) -> None:
-    from clio_agent.plugins.authored import authored_root
+    from clio_agent.plugins.authored import plugin_folder, private_root
 
     done = _script(flow_app)
     sid = _session(flow_app, "bypass")
     _made(flow_app, sid, done, "0.1.0")
     store = flow_app.app.state.plugin_service.store
     # Edited where it was written, then reinstalled from there: no longer Clio's files.
-    flow = authored_root(store.root) / "tally/ai.iowarp.clio/flows/tally.py"
+    flow = plugin_folder(store.root, "tally") / "ai.iowarp.clio/flows/tally.py"
     flow.write_text(flow.read_text() + "\nimport subprocess\n")
     shutil.rmtree(flow.parent / "__pycache__", ignore_errors=True)
-    store.install(str(flow.parents[2]), name="tally")
+    store.install(str(private_root(store.root)), name="private-local")
     post(flow_app, sid, "run tally")
     row = _permission(flow_app)
     assert row["tool_call"]["input"]["authored_by_clio"] is False
@@ -280,11 +291,15 @@ def test_a_new_version_asks_again_before_it_runs(flow_app: TestClient) -> None:
     started = wait_until(lambda: done.get("run tally"), timeout=60)
     assert started["accepted"], started
     _result_read(flow_app, sid, started["handle"])
-    _made(flow_app, sid, done, "0.2.0")
+    made = _made(flow_app, sid, done, "0.2.0")
+    assert made["version"] == 2 and made["executable_changed"] == ["ai.iowarp.clio/flows/tally.py"]
+    assert "counted by 0.2.0" in made["diff"]
     _idle(flow_app, sid)
     post(flow_app, sid, "run tally again")
     row = _permission(flow_app)
     assert row["tool_call"]["input"]["version"] == "0.2.0"
+    # Only the changed executable part is named as new since the trusted version.
+    assert row["tool_call"]["input"]["changed_since_trusted"] == ["ai.iowarp.clio/flows/tally.py"]
     flow_app.post(f"/v1/permissions/{row['id']}", json={"action": "allow"})
     assert wait_until(lambda: done.get("run tally again"), timeout=60)["accepted"]
 
@@ -364,11 +379,11 @@ def test_a_trusted_flow_outside_this_agent_is_added_and_runs_without_asking(
     flow_app.post(f"/v1/permissions/{_permission(flow_app)['id']}", json={"action": "allow"})
     assert wait_until(lambda: done.get("run tally"), timeout=60)["accepted"]
     second = _session(flow_app, "ask")
-    assert "tally/tally" not in _delta(flow_app, second)
+    assert "private-local/tally" not in _delta(flow_app, second)
     post(flow_app, second, "run tally here")
     started = wait_until(lambda: done.get("run tally here"), timeout=60)
     assert started["accepted"], started
-    assert "tally/tally" in _delta(flow_app, second)
+    assert "private-local/tally" in _delta(flow_app, second)
     pending = [
         row
         for row in flow_app.get("/v1/permissions").json()["permissions"]

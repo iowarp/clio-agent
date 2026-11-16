@@ -185,3 +185,97 @@ def optimize_report_shown(args: Mapping[str, Any], result: Any, structured: Any)
     if declined:
         summary += f", {_plural(len(declined), 'finding')} declined"
     return {"action": action, "summary": summary, "blocks": blocks}
+
+
+def make_plugin_presentation(
+    args: Mapping[str, Any], result: Any, structured: Any
+) -> dict[str, Any]:
+    """Write plugin <name>: its version, what changed (a diff), its parts and its trust."""
+
+    row = _row(result, structured)
+    name = str(row.get("plugin") or args.get("name") or "")
+    action = "Write plugin"
+    blocks: list[dict[str, Any]] = [{"id": "plugin", "type": "text", "text": name}]
+    if not row.get("installed") and row.get("reason") != "check_failed":
+        return {**_failed(action, row, blocks), "subject": "plugin"}
+    version = int(row.get("version") or 0)
+    if row.get("variation_of"):
+        blocks.append(
+            {
+                "id": "variation",
+                "type": "text",
+                "label": "Variation of",
+                "text": str(row["variation_of"]),
+            }
+        )
+    changes = [
+        *(f"Added {p}" for p in row.get("added") or []),
+        *(f"Changed {p}" for p in row.get("changed") or []),
+        *(f"Removed {p}" for p in row.get("removed") or []),
+    ]
+    if version > 1:
+        blocks.append(
+            {
+                "id": "changes",
+                "type": "text",
+                "label": f"Version {version}",
+                "text": "\n".join(changes) or "No file changed",
+            }
+        )
+    if row.get("diff"):
+        blocks.append({"id": "diff", "type": "diff", "text": str(row["diff"])})
+    if row.get("reason") == "check_failed":
+        report = row.get("check") if isinstance(row.get("check"), Mapping) else {}
+        for i, diag in enumerate(report.get("diagnostics") or []):
+            if not isinstance(diag, Mapping):
+                continue
+            blocks.append(
+                {
+                    "id": f"check-{i}",
+                    "type": "check",
+                    "label": str(diag.get("code") or ""),
+                    "status": "failed" if diag.get("severity") == "error" else "to_check",
+                    "text": str(diag.get("message") or ""),
+                    "severity": "error" if diag.get("severity") == "error" else "warning",
+                }
+            )
+        return {
+            "action": action,
+            "subject": "plugin",
+            "status": "failed",
+            "summary": "Check failed",
+            "blocks": blocks,
+        }
+    parts = [
+        *(f"Flow {f}" for f in row.get("flows") or []),
+        *(f"Tool {t}" for t in row.get("tools") or []),
+        *(f"Hook {h}" for h in row.get("hooks") or []),
+    ]
+    if parts:
+        blocks.append(
+            {"id": "parts", "type": "text", "label": "Executable parts", "text": "\n".join(parts)}
+        )
+    for i, warning in enumerate(row.get("warnings") or []):
+        if isinstance(warning, Mapping):
+            blocks.append(
+                {
+                    "id": f"warning-{i}",
+                    "type": "check",
+                    "label": str(warning.get("code") or ""),
+                    "status": "to_check",
+                    "text": str(warning.get("message") or ""),
+                    "severity": "warning",
+                }
+            )
+    trust = (
+        "Asked about once, when first used"
+        if row.get("executable") and not row.get("trusted")
+        else ("Text only: no trust step" if not row.get("executable") else "Trusted")
+    )
+    blocks.append({"id": "trust", "type": "text", "label": "Trust", "text": trust})
+    return {
+        "action": action,
+        "subject": "plugin",
+        "summary": f"Version {version}, check passed" if version else "Check passed",
+        "blocks": blocks,
+    }

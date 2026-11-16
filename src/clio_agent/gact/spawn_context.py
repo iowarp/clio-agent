@@ -25,7 +25,9 @@ if TYPE_CHECKING:
     from clio_agent.plugins.resolve import Resolution
 
 CreatePreparedChild = Callable[[str, str, dict[str, Any], str | None], StoredSession]
-PrepareChild = Callable[[str, str, dict[str, Any] | None, str], CreatePreparedChild]
+PrepareChild = Callable[
+    [str, str, dict[str, Any] | None, str, dict[str, list[str]] | None], CreatePreparedChild
+]
 
 #: A spawn target ``fork:<session>`` forks that session (the ``fork`` tool's target).
 FORK_TARGET = "fork:"
@@ -48,6 +50,48 @@ def _launch_context(parent: StoredSession) -> dict[str, Any]:
     }
 
 
+def with_plugins(
+    app: "FastAPI", child: "Resolution", pin: dict[str, Any], plugins: dict[str, list[str]]
+) -> tuple["Resolution", dict[str, Any]]:
+    """``child`` with ``plugins`` added or removed: its agent ref and delta, resolved again."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        AGENT_DELTA_KEY,
+        AGENT_REF_KEY,
+        AGENT_RESOLUTION_KEY,
+        SUBAGENT_KEY,
+        SessionAgentUnavailable,
+        default_agent_ref,
+        resolve_for_session,
+    )
+    from clio_agent.plugins.resolve import Delta  # noqa: PLC0415
+
+    if pin.get(SUBAGENT_KEY):
+        raise ValueError(
+            "a defined subagent's plugins are fixed by its plugin; give the plugins to a "
+            "copy of yourself (agent omitted) or to an installed agent instead"
+        )
+    current = pin.get(AGENT_DELTA_KEY) or {}
+    delta = Delta(tuple(current.get("add") or ()), tuple(current.get("remove") or ())).then(
+        Delta(tuple(plugins.get("add") or ()), tuple(plugins.get("remove") or ()))
+    )
+    ref = str(pin.get(AGENT_REF_KEY) or child.agent.get("ref") or default_agent_ref(app))
+    try:
+        changed = resolve_for_session(app, ref, delta)
+    except SessionAgentUnavailable as exc:
+        raise ValueError(f"the child's agent with these plugins cannot resolve: {exc}") from exc
+    return changed, {
+        **pin,
+        AGENT_REF_KEY: ref,
+        AGENT_DELTA_KEY: delta.to_dict(),
+        AGENT_RESOLUTION_KEY: changed.digest,
+        "spawn_plugins": {
+            "add": list(plugins.get("add") or []),
+            "remove": list(plugins.get("remove") or []),
+        },
+    }
+
+
 def resolve_child_agent(
     app: "FastAPI", parent_id: str, agent_id: str
 ) -> tuple["Resolution", dict[str, Any]]:
@@ -56,7 +100,6 @@ def resolve_child_agent(
     Raises ``ValueError`` naming why when ``agent_id`` is neither a defined
     subagent of the parent's agent nor an installed agent.
     """
-
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         AGENT_DELTA_KEY,
         AGENT_REF_KEY,
@@ -124,6 +167,7 @@ def prepare_child_session(
     agent_id: str,
     target_scope: dict[str, Any] | None,
     model: str = "",
+    plugins: dict[str, list[str]] | None = None,
 ) -> CreatePreparedChild:
     """Resolve the child and choose its model outside task locking; return finite
     acceptance metadata work.
@@ -149,6 +193,8 @@ def prepare_child_session(
     launch = _launch_context(parent)
     digest = argument_digest(launch)
     child, pin = resolve_child_agent(app, parent_id, agent_id)
+    if plugins and (plugins.get("add") or plugins.get("remove")):
+        child, pin = with_plugins(app, child, pin, plugins)
     source = (
         store.snapshot(agent_id.removeprefix(FORK_TARGET))
         if agent_id.startswith(FORK_TARGET)

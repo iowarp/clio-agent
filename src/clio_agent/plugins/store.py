@@ -429,8 +429,9 @@ class PluginStore:
         entry: dict[str, Any],
         *,
         approve: bool = False,
+        only: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
-        """Apply ``snapshot`` as ``market``'s content.
+        """Apply ``snapshot`` as ``market``'s content (``only``: approve just these plugins).
 
         Everything is read first without importing any Python. Only then do the
         executable digests decide what may run: a trusted marketplace's plugin
@@ -443,7 +444,7 @@ class PluginStore:
         trusted = bool(entry["trusted"])
         approve = trusted and (approve or bool(entry.get("default")))
         digests: dict[str, str] = entry["trusted_digests"]
-        if approve:
+        if approve and not only:
             digests.clear()
         # The detected layout decides how to read it: a Claude Code marketplace, a
         # single Claude Code plugin, a folder of skills, or an Agent Plugins tree.
@@ -454,7 +455,7 @@ class PluginStore:
         records: list[PluginRecord] = []
         held: list[str] = []
         for record in [*contents.plugins, *git_records]:
-            if approve:
+            if approve and (not only or record.id in only):
                 digests[record.id] = record.executable_digest
             known = digests.get(record.id)
             if trusted and known == record.executable_digest:
@@ -536,7 +537,12 @@ class PluginStore:
         return [spec.id for spec in specs]
 
     def trust(
-        self, market: str, *, reason: str = "explicit_trust_step", snapshot: str = ""
+        self,
+        market: str,
+        *,
+        reason: str = "explicit_trust_step",
+        snapshot: str = "",
+        plugins: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """The explicit trust step: trust the marketplace's current executable parts.
 
@@ -545,6 +551,8 @@ class PluginStore:
         conversation or under bypass (:mod:`clio_agent.plugins.authored`).
         ``snapshot``, when given, is the content that was reviewed: a marketplace
         whose installed content changed since is refused, never trusted unseen.
+        ``plugins``, when given, trusts only those plugins of the marketplace (a plugin
+        Clio wrote in the person's private marketplace); the others keep their state.
         """
 
         with self.lock:
@@ -562,7 +570,7 @@ class PluginStore:
             current = Path(entry["snapshot"])
             entry["trusted"] = True
             entry["trust_reason"] = reason
-            summary = self._apply(state, market, current, entry, approve=True)
+            summary = self._apply(state, market, current, entry, approve=True, only=plugins)
             entry["trusted_at"] = _now()
             self._write_state(state)
         summary.pop("federated_pins", None)

@@ -33,15 +33,20 @@ async def spawn_child(
     name: str = "",
     concurrency: int | None = None,
     metadata: dict[str, Any] | None = None,
+    plugins: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Start ``agent`` on ``task`` for ``caller``: the spawn tools' path, and the person's.
 
     Only who ``caller`` is differs between the two: the spawn tools resolve the calling
     agent, a person's summons name the conversation they wrote in (``metadata`` then
-    says the person started it).
+    says the person started it). ``plugins`` adds plugins to, or removes them from, the
+    child's agent (:func:`~clio_agent.gact.spawn_context.with_plugins`).
     """
     from clio_agent.gact.assignment_evidence import select_assignment_evidence
+    from clio_agent.gact.authored_trust import permit_child_plugins  # noqa: PLC0415
 
+    if plugins and (refused := await permit_child_plugins(app, caller.session_id, plugins)):
+        return refused  # typed (plugin_not_trusted, plugin_not_installed); nothing started
     target = str(agent or "").strip() or "self"
     if not isinstance(name, str):
         raise ValueError("name must be a string")
@@ -65,12 +70,27 @@ async def spawn_child(
         launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
         session_metadata=session_metadata or None,
         model=str(model or "").strip(),
+        plugins=plugins or None,
     )
     return {
         **result,
         **({"task_id": result["handle"]} if "handle" in result else {}),
         **accepted_model(app, result),
     }
+
+
+def _plugin_change(plugins: Any) -> dict[str, list[str]] | None:
+    """The ``plugins`` argument as ``{"add": [...], "remove": [...]}``, or ``None``."""
+
+    if plugins is None:
+        return None
+    if not isinstance(plugins, dict) or set(plugins) - {"add", "remove"}:
+        raise ValueError('plugins must be {"add": [...], "remove": [...]}')
+    change = {
+        key: [str(ref).strip() for ref in plugins.get(key) or [] if str(ref).strip()]
+        for key in ("add", "remove")
+    }
+    return change if change["add"] or change["remove"] else None
 
 
 def build_spawn_runtime_tools(
@@ -108,11 +128,13 @@ def build_spawn_runtime_tools(
         invocation: str,
         model: str = "",
         name: str = "",
+        plugins: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from clio_agent.gact import summon  # noqa: PLC0415
 
         local_placement(placement)
         app, caller = _runtime()
+        change = _plugin_change(plugins)
         # A subagent the person @-named this turn: the person is recorded as its starter.
         claimed = summon.claim(summon.SUBAGENT, str(agent or "").strip())
         try:
@@ -128,6 +150,7 @@ def build_spawn_runtime_tools(
                 name=name,
                 concurrency=concurrency,
                 metadata=summon.child_metadata(claimed) or None,
+                plugins=change,
             )
         except Exception as error:
             summon.started(claimed, {"error": str(error)})
@@ -143,6 +166,7 @@ def build_spawn_runtime_tools(
         strategy: dict[str, Any] | None = None,
         model: str = "",
         name: str = "",
+        plugins: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await prepare_and_spawn(
             agent,
@@ -153,6 +177,7 @@ def build_spawn_runtime_tools(
             spawn_invocation_id(),
             model,
             name,
+            plugins,
         )
 
     async def spawn_agents_parallel(
@@ -177,6 +202,7 @@ def build_spawn_runtime_tools(
                     invocation + ":" + str(index),
                     assignment.get("model") or "",
                     assignment.get("name") or "",
+                    assignment.get("plugins"),
                 )
             except Exception as error:
                 logger.exception(
@@ -238,6 +264,27 @@ def build_spawn_runtime_tools(
         ],
         "default": None,
     }
+    plugins_schema = {
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "add": {"type": "array", "items": {"type": "string"}},
+                    "remove": {"type": "array", "items": {"type": "string"}},
+                },
+                "additionalProperties": False,
+            },
+            {"type": "null"},
+        ],
+        "default": None,
+        "description": (
+            "Plugins to add to or remove from the child's agent (refs such as "
+            "private-local/my-plugin), as the Agent panel changes a conversation: try a "
+            "plugin in a child without changing yours. A plugin Clio wrote that is not "
+            "trusted yet is asked about once; someone else's untrusted plugin is refused "
+            "(plugin_not_trusted). Not for a defined subagent."
+        ),
+    }
     model_schema = {
         "type": "string",
         "default": "",
@@ -268,6 +315,7 @@ def build_spawn_runtime_tools(
                 },
                 "strategy": strategy_schema,
                 "model": model_schema,
+                "plugins": plugins_schema,
             },
             "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Delegate work that can run in parallel and reading you need only the conclusion of: what you read yourself stays in your context for the rest of the task, while a child returns only its report. A child also costs time of its own: it starts fresh, works on its own model (named in the result), and ends by writing its report, which you then read and answer from; a search you can finish in a few wide steps, or with one run_code script, is usually faster done yourself. Do a lookup whose file you already know yourself. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
         )
@@ -305,6 +353,7 @@ def build_spawn_runtime_tools(
                             },
                             "strategy": strategy_schema,
                             "model": model_schema,
+                            "plugins": plugins_schema,
                         },
                         "required": ["task"],
                         "additionalProperties": False,

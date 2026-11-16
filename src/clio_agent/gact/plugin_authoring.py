@@ -1,18 +1,16 @@
-"""Running a flow whose plugin is not trusted asks the person, where they are.
+"""``make_plugin``, and running a flow whose plugin is not trusted yet.
 
-``make_plugin`` writes a plugin Clio authored (:mod:`clio_agent.plugins.authored`),
-checks it as ``clio-agent plugin check`` does and installs it, untrusted.
+``make_plugin`` (claimed by the ``builder`` plugin) writes a plugin into the person's
+``private-local`` marketplace (:mod:`clio_agent.plugins.authored`), checks it untrusted
+as ``clio-agent plugin check`` does and installs the marketplace. Writing the name of a
+plugin Clio wrote makes its next version, with the diff recorded; a name the person
+wrote is ``name_taken_by_person``, and a plugin of another marketplace is changed only
+as the person's variation under a new name (``variation_of``).
 
 ``run_flow`` on a flow no trusted plugin of the conversation provides looks for an
-installed, untrusted plugin that declares it, read from its installed files without
-importing them. Running it is then a permission request through the conversation's
-permission gate: the flow, who wrote it, its file, and where to read it. Allowed, the
-plugin is trusted, added to the conversation, and the flow starts.
-
-Who decides follows who wrote it. A flow Clio wrote, whose installed files are still
-exactly what Clio wrote, takes the conversation's approval mode: under bypass it runs
-at once, on the record. Any other plugin is asked about in every mode: bypass does not
-trust someone else's code.
+installed, untrusted plugin that declares it, read from its files without importing
+them, and asks (:mod:`clio_agent.gact.authored_trust`): allowed, that one plugin is
+trusted, added to the conversation, and the flow starts.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.flows.outcomes import FlowNotTrusted
-from clio_agent.gact import session_warmup
+from clio_agent.gact import authored_trust, session_warmup
 from clio_agent.gact.agents import prompt_basis
 from clio_agent.gact.agents.resolution import (
     SessionAgentUnavailable,
@@ -38,45 +36,34 @@ from clio_agent.plugins.store import BUILTIN_MARKETPLACE, StoreError
 from clio_agent.tools.tool_settings import self_gated
 
 
-def _authored_by_clio(store: Any, market: str, snapshot: Path) -> str:
-    """The session in which Clio wrote ``market``, when the installed files are exactly
-    the ones it wrote; otherwise empty."""
+def _untrusted_records(store: Any) -> list[Any]:
+    """Installed plugins whose installed version may not run yet: never trusted, or an
+    update that waits for trust (the waiting version, not the one still in use)."""
 
-    record = authored.authorship(store.root, market)
-    if record is None or record["digest"] != authored.folder_digest(snapshot):
-        return ""
-    return str(record.get("session_id") or "")
+    pending = {(r.marketplace, r.id): r for r in store.pending()}
+    rows = [pending.pop((r.marketplace, r.id), r) for r in store.installed_records()]
+    return [r for r in [*rows, *pending.values()] if authored_trust.needs_trust(store, r)]
 
 
 def untrusted_flows(store: Any) -> list[dict[str, Any]]:
-    """Every flow an installed plugin declares that is not trusted in its installed version
-    (never trusted, or an update waits for trust), read from its files."""
+    """Every flow an untrusted installed plugin declares, read from its files."""
 
-    waiting = {row.marketplace for row in store.pending()}
     rows: list[dict[str, Any]] = []
-    for market, entry in sorted(store.marketplaces().items()):
-        if entry.get("trusted") and market not in waiting:
+    for record in sorted(_untrusted_records(store), key=lambda r: (r.marketplace, r.id)):
+        root = Path(record.root)
+        if not (root / "plugin.json").is_file():
+            # Flows come from an Agent Plugins plugin; a Claude Code plugin declares none.
             continue
-        snapshot = Path(entry["snapshot"])
-        if not (snapshot / "plugin.json").is_file():
-            # Flows come from an Agent Plugins plugin (a plugin.json at its root); a
-            # Claude Code marketplace or plugin declares none.
+        review = authored.review(root)
+        if not review["flows"]:
             continue
-        review = authored.review(snapshot)
-        session = _authored_by_clio(store, market, snapshot) if review["flows"] else ""
-        by_clio = bool(session)
+        row = authored_trust.trust_row(store, record)
         rows.extend(
             {
+                **row,
                 "flow": flow["id"],
                 "description": flow["description"],
-                "plugin": market,
-                "version": review["version"],
-                "snapshot": str(snapshot),
-                "authored_by_clio": by_clio,
-                "authored_in_session": session,
-                "author": "Clio" if by_clio else market,
                 "file": flow["file"],
-                "review_url": f"/v1/plugins/{market}/review",
             }
             for flow in review["flows"]
         )
@@ -84,8 +71,7 @@ def untrusted_flows(store: Any) -> list[dict[str, Any]]:
 
 
 def untrusted_flow(store: Any, flow_id: str) -> dict[str, Any] | None:
-    """The first untrusted installed plugin that declares ``flow_id``: who wrote it and
-    where to read it, as the run permission presents it."""
+    """The first untrusted installed plugin that declares ``flow_id``, as the ask names it."""
 
     found = next((row for row in untrusted_flows(store) if row["flow"] == flow_id), None)
     if found is None:
@@ -117,13 +103,22 @@ def installed_changed(app: Any) -> None:
 
 
 def installed_review(app: Any, name: str) -> dict[str, Any]:
-    """The review of ``name``'s installed files, and whether they are exactly what Clio wrote."""
+    """The review of ``name`` (a marketplace, or a plugin of the private marketplace) as
+    installed, whether it is exactly what Clio wrote, and what changed since trusted."""
 
     store = plugin_service(app).store
-    snapshot = Path(store.marketplaces()[name]["snapshot"])
+    entry = store.marketplaces().get(name)
+    if entry is not None:
+        snapshot = Path(entry["snapshot"])
+        return {**authored.review(snapshot), "authored_by_clio": False}
+    record = authored_trust.find_record(app, f"{authored.PRIVATE_MARKETPLACE}/{name}")
+    if record is None:
+        raise LookupError(f"{name!r} is not installed")
+    row = authored_trust.trust_row(store, record)
     return {
-        **authored.review(snapshot),
-        "authored_by_clio": bool(_authored_by_clio(store, name, snapshot)),
+        **authored.review(Path(record.root)),
+        "authored_by_clio": row["authored_by_clio"],
+        "changed_since_trusted": row["changed_since_trusted"],
     }
 
 
@@ -140,25 +135,6 @@ def add_to_conversation(app: Any, session_id: str, refs: list[str]) -> list[str]
     prompt_basis.settle_basis(app, session_id)
     session_warmup.start_session_warmup(app, session_id, trigger="agent_changed")
     return added
-
-
-def trust_and_add(
-    app: Any, market: str, session_id: str, *, reason: str, snapshot: str = ""
-) -> list[str]:
-    """Trust ``market`` and add its plugins to ``session_id``'s agent; returns their refs.
-
-    ``snapshot`` is the content the person was asked about: if the plugin changed
-    since (rewritten or updated while the question was open), nothing is trusted.
-    """
-
-    store = plugin_service(app).store
-    store.trust(market, reason=reason, snapshot=snapshot)
-    installed_changed(app)
-    refs = sorted(
-        f"{row.marketplace}/{row.id}" for row in store.records() if row.marketplace == market
-    )
-    add_to_conversation(app, session_id, refs)
-    return refs
 
 
 def outside_flows(store: Any, resolved: set[str]) -> list[dict[str, Any]]:
@@ -179,51 +155,29 @@ def outside_flows(store: Any, resolved: set[str]) -> list[dict[str, Any]]:
     return rows
 
 
-def _ask_to_run(
-    app: Any, session_id: str, flow_id: str, found: dict[str, Any], call: dict[str, Any]
-) -> str:
-    """Put running the untrusted flow to the conversation's permission gate (blocking)."""
-
-    session = app.state.sessions.get(session_id)
-    bypass = getattr(session, "approval_mode", "") == "bypass"
-    here = _authored_here(found, session_id)
-    who = "Clio" if found["authored_by_clio"] else f"the {found['plugin']} plugin"
-    gate = app.state.make_permission_gate()
-    return gate(
-        "run_flow",
-        {
-            "flow": flow_id,
-            **{k: v for k, v in found.items() if k not in ("snapshot", "authored_in_session")},
-            **call,
-        },
-        {
-            "kind": "native",
-            "summary": f"Run the {flow_id} flow, written by {who}, which is not trusted yet",
-            # Only a flow Clio wrote in THIS conversation may follow its approval
-            # mode (bypass runs it): another conversation's bypass is not this one's.
-            "always_ask": not (here and bypass),
-        },
-    )
-
-
-def _authored_here(found: dict[str, Any], session_id: str) -> bool:
-    return bool(found["authored_by_clio"]) and found.get("authored_in_session") == session_id
-
-
 async def permit_untrusted_flow(
     app: Any, session_id: str, flow_id: str, call: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Ask to run ``flow_id`` from an untrusted plugin; trust and add it when allowed.
 
     Returns ``None`` when no untrusted plugin declares it, ``{"trusted": True, ...}``
-    once it can start, or a typed refusal.
+    once it can start, or a typed refusal (``flow_not_trusted``, ``flow_not_added``).
     """
 
     store = plugin_service(app).store
     found = await asyncio.to_thread(untrusted_flow, store, flow_id)
     if found is None:
         return None
-    decision = await asyncio.to_thread(_ask_to_run, app, session_id, flow_id, found, call)
+    who = "Clio" if found["authored_by_clio"] else f"the {found['marketplace']} marketplace"
+    decision = await asyncio.to_thread(
+        authored_trust._ask,  # noqa: SLF001 - the one gate wording for trust asks
+        app,
+        session_id,
+        "run_flow",
+        found,
+        {"flow": flow_id, **call},
+        f"Run the {flow_id} flow, written by {who}, which is not trusted yet",
+    )
     if str(decision) != "allow":
         return {
             "accepted": False,
@@ -232,76 +186,149 @@ async def permit_untrusted_flow(
             "plugin": found["plugin"],
         }
     session = app.state.sessions.get(session_id)
-    reason = (
-        "authored_bypass"
-        if _authored_here(found, session_id) and getattr(session, "approval_mode", "") == "bypass"
-        else "allowed_to_run"
-    )
+    here = found["authored_by_clio"] and found["authored_in_session"] == session_id
+    bypass = getattr(session, "approval_mode", "") == "bypass"
+    reason = "authored_bypass" if here and bypass else "allowed_to_run"
     try:
-        added = await asyncio.to_thread(
-            trust_and_add,
-            app,
-            found["plugin"],
-            session_id,
-            reason=reason,
-            snapshot=found["snapshot"],
-        )
+        await asyncio.to_thread(authored_trust.trust_plugin, store, found, reason=reason)
+        installed_changed(app)
+        added = await asyncio.to_thread(add_to_conversation, app, session_id, [found["ref"]])
     except (StoreError, SessionAgentUnavailable) as exc:
         return {"accepted": False, "reason": "flow_not_added", "error": str(exc)}
     return {"trusted": True, "plugin": found["plugin"], "added": added}
 
 
-async def make_plugin(name: str, files: dict[str, str]) -> dict[str, Any]:
+# ------------------------------------------------------------------ make_plugin
+
+
+def _taken_elsewhere(store: Any, name: str) -> str:
+    """The marketplace that already provides a plugin (or is itself) named ``name``."""
+
+    if name in store.marketplaces() and name != authored.PRIVATE_MARKETPLACE:
+        return name
+    for record in store.records():
+        if record.id == name and record.marketplace != authored.PRIVATE_MARKETPLACE:
+            return record.marketplace
+    return ""
+
+
+def _write(
+    store: Any, name: str, files: dict[str, str], session_id: str, variation_of: str
+) -> tuple[Path, dict[str, Any]]:
+    with store.lock:
+        folder, version = authored.write(
+            store.root,
+            name,
+            files,
+            session_id,
+            variation_of=variation_of,
+            taken_elsewhere=_taken_elsewhere(store, name),
+        )
+    return folder, version
+
+
+def _installed(store: Any, name: str) -> Any | None:
+    rows = {(r.marketplace, r.id): r for r in store.installed_records()}
+    rows.update({(r.marketplace, r.id): r for r in store.pending()})
+    return rows.get((authored.PRIVATE_MARKETPLACE, name))
+
+
+def _version_view(version: dict[str, Any]) -> dict[str, Any]:
+    diff = version.get("diff") or {}
+    return {
+        "version": version["version"],
+        "variation_of": version.get("variation_of", ""),
+        "added": diff.get("added", []),
+        "changed": diff.get("changed", []),
+        "removed": diff.get("removed", []),
+        "executable_changed": diff.get("executable_changed", []),
+        "diff": diff.get("unified", ""),
+    }
+
+
+async def make_plugin(name: str, files: dict[str, str], variation_of: str = "") -> dict[str, Any]:
     from clio_agent.gact.flow_tools import _runtime  # noqa: PLC0415
 
     app, caller = _runtime()
-    store = plugin_service(app).store
-    existing = store.marketplaces().get(name)
-    own = str((authored.authored_root(store.root) / name).resolve())
-    if existing is not None and existing.get("url") != own:
-        # The name belongs to a marketplace Clio did not write (and carries its trust).
+    service = plugin_service(app)
+    store = service.store
+    try:
+        folder, version = await asyncio.to_thread(
+            _write, store, name, files, caller.session_id, variation_of.strip()
+        )
+    except authored.AuthoredError as exc:
+        return {"installed": False, "reason": exc.reason, "error": str(exc), **exc.details}
+    # Not trusted yet: checked without importing the Python Clio just wrote.
+    report = await asyncio.to_thread(check, folder, service=service, trusted=False)
+    if not report.ok:
         return {
             "installed": False,
-            "reason": "marketplace_name_taken",
-            "error": f"{name!r} is already installed from {existing.get('url')}; pick another name",
+            "reason": "check_failed",
+            "check": report.to_dict(),
+            "message": "Fix the files and call make_plugin again with the same name.",
+            **_version_view(version),
         }
     try:
-        folder = await asyncio.to_thread(authored.write, store.root, name, files, caller.session_id)
-    except authored.AuthoredError as exc:
-        return {"installed": False, "reason": exc.reason, "error": str(exc)}
-    # Not trusted yet: checked without importing the Python Clio just wrote.
-    report = await asyncio.to_thread(check, folder, service=plugin_service(app), trusted=False)
-    if not report.ok:
-        return {"installed": False, "reason": "check_failed", "check": report.to_dict()}
-    try:
-        await asyncio.to_thread(store.install, str(folder), name=name)
+        await asyncio.to_thread(
+            store.install,
+            str(authored.private_root(store.root)),
+            name=authored.PRIVATE_MARKETPLACE,
+        )
     except StoreError as exc:
         return {"installed": False, "reason": exc.code, "error": str(exc)}
     installed_changed(app)
-    flows = [row["id"] for row in (await asyncio.to_thread(authored.review, folder))["flows"]]
+    record = await asyncio.to_thread(_installed, store, name)
+    if record is not None:
+        await asyncio.to_thread(authored.note_installed, store.root, name, record.executable_digest)
+    review = await asyncio.to_thread(authored.review, folder)
+    executable = bool(record is not None and record.has_executable_parts)
+    trusted = bool(record is not None and store.trusted(record))
     return {
         "installed": True,
         "check": "passed",
-        "flows": flows,
+        "plugin": name,
+        "ref": f"{authored.PRIVATE_MARKETPLACE}/{name}",
+        "marketplace": authored.PRIVATE_MARKETPLACE,
+        **_version_view(version),
+        "flows": [row["id"] for row in review["flows"]],
+        "tools": [row["name"] for row in review["tools"]],
+        "hooks": [row["id"] for row in review["hooks"]],
+        "executable": executable,
+        "trusted": trusted or not executable,
+        "warnings": [
+            row
+            for row in report.to_dict().get("diagnostics", [])
+            if row.get("severity") == "warning"
+        ],
         "message": (
-            "Start it with run_flow and these flow ids. The first run asks the person to "
-            "trust it, unless the conversation runs in bypass."
+            "Installed in the person's private marketplace. Add it to this conversation with "
+            "offer_plugin, or to a child with spawn_agent_task's plugins; "
+            + (
+                "its executable parts are asked about once when it is first used."
+                if executable and not trusted
+                else "it needs no trust step."
+            )
         ),
     }
 
 
 def build_make_plugin_tool() -> Any:
+    from clio_agent.gact.builder.presentation import make_plugin_presentation  # noqa: PLC0415
+
     return self_gated(
         native_tool(
             make_plugin,
             name="make_plugin",
-            domain="tasks",
+            domain="agents",
             title="Make plugin",
             desc=(
-                "Write a plugin from its files (plugin.json and its code, as the author-a-flow "
-                "skill describes), check it and install it. Returns its flow ids; run_flow "
-                "starts them. The first run asks the person to trust it (not under bypass). "
-                "Calling it again with changed files makes a new version, asked about again."
+                "Write a plugin from its files (plugin.json and its parts, as the capture "
+                "skill's references describe) into the person's private marketplace, check "
+                "it and install it. Calling it again with the name of a plugin you wrote "
+                "makes its next version (the diff is recorded). A name the person wrote is "
+                "name_taken_by_person; a plugin of another marketplace is changed only as a "
+                "variation under a new name with variation_of set to its ref. A failed check "
+                "returns its diagnostics: fix the files and call again."
             ),
             args={
                 "name": {"type": "string", "description": "The plugin's name, as in plugin.json."},
@@ -310,7 +337,12 @@ def build_make_plugin_tool() -> Any:
                     "additionalProperties": {"type": "string"},
                     "description": "Each file's path inside the plugin, mapped to its text.",
                 },
+                "variation_of": {
+                    "type": "string",
+                    "default": "",
+                    "description": "marketplace/plugin this is a variation of, if any.",
+                },
             },
-            presentation="tasks",
+            presentation=make_plugin_presentation,
         )
     )

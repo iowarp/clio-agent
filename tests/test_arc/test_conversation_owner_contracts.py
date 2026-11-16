@@ -116,10 +116,11 @@ async def test_delayed_spawn_commit_is_found_and_cancelled_after_fence_timeout(
         agent: str,
         scope: dict[str, Any] | None,
         model: str = "",
+        plugins: dict[str, list[str]] | None = None,
     ) -> CreatePreparedChild:
         prepare_entered.set()
         assert release_prepare.wait(10)
-        return original_prepare(parent, agent, scope, model)
+        return original_prepare(parent, agent, scope, model, plugins)
 
     def observed_submit(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         if getattr(operation, "__name__", "") == "create":
@@ -356,6 +357,7 @@ async def create_environment(
         agent: str,
         scope: dict[str, Any] | None,
         model: str = "",
+        plugins: dict[str, list[str]] | None = None,
     ) -> CreatePreparedChild:
         del model
         # Pinned like a defined subagent, so no later first use re-pins the child to

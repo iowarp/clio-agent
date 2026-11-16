@@ -199,6 +199,7 @@ class PluginService:
                         len(result.get("plugins") or []),
                         len(result.get("diagnostics") or []),
                     )
+            self._migrate_authored()
             if not self._install_default:
                 self._ready = True
                 return
@@ -218,6 +219,22 @@ class PluginService:
                     exc,
                 )
             self._ready = True
+
+    def _migrate_authored(self) -> None:
+        """Move plugins an older CLIO wrote (``<store>/authored``) into ``private-local``."""
+
+        from clio_agent.plugins import authored  # noqa: PLC0415
+
+        try:
+            moved = authored.migrate(self.store)
+        except (OSError, StoreError, ValueError) as exc:
+            # Typed and logged; the plugins stay where they were and the next start retries.
+            logger.error(
+                "authored plugin migration failed reason=authored_migration_failed: %r", exc
+            )
+            return
+        if moved:
+            logger.info("authored plugins moved to private-local: %s", moved)
 
     # ---------------------------------------------------------------- catalog
     def catalog(self, extra: list[PluginRecord] | None = None) -> Catalog:
