@@ -13,12 +13,14 @@ names:
   arxiv: arXiv
   chronolog: ChronoLog
   darshan: Darshan
+  decimer: DECIMER
   hdf5: HDF5
   jarvis: Jarvis
   lmod: Lmod
   ndp: National Data Platform
   node-hardware: Node hardware
   pandas: pandas
+  pubchem: PubChem
   parallel-sort: Log sort
   paraview: ParaView
   parquet: Parquet
@@ -37,6 +39,7 @@ groups:
   clio-fabrication: Fabrication
   clio-electronics: Electronics
   clio-home: Home and devices
+  clio-chemistry: Chemistry
   clio-research: Research
 # Logos, served like a hand-written entry's `logo` (an SVG beside this file) and, as
 # {light, dark}, its `logo_dark` (apps ledger, "Connector logos (LG)", LG-D2). A hand-written
@@ -52,12 +55,16 @@ groups:
 #   white, at least 55 px), Parquet (ASF: without permission only as a link to the project),
 #   arXiv (prohibited for products), HDF5 and Slurm (trademarks, no published logo terms
 #   found); the rest publish no logo terms either (LG-T2).
+# - pubchem, decimer: drawn for CLIO in the chemistry tile colour (as are the hand-written
+#   ase, fdmnes and graspa entries' logos); PubChem's mark was not used (no published
+#   logo terms for a third-party interface).
 logos:
   adios: adios.svg
   arxiv: arxiv.svg
   chronolog: chronolog.svg
   compression: compression.svg
   darshan: darshan.svg
+  decimer: decimer.svg
   hdf5: hdf5.svg
   jarvis: jarvis.svg
   lmod: lmod.svg
@@ -66,6 +73,7 @@ logos:
   pandas: pandas.svg
   parallel-sort: parallel-sort.svg
   parquet: parquet.svg
+  pubchem: pubchem.svg
   plot: plot.svg
   scientific-catalog: scientific-catalog.svg
   seismology: seismology.svg

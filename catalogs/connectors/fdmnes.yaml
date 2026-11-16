@@ -1,0 +1,24 @@
+# FDMNES: clio-kit's fdmnes server (mcp-servers/fdmnes), XANES spectra with FDMNES
+# (Institut Neel, CNRS). Adapted in part from ChemGraph (Apache-2.0). The server never
+# downloads FDMNES; the fdmnes plugin's install skill builds it with Spack from clio-kit's
+# spack-repo (spack install fdmnes) and "FDMNES program" points at it. Empty, the server
+# looks for fdmnes on PATH. Reading and comparing spectra work without it. Group from
+# derive.yaml (clio-chemistry). Logo: ours.
+- id: fdmnes
+  name: FDMNES
+  logo: fdmnes.svg
+  description: Compute X-ray absorption (XANES) spectra of crystals and molecules with FDMNES, and normalize and compare spectra
+  server:
+    command: clio-kit
+    args: [mcp-server, fdmnes]
+    env:
+      FDMNES_COMMAND: ${need.fdmnes}
+  needs:
+    - key: fdmnes
+      kind: value
+      label: FDMNES program
+      required: false
+      agent_settable: true
+      help: Leave empty to find fdmnes on PATH. Otherwise the path to the fdmnes executable (spack location -i fdmnes, then bin/fdmnes).
+  requires: The FDMNES program, for computing spectra (the fdmnes plugin can build it with Spack)
+  plugin: fdmnes
