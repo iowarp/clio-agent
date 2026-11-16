@@ -198,7 +198,6 @@ class Session(_WireModel):
     cost_usd: float | None = None
     mode: str = "edit"  # P1.1 #1063: ``chat`` mode removed (unenforced == edit)
     edit_mode: str = "diff"
-    routing_mode: str = "auto"
     archived: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -1071,7 +1071,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
-    "src/clio_agent/ui/cli.py": 1014,
+    "src/clio_agent/ui/cli.py": 1012,
     # (agent_elicitation.py's entry retired, #1331 review round: the file was a
     # NEW god-file at 1001 lines, never a legitimate baseline target -- the 800
     # cap is a backstop, not a license. Split by behavior into owner modules
@@ -1096,13 +1096,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # #2234 (+40, 816 -> 856): Windows download cancel (replace retry, chunked cancellable
     # verification, taskkill of the identity-checked supervisor) -- same one-script constraint.
     "src/clio_agent/gact/infrastructure/node_models.py": 856,
-    "src/clio_agent/gact/permission_gate.py": 834,
+    "src/clio_agent/gact/permission_gate.py": 826,
     # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,
     "src/clio_agent/gact/sessions.py": 839,
     "src/clio_agent/gact/turn_finalize.py": 803,
-    "src/clio_agent/gact/types.py": 802,
     # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to
     # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,

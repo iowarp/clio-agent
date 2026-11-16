@@ -1,24 +1,32 @@
-"""clio_agent.client — typed Python client for the GACT v1 API (#799 phase 1).
+"""clio_agent.client — run CLIO agents and flows from Python (also exported as ``clio``).
 
-Talk to a running clio backend from code: sessions, messages, SSE
-streaming with ``Last-Event-ID`` resume, workspaces, permissions, and
-health/capability probing. Pure client — importing this package never
-loads the gact server.
+Opening a :class:`ClioClient` attaches to the CLIO server on this machine (or at
+``ClioOptions.url``) or starts one; ``run`` and ``run_flow`` put an agent or a flow to
+work without asking anyone anything and return a :class:`RunResult`. The typed GACT
+v1 API (sessions, messages, SSE streaming with ``Last-Event-ID`` resume, workspaces,
+permissions) is on the same client. Importing this package never loads the server.
 
 Example:
-    >>> from clio_agent.client import ClioClient
-    >>> with ClioClient() as client:
-    ...     print(client.health().overall_status)
+    >>> from clio import ClioClient, ClioOptions
+    >>> with ClioClient(options=ClioOptions(workspace=".", agent="factorio")) as c:
+    ...     result = c.run("Reduce the mass of the bracket in bracket.inp by 30%")
+    ...     print(result.text)
 """
 
+from clio_agent.client.aio import AsyncClioClient, AsyncRunSession
 from clio_agent.client.client import (
-    DEFAULT_BASE_URL,
     ClioClient,
     DocumentsAPI,
     MessagesAPI,
     PermissionsAPI,
     SessionsAPI,
     WorkspacesAPI,
+)
+from clio_agent.client.connection import (
+    ProviderNotConfigured,
+    ServerSetupError,
+    ServerStartFailed,
+    ServerUnavailable,
 )
 from clio_agent.client.errors import (
     ClioAPIError,
@@ -51,6 +59,9 @@ from clio_agent.client.events import (
     ToolCallCompleted,
     ToolCallStarted,
 )
+from clio_agent.client.options import ClioOptions
+from clio_agent.client.run import Artifact, RunResult, TaskSettled, TaskStarted
+from clio_agent.client.run_api import AgentNotAvailable, RunSession
 from clio_agent.client.types import (
     Agent,
     ArtifactReview,
@@ -83,8 +94,20 @@ from clio_agent.client.types import (
 )
 
 __all__ = [
-    "DEFAULT_BASE_URL",
     "Agent",
+    "AgentNotAvailable",
+    "Artifact",
+    "AsyncClioClient",
+    "AsyncRunSession",
+    "ClioOptions",
+    "ProviderNotConfigured",
+    "RunResult",
+    "RunSession",
+    "ServerSetupError",
+    "ServerStartFailed",
+    "ServerUnavailable",
+    "TaskSettled",
+    "TaskStarted",
     "ArtifactReview",
     "Capabilities",
     "ClioAPIError",

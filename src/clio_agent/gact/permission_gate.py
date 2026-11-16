@@ -63,7 +63,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact import permission_timeout
+from clio_agent.gact import permission_timeout, unattended
 from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
@@ -82,7 +82,6 @@ from clio_agent.gact.permission_context import (
 from clio_agent.gact.permission_context import (
     _normalize_mcp_tool_annotations as _normalize_mcp_tool_annotations,
 )
-from clio_agent.gact import unattended
 from clio_agent.gact.permission_delivery import (
     permission_summary,
     publish_permission_event,

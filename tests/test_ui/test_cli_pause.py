@@ -32,6 +32,7 @@ from rich.console import Console
 from clio_agent.client import (
     ClioClient,
     ClioConnectionError,
+    ClioOptions,
     SessionStatusChanged,
     UserQuestion,
 )
@@ -180,7 +181,7 @@ def make_client(tmp_path: Path) -> Iterator[Callable[[Any], ClioClient]]:
         )
         transport = StreamingASGITransport(app)
         transports.append(transport)
-        client = ClioClient("http://testserver", transport=transport)
+        client = ClioClient(ClioOptions(url="http://testserver"), transport=transport)
         clients.append(client)
         return client
 
@@ -221,25 +222,6 @@ def test_ask_question_drives_ask_user_pause_and_resumes(
     assert questions[0].answer_input["turn_id"]
 
 
-def test_ask_user_pause_aborts_structured_in_non_interactive(
-    make_client: Callable[[Any], ClioClient],
-) -> None:
-    """``--query`` (non-interactive) must NOT hang on an ask_user pause: it
-    surfaces a structured 'input_required' error and stops."""
-
-    agent = AskThenAnswerAgent(question="Which dataset?", answer="never reached")
-    client = make_client(agent)
-    cli, _ = _make_cli(client)
-
-    result = _run_with_timeout(lambda: cli.ask_question("q", interactive=False))
-
-    assert result["error_info"] is not None
-    assert result["error_info"]["error"] == "input_required"
-    assert "Which dataset?" in result["error_info"]["message"]
-    # Only the initial forward ran — we aborted instead of answering + resuming.
-    assert len(agent.calls) == 1
-
-
 # --------------------------------------------------------------------------- #
 # DEFECT 1 — permission pause is driven, not hung
 # --------------------------------------------------------------------------- #
@@ -276,34 +258,6 @@ def test_ask_question_drives_permission_pause(
     assert "Command finished." in result["answer"]
 
 
-def test_permission_pause_auto_denies_in_non_interactive(
-    make_client: Callable[[Any], ClioClient], monkeypatch: Any
-) -> None:
-    agent = StubAgent(
-        answer="Command finished.",
-        permissions_requested=[
-            {"id": "perm_xyz", "tool_call": {"tool_name": "shell.run"}, "summary": "run rm"}
-        ],
-    )
-    client = make_client(agent)
-    cli, _ = _make_cli(client)
-
-    responded: list[tuple[str, str]] = []
-    orig_respond = client.permissions.respond
-
-    def _spy_respond(permission_id: str, action: str) -> None:
-        responded.append((permission_id, action))
-        return orig_respond(permission_id, action)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(client.permissions, "respond", _spy_respond)
-
-    result = _run_with_timeout(lambda: cli.ask_question("do it", interactive=False))
-
-    # Non-interactive auto-denies (announced, not silent) and the turn resumes.
-    assert responded == [("perm_xyz", "deny")]
-    assert result["error_info"] is None
-
-
 # --------------------------------------------------------------------------- #
 # DEFECT 1 — the pause loop is hard-bounded (injected fakes, fast + determinist)
 # --------------------------------------------------------------------------- #
@@ -334,7 +288,7 @@ def test_consume_turn_bounds_pause_rounds(client: ClioClient, monkeypatch: Any) 
     monkeypatch.setattr(cli.client.sessions, "questions", lambda sid, **k: [pending])
     monkeypatch.setattr(cli.client.sessions, "answer_question", _fake_answer)
 
-    completed, message, error_info = cli._consume_turn("sess_x", "msg_1", interactive=True)
+    completed, message, error_info = cli._consume_turn("sess_x", "msg_1")
 
     assert completed is None
     assert message is None
@@ -361,13 +315,14 @@ def test_ask_question_uses_session_title(client: ClioClient) -> None:
 def test_run_query_threads_session_title(client: ClioClient, monkeypatch: Any) -> None:
     import clio_agent.ui.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "boot_client", lambda *a, **k: client)
-    # run_query closes the client in `finally`; keep the shared fixture alive.
+    # run_query opens its own library client; hand it the in-process one (kept open).
+    monkeypatch.setattr(cli_mod, "ClioClient", lambda *a, **k: client)
     monkeypatch.setattr(client, "close", lambda: None)
 
-    run_query("hello there", session_title="Threaded Title", port=0)
+    assert run_query("hello there", session_title="Threaded Title", port=0) == 0
 
-    titles = [s.title for s in client.sessions.list()]
+    # The library runs in a workspace rooted at the working folder, not ws_default.
+    titles = [s.title for s in client.sessions.list(include_all_workspaces=True)]
     assert "Threaded Title" in titles
 
 
@@ -458,7 +413,7 @@ def test_ask_question_fetch_never_races_assistant_persistence(
     monkeypatch.setattr(gact_app, "_append_session_message", _gated_append)
 
     transport = StreamingASGITransport(app)
-    client = ClioClient("http://testserver", transport=transport)
+    client = ClioClient(ClioOptions(url="http://testserver"), transport=transport)
     try:
         real_get = client.messages.get
 

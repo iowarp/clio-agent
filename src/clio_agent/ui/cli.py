@@ -7,7 +7,7 @@ A typed SDK client of the GACT server; no in-process agent or LM.
 Boot is separated from logic for testability: :class:`ClioAgentCLI` takes an
 already-built :class:`ClioClient` (tests inject one over an in-process ASGI
 transport), and the module-level :func:`boot_client` connect-or-spawns the
-real server via :func:`clio_agent.serve.ensure_server` and wraps it in a
+real server through the library (:class:`clio_agent.client.ClioClient`) as a
 client. A server that cannot be reached is a structured, non-zero exit — no
 silent fallback.
 
@@ -48,12 +48,8 @@ _src_root = _current_file.parent.parent.parent  # src/clio_agent/ui/cli.py -> sr
 if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
-from clio_agent import __version__, serve
-from clio_agent.client import (
-    ClioClient,
-    ClioSDKError,
-    Health,
-)
+from clio_agent import __version__
+from clio_agent.client import ClioClient, ClioOptions, ClioSDKError, Health
 from clio_agent.runtime.installation_tools import adopt_installation_tools
 from clio_agent.ui.cli_commands import handle_local_command
 from clio_agent.ui.doctor import run_doctor, run_doctor_gc
@@ -474,23 +470,18 @@ Source: server agent catalog (GET /v1/agents)
         question: str,
         *,
         session_title: str = "CLI session",
-        interactive: bool = True,
     ) -> dict[str, Any]:
         """Ask the server a question: post the message, consume the session
         SSE feed until the turn completes, and return the rendered result.
 
-        Reuse one session and advance its event cursor across REPL turns.
-        Interactive mode answers posted Questions and permission requests;
-        noninteractive mode reports required human input without inventing it.
+        Reuse one session and advance its event cursor across REPL turns, and
+        prompt the person for posted Questions and permission requests.
+        (``--query`` runs through the library unattended: :func:`run_query`.)
 
         Args:
             question: The user's question.
             session_title: Title for the session, applied only when the
                 session is first created (see :meth:`_ensure_session`).
-            interactive: Whether the CLI may prompt the user to resolve a
-                pause. ``False`` (the ``--query`` path) auto-denies
-                permissions and aborts an ask-user pause with a structured
-                error rather than hanging on a prompt it cannot show.
 
         Returns:
             A dict with ``question``, ``expert``, ``answer``, ``error_info``,
@@ -503,7 +494,7 @@ Source: server agent catalog (GET /v1/agents)
         try:
             ack = self.client.messages.post(session_id, text=question)
             completed, message, consume_error = self._consume_turn(
-                session_id, ack.message_id, interactive=interactive, status=status
+                session_id, ack.message_id, status=status
             )
         finally:
             status.stop()
@@ -545,7 +536,6 @@ Source: server agent catalog (GET /v1/agents)
         session_id: str,
         ack_message_id: str,
         *,
-        interactive: bool = True,
         status: Any = None,
         answered_question: str | None = None,
     ) -> tuple[Any, Any, dict[str, Any] | None]:
@@ -556,7 +546,6 @@ Source: server agent catalog (GET /v1/agents)
             self,
             session_id,
             ack_message_id,
-            interactive=interactive,
             status=status,
             answered_question=answered_question,
         )
@@ -583,37 +572,22 @@ Source: server agent catalog (GET /v1/agents)
         self,
         session_id: str,
         *,
-        interactive: bool,
         status: Any = None,
         question_id: str | None = None,
     ) -> tuple[dict[str, Any] | None, Any]:
         """Answer the addressed Question and retain its actual owner identity."""
         from clio_agent.ui.cli_events import resolve_waiting_user
 
-        return resolve_waiting_user(
-            self, session_id, interactive=interactive, status=status, question_id=question_id
-        )
+        return resolve_waiting_user(self, session_id, status=status, question_id=question_id)
 
-    def _resolve_permission(
-        self, permission: Any, *, interactive: bool, status: Any = None
-    ) -> dict[str, Any] | None:
+    def _resolve_permission(self, permission: Any, *, status: Any = None) -> dict[str, Any] | None:
         """Resolve a ``permission.requested`` pause: prompt allow/deny and
         respond.
 
-        Non-interactive mode auto-denies (a safe default that still lets the
-        turn continue), which is a deliberate policy, not a silent failure —
-        the denial is announced. Returns ``None`` once handled.
+        Returns ``None`` once handled.
         """
         tool_name = permission.tool_call.tool_name or "(unknown tool)"
         summary = permission.summary or ""
-
-        if not interactive:
-            self.console.print(
-                f"[#FFAA00]Auto-denying tool permission for '{escape(tool_name)}' "
-                "(non-interactive mode).[/#FFAA00]"
-            )
-            self.client.permissions.respond(permission.id, "deny")
-            return None
 
         body = f"[bold]Tool:[/bold] {escape(tool_name)}"
         if summary:
@@ -718,42 +692,29 @@ def boot_client(
     *,
     console: Console | None = None,
 ) -> ClioClient:
-    """Connect-or-spawn the GACT server and return a client for it.
+    """Attach to the CLIO server on ``host``/``port`` or start one, and return the client.
 
-    Delegates to :func:`clio_agent.serve.ensure_server` (attach to a running
-    server or spawn one), then wraps the base URL in a :class:`ClioClient`.
-    A server that cannot be located or started is a structured, non-zero
-    exit — never a silent fallback.
-
-    Args:
-        port: TCP port to probe/serve on (default: the configured ``gact.port``).
-        host: Bind/probe host (default ``127.0.0.1``).
-        console: Optional console for the structured error (tests inject one).
-
-    Returns:
-        A connected :class:`ClioClient`.
+    The library's own attach-or-start (:mod:`clio_agent.client.connection`): a server
+    it starts stops when its last client leaves. A server that cannot be reached or
+    started is a structured, non-zero exit naming the fix -- never a silent fallback.
 
     Raises:
-        SystemExit: If the server cannot be reached/started (after printing
-            the structured reason).
+        SystemExit: If the server cannot be reached or started (after printing why).
     """
     console = console or Console()
+    client = ClioClient(ClioOptions(url=_server_url(host, port), banner=False))
     try:
-        base_url = serve.ensure_server(port, host)
-    except serve.ServeError as exc:
-        payload = exc.payload if isinstance(exc.payload, dict) else {}
-        reason = payload.get("reason", "error")
-        detail = payload.get("detail", str(exc))
-        console.print(f"\n[red]Cannot start the CLIO server ({escape(str(reason))}).[/red]")
-        console.print(f"[yellow]{escape(str(detail))}[/yellow]")
-        searched = payload.get("searched")
-        if searched:
-            console.print(f"[dim]Searched: {escape(str(searched))}[/dim]")
-        log = payload.get("log")
-        if log:
-            console.print(f"[dim]Server log: {escape(str(log))}[/dim]")
+        return client.open()
+    except ClioSDKError as exc:
+        client.close()
+        console.print(f"\n[red]Cannot use a CLIO server: {escape(str(exc))}[/red]")
         raise SystemExit(1) from exc
-    return ClioClient(base_url)
+
+
+def _server_url(host: str, port: int | None) -> str:
+    from clio_agent.server_port import configured_port  # noqa: PLC0415
+
+    return f"http://{host}:{configured_port() if port is None else port}"
 
 
 def render_health(console: Console, health: Health) -> None:
@@ -840,38 +801,62 @@ def run_query(
     verbose: bool = False,
     port: int | None = None,
     host: str = "127.0.0.1",
+    agent: str | None = None,
+    model: str | None = None,
+    workspace: str = ".",
+    approval_mode: str = "bypass",
 ) -> int:
-    """Non-interactive single-question mode over the server-backed client."""
+    """``clio-agent -q``: one unattended run through the library (``ClioClient.run``).
+
+    Nothing is asked: tools run under ``approval_mode`` (``bypass`` by default), a
+    question gets the "user is not available" reply. Prints the answer (or JSON) and
+    returns 0 when the run completed.
+    """
     import json
 
-    console = Console()
-    client = boot_client(port, host, console=console)
+    console = Console(stderr=json_output)
+    started = time.time()
     try:
-        cli = ClioAgentCLI(client, verbose=verbose, console=console)
-        result = cli.ask_question(query, session_title=session_title, interactive=False)
-        if json_output:
-            output = {
-                "question": query,
-                "answer": result["answer"],
-                "selected_expert": result["expert"],
-                "duration_ms": result["duration_ms"],
-                "session_id": result["session_id"],
-                "error_info": result["error_info"],
-                "status": "degraded" if result["error_info"] else "success",
-            }
-            print(json.dumps(output, indent=2))
-        else:
-            console.print(f"\n[bold cyan]Question:[/bold cyan] {escape(query)}")
-            cli._render_answer(result)
-        return 1 if result["error_info"] else 0
-    except ClioSDKError as exc:
+        options = ClioOptions(
+            url=_server_url(host, port),
+            workspace=workspace,
+            agent=agent,
+            model=model,
+            approval_mode=approval_mode,  # type: ignore[arg-type]
+        )
+        with ClioClient(options) as client:
+            result = client.session(title=session_title).run(query)
+    except (ClioSDKError, ValueError) as exc:
         if json_output:
             print(json.dumps({"error": str(exc), "status": "failed"}))
         else:
             console.print(f"[red]Error: {escape(str(exc))}[/red]")
         return 1
-    finally:
-        client.close()
+    error = result.error.model_dump() if result.error is not None else None
+    if json_output:
+        output = {
+            "question": query,
+            "answer": result.text,
+            "status": result.status,
+            "session_id": result.session_id,
+            "error_info": error,
+            "artifacts": [artifact.path for artifact in result.artifacts],
+            "trusted": result.trusted,
+            "usage": result.usage,
+            "duration_ms": (time.time() - started) * 1000.0,
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        console.print(f"\n[bold cyan]Question:[/bold cyan] {escape(query)}")
+        if error is not None:
+            console.print(Panel(Markdown(str(error.get("message") or "")), title="CLIO Error"))
+        else:
+            console.print(Panel(Markdown(result.text or "_(no answer)_"), title="CLIO"))
+        for artifact in result.artifacts:
+            console.print(f"[dim]artifact:[/dim] {escape(artifact.path)}")
+        if verbose:
+            console.print(f"[dim]session {result.session_id}; usage {result.usage}[/dim]")
+    return 0 if result.status == "completed" else 1
 
 
 def main() -> None:
@@ -952,6 +937,15 @@ def main() -> None:
         action="store_true",
         help="Accepted for CLI parity (Codex sandbox setup pops a native UAC prompt).",
     )
+    parser.add_argument("--agent", help="With --query: the agent id (default: the server's)")
+    parser.add_argument("--model", help="With --query: an account/model id")
+    parser.add_argument("--workspace", default=".", help="With --query: the workspace folder")
+    parser.add_argument(
+        "--approval-mode",
+        default="bypass",
+        choices=["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"],
+        help="With --query: what runs without asking; asks are denied (default: bypass)",
+    )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=None, help="Server port (default: gact.port)")
     parser.add_argument(
@@ -1004,6 +998,10 @@ def main() -> None:
                 verbose=args.verbose,
                 port=args.port,
                 host=args.host,
+                agent=args.agent,
+                model=args.model,
+                workspace=args.workspace,
+                approval_mode=args.approval_mode,
             )
         )
     else:
