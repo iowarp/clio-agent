@@ -7,7 +7,8 @@ its preamble arrives, so no event of the run is missed. While it runs:
 * child tasks (a flow's researchers, an agent's subagents) surface as
   :class:`TaskStarted` / :class:`TaskSettled` events, read from the server's task
   view on each ``task.updated`` hint;
-* each plugin trusted for the run (recorded on the session by the server) is printed
+* each plugin trusted for the run, and each tool input request approved with the
+  tool's defaults (both recorded on the session by the server), is printed
   once to stderr.
 
 The result reads the server's own records: the final message, the session's
@@ -55,6 +56,8 @@ class RunResult:
     artifacts: list[Artifact] = field(default_factory=list)
     error: ErrorInfo | None = None
     trusted: list[str] = field(default_factory=list)
+    #: Tool input requests approved without a person (``bypass``): question and answer.
+    approved: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, Any] = field(default_factory=dict)
 
 
@@ -108,6 +111,7 @@ class RunEngine:
         self.session_id = session_id
         self.workspace_root = workspace_root
         self.announced: set[str] = set()
+        self.approvals_seen = 0
         self._tasks: dict[str, str] = {}
 
     # -- the run ------------------------------------------------------------- #
@@ -131,7 +135,7 @@ class RunEngine:
                 if event.type == "task.updated":
                     yield from self._task_events(event)
                 elif event.type == "session.updated":
-                    self._announce_trusted(event.payload.get("metadata") or {})
+                    self._announce(event.payload.get("metadata") or {})
                 elif isinstance(event, MessageCompleted):
                     identity = str(event.payload.get("turn_id") or "")
                     if identity not in targets:
@@ -181,6 +185,18 @@ class RunEngine:
         if status in TERMINAL_TASK_STATUSES and previous not in TERMINAL_TASK_STATUSES:
             yield TaskSettled(id=hint.id, type="task.settled", payload=payload)
 
+    def _announce(self, metadata: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+        """Print the run's new trusts and approvals; return all of them."""
+
+        from clio_agent.client.connection import print_approved  # noqa: PLC0415
+
+        approved = [dict(row) for row in metadata.get("unattended_approved") or []]
+        for row in approved[self.approvals_seen :]:
+            if self.client.options.banner:
+                print_approved(str(row.get("question") or ""), row.get("answer") or {})
+        self.approvals_seen = max(self.approvals_seen, len(approved))
+        return self._announce_trusted(metadata), approved
+
     def _announce_trusted(self, metadata: dict[str, Any]) -> list[str]:
         from clio_agent.client.connection import print_trusted  # noqa: PLC0415
 
@@ -195,7 +211,7 @@ class RunEngine:
         """The result from the server's records once the turn completed (or the feed ended)."""
 
         session = self.client.sessions.get(self.session_id)
-        trusted = self._announce_trusted(session.metadata)
+        trusted, approved = self._announce(session.metadata)
         error: ErrorInfo | None = None
         text = ""
         if completed is None:
@@ -226,6 +242,7 @@ class RunEngine:
             artifacts=self.artifacts(),
             error=error,
             trusted=trusted,
+            approved=approved,
             usage=self.client.sessions.usage(self.session_id),
         )
 

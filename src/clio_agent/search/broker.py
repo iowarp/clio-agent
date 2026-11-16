@@ -38,6 +38,9 @@ class Decision:
     topic: str
     message: str
     options: tuple[tuple[str, str], ...]
+    #: The choice that proceeds: what a run whose approval mode approves every tool
+    #: answers without a person (``bypass``; :mod:`clio_agent.gact.unattended`).
+    default: str = ""
 
 
 @dataclass
@@ -74,6 +77,7 @@ def approval(source: str) -> Decision:
             f"{what} sees them. CLIO asks once for each source."
         ),
         options=((APPROVE, f"Allow searches through {label}"), (DECLINE, f"Don't use {label}")),
+        default=APPROVE,
     )
 
 
@@ -97,6 +101,7 @@ def exhausted(source: str, epoch: int, until: float, next_source: str) -> Decisi
             (ADD_KEY, f"I'll add a {_name(source)} key in Settings → Web search"),
             (STOP, "Stop searching for now"),
         ),
+        default=SWITCH,
     )
 
 

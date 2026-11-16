@@ -58,13 +58,15 @@ def input_required(decision: broker.Decision) -> mcp_types.InputRequiredResult:
 
     values = [value for value, _ in decision.options]
     labels = [label for _, label in decision.options]
-    schema = {
-        "type": "object",
-        "properties": {
-            _FIELD: {"type": "string", "title": "Choice", "enum": values, "enumNames": labels}
-        },
-        "required": [_FIELD],
+    field: dict[str, Any] = {
+        "type": "string",
+        "title": "Choice",
+        "enum": values,
+        "enumNames": labels,
     }
+    if decision.default:
+        field["default"] = decision.default  # what proceeding means, for a bypass run
+    schema = {"type": "object", "properties": {_FIELD: field}, "required": [_FIELD]}
     request = mcp_types.ElicitRequest(
         params=mcp_types.ElicitRequestFormParams(message=decision.message, requested_schema=schema)
     )

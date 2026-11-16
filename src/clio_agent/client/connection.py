@@ -234,6 +234,13 @@ def print_banner(connection: Connection, options: ClioOptions, provider: dict[st
     )
 
 
+def print_approved(question: str, answer: dict[str, Any]) -> None:
+    """Announce a tool's input request approved with its defaults, on stderr."""
+
+    chosen = ", ".join(str(value) for value in answer.values()) or "its default"
+    print(f"clio: approved for this run: {question} ({chosen}).", file=sys.stderr, flush=True)
+
+
 def print_trusted(plugin: str) -> None:
     """Announce a plugin trusted during a run, on stderr."""
 
@@ -249,5 +256,6 @@ __all__ = [
     "close_connection",
     "open_connection",
     "print_banner",
+    "print_approved",
     "print_trusted",
 ]

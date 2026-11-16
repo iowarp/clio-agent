@@ -10,6 +10,11 @@ library sends) and every session spawned beneath it never wait on a person:
   nothing; a person's deny rules still apply before any mode.)
 * **Plugins** an agent or flow needs are trusted and added, and each trust is recorded
   on the run's root session (``unattended_trusted``) so the script can report it.
+* **A tool's own input request** (an MCP form, such as search asking to send queries
+  to a source) is accepted with the defaults the tool declares when the approval mode
+  approves everything (``bypass``, ``spotter-ai``), and recorded on the root
+  (``unattended_approved``). Under any other mode, or a form without defaults, it is
+  declined like any question.
 
 The flag, the run limits and the trusted list live in the root session's metadata
 under keys a client cannot set through ``metadata`` (:data:`RESERVED_METADATA_KEYS`).
@@ -28,10 +33,14 @@ UNATTENDED_KEY = "unattended"
 RUN_LIMITS_KEY = "run_limits"
 TRUSTED_KEY = "unattended_trusted"
 LIMIT_REACHED_KEY = "run_limit_reached"
+APPROVED_KEY = "unattended_approved"
+#: Approval modes that approve every tool: a tool's input request takes its defaults.
+APPROVING_MODES = frozenset({"bypass", "spotter-ai"})
+_ELICITATION_SOURCE = "mcp_elicitation"
 #: Session metadata only the server sets: a client's ``metadata`` may not carry them
 #: (``agent_flow`` comes only from the validated ``flow`` field, so lineage is not forged).
 RESERVED_METADATA_KEYS = frozenset(
-    {"agent_flow", UNATTENDED_KEY, RUN_LIMITS_KEY, TRUSTED_KEY, LIMIT_REACHED_KEY}
+    {"agent_flow", UNATTENDED_KEY, RUN_LIMITS_KEY, TRUSTED_KEY, LIMIT_REACHED_KEY, APPROVED_KEY}
 )
 
 NOT_AVAILABLE_REPLY = (
@@ -82,6 +91,18 @@ def auto_reply(app: Any, task: Any, definition: Any) -> Any:
 
     if not is_unattended(app, task.owner.session_id):
         return None
+    defaults = _tool_defaults(definition)
+    session = app.state.sessions.get(task.owner.session_id)
+    if defaults is not None and getattr(session, "approval_mode", "") in APPROVING_MODES:
+        record_approved(app, task.owner.session_id, definition.prompt, defaults)
+        offered = {option.value for option in definition.options}
+        chosen = [
+            v
+            for value in defaults.values()
+            for v in (value if isinstance(value, list) else [value])
+        ]
+        selected = tuple(str(v) for v in chosen if str(v) in offered)
+        return QuestionReply(metadata={**defaults}, selected_options=selected, action="accept")
     free = (
         bool(definition.allow_freeform)
         and definition.requested_schema is None
@@ -92,6 +113,31 @@ def auto_reply(app: Any, task: Any, definition: Any) -> Any:
         metadata={UNATTENDED_KEY: True},
         action="accept" if free else "decline",
     )
+
+
+def _tool_defaults(definition: Any) -> dict[str, Any] | None:
+    """The answer a tool's input request declares as its default, else ``None``.
+
+    Only a tool's own form (an MCP input request) whose every required field carries
+    a JSON Schema ``default``: the tool says what proceeding means; CLIO picks nothing.
+    """
+
+    schema = definition.requested_schema
+    if definition.source != _ELICITATION_SOURCE or not isinstance(schema, dict):
+        return None
+    fields = schema.get("properties")
+    if not isinstance(fields, dict) or not fields:
+        return None
+    required = schema.get("required") or list(fields)
+    if any(
+        not isinstance(fields.get(name), dict) or "default" not in fields[name] for name in required
+    ):
+        return None
+    return {
+        name: spec["default"]
+        for name, spec in fields.items()
+        if isinstance(spec, dict) and "default" in spec
+    }
 
 
 def refuse_ask(
@@ -125,6 +171,26 @@ def refuse_ask(
     )
 
 
+def record_approved(app: Any, session_id: str, prompt: str, answer: dict[str, Any]) -> None:
+    """Record on the run's root that a tool's input request was approved with its defaults."""
+
+    root = run_root(app, session_id)
+    if root is None:
+        return
+    question = str(prompt or "").split("\n", 1)[0][:200]
+    rows = list((root.metadata or {}).get(APPROVED_KEY) or [])
+    rows.append(
+        {
+            "question": question,
+            "answer": answer,
+            "session_id": session_id,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    logger.warning("unattended run %s approved %r with %r", root.id, question, answer)
+    app.state.sessions.update(root.id, metadata_patch={APPROVED_KEY: rows})
+
+
 def record_trusted(app: Any, session_id: str, plugin: str, *, marketplace: str = "") -> None:
     """Record on the run's root that ``plugin`` was trusted for it (and log it)."""
 
@@ -149,6 +215,8 @@ def record_trusted(app: Any, session_id: str, plugin: str, *, marketplace: str =
 
 
 __all__ = [
+    "APPROVED_KEY",
+    "APPROVING_MODES",
     "LIMIT_REACHED_KEY",
     "NOT_AVAILABLE_REPLY",
     "REASON_NO_PERSON",
@@ -158,6 +226,7 @@ __all__ = [
     "UNATTENDED_KEY",
     "auto_reply",
     "is_unattended",
+    "record_approved",
     "record_trusted",
     "refuse_ask",
     "reserved_keys",

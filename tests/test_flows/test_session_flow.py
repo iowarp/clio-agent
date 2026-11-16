@@ -151,3 +151,64 @@ def test_a_file_a_flow_writes_is_an_artifact_of_its_session(
         row["name"] for row in flow_app.get(f"/v1/sessions/{sid}/artifacts").json()["artifacts"]
     ]
     assert not any(name.endswith("runs.jsonl") for name in names)
+
+
+def _search_consent(flow_app: TestClient, sid: str, *, default: str | None = "approve") -> Any:
+    from clio_agent.arc.task_types import QuestionDefinition
+    from clio_agent.gact.elicitation_schema import translate_form_schema
+    from tests.test_gact.task_records import record_assignment_fixture
+
+    choice: dict[str, Any] = {
+        "type": "string",
+        "enum": ["approve", "decline"],
+        "enumNames": ["Allow searches through Exa", "Don't use Exa"],
+    }
+    if default is not None:
+        choice["default"] = default
+    schema = {"type": "object", "properties": {"choice": choice}, "required": ["choice"]}
+    translated = translate_form_schema(schema)  # as the host builds a tool's form question
+    assignment = record_assignment_fixture(flow_app.app, sid)
+    definition = QuestionDefinition.model_validate(
+        {
+            "prompt": "Allow searches through Exa?\n\nSearch queries leave this computer.",
+            "kind": translated.kind,
+            "options": [option.model_dump(mode="json") for option in translated.options],
+            "requested_schema": schema,
+            "source": "mcp_elicitation",
+        }
+    )
+    return flow_app.app.state.questions.create(
+        assignment.owner.model_copy(update={"parent_handle": assignment.handle}),
+        definition,
+        invocation_id="consent-" + sid,
+    )
+
+
+def test_bypass_run_approves_a_tools_input_request_with_its_default(
+    flow_app: TestClient,
+) -> None:
+    sid = _create(flow_app, unattended=True, approval_mode="bypass").json()["id"]
+    task = _search_consent(flow_app, sid)
+    from clio_agent.arc.task_types import QuestionReply
+
+    assert task.raw_status == "answered"
+    stored = QuestionReply.model_validate(flow_app.app.state.task_history.read_content(task.result))
+    assert stored.action == "accept" and stored.selected_options == ("approve",)
+    assert stored.metadata == {"choice": "approve"}
+    approved = flow_app.app.state.sessions.get(sid).metadata["unattended_approved"]
+    assert approved[0]["answer"] == {"choice": "approve"}
+    assert approved[0]["question"] == "Allow searches through Exa?"
+
+
+def test_narrower_mode_or_no_default_still_declines(flow_app: TestClient) -> None:
+    from clio_agent.arc.task_types import QuestionReply
+
+    for body, default in (({"approval_mode": "auto-edits"}, "approve"), ({}, None)):
+        sid = _create(flow_app, unattended=True, **body).json()["id"]
+        task = _search_consent(flow_app, sid, default=default)
+        assert task.raw_status == "answered"
+        stored = QuestionReply.model_validate(
+            flow_app.app.state.task_history.read_content(task.result)
+        )
+        assert stored.action == "decline", body
+        assert "unattended_approved" not in flow_app.app.state.sessions.get(sid).metadata
