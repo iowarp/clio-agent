@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent import paths
 from clio_agent.runtime import execution_environment as execution
 
 
@@ -159,7 +160,8 @@ def test_every_shell_names_clios_own_python_and_uv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A host may have no Python or uv; CLIO brings its own, and a command (a plugin's
-    server, for one) uses those, with uv's cache kept in CLIO's scratch."""
+    server, for one) uses those, with uv's cache kept in the workspace's CLIO cache folder,
+    shared by its conversations (KiCad footprints ledger FN-27)."""
     import sys
 
     from clio_agent.gact.infrastructure import native_service_platform
@@ -174,7 +176,10 @@ def test_every_shell_names_clios_own_python_and_uv(
     environment = execution.shell_environment(tmp_path / "workspace")
     assert environment["CLIO_PYTHON"] == sys.executable  # nothing prepared: CLIO's own
     assert environment["CLIO_UV"] == str(bundled_uv)
-    assert environment["UV_CACHE_DIR"] == str(tmp_path / "s" / "uv-cache")
+    shared = str(paths.workspace_cache_dir(tmp_path / "workspace") / "uv-cache")
+    assert environment["UV_CACHE_DIR"] == shared  # not the conversation's scratch
+    monkeypatch.setattr(execution, "_session_temp", lambda _sid: {"TMPDIR": str(tmp_path / "t")})
+    assert execution.shell_environment(tmp_path / "workspace")["UV_CACHE_DIR"] == shared
     prepared = {"CLIO_EXECUTION_PYTHON": "/clio/python/bin/python", "UV_CACHE_DIR": "/ws/.tmp/uv"}
     monkeypatch.setitem(execution._ENVIRONMENTS, (tmp_path / "w2").resolve(), prepared)
     environment = execution.shell_environment(tmp_path / "w2")

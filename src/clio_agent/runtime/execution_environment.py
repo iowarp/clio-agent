@@ -106,12 +106,12 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
 
     ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
     session owns the call (``session_id``, else the active one); ``UV_CACHE_DIR`` and
-    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch.
+    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace (its scratch, else its cache folder).
     """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
-    environment.update(_clio_tools(environment))
+    environment.update(_clio_tools(environment, workspace))
     _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))
     path = environment.get("PATH", os.environ.get("PATH", ""))
@@ -148,14 +148,18 @@ def _bundled_git(environment: dict[str, str]) -> None:
 CLIO_TOOL_VARIABLES = ("CLIO_PYTHON", "CLIO_UV", "UV_CACHE_DIR")
 
 
-def _clio_tools(environment: dict[str, str]) -> dict[str, str]:
+def _clio_tools(environment: dict[str, str], workspace: Path) -> dict[str, str]:
     """CLIO's own interpreter and uv, so a command can use them on a host with neither.
 
     ``CLIO_PYTHON`` is the interpreter ``run_code`` runs on (the prepared execution
     Python, else CLIO's own); ``CLIO_UV`` is CLIO's uv (bundled first, see
-    ``clio_tool``). uv's cache stays CLIO's: the prepared workspace scratch, else the
-    session's scratch folder, never the person's own uv cache.
+    ``clio_tool``). uv's cache stays CLIO's, never the person's own uv cache: the prepared
+    workspace scratch, else the workspace's disposable cache folder (the fence grants it,
+    and ``sandbox.py`` sends a confined child's other tool caches there too). It is the
+    workspace's, not the conversation's: found live (KiCad footprints ledger FN-27), a
+    per-conversation cache downloaded CadQuery (1.7 GB) again in every conversation.
     """
+    from clio_agent import paths  # noqa: PLC0415
     from clio_agent.gact.infrastructure.native_service_platform import clio_tool  # noqa: PLC0415
 
     python = environment.get("CLIO_EXECUTION_PYTHON") or sys.executable
@@ -163,8 +167,8 @@ def _clio_tools(environment: dict[str, str]) -> dict[str, str]:
     uv = clio_tool("uv", python)
     if uv:
         tools["CLIO_UV"] = uv
-    if "UV_CACHE_DIR" not in environment and environment.get("TMPDIR"):
-        tools["UV_CACHE_DIR"] = str(Path(environment["TMPDIR"]) / "uv-cache")
+    if "UV_CACHE_DIR" not in environment:
+        tools["UV_CACHE_DIR"] = str(paths.workspace_cache_dir(workspace) / "uv-cache")
     return tools
 
 
