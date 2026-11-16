@@ -359,8 +359,9 @@ async def close_connections(self: ExternalTasks) -> None:
         await retire_connection(self, host, shutdown=True)
 
 
-async def plain_call_started(
-    self: ExternalTasks, handle: str, rpc: asyncio.Task[Any], written_ahead: bool
-) -> None:
-    """A plain call was sent: running, and cancellable by its handle (external_plain_calls)."""
+async def plain_call_started(self: ExternalTasks, handle: str, written_ahead: bool) -> None:
+    """A plain call is being sent, from inside its own (shielded) task: running, and
+    cancellable by its handle (external_plain_calls)."""
+    rpc = asyncio.current_task()
+    assert rpc is not None
     await external_plain_calls.started(self, handle, rpc, written_ahead=written_ahead)

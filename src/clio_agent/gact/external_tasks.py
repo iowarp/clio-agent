@@ -396,6 +396,7 @@ class ExternalTasks:
                 if client is None:
                     raise ValueError("External task transport is unavailable before submission")
                 with client.submission(binding):
+                    await external_task_connections.plain_call_started(self, handle, lazy is None)
                     return await client.call_tool(
                         name,
                         public,
@@ -409,7 +410,6 @@ class ExternalTasks:
         rpc = asyncio.create_task(submit())
         host.rpcs.add(rpc)
         rpc.add_done_callback(lambda finished: self._rpc_retired(host, finished))
-        await external_task_connections.plain_call_started(self, handle, rpc, lazy is None)
         stopped = False
         while True:
             try:
