@@ -330,22 +330,40 @@ def test_restart_keeps_unknown_partial_output_without_fabricating_a_completion(
         assert materialized is not None
         assert [m.role for m in materialized] == ["user", "assistant"]
         asst = materialized[1]
+        # The sealed partial output is kept verbatim; nothing replaces or extends it.
         assert [p.text for p in asst.parts if p.type == "text"] == ["five dense stations near"]
-        assert asst.stop_reason == "incomplete"
-        assert asst.error_info is None
+        # The restart closes the turn with its typed reason (CC-F1, stop-and-restart.md
+        # §3): an outcome that says why it ended, never a completion of a turn whose
+        # execution is unknown.
+        assert asst.stop_reason == "error"
+        assert asst.stop_reason not in {"end_turn", "completed", "waiting_user"}
+        assert asst.error_info is not None
+        assert asst.error_info.error == "server_restart_interrupted"
+        assert asst.error_info.details["reason"] == "server_restart_interrupted"
+        assert asst.error_info.details["turn_id"] == turn_id
+        assert asst.error_info.recoverable
+        # The lane still records that no envelope ever landed for this turn.
         assert (
             asst.metadata["transcript_incomplete"]["reason"] == "transcript_incomplete_no_envelope"
         )
-        assert asst.metadata.get("transcript_incomplete")
 
         # The divergence-repair path (materialize_ledger's own logger.error) never
         # fires: the reconciliation kept file and lane in agreement by construction.
         assert not errors_logged, errors_logged
 
+        # The closing row is written through the replace seam, so the file agrees with
+        # the lane: the same sealed text and the same typed reason, no completion.
         on_disk = app.state.message_store.load_session(sid)
-        assert [m.role for m in on_disk] == ["user"]
+        assert [m.role for m in on_disk] == ["user", "assistant"]
         assert on_disk[0].id == turn_id
-        assert [m.role for m in projection.materialize_ledger(app, sid)] == ["user", "assistant"]
+        disk_asst = on_disk[1]
+        assert [p.text for p in disk_asst.parts if p.type == "text"] == ["five dense stations near"]
+        assert disk_asst.stop_reason == "error"
+        assert disk_asst.error_info is not None
+        assert disk_asst.error_info.error == "server_restart_interrupted"
+        again = projection.materialize_ledger(app, sid)
+        assert [m.role for m in again] == ["user", "assistant"]
+        assert again[1].stop_reason == "error"
 
 
 # --------------------------------------------------------------------------- #
