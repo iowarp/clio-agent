@@ -6,8 +6,9 @@
 //
 // For each conversation it prints the title, the reply-failure lines it shows ("This reply
 // didn't load", "This reply didn't finish", "This reply was interrupted") with the reason
-// line under each, and whether the composer accepts input. With CC_ASK set it also sends
-// that text in the last conversation and captures the answer.
+// line under each, and whether the composer is editable. With CC_ASK set it also sends
+// that text in the last conversation and captures the answer. With CC_REOPEN=1 it presses
+// the newest view's Reopen and reports the app frames that load.
 export default async function (page, shot) {
   const ws = process.env.CC_WORKSPACE || "ws_default";
   const sessions = (process.env.CC_SESSIONS || "").split(",").filter(Boolean);
@@ -30,20 +31,34 @@ export default async function (page, shot) {
       if (/^This reply (didn.t load|didn.t finish|was interrupted)/.test(line))
         failures.push(`${line} | ${lines[i + 1] || ""}`);
     });
-    const composer = page.getByRole("textbox").last();
+    const composer = page.locator('[data-slot="clio-composer"] [contenteditable="true"]').first();
     report.push({
       sid,
       failures,
-      composerEnabled: (await composer.count()) ? await composer.isEditable() : false,
+      composerEditable: (await composer.count()) ? await composer.isEditable() : false,
       notFound: /not found|couldn.t (load|open)/i.test(body),
     });
     // The newest turns are what a reopened conversation shows first.
     await shot(sid);
+    if (process.env.CC_REOPEN === "1") {
+      // A view the restart closed comes back on Reopen (an app view's own frame).
+      const reopen = page.getByRole("button", { name: /^Reopen$/ });
+      const views = await reopen.count();
+      if (views) {
+        await reopen.last().scrollIntoViewIfNeeded().catch(() => undefined);
+        await reopen.last().click().catch(() => undefined);
+        await page.waitForTimeout(20000);
+      }
+      const frames = page.frames().filter((f) => /\/mcp-apps\/[^/]+\/sandbox/.test(f.url()));
+      report.at(-1).reopen = { buttons: views, appFrames: frames.length };
+      await shot(`${sid}-reopened`);
+    }
   }
   if (process.env.CC_ASK && sessions.length) {
-    const composer = page.getByRole("textbox").last();
-    await composer.fill(process.env.CC_ASK);
-    await composer.press("Enter");
+    const composer = page.locator('[data-slot="clio-composer"] [contenteditable="true"]').first();
+    await composer.click();
+    await page.keyboard.type(process.env.CC_ASK);
+    await page.keyboard.press("Enter");
     await page.waitForTimeout(Number(process.env.CC_ASK_WAIT || 25000));
     await shot("answer");
   }
