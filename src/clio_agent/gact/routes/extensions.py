@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
 from clio_agent.gact.agents.resolution import plugin_service
+from clio_agent.gact.local_publish import PublishError
+from clio_agent.gact.local_publish_routes import publish_error, publish_status, publish_to_github
 from clio_agent.gact.plugin_authoring import installed_changed
 from clio_agent.gact.routes._body import json_body
 from clio_agent.plugins.local import (
@@ -121,6 +123,23 @@ def register_extension_routes(app: FastAPI) -> None:
             content,
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="private-local-marketplace.zip"'},
+        )
+
+    @app.get("/v1/plugins/local/publish")
+    async def local_publish_status() -> dict[str, Any]:
+        """The GitHub sign-in, the last publication and whether anything changed since."""
+        return await asyncio.to_thread(publish_status, app)
+
+    @app.post("/v1/plugins/local/publish")
+    async def publish_local(request: Request) -> dict[str, Any]:
+        """Publish the private marketplace to the named GitHub repository in one commit."""
+        body = await json_body(request, route="Publish local marketplace")
+        if not isinstance(body, dict) or not isinstance(body.get("repository"), str):
+            raise publish_error(
+                PublishError(422, "repository_invalid", "Name the repository to publish to.")
+            )
+        return await asyncio.to_thread(
+            publish_to_github, app, body["repository"], bool(body.get("allow_public"))
         )
 
     @app.get("/v1/extensions/mcp-registry")
