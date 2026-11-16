@@ -25,12 +25,13 @@ import pytest
 
 import clio_agent.gact.runtime.globals as runtime_globals
 from clio_agent.arc.memory import ARCMemory
+from clio_agent.errors import ClioError
 from clio_agent.gact import context as ctx
 from clio_agent.gact import injection_parts
 from clio_agent.gact.agents import context_repair
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.clio_react_record import fold_steps
-from clio_agent.gact.agents.context_errors import ContextFoldError
+from clio_agent.gact.agents.context_errors import ContextFoldError, ContextReadError
 from clio_agent.gact.agents.context_repair import (
     CONTEXT_REPAIRED,
     OUTCOME_UNCERTAIN,
@@ -168,3 +169,31 @@ def test_started_tasks_are_named_in_the_result() -> None:
     body = json.loads(context_repair.interrupted_observation("call_x", [row])["text"])
     assert body["started_tasks"][0]["handle"] == "task_1"
     assert "not started again" in body["started_note"]
+
+
+@pytest.mark.parametrize("error_type", [OSError, ClioError])
+def test_a_transient_read_failure_is_typed_and_the_next_forward_repairs(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    """The scope read the startup writer used to make (FN-16) fails typed, writing nothing.
+
+    A Core outage while the forward reads its scope is ``arc_context_read_failed``: the
+    turn fails with that reason, no result is guessed, and the cut call stays for the
+    next forward, which repairs it once the scope is readable.
+    """
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    _damaged(arc)
+    readable = arc.context_view
+
+    def outage(session: str, scope: str, **kwargs: Any) -> Any:
+        raise error_type("Transient context read outage")
+
+    monkeypatch.setattr(arc, "context_view", outage)
+    with pytest.raises(ContextReadError) as raised:
+        repair_unanswered_calls(arc, SID, SCOPE, turn_id="t3")
+    assert raised.value.to_dict()["error"] == "arc_context_read_failed"
+    assert raised.value.to_dict()["details"]["cause"] == error_type.__name__
+
+    monkeypatch.setattr(arc, "context_view", readable)
+    assert "observation" not in [s.kind for s in arc.context_view(SID, SCOPE).segments]
+    assert repair_unanswered_calls(arc, SID, SCOPE, turn_id="t4") == ["call_lost"]
