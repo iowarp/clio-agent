@@ -219,7 +219,8 @@ def test_subagent_order_is_deterministic(world: SimpleNamespace) -> None:
     never depends on filesystem listing or dict/set iteration order."""
     orders = {tuple(row["id"] for row in delegable_subagents(_resolve(world))) for _ in range(3)}
     assert len(orders) == 1
-    assert sorted(next(iter(orders))) == sorted(SUBAGENTS)
+    base = ("clio-guide", "capture-reviewer", "optimize-scanner")  # the guide and builder
+    assert sorted(next(iter(orders))) == sorted([*SUBAGENTS, *base])
 
 
 # ---- (i) ARC-vs-native multi-turn equivalence ------------------------------- #

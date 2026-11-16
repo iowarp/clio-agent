@@ -116,7 +116,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "9cc045d50598853036167d36c93e3971c367e8ae9e140fc8dee20d335a0658cc",
+              "digest": "7d4d75d9232e3e0b41c6c16f3fee7680c0f5cc7e6df75b889d954f8288bb2d2a",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -125,6 +125,8 @@
               "plugins": [
                 "core",
                 "memory",
+                "guide",
+                "builder",
                 "workspace",
                 "shell",
                 "visuals",
@@ -163,6 +165,8 @@
             "skills": [
               "planning",
               "task-protocol",
+              "clio",
+              "capture",
               "update-models",
               "live-status"
             ],
@@ -215,6 +219,10 @@
               "session_search",
               "session_read_summary",
               "session_read_context_frame",
+              "session_record",
+              "optimize_scope",
+              "optimize_report_shown",
+              "make_plugin",
               "fs_read_file",
               "fs_list_directory",
               "fs_search_text",
