@@ -1,6 +1,6 @@
 ---
 name: capture
-description: Turn work from a session into a plugin the person can reuse, or make an existing plugin's next version from the sessions that used it. Use for /capture and /optimize, and when the person says it in their own words - "make this reusable", "I want to do this again next week", "teach CLIO this", "save this as a tool", "next time do it this way".
+description: Turn work from a session into a plugin the person can reuse, or make an existing plugin's next version from the sessions that used it. Use for /capture and /optimize, and when the person says it in their own words - "make this reusable", "I want to do this again next week", "teach CLIO this", "save this as a tool", "next time do it this way". Also when the person wants a view CLIO does not have yet - a custom board, a picker, a new built-in component (`references/view.md`).
 ---
 
 # Capture: from a session to a plugin

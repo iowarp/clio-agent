@@ -48,3 +48,11 @@ tool-directed prompt" is not evidence of agent judgement.
   second global `/optimize` listed it as not fixable by a plugin.
 - `offer_plugin` search does not find an untrusted marketplace plugin (`units-tools`),
   so the agent cannot offer it for trust (row 10c).
+
+## Follow-up: views and the private marketplace
+
+| # | Scenario | Sessions | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| 11 | A plugin brings its own view as an MCP App | `sess_2bb6b4a48915` | The view reference's worked example (`run-board`: `mcp.json`, a standard-library server, a skill) installed into `private-local`, trusted, added to the conversation. A plain request ("Show me today's runs: ... Which went over?") opened the board inline: one card per run, red over the 360 K limit (`runboard-3-after-send.png`). `test_the_view_example_serves_an_mcp_app` runs the same server over stdio. | passed |
+| 12 | A request for a new built-in view gets the pull-request answer | `sess_aa1ee8a30dfd`; earlier `sess_e56545b5c963` | Plain request for a built-in periodic table picker. After the capture skill's description named views, the agent loaded `references/view.md` and said a built-in component needs a change to CLIO, offered to open a pull request with GitHub access and the person's yes, said it waits for the maintainers' approval, and offered an MCP App or existing components meanwhile. The earlier attempt, before that trigger, read CLIO's source (the test workspace is inside the repository) and asked how to proceed without mentioning GitHub. | passed |
+| 13 | The private marketplace shows its folders and backs up to GitHub | stack UI | Settings, Extensions and connectors, Marketplaces, Private local marketplace: "Saved here" lists the plugin; its menu has Back up with GitHub, Download marketplace ZIP and Marketplace details (folder paths) (`market4-5-click-3.png`, `market4-6-click-4.png`). The ZIP held the plugin's files; `test_a_plugin_clio_wrote_is_in_the_github_backup` covers a plugin written by `make_plugin`. The backup is manual (download, upload to a repository you create); CLIO does not push. | passed |

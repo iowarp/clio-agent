@@ -106,3 +106,23 @@ def test_export_empty_collection_is_explicit(tmp_path: Path) -> None:
     with pytest.raises(LocalExportError, match="Save an agent, skill or plugin") as raised:
         export_local_marketplace(PluginService(PluginStore(tmp_path / "store")))
     assert raised.value.status == 404
+
+
+def test_a_plugin_clio_wrote_is_in_the_github_backup(tmp_path: Path) -> None:
+    """``make_plugin`` writes into the private marketplace, so the backup carries it;
+    Clio's authorship records stay on the host."""
+    from clio_agent.plugins import authored  # noqa: PLC0415
+
+    service = service_at(tmp_path)
+    manifest = {"name": "run-notes", "version": "0.1.0", "description": "Run notes."}
+    skill = "---\nname: run-notes\ndescription: Write up a run.\n---\n\nRun id, then sample.\n"
+    authored.write(
+        service.store.root,
+        "run-notes",
+        {"plugin.json": json.dumps(manifest), "skills/run-notes/SKILL.md": skill},
+        "sess_test",
+    )
+    names = zipfile.ZipFile(io.BytesIO(export_local_marketplace(service))).namelist()
+    assert "plugins/run-notes/plugin.json" in names
+    assert "plugins/run-notes/skills/run-notes/SKILL.md" in names
+    assert not [name for name in names if "authorship" in name]
