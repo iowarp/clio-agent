@@ -15,7 +15,9 @@
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
 //   {"shot": "name"} / {"hero": "name"} a screenshot / a maximized-view screenshot
 //   {"wait": seconds}
-// Permission questions are answered with the broadest allow they offer and logged.
+// Permission questions are answered with the broadest allow they offer and logged. The
+// agent's own questions are answered from CASE_ANSWERS, a JSON map from a word in the
+// question to the option the person picks; unmatched questions stay pending.
 // Prints one JSON line: session, workspace, per turn the new tool calls and the answer.
 import { api, appFrames, heroShot, openConversation, send, showLastApp, waitIdle } from "./_lib.mjs";
 
@@ -80,7 +82,12 @@ export default async function (page, shot) {
       const started = Date.now();
       await send(page, step.send);
       await page.waitForTimeout(5000);
-      const idle = await waitIdle(page, sessionId, report.log, Number(process.env.CASE_WAIT_MIN || 15));
+      const idle = await waitIdle(
+        page,
+        sessionId,
+        report.log, Number(process.env.CASE_WAIT_MIN || 15),
+        JSON.parse(process.env.CASE_ANSWERS || "null"),
+      );
       const turn = turnOf(await messages(sessionId), before);
       report.turns.push({
         sent: step.send,
