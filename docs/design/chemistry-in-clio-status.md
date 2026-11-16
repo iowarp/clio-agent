@@ -55,8 +55,9 @@ yes after server-side packing to P1. Not yet tried inside live CLIO.
 4. Live qualification of the remaining C-cases (plain requests only), ledger.
 5. Showcase screenshots for the website from every live case (deviceScaleFactor 2, at
    1440x900 and 390x844), saved under `site/src/assets/tutorials/chemistry/` per
-   `site/WRITING.md`, alongside the ledger's evidence screenshots. Burette view-level
-   showcases from session_01BHQAwt26SXevc5vL25FMh8 are already there.
+   `site/WRITING.md`, alongside the ledger's evidence screenshots. Only screenshots of
+   the real CLIO interface (Web or Desktop) go on the website; test-harness captures are
+   evidence only.
 
 ## Not verified
 - CLIO passing CA/proxy env to the pubchem server; ORCA, UMA, NWChem-via-Spack; Burette in live CLIO.
