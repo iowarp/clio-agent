@@ -13,7 +13,8 @@ each one (``continuity_states.verify_case``):
 States: ``1`` idle after an answer, ``2`` idle after several tool calls with a large
 output, ``3a`` mid model stream, ``3b`` mid shell call; and (``continuity_more.py``) ``4``
 waiting on a permission, ``5`` waiting on the agent's question, ``7`` a child task
-running, ``8`` compacted, ``9r`` rewound, ``9f`` forked.
+running, ``8`` compacted, ``9r`` rewound, ``9f`` forked; ``8n`` (``continuity_compaction.py``)
+just below auto-compaction, run with ``CLIO_AUTOCOMPACT_PCT=0.04``.
 
 Transitions (the server runs through ``scripts/cloud/stack.sh`` with this checkout's
 ``.cloud-run`` state; export the stack's ports and ``CLIO_CLOUD_ISOLATE=1`` first):
@@ -50,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import continuity_compaction  # noqa: E402,F401 - registers state 8n
 import continuity_more  # noqa: E402,F401 - registers states 4, 5, 7, 8, 9r and 9f
 import continuity_states as cs  # noqa: E402
 

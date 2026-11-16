@@ -306,6 +306,8 @@ def state_running_tool(api: Api, label: str) -> Case:
 
 #: Resolvers for states that wait on the person (``Case.kind``), set by continuity_more.
 FOLLOWUPS: dict[str, Any] = {}
+#: Checks after the recall question (``Case.kind``), set by continuity_compaction.
+AFTER_ASK: dict[str, Any] = {}
 
 STATES = {
     "1": state_idle_answer,
@@ -385,7 +387,17 @@ def verify_case(api: Api, case: Case) -> Verdict:
         if settled in BUSY or settled == "timeout":
             verdict.problems.append(f"conversation still {settled} after the transition")
             return verdict
+    if case.kind == "running":
+        # The restart resumes the interrupted assignment in place (stop-and-restart.md
+        # section 2): a reply after the cut one must have finished.
+        tail = _interruption(snapshot(api, case.sid), case, verdict)
+        verdict.checks["resumed"] = tail["finished_after_restart"]
+        if not tail["finished_after_restart"]:
+            verdict.problems.append(f"the interrupted turn was not resumed: {tail['tail']}")
     _ask(api, case, verdict)
+    after = AFTER_ASK.get(case.kind)
+    if after is not None:
+        after(api, case, verdict)
     verdict.passed = not verdict.problems
     return verdict
 

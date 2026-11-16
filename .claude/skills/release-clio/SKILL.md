@@ -187,7 +187,9 @@ python3 scripts/acceptance/continuity_check.py grid --cells A,B,C,D --states 1,2
     --old-agent-bin <previous-release venv>/bin/clio-agent --out .cloud-run/continuity
 ```
 Every cell must print PASS (it spends real model calls). `--states` also takes `3s`, `4`,
-`5`, `7`, `8`, `9r` and `9f` (stopped, waiting, child task, compacted, rewound, forked).
+`5`, `7`, `8`, `9r` and `9f` (stopped, waiting, child task, compacted, rewound, forked),
+and `8n` (just below auto-compaction; run it with `CLIO_AUTOCOMPACT_PCT=0.04` in the
+environment so the threshold is reachable).
 Open a sample of the conversations with `scripts/cloud/checks/continuity_open.mjs` and
 read the screenshots. Grid and history: the "Conversation continuity (CC)" section of
 `docs/design/sdk/mcp-apps-ledger.md`. Remove the old venv afterwards.
