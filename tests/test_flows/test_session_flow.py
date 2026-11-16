@@ -243,3 +243,19 @@ def test_a_script_run_grants_every_permission(flow_app: TestClient, tmp_path: An
     assert approved[-1]["question"] == f"Folder access: {outside}"
     attended = _create(flow_app, approval_mode="ask").json()
     assert attended["approval_mode"] == "ask"
+
+
+def test_the_ui_projection_publishes_a_sessions_own_flow_only() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.protocol.v3.session import session_to_v3
+
+    def project(metadata: dict[str, Any]) -> dict[str, Any]:
+        session = SimpleNamespace(id="sess_x", workspace_id="ws", metadata=metadata, status="idle")
+        return session_to_v3(session).get("metadata") or {}
+
+    own = project({"agent_flow": {"id": "deep-research", "options": {"max_rounds": 1}}})
+    assert own["agent_flow"] == {"id": "deep-research", "options": {"max_rounds": 1}}
+    # A flow started from another conversation shows on that conversation's card.
+    started = project({"agent_flow": {"id": "council", "options": {}, "input": "x", "depth": 1}})
+    assert "agent_flow" not in started

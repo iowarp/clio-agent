@@ -25,6 +25,8 @@ TUI/HTTP surface aren't tracked here.
   A run limit fails the next
   model step of the tree with `run_limit_reached`.
 - `GET /v1/sessions/{sid}/usage`: model turns, tokens and cost over a session tree.
+- The 0.3 session projection publishes a session's own flow (`metadata.agent_flow`:
+  id and options), so the UI can show its runs' railroad.
 - `POST|GET /v1/server/clients`, `DELETE /v1/server/clients/{id}`: the attached-client
   count. A server started with `CLIO_STOP_WITH_LAST_CLIENT=1` stops when its last
   client leaves (or exits).
