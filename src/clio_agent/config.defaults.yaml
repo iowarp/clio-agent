@@ -1036,6 +1036,12 @@ arc.cte.home_ram_capacity: "128MB"
 # generated config; raise if a home's daemon runs out of segment space.
 arc.cte.home_segment_size: "64MB"
 
+# CLIO_ARC_CTE_METADATA_DISK_RESERVE  (str)  <- src/clio_agent/arc/clio_core_disk_guard.py
+# Free space (e.g. "256MB") clio-core writes must leave on its metadata
+# log's file system; below it CLIO refuses the write instead of tearing the
+# log. 0 turns it off.
+arc.cte.metadata_disk_reserve: "256MB"
+
 # CLIO_ARC_CTE_RAM_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Hard byte ceiling (e.g. "1GB") for clio-core's RAM working arena; raise
 # for more headroom -- a deliberate desktop cap on DRAM growth.

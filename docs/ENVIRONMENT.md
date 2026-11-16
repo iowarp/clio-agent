@@ -36,6 +36,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_HOME_RAM_CAPACITY` | `arc.cte.home_ram_capacity` | str | `128MB` | `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_ARC_CTE_HOME_SEGMENT_SIZE` | `arc.cte.home_segment_size` | str | `64MB` | `src/clio_agent/arc/home_runtime.py` |
+| `CLIO_ARC_CTE_METADATA_DISK_RESERVE` | `arc.cte.metadata_disk_reserve` | str | `256MB` | `src/clio_agent/arc/clio_core_disk_guard.py` |
 | `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_HIGHWAY_DEFERRED` | `arc.highway_deferred` | bool | `true` | `src/clio_agent/gact/highway_writer.py` |
@@ -442,6 +443,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_INSTALL_KIT_READY` | unmigrated | `src/clio_agent/runtime/install_tool_servers.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/connectors/kit_readiness.py`, `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
+| `CLIO_LOG` | unmigrated | `src/clio_agent/runtime/log_sources.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |

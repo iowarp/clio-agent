@@ -353,6 +353,10 @@ KEY_NOTES: dict[str, str] = {
         "Fraction (0-1) of the CTE file-tier capacity that triggers a disk-space warning; lower "
         "for earlier warnings before the tier fills."
     ),
+    "arc.cte.metadata_disk_reserve": (
+        'Free space (e.g. "256MB") clio-core writes must leave on its metadata log\'s file '
+        "system; below it CLIO refuses the write instead of tearing the log. 0 turns it off."
+    ),
     "arc.cte.auto_expand": (
         "Allow bounded live capacity additions when CLIO's generated file store is full; "
         "disable to retain a fixed capacity. Explicit file_capacity settings disable growth."
