@@ -18,6 +18,7 @@ from clio_agent.arc.task_types import (
     TaskSnapshot,
 )
 from clio_agent.errors import ClioError
+from clio_agent.gact import conversation_stop_hold
 from clio_agent.gact.auth import configured_bearer_token, has_valid_bearer
 from clio_agent.gact.fleet.child_model import recorded_choice
 from clio_agent.gact.human_controls import intervene
@@ -432,6 +433,8 @@ def register_task_routes(app: FastAPI) -> None:
             effect = await intervene(app, task.handle, action)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        if action != "pause":
+            conversation_stop_hold.resume(app.state.sessions, sid)
         return {
             **effect,
             "session_id": task.owner.session_id,

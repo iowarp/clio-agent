@@ -7,6 +7,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from clio_agent.gact import conversation_stop_hold
 from clio_agent.gact.work_controls import control_work
 
 
@@ -40,6 +41,8 @@ def register_work_controls_routes(app: FastAPI) -> None:
             raise HTTPException(404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, detail=str(exc)) from exc
+        if body.action == "restart":
+            conversation_stop_hold.resume(app.state.sessions, sid)
         if kind == "goal" and body.action == "restart":
             await launch_pending_goal(app, sid)
         return result

@@ -70,3 +70,13 @@ def test_a_conversation_that_was_not_stopped_is_unchanged() -> None:
     sessions = _Sessions()
     item = _mail("task_result", "outcome")
     assert not hold.holds(sessions, _History([item]), "sess_1", item)
+
+
+def test_the_person_restarting_work_ends_the_stop() -> None:
+    """Found in the flow tests: after Stop everything, the person restarted the stopped
+    workflow, and its result never woke the conversation."""
+    sessions = _Sessions()
+    result = _mail("task_result", "restarted")
+    hold.stop(sessions, "sess_1")
+    hold.resume(sessions, "sess_1")
+    assert not hold.holds(sessions, _History([result]), "sess_1", result)
