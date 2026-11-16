@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 PROVIDER_SETTLE_S = 60.0
 #: Seconds to wait for a server that answers health but is still starting its services.
 READY_TIMEOUT_S = 300.0
+#: Seconds one provider read may take (it can probe the provider's sign-in).
+PROVIDER_READ_TIMEOUT_S = 180.0
 
 
 class ServerSetupError(ClioSDKError):
@@ -131,7 +133,8 @@ def _register(http: httpx.Client) -> str | None:
 def _check_provider(http: httpx.Client) -> dict[str, Any]:
     deadline = time.monotonic() + PROVIDER_SETTLE_S
     while True:
-        body = http.get("/v1/providers/lm").json()
+        # A fresh home's first read re-probes the provider's sign-in: allow it time.
+        body = http.get("/v1/providers/lm", timeout=PROVIDER_READ_TIMEOUT_S).json()
         if body.get("configured"):
             return body
         if body.get("state") != "configuring" or time.monotonic() > deadline:
