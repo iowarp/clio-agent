@@ -11,15 +11,25 @@
 //   {"wait": seconds}
 // Permission questions are answered with the broadest allow they offer and logged.
 // Prints one JSON line: session, workspace, per turn the new tool calls and the answer.
-import { api, appFrames, heroShot, openConversation, send, showLastApp, toolCalls, waitIdle } from "./_lib.mjs";
+import { api, appFrames, heroShot, openConversation, send, showLastApp, waitIdle } from "./_lib.mjs";
 
 const words = (text) => (text || "").replace(/\s+/gu, " ").trim();
 
-async function lastAnswer(sessionId) {
+async function messages(sessionId) {
   const listed = await api("GET", `/v1/sessions/${sessionId}/messages`);
-  const rows = Array.isArray(listed) ? listed : listed.messages || [];
-  const last = rows.filter((m) => m.role === "assistant").at(-1);
-  return words((last?.parts || []).filter((p) => p.type === "text").map((p) => p.text).join(" "));
+  return Array.isArray(listed) ? listed : listed.messages || [];
+}
+
+/** What the agent did since the messages in `before`: tool calls, app views and its text. */
+function turnOf(rows, before) {
+  const fresh = rows.filter((m) => m.role === "assistant" && !before.has(m.id)).reverse();
+  const parts = fresh.flatMap((m) => m.parts || []);
+  return {
+    tools: parts
+      .filter((p) => p.type === "tool_call" || p.type === "mcp_app")
+      .map((p) => (p.type === "mcp_app" ? `app:${p.tool_name}` : p.tool_name)),
+    answer: words(parts.filter((p) => p.type === "text").map((p) => p.text).join(" ")),
+  };
 }
 
 async function frameBox(page, index) {
@@ -50,22 +60,21 @@ export default async function (page, shot) {
   }
   report.session = sessionId;
   const steps = JSON.parse(process.env.CASE_STEPS || "[]");
-  let seen = (await toolCalls(sessionId)).length;
   for (const step of steps) {
     if (step.send) {
+      const before = new Set((await messages(sessionId)).map((m) => m.id));
       const started = Date.now();
       await send(page, step.send);
       await page.waitForTimeout(5000);
       const idle = await waitIdle(page, sessionId, report.log, Number(process.env.CASE_WAIT_MIN || 15));
-      const calls = await toolCalls(sessionId);
+      const turn = turnOf(await messages(sessionId), before);
       report.turns.push({
         sent: step.send,
         idle,
         seconds: Math.round((Date.now() - started) / 1000),
-        tools: calls.slice(seen),
-        answer: (await lastAnswer(sessionId)).slice(0, 1500),
+        tools: turn.tools,
+        answer: turn.answer.slice(0, 2000),
       });
-      seen = calls.length;
       report.apps = await showLastApp(page, await appFrames(page));
     } else if (step.click) {
       const box = await frameBox(page, step.click.app ?? -1);
