@@ -65,7 +65,7 @@ def input_required(decision: broker.Decision) -> mcp_types.InputRequiredResult:
         "enumNames": labels,
     }
     if decision.default:
-        field["default"] = decision.default  # what proceeding means, for a bypass run
+        field["default"] = decision.default  # what proceeding means, for a script run
     schema = {"type": "object", "properties": {_FIELD: field}, "required": [_FIELD]}
     request = mcp_types.ElicitRequest(
         params=mcp_types.ElicitRequestFormParams(message=decision.message, requested_schema=schema)

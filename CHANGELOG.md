@@ -19,7 +19,10 @@ TUI/HTTP surface aren't tracked here.
   `unattended`, `max_turns` and `max_budget_usd`. An unattended run answers every
   Question at once ("the user is not available"), denies what its approval mode
   would ask a person (`unattended_no_person`) and trusts the plugins it needs,
-  listing them in the session's `unattended_trusted`. A run limit fails the next
+  listing them in the session's `unattended_trusted`. A tool's own input request
+  (search asking to use a source) takes the default the tool declares, in every
+  approval mode, listed in `unattended_approved`; one with no default is declined.
+  A run limit fails the next
   model step of the tree with `run_limit_reached`.
 - `GET /v1/sessions/{sid}/usage`: model turns, tokens and cost over a session tree.
 - `POST|GET /v1/server/clients`, `DELETE /v1/server/clients/{id}`: the attached-client

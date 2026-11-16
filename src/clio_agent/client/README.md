@@ -74,6 +74,10 @@ A script's sessions are *unattended*:
 - Plugins the run needs are trusted, including flows and agents from marketplaces
   other than the default (name such an agent `marketplace/id`). Each is listed in
   `RunResult.trusted`.
+- A tool's own input request (search asking to use a source) takes the default the
+  tool declares, in every approval mode. It is printed to stderr and listed in
+  `RunResult.approved`. A request with no default (a key, an account) is declined:
+  supply that value through the environment or CLIO's settings before the run.
 
 ## Results
 

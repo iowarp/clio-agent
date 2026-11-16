@@ -200,15 +200,22 @@ def test_bypass_run_approves_a_tools_input_request_with_its_default(
     assert approved[0]["question"] == "Allow searches through Exa?"
 
 
-def test_narrower_mode_or_no_default_still_declines(flow_app: TestClient) -> None:
+def test_every_mode_takes_the_tools_default_and_no_default_is_declined(
+    flow_app: TestClient,
+) -> None:
     from clio_agent.arc.task_types import QuestionReply
 
-    for body, default in (({"approval_mode": "auto-edits"}, "approve"), ({}, None)):
+    for body, default, action in (
+        ({"approval_mode": "auto-edits"}, "approve", "accept"),
+        ({"approval_mode": "ask"}, "approve", "accept"),
+        ({}, None, "decline"),  # a value only a person or the environment can give
+    ):
         sid = _create(flow_app, unattended=True, **body).json()["id"]
         task = _search_consent(flow_app, sid, default=default)
         assert task.raw_status == "answered"
         stored = QuestionReply.model_validate(
             flow_app.app.state.task_history.read_content(task.result)
         )
-        assert stored.action == "decline", body
-        assert "unattended_approved" not in flow_app.app.state.sessions.get(sid).metadata
+        assert stored.action == action, body
+        approved = flow_app.app.state.sessions.get(sid).metadata.get("unattended_approved")
+        assert bool(approved) == (action == "accept"), body

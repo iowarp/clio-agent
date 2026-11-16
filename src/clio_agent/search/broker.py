@@ -38,8 +38,8 @@ class Decision:
     topic: str
     message: str
     options: tuple[tuple[str, str], ...]
-    #: The choice that proceeds: what a run whose approval mode approves every tool
-    #: answers without a person (``bypass``; :mod:`clio_agent.gact.unattended`).
+    #: The choice that proceeds: what a script run (nobody to ask) answers
+    #: (:mod:`clio_agent.gact.unattended`).
     default: str = ""
 
 

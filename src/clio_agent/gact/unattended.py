@@ -11,10 +11,10 @@ library sends) and every session spawned beneath it never wait on a person:
 * **Plugins** an agent or flow needs are trusted and added, and each trust is recorded
   on the run's root session (``unattended_trusted``) so the script can report it.
 * **A tool's own input request** (an MCP form, such as search asking to send queries
-  to a source) is accepted with the defaults the tool declares when the approval mode
-  approves everything (``bypass``, ``spotter-ai``), and recorded on the root
-  (``unattended_approved``). Under any other mode, or a form without defaults, it is
-  declined like any question.
+  to a source) is accepted with the defaults the tool declares, in every approval
+  mode, and recorded on the root (``unattended_approved``). A script run is never
+  interactive: a form with no default (a key, an account) is declined with the
+  not-available reply, and its value has to come from the environment or settings.
 
 The flag, the run limits and the trusted list live in the root session's metadata
 under keys a client cannot set through ``metadata`` (:data:`RESERVED_METADATA_KEYS`).
@@ -34,8 +34,6 @@ RUN_LIMITS_KEY = "run_limits"
 TRUSTED_KEY = "unattended_trusted"
 LIMIT_REACHED_KEY = "run_limit_reached"
 APPROVED_KEY = "unattended_approved"
-#: Approval modes that approve every tool: a tool's input request takes its defaults.
-APPROVING_MODES = frozenset({"bypass", "spotter-ai"})
 _ELICITATION_SOURCE = "mcp_elicitation"
 #: Session metadata only the server sets: a client's ``metadata`` may not carry them
 #: (``agent_flow`` comes only from the validated ``flow`` field, so lineage is not forged).
@@ -92,8 +90,7 @@ def auto_reply(app: Any, task: Any, definition: Any) -> Any:
     if not is_unattended(app, task.owner.session_id):
         return None
     defaults = _tool_defaults(definition)
-    session = app.state.sessions.get(task.owner.session_id)
-    if defaults is not None and getattr(session, "approval_mode", "") in APPROVING_MODES:
+    if defaults is not None:
         record_approved(app, task.owner.session_id, definition.prompt, defaults)
         offered = {option.value for option in definition.options}
         chosen = [
@@ -216,7 +213,6 @@ def record_trusted(app: Any, session_id: str, plugin: str, *, marketplace: str =
 
 __all__ = [
     "APPROVED_KEY",
-    "APPROVING_MODES",
     "LIMIT_REACHED_KEY",
     "NOT_AVAILABLE_REPLY",
     "REASON_NO_PERSON",
