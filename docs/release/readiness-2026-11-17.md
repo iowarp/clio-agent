@@ -154,7 +154,11 @@ PENDING. Command: `scripts/mcp_mem_attribution.py --agent clio/clio-data --priva
 
 **Caveats that apply to any result:**
 - **Synthetic dataset.** The repository does not ship `sensor_readings.csv`. I generated a deterministic one with 6,026 rows and planted faults.
-- **Lighter load than the budget was recorded with.** In run 1 the clio-data sessions used only built-in tools (`fs_read_file`, `shell_bash`, `fs_glob`); no hdf5, adios or parquet MCP server started. The answers were correct and grounded in the data. I did not determine whether that was the agent's choice for a CSV or the MCP tools being unavailable under lazy install.
+- **The gate no longer measures an MCP fleet.**
+  - In the interrupted attempt's run 1, the clio-data sessions used only built-in tools (`fs_read_file`, `shell_bash`, `fs_glob`). The answers were correct and grounded in the data.
+  - The cause is lazy install (#2358). On the gate's server, `GET /v1/connectors` shows `hdf5`, `adios`, `parquet` and `pandas` as `enabled: false` (status ready). clio-data declares those plugins, but their MCP servers stay off until someone enables them.
+  - So the release gate's load no longer includes the MCP fleet that `scripts/mcp_mem_budget.json` was recorded with. A PASS here is real for this load but does not cover fleet memory.
+  - To restore the original meaning, the harness should enable those connectors (`POST /v1/connectors/{id}/enable`) before the load. That changes comparability with the recorded numbers, so it is your decision. I did not change the gate.
 - **Leftover processes and directories.** `codex` sandbox processes, about 0.08 GB, were still alive at FINAL after the 1,830 s settle. The script leaves `/tmp/clio-mem-gate-xdg-*` behind after each run; I deleted them.
 
 ## Release preparation (report only)
