@@ -679,12 +679,25 @@ Checks: Angora's in-basin area matches the independent figure in R6d (1,243 ha).
 The deer-fawning burn share (11.0 % since 2000) is consistent with R6b
 (9.5 % for 2007 to 2024, without Gondola 2002). The context reached the
 compaction threshold (the room fell to the floor twice, about 171k of 200k)
-and the turn completed. No auto compaction was recorded, and the reason was not
-recoverable because skip reasons went only to the disabled stream audit. That
-is fixed (`compaction_audit.py`): skips and empty compactions are now traced.
+and auto compaction ran: the conversation shows "Compacted here, earlier
+messages summarized" between two tool groups (`r6f-map-in-ui-1440.png`); an
+earlier reading of this ledger said none ran, from a search of the message
+parts, which do not hold the compaction marker. Separately, compaction skips
+went only to the disabled stream audit; they are now traced
+(`compaction_audit.py`).
 
-Captures: `r6f-correlation-1440.png`, `r6f-correlation-390.png`. Verdict:
+**In the CLIO UI:** the agent embedded its map in the reply, and it renders inline
+under the first paragraph, with its caption, at 1440x900 (772 px wide) and 390x844
+(294 px), image loaded (1440x1440), no console errors
+(`r6f-map-in-ui-1440.png`, `r6f-map-in-ui-390.png`). It is a static image, not the
+interactive layered map: the GeoTIFF layer support for `clio.layered-map.v1` is on
+the separate map branch (`claude/ndp-data-access-map`), not on this stack.
+
+Captures: `r6f-map-in-ui-1440.png`, `r6f-map-in-ui-390.png` (the map in the
+conversation), `r6f-correlation-1440.png`, `r6f-correlation-390.png` (the end of
+the reply). Verdict:
 **pass**: cross-organization acquisition, a whole-basin correlation and an
-honest coverage report from a plain request. Not established by this run: an
-overflow recovered by compaction (none occurred), and the agent exploring a
+honest coverage report from a plain request, with the map in the conversation.
+Auto compaction ran during the turn. Not established by this run: a refused
+request recovered by compaction (none was refused), and the agent exploring a
 spilled file with code (the two spills were small).
