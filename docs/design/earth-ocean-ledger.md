@@ -173,6 +173,13 @@ Rows still marked "to choose" are filled in as their work starts.
 | Q | Fixture | Reference values |
 | --- | --- | --- |
 | Q1 | GO-SHIP A16N, 2013 occupation (CCHDO expocode 33RO20130803), CTD casts | Talley et al. (2011), *Descriptive Physical Oceanography*, Atlantic chapter: AAIW as the intermediate salinity minimum (~700–1200 dbar) south of ~20°N; Mediterranean Overflow Water as the intermediate salinity maximum near 30–40°N; NADW between ~1500 and ~4000 dbar (S ≈ 34.9–35.0); AABW-influenced bottom water (θ < ~2 °C) in the south |
+| Q18 | ECMWF ENS open data, latest run, Bergen (Norway), 72 h precipitation | Pass: a probability per day (or for the window) of more than 30 mm, as the fraction of members, with the run and member count stated |
+| Q21 | ERA5 hourly 2 m temperature at Lisbon, 1991-2020 (ARCO ERA5, keyless) | IPMA's documented heat waves: early August 2003 and early August 2018 (Lisbon above 40 °C on 4 August 2018) must be among the events; the CDS cost estimate the plan names needs a CDS token (absent) |
+| Q24 | ERA5 pressure levels, the cold front of Storm Ciara over Great Britain, 9 February 2020 | Met Office storm report: a cold front crossing England and Wales on 9 February; winter soundings with low CAPE either side, colder and drier behind the front |
+| Q22 | ERA5 integrated vapour transport, US West Coast, December 2022 to March 2023 | CW3E's season summary: a family of about nine landfalling atmospheric rivers in California from late December 2022 to mid January 2023, then further events in February and March |
+| Q23 | ERA5 500 hPa geopotential, Europe and the North Atlantic, winters 2009-10 and 2010-11 | Cattiaux et al. (2010, GRL): winter 2009-10 dominated by persistent high-latitude (Greenland and North Atlantic) blocking with a record negative NAO |
+| Q28 | CMIP6 (Pangeo catalog), three models, SSP2-4.5, June to August near-surface temperature over the Iberian Peninsula, 2071-2100 against 1981-2010 | IPCC AR6 WGI Atlas: Mediterranean summer warming under SSP2-4.5 of roughly 2.5 to 4 °C by late century, with a model spread of a degree or more |
+| Q2 | Argo, Sargasso Sea box 30-34°N, 68-62°W, 2005-2025 | de Boyer Montégut et al. (2004) climatology for the box: deepest mixed layers in February-March of about 100-250 m, shallowest in summer of about 15-30 m |
 
 ## Qualification results
 
