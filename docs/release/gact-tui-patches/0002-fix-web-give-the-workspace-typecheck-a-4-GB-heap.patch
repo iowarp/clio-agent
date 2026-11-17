@@ -1,0 +1,34 @@
+From ef980f87c948eb7f5bcf93a5010f86401a7969f6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 05:29:10 +0000
+Subject: [PATCH 2/2] fix(web): give the workspace typecheck a 4 GB heap
+
+tsc -b over web/ (5,993 files, 785k types) now peaks at 2.38 GB, above
+Node's default old-space limit on a 15-16 GB machine (about 2 GB), so
+`pnpm typecheck` aborted with "Reached heap limit" (exit 134) with no type
+error underneath: with a larger heap it passes clean. Run tsc through node
+with --max-old-space-size=4096, which works on every OS (a NODE_OPTIONS
+prefix would not on Windows).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ web/package.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/web/package.json b/web/package.json
+index 668a796be..92cb9cb9a 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -9,7 +9,7 @@
+     "build:bundle": "pnpm --filter @clio/hdf5-viewer build && vite build && vite build --config vite.offline.config.ts",
+     "build:offline": "vite build --config vite.offline.config.ts",
+     "lint": "oxlint src/components/ai-elements src/components/kibo-ui src/components/mermaidcn src/components/reui src/components/theokit src/components/ui --quiet && oxlint src/components/clio src/routes src/providers src/hooks src/lib src/store src/tauri src/theme src/App.tsx src/main.tsx src/app-main.tsx src/i18n --deny-warnings",
+-    "typecheck": "tsc -b --pretty false",
++    "typecheck": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc -b --pretty false",
+     "i18n:extract": "lingui extract --clean",
+     "test": "vitest run",
+     "pretest:e2e": "node e2e/build.mjs",
+-- 
+2.43.0
+

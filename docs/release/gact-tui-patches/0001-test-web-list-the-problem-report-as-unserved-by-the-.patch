@@ -1,0 +1,32 @@
+From 1cdf69a49852876e033afac47b3986a1de9abcc9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 05:25:48 +0000
+Subject: [PATCH 1/2] test(web): list the problem report as unserved by the e2e
+ fixture
+
+The core client gained GET /v1/system/problem-report with Settings > Report a
+problem (1da8b7346). No browser test reaches that page, so, as the contract test
+asks, the route goes on fixture-unserved-routes.json rather than into the
+fixture server (the same as 3fe667eb9).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ web/tests/contract/fixture-unserved-routes.json | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/web/tests/contract/fixture-unserved-routes.json b/web/tests/contract/fixture-unserved-routes.json
+index dc6b51b9c..ca3438fc7 100644
+--- a/web/tests/contract/fixture-unserved-routes.json
++++ b/web/tests/contract/fixture-unserved-routes.json
+@@ -75,6 +75,7 @@
+   "GET /v1/storage/obsidian",
+   "GET /v1/storage/obsidian/vaults",
+   "GET /v1/storage/ssh/profiles",
++  "GET /v1/system/problem-report",
+   "GET /v1/tasks/query",
+   "GET /v1/workspaces/:id/comment-targets",
+   "GET /v1/workspaces/:id/files",
+-- 
+2.43.0
+
