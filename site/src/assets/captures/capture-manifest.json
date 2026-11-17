@@ -372,5 +372,59 @@
         "step_file": "scripts/cloud/checks/apps/helene_offline.mjs"
       }
     ]
+  },
+  "ocean_weather": {
+    "captured": "2026-11-17",
+    "model_run": true,
+    "source": "live runs on the cloud stack, claude_code provider, Sonnet 5.5, CLIO brand; plain requests from the ocean and weather qualification (docs/design/earth-ocean-ledger.md)",
+    "agent_base": "50307c3aa5787c953b9dccda2730183d3a218ec4",
+    "ui_revision": "6be2220ef33a2e442b3ccf28455bf72ae8d56757",
+    "marketplace_revision": "53c317126740df80631db1bac913062237cbee1a",
+    "captures": [
+      {
+        "file": "ocean-weather/section-picked.png",
+        "sha256": "3d2b351f9eae7edb3ab51e8aa514009d2513cc9a3cda65c3c6dea4adf61b4c16",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "theme": "light",
+        "source": "sess_fb79887aba8f (Q1, A16N 2013), the agent's section and T-S surface with one cast clicked on the section, scrolled to include the person's request above the views",
+        "step_file": "scripts/cloud/checks/apps/ocean_pick_cast.mjs"
+      },
+      {
+        "file": "ocean-weather/profiles.png",
+        "sha256": "096bb68f480806c46035e9e9d430076080089b23782b88eb148037d873831bcf",
+        "pixels": "2880x1800",
+        "scale": 2,
+        "theme": "light",
+        "source": "sess_98c95a5dc056 (Q11 OMZ rerun), a profile stack CLIO showed from an argo_fetch result (result views): one curve excluded, another picked",
+        "step_file": "scripts/cloud/checks/apps/profile_stack_pick.mjs"
+      },
+      {
+        "file": "ocean-weather/grid-editor.png",
+        "sha256": "8a99151191813cb997c211347136e2d36a12f341b7dfa04b1402a389d59efb9b",
+        "pixels": "1440x900",
+        "scale": 1,
+        "theme": "dark",
+        "source": "sess_8537be6a4e13 (Q14), the grids editor app on the regional model's bathymetry"
+      },
+      {
+        "file": "../carousel/oceanography/section-dark.webp",
+        "sha256": "4b51b854c8ed39d4132b95fe424a1d2db3b01333245996e76078550528662857",
+        "pixels": "1600x1000",
+        "scale": 1.25,
+        "theme": "dark",
+        "source": "sess_fb79887aba8f, sidebar collapsed",
+        "step_file": "scripts/cloud/checks/apps/view_slide.mjs"
+      },
+      {
+        "file": "../carousel/oceanography/section-light.webp",
+        "sha256": "70a040119ec2f8a2d4a9dd3629fb95b5bebc7d73a76f1e9bd06058a5edfc4d4f",
+        "pixels": "1600x1000",
+        "scale": 1.25,
+        "theme": "light",
+        "source": "sess_fb79887aba8f, sidebar collapsed",
+        "step_file": "scripts/cloud/checks/apps/view_slide.mjs"
+      }
+    ]
   }
 }

@@ -1,0 +1,111 @@
+---
+title: "Ocean and weather science"
+description: Ask ocean, weather and climate questions in plain words. CLIO fetches the data, runs the analysis with a record of where every number came from, and shows the result in views you can check and steer.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from "../../../components/overview/Capture";
+import { captureImage } from "../../../lib/captures";
+import sectionPicked from "../../../assets/captures/ocean-weather/section-picked.png";
+import profiles from "../../../assets/captures/ocean-weather/profiles.png";
+import gridEditor from "../../../assets/captures/ocean-weather/grid-editor.png";
+
+<Aside type="note" title="Development build">
+The ocean and weather plugins are in the development build.
+</Aside>
+
+Ask an ocean or atmosphere question the way you would ask a colleague: "where is the
+oxygen minimum zone in the Arabian Sea, and has it changed?", "how well did the forecasts
+track this typhoon?", "how biased is this climate model against ERA5?". The agent picks
+the data, the definitions and the methods, says which it chose and why, runs the analysis
+and shows you the result.
+
+The **ocean** plugin covers CTD casts, Argo floats and gliders, TEOS-10 and water masses,
+sections and T-S diagrams, transports and overturning, tides, eddies, SWOT, particles,
+marine heatwaves, phytoplankton blooms, mixed-layer budgets, cruise plans and checks of
+regional ocean models. The **weather** plugin covers forecasts for a place, ensemble
+probabilities, reanalysis thresholds and extremes, atmospheric rivers and cyclone tracks,
+cross-sections and soundings with a skew-T chart, forecast scores, AI forecasts and the
+evaluation of climate models.
+
+## Turn it on
+
+<Steps>
+1. Open **Extensions** and turn on **Ocean analysis**, **Weather**, or both. Turn on
+   **Grids** too if you edit model grids (bathymetry, land masks).
+2. Or just ask: the agent offers the plugin a question needs, and **Add** puts it in that
+   conversation.
+</Steps>
+
+## Where the data comes from
+
+Most sources need no account, and the agent uses them directly:
+
+- Argo floats, core and biogeochemical (oxygen, chlorophyll, nitrate).
+- Glider deployments in the IOOS Glider DAC.
+- NOAA's ERDDAP servers (ocean colour, sea surface temperature and more), NOAA OISST,
+  NOAA tide gauges, hourly station observations (GHCN-hourly) and cyclone best tracks
+  (IBTrACS).
+- ECMWF open data: the IFS and AIFS forecasts and the ensemble.
+- ERA5 from its analysis-ready copy on Google Cloud, and CMIP6 model output from the
+  Pangeo catalogue.
+- SWOT granules can be searched without a login.
+
+Some need an account: Copernicus Marine and the Climate Data Store through the
+**Copernicus** connector, and SWOT downloads through the NASA Earthdata login in the
+**Ocean analysis** card. You enter an account in the connector's card, never in the
+conversation. When a question would be better served by a source you have not set up,
+the agent offers it, and goes on with a public source if you choose **Not now**.
+
+Every result carries a provenance record: the sources and their versions, the subset
+taken, the method and its parameters, and the data licences.
+
+## Results arrive as views
+
+Ocean and weather results are judged by looking at them, so a tool output that has a
+natural view arrives with it in the conversation:
+
+- **Profile stack**: many casts or floats drawn together. Point to a curve to name it,
+  click to pick it, and exclude the ones that look wrong; excluded profiles are listed
+  below the plot, where one click brings each back.
+- **Section**: a variable along a ship track or glider transect against depth, with
+  contours. Click a station to select its cast.
+- **Map with time**: positions, tracks and gridded fields on a map with a time slider.
+- **Grid editor**: select cells of a model grid and choose an edit; each edit is recorded
+  by longitude and latitude so it can be replayed onto a regenerated grid.
+- **Skew-T chart**: soundings with temperature, dew point and the surface parcel.
+
+<Capture client:visible image={await captureImage(profiles)}
+  alt="A profile stack of one year of Arabian Sea Argo floats: 90 temperature profiles against pressure to 1200 dbar, one picked and drawn in the accent colour with an Exclude button beside its name, the count reading 90 profiles, 1 excluded, and the excluded profile shown as a struck-through chip beside Include all"
+  caption="Each Argo fetch arrived with its profile stack. Pick a curve to exclude it; excluded profiles come back with one click."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+Views that show the same casts or stations are linked: select a cast on the section and
+the T-S diagram dims every other cast. The agent looks at the views it shows, the way you
+do, and fixes what looks wrong before it answers.
+
+<Capture client:visible image={await captureImage(sectionPicked)}
+  alt="A temperature section of the A16N cruise beside a T-S diagram; one station is selected on the section, and in the T-S diagram that cast's samples stay bright while the others are dimmed"
+  caption="A cast picked on the section, and the same cast in the T-S diagram."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(gridEditor)}
+  alt="The grid editor showing the depth of a regional model grid of 55 by 60 cells, with controls to select cells by dragging a box, choose an operation and value, add a note and apply the edit"
+  caption="The grid editor on a regional model's bathymetry."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## What runs where
+
+Everything runs on the machine that runs CLIO's backend. Two parts need more than the
+plugins install by themselves:
+
+- **AI forecast models** (FourCastNet and DLWP through Earth2Studio) need a CUDA GPU to run
+  at a useful speed. Without one they run only when you allow it, slowly. ECMWF's own AI
+  forecasts (AIFS) come from open data and need no GPU.
+- **TempestExtremes**, which tracks blobs and cyclones in gridded fields, is built from
+  source and pointed to with `TEMPESTEXTREMES_BIN`.
+
+<CardGrid>
+  <LinkCard title="Connectors" href="/docs/connectors/" description="Turn connectors on and give them accounts." />
+  <LinkCard title="Explore a hurricane in HDF5 data" href="/docs/examples/hdf5-paraview/" description="A worked example with ERA5 and ParaView." />
+</CardGrid>
