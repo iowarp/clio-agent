@@ -448,6 +448,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
 | `CLIO_SHUTDOWN_BUDGET_S` | unmigrated | `src/clio_agent/gact/shutdown_budget.py` |
+| `CLIO_STOP_WITH_LAST_CLIENT` | unmigrated | `src/clio_agent/gact/attached_clients.py` |
 | `CLIO_STORAGE_GITHUB_APP_URL` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
 | `CLIO_STORAGE_GITHUB_CLIENT_ID` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
 | `CLIO_STORAGE_GOOGLE_API_KEY` | unmigrated | `src/clio_agent/gact/storage/drive_filesystem.py` |
