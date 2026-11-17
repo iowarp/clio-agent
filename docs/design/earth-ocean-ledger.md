@@ -185,3 +185,18 @@ Rows still marked "to choose" are filled in as their work starts.
 
 Filled in as each row runs. A tool-directed prompt is recorded as "mechanism
 verified with a tool-directed prompt; not evidence of agent judgement".
+
+Stack: `CLIO_CLOUD_ISOLATE=1 CLIO_UI_DIR=<gact-tui> bash scripts/cloud/stack.sh start`
+(own config, data, state and cache under `.cloud-run/xdg`), agent `clio/science`
+with the row's plugin added (`PATCH /v1/sessions/{sid}/agent`), provider
+`claude_code`, model `claude-sonnet-5-5`, approval mode bypass. Prompts are plain
+requests; a place or period the plan leaves as "here" is named. Turns that make
+views run with the web UI open on the conversation (a client must advertise its
+catalogs before a surface can be created; a turn posted with no client attached is
+refused with a typed reason, which is how the first Q1 view turn ended).
+
+| Q | Session | Verdict | Evidence |
+| --- | --- | --- | --- |
+| Q1 | `sess_fb79887aba8f` | **Pass (science); views pass on a follow-up.** From the plain prompt the agent read the 145 A16N casts (`ctd_read`), converted to TEOS-10, assigned water masses against the built-in Emery & Meincke definition, built the section and named NADW (filling the deep column, ~1500-4000 dbar), AAIW (the low-salinity layer ~600-1200 dbar south of ~10°N), Mediterranean Water (intermediate salinity maximum) and AABW-influenced bottom water (CT below 1 °C in the south), matching the reference. It flagged, unprompted, that the definition misassigns Mediterranean and South Atlantic Central Water north of ~45°N and left 23% unassigned rather than forcing them. Its first answer was a static figure; asked for something to explore, it built `clio.section.v1` beside a `clio.chart.v1` T-S diagram with σ0 contours, bound to one `profile` selection, and checked the rendered view itself. Linking by click is not yet verified (the capture's click landed outside the plot). Fixed from this run: the section and profile stack drew at their fallback size before layout (gact-tui `1b11399`). | `.cloud-run/shots/q01-views-1440-2-views.png`, `q01-views-390-2-views.png`; transcript in the session |
+| Q18 | `sess_0804dba02196` | **Pass, after two server fixes found by it.** Bergen, 72 h: effectively 0% (no member above 1 mm; 51-member AIFS ENS, 00 UTC 17 Nov 2026, source and licence stated), cross-checked against another forecast. The IFS ENS fetch failed (`coordinate 'number' not present in all datasets`: the open-data index had no control member for `tp`), and `exceedance`'s fixed metre-to-mm factor gave nonsense on AIFS kg m-2 until the agent noticed and corrected it. Both fixed in clio-kit `d17fcf96` (empty member type skipped and reported; units read from the field). | session transcript; `.cloud-run/qual/q18` |
+| Q21 | `sess_001cd860cdb6` | **Partial.** The agent fetched 1991-2020 hourly ERA5 at the nearest cell through ECMWF's keyless point route (the vendored `ecmwf-cds-ads` skill), checked completeness (262,992 hours), and ran `threshold_events` with a stated definition (daily max, calendar-day 90th percentile, 15-day window, 3 days). Both reference events are found: 29 Jul-2 Aug 2003 and 2-5 Aug 2018 (peak 4 Aug). Peaks are ~34.7 °C against 44 °C at Lisbon stations, because the ERA5 cell is coastal, which the agent said. Not met: the plan's "validated and costed before submission" is a CDS request estimate, and no CDS token is present, so no CDS request was made. | `.cloud-run/qual/q21/lisbon_heatwaves_events.csv` |
