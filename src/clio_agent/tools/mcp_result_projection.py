@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 MODEL_TOOL_RESULT_SPILL_FAILED_REASON = "model_tool_result_spill_failed"
 #: Typed reason traced when a saved JSON result could not be read back for its outline.
 RESULT_OUTLINE_UNREADABLE_REASON = "result_outline_unreadable"
+#: Typed reason traced when a result's structure did not fit the room and was left out.
+RESULT_OUTLINE_OMITTED_REASON = "result_outline_omitted"
 #: The injection source, and the fixed marker that opens a cut result's note.
 RESULT_SPILLED_SOURCE = "result_spilled"
 RESULT_SPILLED_MARKER = f"[clio: {RESULT_SPILLED_SOURCE}]"
@@ -118,6 +120,10 @@ def bounded_model_tool_result(
         }
         return f"{RESULT_SPILLED_MARKER} {_say(RESULT_SPILLED_SOURCE, frame)}"
 
+    if outline and len(note(text, True)) + 2 > room.chars:
+        # The whole note must fit the room: a structure that does not is left out.
+        trace.event("TOOLS", "%s room_chars=%d", RESULT_OUTLINE_OMITTED_REASON, room.chars)
+        outline = ""
     # The sample is small: it shows what the data looks like, and the agent explores
     # the file for the rest. Reserve the longest note, then cut the sample to fit.
     sample = min(spilled_sample_chars(), room.chars - len(note(text, True)) - 2)

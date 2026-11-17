@@ -198,16 +198,17 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
     [
         (
             Path("/w/out.txt"),
-            "the full result is in `/w/out.txt`. Explore it rather than reading it whole: "
-            "search it with fs_search_text, or grep or a script where you can run code; read "
-            'on from the end of the sample with fs_read_file(path="/w/out.txt", offset={offset})',
+            "the full result is in `/w/out.txt`. Explore it rather than reading it whole, for "
+            'example in shell_bash: `grep -n "PATTERN" "/w/out.txt" | head`; or search it with '
+            'fs_search_text, or read on with fs_read_file(path="/w/out.txt", offset={offset})',
         ),
         (
             Path("/w/out.json"),
             "the full result is in `/w/out.json`, saved as one indented JSON document. Explore "
-            "it rather than reading it whole: where you can run code, load it in a script and "
-            "select, count or filter what you need; or "
-            "search it with fs_search_text and read a part with fs_read_file",
+            "it with code rather than reading it whole, for example in run_code: `import json; "
+            'data = json.load(open("/w/out.json"))`, then select, count or filter what you need '
+            "and print only that. Without a code tool, search it with fs_search_text and read a "
+            "part with fs_read_file",
         ),
         (
             OSError("disk full"),
@@ -225,9 +226,8 @@ def test_a_cut_result_keeps_todays_note_and_it_cannot_be_switched_off(
     where = where.replace("{offset}", str(head.count("\n") + 2))
     note = (
         "[clio: result_spilled] This result is about 250 tokens (1,000 characters), too "
-        f"large to put in your context: {where}.\nBelow is a sample, its first "
-        f"{len(head):,} characters, to show what the data looks like; it is not the whole "
-        "result."
+        f"large to put in your context: {where}.\nBelow is a sample (its first "
+        f"{len(head):,} characters), not the whole result."
     )
     assert result.startswith(note + "\n\n") and told == [("result_spilled", result)]
     for source in ("result_spilled", "result_spilled_read_on", "result_spilled_json"):

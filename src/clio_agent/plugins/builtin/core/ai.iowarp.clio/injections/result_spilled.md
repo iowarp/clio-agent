@@ -13,4 +13,4 @@ This result is about {{tokens}} tokens ({{chars}} characters), too large to put 
 Its structure, to write that query:
 {{outline}}
 {%- endif %}
-Below is a sample, its first {{shown}} characters, to show what the data looks like; it is not the whole result.
+Below is a sample (its first {{shown}} characters), not the whole result.

@@ -105,7 +105,9 @@ def test_a_json_result_is_saved_indented_for_reading_on(tmp_path: Path) -> None:
     with tool_workspace_context(str(tmp_path)), injections.collect():
         result = bounded_model_tool_result(json.dumps(value))
     assert "saved as one indented JSON document" in result
-    assert "load it in a script" in result and "fs_search_text" in result
+    path = _spilled_path(result)
+    assert f'in run_code: `import json; data = json.load(open("{path}"))`' in result
+    assert "fs_search_text" in result
     saved = _spilled_path(result).read_text(encoding="utf-8")
     assert json.loads(saved) == value and len(saved.splitlines()) == 104
 
@@ -153,7 +155,7 @@ def test_a_large_result_gets_a_small_sample_its_size_and_how_to_explore_it(
     assert len(sample) <= 800 and rows.startswith(sample)
     assert f"about {len(rows) // 4:,} tokens ({len(rows):,} characters)" in note
     assert "Explore it rather than reading it whole" in note
-    assert "it is not the whole result" in note
+    assert "not the whole result" in note
     assert len(result) < 2_000
 
 

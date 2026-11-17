@@ -308,12 +308,12 @@ def test_model_tool_result_bound_is_configurable(tmp_path: Path) -> None:
     from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
     from clio_agent.tools.result_room import result_room
 
-    set_config("tools.unknown_window_result_tokens", 225)
-    assert result_room().chars == 900
+    set_config("tools.unknown_window_result_tokens", 300)
+    assert result_room().chars == 1_200
 
     with tool_workspace_context(str(tmp_path)):
         bounded = bounded_model_tool_result("x" * 5_000)
-    assert len(bounded) <= 900
+    assert len(bounded) <= 1_200
     assert bounded.startswith(
         "[clio: result_spilled] This result is about 1,250 tokens (5,000 characters)"
     )
