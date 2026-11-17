@@ -601,3 +601,44 @@ but its central fire figure leaves out the area that holds the basin's main
 recent burns. The earlier R6b computation, which did cover the basin
 (9.5 % of deer fawning area burned, 2007 to 2024), remains the reference. Rerun
 R6e below.
+
+### R6e: correlation rerun on the R6d fixes (stuck, cancelled)
+
+Session `sess_e52c59ed4f62` (111 calls, 4 failed). The agent loaded `work-with-ndp`
+and `find-ndp-data-for-place`, ran 44 catalog searches and 26 detail calls, and
+started reading OpenTopography `.img` lidar tiles. One `read_raster_window` over
+dozens of tiles then ran for over 40 minutes. `opentopography.s3.sdsc.edu` kept
+resetting connections; GDAL bounds and retries each request, but nothing bounded
+the whole read. The run was cancelled. Other failures: `Cannot convert fill_value
+nan to dtype int16` in two decimated reads of an integer DEM, and one read of 171
+tiles refused by the 64-tile limit (correct).
+
+Verdict: **failed (tool hang).** Fixed in clio-kit `c67e725` (integer reads) and
+`855db5f` (a time limit for each geoservices read, `GEOSERVICES_READ_DEADLINE_S`,
+default 600 s; the read writes to a staging file that is discarded if the limit
+passes).
+
+### Why R6c overflowed, and the fixes (2026-11-17, evening)
+
+- **Wrong window.** `claude_code` reported the catalog maximum for Sonnet 5.5
+  (1,000,000 tokens). Claude Code serves that only to a `[1m]` selection; a
+  plain selection gets 200,000. One result's room was 12.5 % of 1M (125,000
+  tokens), and auto compaction waited for 80 % of 1M. Two large searches passed
+  the 200k the model actually had. Fixed in `02ba2df`: the handshake and the
+  loop's window resolver report the served window.
+- **Overflow stopped the turn.** When the model refused a too-long request, the
+  loop stopped with `context_window_exceeded`. Fixed in `02ba2df`: the running
+  scope is compacted (every step, from a copy whose tool results are cut to
+  4,000 characters) and the step is sent once more; only a second refusal
+  stops. A turn that does stop says why (`c4fdba3`).
+- **A spilled result filled the room.** A result saved to file still returned
+  its first characters up to the whole room, under a note giving only its
+  length, so the model took that head for the result. Fixed in `95e93d8` and
+  `0e4673b`. The return now gives the size in tokens and characters, the file,
+  and a first step with code (`run_code` with `json.load` for JSON, `grep` in
+  `shell_bash` for text). It adds the structure of a JSON result and a
+  2,000-character sample.
+- **Search results carried every resource.** `01169c7`: 20 per hit, the rest
+  paged by `dataset_id`.
+- **Argument names.** The ndp server now accepts `query` and `dataset_id` (clio-kit
+  `5025a5a`, ndp 2.2.10). These failed 20 and 7 times in one session.
