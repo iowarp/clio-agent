@@ -168,7 +168,7 @@ in 2.2 s (mean 13.6, max 55.8, units only in the record's `data_units`).
 
 | Question | Evidence so far | Answer |
 | --- | --- | --- |
-| Do national layers expose their extent through their services? | NIFC FeatureServer: declared extent malformed, bbox query works. sparcal WCS: `DescribeCoverage` gives a correct EPSG:3310 envelope. LANDFIRE records link HTML pages, not a service | Partly answered: yes for sparcal WCS, effectively no for NIFC's declared extent (but a query works), unknown for LANDFIRE |
+| Do national layers expose their extent through their services? | NIFC FeatureServer: declared extent malformed, but a `returnExtentOnly` query gives the real data extent (-176.65, 0.0, 144.94, 69.89) and a bbox count works (21 perimeters in the Tahoe box). sparcal WCS: `DescribeCoverage` gives a correct EPSG:3310 envelope. LANDFIRE records link HTML pages, not a service | **Answered:** yes for sparcal WCS; for NIFC through a data query rather than the declared extent (geoservices does both); unknown for LANDFIRE, whose records have no service link |
 | Can CLIO query Affinities? | EarthScope records carry `affinity_dataset_uuid`, `affinity_service_uuids` and `affinity_endpoint_uuids` extras. The ep-api documents Affinities as an Endpoint feature (`AFFINITIES_ENABLED`). No public Endpoint exposing it was found | Open: which Endpoint hosts the Affinities registry, and is it readable without sign-in? |
 | Is ndp-test the catalog for the idp-test login? | Not determinable from public services | Open (for NDP) |
 | Longer EarthScope GNSS series? | Both catalogs hold only the 9-day window | Open (for NDP); nothing longer is in either catalog |
@@ -176,6 +176,11 @@ in 2.2 s (mean 13.6, max 55.8, units only in the record's `data_units`).
 | Which organizations would join a trial? | — | Open (for NDP) |
 | New: why are OpenTopography datasets listed twice under one title? | Every Tahoe OpenTopography result appears twice | Open (for NDP) |
 | New: stale 3DEP Entwine links | `usgs-lidar-public/TX_BurnetCo_2006` no longer exists | Open (for NDP): can the harvester drop or refresh removed projects? |
+| New: stale service links in harvested records | TRPA "Wetlands" points at layer 4 and other records at layer 2 of `Datadownloader_SoilsandHydro`, both "404 Layer not found" (R3, R5); 28 of 50 TRPA Hub GeoJSON links fail; Cal OES records point at hosted services that no longer exist (`Fire_Station`: "400 Invalid URL", checked by hand) and at FRAP Fire Threat (404); several Cal OES layers need an ArcGIS token | Open (for NDP): can harvesting check each resource URL and mark dead ones? |
+| New: production TRPA host | Production records use `arcprod.trpa.org`; through this container's egress proxy its certificate fails hostname verification, while a direct handshake shows a certificate naming the host | Undetermined from here; worth checking from a normal network |
+| New: NIFC history stops at 2019 near Tahoe | The InterAgencyFirePerimeterHistory "All Years" layer returned no 2020 or later fires within 20 km of the lake, although its description says it runs through 2021 (NIFC run) | Open (for NDP or NIFC): is the archive layer behind, or are recent years only in the current-year WFIGS layers? |
+| New: same dataset id in both catalogs | OpenTopography datasets carry the same CKAN id on production and test (the tile tool had to ask which catalog) | Answered for CLIO (the tool names both catalogs); open for NDP whether the two are meant to mirror |
+| New: BCO-DMO records hold no data | Every sampled `bco_weather` record has one ISO XML resource; the data is at bco-dmo.org | Answered: metadata only on NDP; data acquisition needs BCO-DMO directly |
 
 ### R2 (2026-11-17): geoservices against live services (mechanism, not agent judgement)
 
