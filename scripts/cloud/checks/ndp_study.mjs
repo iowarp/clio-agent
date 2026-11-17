@@ -72,11 +72,17 @@ export default async function (page, shot) {
   if (await enable.count()) {
     await enable.first().click();
     log.push("clicked Enable all on the agent-needs card");
+    // The card's own phase (ask, working, done), read from the interactions API.
     const until = Date.now() + 15 * 60_000;
     while (Date.now() < until) {
-      const body = await page.locator("body").innerText();
-      if (!/Preparing|Enabling|Waiting/i.test(body)) break;
-      await page.waitForTimeout(5000);
+      const listed = await api("GET", `/v1/sessions/${session.id}/interactions?include_recent_resolved=true`);
+      const card = (listed.interactions || []).find((i) => (i.payload || {}).intent === "agent_needs");
+      const phase = card ? card.payload.phase : "done";
+      if (phase === "done") {
+        log.push(`enable: ${(card ? card.payload.items : []).map((i) => `${i.id}=${i.progress}`).join(", ")}`);
+        break;
+      }
+      await page.waitForTimeout(3000);
     }
     await shot("enabled");
   } else log.push("no agent-needs card");
