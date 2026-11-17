@@ -36,20 +36,22 @@ async function allowPending(sessionId, log) {
   }
 }
 
-// A person accepts what the agent offers: Add on a plugin offer (intent add_plugin),
-// then Enable all when the added plugin's tool servers ask to be turned on. Each
-// acceptance is logged with the plugin and the agent's reason, so the study shows
-// which plugins the agent chose to load.
+// A person accepts what the agent offers: a plugin offer (intent add_plugin) or a
+// connector offer (intent enable) is answered with the card's own submit action
+// (Add), then Enable all is clicked when the added servers ask to be turned on. A
+// card asking for values (keys, settings) is left for a person. Each acceptance is
+// logged with the plugin and the agent's reason, so the study shows which plugins
+// the agent chose to load.
 async function acceptOffers(page, sessionId, log) {
   const listed = await api("GET", `/v1/sessions/${sessionId}/interactions`);
   for (const card of listed.interactions || []) {
     const payload = card.payload || {};
-    if (payload.intent !== "add_plugin" || log.includes(`offer:${card.id}`)) continue;
-    const add = page.getByRole("button", { name: /^Add$/ });
-    if (!(await add.count())) continue;
-    await add.first().click();
-    log.push(`offer:${card.id}`);
-    log.push(`accepted plugin offer ${payload.plugin || payload.name || JSON.stringify(payload).slice(0, 120)}: ${payload.reason || ""}`);
+    if (card.status !== "pending" || !["add_plugin", "enable"].includes(payload.intent)) continue;
+    if ((payload.missing || []).length) continue;
+    await api("POST", `/v1/sessions/${sessionId}/interactions/${card.id}/respond`, { action: "submit" });
+    log.push(
+      `accepted ${payload.intent} offer ${payload.plugin_id || payload.connector_id || payload.name || card.title}: ${payload.reason || ""}`,
+    );
   }
   const enable = page.getByRole("button", { name: /Enable all/i });
   if (await enable.count()) {
