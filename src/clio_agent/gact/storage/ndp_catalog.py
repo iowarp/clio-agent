@@ -388,18 +388,19 @@ class NDPCatalog:
     def observed(self, dataset_id: str, endpoint_id: str = "") -> NDPDataset:
         """Return a dataset exactly as a search showed it, without contacting NDP."""
         with self._lock:
-            matches = [
-                item
+            found = {
+                endpoint: item
                 for (endpoint, identifier), item in self._results.items()
                 if identifier == dataset_id and (not endpoint_id or endpoint == endpoint_id)
-            ]
+            }
+        matches = list(found.values())
         if not matches:
             raise ValueError(
                 "Search for this NDP dataset with connected_data_search_ndp first; "
                 "CLIO only works on datasets a search returned"
             )
         if len(matches) > 1:
-            catalogs = ", ".join(sorted(item.endpoint.id for item in matches))
+            catalogs = ", ".join(sorted(found))
             raise ValueError(
                 f"This dataset appears in several catalogs ({catalogs}); pass one as endpoint_id"
             )
