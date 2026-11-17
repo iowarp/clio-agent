@@ -21,15 +21,13 @@ def test_shipped_entries_load_without_diagnostics() -> None:
     assert catalog.diagnostics == []
     assert {"burette", "spice", "paraview"} <= set(catalog.entries)
     burette = catalog.entries["burette"]
-    assert burette.is_url and burette.needs == ()
-    assert "preview_molecular_file" not in burette.tools
-    assert set(burette.tools) == {
-        "preview_pdb_structure",
-        "render_molecular_scene",
-        "open_ketcher",
-        "control_ketcher",
-    }
-    assert burette.to_dict()["tools"] == list(burette.tools)
+    # The CLIO fork, one stdio process run by uvx from a pinned commit (every tool).
+    assert not burette.is_url and burette.needs == () and burette.tools == ()
+    assert burette.server["command"] == "uvx" and burette.plugin == "burette"
+    source = burette.server["args"][1]
+    assert source.startswith("git+https://github.com/JaimeCernuda/Burette@")
+    assert source.endswith("#subdirectory=packages/clio-burette")
+    assert len(source.split("@")[1].split("#")[0]) == 40  # a full commit, not a branch
     spice = catalog.entries["spice"]
     assert spice.server["command"] == "clio-kit" and list(spice.server["args"]) == [
         "mcp-server",
@@ -65,8 +63,17 @@ def test_an_unknown_entry_field_is_a_typed_diagnostic(tmp_path: Path) -> None:
     assert [d.code for d in catalog.diagnostics] == [entries.ENTRY_INVALID]
 
 
-def test_offered_keeps_only_the_listed_tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    catalog = entries.load_catalog([SHIPPED])
+def test_offered_keeps_only_the_listed_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "burette.yaml").write_text(
+        "- id: burette\n  name: Burette\n  description: d\n"
+        "  server: {url: 'https://burette.invalid/mcp'}\n"
+        "  tools: [preview_pdb_structure, render_molecular_scene, open_ketcher,"
+        " control_ketcher]\n"
+    )
+    catalog = entries.load_catalog([tmp_path])
+    assert catalog.entries["burette"].to_dict()["tools"] == list(catalog.entries["burette"].tools)
     monkeypatch.setattr(state, "all_entries", lambda: dict(catalog.entries))
     events: list[str] = []
     monkeypatch.setattr(listing.trace, "event", lambda _cat, fmt, *args: events.append(fmt % args))
@@ -191,3 +198,26 @@ def test_a_catalog_plugin_is_followed_by_a_marketplace_plugin_with_skills() -> N
     # The geo plugin earthscope and geodesy require keeps its own server and follows the
     # Geo connector through it (LZ-D8, superseding PL-D6): mounted while Geo is on.
     assert plugins["geo"].follows == "geo" and "geo" in plugins["geo"].mcp_servers
+
+
+@pytest.mark.parametrize(
+    ("connector", "env", "keys"),
+    [
+        ("ase", {"NWCHEM_COMMAND", "ORCA_COMMAND", "HF_TOKEN"}, ["nwchem", "orca", "hf_token"]),
+        ("fdmnes", {"FDMNES_COMMAND", "MP_API_KEY"}, ["fdmnes", "mp_api_key"]),
+        ("graspa", {"GRASPA_COMMAND"}, ["graspa"]),
+        ("avogadro", {"AVOGADRO_COMMAND"}, ["avogadro"]),
+    ],
+)
+def test_chemistry_servers_start_through_clio_kit_with_optional_program_paths(
+    connector: str, env: set[str], keys: list[str]
+) -> None:
+    """The chemistry servers clio-kit ships: every need is optional (an empty value leaves
+    the server's own lookup in charge) and each follows its own plugin."""
+
+    entry = entries.load_catalog([SHIPPED]).entries[connector]
+    assert entry.server["command"] == "clio-kit"
+    assert list(entry.server["args"]) == ["mcp-server", connector]
+    assert set(entry.server["env"]) == env
+    assert [n.key for n in entry.needs] == keys and not any(n.required for n in entry.needs)
+    assert entry.plugin == connector and entry.logo == f"{connector}.svg"

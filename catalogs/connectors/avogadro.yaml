@@ -1,0 +1,25 @@
+# Avogadro 2: clio-kit's avogadro server (mcp-servers/avogadro), Avogadro 2 streamed into a
+# view for building and remodelling structures in 3D. As with KiCad, the server finds and
+# starts the application and never installs it: the avogadro plugin's install-avogadro skill
+# installs Avogadro 2.1.0 (the official Linux AppImage, checksum checked) and Xvfb and x11vnc
+# with the person's consent, and sets "Where Avogadro is". Empty, the server looks for
+# avogadro2 on PATH. The group, Chemistry, comes from clio-kit's clio-chemistry bundle
+# (derive.yaml). Logo: ours (Avogadro's mark was not used).
+- id: avogadro
+  name: Avogadro
+  logo: avogadro.svg
+  description: Build and edit molecules and crystals in 3D in Avogadro 2, in a tab, and hand the result and your selection back to the agent
+  server:
+    command: clio-kit
+    args: [mcp-server, avogadro]
+    env:
+      AVOGADRO_COMMAND: ${need.avogadro}
+  needs:
+    - key: avogadro
+      kind: value
+      label: Where Avogadro is
+      required: false
+      agent_settable: true
+      help: Leave empty to find avogadro2 on this machine. Otherwise the path to avogadro2, or to the AppRun of an unpacked Avogadro AppImage.
+  requires: Avogadro 2, and on Linux Xvfb and x11vnc (the avogadro plugin installs them with your consent)
+  plugin: avogadro

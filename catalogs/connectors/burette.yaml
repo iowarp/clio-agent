@@ -1,13 +1,25 @@
-# Burette: molecular structures in Mol*, and Ketcher for drawing them.
-# The hosted public service (SergeiNikolenko/Burette, MIT, read at b1ac8ae), served
-# over Streamable HTTP with no sign-in. Its file tool takes another host's file
-# parameter, so CLIO offers the PDB-ID and Ketcher tools only (apps ledger, grounds).
+# Burette: molecular structures in Mol* and the Ketcher editor, from the CLIO fork of
+# Burette (JaimeCernuda/Burette, packages/clio-burette; upstream SergeiNikolenko/Burette,
+# MIT). One stdio process serves the viewer and Ketcher MCP Apps views and the workspace
+# tools beside them: open a structure file by path (PDB, mmCIF, CIF with its unit cell,
+# SDF/MOL, XYZ trajectories, GRO, MOL2), play normal modes and trajectories, edit bond
+# lengths, angles, dihedrals and atom positions (each edit a new file), draw in Ketcher
+# and save the drawing. The viewer reports selection, region, frame, mode and focus to
+# the agent (ui/update-model-context and app tools). It runs with uvx from a pinned
+# commit; the wrapper ships Node (nodejs-wheel-binaries), so nothing is built here.
+# Replaces the hosted public service (b1ac8ae), whose file tool took another host's file
+# parameter. Group: Chemistry, beside clio-kit's chemistry servers. Logo: unchanged.
 - id: burette
   name: Burette
-  group: Chemistry and biology
+  group: Chemistry
   logo: burette.svg
-  description: See molecular structures from the Protein Data Bank, and draw or edit molecules
+  description: See molecules, crystals, trajectories and vibrations in Mol*, edit their geometry, and draw structures in Ketcher
   server:
-    url: https://burette-plugin.vercel.app/mcp
+    command: uvx
+    args:
+      - --from
+      - git+https://github.com/JaimeCernuda/Burette@ce5599dc3ab3111897e465e8b0decfdec0c1f136#subdirectory=packages/clio-burette
+      - burette-clio
   needs: []
-  tools: [preview_pdb_structure, render_molecular_scene, open_ketcher, control_ketcher]
+  requires: uv (uvx) on this machine; the first start downloads Burette and its Node runtime
+  plugin: burette

@@ -349,6 +349,11 @@ KEY_NOTES: dict[str, str] = {
         "Directory clio-core's CTE artifacts (config, file-tier data, logs) are written under; "
         "change to relocate ARC's disk storage."
     ),
+    "arc.cte.metadata_disk_reserve": (
+        "Free space (for example 256MB) below which CLIO refuses clio-core writes, so the "
+        "metadata log is never torn by a full disk; writing resumes once space is freed. "
+        "0 turns the guard off."
+    ),
     "arc.cte.disk_warn_fraction": (
         "Fraction (0-1) of the CTE file-tier capacity that triggers a disk-space warning; lower "
         "for earlier warnings before the tier fills."

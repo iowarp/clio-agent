@@ -1,0 +1,24 @@
+# gRASPA: clio-kit's graspa server (mcp-servers/graspa), GCMC adsorption in porous
+# crystals with gRASPA (Snurr group, MIT). Adapted in part from ChemGraph (Apache-2.0).
+# gRASPA needs a GPU; on a machine without one, the server prepares run folders for a GPU
+# node and reads them back. "gRASPA program" points at nvc_main.x or hip_main.x where
+# there is one (the graspa plugin's install skill builds it with Spack). Group from
+# derive.yaml (clio-chemistry). Logo: ours.
+- id: graspa
+  name: gRASPA
+  logo: graspa.svg
+  description: Simulate gas adsorption (CO2, H2O, N2) in MOFs and zeolites with gRASPA, and rank frameworks by uptake or working capacity
+  server:
+    command: clio-kit
+    args: [mcp-server, graspa]
+    env:
+      GRASPA_COMMAND: ${need.graspa}
+  needs:
+    - key: graspa
+      kind: value
+      label: gRASPA program
+      required: false
+      agent_settable: true
+      help: Leave empty to find nvc_main.x, hip_main.x or graspa on PATH. Without a GPU here, run folders are prepared for a GPU node instead.
+  requires: gRASPA on a GPU, for running simulations here (preparing, reading and ranking need nothing)
+  plugin: graspa

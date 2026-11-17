@@ -41,6 +41,18 @@ def task_owner_recipient(history: TaskHistory, current: TaskSnapshot) -> str | N
     """
     if (current.invocation_id or "").startswith(HUMAN_SOURCE_INVOCATION):
         return None
+    if (
+        current.kind == "Question"
+        and current.status == "completed"
+        and current.owner.parent_handle is not None
+    ):
+        # An answered input round of a tool (a source consent, an MCP elicitation): the
+        # tool call that asked receives the answer and goes on. Mailing it to the agent as
+        # well arrives as an answer to a question the agent never posted. A round that is
+        # cancelled or expires is still the owner's outcome to hear about.
+        parent = history.task_snapshot(current.owner.parent_handle)
+        if parent is not None and parent.kind not in {"Session", "Subagent"}:
+            return None
     if current.kind not in {"Session", "Subagent"}:
         return current.owner.session_id
     if current.kind == "Subagent" and current.owner.parent_handle is not None:

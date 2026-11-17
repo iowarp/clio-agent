@@ -57,11 +57,11 @@ def stops_with_last_client() -> bool:
 
 
 def _create_time(pid: int) -> float | None:
-    try:
-        import psutil  # noqa: PLC0415
+    import psutil  # noqa: PLC0415
 
+    try:
         return float(psutil.Process(pid).create_time())
-    except Exception:  # noqa: BLE001 - no such process / access denied: not ours to track
+    except psutil.Error:  # no such process, or access denied: not ours to track
         return None
 
 

@@ -52,11 +52,28 @@ export async function allowPending(sessionId, log) {
   }
 }
 
-export async function waitIdle(page, sessionId, log, minutes = 8) {
+/**
+ * Answer the agent's pending questions as the person would: `answers` maps a word in the
+ * question to the option (or text) to give. A question no entry matches is left pending.
+ */
+export async function answerQuestions(sessionId, answers, log) {
+  if (!answers) return;
+  const listed = await api("GET", `/v1/sessions/${sessionId}/questions`);
+  for (const row of listed.questions || []) {
+    if (row.status !== "pending") continue;
+    const key = Object.keys(answers).find((k) => (row.prompt || "").toLowerCase().includes(k.toLowerCase()));
+    if (!key) continue;
+    log.push(`answered "${answers[key]}": ${(row.prompt || "").slice(0, 120)}`);
+    await api("POST", `/v1/sessions/${sessionId}/questions/${row.id}/answer`, { value: answers[key] });
+  }
+}
+
+export async function waitIdle(page, sessionId, log, minutes = 8, answers = null) {
   const until = Date.now() + minutes * 60_000;
   let quiet = 0;
   while (Date.now() < until) {
     await allowPending(sessionId, log);
+    await answerQuestions(sessionId, answers, log);
     const session = await api("GET", `/v1/sessions/${sessionId}`);
     quiet = ["idle", "completed"].includes(session.status) ? quiet + 1 : 0;
     if (quiet >= 3) return true;
