@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from typing import Any
 from urllib.parse import urlsplit
 
 #: The variable for a bearer token set by hand.
@@ -90,7 +91,7 @@ class ClioOptions:
         parts = urlsplit(self.base_url)
         return parts.port or (443 if parts.scheme == "https" else 80)
 
-    def with_overrides(self, **overrides: object) -> ClioOptions:
+    def with_overrides(self, **overrides: Any) -> ClioOptions:
         """A copy with the per-call overrides that are not ``None`` applied."""
 
         return replace(self, **{k: v for k, v in overrides.items() if v is not None})
