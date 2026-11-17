@@ -52,6 +52,7 @@ from clio_agent import injections
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.compaction_audit import stream_audit
 from clio_agent.gact.compaction_policy import (
     keep_policy,
     post_compaction_context,
@@ -73,7 +74,6 @@ from clio_agent.gact.summarization_record import (
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.platform_paths import atomic_write_text
-from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
@@ -806,10 +806,8 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     The loop calls this at every step boundary with its forward's ``guard``. When the
     last measured prompt size over the context window crosses the session's
     threshold, the running scope is compacted with ``trigger="auto"`` (the same
-    operation as a manual compact). A failed compaction is NOT swallowed: it is
-    audited (:data:`AUDIT_AUTO_FAILED`) and raised as
-    :class:`AutoCompactionFailedError`, so the turn fails typed with its context
-    unfolded. With no measured count yet in this binding, the previous turn's durable
+    operation as a manual compact). A failed compaction is audited and traced
+    (:mod:`.compaction_audit`) and raised as :class:`AutoCompactionFailedError`. With no measured count yet in this binding, the previous turn's durable
     per-scope usage stands in (subscription providers bind a fresh LM per turn).
     History mode has no compaction; no active app is an audited skip. When the first
     measurement after an auto compaction is still over the threshold, it becomes the
@@ -869,9 +867,10 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     except CompactionError as exc:
         stream_audit(AUDIT_AUTO_FAILED, session_id=session, error=exc.error, message=exc.message)
         raise AutoCompactionFailedError(exc, session) from exc
-    if result["compacted"]:
-        guard.compaction_id = str(result["compactions"][-1]["compaction_id"])
-        guard.awaiting_measurement = True
+    if not result["compacted"]:  # over the threshold yet nothing folded: say why
+        return stream_audit(AUDIT_AUTO_SKIPPED, reason=result["reason"], session_id=session)
+    guard.compaction_id = str(result["compactions"][-1]["compaction_id"])
+    guard.awaiting_measurement = True
 
 
 def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) -> None:

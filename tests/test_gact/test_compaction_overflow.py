@@ -41,6 +41,7 @@ def test_without_a_context_store_it_reports_and_does_not_compact(
     monkeypatch: Any,
 ) -> None:
     reported: list[tuple[str, dict[str, Any]]] = []
+
     def audit(stage: str, /, **fields: Any) -> None:
         reported.append((stage, fields))
 
@@ -55,3 +56,15 @@ def test_without_a_context_store_it_reports_and_does_not_compact(
             {"session_id": "sess_x", "reason": "no_context_store"},
         )
     ]
+
+
+def test_auto_compaction_skips_reach_the_trace(monkeypatch: Any) -> None:
+    """A skip is never visible only in the optional stream-audit log."""
+    from clio_agent.gact import compaction_audit
+
+    traced: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(compaction_audit.trace, "event", lambda *a: traced.append(a))
+    monkeypatch.setattr(compaction_audit, "_audit", lambda stage, **f: None)
+    compaction_audit.stream_audit("compaction.auto_skipped", reason="no_token_count")
+    compaction_audit.stream_audit("compaction.started", session_id="s")
+    assert traced == [("COMPACT", "%s %s", "compaction.auto_skipped", "reason=no_token_count")]
