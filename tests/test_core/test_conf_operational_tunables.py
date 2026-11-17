@@ -314,9 +314,24 @@ def test_model_tool_result_bound_is_configurable(tmp_path: Path) -> None:
     with tool_workspace_context(str(tmp_path)):
         bounded = bounded_model_tool_result("x" * 5_000)
     assert len(bounded) <= 900
-    assert bounded.startswith("[clio: result_spilled] This result is 5,000 characters")
+    assert bounded.startswith(
+        "[clio: result_spilled] This result is about 1,250 tokens (5,000 characters)"
+    )
     head = bounded.split("\n\n", 1)[1]
-    assert f"more than the {len(head):,} shown to you" in bounded
+    assert f"its first {len(head):,} characters" in bounded
+
+
+def test_spilled_sample_size_is_configurable(tmp_path: Path) -> None:
+    """``tools.spilled_sample_chars`` caps the sample a spilled result shows."""
+
+    from clio_agent.tools.execution import tool_workspace_context
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+
+    set_config("tools.unknown_window_result_tokens", 25_000)
+    set_config("tools.spilled_sample_chars", 300)
+    with tool_workspace_context(str(tmp_path)):
+        bounded = bounded_model_tool_result("z" * 200_000)
+    assert len(bounded.split("\n\n", 1)[1]) == 300
 
 
 def test_model_and_evidence_tool_result_bounds_are_independent() -> None:

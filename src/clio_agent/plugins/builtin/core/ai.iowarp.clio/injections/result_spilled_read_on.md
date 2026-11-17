@@ -8,4 +8,4 @@ x_trigger: source result_spilled; when a cut result was saved to a file that is 
 x_variables: path, offset
 x_required: it is the only place the agent learns where the rest of the result is
 ---
-the full result is in `{{path}}`; read on with fs_read_file(path="{{path}}", offset={{offset}}), or search it with fs_search_text
+the full result is in `{{path}}`. Explore it rather than reading it whole: search it with fs_search_text, or grep or a script where you can run code; read on from the end of the sample with fs_read_file(path="{{path}}", offset={{offset}})

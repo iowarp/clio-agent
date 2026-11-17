@@ -8,4 +8,4 @@ x_trigger: source result_spilled; when a cut result was saved to a .json file
 x_variables: path
 x_required: it is the only place the agent learns where the rest of the result is
 ---
-the full result is in `{{path}}`, saved as one indented JSON document; search it with fs_search_text, read it with fs_read_file, or, where you can run scripts, load it in one
+the full result is in `{{path}}`, saved as one indented JSON document. Explore it rather than reading it whole: where you can run code, load it in a script and select, count or filter what you need; or search it with fs_search_text and read a part with fs_read_file

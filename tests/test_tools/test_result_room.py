@@ -61,7 +61,8 @@ def test_a_result_past_the_share_is_spilled_with_the_note(window: Any, tmp_path:
         shown = bounded_model_tool_result(text)
     assert shown.startswith("[clio: result_spilled] This result is ")
     assert f"{len(text):,} characters" in shown
-    assert 90_000 < len(shown) <= 100_000  # the head fills the room
+    # A pointer, not a head that fills the room: size, file, how to explore, a sample.
+    assert len(shown) < 3_000 and "Explore it rather than reading it whole" in shown
     assert told == [("result_spilled", shown)]
 
 

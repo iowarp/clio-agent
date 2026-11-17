@@ -19,12 +19,15 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from clio_agent.runtime import trace
-from clio_agent.tools.result_room import ResultRoom, result_room
+from clio_agent.tools.result_outline import json_outline
+from clio_agent.tools.result_room import CHARS_PER_TOKEN, ResultRoom, result_room
 
 logger = logging.getLogger(__name__)
 
 #: Typed reason logged when an oversize result could not be written to its file.
 MODEL_TOOL_RESULT_SPILL_FAILED_REASON = "model_tool_result_spill_failed"
+#: Typed reason traced when a saved JSON result could not be read back for its outline.
+RESULT_OUTLINE_UNREADABLE_REASON = "result_outline_unreadable"
 #: The injection source, and the fixed marker that opens a cut result's note.
 RESULT_SPILLED_SOURCE = "result_spilled"
 RESULT_SPILLED_MARKER = f"[clio: {RESULT_SPILLED_SOURCE}]"
@@ -102,13 +105,23 @@ def bounded_model_tool_result(
         )
         unsaved = _say("result_spilled_unsaved", {"error": exc})
 
+    outline = _outline(path)
+
     def note(head: str, whole: bool) -> str:
         where = unsaved if path is None else _continuation(path, head, whole)
-        frame = {"chars": f"{len(text):,}", "shown": f"{len(head):,}", "where": where}
+        frame = {
+            "tokens": f"{len(text) // CHARS_PER_TOKEN:,}",
+            "chars": f"{len(text):,}",
+            "shown": f"{len(head):,}",
+            "where": where,
+            "outline": outline,
+        }
         return f"{RESULT_SPILLED_MARKER} {_say(RESULT_SPILLED_SOURCE, frame)}"
 
-    # Reserve the longest note (every count at its largest), then cut the head to fit.
-    head = text[: max(0, room.chars - len(note(text, True)) - 2)]
+    # The sample is small: it shows what the data looks like, and the agent explores
+    # the file for the rest. Reserve the longest note, then cut the sample to fit.
+    sample = min(spilled_sample_chars(), room.chars - len(note(text, True)) - 2)
+    head = text[: max(0, sample)]
     cut = head.rfind("\n")
     whole = cut > len(head) // 2
     if whole:
@@ -120,6 +133,32 @@ def bounded_model_tool_result(
     # to the model. Recording only `note` silently loses that part of the view.
     injections.note(RESULT_SPILLED_SOURCE, projection)
     return projection
+
+
+def spilled_sample_chars() -> int:
+    """Characters of a spilled result shown as a sample (``tools.spilled_sample_chars``)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    value = conf.resolve(
+        "tools.spilled_sample_chars",
+        env="CLIO_TOOLS_SPILLED_SAMPLE_CHARS",
+        default=2_000,
+        cast=conf.as_int,
+    )
+    if value < 0:
+        raise ValueError(f"tools.spilled_sample_chars must be at least 0, not {value}")
+    return value
+
+
+def _outline(path: Path | None) -> str:
+    """The structure of a result saved as JSON, so the agent can query it; else empty."""
+    if path is None or path.suffix != ".json":
+        return ""
+    try:
+        return json_outline(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        trace.event("TOOLS", "%s error=%r", RESULT_OUTLINE_UNREADABLE_REASON, exc)
+        return ""
 
 
 def _continuation(path: Path, head: str, whole: bool) -> str:
