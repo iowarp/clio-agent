@@ -138,16 +138,24 @@ stated):
 - **Copyleft workers.** Approve shipping the marEx (AGPL-3.0-or-later) and
   py-eddy-tracker (GPL-3.0) workers as separate processes inside clio-kit, or
   choose to make them a separately installed extra.
-- **Credentials** for Copernicus Marine, CDS, ECMWF Polytope, NASA Earthdata
-  and TPXO come through CLIO's connector card; none are present in this
-  session.
+- **Accounts.** Five rows wait on two accounts, entered in CLIO's connector cards
+  (never in chat, files or logs):
+  - a **Copernicus Marine** account (the Copernicus connector): Q4 (GLORYS, Drake
+    Passage transport), Q7 (sea-level anomaly), Q9 (GLORYS currents), Q13 (the
+    operational forecast);
+  - a **NASA Earthdata** login (the Ocean analysis connector): Q8 (SWOT downloads;
+    SWOT search needs none).
+  Optional only, nothing blocked: a CDS token (ERA5 days beyond the ARCO copy's end,
+  which the keyless path covers otherwise), an ECMWF Polytope key (the ensemble also
+  comes from open data), and a TPXO registration with its files (regional MOM6 tides,
+  below).
 - **Profile stack departs from skill rule 2** (one charting layer). It is a
   component because exclusion is a persistent decision the agent reads back
   and a stack is read by reference far past the chart's inline row cap.
   Confirm, or ask for it as a `clio.chart.v1` preset plus a separate
   exclusion list.
 - **Unmerged pins.** clio-agent on this branch pins clio-schemas `474575c` and
-  clio-kit `8e0c427e`, commits on `claude/earth-ocean-weather` that are not
+  clio-kit `f49bbf8f`, gact-tui `519081d`, commits on `claude/earth-ocean-weather` that are not
   merged into their develop/main; the pin comment says develop pins merged
   commits. They must be re-pinned to the merge commits before this lands.
 - **Pre-existing failure, not from this work.** gact-tui
@@ -164,24 +172,33 @@ stated):
   plugin's own paths are keyless (ENS open data, ARCO ERA5) and CDS goes
   through the copernicus connector; decide whether skills get a secret
   mechanism.
-- **Views are rarely built unasked.** Most science passes above end with
-  "views not made": the agent answers with numbers, caveats and at most a
-  static PNG. Checked: each session's trace carries its plugin's views
-  guidance (`ocean.views` or `weather.views`, gated on `create_a2ui_surface`
-  in a root session), so this is the agent's choice with the guidance in
-  front of it, not a missing injection. Asked for views, it builds them and
-  they render (Q1's follow-up, Q3). Per the repository's rule against
-  behavioural handcuffs in prompts, nothing was added here; decide whether a
-  plain request should produce views (and if so where that belongs: the flow,
-  the guidance's wording, or a review step), or whether a view on request is
-  the intended behaviour.
-- **An unanswered offer card holds a turn indefinitely.** Q11's bloom turn
-  waited 90 minutes on a Copernicus `offer_plugin` card (Q12 likewise) until
-  it was answered "Not now". This is the designed human-in-the-loop gate;
-  decide whether such a card should time out into "not now" for unattended
-  runs.
+- **Views and the finished answer, resolved after the owner's review** (section
+  below): CLIO shows the views a tool result declares, `core.visual` asks the agent to
+  look and fix, `core.finish` (Claude providers) asks it to do what it notices undone,
+  and an offer the request can do without no longer stops the turn.
 - **TPXO** needs a registration and its files on disk; the regional MOM6
   set-up tools that need it are not built (see the regional-mom6 rows).
+
+## After the owner's review (17 November)
+
+The owner's review asked for views without being asked, for Claude to finish work
+instead of listing what is open, and why an offer card held a turn. Each item below is
+done, with its evidence.
+
+| Item | Decision and change | Evidence |
+| --- | --- | --- |
+| RV-D1 | **A tool result's declared views are shown as it arrives.** A structured result may name, per output, the component that shows it (`outputs[].view`); CLIO draws them in one surface per call, as the MCP App observer opens the view a tool names, and the call's model result says which surface holds them so the agent can look at it, link or change it. A view CLIO could not show is said with the refusal's reason. clio-kit's ocean and weather servers declare views for profiles (profile stack), sections, fields (grid layer) and tracks or positioned rows (map layers); series and summaries declare none. | clio-agent `3d3d5a127`, note delivery fixed in the next commit (keyed by tool name; a dropped note is traced); clio-kit `1c803f70`; `tests/test_gact/test_result_views.py` (6, one through the model-observation seam); clio-kit `tests/test_views.py` in both servers. Live, plain request (Q11 OMZ rerun `sess_98c95a5dc056`): ten Argo fetches arrived with ten profile stacks the agent did not build. Live (Q27 rerun `sess_66ed3bae145b`): `evaluate_run`'s bias map arrived as a map, and the agent called `capture_a2ui_surface` on it twice; both captures were refused because the harness browser had been killed for memory (a typed refusal the agent reported). |
+| core.visual | **The agent reviews by looking.** A core guideline for root sessions that can create and capture views: show a result with a shape as a view while working, look at it with `capture_a2ui_surface`, check it against the numbers, fix it and let it change the answer. The ocean and weather view guidance says declared views arrive by themselves. | clio-agent `d99ab47d8`, `3d3d5a127`; marketplace `7e7efcd5`, `53c31712`. Prompt text present in the session prompt (`GET /v1/sessions/{sid}/agent`) and in the trace. Before RV-D1, two runs with this text built no views (Q11 bloom rerun `sess_d2137e4a840f`, Q27 rerun `sess_b00f8ab16284`): prompt text alone did not move the agent, which is why RV-D1 exists. |
+| core.finish, providers | **Claude finishes the work or asks.** Prompt fragments can be scoped to providers (`when.providers`), applied when a turn's prompt is built from the turn's provider. `core.finish` reaches `claude_code` and `anthropic` root sessions: look for what is undone before answering and do it; ask with `ask_user` when it needs the person; saying what was skipped is honest only when it cannot be done here. | clio-agent `913a8179b`, reworded in `50307c3aa` after two runs still opened with "I did not build a map"; `tests/test_plugins/test_compose_final.py`, `test_resolve.py` (provider narrowing). |
+| OD-D1 | **An offer the request can do without does not stop the turn.** `offer_plugin` takes `required` (the model decides). Required: the turn waits for Add or Not now, as before. Otherwise the card stays on screen and the tool returns at once; a later answer is applied as before and reaches the agent as attention mail, which wakes an idle conversation; offering the plugin again joins its tools to the turn. A second offer of a plugin whose card is pending shows no second card (Q12's two identical cards). Why the cards waited before: the harness had no person to answer them, and the tool always waited. | clio-agent `be4086d58`; `tests/test_connectors` (offer suites, new tests for shown, pending, later Add and later Not now). Live, mechanism verified with a tool-directed prompt, not evidence of agent judgement (`sess_f356ebb0795e`): the tool returned `plugin_offer_shown`, the turn ended, Add through the interactions route put `clio/geodesy` in the conversation, the attention mail woke it, and the agent answered from the note. In the plain bloom rerun the agent marked Copernicus required; the ocean prompt then said public gridded sources need no account (next row). |
+| OC-G1 | **Public gridded sources are named.** The ocean prompt and plugin description presented Copernicus as the gridded source; they now say public servers need no account (NOAA ERDDAP, OISST, Argo, gliders) and Copernicus is required only when no public source can answer. Grounding, not a handcuff. | marketplace `53c31712`. |
+| BL-F2 | **A year without a bloom start no longer fails the call.** After BL-F1 dated fewer artefacts, years with no start became common, and the missing value reached the result as NaN, which JSON cannot carry. Dates go out as ISO text, a missing one as null. Found by the bloom rerun. | clio-kit `bc495685`; `test_bloom_phenology_returns_a_year_without_a_start_as_null` fails before, passes after. |
+| RV-L1 | **The look-and-fix loop, live.** Plain Q27 request on the build with RV-D1, core.visual and core.finish (`sess_f3490ef92a32`): `evaluate_run` failed first (EV-F1 below); the agent changed its input and reran it, CLIO showed the bias map, and the agent captured it twice, saw only the colour bar, said so, drew its own bias, zonal-mean, seasonal and ENSO figures, looked at them with `view_image`, and put them in a view. It computed ENSO from sea surface temperature this time. What it still left: it did not capture its final view and did not check data licences, and said both. | `sess_f3490ef92a32`; `.cloud-run/qual/q27x/` |
+| LM-F4 | **A capture of the layered map waits for its tiles.** The blank map the agent saw was a timing fault: `clio.layered-map.v1` did not register as a map surface, so `capture_a2ui_surface` did not wait for its grid tiles (the server's tiles were correct). It now exposes its map and failures as `clio.map.v1` does, and draws the world once instead of repeating it with seams at 180°. | gact-tui `519081d`; the same view in a browser renders the field (`.cloud-run/shots/q27x-map-2-view.png`) |
+| EV-F1 | **`evaluate_run` on 0-360 grids.** The common grid took the coarser grid's longitudes wrapped to −180..180 unsorted, so 0-360 inputs gave 0…177.5, −180…−2.5 and every region box failed. Sorted. | clio-kit `17790fb8`; `test_evaluate_run_on_0_360_grids_cuts_boxes` fails before, passes after |
+| RV-D2 | **A field either side of zero gets a diverging scale centred on 0** in its declared view (`balance`, symmetric value range), so a bias map reads as warm and cold instead of a sequential ramp. | clio-kit `f49bbf8f`; `tests/test_views.py` in both servers |
+| PS-D1 | **Profile stack: work on the curves, not a checkbox per profile** (the owner: "20 like this is not" acceptable). The plot takes the full width; point to name a curve, click to pick it, then Exclude or Keep; Find a profile picks one by name from suggestions; the count says how many are excluded and only those are listed, as chips that restore them, with Include all. Lines break at missing values and at a vertical step far larger than both its neighbours, so no curve is drawn across samples it lacks, while Argo's coarser deep sampling stays one line (an earlier median rule broke it into dots; caught in the browser and fixed before commit). | gact-tui `6be2220`; `field-views.test.ts` (gap rule, Argo case); browser: `scripts/cloud/checks/apps/profile_stack_pick.mjs` on `sess_98c95a5dc056`, picked and excluded at 1440 x 900; phone layout checked at 390 x 844 |
+| Site | **Ocean and weather on the site**: a docs page (`docs/ocean-and-weather`) and carousel slides from real runs. | site commit below. |
 
 ## Qualification fixtures
 
