@@ -25,6 +25,9 @@
 //                                      is a password input; the value is never logged)
 //   {"button": "Save"}                 click the page's button with that name
 //   {"settle": true}                   wait for the running turn to finish and record it
+//   {"chartdrag": {"ticks": [0, 50], "from": -5, "to": 5}}  drag across the last chart on the
+//                                      page between two x values, placed from two x-axis tick
+//                                      labels it draws
 //   {"allow": true}                    answer pending permission prompts now (a view's own
 //                                      call, such as an edit's Apply, asks before it runs)
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
@@ -207,6 +210,47 @@ export default async function (page, shot) {
       const lastUser = rows.findIndex((m) => m.role === "user");
       const turn = turnOf(rows, new Set(rows.slice(lastUser).map((m) => m.id)));
       report.turns.push({ sent: "(settled after the card)", idle, tools: turn.tools, answer: turn.answer.slice(0, 2000) });
+    } else if (step.chartdrag) {
+      const { ticks, from, to } = step.chartdrag;
+      // The transcript mounts only what is near the screen: scroll up from the bottom
+      // until a chart with these ticks is drawn (the newest one is met first).
+      const locate = (labels) => {
+        const charts = [...document.querySelectorAll("svg")].filter((svg) => {
+          const texts = [...svg.querySelectorAll("text")].map((t) => t.textContent.trim());
+          return labels.every((l) => texts.includes(String(l)));
+        });
+        const svg = charts.at(-1);
+        if (!svg) return null;
+        svg.scrollIntoView({ block: "center" });
+        const box = svg.getBoundingClientRect();
+        const at = labels.map((l) => {
+          const nodes = [...svg.querySelectorAll("text")].filter((t) => t.textContent.trim() === String(l));
+          const r = nodes.map((t) => t.getBoundingClientRect()).sort((a, b) => b.y - a.y)[0];
+          return { x: r.x + r.width / 2, y: r.y };
+        });
+        return { at, top: box.top };
+      };
+      let found = null;
+      for (let k = 0; k < 25 && !found; k += 1) {
+        found = await page.evaluate(locate, ticks);
+        if (!found) {
+          await page.mouse.move(860, 400);
+          await page.mouse.wheel(0, -500);
+          await page.waitForTimeout(700);
+        }
+      }
+      if (!found) throw new Error(`no chart with x ticks ${ticks}`);
+      await page.waitForTimeout(800);
+      found = await page.evaluate(locate, ticks);
+      const [a, b] = found.at;
+      const px = (v) => a.x + ((v - ticks[0]) * (b.x - a.x)) / (ticks[1] - ticks[0]);
+      const y = (found.top + a.y) / 2;
+      log(report, `chartdrag ${from}..${to} at x ${Math.round(px(from))}..${Math.round(px(to))}, y ${Math.round(y)}`);
+      await page.mouse.move(px(from), y);
+      await page.mouse.down();
+      await page.mouse.move(px(to), y, { steps: 12 });
+      await page.mouse.up();
+      await page.waitForTimeout(2000);
     } else if (step.allow) {
       for (let k = 0; k < 10; k += 1) {
         await allowPending(sessionId, report.log);
