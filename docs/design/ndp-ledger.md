@@ -459,3 +459,26 @@ stack is restarted with a 1 GB store for the remaining runs.
 - Finding for CLIO, not NDP: a full clio-core store degrades health and blocks
   new sessions; the store's fill level is not reported before writes start
   failing. Worth an issue against the clio-core health integration.
+
+### Alta (October request unchanged), on the fresh stack
+
+Session `sess_445d6dba454f` (27 calls, 1 failed shell call). The agent loaded
+`work-with-ndp`, found both Alta-Collins datasets (2000 to 2023, and 2023-24),
+downloaded them, read both readmes, and compared seasonal bulk SLR, 12-hour event
+SLR (LPE ≥ 0.10 in) and monthly SLR, with a chart it inspected.
+
+- Its result: 2023-24 bulk SLR **10.8** against a 2000 to 2023 mean of **12.1**
+  (SD 1.2), rank 4 of 24, z = -1.08; events lower too (median 11.1 against 12.0,
+  Mann-Whitney p ≈ 0.02, with the dependence caveat); lower in every month.
+  Conclusion: denser snow than average but within year-to-year variability.
+  Limits stated: one season against 24, the LPE method change around 2002,
+  quality-controlled history against raw 2023-24 data, the event threshold,
+  incomplete seasons, 313 rain or melt periods kept.
+- **Independent recomputation** (by hand, from the same downloaded files):
+  with the agent's rule (all snow over all LPE) 10.8078 against 12.1395, its
+  numbers exactly; with October's rule (paired positive observations only)
+  635.5 / 58.24 = **10.9117** against **12.2736**, rank 5 of 25, identical to the
+  October verification. The difference is the definition (the agent's includes
+  rain-only LPE), which it stated.
+- Verdict: **pass** (the October Luna failure, discovery that gave up, did not
+  recur; the October Sol result is reproduced).
