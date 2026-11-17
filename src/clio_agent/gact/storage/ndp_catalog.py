@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+from collections import Counter
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -22,6 +23,10 @@ from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 # Resources kept per dataset; also the most resource IDs one selection may carry.
 MAX_DATASET_RESOURCES = 1000
+# Resources each search hit lists. A tiled dataset holds hundreds, and listing them all
+# put megabytes into every search; the rest are paged with ``resource_page``.
+SEARCH_RESOURCES = 20
+RESOURCE_PAGE = 200
 
 # Former built-in Endpoint API default. It never was a public service and no longer answers.
 _RETIRED_DEFAULT_API_URL = "http://155.101.6.191:8003"
@@ -291,7 +296,7 @@ class NDPCatalog:
                 if len(item.resources) > MAX_DATASET_RESOURCES:
                     # No silent truncation: say how many tiles/files cannot be selected.
                     warnings.append(
-                        f"{item.title}: CLIO lists the first {MAX_DATASET_RESOURCES} of "
+                        f"{item.title}: CLIO keeps the first {MAX_DATASET_RESOURCES} of "
                         f"{len(item.resources)} resources; the rest cannot be selected here."
                     )
                 for index, resource in enumerate(item.resources[:MAX_DATASET_RESOURCES]):
@@ -376,13 +381,47 @@ class NDPCatalog:
         return {"organizations": organizations}
 
     @staticmethod
-    def visible(dataset: NDPDataset) -> dict[str, Any]:
-        """Expose catalog labels and stable IDs without leaking signed download URLs."""
-        return {
+    def visible(
+        dataset: NDPDataset, resource_offset: int = 0, resource_limit: int = SEARCH_RESOURCES
+    ) -> dict[str, Any]:
+        """Expose catalog labels and stable IDs without leaking signed download URLs.
+
+        Lists ``resource_limit`` resources from ``resource_offset``. When that is not
+        all of them, says which range is listed, tallies the formats of all of them,
+        and gives ``next_resource_offset`` for ``resource_page``.
+        """
+        resources = dataset.resources
+        shown = resources[resource_offset : resource_offset + resource_limit]
+        end = resource_offset + len(shown)
+        out: dict[str, Any] = {
             **dataset.model_dump(exclude={"endpoint", "resources"}),
             "endpoint_id": dataset.endpoint.id,
             "endpoint_name": dataset.endpoint.name,
-            "resources": [item.model_dump(exclude={"url"}) for item in dataset.resources],
+            "resources": [item.model_dump(exclude={"url"}) for item in shown],
+            "resource_count": len(resources),
+        }
+        if resource_offset or end < len(resources):
+            formats = Counter(item.format or "unspecified" for item in resources)
+            out["resources_listed"] = f"{resource_offset + 1}-{end} of {len(resources)}"
+            out["resource_formats"] = dict(formats.most_common(10))
+            if end < len(resources):
+                out["next_resource_offset"] = end
+        return out
+
+    def resource_page(
+        self, dataset_id: str, endpoint_id: str = "", resource_offset: int = 0
+    ) -> dict[str, Any]:
+        """One page of a searched dataset's resources, as its search kept them."""
+        dataset = self.observed(dataset_id, endpoint_id)
+        if resource_offset >= max(1, len(dataset.resources)):
+            raise ValueError(
+                f"{dataset.title} has {len(dataset.resources)} resources; "
+                "use a resource_offset below that"
+            )
+        return {
+            "datasets": [self.visible(dataset, resource_offset, RESOURCE_PAGE)],
+            "warnings": [],
+            "total": 1,
         }
 
     def observed(self, dataset_id: str, endpoint_id: str = "") -> NDPDataset:

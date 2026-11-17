@@ -281,8 +281,26 @@ def test_search_warns_when_a_dataset_has_more_resources_than_can_be_selected(
     monkeypatch.setattr(catalog, "access", lambda endpoint, token: (None, ""))
     monkeypatch.setattr(catalog._public_catalog, "search", lambda *args: ([record], 1))
     result = catalog.search("sierra")
-    assert len(result["datasets"][0]["resources"]) == 1000
     assert result["warnings"] == [
-        "3DEP 1-m DEM Dataset: CA_SierraNevada_B22: CLIO lists the first 1000 of 1048 "
+        "3DEP 1-m DEM Dataset: CA_SierraNevada_B22: CLIO keeps the first 1000 of 1048 "
         "resources; the rest cannot be selected here."
     ]
+    # A search hit lists a few resources, counts and tallies the rest, and pages them.
+    row = result["datasets"][0]
+    assert len(row["resources"]) == 20 and row["resource_count"] == 1000
+    assert row["resources_listed"] == "1-20 of 1000" and row["next_resource_offset"] == 20
+    assert row["resource_formats"] == {"GeoTIFF": 1000}
+    page = catalog.resource_page("dem", resource_offset=900)
+    listed = page["datasets"][0]
+    assert [item["id"] for item in listed["resources"]][:1] == ["t900"]
+    assert len(listed["resources"]) == 100 and "next_resource_offset" not in listed
+    assert listed["resources_listed"] == "901-1000 of 1000"
+    with pytest.raises(ValueError, match="has 1000 resources"):
+        catalog.resource_page("dem", resource_offset=1000)
+
+
+def test_search_hit_with_few_resources_lists_them_all() -> None:
+    item = dataset(resource("a.tif"), resource("b.tif"))
+    row = NDPCatalog.visible(item)
+    assert row["resource_count"] == 2 and len(row["resources"]) == 2
+    assert "resources_listed" not in row and "next_resource_offset" not in row

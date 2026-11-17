@@ -125,6 +125,8 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
             ("query", "Search terms"),
             ("organization", "Publisher"),
             ("endpoint_id", "Catalog"),
+            ("dataset_id", "Dataset"),
+            ("resource_offset", "Resources from"),
         )
         if args.get(key)
     )
@@ -142,6 +144,15 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
             if dataset.get("access"):
                 detail.append(f"Access: {dataset['access']}")
             detail.extend(_coverage_lines(dataset.get("coverage") or {}))
+            if dataset.get("resources_listed"):
+                formats = ", ".join(
+                    f"{name} {count}" for name, count in dataset.get("resource_formats", {}).items()
+                )
+                detail.append(
+                    f"Resources listed: {dataset['resources_listed']} (formats: {formats})"
+                )
+                if dataset.get("next_resource_offset") is not None:
+                    detail.append(f"Next resource offset: {dataset['next_resource_offset']}")
             blocks.append(
                 {
                     "id": f"dataset-{index}",
