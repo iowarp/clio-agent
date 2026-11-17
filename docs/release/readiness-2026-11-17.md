@@ -146,20 +146,31 @@ On main, 40 Quality Control jobs and both acceptance jobs had been failing.
 
 ## Memory budget gate
 
-PENDING. Command: `scripts/mcp_mem_attribution.py --agent clio/clio-data --private-core-root <owned dir> --provider claude_code --sessions 3 --settle-s 1830 --runs 3 --assert-budget`, at `b44e10b`.
+**GATE: PASS** (exit 0).
+- **Command:** `scripts/mcp_mem_attribution.py --agent clio/clio-data --workspace <synthetic CSV> --private-core-root <owned dir> --provider claude_code --port 18917 --sessions 3 --settle-s 1830 --runs 3 --assert-budget`.
+- **Code:** clio-agent at `d6a1fde`; the code is identical to `3d1c6e2`, where CI is green.
+- **Timing:** 06:35 to 08:18 UTC. Each run started and retired its own private clio-core daemon, which the script confirmed ("owned daemon settled; disposable runtime absent=True").
 
-**Attempt 1 (interrupted):**
-- Run 1 completed with peak 1.47 GB and final 0.82 GB, against a budget of 3.2 / 0.92 GB.
-- The container restart killed it during run 2. It needs 3 complete runs, so it does not count.
+| Run | Peak | Final (after the 1,830 s settle) |
+|---|---|---|
+| 1 | 1.52 GB | 0.67 GB |
+| 2 | 1.54 GB | 0.68 GB |
+| 3 | 1.33 GB | 0.67 GB |
+| **Median** | **1.52 GB** (spread 0.21) | **0.67 GB** (spread 0.01) |
+| Budget with 5% tolerance | 3.36 GB | 0.97 GB |
 
-**Caveats that apply to any result:**
+- **Composition:** the peak is server-main (about 0.6 GB), the Claude SDK CLIs (about 0.62 to 0.64 GB) and the clio-core daemon (0.07 GB). Every session was idle before FINAL.
+- **Ratchet:** the script suggests recording lower numbers. **I did not change `mcp_mem_budget.json`**, because of the first caveat below: this load is lighter than the one the budget describes.
+- **Earlier attempt:** it was killed by the container restart after its run 1 (1.47 GB peak, 0.82 GB final; codex sandbox processes were still alive at FINAL in that run only). Its log is kept separately and is not counted.
+
+**Caveats:**
 - **Synthetic dataset.** The repository does not ship `sensor_readings.csv`. I generated a deterministic one with 6,026 rows and planted faults.
 - **The gate no longer measures an MCP fleet.**
-  - In the interrupted attempt's run 1, the clio-data sessions used only built-in tools (`fs_read_file`, `shell_bash`, `fs_glob`). The answers were correct and grounded in the data.
-  - The cause is lazy install (#2358). On the gate's server, `GET /v1/connectors` shows `hdf5`, `adios`, `parquet` and `pandas` as `enabled: false` (status ready). clio-data declares those plugins, but their MCP servers stay off until someone enables them.
+  - The clio-data sessions used only built-in tools (`fs_read_file`, `shell_bash`, `fs_glob`). No `mcp:*` process appears in any run's attribution. The answers I read were correct and grounded in the data.
+  - The cause is lazy install (#2358). On run 2's server, `GET /v1/connectors` shows `hdf5`, `adios`, `parquet` and `pandas` as `enabled: false` (status ready). clio-data declares those plugins, but their MCP servers stay off until someone enables them.
   - So the release gate's load no longer includes the MCP fleet that `scripts/mcp_mem_budget.json` was recorded with. A PASS here is real for this load but does not cover fleet memory.
   - To restore the original meaning, the harness should enable those connectors (`POST /v1/connectors/{id}/enable`) before the load. That changes comparability with the recorded numbers, so it is your decision. I did not change the gate.
-- **Leftover processes and directories.** `codex` sandbox processes, about 0.08 GB, were still alive at FINAL after the 1,830 s settle. The script leaves `/tmp/clio-mem-gate-xdg-*` behind after each run; I deleted them.
+- **Leftovers.** The script leaves one `/tmp/clio-mem-gate-xdg-*` directory behind per run (6 in total); I deleted them. In the interrupted attempt, `codex` sandbox processes (about 0.08 GB) were still alive at FINAL. None were in the three counted runs.
 
 ## Release preparation (report only)
 
