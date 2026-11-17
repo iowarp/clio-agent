@@ -41,7 +41,7 @@ async def aiterate(make: Callable[[], Iterator[Any]]) -> AsyncIterator[Any]:
                 loop.call_soon_threadsafe(queue.put_nowait, (False, item))
                 if stop.is_set():
                     break
-        except BaseException as exc:  # noqa: BLE001 - re-raised in the consumer
+        except BaseException as exc:  # noqa: BLE001 - forwards: the consumer re-raises it
             loop.call_soon_threadsafe(queue.put_nowait, (True, exc))
         finally:
             close = getattr(iterator, "close", None)
