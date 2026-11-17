@@ -683,7 +683,12 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
             )
             with _build_phase("build.prompt"):
-                agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
+                agent_prompt = final_agent_prompt(
+                    agent_def,
+                    resolution,
+                    getattr(self, "tools", ()),
+                    provider=str(getattr(self.config, "provider", "") or ""),
+                )
             # The same text for every session of this agent: the session's own facts
             # (workspace, roots, machine, scratch) ride the conversation as the
             # ``session_facts`` injection (gact/working_state.py), so the cached system
