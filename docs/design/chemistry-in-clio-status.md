@@ -179,3 +179,33 @@ committed). Results are judged against what the tools returned.
 
 ### Showcase captures (live UI, deviceScaleFactor 2)
 Saved in `site/src/assets/tutorials/chemistry/`: `magnetite-unit-cell.png` (C8, the Fd-3m cell in Burette), `imaginary-mode.png` (C4, the imaginary mode playing), `dihedral-edit.png` (C6, Edit mode with O0–C1–C2–O3 picked), `avogadro-stream.png` (Avogadro 2.1 streamed in the conversation, installed by CLIO), and at 390x844 `magnetite-phone.png` and `imaginary-mode-phone.png`. Each view was reopened with a plain request in its own conversation and captured as an element. Not used: the Ketcher capture (seeded from the 3D file, it drew every hydrogen and a tangled carboxyl). Observed at 390 px: the Burette view's toolbar is clipped on the right and two icons overlap (Burette fork). Not captured: the FDMNES key card (answered before captures), the C5 energy chart and the XANES overlay (A2UI charts; the harness could not locate them to crop).
+
+### Install once, look first (2026-11-17)
+A fresh conversation reported Avogadro missing although CLIO had installed it: the install
+had set the program path for one conversation only, and NWChem was installed again in each
+workspace. Fixed in the skills (marketplace): install-avogadro, install-nwchem and
+install-fdmnes check for an installed program first, install under `~/.local/opt` with a
+launcher in `~/.local/bin` (on CLIO's PATH), and set a connector path only for a program
+elsewhere; the NWChem launcher sets the conda build's basis-library path (checked: H2/STO-3G
+−1.1168 Eh). The Avogadro server also finds a release the skill unpacked. Live: in a new
+conversation "Build ethylene glycol, optimize it with MACE and open it in Avogadro." opened
+it with no install question.
+
+Avogadro 2.1 round trip: 2.1 no longer loads script commands (its plugins are pyproject
+packages that it registers only through a setup dialog), so Send to CLIO is gone there.
+`read_avogadro` now reads the molecule open in Avogadro (`getMolecule`, CJSON with the
+selection); Send to CLIO remains for older releases. Live: one hydrogen deleted in the
+Avogadro tab, then "What did I change in Avogadro?" → the agent read the live molecule
+(C2H5O2, 9 atoms), named the removed hydroxyl H on O3 and that nothing else moved. XYZ files
+open under their file name ("final (C2H6O2)", not ASE's property line).
+
+Also: Factorio's main-only fragments were gated on `spawn_skill_task`, which its agent
+never gets (only agents with subagent-spawning skills do); now `spawn_agent_task` in the
+root session. A tool's own input round (a search-source consent) is no longer mailed to
+the agent as a question answer (`task_publication.task_owner_recipient`). Burette's
+phone-width toolbar overlap is fixed in the fork (ce5599d) but not pushed: the fork's
+pre-push hook downloads the Mol* source, which this machine's network refuses.
+
+Website: two carousel slides (ethane's imaginary mode, Avogadro in a tab) as full CLIO
+windows from fresh one-request conversations, in light and dark matching the site theme;
+the example page uses the light captures.
