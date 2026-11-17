@@ -159,6 +159,20 @@ def test_section_sample_carries_stations_and_orientation(tmp_path: Path) -> None
     assert "LineString" in out["path"]
 
 
+def test_section_rows_run_from_the_smallest_level(tmp_path: Path) -> None:
+    pressure = np.array([1000.0, 850.0, 500.0, 200.0])  # stored surface first, as ERA5 cuts are
+    ds = xr.Dataset(
+        {"t": (("pressure", "distance"), np.repeat(pressure[:, None], 3, axis=1))},
+        coords={"pressure": pressure, "distance": np.array([0.0, 50.0, 100.0])},
+    )
+    path = tmp_path / "upside.nc"
+    ds.to_netcdf(path)
+    out = section_sample(path, variable="t", width=3, height=4)
+    assert out["levels"] == [200.0, 500.0, 850.0, 1000.0]
+    assert [row[0] for row in out["values"]] == [200.0, 500.0, 850.0, 1000.0]
+    assert out["positiveDown"] is True
+
+
 def test_registered_grid_routes(tmp_path: Path) -> None:
     client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
     workspace = client.post("/v1/workspaces", json={"name": "grid", "root_path": str(tmp_path)})

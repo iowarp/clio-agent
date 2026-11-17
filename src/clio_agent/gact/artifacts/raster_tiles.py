@@ -309,6 +309,11 @@ def section_sample(
         data = dataset[chosen]
         vertical = next(d for d in data.dims if d != "distance")
         data = data.transpose(vertical, "distance")
+        if vertical in data.coords:
+            # Rows run from the smallest vertical value, whatever order the file
+            # stores them in, so a view can place them by value (pressure from the
+            # top of the column, depth from the surface) without guessing the order.
+            data = data.sortby(vertical)
         distance = np.asarray(data["distance"].values, dtype=float)
         levels = (
             np.asarray(data[vertical].values, dtype=float)
