@@ -4,7 +4,7 @@ Overnight preparation for the next CLIO release. No release action was taken: no
 
 Baseline (03:40 UTC monitor): clio-agent develop `ba8c47f`, gact-tui develop `def3ae0`, marketplace develop `f860020`, clio-schemas develop `e138128`, clio-kit main `4b5e6e3c`.
 
-**Status of this file:** sections marked PENDING are filled in as the last runs finish.
+**Status of this file:** final, written at 09:55 UTC.
 
 ## Access limits that shaped the night
 
@@ -57,7 +57,20 @@ Baseline (03:40 UTC monitor): clio-agent develop `ba8c47f`, gact-tui develop `de
   - So do these guards: file size, class-in-function, no-summaries, no-settle, no-elicitationId, no-middle-dot, tool-instrumentation, silent-fallback and noqa-swallow.
   - `plugin check` gave 69/69 and `bash -n homelab-env.sh` passed.
 - **Develop baseline:** shards 0 to 2 of 6 ran locally at `ba8c47f`, each 5 failed, the same failures as CI. I stopped it after that because CI covered the rest.
-- **Six shards and the coverage floor on my branch:** PENDING. They run after the memory gate, because the test suite's clio-core daemons must not overlap with the gate's samples.
+- **Six shards and the coverage floor on my branch** (`090c532`, code identical to `3d1c6e2`), 08:18 to 09:50 UTC, run as CI does: `scripts/run_tests.py tests/ -m "not integration" -W error::DeprecationWarning --num-shards 6 --shard-id N -n logical --dist worksteal --cov=clio_agent --cov-branch`, on Python 3.14.
+
+| Shard | Passed | Failed | Skipped |
+|---|---|---|---|
+| 0 | 2,839 | 0 | 25 |
+| 1 | 2,835 | 0 | 27 |
+| 2 | 2,850 | 0 | 24 |
+| 3 | 2,892 | 1 | 25 |
+| 4 | 2,847 | 0 | 23 |
+| 5 | 2,860 | 0 | 15 |
+| **Total** | **17,123** | **1** | 139 |
+
+  - **Shard 3's failure is my invocation, not the code.** I added `-p no:cacheprovider`, which CI does not use. It removes `pytestconfig.cache`, which `test_test_runtime_isolation.py::test_live_suite_runtime_is_not_system_temp` asserts on. Run without the flag the test passes; with it, it fails. It passes in CI.
+  - **Coverage:** the combined line and branch coverage over the 6 shards is **84%**, against the floor of 78 (`coverage report --fail-under=78`).
 
 ### gact-tui (local branch `claude/release-readiness`, NOT pushed)
 
@@ -191,7 +204,7 @@ The full inventory, with commits and PR numbers, is in the next section.
 
 ### Contract-change inventory
 
-The detailed inventory was produced in this session from `git log f4b05a1..origin/develop`. Its key points are in the CHANGELOG subsection above and in the release notes draft. PR numbers I verified: #2305, #2354, #2358, #2364 and #2365.
+The detailed inventory is in `docs/release/contract-changes-since-v0.9.7.md`, built from `git log f4b05a1..origin/develop`. It was spot-checked, not verified line by line. Its key points are in the CHANGELOG subsection above and in the release notes draft. PR numbers I verified: #2305, #2354, #2358, #2364 and #2365.
 
 ### Dependencies, for their own release from `main`
 
