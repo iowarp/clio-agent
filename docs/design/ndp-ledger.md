@@ -545,3 +545,59 @@ Two CLIO defects, both fixed in this branch:
    happened and what to do (`gact/turn_unfinished.py`).
 
 Verdict: **failed (CLIO defect, fixed); rerun below.**
+
+### R6d: cross-organization Tahoe correlation, rerun after the search fix (delivered, wrong)
+
+Session `sess_42895aadd165` (50 calls, 4 failed), same request, on clio-agent
+`b479119`. The agent loaded `find-ndp-data-for-place` and finished with a written
+answer. Sources:
+
+- **TRPA** habitat layers through its ArcGIS service;
+- **NIFC** perimeter history filtered to 2000 onward, with 55 polygons and the
+  history's end in 2019 stated;
+- **California Landscape Metrics** fuel load, canopy height and cover through
+  WCS;
+- **USGS 3DEP** 1-arc-second DEM from the Planetary Computer, retried with a
+  signed token after an unsigned HTTP 409.
+
+It reported a per-habitat table (area, elevation, slope, fuel, share burned
+since 2000), a what-overlaps table, and what it could not use. Each output has a
+provenance sidecar. Captures `r6d-correlation-1440.png`, `r6d-correlation-390.png`,
+`r6d-correlation-agent-map.png`.
+
+**Independent check: the numbers leave out the south shore.** The agent read
+only the two `n40` 1° DEM tiles (39 to 40 N) for a window reaching 38.85 N. The
+DEM is nodata south of 39.0 N, and every statistic is masked on the DEM, so the
+southern third of the basin (South Lake Tahoe, Meyers, Fallen Leaf) is missing
+from the table. That includes Angora 2007 (1,243 ha), Gondola 2002 (260 ha) and
+Emerald 2016 (70 ha). Recomputed from its own files, its reference land and
+burned share reproduce exactly (85,822 ha, 1.01 %). The fires inside the DEM are
+Martis (outside the basin, near Truckee) and small burns. The agent's map shows
+the empty band, but it said it had not looked at the map. It also described the
+fires as falling "outside these habitats" when the largest in-basin burn was
+outside its data. The habitat areas (for example deer fawning 9,216 ha) are
+north-of-39 N areas, not basin areas.
+
+Defects found and fixed:
+
+- **geoservices (clio-kit `2065b78`).** `read_raster_window` returned nodata
+  where no source reached, and its only signal was a whole-window
+  `valid_fraction` (the lake and nodata count there too). It now returns
+  `region_not_covered` with the fraction and WGS84 box that no source's
+  footprint reaches.
+- **Signed URLs in provenance (clio-kit `2065b78`).** Provenance sidecars
+  recorded the Planetary Computer SAS URLs whole, signature included. Sources
+  now drop signing and credential query parameters (Azure SAS, AWS SigV4,
+  tokens, keys) and say the signature was removed; geoprocess shares the module.
+- **get-geospatial-data skill (marketplace `148f25a`).** It says what
+  `region_not_covered` means: add the covering tiles, or report the gap and keep
+  it out of every statistic.
+
+Not a CLIO defect: the agent did not look at its own figure, though `view_image`
+was available.
+
+Verdict: **failed on correctness.** The answer is delivered and well caveated,
+but its central fire figure leaves out the area that holds the basin's main
+recent burns. The earlier R6b computation, which did cover the basin
+(9.5 % of deer fawning area burned, 2007 to 2024), remains the reference. Rerun
+R6e below.
