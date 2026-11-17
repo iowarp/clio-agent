@@ -11,12 +11,12 @@ readiness per organization and across organizations". Branch in every repo:
 | 1. Catalog profile (test and production) | Done. See [Catalog profile](#catalog-profile-2026-11-17) |
 | 2. Access layer in clio-kit (services, bounded reads, rasterio extra) | Done on clio-kit `claude/ndp-data-access`: new `geoservices` server (`d3fe70a`), terrain 2.3.0 reads GeoTIFF and LAZ by default (`c77a9cf`). Not yet in a released clio-kit, so CLIO's pinned clio-kit does not ship it |
 | 2. "Tiles covering a region" in the clio-agent attach model | Done on this branch: `connected_data_ndp_tiles_covering`, plus a warning for datasets over 1,000 resources. The marketplace `ndp` plugin must still claim the tool (blocked) |
-| 3. Core geospatial operations (clio-kit) | Next |
-| 4. Discovery skill and shared `resolve-region` (marketplace) | Not started (repository now attached) |
-| 5. Harmonization and recorded merge | Not started |
-| 6. Map with time for rasters and vectors | Not started; depends on the earth-ocean component |
-| 7. Domain skills (marketplace) | Not started (repository now attached) |
-| Qualification runs | Not started |
+| 3. Core geospatial operations (clio-kit) | Done on clio-kit `claude/ndp-data-access`: new `geoprocess` server (`a78f824`) |
+| 4. Discovery skill and shared `resolve-region` (marketplace) | Done on marketplace `claude/ndp-data-access` (`fce1ba6`): `geospatial` plugin (moved `resolve-region`, `get-geospatial-data`, `harmonize-layers`), ndp `find-ndp-data-for-place`, tile tool claimed |
+| 5. Harmonization and recorded merge | Skill written (`harmonize-layers`); provenance sidecar format awaiting the earth-ocean session's answer; not exercised live |
+| 6. Map with time for rasters and vectors | Not started. Vectors already work on `clio.layered-map.v1` (`shapes`); GeoTIFF proposal sent to the earth-ocean session, awaiting reply |
+| 7. Domain skills (marketplace) | Done (`70088e8`): `wildfire` (fire-perimeters, fire-risk-and-fuels), `landscape` (terrain-from-lidar with a D8 flow-routing script, planning-layers); the ndp agent carries both |
+| Qualification runs | In progress: Tahoe habitat run 1 (R3) done, partial; snow-depth case grounded (R4) |
 
 ## Needs user
 
@@ -126,6 +126,25 @@ name the field that holds it. "Probe" is a live request from this container on
   the reason; raster windows are decimated to `max_cells` and return the factor.
   Neither silently returns a thinned result as if it were full density.
 
+- **D7. NDP verifies TLS with the OS trust store** (`6cc03b6`). NDP clients set
+  `trust_env=False`, so httpx trusted only certifi and failed behind any
+  TLS-inspecting network whose CA the OS trusts. This container is one; so are
+  many lab and university networks. The built-in catalog tools failed in R3 and
+  the agent fell back to the shell. One owner helper (`ndp_tls.system_tls()`,
+  a truststore context) now serves every NDP client. Direct check: certifi fails
+  and truststore succeeds against `ndp-test.sdsc.edu` from this container.
+- **D8. Tool servers are enabled the way a person enables them.** A fresh agent
+  shows an "Enable all" card for servers its plugins declare (geo, geoservices,
+  geoprocess, terrain, ndp); nothing is installed without it. In R3 nobody
+  clicked it, so the agent had no geoservices tools. Qualification runs now click
+  "Enable all" before typing the request (`scripts/cloud/checks/ndp_study.mjs`),
+  as the October runs pre-saved the NDP account. This is environment setup, not
+  model-facing instruction.
+- **D9. The clio-agent branch pins the sibling branches.** `pyproject.toml` pins
+  clio-kit at the `claude/ndp-data-access` commit, and the marketplace submodule
+  and `DEFAULT_MARKETPLACE_COMMIT` point at the marketplace branch (`fa913d3`,
+  `35b9c1b`), as develop pins merged sibling work. A release replaces both.
+
 ## Runs
 
 ### R1 (2026-11-17): tile selection against live catalogs (mechanism, not agent judgement)
@@ -173,3 +192,48 @@ Direct MCP calls through the in-memory FastMCP client, outside an agent.
 | `read_raster_window` two 3DEP 1 m tiles in UTM 10 and UTM 11 | Mosaicked in EPSG:26910, valid 100%, 2,019 to 2,689 m. A box east of both surveys correctly returned "no valid cells"; per-tile checks confirmed both tiles are nodata there | 5.4 s |
 | `describe_geo_service` Entwine viewer link for `CA_PlacerCo_2012` | Followed to `ept.json`: 4.96 billion points, EPSG:3857, extent -121.38, 38.75, -119.99, 39.32 | 0.5 s |
 | `read_point_cloud` same, 0.01° box near Tahoe City, 500k budget | 375,397 points to octree depth 7 (spacing 4.7 m), `complete: false` with the reason; classes 1, 2 (62,931 ground), 7, 11 | 3.7 s |
+
+### R3 (2026-11-17): Tahoe habitat, October request unchanged (plain request; partial)
+
+- Stack: isolated (`CLIO_CLOUD_ISOLATE=1`), provider `claude_code`, model
+  `claude-sonnet-5-5`, agent `clio/ndp` 1.1.0. Session `sess_41e09de7589c`,
+  workspace `ws_94bfda34fc6b`.
+- Command: `STUDY_AGENT=ndp STUDY_TEXT=… node scripts/cloud/ui_check.mjs --steps
+  scripts/cloud/checks/science_study.mjs --label ndp-tahoe-habitat --width 1440
+  --height 900`. The request was typed into the real composer. The harness allowed
+  each permission for the session.
+- Request: "What can NDP tell us about how much of the Lake Tahoe basin is wetland
+  or riparian habitat, and how that relates spatially to the lake? Use the
+  available scientific data to make a small map and quantify what you can, with
+  clear caveats."
+- What the agent chose (evidence of judgement, since nothing was named): it
+  loaded `find-ndp-data-for-place`, then `planning-layers`.
+- What failed: every built-in NDP search failed TLS (fixed after this run, D7);
+  the agent queried the public CKAN API through the shell with verification on.
+  The geoservices tools were never available (D8). It found that the NDP
+  "Wetlands" record points at TRPA layer 4, which no longer exists on the service
+  or the hub, listed the service's current layers, and used "Stream Environment
+  Zone - Remotely Sensed" instead. It also caught a GeoJSON labelled EPSG:4326
+  that held UTM metres.
+- Science: 10,206 ha of dissolved wetland/riparian habitat (six SEZ classes,
+  overlaps counted once), 12.3% of 83,165 ha of basin land (basin 132,979 ha,
+  lake 49,814 ha). The wetland share is 10 to 13% in every distance band from the
+  shore, from 0-100 m to 5 km and beyond, so there is no shoreline
+  concentration; the large patches are at the south shore (Upper Truckee and
+  Taylor Creek marshes). Cross-checks: an independent meadow layer gives 2,008 ha
+  against 2,669 ha of SEZ meadow; 9% of the wetland lies in the 100-year flood
+  zone. Caveats stated: undated remotely sensed layer, "forested" SEZ as
+  wetland is a judgement, no sliver filter.
+- Verdict: **partial.** The science answers the October question, including the
+  overlap-corrected footprint the October run lacked. Not a pass of the NDP path:
+  the built-in tools failed TLS, and the data came through hand-written REST
+  queries rather than the access layer. Rerun as R5 after D7 and D8.
+- Screenshots: `ndp-ledger-shots/r3-tahoe-1440.png` (1440x900),
+  `ndp-ledger-shots/r3-tahoe-390.png` (390x844, showing the unclicked enable
+  card), the agent's map `ndp-ledger-shots/r3-tahoe-agent-map.png`.
+
+### R4 (2026-11-17): snow-depth case grounded by hand
+
+See `benchmark/ndp-snow-depth-lidar/README.md` (`36b97a5`): Southern Sierra CZO
+March and August 2010 bare-earth models, differenced with geoservices and
+geoprocess. Median depth 2.02 m at Wolverton, 0.90 m at Providence Creek.
