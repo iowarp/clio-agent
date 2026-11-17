@@ -78,6 +78,24 @@ def _categorical(dataset: Any, band: int) -> bool:
     return bool(np.issubdtype(np.dtype(dataset.dtypes[band - 1]), np.integer))
 
 
+def band_index(path: Path, variable: str | None) -> int:
+    """A band from a layer's ``variable``: none (band 1), an index, ``bandN`` or a band name."""
+    if variable in (None, ""):
+        return 1
+    text = str(variable).strip()
+    if text.isdigit():
+        return int(text)
+    if text.lower().startswith("band") and text[4:].isdigit():
+        return int(text[4:])
+    with _open(path) as dataset:
+        names = [d or f"band{i + 1}" for i, d in enumerate(dataset.descriptions)]
+    if text in names:
+        return names.index(text) + 1
+    raise GeoTiffTileError(
+        "raster_variable_required", f"Choose a band from {names} (or its number); got {text!r}."
+    )
+
+
 def tile_mercator_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
     """(left, bottom, right, top) of an XYZ tile in EPSG:3857 metres."""
     size = 2 * _WEB_MERCATOR_HALF / 2**z
