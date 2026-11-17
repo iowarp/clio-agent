@@ -28,6 +28,8 @@
 //   {"chartdrag": {"ticks": [0, 50], "from": -5, "to": 5}}  drag across the last chart on the
 //                                      page between two x values, placed from two x-axis tick
 //                                      labels it draws
+//   {"elshot": {"app": -1, "path": "site/src/assets/tutorials/chemistry/x.png"}}  screenshot
+//                                      one app view's frame as an element (at --scale)
 //   {"allow": true}                    answer pending permission prompts now (a view's own
 //                                      call, such as an edit's Apply, asks before it runs)
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
@@ -252,6 +254,22 @@ export default async function (page, shot) {
       await page.mouse.move(px(to), y, { steps: 12 });
       await page.mouse.up();
       await page.waitForTimeout(2000);
+    } else if (step.elshot) {
+      let frames = await appFrames(page);
+      for (let k = 0; k < 90 && !frames.length; k += 1) {
+        await page.mouse.move(370, 500);  // over the margin: a view takes the wheel
+        await page.mouse.wheel(0, -600);
+        await page.waitForTimeout(700);
+        frames = await appFrames(page);
+      }
+      await page.waitForTimeout(2500);
+      frames = await appFrames(page);
+      const row = frames.at(step.elshot.app ?? -1);
+      if (!row?.element) throw new Error("no app frame to capture");
+      await row.element.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.waitForTimeout(1500);
+      await row.element.screenshot({ path: step.elshot.path });
+      log(report, `captured ${step.elshot.path}`);
     } else if (step.allow) {
       for (let k = 0; k < 10; k += 1) {
         await allowPending(sessionId, report.log);
