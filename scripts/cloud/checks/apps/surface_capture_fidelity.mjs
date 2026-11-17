@@ -16,12 +16,21 @@ export default async function (page, shot) {
   }
   await node.scrollIntoViewIfNeeded();
   await page.waitForTimeout(8000);
+  // QUAL_HOVER: the pointer rests on the view, as in a live session (hover shows its toolbar).
+  if (process.env.QUAL_HOVER) {
+    const b = await node.boundingBox();
+    if (b) await page.mouse.move(b.x + b.width / 2, b.y + 20);
+    await page.waitForTimeout(800);
+  }
   const result = await page.evaluate(async ({ id: componentId, within }) => {
-    const shownAll = (cid) => [...document.querySelectorAll(`[data-a2ui-component-id="${cid}"]`)].filter((n) => n.getBoundingClientRect().height > 0);
+    // A component wrapper may lay out as contents; its child then holds the box (as the capture does).
+    const box = (n) => (n.getBoundingClientRect().height > 0 ? n : n.firstElementChild);
+    const shownAll = (cid) => [...document.querySelectorAll(`[data-a2ui-component-id="${cid}"]`)].map(box).filter((n) => n && n.getBoundingClientRect().height > 0);
     const process_inner = (cid) => {
       // The surface: the smallest displayed element holding both named components.
       if (!within) return shownAll(cid).pop();
-      const a = shownAll(within)[0], b = shownAll(cid)[0];
+      const a = shownAll(within).pop();
+      const b = shownAll(cid).find((n) => n.contains(a)) ?? shownAll(cid)[0];
       let up = a; while (up && !up.contains(b)) up = up.parentElement;
       return up;
     };
