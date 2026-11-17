@@ -488,4 +488,60 @@ SLR (LPE ≥ 0.10 in) and monthly SLR, with a chart it inspected.
 | Task | Session | Result | Verdict |
 | --- | --- | --- | --- |
 | 1. EarthScope GNSS for WWMT: datasets, columns, observations | `sess_15550b17db61` (7 calls, none failed) | Listed `WWMT.CI.LY_.20`, `.40` and `PW.LY_.00` with location (33.9553 N, 116.6539 W) and coverage (2024-12-03 to 12-12) from the search results' new `coverage` fields, noted the test-catalog copies, connected one, and showed the columns and five real 1 Hz rows, stating it read only the first 64 KB of a 46.7 MB file | **Pass** |
+| 5. Japanese satellite wildfire data in NDP, and which resources hold measurements | `sess_c19f803e0f08` (9 calls, 1 failed: `ndp_get_dataset_details` called with `dataset_id`, then corrected) | Found Himawari (JMA) and Terra ASTER; classified each resource as data (the AWS Open Data S3 bucket, the LP DAAC portal) or tooling (a PyPI package, a GitHub tutorial repo); noted the catalog start date looks earlier than the archive's own; stated it read URLs and descriptions only because every `format` is blank, and listed the rephrased queries that found nothing more. Captures `task5-1440.png`, `task5-390.png` | **Pass** |
 | 2 to 4 (Ares Endpoint, on-demand stream, private dataset creation) | not run | Need the private Ares SSH Endpoint and a saved on-demand stream service, which this container cannot reach | **Not run (environment)** |
+
+### Case 01 (San Diego hazard brief), plain request
+
+Session `sess_6d54561036e9` (38 calls, 8 failed; 4 min 25 s; 5.1 M input
+tokens). The agent loaded `find-ndp-data-for-place`, geocoded the county to a box,
+searched NDP, and used `describe_geo_service` and `fetch_features` on the
+services behind the records:
+
+- **AirNow** current monitors: 20 in the box at 13:00 PST, all Good (ozone AQI
+  36 to 44, PM2.5 AQI 16 to 22), with the records that report no pollutant named;
+- **USA Wildfires** and the **NDGD smoke forecast**: 0 features, read as "no
+  incident or modelled smoke now", explicitly not as low fire risk;
+- **NWS watches and warnings** (nowCOAST): HTTP 403 from this container through
+  the tool and through curl; reported as not determined, not worked around;
+- static layers (lidar, imagery, SANGIS, CLM rasters) excluded as not current,
+  with the reason.
+
+Deliverables: the brief, `airnow_sd.geojson` with its `clio.provenance/1`
+sidecar, and a monitor map. It said it had not looked at its own map.
+Failures: six `ndp_get_dataset_details` calls passed `dataset_id` where the server
+requires `dataset_identifier` (follow-up below), one ArcGIS item page given to
+`describe_geo_service`, and the 403. Captures `case01-1440.png`, `case01-390.png`.
+
+Verdict against the case README: **pass on the semantics** (region object with
+source, catalog candidates checked against it, bounded feature queries with source
+URLs, analysis apart from search, synthesis with caveats, GeoJSON with provenance).
+**Not met:** the required expert decomposition (one agent did every branch), and
+the README's own "Status: not passed" stays until that is met.
+
+### R6c: cross-organization Tahoe correlation, second rerun (context window)
+
+Session `sess_a0cf5de00e2f`, same request as R6. The agent loaded
+`find-ndp-data-for-place` and `work-with-ndp` and ran seven catalog searches
+before the model call failed with `ContextWindowExceededError`. The session
+went idle showing the tool results and no reply; the message was stored as a
+normal `end_turn` with no error.
+
+Two CLIO defects, both fixed in this branch:
+
+1. **Search results carried every resource.** A search hit listed up to 1,000
+   resources (a tiled 3DEP or OpenTopography project is 290 KB on its own), so one
+   search returned 0.8 to 2.5 MB, and seven of them, each shown at the 25,000-token
+   per-result window, overflowed the context. Each hit now lists its first 20
+   resources with `resource_count`, a tally of the formats of all of them, and
+   `next_resource_offset`; `connected_data_search_ndp(dataset_id=...,
+   resource_offset=...)` pages one searched dataset 200 at a time from what the
+   search kept, and `connected_data_ndp_tiles_covering` still picks tiles by
+   region.
+2. **A context-window stop was silent.** The loop stopped with
+   `termination_reason="context_window_exceeded"`, but the empty-turn check only
+   fired when there was no tool output, so nothing reached the message. Such a
+   turn now carries `ErrorInfo(error="context_window_exceeded")` saying what
+   happened and what to do (`gact/turn_unfinished.py`).
+
+Verdict: **failed (CLIO defect, fixed); rerun below.**
