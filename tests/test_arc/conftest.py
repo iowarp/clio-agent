@@ -58,7 +58,11 @@ def live_plane_context(
 ) -> Iterator[None]:
     """Set the runtime context the live plane reads (app handle, scope, session,
     and the context window that drives auto-compaction)."""
-    fake_session = types.SimpleNamespace(metadata=session_metadata or {})
+    # The fields every stored session has (gact.sessions.Session) that the loop reads:
+    # run limits walk ``id`` / ``parent_session_id`` to the run root before each step.
+    fake_session = types.SimpleNamespace(
+        id=session, parent_session_id="", metadata=session_metadata or {}
+    )
     fake_app = types.SimpleNamespace(
         state=types.SimpleNamespace(
             arc=arc_memory,
