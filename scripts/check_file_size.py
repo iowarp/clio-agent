@@ -1101,7 +1101,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,
     "src/clio_agent/gact/sessions.py": 839,
-    "src/clio_agent/gact/turn_finalize.py": 803,
+    "src/clio_agent/gact/turn_finalize.py": 787,
     # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to
     # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,
