@@ -9,24 +9,19 @@ readiness per organization and across organizations". Branch in every repo:
 | Area | State |
 | --- | --- |
 | 1. Catalog profile (test and production) | Done. See [Catalog profile](#catalog-profile-2026-11-17) |
-| 2. Access layer in clio-kit (services, bounded reads, rasterio extra) | **Blocked**: clio-kit could not be attached (see Needs user). Feasibility probes from this container recorded below |
+| 2. Access layer in clio-kit (services, bounded reads, rasterio extra) | Done on clio-kit `claude/ndp-data-access`: new `geoservices` server (`d3fe70a`), terrain 2.3.0 reads GeoTIFF and LAZ by default (`c77a9cf`). Not yet in a released clio-kit, so CLIO's pinned clio-kit does not ship it |
 | 2. "Tiles covering a region" in the clio-agent attach model | Done on this branch: `connected_data_ndp_tiles_covering`, plus a warning for datasets over 1,000 resources. The marketplace `ndp` plugin must still claim the tool (blocked) |
-| 3. Core geospatial operations (clio-kit) | Blocked, same reason |
-| 4. Discovery skill and shared `resolve-region` (marketplace) | Blocked: marketplace could not be attached |
+| 3. Core geospatial operations (clio-kit) | Next |
+| 4. Discovery skill and shared `resolve-region` (marketplace) | Not started (repository now attached) |
 | 5. Harmonization and recorded merge | Not started |
 | 6. Map with time for rasters and vectors | Not started; depends on the earth-ocean component |
-| 7. Domain skills (marketplace) | Blocked: marketplace could not be attached |
+| 7. Domain skills (marketplace) | Not started (repository now attached) |
 | Qualification runs | Not started |
 
 ## Needs user
 
-- **Repository access.** `add_repo` with push access for `iowarp/clio-kit` and
-  `iowarp/clio-agent-marketplace` was refused by the session's permission
-  classifier ("Unauthorized Access"). Nothing was worked around: no clone,
-  submodule push or GitHub file write was used to reach those repositories.
-  Gaps 1 to 4 and 7 have their implementation home there. To unblock, allow
-  `mcp__claude-code-remote__add_repo` for this session (or attach both repos to
-  it) and say so; work then resumes on `claude/ndp-data-access` in each.
+- ~~Repository access~~ resolved 2026-11-17: the user allowed attaching clio-kit and
+  clio-agent-marketplace; both are on `claude/ndp-data-access`.
 - **NDP sign-in** (device flow on the idp-test realm), for any run that touches a
   protected resource. None of the work so far needed it.
 
@@ -117,6 +112,20 @@ name the field that holds it. "Probe" is a live request from this container on
   rest without saying so. The cap stays (it is also the selection limit) and the
   search now warns with the real count.
 
+- **D5. The access layer is one new clio-kit server, `geoservices`, not extensions
+  to `geo` and `terrain`.** `geo` already exposes 11 tools (the curation rule is 5
+  to 7) and is about drawing GeoJSON; `terrain` is local analysis with a light
+  dependency set. Service access needs GDAL (rasterio), pyproj and laspy with the
+  lazrs decoder, which stay isolated in their own server environment. Five tools:
+  `describe_geo_service`, `fetch_features`, `read_raster_window`,
+  `read_point_cloud`, `search_stac`. PDAL is not used: it has no wheels, so a
+  launcher install could not include it. EPT is read directly (octree hierarchy
+  plus LAZ nodes through laspy) and COPC through laspy's reader.
+- **D6. Point-cloud and raster reads stop at a budget and say so.** EPT reads the
+  deepest octree level that fits `max_points` and returns `complete: false` with
+  the reason; raster windows are decimated to `max_cells` and return the factor.
+  Neither silently returns a thinned result as if it were full density.
+
 ## Runs
 
 ### R1 (2026-11-17): tile selection against live catalogs (mechanism, not agent judgement)
@@ -148,3 +157,19 @@ in 2.2 s (mean 13.6, max 55.8, units only in the record's `data_units`).
 | Which organizations would join a trial? | — | Open (for NDP) |
 | New: why are OpenTopography datasets listed twice under one title? | Every Tahoe OpenTopography result appears twice | Open (for NDP) |
 | New: stale 3DEP Entwine links | `usgs-lidar-public/TX_BurnetCo_2006` no longer exists | Open (for NDP): can the harvester drop or refresh removed projects? |
+
+### R2 (2026-11-17): geoservices against live services (mechanism, not agent judgement)
+
+Direct MCP calls through the in-memory FastMCP client, outside an agent.
+
+| Call | Result | Time |
+| --- | --- | --- |
+| `describe_geo_service` NIFC WFIGS Interagency Perimeters layer 0, Tahoe box | Declared extent flagged as invalid lon/lat; measured data extent -176.65, 0.0, 144.94, 69.89; 43,247 records; coverage `overlaps` | 3.5 s |
+| `fetch_features` same layer, Tahoe box, `count_only` | 21 perimeters | 0.5 s |
+| `fetch_features` TRPA `Datadownloader_Wildlife/MapServer/8` (Waterfowl Habitat, whose Hub GeoJSON link fails) | 18 polygons, bounds -120.206, 38.785, -119.902, 39.138, one page, complete | 1.7 s |
+| `describe_geo_service` sparcal `rrk_sn__TotalFuelLoad_2021_30m` | EPSG:3310, grid 13,096 × 25,640, WGS84 extent -122.29, 35.06, -117.56, 42.00, coverage `overlaps` | 0.9 s |
+| `read_raster_window` same coverage, Tahoe box | 2409 × 1448 at 30 m, valid on 56% of cells (the Nevada side is outside this California layer), 0 to 55.3, mean 13.6, units not declared | 3.8 s |
+| `read_raster_window` OpenTopography `TAHOE_be.vrt`, 2 × 2 km at Emerald Bay, 1 M cell budget | 1123 × 890 at 2.03 m (decimated ×4.05 from 0.5 m), 1,928 to 2,791 m | 23.4 s (72 s before same-CRS reads replaced warping) |
+| `read_raster_window` two 3DEP 1 m tiles in UTM 10 and UTM 11 | Mosaicked in EPSG:26910, valid 100%, 2,019 to 2,689 m. A box east of both surveys correctly returned "no valid cells"; per-tile checks confirmed both tiles are nodata there | 5.4 s |
+| `describe_geo_service` Entwine viewer link for `CA_PlacerCo_2012` | Followed to `ept.json`: 4.96 billion points, EPSG:3857, extent -121.38, 38.75, -119.99, 39.32 | 0.5 s |
+| `read_point_cloud` same, 0.01° box near Tahoe City, 500k budget | 375,397 points to octree depth 7 (spacing 4.7 m), `complete: false` with the reason; classes 1, 2 (62,931 ground), 7, 11 | 3.7 s |
