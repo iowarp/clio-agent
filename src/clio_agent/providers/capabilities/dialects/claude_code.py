@@ -31,6 +31,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: The window Claude Code serves a model unless the selection asks for the extended
+#: one with a ``[1m]`` suffix. Catalogs list a model's largest window, which Claude
+#: Code serves only to a ``[1m]`` selection.
+STANDARD_CONTEXT_WINDOW = 200_000
+EXTENDED_CONTEXT_SUFFIX = "[1m]"
+#: The context source recorded when the catalog window is above what Claude Code serves.
+STANDARD_WINDOW_SOURCE = "claude_code_standard_window"
+
+
+def served_context_window(model: str, catalog_window: int | None) -> int | None:
+    """The window Claude Code serves ``model``, from the catalog's maximum for it.
+
+    A ``[1m]`` selection is served the catalog maximum; any other selection at most
+    :data:`STANDARD_CONTEXT_WINDOW`.
+    """
+    if not catalog_window or catalog_window <= 0:
+        return catalog_window
+    if model.endswith(EXTENDED_CONTEXT_SUFFIX):
+        return catalog_window
+    return min(catalog_window, STANDARD_CONTEXT_WINDOW)
+
+
 def _overlay_row(model: str) -> dict[str, Any] | None:
     """The claude_code refresh-overlay row for a configured model id or CLI alias.
 

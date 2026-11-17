@@ -19,8 +19,10 @@ code via the ``compaction.keep.*`` config keys (:func:`keep_policy`).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from typing import Any
 
 from clio_agent import conf
@@ -79,8 +81,34 @@ class PostCompactionContext:
     keep: tuple[str, ...]
 
 
+#: Set while a compaction recovers from a request that outgrew the window
+#: (:func:`overflow_keep_policy`): no step is kept verbatim, because the last step is
+#: usually what overflowed.
+_KEEP_NO_STEPS: ContextVar[bool] = ContextVar("compaction_keep_no_steps", default=False)
+
+
+@contextmanager
+def overflow_keep_policy() -> Iterator[None]:
+    """Within this block :func:`keep_policy` keeps no step verbatim."""
+    token = _KEEP_NO_STEPS.set(True)
+    try:
+        yield
+    finally:
+        _KEEP_NO_STEPS.reset(token)
+
+
 def keep_policy() -> KeepPolicy:
-    """The configured :class:`KeepPolicy` (file -> env -> default)."""
+    """The configured :class:`KeepPolicy` (file -> env -> default).
+
+    Inside :func:`overflow_keep_policy` the last steps are summarized too.
+    """
+    policy = _configured_keep_policy()
+    if _KEEP_NO_STEPS.get():
+        return replace(policy, keep_last_steps=0, keep_last_turns=0)
+    return policy
+
+
+def _configured_keep_policy() -> KeepPolicy:
     return KeepPolicy(
         keep_head=conf.resolve(
             "compaction.keep.head",

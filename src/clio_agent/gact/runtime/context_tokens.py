@@ -338,4 +338,9 @@ def _resolve_expert_context_window(cfg: Any) -> int:
         return 0
     from clio_agent.providers.handshake.sources import lookup_native_context  # noqa: PLC0415
 
+    if str(getattr(cfg, "provider", "") or "") == "claude_code":
+        from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
+
+        bare = model.removesuffix(claude_code.EXTENDED_CONTEXT_SUFFIX)
+        return claude_code.served_context_window(model, lookup_native_context(bare)) or 0
     return lookup_native_context(model) or 0

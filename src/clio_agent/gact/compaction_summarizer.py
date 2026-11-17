@@ -36,6 +36,7 @@ if TYPE_CHECKING:  # the model stack loads with a turn, not with the app (lazy i
 __all__ = [
     "TOOL_CALL_REASON",
     "Summarize",
+    "clip_tool_results",
     "loop_summarizer",
     "reply_text",
     "scope_summarizer",
@@ -113,8 +114,40 @@ def loop_summarizer(lm: Callable[[], Any], next_request: Callable[[], Request]) 
     return summarize
 
 
-def scope_summarizer(app: Any, sid: str, scope: str, lm: Any) -> Summarize:
-    """The summarizer outside a loop: ``scope``'s context read once, on ``lm``."""
+def clip_tool_results(messages: Any, limit: int) -> tuple[Message, ...]:
+    """``messages`` with each tool result's text longer than ``limit`` cut, saying so.
+
+    Only the copy a summary is written from is cut; the context itself is unchanged.
+    """
+    from dataclasses import replace  # noqa: PLC0415
+
+    from dspy.lm15 import TextPart, ToolResultPart  # noqa: PLC0415
+
+    def clip(part: Any) -> Any:
+        if not isinstance(part, ToolResultPart):
+            return part
+        content = []
+        for piece in part.content:
+            text = getattr(piece, "text", None)
+            if isinstance(piece, TextPart) and isinstance(text, str) and len(text) > limit:
+                piece = replace(
+                    piece,
+                    text=f"{text[:limit]}\n[cut for this summary: {len(text):,} characters in all]",
+                )
+            content.append(piece)
+        return replace(part, content=tuple(content))
+
+    return tuple(replace(m, parts=tuple(clip(p) for p in m.parts)) for m in messages)
+
+
+def scope_summarizer(
+    app: Any, sid: str, scope: str, lm: Any, *, clip_results: int = 0
+) -> Summarize:
+    """The summarizer outside a loop: ``scope``'s context read once, on ``lm``.
+
+    ``clip_results`` > 0 cuts each tool result to that many characters in the copy the
+    summary is written from (recovering from a request that outgrew the window).
+    """
     from clio_agent.gact.agents.clio_react_record import fold_steps  # noqa: PLC0415
     from clio_agent.gact.agents.context_reader import model_context_segments  # noqa: PLC0415
     from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415 - model hooks
@@ -126,6 +159,8 @@ def scope_summarizer(app: Any, sid: str, scope: str, lm: Any) -> Summarize:
         segments = app.state.arc.context_view(sid, scope).segments
         history = getattr(app.state, "task_history", None)
         messages = fold_steps(model_context_segments(segments, history, sid, scope))
+        if clip_results > 0:
+            messages = clip_tool_results(messages, clip_results)
         model = wrap_lm_with_hooks(lm)
         return _ask(model, Request(model=model.model, messages=_with_prompt(messages, prompt)))
 

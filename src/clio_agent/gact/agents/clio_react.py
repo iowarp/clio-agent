@@ -28,7 +28,8 @@ Per step:
    its typed outputs; ``ask_user`` / ``plan_exit``: yield to the user;
    ``draft_alternatives``: the selected draft is the answer, or the turn yields the
    drafts to the user; ``max_iters`` (``<= 0`` unlimited) or ``context_window_exceeded``:
-   stop. Nothing calls the model after the loop (``react-loop-completion-2026-09.md``).
+   stop; a too-long request is first compacted and sent once more (``compaction_overflow``).
+   Nothing calls the model after the loop (``react-loop-completion-2026-09.md``).
 
 Human-judged module variants collect their own common Core Question results.
 Ordinary agent Questions remain inputs to the current conversation.
@@ -422,6 +423,7 @@ class _Loop:
     def _one_step(self) -> dspy.Prediction | None:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
+        from clio_agent.gact.compaction_overflow import compact_after_overflow  # noqa: PLC0415
 
         _raise_if_cancelled()
         from clio_agent.gact.run_limits import check_before_step  # noqa: PLC0415
@@ -455,7 +457,14 @@ class _Loop:
         callable_token = CALLABLE_TOOLS.set(frozenset(self.agent.tools))
         defs_token = CALLABLE_TOOL_DEFS.set(self.agent.tools)
         try:
-            response = recover_stream(self.lm, request, _call_lm, _raise_if_cancelled)
+            try:
+                response = recover_stream(self.lm, request, _call_lm, _raise_if_cancelled)
+            except (ContextWindowExceededError, ContextLengthError):
+                # Too long for the model: compact and send the step once more.
+                if not compact_after_overflow(self.autocompact, self.lm):
+                    raise
+                working_state.reinject_after_compaction(self.recorder)
+                response = recover_stream(self.lm, request, _call_lm, _raise_if_cancelled)
         except (ContextWindowExceededError, ContextLengthError):
             return self._stop("context_window_exceeded")
         finally:
