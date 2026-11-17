@@ -6,10 +6,13 @@ from clio_agent.arc.task_types import TaskOwner, TaskSnapshot
 from clio_agent.gact.task_publication import task_owner_recipient
 
 
-def _task(handle: str, kind: str, parent: str | None = None) -> TaskSnapshot:
+def _task(
+    handle: str, kind: str, parent: str | None = None, status: str = "completed"
+) -> TaskSnapshot:
     return TaskSnapshot.model_construct(
         handle=handle,
         kind=kind,
+        status=status,
         owner=TaskOwner(
             human_id="h", session_id="sess_agent", assignment_id="a", parent_handle=parent
         ),
@@ -36,3 +39,10 @@ def test_a_tools_input_round_is_answered_to_the_tool_only() -> None:
     call = _task("task_search", "MCP")
     question = _task("task_q", "Question", parent="task_search")
     assert task_owner_recipient(_History(call, question), question) is None
+
+
+def test_a_tools_cancelled_input_round_is_still_the_owners_outcome() -> None:
+    """The call ended before the person answered: the owner hears the round closed."""
+    call = _task("task_search", "MCP")
+    question = _task("task_q", "Question", parent="task_search", status="cancelled")
+    assert task_owner_recipient(_History(call, question), question) == "sess_agent"
