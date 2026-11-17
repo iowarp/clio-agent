@@ -122,7 +122,12 @@ stated):
 | Section view data | `clio.section.v1` names a section artifact the ocean and weather servers write (`distance` x a vertical with `positive` set, per-column latitude/longitude, station ids). GACT resamples it to the view size (`POST /v1/artifacts/{id}/section-query`), so a long, deep section never ships whole. Contours by marching squares in the client. | `test_artifact_grid_views.py::test_section_sample_carries_stations_and_orientation` |
 | Producer checks for the field components | Every grid, section, table and GeoJSON a field component names is resolved at surface creation; a missing variable is `a2ui_grid_invalid` / `a2ui_section_invalid`, a wrong column `a2ui_field_not_in_dataset` naming the layer and the real columns. In `a2ui_producer/_field_references.py`, called from the existing validator so `_data_reference.py` stays under its size cap. | `tests/test_gact/test_a2ui_field_references.py` (7 tests) |
 | Base map style in the layered map | Found in the browser: passing `offlineStyle()` fresh on each render made the map re-apply its style and drop every layer added to it, so nothing but the land showed. The style is now memoized, as `scientific-map-view.tsx` already does, and grid layers sit beneath the coastline. | gallery screenshots before/after |
-| Grid editor | **An MCP App view of a general clio-kit `grids` server**, not a catalog component: every edit must be a tool call recorded with the grid's hash so it can be replayed onto a regenerated grid, which an A2UI binding cannot guarantee. Status is in the results section. | design |
+| Grid editor | **An MCP App view of a general clio-kit `grids` server**, not a catalog component: every edit must be a tool call recorded with the grid's hash so it can be replayed onto a regenerated grid, which an A2UI binding cannot guarantee. Built: clio-kit `grids` server (`grid_open`, `grid_edit`, `grid_replay`, app-only `grid_window`) and its `ui://grids/editor` view; edits by longitude and latitude, base and result hashes in `<output>.edits.json`. Driven in Chromium through a stand-in host at 1440x900 and 390x844: box set, cell pick, undo, enclosed-lake fill, each a `grid_edit` call. | clio-kit `be198f67`, `tests/test_grids.py` (6), `tests/browser/run_standin.py` |
+| copernicus-mcp in CLIO | **A clio-kit server that runs copernicus-mcp 0.7.2 as published** (`mcp-servers/copernicus`, the earthdata wrapper pattern: pinned with its `cmems,cds` extras, locked, run as its own program). Upstream lists its `cds_*` tools only once a CDS key resolves; the tests check both ways. The accounts are needs of a hand-written `copernicus` connector (Marine username and password, CDS token), kept in CLIO's secret storage and given to the server through the variables it reads. The marketplace `copernicus` plugin follows that connector. | clio-kit `84ab3af2` (`tests/test_server.py`, 4 tests); `catalogs/connectors/copernicus.yaml` |
+| NASA Earthdata | **CLIO's existing `earthdata` connector**, not NASA's hosted endpoint: it already runs datalayer's earthdata-mcp-server 0.6.0 (BSD-3-Clause) in clio-kit with an optional Earthdata Login, and covers the CMR search O9 needs. SWOT downloads stay in the ocean server's `swath_fetch`, whose Earthdata Login is an optional need of a hand-written `ocean` connector (a connector's needs are the only way CLIO gives a server a secret). | `catalogs/connectors/earthdata.yaml`, `ocean.yaml` |
+| Skew-T chart | **A weather-plugin skill with a Vega-Lite spec** (`skew-t-chart/skew-t.vl.json`) passed unchanged to `clio.chart.v1` with the soundings table as `dataUri`: log-pressure axis reversed, temperature skewed with height, dewpoint and the surface parcel. A plugin catalog preset cannot carry it (presets are string values), and a core chart preset would put a domain chart in clio-agent and gact-tui. It passes the chart guard (`check_chart_spec`) and renders with Vega 6.4; isotherm guide lines are not drawn because the guard allows data only from the named source. The T-S diagram follows the same pattern in the ocean plugin, with a script that adds labelled isopycnals to the table. | marketplace `07281118` (`plugins/weather/tests`, `plugins/ocean/tests`); renders in the session scratchpad |
+| ECMWF weather skills | `ecmwf-open-data`, `ecmwf-polytope` and `ecmwf-cds-ads` vendored unchanged from ecmwf/ecmwf-weather-skills `62e6334a` (Apache-2.0) into the weather plugin, with LICENSE and NOTICE and an import lock of file hashes. Their dates and figures are ECMWF's product facts, so the literal lint skips files the lock records unchanged and checks any edited one. | `plugins/weather/import-lock.json`; `tests/test_check_skill_literals.py` |
+| Plugins and connectors | `ocean` follows the `ocean` connector and requires `grids`; `copernicus` follows its connector; `grids` and `weather` run their clio-kit servers from `mcp.json` (no credentials). A plugin that binds a connection makes the agent unavailable until that connection is saved, which is why those two follow their connectors (added from the connector card). | `clio-agent plugin check` on the marketplace: 72/72 |
 
 ## Needs user
 
@@ -149,6 +154,16 @@ stated):
   `tests/contract/fixture-routes.test.ts` fails on develop `def3ae0` because
   `GET /v1/system/problem-report` is neither served by the e2e fixture server
   nor declared unserved. The three grid routes added here are declared.
+
+- **Secrets for skill scripts.** ECMWF's `ecmwf-polytope` and `ecmwf-cds-ads`
+  scripts run through `shell_bash` and read their keys from the environment
+  or a dot-file. CLIO hands secrets only to a connector's server, so those
+  scripts have no sanctioned way to get a Polytope or CDS key. The weather
+  plugin's own paths are keyless (ENS open data, ARCO ERA5) and CDS goes
+  through the copernicus connector; decide whether skills get a secret
+  mechanism.
+- **TPXO** needs a registration and its files on disk; the regional MOM6
+  set-up tools that need it are not built (see the regional-mom6 rows).
 
 ## Qualification fixtures
 
