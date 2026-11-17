@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.client import ClioClient
+from clio_agent.client import ClioClient, ClioOptions
 from clio_agent.gact.app import build_app
 from tests.test_client.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 
@@ -68,5 +68,5 @@ def transport(app: Any) -> Iterator[StreamingASGITransport]:
 
 @pytest.fixture()
 def client(transport: StreamingASGITransport) -> Iterator[ClioClient]:
-    with ClioClient("http://testserver", transport=transport) as c:
+    with ClioClient(ClioOptions(url="http://testserver"), transport=transport) as c:
         yield c

@@ -155,10 +155,18 @@ class CallResult(Mapping[str, Any]):
 
 
 class FlowWorkspace:
-    """The session's workspace folder. Writes are side effects: run them through ``ctx.step``."""
+    """The session's workspace folder. Writes are side effects: run them through ``ctx.step``.
 
-    def __init__(self, root: Path | None) -> None:
+    A file the flow writes is an output it names, so ``write`` records it as an artifact
+    of the flow's session (designation, not discovery: producer ``flow.workspace.write``),
+    the way a person's or a tool's write is recorded. ``append`` (a log or ledger the
+    flow grows) is not.
+    """
+
+    def __init__(self, root: Path | None, *, app: Any = None, session_id: str = "") -> None:
         self.root = root
+        self._app = app
+        self._session_id = session_id
 
     def _path(self, relative: str) -> Path:
         if self.root is None:
@@ -175,7 +183,23 @@ class FlowWorkspace:
         path = self._path(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+        self._record(path)
         return str(path)
+
+    def _record(self, path: Path) -> None:
+        """Record the written file as an artifact of the flow's session (when it has one)."""
+
+        sessions = getattr(getattr(self._app, "state", None), "sessions", None)
+        session = sessions.get(self._session_id) if sessions is not None else None
+        if session is None:
+            return
+        import hashlib  # noqa: PLC0415
+
+        from clio_agent.gact.artifacts.minting import mint_harness_write  # noqa: PLC0415
+
+        data = path.read_bytes()
+        written = {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+        mint_harness_write(self._app, session, str(path), written, tool="flow.workspace.write")
 
     def append(self, relative: str, value: Any) -> str:
         path = self._path(relative)

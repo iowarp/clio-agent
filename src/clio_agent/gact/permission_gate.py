@@ -63,7 +63,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact import permission_timeout
+from clio_agent.gact import permission_timeout, unattended
 from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
@@ -489,19 +489,11 @@ def _ask_person(
     cancelled: Any,
 ) -> str:
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
-    running = call_identity_claimed()
-    holder: dict[str, Any] = {}
+    if (refused := unattended.refuse_ask(app, sid, name, args, approval_mode)) is not None:
+        return refused  # nobody to ask in an unattended run: denied, typed
+    running, holder = call_identity_claimed(), {}
     decision = _ask_and_wait(
-        app,
-        sid,
-        name,
-        args,
-        context,
-        subject,
-        approval_mode,
-        policy_action,
-        cancelled,
-        holder,
+        app, sid, name, args, context, subject, approval_mode, policy_action, cancelled, holder
     )
     # A call that was already running while it waited reads as running again.
     if running and decision == "allow" and holder.get("row"):

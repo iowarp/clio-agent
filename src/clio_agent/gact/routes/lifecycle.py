@@ -33,6 +33,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 
 from clio_agent.gact import desktop_lifecycle
+from clio_agent.gact.attached_clients import register_attached_client_routes
 from clio_agent.gact.auth import _authentication_refusal, _header_bearer_token, has_valid_bearer
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -89,6 +90,8 @@ def _owner_shutdown(
 
 def register_lifecycle_routes(app: FastAPI) -> None:
     """Register the private lifecycle control used by the owning desktop shell."""
+
+    register_attached_client_routes(app)
 
     @app.get("/v1/desktop/attach")
     async def desktop_attach_check(request: Request) -> Response:

@@ -180,6 +180,10 @@ def request_folder_access(
             "scope": "workspace",
         },
     }
+    from clio_agent.gact.unattended import grant_folders  # noqa: PLC0415
+
+    if grant_folders(app, sid, row):
+        return "allow"  # a script run: every permission is granted (deny rules held above)
     # Human resolution may run immediately after the row becomes visible.
     app.state.permission_events[pid] = event
     app.state.permissions[pid] = row

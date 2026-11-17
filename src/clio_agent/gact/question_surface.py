@@ -103,12 +103,20 @@ def question_view(app: Any, task: TaskSnapshot) -> dict[str, Any]:
         "agent_elicitation_routing": metadata.get("agent_elicitation_routing") or None,
         "agent_elicitation_fallback_detail": metadata.get("agent_elicitation_fallback_detail")
         or None,
-        "answered_by": "agent"
-        if answer.responder_session
-        else "human"
-        if task.raw_status == "answered"
-        else None,
+        "answered_by": _answered_by(app, task, answer),
     }
+
+
+def _answered_by(app: Any, task: TaskSnapshot, answer: QuestionReply) -> str | None:
+    """Who produced the answer: an agent, the run itself (nobody watching), or a person."""
+    if task.raw_status != "answered":
+        return None
+    if answer.responder_session:
+        return "agent"
+    from clio_agent.gact.unattended import is_unattended  # noqa: PLC0415
+
+    # An unattended run answers every Question the moment it is posted.
+    return "unattended" if is_unattended(app, task.owner.session_id) else "human"
 
 
 def question_row(app: Any, handle: str) -> UserQuestion:

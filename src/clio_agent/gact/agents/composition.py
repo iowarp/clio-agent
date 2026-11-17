@@ -124,6 +124,10 @@ def _session_scratch_lines(app: Any, session_id: str) -> list[str | None]:
     where = {"app": app, "session_id": session_id}
     machine = {"machine": session_scratch.machine_name()}
     lines = [injections.render("session_facts_machine", machine, **where)]
+    from clio_agent.gact.unattended import is_unattended  # noqa: PLC0415
+
+    if is_unattended(app, session_id):
+        lines.append(injections.render("session_facts_unattended", {}, **where))
     if folder := session_scratch.session_scratch_dir(session_id):
         lines.append(injections.render("session_facts_scratch", {"folder": folder}, **where))
     return lines

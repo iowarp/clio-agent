@@ -279,7 +279,11 @@ from clio_agent.gact.app import build_app
 # merged with #2364 without a recount.
 # 484 -> 486: Report a problem (routes/problem_report.py, registered with the release check
 # from routes/system_support.py): GET /v1/system/problem-report and .../download.
-EXPECTED_ROUTE_METHOD_PAIRS = 486
+# 486 -> 490: running agents and flows from Python: GET /v1/sessions/{sid}/usage
+# (routes/session_usage.py, from routes/session_creation.py) and the attached-client
+# count, POST/GET /v1/server/clients and DELETE .../{client_id} (gact/attached_clients.py,
+# from routes/lifecycle.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 490
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
