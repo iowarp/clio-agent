@@ -491,7 +491,7 @@ def _ask_person(
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
     if (refused := unattended.refuse_ask(app, sid, name, args, approval_mode)) is not None:
         return refused  # nobody to ask in an unattended run: denied, typed
-    running, holder = call_identity_claimed(), {}
+    running, holder = call_identity_claimed(), dict[str, Any]()
     decision = _ask_and_wait(
         app, sid, name, args, context, subject, approval_mode, policy_action, cancelled, holder
     )
