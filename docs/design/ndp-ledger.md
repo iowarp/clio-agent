@@ -443,3 +443,19 @@ two runs that followed could not open sessions. Verdict: **cross-organization
 acquisition and correlation computed; the written answer and its
 overlap/no-overlap report were not delivered (test-environment failure).** The
 stack is restarted with a 1 GB store for the remaining runs.
+
+### Test-stack incident (21:00 to 21:25) and recovery
+
+- The isolated stacks shared one clio-core daemon (port 9413), created with
+  `CLIO_ARC_CTE_FILE_CAPACITY=128MB` (the cloud default for shared disks). The long
+  correlation session filled it: writes failed with code 12, a boot migration
+  marker could not be written, `/v1/health` flapped to 503, and the UI stuck at
+  "Connecting to cloud", so three runs (Alta twice, case 01, discovery task 1)
+  never opened a session. `clio-agent migrate` could not repair a full store.
+- Recovery: compact traces of every cited session were committed
+  (`docs/design/ndp-runs/`, `e9c392b`), both stacks and the daemon were stopped,
+  their disposable state (5.7 GB) removed, and the stack restarted fresh with a
+  2 GB store. Tool servers were enabled again through the card.
+- Finding for CLIO, not NDP: a full clio-core store degrades health and blocks
+  new sessions; the store's fill level is not reported before writes start
+  failing. Worth an issue against the clio-core health integration.
