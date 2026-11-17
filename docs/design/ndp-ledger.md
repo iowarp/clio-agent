@@ -410,3 +410,36 @@ provenance sidecar.
 | October Konza (request unchanged) | `sess_a0fcdee472d8` | Loaded `work-with-ndp`; found the NEON/Sage/WIFIRE burn dataset (both catalogs), connected 10 resources (anemometers, CO2 analyzers, Sage streams) | No bytes: every download failed "NDP could not be reached while reading this resource" and a linked read timed out; it stopped and said what the data could support. The files are on `wifire-data.sdsc.edu`, which answers a ranged request in 0.5 s from here; the wind file is 1.24 GB, and a direct streamed read of it from this container did not finish within 300 s. So the failure is slow or interrupted large transfers from here, not an unreachable NDP; whether the proxy cut the agent's transfers was not established. CLIO's message "NDP could not be reached" misdescribes a transfer that started | **Failed to acquire (environment, not agent judgement)**; honest report |
 | Case 04 (CIMIS fire-risk profile) | `sess_2fa564e47efe` | Loaded `work-with-ndp`; geocoded Fresno; chose station 80 as the only Fresno-area station, naming the farther ones it rejected; downloaded and profiled the hourly CSV | 131,520 rows, 2010-09-28 to 2025-09-28, QC flags M/R/S/Q excluded and Y kept (3%); favourable fire-spread hours (RH ≤ 20%, wind ≥ 4.5 m/s, ≥ 25 °C) 0.13% of hours, April to September, peak June; field-operation windows about 50% of daytime hours, best March to May and October; stated that 2 m wind understates 10 m fire-weather winds. Figure inspected | **Pass on the science and the station-selection semantics.** Not met: the README's expert decomposition (single agent, no delegation) |
 | Case 03 (wildfire and weather fusion, LA) | `sess_fa1ff4fa516f` | NIFC current perimeters (0 in the box) and incidents (18 small or administrative), CalOES NWS alerts and NWS forecast/observations | Brief: no significant active fire; Flood Watch for LA and Ventura through 19 Nov with 1 to 2 in of rain forecast; no Red Flag Warning in California; burn-scar debris-flow concern named but not analysed; caveats on unqueried VIIRS, CAL FIRE and RAWS | **Pass on fusion semantics** (two data branches, timestamps and scope reconciled, caveats). Not met: expert decomposition, and no map |
+
+### R6b: cross-organization Tahoe correlation, rerun (computed, answer not delivered)
+
+Session `sess_d2d93428c390` (97 calls, 6 failed), same request as R6. The agent
+loaded `find-ndp-data-for-place` and `work-with-ndp`, then acquired, each file with
+its `clio.provenance/1` sidecar:
+
+- **TRPA**: 17 habitat layers (deer fawning, goshawk and spotted owl activity
+  centres, frog critical and suitable habitat, eagle, osprey, peregrine, marten,
+  bat, willow flycatcher, waterfowl, fish, biodiversity) and the basin boundary;
+- **NIFC**: perimeter history and current-year WFIGS; **CAL FIRE** perimeters;
+- **California Forest Observatory** 2019: canopy cover, canopy height, ladder fuel
+  density and surface fuels;
+- **terrain**: when `read_raster_window` refused the whole basin from the 0.5 m
+  lidar mosaic (37.9 GB, "about 112 km² fits"), it took a 30 m Copernicus DEM for
+  the basin through `search_stac` and kept lidar for a window over the Angora burn.
+
+It then computed `habitat_summary.csv`: for each habitat, its area, elevation,
+slope, canopy, ladder fuel and the area burned 2007 to 2024. Examples: deer
+fawning 13,058 ha, 9.5% burned; spotted owl activity centres 2,741 ha, 10.6%
+burned; goshawk threshold areas 7,729 ha, 10.9% burned; frog critical habitat
+81,471 ha, 6.0% burned; nests of eagles, osprey and golden eagles 0% burned. The
+three-panel map (`ndp-ledger-shots/r6b-correlation-agent-map.png`) overlays
+habitat, recent fire perimeters (Angora 2007, Little Valley 2016), canopy cover
+and ladder fuel density with a slope contour.
+
+No final reply: at about 21:00 the test stack's clio-core store (capped at
+128 MB by `CLIO_ARC_CTE_FILE_CAPACITY` for shared cloud disks) filled, writes
+failed with code 12, health went to 503, the session stopped persisting, and the
+two runs that followed could not open sessions. Verdict: **cross-organization
+acquisition and correlation computed; the written answer and its
+overlap/no-overlap report were not delivered (test-environment failure).** The
+stack is restarted with a 1 GB store for the remaining runs.
