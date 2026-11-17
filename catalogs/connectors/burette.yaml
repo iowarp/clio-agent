@@ -18,7 +18,7 @@
     command: uvx
     args:
       - --from
-      - git+https://github.com/JaimeCernuda/Burette@77a474037cc6202db0423d7d73eb91f88f67f750#subdirectory=packages/clio-burette
+      - git+https://github.com/JaimeCernuda/Burette@ce5599dc3ab3111897e465e8b0decfdec0c1f136#subdirectory=packages/clio-burette
       - burette-clio
   needs: []
   requires: uv (uvx) on this machine; the first start downloads Burette and its Node runtime
