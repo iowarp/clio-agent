@@ -541,6 +541,9 @@ def _make_mcp_app_observer(app: FastAPI):
         raw_result: Any,
         source_namespace: str | None,
     ) -> None:
+        from clio_agent.gact import result_views  # noqa: PLC0415
+
+        result_views.show(app, name, call_tool_result_to_wire(raw_result).get("structuredContent"))
         uri = _resource_uri(tool)
         if not uri:
             _record_observer_skip(
