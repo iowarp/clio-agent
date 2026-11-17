@@ -216,3 +216,35 @@ def test_section_and_grid_take_a_workspace_path(pin: Any) -> None:
     assert result.get("ok") is not False, result
     exported = {entry["property"] for entry in result.get("exported_artifacts", [])}
     assert {"sectionUri", "gridUri"} <= exported, result
+
+
+def _dem(path: Path) -> None:
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=20,
+        width=20,
+        count=1,
+        dtype="float32",
+        crs="EPSG:26910",
+        transform=from_origin(750000, 4320000, 30, 30),
+    ) as out:
+        out.write(np.full((20, 20), 1900.0, dtype="float32"), 1)
+        out.set_band_description(1, "elevation")
+
+
+def test_layered_map_takes_a_geotiff_grid_by_band_name_and_refuses_a_wrong_band(pin: Any) -> None:
+    dem = pin("dem.tif", _dem)
+    drawn = _create(
+        _map({"id": "d", "kind": "grid", "label": "DEM", "gridUri": dem, "variable": "elevation"})
+    )
+    assert drawn.get("ok") is not False, drawn
+    wrong = _create(
+        _map({"id": "d", "kind": "grid", "label": "DEM", "gridUri": dem, "variable": "slope"})
+    )
+    assert wrong["ok"] is False and wrong["reason"] == "a2ui_grid_invalid"
+    assert "layer 'd'" in wrong["detail"]
