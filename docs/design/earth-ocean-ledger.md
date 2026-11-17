@@ -117,6 +117,12 @@ stated):
 | Tide gauges (O7, O11) | PSMSL and UHSLC are reachable without a key; the ocean tools take the downloaded series as files. | HTTP probe |
 | Tile service | **Built in GACT, not as a clio-kit server.** The map's raster layers need tiles the browser can fetch same-origin and authenticated in Desktop, local Web and remote Web. A clio-kit process on localhost is reachable only from a browser on the same machine (Desktop CSP allows `connect-src http://127.0.0.1:*`; remote Web would need a GACT proxy to it, which is an SSRF surface). GACT already reads registered artifacts next to the data (raster-query), so `GET /v1/artifacts/{id}/tiles/{z}/{x}/{y}.png`, `GET .../grid-info` and `POST .../section-query` were added there (`gact/artifacts/raster_tiles.py`, `routes/artifact_grid_views.py`). Each tile reads only its index window from a lazily opened NetCDF or zipped Zarr, strided to at most 1024 cells per axis, so a multi-gigabyte field is never loaded whole (raster-query loads the whole plane and caps sources at 256 MiB). Not TiTiler: titiler.xarray brings rasterio/GDAL and a second web app for what ~300 lines of numpy and Pillow do on regular lon-lat grids. | `tests/test_gact/test_artifact_grid_views.py` (7 tests) |
 | regional-mom6 install | 1.0.4 installs from PyPI but imports `xesmf`, which needs ESMF/esmpy; ESMF has no PyPI wheel and no Ubuntu 24.04 package. Needs a source or Spack build of ESMF for O18/Q14. | `ModuleNotFoundError: No module named 'ESMF'` |
+| Linked views (`/view/time`, `/view/selection`, `/view/path`) | **Mapped onto the catalog's existing mechanisms, no new `/view/*` namespace.** Time and selection are `SelectionState` at a `/selection/<key>` path (`{field, values[], source}`): the layered map writes the frame it shows to its `time` path, and a section or profile stack reading the same path follows it; a click writes the picked feature to `selection`. Drawn geometry (`draw.value`), moved points (`edits`) and excluded profiles (`excluded`) are data-model bindings the agent reads back, e.g. `/view/path`. A second selection mechanism would break skill rule 3. | clio-schemas `474575c` (`field_components.py`, `instructions.py`); gact-tui `bound-value.ts`, `field-views.test.ts` |
+| Profile stack as its own component | **A component, not a chart preset.** Skill rule 2 says one charting layer, but `clio.chart.v1` caps inline rows and has no persistent per-item decision: excluding a bad profile here writes the id list to a binding the agent reads back (a QC decision, not a highlight), and a 600 x 60 stack (36k rows) is read by reference with a search over the profile list. Overlay, label and category fields come from the same table. Recorded under Needs user because it departs from rule 2. | gallery screenshots; `test_a2ui_field_references.py` |
+| Section view data | `clio.section.v1` names a section artifact the ocean and weather servers write (`distance` x a vertical with `positive` set, per-column latitude/longitude, station ids). GACT resamples it to the view size (`POST /v1/artifacts/{id}/section-query`), so a long, deep section never ships whole. Contours by marching squares in the client. | `test_artifact_grid_views.py::test_section_sample_carries_stations_and_orientation` |
+| Producer checks for the field components | Every grid, section, table and GeoJSON a field component names is resolved at surface creation; a missing variable is `a2ui_grid_invalid` / `a2ui_section_invalid`, a wrong column `a2ui_field_not_in_dataset` naming the layer and the real columns. In `a2ui_producer/_field_references.py`, called from the existing validator so `_data_reference.py` stays under its size cap. | `tests/test_gact/test_a2ui_field_references.py` (7 tests) |
+| Base map style in the layered map | Found in the browser: passing `offlineStyle()` fresh on each render made the map re-apply its style and drop every layer added to it, so nothing but the land showed. The style is now memoized, as `scientific-map-view.tsx` already does, and grid layers sit beneath the coastline. | gallery screenshots before/after |
+| Grid editor | **An MCP App view of a general clio-kit `grids` server**, not a catalog component: every edit must be a tool call recorded with the grid's hash so it can be replayed onto a regenerated grid, which an A2UI binding cannot guarantee. Status is in the results section. | design |
 
 ## Needs user
 
@@ -124,13 +130,25 @@ stated):
   in GACT for the reason in the resolution table (same-origin, authenticated
   tiles for remote Web). Confirm, or ask for a clio-kit server plus a GACT
   proxy.
-
 - **Copyleft workers.** Approve shipping the marEx (AGPL-3.0-or-later) and
   py-eddy-tracker (GPL-3.0) workers as separate processes inside clio-kit, or
   choose to make them a separately installed extra.
 - **Credentials** for Copernicus Marine, CDS, ECMWF Polytope, NASA Earthdata
   and TPXO come through CLIO's connector card; none are present in this
   session.
+- **Profile stack departs from skill rule 2** (one charting layer). It is a
+  component because exclusion is a persistent decision the agent reads back
+  and a stack is read by reference far past the chart's inline row cap.
+  Confirm, or ask for it as a `clio.chart.v1` preset plus a separate
+  exclusion list.
+- **Unmerged pins.** clio-agent on this branch pins clio-schemas `474575c` and
+  clio-kit `7cfd3999`, commits on `claude/earth-ocean-weather` that are not
+  merged into their develop/main; the pin comment says develop pins merged
+  commits. They must be re-pinned to the merge commits before this lands.
+- **Pre-existing failure, not from this work.** gact-tui
+  `tests/contract/fixture-routes.test.ts` fails on develop `def3ae0` because
+  `GET /v1/system/problem-report` is neither served by the e2e fixture server
+  nor declared unserved. The three grid routes added here are declared.
 
 ## Qualification fixtures
 

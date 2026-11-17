@@ -784,7 +784,11 @@ def validate_component_data_references(
             outcome = _validate_text_readable(path, component_id=component_id)
             if outcome is not None:
                 return outcome
-    return None
+    from clio_agent.gact.a2ui_producer._field_references import (  # noqa: PLC0415 - cycle
+        validate_field_component_references,
+    )
+
+    return validate_field_component_references(app, components, bindings)
 
 
 __all__ = ["validate_component_data_references"]
