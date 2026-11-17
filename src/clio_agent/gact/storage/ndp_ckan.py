@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 
+from clio_agent.gact.storage.ndp_tls import system_tls
+
 PUBLIC_CATALOG_URL = "https://nationaldataplatform.org/catalog"
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 
@@ -61,7 +63,10 @@ class NDPCkanCatalog:
     def _request(url: str, action: str, parameters: dict[str, Any]) -> Any:
         """Read one bounded page; never retry a slow full-catalog query or follow redirects."""
         with httpx.Client(
-            timeout=httpx.Timeout(15, connect=5), follow_redirects=False, trust_env=False
+            timeout=httpx.Timeout(15, connect=5),
+            follow_redirects=False,
+            trust_env=False,
+            verify=system_tls(),
         ) as client:
             with client.stream(
                 "GET", f"{url}/api/3/action/{action}", params=parameters

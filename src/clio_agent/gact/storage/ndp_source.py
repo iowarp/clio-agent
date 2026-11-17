@@ -13,6 +13,7 @@ from clio_schemas.connected_resources import SourceCapabilities
 
 from clio_agent.gact.storage.models import FileEntry
 from clio_agent.gact.storage.ndp_catalog import NDPDataset, NDPEndpoint, NDPResource
+from clio_agent.gact.storage.ndp_tls import system_tls
 
 if TYPE_CHECKING:
     from clio_agent.gact.storage.models import SourceRecord
@@ -175,7 +176,9 @@ class NDPSource:
             raise PermissionError(
                 "Configure an HTTPS NDP Endpoint for authenticated Pelican or S3 reads"
             )
-        client = httpx.Client(timeout=httpx.Timeout(60, connect=15), follow_redirects=False)
+        client = httpx.Client(
+            timeout=httpx.Timeout(60, connect=15), follow_redirects=False, verify=system_tls()
+        )
         response: httpx.Response | None = None
         try:
             for attempt in range(6):

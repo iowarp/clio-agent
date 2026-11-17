@@ -13,6 +13,7 @@ import paramiko
 
 from clio_agent.gact.infrastructure.models import SshRoute
 from clio_agent.gact.storage.ndp_endpoint_models import EndpointConnectionInput
+from clio_agent.gact.storage.ndp_tls import system_tls
 from clio_agent.gact.storage.sftp import connect_profile, connect_route
 
 
@@ -156,4 +157,5 @@ def endpoint_client(connection: EndpointConnectionInput, seconds: float = 15) ->
         timeout=httpx.Timeout(seconds, connect=10),
         follow_redirects=False,
         trust_env=False,
+        verify=system_tls(),
     )

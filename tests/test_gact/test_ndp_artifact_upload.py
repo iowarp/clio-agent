@@ -589,7 +589,13 @@ def test_ndp_authoring_reference_is_loadable_as_a_skill_resource(
     from tests._plugin_fixtures import custom_marketplace
 
     marketplace = custom_marketplace(tmp_path, monkeypatch, agents={"ndp_author.py": _NDP_AGENT})
-    for name, real in (("connected-data", REAL_CONNECTED_DATA), ("ndp", REAL_NDP)):
+    # ndp requires geospatial, which requires geo.
+    for name, real in (
+        ("connected-data", REAL_CONNECTED_DATA),
+        ("ndp", REAL_NDP),
+        ("geospatial", MARKETPLACE_ROOT / "plugins" / "geospatial"),
+        ("geo", MARKETPLACE_ROOT / "plugins" / "geo"),
+    ):
         shutil.copytree(
             real,
             marketplace / "plugins" / name,

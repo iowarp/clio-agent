@@ -16,6 +16,7 @@ from pydantic import Field, field_validator, model_validator
 from clio_agent.gact.storage import ndp_discovery_client as catalog_client
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
+from clio_agent.gact.storage.ndp_tls import system_tls
 from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 # Resources kept per dataset; also the most resource IDs one selection may carry.
@@ -158,7 +159,7 @@ class NDPCatalog:
         if not token or not endpoint.authenticated:
             return None, ""
         try:
-            with httpx.Client(timeout=15, follow_redirects=False) as client:
+            with httpx.Client(timeout=15, follow_redirects=False, verify=system_tls()) as client:
                 response = client.get(
                     endpoint.url + "/user/info", headers={"Authorization": "Bearer " + token}
                 )

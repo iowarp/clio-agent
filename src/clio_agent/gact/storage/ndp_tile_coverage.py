@@ -26,6 +26,7 @@ import httpx
 
 from clio_agent.gact.storage.ndp_catalog import NDPDataset, NDPResource
 from clio_agent.gact.storage.ndp_source import credential_target
+from clio_agent.gact.storage.ndp_tls import system_tls
 
 # A mosaic description is XML; the largest seen (OpenTopography, 2,084 tiles) is < 2 MiB.
 MAX_VRT_BYTES = 16 * 1024 * 1024
@@ -107,7 +108,9 @@ def parse_vrt(text: str, vrt_url: str) -> tuple[str, list[tuple[str, Bounds]]]:
 
 
 def _fetch_vrt(url: str) -> str:
-    with httpx.Client(timeout=httpx.Timeout(30, connect=10), follow_redirects=True) as client:
+    with httpx.Client(
+        timeout=httpx.Timeout(30, connect=10), follow_redirects=True, verify=system_tls()
+    ) as client:
         with client.stream("GET", url) as response:
             response.raise_for_status()
             body = bytearray()
