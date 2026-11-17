@@ -290,5 +290,6 @@ time; it went straight to the geoservices tools (`fetch_features` ×26,
   NDP-discovered data acquired through the access layer, an overlap-corrected
   footprint, its spatial relation to the lake, a map the agent inspected, and
   stated limits. Mechanism note: no map-with-time view, a static PNG.
-- Captures: `ndp-ledger-shots/r5-tahoe-agent-map.png` (the agent's map); UI
-  captures in the October-set section below once the harness finishes.
+- Captures: `ndp-ledger-shots/r5-tahoe-1440.png` (1440x900),
+  `ndp-ledger-shots/r5-tahoe-390.png` (390x844), and the agent's map
+  `ndp-ledger-shots/r5-tahoe-agent-map.png`.
