@@ -179,6 +179,46 @@ stated):
 - **TPXO** needs a registration and its files on disk; the regional MOM6
   set-up tools that need it are not built (see the regional-mom6 rows).
 
+## Interfaces other work builds on
+
+Kept current for sessions that extend these (raster files and vector layers for NDP
+build on them rather than adding a second map).
+
+**`clio.layered-map.v1`** (gact-tui `web/src/components/clio/layered-map-model.ts`,
+catalog `a2ui-layered-map-catalog.tsx`, renderer `a2ui-layered-map.tsx`): one MapLibre
+map with 1-12 `layers`, each `{id, kind, label, visible?, opacity?}` plus its source.
+`kind` is open to new values; today:
+
+| kind | source | fields |
+| --- | --- | --- |
+| `grid` | `gridUri` (registered NetCDF or zipped Zarr) | `variable`, `timeDimension`, `fixed` (other dimensions), `colormap`, `valueRange`, `unit` |
+| `points` | `dataUri` table (+ `dataQuery`) | `latitudeField`, `longitudeField`, `idField`, `labelField`, `timeField`, `categoryField` or `valueField`, `editable` |
+| `tracks` | `dataUri` table | as points, plus `trackField` and `timeField` (both required) |
+| `shapes` | `geojsonUri` (registered GeoJSON) | `categoryField`, `valueField`, `labelField` |
+
+One time slider steps every layer that has `timeDimension` or `timeField`. Selection
+is the catalog's shared `SelectionState` at `/selection/<key>`; there is no `/view/*`
+namespace (time and selection map onto existing mechanisms). Validation runs in the
+catalog (zod) and, for files, in the producer at surface creation (a wrong variable or
+column is a typed refusal). Captures find the map by `[data-slot="a2ui-map-surface"]`
+and wait on `__clioMap` (`loaded()`, `areTilesLoaded()`, `isMoving()`);
+`__clioMapFailure` fails them.
+
+**Tile service** (clio-agent `gact/routes/artifact_grid_views.py`, backend
+`gact/artifacts/raster_tiles.py`), same-origin and authenticated like every artifact
+route:
+
+- `GET /v1/artifacts/{id}/tiles/{z}/{x}/{y}.png?variable=&select=&colormap=&vmin=&vmax=&opacity=`:
+  a Web Mercator XYZ tile, read lazily by index window (at most 1024 cells per axis)
+  with a fixed value range so neighbouring tiles agree.
+- `GET /v1/artifacts/{id}/grid-info`: variables, dimensions, coordinates, value range.
+- `POST /v1/artifacts/{id}/section-query`: samples along a path (for `clio.section.v1`).
+
+Inputs today: NetCDF and zipped Zarr with 1-D longitude and latitude (0-360 or
+-180..180). GeoTIFF/COG would enter in `raster_tiles.py`, opened by format the way
+NetCDF and Zarr are, behind the same routes; vector data beyond GeoJSON would be a new
+`kind`. Neither exists yet.
+
 ## After the owner's review (17 November)
 
 The owner's review asked for views without being asked, for Claude to finish work
