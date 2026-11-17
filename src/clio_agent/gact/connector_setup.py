@@ -409,6 +409,10 @@ async def respond(
     event = _events(app).get(row["id"])
     if event is not None:
         event.set()
+    if row.get("detached"):  # nobody waits: the agent hears of it through its mail
+        from clio_agent.gact.offer_detached import tell_agent  # noqa: PLC0415
+
+        await asyncio.to_thread(tell_agent, app, row)
     return next(
         item for item in projected(app, {row["session_id"]}) if item.id == PREFIX + row["id"]
     )

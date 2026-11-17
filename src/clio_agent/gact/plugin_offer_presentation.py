@@ -98,7 +98,7 @@ def _overview(row: Mapping[str, Any]) -> dict[str, Any]:
 def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """The finished call's row and blocks."""
 
-    from clio_agent.gact import connector_offer, plugin_offer  # noqa: PLC0415
+    from clio_agent.gact import connector_offer, offer_detached, plugin_offer  # noqa: PLC0415
 
     row = structured if isinstance(structured, Mapping) else result
     row = row if isinstance(row, Mapping) else {}
@@ -127,6 +127,16 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     head = {"action": "Offer", "subject": "plugin", "summary": str(row.get("message") or "")}
     if row.get("refusal") == plugin_offer.OFFER_DECLINED:
         blocks.append({"id": "outcome", "type": "text", "label": "Answer", "text": "Not now"})
+        return {**head, "blocks": blocks}
+    if row.get("outcome") in (offer_detached.OFFER_SHOWN, offer_detached.OFFER_PENDING):
+        blocks.append(
+            {
+                "id": "outcome",
+                "type": "text",
+                "label": "Answer",
+                "text": "Not answered yet; the work goes on without it",
+            }
+        )
         return {**head, "blocks": blocks}
     if error := str(row.get("error") or ""):
         blocks.append(
