@@ -20,6 +20,8 @@ import slicerDark from '@/assets/carousel/3d-printing/slicer-dark.webp';
 import routedBoard from '@/assets/carousel/electronics/kicad-routed-board.webp';
 import boardCase from '@/assets/carousel/electronics/kicad-case.webp';
 import hybridTraining from '@/assets/carousel/quantum/hybrid-training.webp';
+import imaginaryMode from '@/assets/carousel/chemistry/imaginary-mode.webp';
+import avogadroStream from '@/assets/carousel/chemistry/avogadro-stream.webp';
 
 export interface SlideImage {
 	src: string;
@@ -120,6 +122,24 @@ const SLIDES: readonly SlideSource[] = [
 		alt: 'Two charts from a CLIO training run on MNIST 0 vs 1: loss per epoch and training accuracy per epoch over 30 epochs, comparing a classical model and a hybrid quantum-classical model',
 		link: { href: '/docs/examples/hybrid-qml/', text: 'A hybrid quantum classifier' },
 		light: hybridTraining,
+	},
+	{
+		id: 'imaginary-mode',
+		field: 'Chemistry',
+		title: 'An imaginary mode you can watch',
+		body: 'CLIO optimized eclipsed ethane with MACE, found one imaginary frequency and played it in the 3D viewer. Marked on one methyl group, the motion was measured from the frames: the two groups twist against each other.',
+		alt: 'The CLIO 3D viewer playing an animation of ethane, frame 10 of 20, with the two methyl groups twisting about the carbon-carbon bond',
+		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
+		light: imaginaryMode,
+	},
+	{
+		id: 'avogadro',
+		field: 'Chemistry',
+		title: 'Avogadro in the conversation',
+		body: 'Asked to open a conformer in Avogadro, CLIO installed Avogadro 2 after asking, then showed its full window inside the conversation with the structure loaded.',
+		alt: 'The Avogadro 2 window inside CLIO, with its menus, toolbar and Display Types panel, showing the gauche ethylene glycol conformer as balls and sticks',
+		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
+		light: avogadroStream,
 	},
 ];
 

@@ -1,0 +1,126 @@
+---
+title: Computational chemistry with Alembic
+description: Recorded sessions with the Alembic agent. An imaginary mode played in the 3D view, a conformer edited by hand and re-optimized, a reaction energy across three methods, and Fe K-edge XANES of magnetite.
+lastUpdated: false
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import imaginaryMode from '../../../../assets/tutorials/chemistry/imaginary-mode.png';
+import dihedralEdit from '../../../../assets/tutorials/chemistry/dihedral-edit.png';
+import avogadroStream from '../../../../assets/tutorials/chemistry/avogadro-stream.png';
+import magnetiteCell from '../../../../assets/tutorials/chemistry/magnetite-unit-cell.png';
+
+Alembic is CLIO's computational chemistry agent. It finds compounds in PubChem, builds
+and edits structures, computes energies, frequencies and thermochemistry with xTB, MACE
+or NWChem, computes X-ray absorption spectra with FDMNES, and shows structures in a 3D
+viewer that you can click, mark and edit. Each request below was typed as a plain
+question, with no tools or steps named. Everything ran on one Linux machine.
+
+## Before you start
+
+Choose the **Alembic** agent for the conversation. The chemistry connectors are in
+**Settings**, under Chemistry: ASE (calculators), Burette (the 3D viewer and sketcher),
+PubChem, FDMNES and Avogadro. When a request needs one that is off, CLIO shows a card
+that turns it on. Programs that are not installed, such as NWChem, FDMNES or Avogadro,
+are installed only after you agree.
+
+## An imaginary mode you can watch
+
+*"Take ethane in the eclipsed conformation, optimize it with MACE keeping that
+conformation, and compute its frequencies."*
+
+The optimized eclipsed structure has one imaginary frequency, 287.29i cm⁻¹. Asked to
+*"Show me the spectrum and play the imaginary mode"*, the agent played the mode in the
+viewer.
+
+<Capture client:visible image={await captureImage(imaginaryMode)}
+  alt="The 3D viewer playing mode_000.xyz, frame 10 of 20: ethane with its two methyl groups twisting against each other"
+  caption="The imaginary mode, played in the viewer. The frame slider and Pause control the animation." />
+
+With a rectangle drawn over one methyl group (the viewer's **Region** button), the
+question was *"What is this motion?"*. The agent named the marked atoms, measured their
+rotation from the animation frames in code (about ±13.9°, the other methyl turning the
+opposite way) and called it the torsion that leads from the eclipsed form to the
+staggered one.
+
+Pushed along that mode and re-optimized without constraints, ethane became staggered,
+with no imaginary frequency. The staggered form is 0.1078 eV (10.4 kJ/mol) lower, or
+8.5 kJ/mol with zero-point energy, both at the same MACE level.
+
+<LinkCard title="Open the ethane session" description="The recorded conversation, every tool call and result. 5.6 MB." href="/conversations/chemistry/ethane-imaginary-mode.html" />
+
+## A conformer you edit by hand
+
+*"Build ethylene glycol and optimize it with MACE."* The optimization landed in the anti
+conformer. In the viewer's **Edit** mode, picking the O–C–C–O atoms shows the dihedral,
+−178°. Typing 60 and choosing **Apply** writes the edited structure as a new file and
+reports it to the agent.
+
+<Capture client:visible image={await captureImage(dihedralEdit)}
+  alt="The 3D viewer in Edit mode with four atoms selected and the line dihedral O0–C1–C2–O3: -178.0°, a slider, a value box and an Apply button"
+  caption="Edit mode: the four picked atoms and their dihedral, ready to be set." />
+
+*"Re-optimize from this geometry and tell me which conformer is lower and by how
+much."* The agent started from the edited file, re-optimized with frequencies and found
+the gauche conformer lower by 5.95 kJ/mol (5.7 kJ/mol with zero-point energy).
+
+For more than bond, angle and dihedral edits, the same structure can be opened in
+Avogadro 2. Asked to open it there, the agent found Avogadro was not installed, asked
+before installing it, then opened the conformer. The full Avogadro window runs inside
+the conversation.
+
+<Capture client:visible image={await captureImage(avogadroStream)}
+  alt="The Avogadro 2 window inside CLIO, with its menus, toolbar and Display Types panel, showing the gauche ethylene glycol conformer as balls and sticks"
+  caption="Avogadro 2, installed with consent and shown in the conversation." />
+
+## A reaction energy across three methods
+
+*"What is the Gibbs energy of CH4 + 2 O2 → CO2 + 2 H2O at 298 K? Start with xTB."*
+The agent balanced the reaction, ran O2 as a triplet and said so, and summed the
+per-species results in code. Then *"Now do it with MACE too, and show both on one
+energy diagram"*, *"Confirm the two biggest disagreements with DFT in NWChem"* and
+*"Redo the whole thing at 500 K"*.
+
+| Method | ΔG at 298 K (kJ/mol) |
+| --- | --- |
+| GFN2-xTB | −1220.6 |
+| MACE-OFF23 small | −898.0 |
+| B3LYP/6-31G* (NWChem) | −624.9 |
+
+The agent asked before installing NWChem, installed it in the workspace and ran DFT
+on all four species. It reported that none of the three methods matches the tabulated
+value it remembered (about −800 kJ/mol for gas-phase water), so this DFT level confirms
+neither of the cheaper results. At 500 K it reused the optimized structures and
+recomputed only the frequencies and thermochemistry; ΔG moved by less than 1 kJ/mol,
+because the reaction has the same number of gas molecules on each side.
+
+<LinkCard title="Open the reaction energy session" description="The recorded conversation, including the NWChem install and the 500 K rerun. 10.9 MB." href="/conversations/chemistry/methane-combustion.html" />
+
+## XANES of magnetite
+
+*"Get magnetite from the Materials Project and show me the structure."* The first time,
+CLIO asked for a Materials Project API key in the FDMNES connector's card; the key is
+typed into the card and never into the conversation. The agent chose the cubic Fd-3m
+entry, the lowest above the convex hull, and opened it with its unit cell.
+
+<Capture client:visible image={await captureImage(magnetiteCell)}
+  alt="The 3D viewer showing Fe3O4 Fd-3m (mp-aaaabcoo): iron and oxygen atoms with the unit cell outlined"
+  caption="Magnetite from the Materials Project, with its unit cell." />
+
+*"Compute the Fe K-edge XANES for each inequivalent iron site."* From the structure the
+agent identified the tetrahedral iron (Fe–O 1.92 Å) and the octahedral iron (2.06 Å)
+and ran FDMNES once per site. The self-consistent potential did not converge for this
+cell, so it ran without one and said that the spectra are therefore less reliable.
+Asked *"Why is the pre-edge stronger for one of them?"*, it answered from the computed
+pre-edge heights (0.30 for the tetrahedral site, 0.08 for the octahedral one) and the
+site geometry: the tetrahedral site has no inversion centre. With one iron atom
+selected in the viewer, *"Which site is this one, and what is its coordination?"* got
+the octahedral site, six oxygens at 2.06 Å.
+
+## Open the sessions
+
+The session pages above are archives of the recorded conversations. Opening them does
+not run the agent or contact any service. The 3D viewer and Avogadro run only in a live
+session, so they appear on this page as captures.
