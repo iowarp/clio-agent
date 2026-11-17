@@ -16,6 +16,7 @@ from pydantic import Field, field_validator, model_validator
 from clio_agent.gact.storage import ndp_discovery_client as catalog_client
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
+from clio_agent.gact.storage.ndp_record_coverage import record_coverage
 from clio_agent.gact.storage.ndp_tls import system_tls
 from clio_agent.runtime.fresh_loop import run_in_new_loop
 
@@ -106,6 +107,9 @@ class NDPDataset(StorageModel):
     endpoint: NDPEndpoint
     resources: list[NDPResource]
     access: Literal["viewer", "request_access"] | None = None
+    #: Where and when the record says its data is, as the record states it
+    #: (:mod:`ndp_record_coverage`); empty when the catalog path gives no extras.
+    coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 class NDPSelection(StorageModel):
@@ -210,6 +214,7 @@ class NDPCatalog:
                         "Only my groups requires a successful live Endpoint access check."
                     )
                 continue
+            coverage: dict[str, dict[str, Any]] = {}
             try:
                 client = catalog_client.NDPClient(base_url=endpoint.url)
                 client.timeout = httpx.Timeout(15, connect=5)
@@ -217,6 +222,9 @@ class NDPCatalog:
                     records, count = self._public_catalog.search(
                         endpoint.catalog_url, query, organization, offset, limit
                     )
+                    coverage = {
+                        str(record.get("id")): record_coverage(record) for record in records
+                    }
                     rows = [
                         catalog_client.Dataset(
                             **{
@@ -324,6 +332,7 @@ class NDPCatalog:
                     endpoint=endpoint,
                     resources=resources,
                     access=access,
+                    coverage=coverage.get(str(item.id), {}),
                 )
                 datasets.append(dataset)
         with self._lock:
