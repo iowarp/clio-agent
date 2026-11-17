@@ -642,3 +642,49 @@ passes).
   paged by `dataset_id`.
 - **Argument names.** The ndp server now accepts `query` and `dataset_id` (clio-kit
   `5025a5a`, ndp 2.2.10). These failed 20 and 7 times in one session.
+
+### R6f: cross-organization Tahoe correlation on the fixed stack (pass)
+
+Session `sess_6d4c207e4fc2`, same plain request as R6. Run on clio-agent
+`3a27db6` with clio-kit `c67e725`: the window, overflow and spill fixes and the
+lean search results, but not yet the ndp argument names or the read time limit.
+It made 142 calls, 28 failed: 20 `ndp_search_datasets` called with `query`
+(fixed since in ndp 2.2.10), 7 detail calls with ids the agent shortened itself,
+and 1 script error. The agent loaded `find-ndp-data-for-place` and
+`harmonize-layers` and delivered:
+
+- **Sources, from four organizations:** TRPA habitat (15 layers) and the basin
+  boundary; NIFC perimeter history and WFIGS (Caldor 2021); California Forest
+  Observatory canopy height and surface fuels through WIFIRE Commons; 3DEP 1/3″
+  DEM. All are in EPSG:32610, with provenance sidecars.
+- **Results on land cells only** (the lake masked):
+  - fires since 2000 burned about 5,900 ha, including Angora (about 1,240 ha)
+    and Caldor (about 4,020 ha in the basin);
+  - habitat burned 3.3 % overall; per layer, goshawk threshold 11.7 %, deer
+    fawning 11.0 %, frog critical habitat 9.5 %, spotted owl PACs 8.0 %;
+  - habitat sits lower and gentler than the rest of the basin, and the
+    habitat that burned is steeper than habitat overall;
+  - fuels are about the same inside and outside habitat.
+- **Coverage report:**
+  - what overlaps;
+  - the Forest Observatory layers stop at the state line (the Nevada gap is
+    shown on the map);
+  - the time mismatch (2020 fuels against Caldor 2021);
+  - what NDP lacks;
+  - two habitat layers left out because they hit the 5,000-feature cap.
+- The agent viewed its own map (`r6f-correlation-agent-map.png`, four panels
+  over the whole basin, south shore included).
+
+Checks: Angora's in-basin area matches the independent figure in R6d (1,243 ha).
+The deer-fawning burn share (11.0 % since 2000) is consistent with R6b
+(9.5 % for 2007 to 2024, without Gondola 2002). The context reached the
+compaction threshold (the room fell to the floor twice, about 171k of 200k)
+and the turn completed. No auto compaction was recorded, and the reason was not
+recoverable because skip reasons went only to the disabled stream audit. That
+is fixed (`compaction_audit.py`): skips and empty compactions are now traced.
+
+Captures: `r6f-correlation-1440.png`, `r6f-correlation-390.png`. Verdict:
+**pass**: cross-organization acquisition, a whole-basin correlation and an
+honest coverage report from a plain request. Not established by this run: an
+overflow recovered by compaction (none occurred), and the agent exploring a
+spilled file with code (the two spills were small).
