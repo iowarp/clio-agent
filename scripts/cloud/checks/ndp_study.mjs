@@ -6,7 +6,8 @@
 // prints the loaded skills, every call with its outcome, and the final reply.
 //
 // STUDY_ROOT names a fresh workspace folder (inside CLIO_ALLOWED_ROOTS); STUDY_TEXT the
-// request (a plain one, naming no tools or steps); STUDY_AGENT the agent (science). The
+// request (a plain one, naming no tools or steps); STUDY_AGENT the agent (empty: CLIO's default). Plugin
+// offers the agent makes are accepted as a person would (acceptOffers). The
 // step opens a conversation there, sends the request, allows each question for the
 // session, waits for the turn to finish, then opens the Science log from the canvas menu
 // and captures its list and, when the study has views, its Views mode. It prints the
@@ -35,11 +36,34 @@ async function allowPending(sessionId, log) {
   }
 }
 
+// A person accepts what the agent offers: Add on a plugin offer (intent add_plugin),
+// then Enable all when the added plugin's tool servers ask to be turned on. Each
+// acceptance is logged with the plugin and the agent's reason, so the study shows
+// which plugins the agent chose to load.
+async function acceptOffers(page, sessionId, log) {
+  const listed = await api("GET", `/v1/sessions/${sessionId}/interactions`);
+  for (const card of listed.interactions || []) {
+    const payload = card.payload || {};
+    if (payload.intent !== "add_plugin" || log.includes(`offer:${card.id}`)) continue;
+    const add = page.getByRole("button", { name: /^Add$/ });
+    if (!(await add.count())) continue;
+    await add.first().click();
+    log.push(`offer:${card.id}`);
+    log.push(`accepted plugin offer ${payload.plugin || payload.name || JSON.stringify(payload).slice(0, 120)}: ${payload.reason || ""}`);
+  }
+  const enable = page.getByRole("button", { name: /Enable all/i });
+  if (await enable.count()) {
+    await enable.first().click().catch(() => undefined);
+    log.push("clicked Enable all for an added plugin's tool servers");
+  }
+}
+
 async function waitIdle(page, sessionId, log, minutes) {
   const until = Date.now() + minutes * 60_000;
   let quiet = 0;
   while (Date.now() < until) {
     await allowPending(sessionId, log);
+    await acceptOffers(page, sessionId, log);
     const session = await api("GET", `/v1/sessions/${sessionId}`);
     quiet = ["idle", "completed"].includes(session.status) ? quiet + 1 : 0;
     if (quiet >= 3) return true;
@@ -62,9 +86,10 @@ export default async function (page, shot) {
   const text = process.env.STUDY_TEXT;
   const log = [];
   const workspace = await api("POST", "/v1/workspaces", { name: path.basename(root), root_path: root });
+  // No STUDY_AGENT: the session gets CLIO's default agent, as a new conversation does.
   const session = await api("POST", "/v1/sessions", {
     workspace_id: workspace.id,
-    agent: { id: process.env.STUDY_AGENT || "science" },
+    ...(process.env.STUDY_AGENT ? { agent: { id: process.env.STUDY_AGENT } } : {}),
   });
   await page.goto(new URL(`/workspaces/${workspace.id}/sessions/${session.id}`, page.url()).toString());
   await page.waitForTimeout(6000);
