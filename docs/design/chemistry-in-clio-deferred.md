@@ -4,7 +4,8 @@ Parts of the "Chemistry in CLIO: conclusions (Nov 15, 2026)" plan that were remo
 from the first implementation session (session_01BHQAwt26SXevc5vL25FMh8, 2026-11-16).
 Model safeguards stopped that session's work on them, and the user chose to drop them
 there and come back to them later, on another model (Sonnet), once everything else is
-done. Nothing here was started; no code for them exists on any branch.
+done. Nothing here was started; as of the merge of clio-agent #2370 (2026-11-17), no code for
+them exists on any branch.
 
 | Item | Where it belonged | Plan reference |
 |---|---|---|
@@ -16,11 +17,11 @@ done. Nothing here was started; no code for them exists on any branch.
 | Test case C9 | ledger | "Test cases" |
 | The second SC demo video | — | "Goal for SC", second candidate demo |
 
-Also deferred from the same session for the same reason, but expected to be fine to do
-in a fresh session: the `fdmnes` and `graspa` servers and the gRASPA and FDMNES Spack
-recipes. These are listed under "Remaining" in
-[chemistry-in-clio-status.md](chemistry-in-clio-status.md), not here.
+The `fdmnes` and `graspa` servers and their Spack recipes, deferred in that session for the
+same reason, have since shipped (clio-kit #432) and are not part of this list.
 
 When picking these up: read the plan's sections named above, keep the same contracts as
 the shipped servers (see the status file), add the Alembic agent's plugin list entry, and
-qualify the case with a plain request.
+qualify the case with a plain request. The closest model to follow is the shipped `fdmnes`
+server (clio-kit `mcp-servers/fdmnes`) and plugin (marketplace `plugins/fdmnes`); add
+`docking-study` to the Alembic mission's list of study skills too.
