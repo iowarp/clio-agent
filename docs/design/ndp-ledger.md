@@ -14,7 +14,7 @@ readiness per organization and across organizations". Branch in every repo:
 | 3. Core geospatial operations (clio-kit) | Done on clio-kit `claude/ndp-data-access`: new `geoprocess` server (`a78f824`) |
 | 4. Discovery skill and shared `resolve-region` (marketplace) | Done on marketplace `claude/ndp-data-access` (`fce1ba6`): `geospatial` plugin (moved `resolve-region`, `get-geospatial-data`, `harmonize-layers`), ndp `find-ndp-data-for-place`, tile tool claimed |
 | 5. Harmonization and recorded merge | Skill written (`harmonize-layers`); provenance sidecar format awaiting the earth-ocean session's answer; not exercised live |
-| 6. Map with time for rasters and vectors | Not started. Vectors already work on `clio.layered-map.v1` (`shapes`); GeoTIFF proposal sent to the earth-ocean session, awaiting reply |
+| 6. Map with time for rasters and vectors | GeoTIFF/COG/VRT grid layers on `clio.layered-map.v1` built on clio-agent branch `claude/ndp-data-access-map` (`0ea9e1d`, based on the earth-ocean branch, agreed with that session); vectors already worked (`shapes`). Live render verified with a tool-directed prompt (R8). The agent-facing catalog text in clio-schemas still says grids are NetCDF or Zarr only (Needs user) |
 | 7. Domain skills (marketplace) | Done (`70088e8`): `wildfire` (fire-perimeters, fire-risk-and-fuels), `landscape` (terrain-from-lidar with a D8 flow-routing script, planning-layers); the ndp agent carries both |
 | Qualification runs | In progress: Tahoe habitat run 1 (R3) done, partial; snow-depth case grounded (R4) |
 
@@ -22,6 +22,18 @@ readiness per organization and across organizations". Branch in every repo:
 
 - ~~Repository access~~ resolved 2026-11-17: the user allowed attaching clio-kit and
   clio-agent-marketplace; both are on `claude/ndp-data-access`.
+- **clio-schemas access** (refused 2026-11-17, `add_repo` "Unauthorized Access";
+  only clio-kit and the marketplace were authorized). One change is needed there
+  for gap 6: `a2ui/catalog_fields.py` describes `gridUri` as "Registered NetCDF
+  or zipped Zarr grid with longitude and latitude (grid layers)." and
+  `a2ui/instructions.py` repeats it, so an agent converts GeoTIFFs to NetCDF
+  before drawing (R8a). Proposed text: "Registered NetCDF, zipped Zarr or
+  GeoTIFF/COG/VRT grid (grid layers); for a GeoTIFF, variable names a band by
+  number, bandN or description." The validator and renderer already accept it.
+- **Map branch placement.** The GeoTIFF layer change sits on
+  `claude/ndp-data-access-map` (based on `claude/earth-ocean-weather`) because it
+  extends that unmerged branch; the earth-ocean session left the merge to the
+  owner. This is the one place the "one branch name per repo" rule could not hold.
 - **NDP sign-in** (device flow on the idp-test realm), for any run that touches a
   protected resource. None of the work so far needed it.
 
@@ -367,3 +379,26 @@ Against the grounded pass criteria (`benchmark/ndp-snow-depth-lidar/README.md`):
 Verdict: **partial.** Sound science and an honest answer; two criteria missed.
 Next: the pass criteria name bounded reads, which `get-geospatial-data` covers
 but the agent did not load.
+
+### R8: GeoTIFF layers on the layered map (gap 6), live in the browser
+
+A second isolated stack from the map worktree (`claude/ndp-data-access-map`,
+agent port 8797, UI 5183), workspace files fetched with geoservices: the Sierra
+Nevada fuel-load WCS subset (EPSG:3310, 1668 x 1301), an OpenTopography DEM window
+at Tahoe City (EPSG:26910) and TRPA waterfowl habitat polygons, each with its
+provenance sidecar.
+
+- **R8a** (`map-geotiff.out`), request naming the files: "Show tahoe_fuel_load.tif,
+  tahoe_city_dem.tif and waterfowl_habitat.geojson from this workspace together
+  on one interactive map, so I can toggle the layers." The agent converted both
+  rasters to NetCDF before drawing, because the catalog text says grid layers
+  take NetCDF or Zarr (Needs user: clio-schemas).
+- **R8b** (`sess_1b094b228c91`), tool-directed prompt naming the component and
+  `gridUri` = the `.tif`: one `create_a2ui_surface`, no failures; the producer
+  accepted `variable: band1` for both rasters, `capture_a2ui_surface` waited for
+  the tiles and the agent described both rasters (fuel 2.93 to 24.0 on magma,
+  DEM 1,900 to 2,120 on cividis) and the habitat outlines on the south shore.
+  **Mechanism verified with a tool-directed prompt; not evidence of agent
+  judgement.** Capture: `ndp-ledger-shots/map-geotiff-1440.png` (the reply; the
+  map is above the fold). A phone-width capture of this session was refused by
+  the session's permission classifier and was not taken.
