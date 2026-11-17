@@ -482,3 +482,10 @@ SLR (LPE ≥ 0.10 in) and monthly SLR, with a chart it inspected.
   rain-only LPE), which it stated.
 - Verdict: **pass** (the October Luna failure, discovery that gave up, did not
   recur; the October Sol result is reproduced).
+
+### Discovery benchmark (October 18), runnable tasks
+
+| Task | Session | Result | Verdict |
+| --- | --- | --- | --- |
+| 1. EarthScope GNSS for WWMT: datasets, columns, observations | `sess_15550b17db61` (7 calls, none failed) | Listed `WWMT.CI.LY_.20`, `.40` and `PW.LY_.00` with location (33.9553 N, 116.6539 W) and coverage (2024-12-03 to 12-12) from the search results' new `coverage` fields, noted the test-catalog copies, connected one, and showed the columns and five real 1 Hz rows, stating it read only the first 64 KB of a 46.7 MB file | **Pass** |
+| 2 to 4 (Ares Endpoint, on-demand stream, private dataset creation) | not run | Need the private Ares SSH Endpoint and a saved on-demand stream service, which this container cannot reach | **Not run (environment)** |
