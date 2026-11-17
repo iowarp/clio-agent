@@ -1,6 +1,6 @@
 ---
 name: capture
-description: Turn work from a session into a plugin the person can reuse, or make an existing plugin's next version from the sessions that used it. Use for /capture and /optimize, and when the person says it in their own words - "make this reusable", "I want to do this again next week", "teach CLIO this", "save this as a tool", "next time do it this way". Also when the person wants a view CLIO does not have yet - a custom board, a picker, a new built-in component (`references/view.md`).
+description: Turn work from a session into a plugin the person can reuse, or make an existing plugin's next version from the sessions that used it. Use for /capture and /optimize, and when the person says it in their own words - "make this reusable", "I want to do this again next week", "teach CLIO this", "save this as a tool", "next time do it this way". Also when the person wants a view CLIO does not have yet - a chart they keep asking for, a new kind of widget such as a picker (`references/view.md`), or another system's own view of its data (`references/app.md`).
 ---
 
 # Capture: from a session to a plugin
@@ -64,7 +64,8 @@ that kind of part, and below it the kinds you chose not to use and why. Use a
 | An external service reached through a saved connection | Named connection | `references/connection.md` |
 | A way the person wants to start the whole thing | Command | `references/command.md` |
 | The set of plugins the person works with | Agent (**Save as agent**) | `references/agent.md` |
-| A picture or view the person keeps asking for | Existing components; an MCP App when they cannot show it; a new built-in view only through a pull request to CLIO | `references/view.md` |
+| A picture or view of data CLIO holds (the person's files, results it computed) | A2UI surface composed from the catalog; a widget CLIO lacks only through a pull request to CLIO | `references/view.md` |
+| A view of data another application or system owns (a program's data service, an instrument) | MCP App served by that system's MCP server | `references/app.md` |
 
 - Never write an MCP server for something a `@tool` does, and never one for a service
   that already has a saved connection.

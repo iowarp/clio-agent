@@ -1,187 +1,104 @@
 # View
 
-How results should look when the person keeps asking for the same picture: a table of
-runs, a chart with the lab's marking, an interactive board. Pick the lowest tier that
-gives them what they asked for.
+How results should look when the person keeps asking for the same picture. First ask
+who owns the data the view shows:
 
-## 1. Compose what CLIO already renders (no code)
+- **CLIO holds it**: the person's files and runs in the workspace, results CLIO
+  computed, a reference table the plugin can carry. The view is an **A2UI surface**,
+  this reference.
+- **Another application or system owns it**: an observing program's data service, an
+  instrument's controller, a lab system with its own records and actions. The view
+  belongs with that system: an **MCP App** served by the MCP server that talks to it.
+  See `references/app.md`.
 
-The `clio-workspace` catalog already draws tables (`clio.data-table.v1`), charts
-(`clio.chart.v1`), metrics, steps, diagrams, maps, code, diffs, callouts and layout
-(`Row`, `Column`, `Grid`, `Tabs`, `Card`). Load `a2ui-catalog-clio-workspace` for their
-fields. Most "make it look like this" requests end here: a skill (or a fragment) that
-says which components to use, with which columns, units and marks, and where to put
-them. A skill's tool can return the data the view needs, so the agent fills it in
-without recomputing.
+## 1. Compose the catalog (no code)
 
-A plugin may also ship a catalog under `ai.iowarp.clio/a2ui/<name>/` (`catalog.json`,
-`catalog.clio.json`, `instructions.md`), but it only gives other names to components
-CLIO already renders (`implements.<Name>.kernel`). A kernel CLIO does not have is
-refused with `a2ui_component_unimplemented`. Do not use it to get a new look.
+The `clio-workspace` catalog draws the person's data from a registered file by
+reference: `clio.chart.v1`, `clio.data-table.v1`, `clio.map.v1`, metrics, steps,
+diagrams, code, diffs, callouts and layout (`Row`, `Column`, `Grid`, `Tabs`, `Card`).
+Load `a2ui-catalog-clio-workspace` for their fields. A plugin captures the view as a
+skill that says what to write, which component to use and how to configure it; the
+agent calls `create_a2ui_surface` with it.
 
-## 2. A view of its own: an MCP App in the plugin
+- Point components at the data with `dataUri` (a workspace path or `artifact://`), not
+  inline rows. `artifact://<workspace>/<name>@latest` follows a file that is still
+  growing, so the view updates as new versions are recorded.
+- Every chart is `clio.chart.v1`: a `preset` or a Vega-Lite `spec`. A new kind of plot
+  is a new `spec`, never a new component.
+- Name columns with the `*Field` properties; the validator checks them against the
+  file's real columns.
 
-When the person needs something the components cannot show (an interactive board, a
-custom plot they drag, a viewer for their file type), the plugin brings its own view as
-an MCP App: an MCP server in `mcp.json` whose tool names a `ui://` resource, and that
-resource is one HTML page. CLIO shows it in a card in the conversation, the person can
-open it in a tab, and the agent can look at it. The page runs sandboxed and talks to
-CLIO only through `postMessage` (JSON-RPC 2.0): it sends `ui/initialize`, receives
-`ui/notifications/tool-input` and `ui/notifications/tool-result` (the tool's
-`structuredContent`), and reports its height with `ui/notifications/size-changed`.
+A plugin may also ship a catalog under `ai.iowarp.clio/a2ui/<name>/`, but it only gives
+other names to widgets CLIO already renders (`implements.<Name>.kernel`); a kernel CLIO
+does not have is refused with `a2ui_component_unimplemented`. It cannot add a widget.
 
-- The tool's `_meta.ui.resourceUri` names the page; `visibility: ["model", "app"]`
-  lets both the agent and the page call it.
-- The resource is served with `mimeType: "text/html;profile=mcp-app"`.
-- Keep the server to the standard library (as below) or to what the person's
-  environment already has; a server that needs packages names its launcher (`uvx ...`).
-- `mcp.json` and the server are executable parts: the plugin is asked about once
-  before it first runs, like any plugin with code.
+## 2. A widget the catalog does not have: a change to CLIO
 
-## 3. A new built-in component: a change to CLIO
-
-When the view should be part of CLIO itself (a component every plugin can use, drawn
-by the app with its own controls), no plugin can add it: it needs a new component in
-CLIO's schemas, server and app. Say so plainly and offer the way:
+When the person needs a kind of widget CLIO does not draw at all (a periodic table
+picker, a sequence viewer, a crystal lattice editor), it becomes a new A2UI component
+in CLIO itself: its schema, its validator and its renderer change together, and every
+plugin can then use it. No plugin can add one. Say so plainly and offer the way:
 
 > This needs a new kind of view in CLIO itself, which a plugin cannot add. If you give
-> me access to GitHub, I'll open a pull request with the new view; it then waits for
+> me access to GitHub, I'll open a pull request with the new widget; it then waits for
 > CLIO's maintainers to review and approve it before it reaches your app. Until then
-> I'll show it with [the closest tier 1 or 2 option].
+> I'll show it with [the closest composition of existing widgets].
 
 Do not open anything without that access and the person's yes. With it, follow the
 `a2ui-component-design` guidance where it is available, open the pull request against
-the CLIO repositories, give the person its link, and do not describe the view as
-available until it is merged and released. Meanwhile the plugin ships the tier 1 or 2
-version, so the person is not left waiting.
+the CLIO repositories, give the person its link, and do not describe the widget as
+available until it is merged and released. Meanwhile the plugin ships the closest
+composition, so the person is not left waiting.
+
+Do not reach for an MCP App instead: an MCP App is another system's view of its own
+data, not a way around adding a widget to CLIO.
 
 ## Worked example
 
-A lab that wants each run's peak temperatures as a board of cards, coloured by whether
-the run stayed under its limit. The skill decides when to open it; the server returns
-the data and the page.
+A person training language models asks every run "show me how it trained": loss for
+training and validation over steps, and the learning rate beneath. The training script
+already writes `train_log.csv` (`step`, `split`, `loss`, `lr`), so the plugin is one
+skill that knows the file and the chart.
 
 ```json plugin.json
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "run-board",
+  "name": "training-curves",
   "version": "0.1.0",
-  "description": "Shows the lab's runs as a board of cards: peak temperature in kelvin, coloured by whether the run stayed under its limit.",
+  "description": "Shows how a model trained: training and validation loss over steps with the learning rate beneath, from the run's train_log.csv.",
   "author": {"name": "Clio"},
   "license": "BSD-3-Clause"
 }
 ```
 
-```json mcp.json
-{
-  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-  "mcpServers": {
-    "runboard": {
-      "type": "stdio",
-      "command": "python3",
-      "args": ["${PLUGIN_ROOT}/server.py"]
-    }
-  }
-}
-```
-
-```python server.py
-"""Run board: one tool that opens the board view (standard library only)."""
-
-import json
-import sys
-
-VIEW = "ui://run-board/view"
-TOOL = {
-    "name": "show_runs",
-    "description": "Open the run board: one card per run with its peak temperature in kelvin.",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "runs": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {"run": {"type": "string"}, "peak_k": {"type": "number"}},
-                    "required": ["run", "peak_k"],
-                },
-            },
-            "limit_k": {"type": "number"},
-        },
-        "required": ["runs", "limit_k"],
-    },
-    "_meta": {"ui": {"resourceUri": VIEW, "visibility": ["model", "app"]}},
-}
-PAGE = """<!doctype html><html><head><meta charset="utf-8">
-<meta name="color-scheme" content="light dark"><style>
-body{margin:0;font:14px system-ui;color:CanvasText;background:Canvas}
-main{display:flex;flex-wrap:wrap;gap:8px;padding:12px}
-.card{padding:8px 12px;border-radius:6px;border:2px solid #2a7}.over{border-color:#c33}
-</style></head><body><main id="board">Waiting for runs</main><script>
-const send = (m) => window.parent.postMessage(m, '*');
-const size = () => send({jsonrpc: '2.0', method: 'ui/notifications/size-changed',
-  params: {height: document.body.scrollHeight}});
-window.addEventListener('message', (e) => {
-  const m = e.data;
-  if (m?.id === 'init' && m.result) {
-    send({jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {}});
-  } else if (m?.method === 'ui/notifications/tool-result') {
-    const r = m.params?.structuredContent || {};
-    document.getElementById('board').replaceChildren(...(r.runs || []).map((x) => {
-      const d = document.createElement('div');
-      d.className = x.peak_k > r.limit_k ? 'card over' : 'card';
-      d.textContent = `${x.run}: ${x.peak_k} K`;
-      return d;
-    }));
-    size();
-  }
-});
-send({jsonrpc: '2.0', id: 'init', method: 'ui/initialize', params: {
-  protocolVersion: '2026-01-26', appInfo: {name: 'run-board', version: '0.1.0'},
-  appCapabilities: {availableDisplayModes: ['inline', 'fullscreen']}}});
-</script></body></html>"""
-
-
-def reply(rid, result):
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}) + "\n")
-    sys.stdout.flush()
-
-
-for raw in sys.stdin:
-    msg = json.loads(raw) if raw.strip() else {}
-    method, rid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
-    if rid is None:
-        continue
-    if method == "initialize":
-        reply(rid, {
-            "protocolVersion": params.get("protocolVersion", "2025-06-18"),
-            "capabilities": {"tools": {}, "resources": {}},
-            "serverInfo": {"name": "run-board", "version": "0.1.0"},
-        })
-    elif method == "tools/list":
-        reply(rid, {"tools": [TOOL]})
-    elif method == "tools/call":
-        args = params.get("arguments") or {}
-        data = {"runs": args.get("runs", []), "limit_k": args.get("limit_k", 0)}
-        reply(rid, {"content": [{"type": "text", "text": json.dumps(data)}],
-                    "structuredContent": data})
-    elif method == "resources/list":
-        reply(rid, {"resources": [{"uri": VIEW, "name": "run-board",
-                                   "mimeType": "text/html;profile=mcp-app"}]})
-    elif method == "resources/read":
-        reply(rid, {"contents": [{"uri": VIEW, "mimeType": "text/html;profile=mcp-app",
-                                  "text": PAGE}]})
-    else:
-        reply(rid, {})
-```
-
-```markdown skills/run-board/SKILL.md
+```markdown skills/training-curves/SKILL.md
 ---
-name: run-board
-description: Show the lab's runs as a board when the person asks to see, compare or review several runs at once ("show me today's runs", "which runs went over?").
+name: training-curves
+description: Show how a model trained, or how a training run is going ("how did it train?", "is it still improving?", "show the loss curves").
 ---
 
-Read each run's peak temperature in kelvin, then call `runboard_show_runs` with every
-run and the lab's limit (360 K unless the person gives another). The board appears in
-the conversation; say in one line which runs went over the limit.
+The run folder holds `train_log.csv` with columns `step`, `split` (`train` or `val`),
+`loss` and `lr`, one row per logged step and split.
+
+1. Check the columns and one row of the file before building the view.
+2. Call `create_a2ui_surface` with this one component. Replace `WORKSPACE` with the
+   workspace and `RUN` with the run folder; `@latest` makes the chart follow the file
+   while the run is still writing it.
+
+        {"id": "curves", "component": "clio.chart.v1",
+         "dataUri": "artifact://WORKSPACE/RUN/train_log.csv@latest",
+         "spec": {"vconcat": [
+           {"mark": "line", "height": 260,
+            "encoding": {"x": {"field": "step", "type": "quantitative"},
+                         "y": {"field": "loss", "type": "quantitative", "scale": {"type": "log"}},
+                         "color": {"field": "split", "type": "nominal"}}},
+           {"mark": "line", "height": 120,
+            "transform": [{"filter": "datum.split == 'train'"}],
+            "encoding": {"x": {"field": "step", "type": "quantitative"},
+                         "y": {"field": "lr", "type": "quantitative", "title": "learning rate"}}}]}}
+
+3. Below the chart, say in one or two lines where validation loss bottomed out (its
+   step and value) and whether it rose after that.
+
+Never redraw the curves as a static image; the chart reads the file by reference.
 ```

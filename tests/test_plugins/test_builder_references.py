@@ -8,8 +8,11 @@ these examples, so an example that fails the check teaches the builder to fail.
 
 from __future__ import annotations
 
+import http.server
+import json
 import re
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -32,6 +35,7 @@ PART_TYPES = {
     "connection",
     "agent",
     "view",
+    "app",
 }
 _BLOCK = re.compile(r"^```(\w+) (\S+)\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 
@@ -72,23 +76,68 @@ def test_the_built_in_plugin_passes_plugin_check(plugin: str, tmp_path: Path) ->
     assert report.ok, [str(d) for d in report.diagnostics]
 
 
-async def test_the_view_example_serves_an_mcp_app(tmp_path: Path) -> None:
-    """The view reference's server is a working MCP App: its tool names the page,
-    the page is served as an app, and the tool's result carries the board's data."""
+def test_the_view_example_is_a_valid_chart_over_the_runs_file() -> None:
+    """The A2UI example's component passes the clio-workspace catalog's validator."""
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs  # noqa: PLC0415
+    from clio_agent.gact.a2ui_catalogs.validation import validate_components  # noqa: PLC0415
 
+    skill = _example(REFERENCES / "view.md")["skills/training-curves/SKILL.md"]
+    block = [line[8:] for line in skill.splitlines() if line.startswith("        ")]
+    component = json.loads("\n".join(block))
+    assert component["component"] == "clio.chart.v1"
+    assert component["dataUri"].endswith("train_log.csv@latest")
+    (catalog,) = [entry for entry in load_builtin_catalogs() if entry.name == "clio-workspace"]
+    validate_components(catalog, [component])
+
+
+async def test_the_app_example_shows_the_programs_data_and_asks_it_for_more(
+    tmp_path: Path,
+) -> None:
+    """The MCP App example: its opening tool names the page, the page is served as an
+    app, the fleet and a float's profile come from the program's service (a stand-in
+    here), and the page's own tool is for the page only."""
     from fastmcp import Client  # noqa: PLC0415
     from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
+    floats = [{"id": "4903", "lat": 58.1, "lon": -52.4, "active": True}]
+    profile = {"time": "2026-11-16T04:00:00Z", "levels": [{"depth_m": 0, "temp_c": 4.2}]}
+    seen: list[str] = []
+
+    class Program(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server's handler name
+            seen.append(self.path)
+            body = (
+                floats
+                if self.path.startswith("/api/floats?") or self.path == "/api/floats"
+                else profile
+            )
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    program = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Program)
+    threading.Thread(target=program.serve_forever, daemon=True).start()
     server = tmp_path / "server.py"
-    server.write_text(_example(REFERENCES / "view.md")["server.py"], encoding="utf-8")
-    transport = StdioTransport(command=sys.executable, args=[str(server)])
-    async with Client(transport) as client:
-        (tool,) = await client.list_tools()
-        uri = tool.meta["ui"]["resourceUri"]
-        assert uri.startswith("ui://")
-        (page,) = await client.read_resource(uri)
-        assert page.mimeType == "text/html;profile=mcp-app"
-        assert "ui/initialize" in page.text
-        runs = [{"run": "run_0412", "peak_k": 371.2}, {"run": "run_0413", "peak_k": 352.0}]
-        result = await client.call_tool(tool.name, {"runs": runs, "limit_k": 360})
-        assert result.structured_content == {"runs": runs, "limit_k": 360}
+    server.write_text(_example(REFERENCES / "app.md")["server.py"], encoding="utf-8")
+    api = f"http://127.0.0.1:{program.server_address[1]}/api"
+    transport = StdioTransport(command=sys.executable, args=[str(server)], env={"FLEET_API": api})
+    try:
+        async with Client(transport) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            uri = tools["show_fleet"].meta["ui"]["resourceUri"]
+            assert tools["float_profile"].meta["ui"]["visibility"] == ["app"]
+            (page,) = await client.read_resource(uri)
+            assert page.mimeType == "text/html;profile=mcp-app"
+            assert "tools/call" in page.text and "float_profile" in page.text
+            fleet = await client.call_tool("show_fleet", {"region": "labrador"})
+            assert fleet.structured_content == {"floats": floats}
+            picked = await client.call_tool("float_profile", {"float_id": "4903"})
+            assert picked.structured_content == profile
+    finally:
+        program.shutdown()
+    assert seen == ["/api/floats?region=labrador", "/api/floats/4903/profile"]
