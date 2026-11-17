@@ -164,6 +164,22 @@ stated):
   plugin's own paths are keyless (ENS open data, ARCO ERA5) and CDS goes
   through the copernicus connector; decide whether skills get a secret
   mechanism.
+- **Views are rarely built unasked.** Most science passes above end with
+  "views not made": the agent answers with numbers, caveats and at most a
+  static PNG. Checked: each session's trace carries its plugin's views
+  guidance (`ocean.views` or `weather.views`, gated on `create_a2ui_surface`
+  in a root session), so this is the agent's choice with the guidance in
+  front of it, not a missing injection. Asked for views, it builds them and
+  they render (Q1's follow-up, Q3). Per the repository's rule against
+  behavioural handcuffs in prompts, nothing was added here; decide whether a
+  plain request should produce views (and if so where that belongs: the flow,
+  the guidance's wording, or a review step), or whether a view on request is
+  the intended behaviour.
+- **An unanswered offer card holds a turn indefinitely.** Q11's bloom turn
+  waited 90 minutes on a Copernicus `offer_plugin` card (Q12 likewise) until
+  it was answered "Not now". This is the designed human-in-the-loop gate;
+  decide whether such a card should time out into "not now" for unattended
+  runs.
 - **TPXO** needs a registration and its files on disk; the regional MOM6
   set-up tools that need it are not built (see the regional-mom6 rows).
 
