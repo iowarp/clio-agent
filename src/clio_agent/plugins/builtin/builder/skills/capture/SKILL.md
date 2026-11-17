@@ -67,6 +67,11 @@ that kind of part, and below it the kinds you chose not to use and why. Use a
 | A picture or view of data CLIO holds (the person's files, results it computed) | A2UI surface composed from the catalog; a widget CLIO lacks only through a pull request to CLIO | `references/view.md` |
 | A view of data another application or system owns (a program's data service, an instrument) | MCP App served by that system's MCP server | `references/app.md` |
 
+- A plot the session drew in code and saved as an image is a view of the person's
+  data, not a computation: the reusable part is an A2UI surface over the data file
+  (`references/view.md`), which stays live as the file grows and which the agent can
+  read. A tool that redraws an image fits only when the person needs the image itself
+  (a figure for a paper, a report).
 - Never write an MCP server for something a `@tool` does, and never one for a service
   that already has a saved connection.
 - Require installed plugins (`workspace`, `hdf5`, `slurm`...) instead of copying their
