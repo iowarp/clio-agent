@@ -361,6 +361,11 @@ KEY_NOTES: dict[str, str] = {
         'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
         "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."
     ),
+    "arc.cte.metadata_disk_reserve": (
+        'Free space (e.g. "256MB") the metadata log\'s file system must keep: below it, '
+        "clio-core writes are refused (clio_core_metadata_disk_low) instead of tearing the "
+        'log. "0" turns the guard off.'
+    ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
         "headroom -- a deliberate desktop cap on DRAM growth."
