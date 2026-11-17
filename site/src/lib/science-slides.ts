@@ -20,8 +20,10 @@ import slicerDark from '@/assets/carousel/3d-printing/slicer-dark.webp';
 import routedBoard from '@/assets/carousel/electronics/kicad-routed-board.webp';
 import boardCase from '@/assets/carousel/electronics/kicad-case.webp';
 import hybridTraining from '@/assets/carousel/quantum/hybrid-training.webp';
-import imaginaryMode from '@/assets/carousel/chemistry/imaginary-mode.webp';
-import avogadroStream from '@/assets/carousel/chemistry/avogadro-stream.webp';
+import imaginaryLight from '@/assets/carousel/chemistry/imaginary-mode-light.webp';
+import imaginaryDark from '@/assets/carousel/chemistry/imaginary-mode-dark.webp';
+import avogadroLight from '@/assets/carousel/chemistry/avogadro-light.webp';
+import avogadroDark from '@/assets/carousel/chemistry/avogadro-dark.webp';
 
 export interface SlideImage {
 	src: string;
@@ -127,19 +129,21 @@ const SLIDES: readonly SlideSource[] = [
 		id: 'imaginary-mode',
 		field: 'Chemistry',
 		title: 'An imaginary mode you can watch',
-		body: 'CLIO optimized eclipsed ethane with MACE, found one imaginary frequency and played it in the 3D viewer. Marked on one methyl group, the motion was measured from the frames: the two groups twist against each other.',
-		alt: 'The CLIO 3D viewer playing an animation of ethane, frame 10 of 20, with the two methyl groups twisting about the carbon-carbon bond',
+		body: 'Asked for eclipsed ethane, CLIO optimized it with MACE, found its one imaginary frequency, 287i cm⁻¹, and played that mode in the 3D viewer beside the conversation: the torsion that leads to the staggered form.',
+		alt: 'CLIO with the ethane conversation on the left, reporting the MACE optimization and one imaginary frequency at 287.3i cm⁻¹, and the Burette 3D viewer open in a tab on the right, playing the mode: ethane with its two methyl groups twisting about the carbon-carbon bond',
 		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
-		light: imaginaryMode,
+		light: imaginaryLight,
+		dark: imaginaryDark,
 	},
 	{
 		id: 'avogadro',
 		field: 'Chemistry',
 		title: 'Avogadro in the conversation',
-		body: 'Asked to open a conformer in Avogadro, CLIO installed Avogadro 2 after asking, then showed its full window inside the conversation with the structure loaded.',
-		alt: 'The Avogadro 2 window inside CLIO, with its menus, toolbar and Display Types panel, showing the gauche ethylene glycol conformer as balls and sticks',
+		body: 'CLIO built ethylene glycol, optimized it with MACE and opened it in Avogadro 2, whose full window runs in a tab beside the conversation, ready for editing.',
+		alt: 'CLIO with the ethylene glycol conversation on the left, reporting the build and the MACE optimization, and an Avogadro tab on the right showing the full Avogadro 2 window, menus and display panels included, with ethylene glycol as balls and sticks',
 		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
-		light: avogadroStream,
+		light: avogadroLight,
+		dark: avogadroDark,
 	},
 ];
 
