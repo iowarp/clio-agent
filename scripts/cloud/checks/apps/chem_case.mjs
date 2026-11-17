@@ -80,6 +80,10 @@ const log = (report, line) => report.log.push(line);
 
 export default async function (page, shot) {
   const report = { turns: [], log: [] };
+  // Failing responses (a view's resources and its service) go to the report.
+  page.on("response", (r) => {
+    if (r.status() >= 400) report.log.push(`HTTP ${r.status()} ${r.url().slice(0, 200)}`);
+  });
   let sessionId = process.env.CASE_SESSION;
   if (sessionId) {
     const wsId = process.env.CASE_WORKSPACE_ID;
