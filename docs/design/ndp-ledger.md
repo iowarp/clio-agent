@@ -237,3 +237,22 @@ Direct MCP calls through the in-memory FastMCP client, outside an agent.
 See `benchmark/ndp-snow-depth-lidar/README.md` (`36b97a5`): Southern Sierra CZO
 March and August 2010 bare-earth models, differenced with geoservices and
 geoprocess. Median depth 2.02 m at Wolverton, 0.90 m at Providence Creek.
+
+## Qualification set 2026-11-17 (R5 onward)
+
+Common setup for every run below: isolated stack (`CLIO_CLOUD_ISOLATE=1`), provider
+`claude_code`, model `claude-sonnet-5-5`, agent `clio/ndp` 1.1.0 (marketplace
+`70088e8`), clio-kit `986cb22`. Two catalogs configured as an operator would
+(`CLIO_STORAGE_NDP_ENDPOINTS`): production `ndp` and test `ndp-test`, because the
+Wildfire Task Force and bco_weather exist only on test. Tool servers were enabled once
+through the agent-needs card (D8). Each request is typed into the real composer by
+`bash scripts/cloud/ndp_batch.sh <key>` from `scripts/cloud/checks/ndp_requests.json`.
+The harness allows each permission for the session. Desktop (1440x900) and phone
+(390x844) captures are in `ndp-ledger-shots/`. Runs on this stack predate `ec55d30`
+(coverage in search results).
+
+### Per-organization acquisition checks
+
+| Organization | Request (abridged) | Session | Path the agent took | Result | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| CA Wildfire and Forest Resilience Task Force | Surface fuel around South Lake Tahoe | `sess_991a854b2f8d` | Search (test catalog) found "Total Fuel (Dead and Down) Load"; connect and download returned HTTP 500 (`connected_data_open`); `describe_geo_service` then `read_raster_window` with the dataset's WCS | Mean 15.5 to 16 Mg/ha within 3 to 10 km, 90th percentile about 21, heaviest about 4 to 7 km south-southeast of town; under 0.1% of cells above the dataset's 40 Mg/ha high-severity level. Units taken from the description because the raster has none (said so). No map rendered (said so) | **Pass** (data in hand through the access layer after the file link failed) |
