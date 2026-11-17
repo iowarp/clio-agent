@@ -307,3 +307,27 @@ time; it went straight to the geoservices tools (`fetch_features` ×26,
 | NIFC | Wildfires within 20 km of Lake Tahoe, and years | `sess_408083696c98` | Loaded `fire-perimeters`; `fetch_features` on InterAgencyFirePerimeterHistory (388 perimeters in a box), buffered the lake outline, merged agency duplicates | **158 fires in 73 years, 1910 to 2019** (255 polygons before merging duplicates; 166 with 8 prescribed burns); nearest: Angora 2007, Emerald 2016, Cascade 1994, Kiva 2002. Stated that the archive has no 2020 or later fires here (so the 2021 Caldor fire is missing), early-century undercount, approximate merge | **Pass** (acquisition and method), with a stated gap: it did not add the current-year WFIGS layer for 2020 onward |
 | OpenTopography | Bare-earth model around Wolverton and its steepness | `sess_f3fdebef57f1` | `connected_data_ndp_tiles_covering` (first call refused: the dataset id is in both catalogs, so it needs `endpoint_id`; it retried with one), then `read_raster_window` | SSCZO 2010 snow-off DTM, 2029 x 1825 at 1 m, 1,959 to 2,469 m; mean slope 18.1°, half the area 15 to 30°. The terrain tool refused 3.7 M cells (2 M limit), so it computed slope itself (said so). Vertical datum not checked (said so) | **Pass** |
 | USGS 3DEP | Ground points for a square kilometre at Tahoe City | `sess_226c428604dd` | `read_point_cloud` on the USGS EPT bucket, four quadrants to reach full density | **2,427,115 ground points at 0.30 m spacing, 1,896.9 to 1,967.9 m, 2.4 pts/m²** (0.7 over the lake-heavy quadrant). Stated that NDP's `CA-NV_LakeTahoe_2010` record holds only a footprint and no EPT exists for it, so it used the overlapping `CA_PlacerCo_2012` survey. **Bug found:** `describe_geo_service` crashed on a streamed HTTP error (`ResponseNotRead`); fixed in clio-kit `8a7639e` | **Pass**, with the points from a different survey than the NDP record named (stated) |
+
+### R6: cross-organization Tahoe correlation, attempt 1 (did not finish)
+
+Session `sess_943e05311dc4`. Request: "For the Lake Tahoe basin, how do wildlife
+habitat areas relate to recent wildfire, vegetation and fuels, and to the terrain?
+Bring together whatever NDP has from the different organizations, tell me what
+overlaps and what doesn't, and show it on a map."
+
+- What the agent chose (plain request, nothing named): it loaded
+  `find-ndp-data-for-place`, then `harmonize-layers`. It ran 23 catalog
+  searches, fetched TRPA habitat layers with `fetch_features`, and checked the
+  Wildfire Task Force's WCS for burn probability, CWHR and goshawk habitat
+  coverages with `describe_geo_service` (`match` filtering 200 coverages).
+- It then asked `read_raster_window` for the whole basin from the 0.5 m
+  OpenTopography mosaic. That source has no overviews, so GDAL had to fetch
+  about 30 GB of native blocks; the call hung for over 25 minutes and the
+  harness gave up. **Fixed** in clio-kit `e8f0d6d`: such a read is refused in
+  about a second with the size and the area that fits. A separate defect seen
+  here (an HTTP error crashing `describe_geo_service`) is fixed in clio-kit
+  `8a7639e`.
+- It also called the optional ndp server's `get_dataset_details` 22 times to
+  read record extents, with argument and id errors; search results now carry
+  each record's location and time (clio-agent `ec55d30`).
+- Verdict: **failed (tool fault, fixed); rerun as R6b.**
