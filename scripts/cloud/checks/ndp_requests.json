@@ -1,5 +1,5 @@
 {
-  "_comment": "Plain requests for the NDP qualification (docs/design/ndp-ledger.md). No tool, skill, dataset id, URL or step is named. October requests are copied verbatim from docs/verification/ndp-scientific-outcomes-2026-10-18.md. case01 drops the README example's procedural wording ('resolve the geography, query bounded live features'), which would make it a tool-directed prompt.",
+  "_comment": "Plain requests for the NDP qualification (docs/design/ndp-ledger.md). No tool, skill, dataset id, URL or step is named. October requests are copied verbatim from docs/verification/ndp-scientific-outcomes-2026-10-18.md. case01 drops the README example's procedural wording ('resolve the geography, query bounded live features'), which would make it a tool-directed prompt. discovery.task1 and task5 are verbatim from docs/verification/ndp-agent-discovery-benchmark-2026-10-18.md; tasks 2-4 need private Endpoints (Ares SSH, an on-demand stream) this container cannot reach.",
   "october": {
     "alta": "Has the snow-to-liquid ratio at Alta-Collins changed in the 2023–24 winter compared with its historical record? I think NDP has the observations. Please investigate and show the evidence, with a chart and the limitations of the comparison.",
     "konza": "Can the NDP observations from the 2022 Konza Prairie burn tell us whether the smoke or CO2 signal changed with the wind? Investigate what the measurements actually support and show me an evidence-based result.",
@@ -24,5 +24,9 @@
     "case01": "Build me a current environmental hazard brief for the San Diego area from what NDP has, as something I can inspect.",
     "case03": "What does the current wildfire picture look like around Los Angeles together with the weather? Bring together NDP's fire and weather data for the region and give me a brief with the caveats.",
     "case04": "Using the CIMIS weather data on NDP, how favourable have conditions been for fire spread or field operations in the Fresno area? Pick the right station and show me the profile."
+  },
+  "discovery": {
+    "task1": "Find EarthScope GNSS observations for station WWMT in NDP. Tell me which measurement datasets are available and show me the columns and a few actual observations from one of them.",
+    "task5": "Find Japanese satellite wildfire observations in NDP. Which available resources contain the measurements, and which are service or download links?"
   }
 }
