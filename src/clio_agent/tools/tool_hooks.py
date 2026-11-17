@@ -125,7 +125,7 @@ def merge_artifact_identity(name: str, observation: Any) -> Any:
         return observation
 
 
-def merge_result_views(observation: Any) -> Any:
+def merge_result_views(name: str, observation: Any) -> Any:
     """Append the note on the views THIS call's result declared and CLIO showed (RV-D1).
 
     Imported lazily for the reason :func:`merge_artifact_identity` is.
@@ -133,7 +133,7 @@ def merge_result_views(observation: Any) -> Any:
 
     from clio_agent.gact.result_views import merge_note  # noqa: PLC0415
 
-    return merge_note(observation)
+    return merge_note(name, observation)
 
 
 def merge_boundary_message(observation: Any) -> Any:
@@ -197,7 +197,7 @@ def assemble_model_observation(
 
     observation = merge_artifact_identity(name, observation)
     observation = merge_boundary_message(observation)
-    observation = merge_result_views(observation)
+    observation = merge_result_views(name, observation)
     return apply_post_tool_hook(
         post_tool, name, args, observation, is_error=is_error, synthetic=synthetic
     )

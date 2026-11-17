@@ -33,6 +33,7 @@ MAX_VIEWS = 6
 SHOWN = "result_views_shown"
 REFUSED = "result_views_refused"
 FAILED = "result_views_failed"
+NOTE_UNDELIVERED = "result_views_note_undelivered"
 
 _PENDING = threading.local()
 
@@ -80,17 +81,18 @@ def _shown_note(result: Mapping[str, Any], views: list[dict[str, Any]]) -> str:
     )
 
 
-def _set_note(note: str) -> None:
-    from clio_agent.tools.tool_observation import peek_call_identity  # noqa: PLC0415
-
-    _PENDING.note = note
-    _PENDING.call = peek_call_identity()
+def _notes() -> dict[str, str]:
+    notes = getattr(_PENDING, "notes", None)
+    if notes is None:
+        notes = _PENDING.notes = {}
+    return notes
 
 
 def show(app: Any, tool: str, structured: Any) -> None:
     """Show the views ``structured`` declares; the note for this call's model result."""
 
-    _set_note("")
+    notes = _notes()
+    notes.pop(tool, None)
     views = declared_views(structured)
     if not views:
         return
@@ -105,36 +107,37 @@ def show(app: Any, tool: str, structured: Any) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - the tool itself succeeded; say so instead
         logger.exception("result views failed tool=%s reason=%s", tool, FAILED)
-        _set_note(
+        notes[tool] = (
             f"CLIO could not show the views this result declares ({type(exc).__name__}); "
             "build them with create_a2ui_surface if they help."
         )
         return
     if isinstance(result, Mapping) and result.get("rendered"):
         trace.event("TOOLS", "%s tool=%s surface=%s", SHOWN, tool, result.get("surface_id"))
-        _set_note(_shown_note(result, views))
+        notes[tool] = _shown_note(result, views)
         return
     reason = (result or {}).get("error") or (result or {}).get("refusal") or "refused"
     detail = (result or {}).get("detail") or (result or {}).get("message") or ""
     trace.event("TOOLS", "%s tool=%s reason=%s", REFUSED, tool, reason)
-    _set_note(
+    notes[tool] = (
         f"CLIO could not show the views this result declares ({reason}"
         + (f": {detail}" if detail else "")
         + "); build them with create_a2ui_surface if they help."
     )
 
 
-def merge_note(observation: Any) -> Any:
-    """Append this call's views note to the model-visible result, once."""
+def merge_note(tool: str, observation: Any) -> Any:
+    """Append the views note of ``tool``'s call to its model-visible result, once.
 
-    from clio_agent.tools.tool_observation import peek_call_identity  # noqa: PLC0415
+    The observer and this merge run one after the other on the calling thread, and a
+    tool's next successful call replaces its note, so a note only ever rides the result
+    of the call that produced it.
+    """
 
-    note = getattr(_PENDING, "note", "")
+    note = _notes().pop(tool, "")
     if not note:
         return observation
-    _PENDING.note = ""
-    if getattr(_PENDING, "call", "") != peek_call_identity():
-        return observation  # another call's note: never carried onto this one
     if not isinstance(observation, str):
+        trace.event("TOOLS", "%s tool=%s reason=result_not_text", NOTE_UNDELIVERED, tool)
         return observation
     return f"{observation}\n\n{note}"

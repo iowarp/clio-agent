@@ -38,7 +38,6 @@ def created(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     monkeypatch.setattr(
         create, "build_create_a2ui_surface_tool", lambda: SimpleNamespace(func=func)
     )
-    monkeypatch.setattr("clio_agent.tools.tool_observation.peek_call_identity", lambda: "call_1")
     return calls
 
 
@@ -57,16 +56,16 @@ def test_a_declared_view_is_shown_and_the_agent_is_told(created: list[dict[str, 
     assert components[0] == {"id": "root", "component": "Column", "children": ["view-1"]}
     assert components[1] == {**PROFILES, "id": "view-1"}
     assert created[0]["surface_id"].startswith("ctd-read-")
-    text = result_views.merge_note("Read 3 casts.")
+    text = result_views.merge_note("ocean_ctd_read", "Read 3 casts.")
     assert text.startswith("Read 3 casts.\n\nCLIO showed this result to the person")
     assert "clio.profile-stack.v1 (casts)" in text and "capture_a2ui_surface" in text
     # Consumed once.
-    assert result_views.merge_note("next") == "next"
+    assert result_views.merge_note("ocean_ctd_read", "next") == "next"
 
 
 def test_a_result_without_views_opens_nothing(created: list[dict[str, Any]]) -> None:
     result_views.show(None, "ocean_teos10", {"summary": "s", "outputs": [{"path": "x"}]})
-    assert created == [] and result_views.merge_note("s") == "s"
+    assert created == [] and result_views.merge_note("ocean_teos10", "s") == "s"
 
 
 def test_a_refused_view_is_said_with_its_reason(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,17 +76,22 @@ def test_a_refused_view_is_said_with_its_reason(monkeypatch: pytest.MonkeyPatch)
             func=lambda **_k: {"error": "a2ui_path_outside_workspace", "detail": "/tmp/x"}
         ),
     )
-    monkeypatch.setattr("clio_agent.tools.tool_observation.peek_call_identity", lambda: "call_2")
     result_views.show(None, "ocean_ctd_read", STRUCTURED)
-    text = result_views.merge_note("done")
+    text = result_views.merge_note("ocean_ctd_read", "done")
     assert "could not show the views" in text and "a2ui_path_outside_workspace: /tmp/x" in text
 
 
-def test_a_note_never_rides_another_calls_result(
-    created: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_note_never_rides_another_tools_result(created: list[dict[str, Any]]) -> None:
     result_views.show(None, "ocean_ctd_read", STRUCTURED)
-    monkeypatch.setattr(
-        "clio_agent.tools.tool_observation.peek_call_identity", lambda: "call_other"
+    assert result_views.merge_note("shell_bash", "other") == "other"
+    assert "CLIO showed" in result_views.merge_note("ocean_ctd_read", "mine")
+
+
+def test_the_note_reaches_the_model_observation(created: list[dict[str, Any]]) -> None:
+    from clio_agent.tools.tool_hooks import assemble_model_observation
+
+    result_views.show(None, "ocean_ctd_read", STRUCTURED)
+    text = assemble_model_observation(
+        None, "ocean_ctd_read", {}, "Read 3 casts.", is_error=False, synthetic=False
     )
-    assert result_views.merge_note("other") == "other"
+    assert text.startswith("Read 3 casts.") and "CLIO showed this result" in text
