@@ -30,6 +30,7 @@
 //                                      labels it draws
 //   {"elshot": {"app": -1, "path": "site/src/assets/tutorials/chemistry/x.png"}}  screenshot
 //                                      one app view's frame as an element (at --scale)
+//   {"park": true}                     move the pointer off every view (no hover controls)
 //   {"allow": true}                    answer pending permission prompts now (a view's own
 //                                      call, such as an edit's Apply, asks before it runs)
 //   {"pagedrag": {"from": [x, y], "to": [x, y]}}  drag on the page at page coordinates
@@ -274,6 +275,9 @@ export default async function (page, shot) {
       await page.waitForTimeout(1500);
       await row.element.screenshot({ path: step.elshot.path });
       log(report, `captured ${step.elshot.path}`);
+    } else if (step.park) {
+      await page.mouse.move(700, 870);  // over the composer: no view, no sidebar hover zone
+      await page.waitForTimeout(1500);
     } else if (step.allow) {
       for (let k = 0; k < 10; k += 1) {
         await allowPending(sessionId, report.log);
