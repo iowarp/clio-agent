@@ -175,6 +175,9 @@ def test_observed_requires_an_earlier_search() -> None:
     catalog._results[("ndp", "lake")] = item
     assert catalog.observed("lake") is item
     assert catalog.observed("lake", "ndp") is item
+    catalog._results[("ndp-test", "lake")] = item
+    with pytest.raises(ValueError, match=r"several catalogs \(ndp, ndp-test\)"):
+        catalog.observed("lake")
 
 
 def _view(row: dict[str, Any], args: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:

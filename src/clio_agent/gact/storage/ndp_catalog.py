@@ -399,7 +399,10 @@ class NDPCatalog:
                 "CLIO only works on datasets a search returned"
             )
         if len(matches) > 1:
-            raise ValueError("This dataset appears in several catalogs; pass its endpoint_id")
+            catalogs = ", ".join(sorted(item.endpoint.id for item in matches))
+            raise ValueError(
+                f"This dataset appears in several catalogs ({catalogs}); pass one as endpoint_id"
+            )
         return matches[0]
 
     def selected(self, endpoint_id: str, dataset_id: str, resources: list[str]) -> NDPDataset:
