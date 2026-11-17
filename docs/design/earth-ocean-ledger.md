@@ -147,7 +147,7 @@ stated):
   Confirm, or ask for it as a `clio.chart.v1` preset plus a separate
   exclusion list.
 - **Unmerged pins.** clio-agent on this branch pins clio-schemas `474575c` and
-  clio-kit `7cfd3999`, commits on `claude/earth-ocean-weather` that are not
+  clio-kit `a4882fb4`, commits on `claude/earth-ocean-weather` that are not
   merged into their develop/main; the pin comment says develop pins merged
   commits. They must be re-pinned to the merge commits before this lands.
 - **Pre-existing failure, not from this work.** gact-tui
