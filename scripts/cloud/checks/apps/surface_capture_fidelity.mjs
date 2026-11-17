@@ -7,7 +7,8 @@ export default async function (page, shot) {
   await page.goto(new URL(`/workspaces/${process.env.QUAL_WS}/sessions/${process.env.QUAL_SID}`, page.url()).toString());
   await page.waitForTimeout(12000);
   const id = process.env.QUAL_ID || "root";
-  const node = page.locator(`[data-a2ui-component-id="${id}"]`).last();
+  // Scroll to a component with a box of its own (QUAL_WITHIN when given).
+  const node = page.locator(`[data-a2ui-component-id="${process.env.QUAL_WITHIN || id}"]`).last();
   const vp = page.viewportSize();
   await page.mouse.move(vp.width / 2, vp.height / 2);
   for (let i = 0; i < 80 && !(await node.count()); i += 1) {
@@ -29,10 +30,14 @@ export default async function (page, shot) {
     const process_inner = (cid) => {
       // The surface: the smallest displayed element holding both named components.
       if (!within) return shownAll(cid).pop();
-      const a = shownAll(within).pop();
-      const b = shownAll(cid).find((n) => n.contains(a)) ?? shownAll(cid)[0];
-      let up = a; while (up && !up.contains(b)) up = up.parentElement;
-      return up;
+      // Walk up from each displayed named component until the surface holds a QUAL_WITHIN one.
+      const inner = shownAll(within);
+      for (const b of shownAll(cid).reverse()) {
+        let up = b;
+        while (up && !inner.some((n) => up.contains(n))) up = up.parentElement;
+        if (up) return up;
+      }
+      return undefined;
     };
     const target = process_inner(componentId);
     const mod = await import("/src/components/clio/a2ui-region-capture.tsx");
