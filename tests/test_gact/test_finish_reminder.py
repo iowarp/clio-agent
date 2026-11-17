@@ -41,3 +41,52 @@ def test_the_providers_are_the_reminders_own_setting(session: dict[str, object])
         injections.update(
             finish_reminder.FINISH_WORK_SOURCE, params={"providers": "claude_code,anthropic"}
         )
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.notes: list[tuple[str, str]] = []
+
+    def injections(self, items: list[tuple[str, str]]) -> None:
+        self.notes.extend(items)
+
+
+def _loop(applies: bool = True) -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(recorder=_Recorder(), _clio_finish_check_applies=applies)
+
+
+def test_the_finish_check_repeats_once_mid_turn() -> None:
+    """SABOTAGE: drop the ``_clio_finish_checked`` check and a second note appears."""
+    injections.update(finish_reminder.FINISH_CHECK_SOURCE, params={"after": 3})
+    loop = _loop()
+    finish_reminder.note_finish_check(loop, ["shell_bash", "shell_bash"])
+    assert loop.recorder.notes == []
+    finish_reminder.note_finish_check(loop, ["ocean_bloom_phenology"])
+    [(source, text)] = loop.recorder.notes
+    assert source == finish_reminder.FINISH_CHECK_SOURCE
+    assert "3 calls" in text and "not rerun" in text and "ask_user" in text
+    finish_reminder.note_finish_check(loop, ["shell_bash"] * 5)
+    assert len(loop.recorder.notes) == 1
+
+
+def test_the_finish_check_skips_sessions_it_does_not_reach() -> None:
+    injections.update(finish_reminder.FINISH_CHECK_SOURCE, params={"after": 2})
+    loop = _loop(applies=False)
+    finish_reminder.note_finish_check(loop, ["shell_bash"] * 6)
+    assert loop.recorder.notes == []
+
+
+def test_the_finish_check_reads_its_providers(session: dict[str, object]) -> None:
+    from clio_agent.gact import context as ctx
+
+    loop = _loop()
+    del loop._clio_finish_check_applies
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ctx, "active_app", lambda: None)
+        mp.setattr(ctx, "active_session_id", lambda: "sess_a")
+        assert finish_reminder._check_applies(loop)
+        del loop._clio_finish_check_applies
+        session["provider"] = "lm_studio"
+        assert not finish_reminder._check_applies(loop)
