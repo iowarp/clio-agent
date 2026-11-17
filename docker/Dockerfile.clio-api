@@ -6,6 +6,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
+# pyproject force-includes the shipped connector catalog in the (editable) build.
+COPY catalogs/connectors ./catalogs/connectors
 RUN pip install --no-cache-dir uv \
     && uv sync --frozen --extra argonne --no-dev
 
@@ -28,6 +30,8 @@ RUN apt-get update \
 
 COPY --from=agent-builder /app/.venv /app/.venv
 COPY src ./src
+# The editable install reads the shipped connector catalog from the checkout layout.
+COPY catalogs/connectors ./catalogs/connectors
 ENV PATH="/app/.venv/bin:$PATH"
 
 RUN useradd --create-home --uid 10001 clio
