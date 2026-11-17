@@ -236,8 +236,8 @@ def _app(sessions: dict[str, Any], workspace: Path) -> Any:
 def test_the_prompt_names_the_machine_and_the_scratch_folder(root: Path, workspace: Path) -> None:
     node = workspace / "node"
     sessions = {
-        "sess_p": SimpleNamespace(workspace_id="ws_1", metadata={}),
-        "sess_n": SimpleNamespace(workspace_id="ws_1", metadata={NODE_FOLDER_KEY: str(node)}),
+        sid: SimpleNamespace(id=sid, parent_session_id="", workspace_id="ws_1", metadata=meta)
+        for sid, meta in (("sess_p", {}), ("sess_n", {NODE_FOLDER_KEY: str(node)}))
     }
     app = _app(sessions, workspace)
     for sid in ("sess_p", "sess_n"):  # the allowed-roots branch and the node-folder branch
