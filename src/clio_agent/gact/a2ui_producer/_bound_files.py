@@ -1,7 +1,7 @@
 """Files a viewer reaches through a binding are exported like literal ones (#1823).
 
 A viewer's file property (``meshUri``, ``materialUri``, ``rasterUri``, ``geojsonUri``,
-``recordingUri``, ``dataUri``, ``url``, ``uri``) may be bound (``{"path": "/..."}``) instead of literal,
+``recordingUri``, ``sectionUri``, ``gridUri``, ``dataUri``, ``url``, ``uri``) may be bound (``{"path": "/..."}``) instead of literal,
 so one viewer can follow a list. Its value then comes from one of two places, and each
 is exported at the same boundary as a literal path (:mod:`._export`): a workspace file
 path becomes an ``artifact://`` reference and is reported in ``exported_artifacts``.
@@ -30,7 +30,17 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 #: Properties naming a file a viewer loads; only an ``artifact://`` value is loadable.
-VIEWER_FILE_KEYS = frozenset({"meshUri", "materialUri", "rasterUri", "geojsonUri", "recordingUri"})
+VIEWER_FILE_KEYS = frozenset(
+    {
+        "meshUri",
+        "materialUri",
+        "rasterUri",
+        "geojsonUri",
+        "recordingUri",
+        "sectionUri",
+        "gridUri",
+    }
+)
 #: Every property naming a file or URL.
 FILE_KEYS = VIEWER_FILE_KEYS | {"dataUri", "url", "uri"}
 _SELECTION = "/selection/"

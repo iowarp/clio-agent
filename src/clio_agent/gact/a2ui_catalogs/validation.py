@@ -128,6 +128,8 @@ A2UI_URL_KEYS = frozenset(
         "rasteruri",
         "geojsonuri",
         "recordinguri",
+        "sectionuri",
+        "griduri",
     }
 )
 

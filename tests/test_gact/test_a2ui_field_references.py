@@ -56,6 +56,9 @@ def pin(tmp_path: Path, monkeypatch: Any) -> Any:
     remember_client_capabilities(app, sid, caps)
 
     def _pin(name: str, write: Any) -> str:
+        if name.startswith("path:"):  # written into the workspace, named by its path
+            write(root / name[5:])
+            return str(root / name[5:])
         write(root / name)
         pinned = client.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": name})
         assert pinned.status_code == 200, pinned.text
@@ -190,3 +193,26 @@ def test_section_variable_is_checked(pin: Any) -> None:
     assert bad["ok"] is False
     assert bad["reason"] == "a2ui_section_invalid"
     assert json.dumps(bad)  # a plain, serializable refusal
+
+
+def test_section_and_grid_take_a_workspace_path(pin: Any) -> None:
+    """A path inside the workspace is registered, as for every other viewer file."""
+
+    section = pin("path:section.nc", _section)
+    grid = pin("path:sst.nc", _grid)
+    result = _create(
+        [
+            {"id": "root", "component": "Column", "children": ["sec", "map"]},
+            {"id": "sec", "component": "clio.section.v1", "sectionUri": section},
+            {
+                "id": "map",
+                "component": "clio.layered-map.v1",
+                "layers": [
+                    {"id": "g", "kind": "grid", "label": "SST", "gridUri": grid, "variable": "sst"}
+                ],
+            },
+        ]
+    )
+    assert result.get("ok") is not False, result
+    exported = {entry["property"] for entry in result.get("exported_artifacts", [])}
+    assert {"sectionUri", "gridUri"} <= exported, result
