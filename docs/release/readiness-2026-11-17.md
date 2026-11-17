@@ -17,11 +17,11 @@ Baseline (03:40 UTC monitor): clio-agent develop `ba8c47f`, gact-tui develop `de
 
 ## Per repository
 
-### clio-agent (`claude/release-readiness`, head `3d1c6e2`)
+### clio-agent (`claude/release-readiness`: code head `3d1c6e2`, branch head `fb3cbee`; everything after `3d1c6e2` is under `docs/release/`)
 
 **Why develop was red** (runs 43974744014, 43787776688, 43741541724):
 1. **Lint:** the per-file noqa-swallow ratchet failed (`client/aio.py`, `gact/attached_clients.py`). That stopped the job before mypy, which had 13 more errors.
-2. **Tests:** 18 distinct test failures across all 18 shards. I first saw them in CI run 44017048512, which ran on my lint fix `42877ff`.
+2. **Tests:** 27 failing tests in 5 root-cause groups, seen on every interpreter in CI run 44017048512, which ran on my lint fix `42877ff`. Shards 0 to 5 had 5, 5, 5, 5, 3 and 4 failures.
 3. **Docker (run 43787776633):** the editable build could not find `catalogs/connectors`, which `pyproject.toml` force-includes but the Dockerfiles never copied.
 
 **Fixes, with root causes:**
@@ -74,7 +74,7 @@ Baseline (03:40 UTC monitor): clio-agent develop `ba8c47f`, gact-tui develop `de
 
 ### gact-tui (local branch `claude/release-readiness`, NOT pushed)
 
-**Local results** in `/home/user/gact-tui-wt`, develop `def3ae0` plus my fixes:
+**Local results** in a worktree at develop `def3ae0` plus my fixes (since removed; the commits are kept as the patches):
 - `pnpm install --frozen-lockfile`: OK.
 - Brand descriptor regenerate and diff: clean.
 - `pnpm lint`: OK.
@@ -322,7 +322,7 @@ Run at `823ff68`, and again at head `d6a1fde`.
    4. Optionally resync develop, which is 146 commits behind main.
 5. **Feature branches:** decide whether `claude/meta-clio-guide-builder` and/or `claude/chemistry-in-clio` go in. Merge them, and their dependency branches, *before* steps 1 to 4 release, then re-run the suites.
 6. **clio-agent**
-   1. Merge `claude/release-readiness` (head `3d1c6e2`) into develop.
+   1. Merge `claude/release-readiness` (head `fb3cbee`) into develop.
    2. On a release branch from main, following the skill: pin the gact-tui and marketplace tags (gitlinks and `DEFAULT_MARKETPLACE_COMMIT`), and the clio-schemas and clio-kit PyPI versions. Remove `[tool.uv.sources]` and run `uv lock`.
    3. Bump the version in every file listed above.
    4. Roll the CHANGELOG: fill in the missing contract items, bring in main's `[0.9.7.1]` section, and fix the misfiled pin bullets.
