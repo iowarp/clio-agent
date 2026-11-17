@@ -701,3 +701,31 @@ honest coverage report from a plain request, with the map in the conversation.
 Auto compaction ran during the turn. Not established by this run: a refused
 request recovered by compaction (none was refused), and the agent exploring a
 spilled file with code (the two spills were small).
+
+## Verdict revision (2026-11-17, late): no run passes yet
+
+Every run above ran without `create_a2ui_surface`. The `visuals` plugin declared
+nothing for its surface tools, so CLIO deferred them with the other built-ins, and
+the figure and dashboard guidance gated on that tool never reached the agent
+(found in R6f's prompt breakdown: 50 listed tools, none of them A2UI). No run built
+an interactive view or went through visual review, and those are the CLIO
+semantics a pass needs. The runs also used the preset `ndp` agent instead of CLIO's
+default agent loading the plugins it needs (`offer_plugin`).
+
+Revised verdicts: every run marked **pass** above (R5, the organization checks,
+Alta, discovery tasks 1 and 5, case 01, case 03, case 04, R6f) is now **data and
+answer correct; CLIO presentation not met (no A2UI surface, no visual review,
+preset agent)**. Partial and failed runs keep their verdicts.
+
+Fixes so far: marketplace `0cce3a0` (visuals 1.2.3 lists the surface tools) pinned
+in clio-agent `43d4f1d`. The batch now uses CLIO's default agent, accepts the
+agent's plugin offers as a person would, and saves each session's export.
+
+### Session exports
+
+CLIO's own export of the session (`GET /v1/sessions/{sid}/export`, JSON, and
+`?mode=transcript`, an offline HTML transcript), gzipped, scanned for signatures,
+tokens and keys (none found):
+
+- R6f: `ndp-runs/exports/r6f-sess_6d4c207e4fc2.json.gz` (3.5 MB),
+  `ndp-runs/exports/r6f-sess_6d4c207e4fc2.transcript.html.gz` (7.7 MB).
