@@ -43,7 +43,7 @@ Baseline (03:40 UTC monitor): clio-agent develop `ba8c47f`, gact-tui develop `de
 | CI [44017048512](https://github.com/iowarp/clio-agent/actions/runs/44017048512) | `42877ff` | Lint green on 3.12, 3.13 and 3.14. All 18 check shards failed on the test failures fixed above. |
 | CI [44022751750](https://github.com/iowarp/clio-agent/actions/runs/44022751750) | `b44e10b` | Attempt 1: every job passed except check (3.13, shard 0), with 1 failure in `test_mcp_reconnect.py::test_reconnect_waits_for_a_server_still_starting` (504 after a 1 s no-progress window). Attempt 2 re-ran only the failed jobs and the run concluded **success**. |
 | Docker [44017195005](https://github.com/iowarp/clio-agent/actions/runs/44017195005) | `823ff68` | **success**. Build only; images are pushed only on `v*` tags. |
-| CI on head `3d1c6e2` | `3d1c6e2` | PENDING. |
+| CI [44032362022](https://github.com/iowarp/clio-agent/actions/runs/44032362022) | `3d1c6e2` | **success on the first attempt**: 31/31 jobs, including lint on 3.12, 3.13 and 3.14, all 18 check shards, coverage-floor jobs on 3.12, 3.13 and 3.14, flake-hunt, filesystem-contract and native-service lifecycle. The later commits (`d6a1fde` and after) touch `docs/release/` only. |
 
 **The reconnect flake:**
 - I did not find its root cause.
@@ -142,7 +142,7 @@ On main, 40 Quality Control jobs and both acceptance jobs had been failing.
 
 - **gact-tui:** CI is unverified. My fixes are local only because the repository could not be attached. Playwright and Tauri were not run.
 - **marketplace:** CI cannot run on the branch. Develop's next push or PR will be its first CI run since Nov 10.
-- **clio-agent:** the flaky reconnect test above is not root-caused. CI on head `3d1c6e2`: PENDING.
+- **clio-agent:** CI is green on the code head. The reconnect test above failed once in 3 full CI runs and is not root-caused.
 
 ## Memory budget gate
 
@@ -238,12 +238,12 @@ Develop says `0.9.7`, but main and v0.9.7.1 say `0.9.7.1`, so the next version m
 
 ### Local release qualification (skill step 4, before main integration)
 
-Run at `823ff68`. The source has changed since then only in tests, docs and `conversation_restart.py`. PENDING: a re-run at the head.
+Run at `823ff68`, and again at head `d6a1fde`.
 - `uv version --short` reports `0.9.7` (not bumped, as instructed).
 - The import check is OK.
-- `uv build` gives a 6.4 MB wheel and a 5.6 MB sdist. Neither has `git+` in its metadata, and the wheel ships 43 `_catalogs/connectors` files.
+- `uv build` gives a 6.4 MB wheel and a 5.6 MB sdist (both well under 100 MB). Neither has `git+` in its metadata, and the wheel ships 43 `_catalogs/connectors` files.
 - The wheel requires `clio-kit==2.12.7` and `clio-schemas==0.8.0b1`.
-- `test_release_install_policy.py`, `test_check_release_completeness.py` and the other release-script tests: 54 passed.
+- **Release-script tests at the head: 141 passed.** That covers `test_release_install_policy.py`, `test_check_release_completeness.py`, `test_github_release.py`, `test_release_install_plan.py`, `test_release_notes_from_changelog.py`, `test_upload_release_assets.py` and `test_mcp_mem_budget.py`.
 
 **Release notes draft:** `docs/release/next-release-notes-draft.md`. It follows the skill's style rules and the version is a placeholder.
 
