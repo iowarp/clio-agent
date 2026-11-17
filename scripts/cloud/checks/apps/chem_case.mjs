@@ -234,7 +234,8 @@ export default async function (page, shot) {
       for (let k = 0; k < 25 && !found; k += 1) {
         found = await page.evaluate(locate, ticks);
         if (!found) {
-          await page.mouse.move(860, 400);
+          // Scroll over the transcript's margin: a view under the pointer takes the wheel.
+          await page.mouse.move(370, 500);
           await page.mouse.wheel(0, -500);
           await page.waitForTimeout(700);
         }
