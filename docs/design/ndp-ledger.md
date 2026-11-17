@@ -331,3 +331,39 @@ overlaps and what doesn't, and show it on a map."
   read record extents, with argument and id errors; search results now carry
   each record's location and time (clio-agent `ec55d30`).
 - Verdict: **failed (tool fault, fixed); rerun as R6b.**
+
+### R7: snow depth (benchmark `ndp-snow-depth-lidar`), plain request
+
+Session `sess_e436ee637f6c` (24 calls, none failed). Request: "How deep was the
+snow in the Southern Sierra Critical Zone Observatory in March 2010? Use NDP data
+and show me a snow-depth map." The agent loaded `work-with-ndp`, found the
+snow-on and snow-off datasets, connected and downloaded them (about 2.4 GB), and
+differenced bare earth for each survey area, sampling every fourth 1 m cell.
+
+| Area | Mean | Median | 5th to 95th percentile |
+| --- | --- | --- | --- |
+| Bull | 1.81 m | 1.82 m | 0.84 to 2.65 m |
+| Courtwright Rd | 2.22 m | 2.25 m | 1.49 to 2.85 m |
+| Providence | 0.91 m | 0.83 m | 0.06 to 2.05 m |
+| Soaproot Saddle (about 1,000 to 1,400 m) | 0.02 m | 0.01 m | -0.16 to 0.17 m |
+| Wolverton | 2.41 m | 2.37 m | 0.54 to 4.51 m |
+
+It explained the missing San Joaquin area (its snow-on file is an 8-bit
+shaded-relief image, not elevation), inspected its map, and stated canopy,
+sampling, coverage and no-ground-truth limits.
+
+Against the grounded pass criteria (`benchmark/ndp-snow-depth-lidar/README.md`):
+
+- finds a matched pair and names surveys and dates: **met**;
+- reads only the region: **not met** (downloaded the surveys);
+- differences on one grid and states the vertical-datum assumption: differenced,
+  but **no datum statement**;
+- statistics within 0.2 m of the grounded medians for the same region: the
+  agent measured whole survey areas, not the grounding boxes. Providence agrees
+  (0.83 m against 0.90 m); Wolverton's whole area (2.37 m) is not comparable
+  with the grounding sub-box (2.02 m);
+- map and limits: **met**.
+
+Verdict: **partial.** Sound science and an honest answer; two criteria missed.
+Next: the pass criteria name bounded reads, which `get-geospatial-data` covers
+but the agent did not load.
