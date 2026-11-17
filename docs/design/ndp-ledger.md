@@ -260,3 +260,35 @@ The harness allows each permission for the session. Desktop (1440x900) and phone
 | WFSI | Fuel moisture measurements | `sess_6ecf46cb8325` | Search, `connected_data_connect` of the data table and its dictionary, linked read | Fort Stewart 2024 campaign, 150 rows, values with units and formula from the dictionary; live pine needles 155 to 212%, dead fine fuels 9 to 33%; flagged one replicate (102.6% against 20.5 and 27.4%) and a dictionary that calls a decimal column integer | **Pass** |
 | EarthScope | GNSS series for a station near Lake Tahoe, and its length | `sess_cfe3fe531e72` | Loaded `work-with-ndp`; 25 searches; connect, download, plot | Station SLID (Slide Mountain, NV), 2024-12-03 to 12-12 at 1 Hz, 851,176 of 863,987 epochs, 581 gaps; units assumed metres and reference frame undocumented, both stated. It chose SLID from knowledge, not from coordinates, because results then carried none (fixed after, `ec55d30`) | **Pass**, with the station choice made without data (now fixable) |
 | bco_weather | California Current cruise measurements from BCO-DMO | `sess_0ef84be8e932` | Search (test catalog) found five BCO-DMO records; connect failed for all five | No data: every record holds one ISO metadata XML, data lives at bco-dmo.org (stated). **Bug found:** attaching failed because the source label became the dataset title, over the 120-character limit, for any long title; fixed in `209c357` | **Typed, honest no-data result**, plus a product bug fixed |
+
+### R5: Tahoe habitat, October request unchanged, rerun after D7 and D8
+
+Session `sess_c083b1b7a2e7` (73 calls, 21 failed). The agent loaded no skill this
+time; it went straight to the geoservices tools (`fetch_features` ×26,
+`describe_geo_service` ×17) and rendered with `geo_render_feature_map`.
+
+- Failures, all handled and reported: production records point at
+  `arcprod.trpa.org`, whose certificate fails hostname verification through this
+  container's egress proxy (a direct handshake presents a certificate naming the
+  host, so this is undetermined rather than TRPA's fault); TRPA layers 2 and 4 no
+  longer exist ("404 Layer not found"); one SEZ page exceeded the 64 MiB response
+  bound and was narrowed; it called the optional ndp server's
+  `get_dataset_details` with wrong argument names and guessed ids (the reason for
+  `ec55d30`).
+- Science: union of SEZ (non-lake classes), SEZ assessment units, UC Davis/USFS
+  meadows and USFS fens, dissolved: **11,093 ha, 13.3% of 83,152 ha of basin
+  land.** Non-lake SEZ alone: **10,206 ha**, the same figure R3 reached in a
+  separate session with hand-written queries. The wetland share is 13 to 15%
+  within 1 km of the shore against 13.3% overall, so there is no shoreline
+  concentration; the large patches are the Upper Truckee corridor and marsh and
+  Camp Richardson/Tallac. Per watershed: Upper Truckee about 2,940 ha, Camp
+  Richardson the densest at about 37%. Caveats: SEZ is a regulatory category
+  with a large forested riparian class; the layers are undated and differ in
+  method, so the union is an upper bound; lake-level sensitivity of the
+  shoreline bands; no field check.
+- Verdict: **pass.** This is the result the October run could not produce:
+  NDP-discovered data acquired through the access layer, an overlap-corrected
+  footprint, its spatial relation to the lake, a map the agent inspected, and
+  stated limits. Mechanism note: no map-with-time view, a static PNG.
+- Captures: `ndp-ledger-shots/r5-tahoe-agent-map.png` (the agent's map); UI
+  captures in the October-set section below once the harness finishes.
