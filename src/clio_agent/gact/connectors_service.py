@@ -30,6 +30,7 @@ import hashlib
 import json
 import re
 from collections.abc import Coroutine, Mapping
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -286,7 +287,7 @@ async def rows(app: Any, *, refresh: bool = False) -> list[dict[str, Any]]:
         choice = choices.get(connector_id, state.Choice())
         if choice.enabled:  # the saved copy follows an entry a release changed
             saved = saved_connection(connector_id)
-            saved_copy.refresh(found, saved, lambda f=found, c=choice: save_connection(f, c))
+            saved_copy.refresh(found, saved, partial(save_connection, found, choice))
         if not choice.enabled or any(n.kind != "sign-in" for n in missing(found, choice)):
             continue
         cached = _probes(app).get(connector_id)

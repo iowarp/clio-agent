@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from typing import Any
 from urllib.parse import urlsplit
 
 #: The variable for a bearer token set by hand.
@@ -93,7 +94,10 @@ class ClioOptions:
     def with_overrides(self, **overrides: object) -> ClioOptions:
         """A copy with the per-call overrides that are not ``None`` applied."""
 
-        return replace(self, **{k: v for k, v in overrides.items() if v is not None})
+        # The keyword names and value types are the dataclass fields'; ``replace``
+        # validates the names, the callers' signatures the types.
+        changes: dict[str, Any] = {k: v for k, v in overrides.items() if v is not None}
+        return replace(self, **changes)
 
     def resolved_token(self) -> str | None:
         """The bearer to present: explicit, else the port's credential record (local

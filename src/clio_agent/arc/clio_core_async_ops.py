@@ -211,7 +211,8 @@ class ClioCorePutRefused(RuntimeError):
     """A completed native put was refused, with its structured return code."""
 
     def __init__(self, name: str, code: int) -> None:
-        self.native_code = code
+        # ``None`` in subclasses CLIO raises itself, with no native return code.
+        self.native_code: int | None = code
         super().__init__(f"clio-core AsyncPutBlob({name!r}) returned code {code}")
 
 

@@ -56,3 +56,10 @@ def test_listing_survives_a_row_it_cannot_normalize(monkeypatch: pytest.MonkeyPa
     ids = [r.id for r in rows]
     assert "sess_good" in ids
     assert "sess_bad" in ids, "a normalizable row must still be served"
+
+
+def test_a_row_without_an_agent_reads_with_the_stored_default_agent() -> None:
+    """The wire default matches the stored record's (``{"id": "main"}``)."""
+    wire = _record("sess_no_agent", "edit").to_wire()
+    stored_default = wire.pop("agent")
+    assert WireSession(**wire).agent.model_dump() == {**stored_default, "mode": ""}

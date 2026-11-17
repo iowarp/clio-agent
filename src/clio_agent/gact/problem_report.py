@@ -69,6 +69,7 @@ def _about(app: FastAPI, client: ClientKind | None, client_version: str | None) 
 
     lm = _effective_lm_config(app)
     managed = desktop_managed()
+    app_kind: ClientKind | Literal["unknown"]
     if client is not None:
         app_kind, app_kind_source = client, "reported by the app"
     elif managed:

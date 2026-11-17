@@ -206,7 +206,10 @@ def repair_metadata_logs(config_path: str, *, daemon_log: Path | None = None) ->
     scans = [scan_log(path) for path in metadata_log_files(config_path)]
     unreadable = [scan for scan in scans if scan.verdict == "unreadable"]
     if unreadable:
-        details = {"reason": UNREADABLE, "logs": [asdict(scan) for scan in unreadable]}
+        details: dict[str, object] = {
+            "reason": UNREADABLE,
+            "logs": [asdict(scan) for scan in unreadable],
+        }
         _record(UNREADABLE, details)
         logger.error("clio-core metadata log unreadable reason=%s logs=%s", UNREADABLE, details)
         raise ClioCoreMetadataLogUnreadableError(

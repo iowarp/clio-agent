@@ -458,7 +458,8 @@ class Session(BaseModel):
     message_count: int = 0
     parent_session_id: str = ""
     model: ModelRef = Field(default_factory=ModelRef)
-    agent: AgentRef = Field(default_factory=AgentRef)
+    # The stored session's default (sessions.Session.agent); AgentRef.id is required.
+    agent: AgentRef = Field(default_factory=lambda: AgentRef(id="main"))
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: Optional[float] = None  # null when SessionRecord.cost_known is False

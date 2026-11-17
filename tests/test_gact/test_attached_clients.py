@@ -88,3 +88,23 @@ def test_an_unknown_local_process_is_refused(server: TestClient) -> None:
     refused = server.post("/v1/server/clients", json={"pid": child.pid})
     assert refused.status_code == 422
     assert refused.json()["error"]["error"] == "client_process_unknown"
+
+
+def test_create_time_is_none_only_for_a_process_it_cannot_track() -> None:
+    import psutil
+
+    assert attached_clients._create_time(os.getpid()) == psutil.Process().create_time()
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    assert attached_clients._create_time(gone.pid) is None
+
+
+def test_create_time_raises_an_unexpected_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import psutil
+
+    def broken(_pid: int) -> Any:
+        raise RuntimeError("not a process lookup failure")
+
+    monkeypatch.setattr(psutil, "Process", broken)
+    with pytest.raises(RuntimeError, match="not a process lookup failure"):
+        attached_clients._create_time(os.getpid())

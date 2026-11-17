@@ -57,11 +57,16 @@ def stops_with_last_client() -> bool:
 
 
 def _create_time(pid: int) -> float | None:
-    try:
-        import psutil  # noqa: PLC0415
+    """The live creation time of ``pid``, or ``None`` when it is gone or not ours to read.
 
+    Only psutil's own process errors (no such process, access denied, zombie) and an
+    out-of-range pid mean "not trackable"; anything else is a real failure and raises.
+    """
+    import psutil  # noqa: PLC0415
+
+    try:
         return float(psutil.Process(pid).create_time())
-    except Exception:  # noqa: BLE001 - no such process / access denied: not ours to track
+    except (psutil.Error, ValueError, OverflowError):
         return None
 
 
