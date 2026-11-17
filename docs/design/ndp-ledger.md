@@ -10,7 +10,7 @@ readiness per organization and across organizations". Branch in every repo:
 | --- | --- |
 | 1. Catalog profile (test and production) | Done. See [Catalog profile](#catalog-profile-2026-11-17) |
 | 2. Access layer in clio-kit (services, bounded reads, rasterio extra) | **Blocked**: clio-kit could not be attached (see Needs user). Feasibility probes from this container recorded below |
-| 2. "Tiles covering a region" in the clio-agent attach model | In progress on this branch |
+| 2. "Tiles covering a region" in the clio-agent attach model | Done on this branch: `connected_data_ndp_tiles_covering`, plus a warning for datasets over 1,000 resources. The marketplace `ndp` plugin must still claim the tool (blocked) |
 | 3. Core geospatial operations (clio-kit) | Blocked, same reason |
 | 4. Discovery skill and shared `resolve-region` (marketplace) | Blocked: marketplace could not be attached |
 | 5. Harmonization and recorded merge | Not started |
@@ -112,9 +112,29 @@ name the field that holds it. "Probe" is a live request from this container on
   each tile's raster header. Tiles whose footprint cannot be read are reported as
   undetermined, never dropped.
 
+- **D4. The 1,000-resource cap was a silent truncation.** Production 3DEP datasets
+  carry up to 1,048 tiles and OpenTopography up to 2,084; the search dropped the
+  rest without saying so. The cap stays (it is also the selection limit) and the
+  search now warns with the real count.
+
 ## Runs
 
-None yet.
+### R1 (2026-11-17): tile selection against live catalogs (mechanism, not agent judgement)
+
+Direct calls of `tiles_covering` on datasets built from live CKAN records, outside
+an agent. This verifies the mechanism only.
+
+| Dataset (catalog) | Region (W, S, E, N) | Result | Time |
+| --- | --- | --- | --- |
+| Lake Tahoe Basin Lidar (test), 174 resources | -120.13, 38.94, -120.11, 38.96 (Emerald Bay) | 6 of 171 tiles cover it (he/hh/int `38120H11`, `38120H22`), 165 outside, 0 undetermined, from three VRTs (58, 58 and 55 sources) | 2.9 s |
+| IML CZO Sangamon River (test), 60 TIF tiles | -88.5, 40.1, -88.45, 40.15 | 10 covering, 50 outside, from two VRTs | 1.6 s |
+| Niobrara River (test), 20 ArcGrid `.adf` files | outside the data | 20 outside; the VRT names `NE15_Alexander_be/*.adf`, which first left all 20 undetermined until glob sources were mapped to their directory | 1.6 s |
+| 3DEP 1-m DEM CA_UpperSouthAmerican_Eldorado_2019_B19 (prod), 98 tiles, no VRT | -120.10, 38.75, -120.05, 38.80 | Two header pages (64 + 34 at the earlier per-call budget): 2 covering (`x75y430` in UTM 10, `x23y430` in UTM 11), 96 outside, 0 unreadable. The record's `dataBbox` is a 2.0° × 1.6° box, so it alone would have selected every tile | 3.1 s + 2.0 s |
+
+Bounded-read probes from the same container: a 2 × 2 km window of `TAHOE_be.vrt`
+(0.5 m) returned elevations of 1,928 to 2,790 m in 11.6 s; a WCS subset of the
+Sierra Nevada total fuel load to the Tahoe box returned 2409 × 1448 cells at 30 m
+in 2.2 s (mean 13.6, max 55.8, units only in the record's `data_units`).
 
 ## Questions for NDP
 

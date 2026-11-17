@@ -70,7 +70,11 @@ _RESOURCE_TOOLS = (
     "workspace_resource_search",
     "workspace_resource_structure",
 )
-_NDP_DISCOVERY = ("connected_data_search_ndp", "connected_data_ndp_organizations")
+_NDP_DISCOVERY = (
+    "connected_data_search_ndp",
+    "connected_data_ndp_organizations",
+    "connected_data_ndp_tiles_covering",
+)
 _NDP_ENDPOINT = (
     "connected_data_ndp_endpoint_connect",
     "connected_data_ndp_endpoint_operations",

@@ -90,6 +90,19 @@ ordinary `connected_data_connect` tool:
  "configuration":{"endpoint_id":"<catalog-endpoint-id>","resource_ids":["<resource-id>"]}}
 ```
 
+For a multi-tile dataset (OpenTopography and USGS 3DEP DEMs carry 20 to more
+than 1,000 raster tiles, and the catalog does not say where each lies),
+`connected_data_ndp_tiles_covering(dataset_id, west, south, east, north)` picks
+the tiles that intersect a WGS84 region before anything is attached. It reads the
+dataset's own VRT mosaic when it has one (one request gives every tile's
+footprint) and otherwise each tile's raster header through ranged reads, at most
+200 per call with `header_offset` paging. No tile body is downloaded, nothing is
+fetched beneath a signed-in Endpoint, and a tile whose footprint cannot be read is
+returned as undetermined with its reason rather than dropped. The returned
+`covering[].id` values are the `resource_ids` for `connected_data_connect`. A
+search warns when a dataset has more than 1,000 resources, the most one selection
+can carry.
+
 The normal permission request shows the selected Endpoint and resource names.
 Deny persists no source or selection. Approval reuses the picker selection owner
 and starts an Indexing task, without fetching resource bytes. Public HTTP

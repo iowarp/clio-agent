@@ -18,6 +18,9 @@ from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
 from clio_agent.runtime.fresh_loop import run_in_new_loop
 
+# Resources kept per dataset; also the most resource IDs one selection may carry.
+MAX_DATASET_RESOURCES = 1000
+
 # Former built-in Endpoint API default. It never was a public service and no longer answers.
 _RETIRED_DEFAULT_API_URL = "http://155.101.6.191:8003"
 
@@ -276,7 +279,13 @@ class NDPCatalog:
             has_more = has_more or offset + limit < count
             for item in rows:
                 resources = []
-                for index, resource in enumerate(item.resources[:1000]):
+                if len(item.resources) > MAX_DATASET_RESOURCES:
+                    # No silent truncation: say how many tiles/files cannot be selected.
+                    warnings.append(
+                        f"{item.title}: CLIO lists the first {MAX_DATASET_RESOURCES} of "
+                        f"{len(item.resources)} resources; the rest cannot be selected here."
+                    )
+                for index, resource in enumerate(item.resources[:MAX_DATASET_RESOURCES]):
                     url = str(resource.get("url", ""))
                     identifier = str(resource.get("id") or hashlib.sha256(url.encode()).hexdigest())
                     name = str(
@@ -365,6 +374,23 @@ class NDPCatalog:
             "endpoint_name": dataset.endpoint.name,
             "resources": [item.model_dump(exclude={"url"}) for item in dataset.resources],
         }
+
+    def observed(self, dataset_id: str, endpoint_id: str = "") -> NDPDataset:
+        """Return a dataset exactly as a search showed it, without contacting NDP."""
+        with self._lock:
+            matches = [
+                item
+                for (endpoint, identifier), item in self._results.items()
+                if identifier == dataset_id and (not endpoint_id or endpoint == endpoint_id)
+            ]
+        if not matches:
+            raise ValueError(
+                "Search for this NDP dataset with connected_data_search_ndp first; "
+                "CLIO only works on datasets a search returned"
+            )
+        if len(matches) > 1:
+            raise ValueError("This dataset appears in several catalogs; pass its endpoint_id")
+        return matches[0]
 
     def selected(self, endpoint_id: str, dataset_id: str, resources: list[str]) -> NDPDataset:
         """Resolve selected IDs only from server-observed catalog data."""
