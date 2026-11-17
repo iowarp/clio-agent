@@ -140,7 +140,7 @@ const SLIDES: readonly SlideSource[] = [
 		field: 'Chemistry',
 		title: 'Avogadro in the conversation',
 		body: 'CLIO built ethylene glycol, optimized it with MACE and opened it in Avogadro 2, whose full window runs in a tab beside the conversation, ready for editing.',
-		alt: 'CLIO with the ethylene glycol conversation on the left, reporting the build and the MACE optimization, and an Avogadro tab on the right showing the full Avogadro 2 window, menus and display panels included, with ethylene glycol as balls and sticks',
+		alt: 'CLIO with the ethylene glycol conversation on the left, reporting the MACE optimization with a table of bond lengths, and an Avogadro tab on the right filled by the Avogadro 2 window at full size, menus and display panels included, with ethylene glycol as balls and sticks',
 		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
 		light: avogadroLight,
 		dark: avogadroDark,
