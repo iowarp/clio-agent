@@ -286,6 +286,11 @@ time; it went straight to the geoservices tools (`fetch_features` ×26,
   with a large forested riparian class; the layers are undated and differ in
   method, so the union is an upper bound; lake-level sensitivity of the
   shoreline bands; no field check.
+- Independent check (by hand, outside the agent): TRPA layer 32 fetched with
+  geoservices (all 28,022 polygons in 32 pages after clio-kit `1ebcf09` halved
+  oversized pages), the six non-lacustrine classes dissolved and clipped to basin
+  land with geopandas: **10,206 ha, 12.3% of 83,152 ha**, basin 132,966 ha, lake
+  49,814 ha. Identical to both agent runs.
 - Verdict: **pass.** This is the result the October run could not produce:
   NDP-discovered data acquired through the access layer, an overlap-corrected
   footprint, its spatial relation to the lake, a map the agent inspected, and
