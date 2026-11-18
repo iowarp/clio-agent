@@ -656,7 +656,7 @@ wheels = [
 
 [[package]]
 name = "clio-agent"
-version = "0.9.7"
+version = "0.9.7.1"
 source = { editable = "." }
 dependencies = [
     { name = "clio-kit" },
