@@ -938,9 +938,12 @@ Multi-turn (follow-ups in the same conversation):
   - Follow-up 3 (rank exposed owl and goshawk areas): all 64 PACs scored by
     unburned share, high-load fuel and slope, top 12 mapped with fires, habitat and
     lidar slope, each score broken down (`r9-tahoe-followup3-pac-exposure.png`).
-- Snow depth follow-up 1 (other years): the turn was interrupted by a restart; CLIO
-  resumed it on its own and the agent searched for later lidar flights (NEON
-  2011-13, 3DEP 2020-22).
+- Snow depth follow-up 1 (other years), partial: interrupted by a restart, CLIO
+  resumed it on its own; the agent searched later flights and found the only
+  snow-on survey in NDP is March 2010 (the 2021 point cloud covers the valley floor
+  only, below 648 m against the areas' 999 m minimum), leaving a summer 2020 3DEP
+  DEM as the only later surface. It then waited on a file-write permission with no
+  harness to answer it and was cancelled; the second follow-up was not sent.
 
 Seen in this wave and not yet fixed:
 
