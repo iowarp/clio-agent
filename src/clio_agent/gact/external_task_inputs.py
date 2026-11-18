@@ -266,6 +266,7 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                         origin_trust=origin_trust,
                         plugin=url_scope.plugin if url_scope else "",
                         server=url_scope.server if url_scope else host.backend.server,
+                        plugin_title=url_scope.owner.get("plugin_title", "") if url_scope else "",
                     )
                     definition = QuestionDefinition.model_validate(
                         {

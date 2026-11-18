@@ -341,6 +341,7 @@ def build_url_metadata(
     origin_trust: str = "",
     plugin: str = "",
     server: str = "",
+    plugin_title: str = "",
 ) -> dict[str, dict[str, Any]]:
     """Assemble the url-mode ``metadata.elicitation`` block for a new question.
 
@@ -353,7 +354,8 @@ def build_url_metadata(
     ``punycode_host``, so a consent surface can show both forms rather than
     only the decoded one (Opus review, C1-S4). ``origin`` and ``origin_trust``
     (see :func:`classify_url_trust`) say why the origin was accepted, and
-    ``plugin``/``server`` name the plugin server that asked ("" when none).
+    ``plugin``/``server`` name the plugin server that asked ("" when none), and
+    ``plugin_title`` its plugin's display title (left out when it has none).
     """
 
     warning, display_host, raw_host = punycode_warning(url)
@@ -378,6 +380,7 @@ def build_url_metadata(
             "task_id": task_id,
             "input_key": input_key,
             "forwarded_from_session": forwarded_from_session,
+            **({"plugin_title": plugin_title} if plugin_title else {}),
         }
     }
 

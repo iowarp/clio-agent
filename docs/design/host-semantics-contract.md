@@ -75,7 +75,7 @@ today.
 
 | Field | Rule | Fatal when |
 | --- | --- | --- |
-| `title` | Optional. The plugin's readable name, text of 1 to 60 characters, sent as `plugin_title` on its tabs and surface owners. It lives here because Agent Plugins 1.0.0 has no display-name field (a top-level `title` is ignored with a warning). Without it CLIO sends no `plugin_title` and the client shows the id read as words | Not text, or empty |
+| `title` | Optional. The plugin's readable name, text of 1 to 60 characters, sent as `plugin_title` on its tabs, its surface owners, its `a2ui.server_surface.refused` events and its URL questions. It lives here because Agent Plugins 1.0.0 has no display-name field (a top-level `title` is ignored with a warning). Without it CLIO sends no `plugin_title` and the client shows the id read as words | Not text, or empty |
 | `tabs[].id` | `[a-z0-9][a-z0-9-]{0,31}`, unique in the plugin. The host id is `<plugin>/<id>` | Missing, bad shape, duplicate |
 | `tabs[].title` | Text, 1 to 40 characters | Missing or empty |
 | `tabs[].icon` | A Lucide icon name. An unknown name renders a generic icon | Not text |
@@ -209,7 +209,12 @@ When the surface has a server owner:
    connection (starting the server if it is not running). It does not depend on any
    turn having run, so a tab action works straight after an agent restart.
 3. CLIO sends `tools/call` with `arguments` = the action's `context`, verbatim. No model
-   turn runs. The call is recorded as a view call (it never splits an open turn).
+   turn runs. The call is recorded as a view call (it never splits an open turn). Before
+   any turn has run (for example straight after an agent restart), CLIO first builds the
+   session's host from the session's own model, as that turn would; the same applies to a
+   tab's `open` and its re-reads. The call goes through the normal tool approval: a tool
+   that needs it raises the usual `permission.requested` (kind `external_mcp`), and the
+   HTTP request waits until the user answers it (`POST /v1/permissions/{id}`).
 4. If the call is task-augmented, CLIO follows the task. An `input_required` becomes a
    question in the session, like any task input; its answer goes back to the task.
 5. A2UI in the result is applied as in HS1, but only to surfaces this server owns. New
@@ -398,16 +403,19 @@ question's `metadata.elicitation`, beside the existing url-mode fields:
 
 ```json
 {"mode": "url", "url": "http://127.0.0.1:41234/ask/...", "origin": "http://127.0.0.1:41234",
- "origin_trust": "plugin_loopback", "plugin": "<plugin id>", "server": "<server>"}
+ "origin_trust": "plugin_loopback", "plugin": "<plugin id>", "server": "<server>",
+ "plugin_title"?: "<the plugin's title>"}
 ```
 
 `origin_trust` is `configured`, `plugin_origin` or `plugin_loopback`. `plugin` is "" for a
-server no plugin declares.
+server no plugin declares. `plugin_title` is present only when that plugin declares a
+`title`.
 
 In the pending interaction (`GET /v1/sessions/{sid}/interactions` and its events), the
 question's `metadata.elicitation` fields are also spread flat into `payload`, as every
-url-mode field already is: `payload.origin`, `payload.origin_trust`, `payload.plugin` and
-`payload.server` sit beside `payload.url`. `payload.metadata` keeps the nested copy.
+url-mode field already is: `payload.origin`, `payload.origin_trust`, `payload.plugin`,
+`payload.server` and, when present, `payload.plugin_title` sit beside `payload.url`.
+`payload.metadata` keeps the nested copy.
 
 ## Events for the UI
 
@@ -417,7 +425,7 @@ On `GET /v1/sessions/{sid}/events` (SSE):
 | --- | --- |
 | `a2ui.surface.upserted` | The surface wire, now with `owner` when server-owned |
 | `a2ui.surface.deleted` | `{"surface_id"}` |
-| `a2ui.server_surface.refused` | `{"plugin", "server", "tool", "uri", "reason", "detail"}` |
+| `a2ui.server_surface.refused` | `{"plugin", "plugin_title"?, "server", "tool", "uri", "reason", "detail"}`; `plugin_title` only when the plugin declares a `title` |
 | `plugin_tab.surface.upserted` | `{"tab_id", "revision", "surface": <surface wire>}` |
 | `plugin_tab.surface.deleted` | `{"tab_id", "revision", "surface_id"}` |
 | `plugin_tab.refreshed` | `{"tab_id", "revision", "surface_ids"}` after a re-read replaced the tab |

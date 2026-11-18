@@ -204,6 +204,8 @@ def publish_refusal(
         "reason": outcome.reason,
         "detail": outcome.detail,
     }
+    if title := scope.owner.get("plugin_title"):
+        payload["plugin_title"] = title
     catalogs = getattr(app.state, "a2ui_catalogs", None)
     if catalogs is not None:
         catalogs.record_session_reason(

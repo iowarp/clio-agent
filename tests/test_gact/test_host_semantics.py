@@ -123,6 +123,37 @@ def test_url_metadata_names_the_origin_and_the_asking_server() -> None:
     assert block["origin_trust"] == URL_TRUST_PLUGIN_ORIGIN
     assert (block["plugin"], block["server"]) == ("host-fixture", "hostfx")
     assert block["url"] == "https://p.org/confirm?x=1"
+    assert "plugin_title" not in block
+    titled = build_url_metadata(
+        "https://p.org/confirm",
+        request_id="q1",
+        namespace="hostfx",
+        tool_name="open_link",
+        invocation_id="inv",
+        forwarded_from_session="",
+        plugin="host-fixture",
+        server="hostfx",
+        plugin_title="Host fixture",
+    )["elicitation"]
+    assert titled["plugin_title"] == "Host fixture"
+
+
+def test_a_refused_payload_names_the_plugin_title_only_when_it_has_one() -> None:
+    from clio_agent.gact.server_surfaces import PayloadOutcome, publish_refusal
+
+    events: list[Any] = []
+    app = SimpleNamespace(
+        state=SimpleNamespace(a2ui_catalogs=None, bus=SimpleNamespace(publish=events.append))
+    )
+    outcome = PayloadOutcome(uri="a2ui://x", reason="a2ui_payload_invalid", detail="bad")
+    titled = ServerScope("host-fixture", "hostfx", "hostfx", {"title": "Host fixture"})
+
+    publish_refusal(app, "s1", titled, tool="t", outcome=outcome)
+    publish_refusal(app, "s1", SCOPE, tool="t", outcome=outcome)
+
+    assert [event.type for event in events] == ["a2ui.server_surface.refused"] * 2
+    assert events[0].payload["plugin_title"] == "Host fixture"
+    assert "plugin_title" not in events[1].payload
 
 
 # -- HS1: payloads ---------------------------------------------------------------
