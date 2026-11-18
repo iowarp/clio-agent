@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.runtime import fence_ssh, net_connect, sandbox
 from clio_agent.runtime import execution_environment as execution
+from clio_agent.runtime import fence_ssh, net_connect, sandbox
 
 HELPER = str(Path(net_connect.__file__).resolve())
 
