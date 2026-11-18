@@ -50,12 +50,15 @@ class ServerScope:
 
     @property
     def owner(self) -> dict[str, str]:
-        return {
+        owner = {
             "kind": "server",
             "plugin": self.plugin,
             "server": self.server,
             "namespace": self.namespace,
         }
+        if self.host.get("title"):
+            owner["plugin_title"] = str(self.host["title"])
+        return owner
 
     @property
     def producible(self) -> frozenset[str]:

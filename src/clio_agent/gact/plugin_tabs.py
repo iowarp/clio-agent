@@ -124,23 +124,27 @@ def declared_tabs(app: Any, session_id: str) -> list[dict[str, Any]]:
         if not isinstance(row, Mapping) or not row.get("plugin"):
             continue
         plugin = str(row["plugin"])
-        for tab in (row.get("host") or {}).get("tabs") or ():
-            tabs.append(
-                {
-                    "id": f"{plugin}/{tab['id']}",
-                    "plugin": plugin,
-                    "tab": str(tab["id"]),
-                    "title": str(tab.get("title") or tab["id"]),
-                    "icon": str(tab.get("icon") or ""),
-                    "server": str(namespace),
-                    "resource": str(tab["resource"]),
-                }
-            )
+        host = row.get("host") or {}
+        for tab in host.get("tabs") or ():
+            declared = {
+                "id": f"{plugin}/{tab['id']}",
+                "plugin": plugin,
+                "tab": str(tab["id"]),
+                "title": str(tab.get("title") or tab["id"]),
+                "icon": str(tab.get("icon") or ""),
+                "server": str(namespace),
+                "resource": str(tab["resource"]),
+            }
+            if host.get("title"):
+                declared["plugin_title"] = str(host["title"])
+            tabs.append(declared)
     return tabs
 
 
 def _tab_wire(declared: Mapping[str, Any], *, reason: str = "") -> dict[str, Any]:
     row = {key: declared[key] for key in ("id", "plugin", "title", "icon", "server", "resource")}
+    if declared.get("plugin_title"):
+        row["plugin_title"] = declared["plugin_title"]
     row["available"] = reason not in (SERVER_UNAVAILABLE, RESOURCE_FAILED)
     row["reason"] = reason
     return row

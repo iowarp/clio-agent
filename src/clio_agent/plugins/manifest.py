@@ -50,6 +50,7 @@ _EXTENSION_FIELDS = (
     "tabs",
     "accounts",
     "elicitation",
+    "title",
 )
 #: Providers a plugin may ask account grants from (HS4); CLIO's own sign-in covers each.
 ACCOUNT_PROVIDERS = ("github", "google_drive", "globus", "ndp")
@@ -195,11 +196,14 @@ def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
 
 
 def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
-    """Shape of ``tabs``, ``accounts`` and ``elicitation`` (host semantics HS3 to HS5).
+    """Shape of ``title``, ``tabs``, ``accounts`` and ``elicitation`` (HS3 to HS5).
 
     A tab's ``server`` is checked against ``mcp.json`` by :func:`host_semantics`.
     """
 
+    title = ext.get("title")
+    if title is not None and (not isinstance(title, str) or not 1 <= len(title.strip()) <= 60):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.title must be text of 1 to 60 characters")
     tabs = ext.get("tabs", [])
     if not isinstance(tabs, list):
         raise ManifestError(f"{plugin}: {NAMESPACE}.tabs must be a list of objects")
@@ -256,12 +260,15 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
 def host_semantics(
     ext: Mapping[str, Any], plugin: str, servers: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """The plugin's normalized ``tabs``, ``accounts`` and ``elicitation`` ({} for none).
+    """The plugin's normalized ``title``, ``tabs``, ``accounts`` and ``elicitation``.
 
-    Each tab names its server: the declared one, or the plugin's only server.
+    ({} for none.) Each tab names its server: the declared one, or the plugin's only
+    server. ``title`` is the plugin's readable name, for the host's UI.
     """
 
     out: dict[str, Any] = {}
+    if ext.get("title"):
+        out["title"] = str(ext["title"]).strip()
     tabs = []
     for tab in ext.get("tabs") or []:
         server = tab.get("server")

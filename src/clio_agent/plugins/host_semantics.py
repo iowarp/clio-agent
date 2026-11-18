@@ -64,6 +64,8 @@ def server_host(record: PluginRecord, server: str) -> dict[str, Any]:
 
     host = record.host or {}
     out: dict[str, Any] = {}
+    if host.get("title"):
+        out["title"] = str(host["title"])
     catalogs = catalog_ids(record)
     if catalogs:
         out["catalogs"] = catalogs

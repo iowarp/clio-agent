@@ -138,6 +138,36 @@ def test_server_scope_owns_its_surfaces_and_produces_its_catalogs() -> None:
     assert SCOPE.producible == frozenset({basic_catalog_id()})
 
 
+def test_a_plugin_title_names_its_tabs_and_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = {
+        "hostfx": {
+            "plugin": "host-fixture",
+            "host": {
+                "title": "Host fixture",
+                "tabs": [{"id": "panel", "title": "Panel", "resource": "a2ui://host-fixture/p"}],
+            },
+        },
+        "plain": {
+            "plugin": "plain",
+            "host": {"tabs": [{"id": "t", "title": "T", "resource": "a2ui://plain/t"}]},
+        },
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution.session_resolution", lambda _app, _sid: None
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.prompt_basis.mounted_servers", lambda _app, _sid, _r: rows
+    )
+
+    titled, plain = [tabs_module._tab_wire(row) for row in tabs_module.declared_tabs(None, "s1")]
+
+    assert titled["plugin_title"] == "Host fixture"
+    assert "plugin_title" not in plain
+    owner = ServerScope("host-fixture", "hostfx", "hostfx", rows["hostfx"]["host"]).owner
+    assert owner["plugin_title"] == "Host fixture"
+    assert "plugin_title" not in SCOPE.owner
+
+
 @pytest.mark.parametrize(
     ("resource", "reason"),
     [

@@ -91,6 +91,23 @@ def _plain(tmp_path: Path) -> Path:
     return plugin(tmp_path, "plain", ext={}, servers={"s": _stdio()})
 
 
+def test_a_plugin_title_reaches_each_server_slice(tmp_path: Path) -> None:
+    root = plugin(
+        tmp_path,
+        "titled",
+        ext={
+            "title": "  Titled plugin ",
+            "tabs": [{"id": "one", "title": "One", "resource": "a2ui://x/one"}],
+        },
+        servers={"s": _stdio()},
+    )
+    record = load_plugin(root, trusted=True)
+
+    assert record.host["title"] == "Titled plugin"
+    assert host_semantics.server_host(record, "s")["title"] == "Titled plugin"
+    assert "title" not in load_plugin(_plain(tmp_path), trusted=True).host
+
+
 @pytest.mark.parametrize(
     ("ext", "servers", "fragment"),
     [
@@ -123,6 +140,8 @@ def _plain(tmp_path: Path) -> Path:
         ({"elicitation": {"origins": ["http://x.org"]}}, {"s": _stdio()}, "https://"),
         ({"elicitation": {"loopback": "yes"}}, {"s": _stdio()}, "true or false"),
         ({"elicitation": {"other": True}}, {"s": _stdio()}, "only loopback and origins"),
+        ({"title": " "}, {"s": _stdio()}, ".title must be"),
+        ({"title": 3}, {"s": _stdio()}, ".title must be"),
     ],
 )
 def test_bad_host_declarations_fail_to_load(

@@ -50,6 +50,7 @@ today.
 {
   "extensions": {
     "ai.iowarp.clio": {
+      "title": "Status board",
       "catalogs": ["basic"],
       "tabs": [
         {
@@ -74,6 +75,7 @@ today.
 
 | Field | Rule | Fatal when |
 | --- | --- | --- |
+| `title` | Optional. The plugin's readable name, text of 1 to 60 characters, sent as `plugin_title` on its tabs and surface owners. It lives here because Agent Plugins 1.0.0 has no display-name field (a top-level `title` is ignored with a warning). Without it CLIO sends no `plugin_title` and the client shows the id read as words | Not text, or empty |
 | `tabs[].id` | `[a-z0-9][a-z0-9-]{0,31}`, unique in the plugin. The host id is `<plugin>/<id>` | Missing, bad shape, duplicate |
 | `tabs[].title` | Text, 1 to 40 characters | Missing or empty |
 | `tabs[].icon` | A Lucide icon name. An unknown name renders a generic icon | Not text |
@@ -167,8 +169,12 @@ A surface from a tool result is stored like any surface: a transcript part of ty
 kept on the part's `metadata.owner` and on the surface record:
 
 ```json
-"owner": {"kind": "server", "plugin": "<plugin id>", "server": "<server name>", "namespace": "<ns>"}
+"owner": {"kind": "server", "plugin": "<plugin id>", "server": "<server name>", "namespace": "<ns>",
+          "plugin_title"?: "<the plugin's title>"}
 ```
+
+`plugin_title` is present only when the plugin declares a `title`. It is for display; the
+owner's identity is `kind`, `plugin` and `server`.
 
 A surface with no `owner` is CLIO's own, and keeps today's behaviour. The owner is fixed
 at `createSurface` and never changes. Replay of an old surface whose server is gone
@@ -180,7 +186,8 @@ task completes. Progress notifications carry no A2UI.
 ## HS2: actions on a server's surface go to that server
 
 The client sends the same request as for any surface, to the same route
-`POST /v1/sessions/{sid}/a2ui/actions`, with header `x-a2ui-version: v0.9.1` (else 406)
+`POST /v1/sessions/{sid}/a2ui/actions`, with header `x-a2ui-version: 0.9.1` (else 406;
+the header has no `v`, which is only the spelling of the envelope's `version`)
 and the existing wrapper body `{"message", "correlation"?, "metadata"?}` (any other
 top-level field is 422 `validation_error`):
 
@@ -254,15 +261,15 @@ own read and watch, whichever session first opened it.
 
 ```text
 GET  /v1/sessions/{sid}/plugin-tabs
-     -> {"tabs": [{"id": "<plugin>/<tab>", "plugin": "...", "title": "...",
-                   "icon": "...", "server": "...", "resource": "a2ui://...",
+     -> {"tabs": [{"id": "<plugin>/<tab>", "plugin": "...", "plugin_title"?: "...",
+                   "title": "...", "icon": "...", "server": "...", "resource": "a2ui://...",
                    "available": true, "reason": ""}]}
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/open
      -> {"tab": {...}, "surfaces": [<surface wire>, ...], "revision": 3}
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/close
      -> {"closed": true}
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
-     header x-a2ui-version: v0.9.1 (else 406)
+     header x-a2ui-version: 0.9.1 (else 406)
      body {"message": {"version": "v0.9.1", "action": {...}}, "correlation"?, "metadata"?}
           (the same body as /v1/sessions/{sid}/a2ui/actions)
      response as HS2
