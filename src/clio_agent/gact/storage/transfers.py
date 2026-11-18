@@ -152,8 +152,14 @@ def materialize(
         reused = _unchanged_files(store, record, owner_root, entries)
         fetched = total - sum(int(row.size or 0) for row in entries if row.path in reused)
         required = fetched + (total if not record.download_read_only else 0)
-        if shutil.disk_usage(owner_root).free < required:
-            raise ValueError("Insufficient capacity for the source baseline and working copy")
+        free = shutil.disk_usage(owner_root).free
+        if free < required:
+            raise ValueError(
+                f"Insufficient capacity: this download needs {required:,} bytes and "
+                f"{free:,} are free where downloads are kept (connected_data_status "
+                "storage lists each source's bytes); select fewer files or read the "
+                "file by range instead"
+            )
         if not record.download_read_only and shutil.disk_usage(workspace_root).free < total:
             raise ValueError("Insufficient workspace capacity for the working copy")
         os.mkdir(win_extended_path(stage))
