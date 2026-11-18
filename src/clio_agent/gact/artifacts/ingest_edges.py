@@ -5,7 +5,7 @@ of child egress (the ARC-as-source invariant forbids parsing srt proxy logs). Th
 the gact-side seam it calls back into:
 
 * :func:`install_egress_recorder` registers a closure with the chokepoint (wired from the
-  server lifespan once ARC is live) that (a) appends each :class:`EgressRecord` to a bounded
+  server lifespan when the fence is selected) that (a) appends each :class:`EgressRecord` to a bounded
   per-app ledger and (b) emits ONE trace-only ``net.egress`` semantic event via
   ``_emit_semantic_event`` — so the chokepoint never imports the god app, and every egress
   lands on the durable trace + ARC, never the SSE wire.
@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 from urllib.parse import urlsplit
 
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
@@ -134,21 +134,27 @@ def record_egress(app: "FastAPI", rec: "EgressRecord") -> None:
         logger.debug("net egress event emit skipped reason=egress_emit_unavailable", exc_info=True)
 
 
-def install_egress_recorder(app: "FastAPI") -> None:
+def install_egress_recorder(app: "FastAPI") -> Optional[Callable[["EgressRecord"], None]]:
     """Wire the process chokepoint's egress recorder to THIS app (server lifespan, guarded).
 
-    Called once ARC is live (mirrors ``sandbox.emit_boot_state_event``). Registers a closure
-    over ``app`` so the runtime-side chokepoint never imports gact. Idempotent — re-wiring
-    simply replaces the closure with one over the same app.
+    Called when the server selects its fence, before any agent can spawn a child (see
+    ``server_boot.wire_egress_policy``). Registers a closure over ``app`` so the runtime-side
+    chokepoint never imports gact; the emit reads ARC at call time and is best-effort. Idempotent
+    — re-wiring simply replaces the closure. Returns the installed closure (``None`` on failure).
     """
     try:
         from clio_agent.runtime.net_chokepoint import set_egress_recorder  # noqa: PLC0415
 
-        set_egress_recorder(lambda rec: record_egress(app, rec))
+        def recorder(rec: "EgressRecord") -> None:
+            record_egress(app, rec)
+
+        set_egress_recorder(recorder)
+        return recorder
     except Exception as exc:  # noqa: BLE001 — recorder wiring is best-effort, never blocks boot
         logger.warning(
             "net egress recorder wiring skipped reason=egress_recorder_wire_failed error=%r", exc
         )
+        return None
 
 
 def net_egress_records(app: "FastAPI") -> list[dict[str, Any]]:

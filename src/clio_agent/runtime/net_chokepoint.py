@@ -160,6 +160,24 @@ def set_egress_gate(gate: Optional[Callable[[EgressRecord], str]]) -> None:
         _GATE = gate
 
 
+def clear_egress_hooks(
+    gate: Optional[Callable[[EgressRecord], str]],
+    recorder: Optional[Callable[[EgressRecord], None]],
+) -> None:
+    """Clear the gate/recorder only while they are still the given ones (app shutdown).
+
+    A server that stops must not leave a closure over its closed stores consulting later
+    egress, yet must not clear hooks a newer app in the same process has since installed.
+    """
+    global _GATE, _RECORDER
+    with _GATE_LOCK:
+        if gate is not None and _GATE is gate:
+            _GATE = None
+    with _RECORDER_LOCK:
+        if recorder is not None and _RECORDER is recorder:
+            _RECORDER = None
+
+
 class ChokepointStartError(RuntimeError):
     """The chokepoint could not bind/listen — typed (``chokepoint_start_failed``)."""
 

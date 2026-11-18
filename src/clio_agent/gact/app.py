@@ -665,6 +665,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     await server_boot.prepare_protection(app, windows=sys.platform == "win32")
+    server_boot.wire_egress_policy(app)  # before any agent path can spawn a fenced child
     # The shipped default marketplace installs off the loop (server_boot.start_plugin_sync).
     server_boot.start_plugin_sync(app)
 
@@ -764,6 +765,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # binding above is the backstop. The owner helper never raises.
         _agent = getattr(app.state, "agent", None)
         await desktop_lifecycle.finalize_desktop_shutdown(app, _agent)
+        server_boot.unwire_egress_policy(app)
         if task_cleanup_errors:
             raise BaseExceptionGroup("Task runtime cleanup failed", list(task_cleanup_errors))
 

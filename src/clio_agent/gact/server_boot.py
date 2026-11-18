@@ -77,6 +77,32 @@ async def prepare_protection(app: FastAPI, *, windows: bool) -> None:
         raise
 
 
+def wire_egress_policy(app: FastAPI) -> None:
+    """Wire the chokepoint's egress recorder and deny-mode gate to THIS app, then replay grants.
+
+    Runs once the fence is selected, before any agent exists. Every path that later builds an
+    agent (boot, a provider bind, a per-session host) and every child it fences is then
+    recorded and gated; wiring this only on the boot-built agent left deny mode silently
+    open whenever the agent came from a bind.
+    """
+    from clio_agent.gact.artifacts.ingest_edges import install_egress_recorder  # noqa: PLC0415
+    from clio_agent.gact.runtime.grants import (  # noqa: PLC0415
+        install_egress_gate,
+        replay_persisted_root_grants,
+    )
+
+    app.state.egress_hooks = (install_egress_gate(app), install_egress_recorder(app))
+    replay_persisted_root_grants(app)
+
+
+def unwire_egress_policy(app: FastAPI) -> None:
+    """Clear this app's egress gate/recorder at shutdown (a newer app's hooks are kept)."""
+    from clio_agent.runtime.net_chokepoint import clear_egress_hooks  # noqa: PLC0415
+
+    gate, recorder = getattr(app.state, "egress_hooks", (None, None))
+    clear_egress_hooks(gate, recorder)
+
+
 def start_plugin_sync(app: FastAPI) -> asyncio.Task:
     """Install or refresh the shipped default marketplace off the loop, as a timed step.
 
