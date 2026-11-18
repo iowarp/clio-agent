@@ -94,9 +94,12 @@ class RangeHandles:
         return handle
 
     def served(self, handle: RangeHandle, n_bytes: int) -> None:
+        from clio_agent.runtime.commitment_activity import note_progress  # noqa: PLC0415
+
         with self._lock:
             handle.bytes_served += n_bytes
             handle.requests += 1
+        note_progress(handle.session_id)  # a script reading the file is working
 
     def for_session(self, session_id: str) -> list[RangeHandle]:
         with self._lock:

@@ -88,6 +88,21 @@ def note_commitment_end(session_id: str | None = None) -> None:
                 watchers[token] = completed_at
 
 
+def note_progress(session_id: str) -> None:
+    """Record work this session owns that publishes nothing: a running script's tool
+    call, a range read served to it. The session's turn watchdog takes it as progress,
+    so a script working through a large file is not stopped as silent; one that goes
+    quiet for the whole window still is."""
+    if not session_id:
+        return
+    with _LOCK:
+        watchers = _COMPLETIONS.get(session_id, {})
+        if watchers:
+            now = time.monotonic()
+            for token in watchers:
+                watchers[token] = now
+
+
 def commitment_wait_in_flight(session_id: str | None = None) -> bool:
     """True when a commitment wait is in flight and counts as turn progress.
 
