@@ -795,3 +795,39 @@ Failed:
 Verdict: **fail on CLIO presentation and on coverage.** The plumbing the run was
 meant to prove works live: dynamic plugins, the mid-turn join, and NDP through
 the source with the person's sign-in.
+
+### R6h: Tahoe correlation after the merge, with windowed NDP reads (fail)
+
+Session `sess_66d5c1e6d911` (126 calls, 6 failed, 27 min 45 s). The same plain
+request on CLIO's default agent, signed in to NDP. Stack on clio-agent `118f8a59e`:
+the earth-ocean branch merged in (the layered map with GeoTIFF/COG/VRT grid layers),
+NDP resources readable by byte range (`8ab9d858b`), and `work-with-ndp` 3.1.0
+saying to read a window through the range link. Command:
+`STUDY_AGENT= RUN_SECONDS=3600 bash scripts/cloud/ndp_batch.sh correlation.tahoe`.
+Export: `ndp-runs/exports/correlation-tahoe-sess_66d5c1e6d911.*` (taken after the
+turn ended). Captures: `r6h-correlation-1440.png`, `r6h-correlation-390.png`.
+
+Worked:
+
+- **Windowed reads, live.** The agent connected the basin's lidar DTM tiles and the
+  statewide surface-fuels and green-vegetation rasters, opened each with `range=true`
+  (76 `connected_data_open`) and read them from a `run_code` script through GDAL:
+  1,228 range requests answered 206, no whole-tile download.
+- **Plugins and source path as in R6g:** `ndp` offered and joined the turn; NDP only
+  through `connected_data_*`.
+
+Failed:
+
+1. **The turn was stopped as silent while its script worked.** The analysis script
+   ran 15 minutes (58 tool calls, the range reads) and the no-progress watchdog
+   stopped the turn at 900 s with `provider_timeout`: "This reply didn't finish".
+   It counted only bus events, model calls and declared waits. Fixed in
+   `673b1188e`: a script's tool calls and range reads served to the session count.
+2. **Range URLs answered sidecar probes with the raster's bytes.** GDAL looks for
+   `<url>.aux.xml`, `.msk` and `.msk.aux.xml`; the route ignored the trailing name,
+   so over 1,100 of the 1,228 requests were the raster parsed as XML. Fixed in
+   `6125041e9`: another name is 404.
+3. **No A2UI view and no answer**, since the turn ended before the analysis. The
+   reply is the agent's running narration.
+
+Verdict: **fail on two CLIO bugs, both fixed; rerun next (R6i).**
