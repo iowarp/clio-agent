@@ -1,0 +1,129 @@
+---
+title: Relay
+description: Relay is an MCP server that runs jobs, commands, file transfers and services on the clusters and computers you use. CLIO, Claude Code, Codex or any other MCP client can use it.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import aresDescribe from '../../../../assets/captures/relay/convo-ares-describe.png';
+import aresDescribePhone from '../../../../assets/captures/relay/convo-ares-describe-phone.png';
+import runResult from '../../../../assets/captures/relay/convo-run-result.png';
+import runResultPhone from '../../../../assets/captures/relay/convo-run-result-phone.png';
+
+Relay lets an agent work on computers other than the one it runs on: a cluster you
+reach over SSH, a TACC system through Tapis, an ALCF system through Globus Compute,
+cloud machines from SkyPilot, or the computer relay itself runs on.
+
+Relay is a standard [MCP](https://modelcontextprotocol.io) server. CLIO uses it
+through its relay plugin, which adds a **Compute** page to CLIO's left bar. Claude
+Code, GitHub Copilot CLI, Codex or any other MCP client can run it with one line of
+configuration, and gets the same five tools.
+
+## Endpoints and sites
+
+Each computer you add is an **endpoint**. Relay's own files and command line call
+it a **site**; the two words mean the same thing. You keep your endpoints on the
+[Compute page](/docs/compute/) or with `clio-relay site`. The agent uses the ones you
+added. It never adds, changes or removes one itself.
+
+Each endpoint has a **protocol**, the way relay reaches it, and a **security**
+setting:
+
+- **Secure** runs only packages someone has reviewed, and asks before it spends an
+  allocation. In relay's files this is `guarded`, and it is the default.
+- **Open** runs what the agent writes. In relay's files this is `open`.
+
+See [Guardrails](/docs/relay/guardrails/) for what Secure checks.
+
+## The five tools
+
+| Tool | What it does |
+| --- | --- |
+| `describe` | With no arguments, lists your endpoints. With `site`, describes one endpoint: what it runs, its queues and what is needed to use it. With `job`, reports on one operation. |
+| `run` | Submits a batch job, written as a [PSI/J](https://exaworks.org/psij) job spec, and follows it to the end. Also cancels and resumes a job. |
+| `exec` | Runs one command on the login side, without a shell, and returns its output. |
+| `files` | Lists, reads, writes, deletes and stages files. See [Files](/docs/relay/files/). |
+| `serve` | Starts a long-running service, such as a Jupyter server, an MCP server or a web app, and forwards its ports to you. See [Serve a service](/docs/relay/serve/). |
+
+`run` and `serve` can take a long time. A client that supports the MCP tasks
+extension gets them as tasks: it sees progress, can leave and come back, and answers
+questions, such as a one-time code or a spend approval, through the task. A client
+without tasks gets an operation id instead and follows it with `describe(job=...)`.
+CLIO supports tasks.
+
+## In a conversation
+
+You ask in plain words. Here CLIO was asked "What is Ares, and what can I run on
+it?". The agent described the Ares endpoint, read the scheduler and the module list
+on the login node, and answered with what it found.
+
+<Capture client:visible image={await captureImage(aresDescribe)}
+  alt="A CLIO conversation answering what Ares is: 28 nodes with 40 CPUs and about 47 GiB of RAM each, no GPUs, the software found on the login node, and a table of the compute, debug and datacrumbs Slurm partitions"
+  caption="The answer comes from Ares itself: its nodes, its software and its Slurm partitions."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(aresDescribePhone)}
+  alt="The same answer about Ares on a phone, with the partition table"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+Asked to "Run a short job on Ares that reports which compute node it ran on and how
+many CPUs it was given", the agent wrote a one-minute Slurm job, ran it and read
+its output.
+
+<Capture client:visible image={await captureImage(runResult)}
+  alt="A CLIO conversation reporting that Slurm job 27846 completed on Ares in one second, on compute node ares-comp-10 with 2 CPUs"
+  caption="A real job on Ares: the node it ran on and the CPUs Slurm gave it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(runResultPhone)}
+  alt="The job result on a phone: Slurm job 27846 on ares-comp-10 with 2 CPUs"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Protocols
+
+| Protocol | Reaches | Tools |
+| --- | --- | --- |
+| [SSH](/docs/relay/ssh/) | A login node, with your own `ssh` and keys | All five |
+| [Worker](/docs/relay/worker/) | A login node, through a small relay worker that dials out | All five |
+| [Tapis](/docs/relay/tapis/) | TACC systems, and your own host registered with Tapis | describe, run, files |
+| [Globus](/docs/relay/globus/) | A Globus Compute endpoint, such as ALCF Polaris or NCSA DeltaAI | describe, run, files |
+| [IRI](/docs/relay/iri/) | A facility's IRI API | describe, run, files |
+| [SkyPilot](/docs/relay/skypilot/) | Cloud machines SkyPilot launches | describe, run |
+| [Local](/docs/relay/local/) | The computer relay runs on | All five |
+
+An endpoint can also list **alternatives**: other protocols that reach the same
+machine. When the protocol in use does not take a tool, the first alternative that
+does takes it. An alternative whose settings are incomplete is skipped, and the
+answer says why. `describe(site=...)` and `clio-relay site show` list which protocol
+takes each tool. A tool that no protocol on the endpoint takes answers with the
+refusal `verb_not_implemented`.
+
+## The catalog
+
+Relay ships a catalog of endpoints it already knows. Adding one from the catalog
+fills in its address, protocol and defaults, and links a skill that tells the agent
+how that machine works.
+
+| ID | Name | Protocol |
+| --- | --- | --- |
+| `ares` | Ares | SSH |
+| `ares-tapis` | Ares (through Tapis) | Tapis |
+| `aurora` | ALCF Aurora | Globus |
+| `chameleon-tapis` | Chameleon node (through Tapis) | Tapis |
+| `deltaai` | NCSA DeltaAI | Globus |
+| `polaris` | ALCF Polaris | Globus |
+| `stampede3` | TACC Stampede3 | Tapis |
+| `vista` | TACC Vista | Tapis |
+
+A machine that is not in the catalog can still be added on any protocol. See
+[Bring your own machine](/docs/relay/bring-your-own-machine/).
+
+## Next steps
+
+<CardGrid>
+	<LinkCard title="Install relay" href="/docs/relay/install/" description="In CLIO, or in another MCP client." />
+	<LinkCard title="The Compute page" href="/docs/compute/" description="Add, probe, edit and remove endpoints in CLIO." />
+	<LinkCard title="Asks and sign-in" href="/docs/relay/asks/" description="How relay asks you to sign in or approve a charge." />
+	<LinkCard title="Command line" href="/docs/relay/cli/" description="Every clio-relay command." />
+</CardGrid>

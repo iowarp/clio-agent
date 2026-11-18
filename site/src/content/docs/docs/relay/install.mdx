@@ -1,0 +1,183 @@
+---
+title: Install relay
+description: Install relay in CLIO as a plugin, or run it as an MCP server in Claude Code, Codex, GitHub Copilot CLI or another MCP client.
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import installServeHelp from '../../../../assets/captures/relay/install-serve-help.png';
+import installServeHelpPhone from '../../../../assets/captures/relay/install-serve-help-phone.png';
+import relayOffer from '../../../../assets/captures/relay/convo-relay-offer.png';
+import relayOfferPhone from '../../../../assets/captures/relay/convo-relay-offer-phone.png';
+
+Relay runs the same way everywhere: as an MCP server, started by the program that
+uses it. In CLIO the relay plugin starts it for you. Anywhere else you install the
+`clio-relay` command and point your MCP client at it.
+
+## In CLIO
+
+<Steps>
+1. Open **Settings → Extensions** and choose **Plugins**.
+2. Find **clio-relay** under **Discover** and install it.
+3. A **Compute** entry appears in CLIO's left bar. Open it to add your first
+   endpoint. See [The Compute page](/docs/compute/).
+</Steps>
+
+Installing the plugin does not put relay in every conversation. When you ask about a
+machine in a conversation that does not have relay yet, CLIO offers to add it. Choose
+**Add**, and relay's tools and skill join that conversation.
+
+<Capture client:visible image={await captureImage(relayOffer)}
+  alt="CLIO asking 'Add Clio relay to this conversation?', saying it brings 1 skill, 1 MCP server and 1 UI catalog, with Add, Not now and View plugin buttons"
+  caption="CLIO offers relay when a request needs a remote machine."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(relayOfferPhone)}
+  alt="The same offer to add Clio relay to the conversation, on a phone"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+The plugin gives CLIO:
+
+- relay's MCP server, with its five tools;
+- the **Compute** page;
+- a Globus account, so a Globus endpoint uses CLIO's own Globus sign-in;
+- sign-in pages, shown inside CLIO, for relay's own loopback pages and for TACC;
+- the `use-relay` skill, which tells the agent to call `describe` first and to read
+  each endpoint's skill before it works there.
+
+CLIO runs relay with `uvx` from a pinned version, so you do not install anything
+else. The first start downloads relay and takes a little longer.
+
+### Use CLIO's endpoints from a terminal
+
+CLIO lets a plugin's server write only inside its own data folder, so relay keeps
+its endpoints and state there, in CLIO's plugin store:
+
+| System | CLIO's plugin store |
+| --- | --- |
+| Linux | `~/.config/clio-agent/plugins` |
+| macOS | `~/Library/Application Support/clio-agent/config/plugins` |
+| Windows | `%APPDATA%\clio-agent\config\plugins` |
+| With `CLIO_AGENT_HOME` set | `$CLIO_AGENT_HOME/config/plugins` |
+
+On Windows, when that path would be too long for a plugin, CLIO puts a new store
+under `%LOCALAPPDATA%\clio-p\` instead; its `owner.txt` names the folder it stands in
+for. Inside the store, relay's endpoints (`sites.yaml`) and your own skills are in
+`data/clio-relay/config`, and its operations, asks and content store are in
+`data/clio-relay/state`.
+
+To work with the same endpoints from a terminal, set the two variables before you
+run `clio-relay`. On Linux:
+
+```sh
+export CLIO_RELAY_CONFIG_DIR="$HOME/.config/clio-agent/plugins/data/clio-relay/config"
+export CLIO_RELAY_STATE_DIR="$HOME/.config/clio-agent/plugins/data/clio-relay/state"
+clio-relay site list
+```
+
+Changes you make from the terminal show on the Compute page within a few seconds.
+
+## In another MCP client
+
+<Steps>
+1. Install the command with [uv](https://docs.astral.sh/uv/):
+
+   ```sh
+   uv tool install --python 3.12 --no-config clio-relay
+   ```
+
+   Add the extras for the protocols you need. Tapis and Globus have their own:
+
+   ```sh
+   uv tool install --python 3.12 --no-config "clio-relay[tapis,globus]"
+   ```
+
+   SSH, Worker, IRI and Local need no extra. SkyPilot goes in its own environment;
+   see [SkyPilot](/docs/relay/skypilot/).
+
+2. Add an endpoint. Pick one from the catalog, or describe your own:
+
+   ```sh
+   clio-relay site catalog
+   clio-relay site add-from-catalog ares
+   clio-relay site add my-cluster --adapter ssh --config '{"ssh_profile": "my-cluster"}' --policy open
+   clio-relay site list
+   ```
+
+3. Point your client at `clio-relay serve`:
+
+   <Tabs syncKey="mcp-host">
+   <TabItem label="Claude Code">
+   ```sh
+   claude mcp add relay -- clio-relay serve
+   ```
+   </TabItem>
+   <TabItem label="Codex">
+   In `~/.codex/config.toml`:
+
+   ```toml
+   [mcp_servers.relay]
+   command = "clio-relay"
+   args = ["serve"]
+   ```
+   </TabItem>
+   <TabItem label="Any other client">
+   Most clients read an `mcpServers` block, for example GitHub Copilot CLI's
+   `~/.copilot/mcp-config.json` or Claude Desktop's configuration:
+
+   ```json
+   {"mcpServers": {"relay": {"command": "clio-relay", "args": ["serve"]}}}
+   ```
+   </TabItem>
+   </Tabs>
+</Steps>
+
+Without CLIO, relay keeps its files in the usual places for your system:
+
+| What | Linux and macOS | Windows |
+| --- | --- | --- |
+| Endpoints (`sites.yaml`) | `~/.config/clio-relay` | `%APPDATA%\clio-relay` |
+| Operations, asks, content store | `~/.local/state/clio-relay` | `%LOCALAPPDATA%\clio-relay\state` |
+
+`CLIO_RELAY_CONFIG_DIR` and `CLIO_RELAY_STATE_DIR` move them.
+
+A client that supports MCP tasks and elicitation shows relay's questions, such as a
+one-time code or a spend approval, inside the conversation. One that does not gets a
+refusal that names a page to open, and you can answer from the terminal with
+`clio-relay asks`. See [Asks and sign-in](/docs/relay/asks/).
+
+## Over HTTP
+
+To serve relay to a client on another machine, or to several clients at once, run
+it over Streamable HTTP:
+
+```sh
+clio-relay serve --http
+```
+
+It listens on `127.0.0.1:8766/mcp` and needs a bearer token. The first time, relay
+writes a token to its state folder; set `CLIO_RELAY_TOKEN` to choose your own, or
+pass `--token-file`. For HTTPS, pass `--tls-cert` and `--tls-key`. `--host`, `--port`
+and `--path` change where it listens.
+
+<Aside type="caution" title="Two tokens">
+The bearer token lets a client call relay's tools. Relay's approval pages need a
+second, separate operator token, so that a client cannot approve its own charges.
+See [Asks and sign-in](/docs/relay/asks/#over-http).
+</Aside>
+
+<Capture client:visible image={await captureImage(installServeHelp)}
+  alt="The output of clio-relay serve --help, with the --http, --host, --port, --path, --token-file, --grant-file, --tls-cert and --tls-key options"
+  caption="clio-relay serve speaks stdio by default; --http and its options serve Streamable HTTP."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(installServeHelpPhone)}
+  alt="The output of clio-relay serve --help, with the --http, --host, --port, --path, --token-file, --grant-file, --tls-cert and --tls-key options, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Check it works
+
+Ask the agent to describe relay, or call `describe` with no arguments. It lists your
+endpoints, each with its status. A plain MCP client sees five tools: `describe`,
+`exec`, `files`, `run` and `serve`.

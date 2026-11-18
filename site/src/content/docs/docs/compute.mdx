@@ -1,109 +1,103 @@
 ---
-title: "Run work on clusters with the Compute tab"
-description: Install the relay plugin, add the clusters and computers you use as sites, check that CLIO can reach them, and change or remove them from the Compute tab.
+title: The Compute page
+description: Add the clusters and computers relay may use as endpoints, pick each one's protocol and security, probe it, sign in, and edit or remove it from CLIO's Compute page.
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Development build">
-The relay plugin and its Compute tab are in the development build.
-</Aside>
+The **Compute** page is where you keep the endpoints [relay](/docs/relay/) may use:
+the clusters, supercomputers, cloud accounts and computers the agent can run work on.
+It is in CLIO's left bar once the relay plugin is installed. See
+[Install relay](/docs/relay/install/#in-clio).
 
-Relay lets the agent run work on computers other than the one running CLIO: a
-cluster you reach over SSH, a supercomputer through Tapis, or this computer. Each one
-is a **site**. The Compute tab is where you keep your sites: add them, check that CLIO
-can reach them, sign in where a site needs it, and change or remove them. The agent
-uses the sites you keep there. It never adds one on its own.
+The page is laid out like **Settings → Tools**: one table, one row per endpoint, with
+the choices you change most often right on the row. The agent uses the endpoints you
+keep here. It never adds, changes or removes one.
 
-The tab and relay's command line, `clio-relay site`, change the same sites in the
-same way. Nothing in the tab needs the command line, and nothing on the command line is
-missing from the tab.
+The page and relay's command line, `clio-relay site`, change the same endpoints in
+the same way. If you change one from a terminal, the page shows it within a couple of
+seconds.
 
-## Turn it on
+## The endpoints table
+
+**Endpoints** has a row for each endpoint, and three columns:
+
+| Column | What it means |
+| --- | --- |
+| **Protocol** | How relay reaches the endpoint: **SSH**, **Worker**, **Tapis**, **Globus**, **IRI**, **SkyPilot** or **Local**. Each has its own page under [Relay](/docs/relay/). |
+| **Security** | **Secure** runs only reviewed packages. **Open** runs what the agent writes. See [Guardrails](/docs/relay/guardrails/). |
+| **Status** | **Ready**, **Needs a sign-in** or **Unavailable**. |
+
+Under each endpoint's name is its address, and a second line that says what the status
+needs, such as **Needs a tacc sign-in**, and what the last probe found.
+
+You can change **Protocol** and **Security** right on the row. Picking a protocol the
+endpoint has no settings for yet opens its edit form, so you can fill them in first.
+
+At the top of the table, **Defaults for new endpoints** sets the protocol and security
+a new endpoint starts with. Out of the box they are **SSH** and **Secure**.
+
+With no endpoints, the table reads **No endpoints yet.**
+
+## Add an endpoint
+
+Choose **Add endpoint**. The **Add an endpoint** form has two parts.
+
+**From the catalog.** Choose one of the endpoints relay already knows, such as
+**Ares**, **TACC Vista** or **ALCF Polaris**. Optionally give it your own
+**Endpoint ID (optional)**, then choose **Add from catalog**. Relay fills in its
+address, protocol, defaults and skill.
+
+**Your own.**
 
 <Steps>
-1. Open **Extensions**, find **clio-relay** in the marketplace and install it.
-2. Turn it on for the conversation. A **Compute** tab appears in the workbench beside
-   **Files**.
-3. Open **Compute**. With no sites yet it says **No sites yet. Add one below.**
+1. Fill in the **Endpoint ID** (lowercase letters, digits, `-` and `_`) and a
+   **Name**.
+2. Choose its **Security** and **Ask before spending**: `always`, `never`, or a number
+   of node-hours above which relay asks you first.
+3. Optionally name a **Skill**: a skill relay ships, or the path of your own Markdown
+   file that tells the agent how this machine works.
+4. Under **Protocol**, pick a tab and fill in its settings. Each tab shows only the
+   settings its protocol takes. The protocol pages list them all.
+5. Choose **Add endpoint**.
 </Steps>
 
-## Add a site
+A field that is wrong says so beneath it, for example **Enter an endpoint ID**, and
+nothing is saved until you fix it. When it is added, the page says **Added** and the
+endpoint's name.
 
-The tab has two ways to add a site.
+## The row's menu
 
-**From the catalog.** The catalog lists clusters relay already knows, such as TACC
-Stampede3 and Vista, ALCF Polaris and Aurora, and NCSA DeltaAI. Choose one under
-**Site**, optionally give it your own **Site ID**, and choose **Add from catalog**.
-Relay fills in the address, how to reach it and its defaults.
+Each row has a menu:
 
-**Your own.** Fill in **Site ID** (lowercase letters, digits, `-` and `_`) and a
-**Name**. Then, under **How relay reaches it**, pick a tab for the way in, such as
-`local` for this computer or `ssh` for a server, and fill in its settings. Each way in
-shows the settings it needs, and only those. Then choose **Add site**.
+- **Connect** appears when the endpoint needs a sign-in. Where CLIO holds the account,
+  as with Globus, CLIO's own sign-in is used. Otherwise the row shows **Open the
+  sign-in page**. See [Asks and sign-in](/docs/relay/asks/).
+- **Probe** checks that relay can reach the endpoint and run there. The page then says
+  what it found: **Ready**, **Missing an allocation**, **Needs a sign-in**,
+  **Unreachable** or **Not configured**.
+- **Edit** opens the endpoint's settings under the row: its name, address, security,
+  spend, skill, default account and queue, and one tab per protocol. The tab in use
+  says **In use**. On another tab, **Also reach it this way** keeps a second protocol
+  ready, for example SSH as well as Tapis for a TACC system. **Save** keeps your
+  changes; **Cancel** leaves them.
+- **Remove** asks first: **Remove Ares from your endpoints? Its operations stay on
+  record.** **Remove endpoint** removes it; **Keep it** does not.
 
-Two settings apply to every site:
+If relay cannot read one endpoint, that row reads **Unavailable** with the reason, and
+the rest of the page keeps working.
 
-- **Policy**: **Guarded** runs only packages that have been reviewed; **Open** runs
-  what the agent writes.
-- **Ask before spending**: **Always**, **Never**, or above a number of node-hours.
-  Above that, the agent asks you before it submits a job.
+## Where endpoints and sign-ins live
 
-A field that is wrong says so beneath it, for example **Enter a site ID**, and
-nothing is saved until you fix it. When the site is added the tab says **Added** and
-the site's name, and its card appears under **Sites**.
-
-## Read a site's card
-
-Each card shows:
-
-| Row | What it means |
-| --- | --- |
-| **Adapter** | The way in relay uses now, such as `ssh` or `tapis`. |
-| **Status** | **Ready**, **Needs a sign-in** or **Unavailable**, with the reason. |
-| **Last probe** | What the last check found: **Ready**, **Missing an allocation**, **Needs a sign-in**, **Unreachable** or **Not configured**. |
-| **Policy** and **Ask before spending** | The settings above. |
-| **Default account**, **Default queue**, **Default duration** | What a job uses when the agent does not choose. |
-| **Identity** and **Sign-in** | For a site that needs a sign-in, whose account it uses and whether you are signed in. |
-| **System ID** | For a Tapis site, the system relay registered after you signed in. |
-
-If relay cannot read one site, that card reads **Unavailable** and says why, and the
-rest of the tab keeps working.
-
-## Check, change and remove a site
-
-- **Probe** checks that relay can reach the site and run there, and updates
-  **Last probe**.
-- **Connect** appears when a site needs a sign-in. CLIO first asks you to allow it
-  with **Sign in to a site**. Where CLIO holds the account, such
-  as Globus, it uses CLIO's own sign-in. Otherwise the card shows **Open the sign-in
-  page**. When you finish, the card reads **Signed in**. If relay has no sign-in set up
-  for that site's provider, the card says what is missing instead. A TACC host refuses an account
-  with no allocation on it, so after you sign in such a card reads **Missing an
-  allocation**.
-- **Adapter in use** and **Switch adapter** appear when a site has more than one way
-  in, for example a TACC cluster you reach by Tapis or by SSH. Switching keeps the site
-  and its history.
-- **Edit** opens the site's settings. **Save** keeps your changes; **Cancel** leaves
-  them.
-- **Remove** asks first. **Remove site** removes it; **Keep it** does not. The site's
-  past operations stay on record.
-
-If you change a site from the command line while the tab is open, the tab updates by
-itself. The refresh button at the top of the tab reads it again at any time.
-
-## Where your sites and sign-ins live
-
-When CLIO runs relay, relay keeps its sites in the plugin's own data folder, inside
-CLIO's home folder at `config/plugins/data/clio-relay/config`. To change the same sites
-from a terminal, point relay's command line at that folder with
-`CLIO_RELAY_CONFIG_DIR`.
+Relay keeps your endpoints in the plugin's own data folder. To change them from a
+terminal, see [Use CLIO's endpoints from a terminal](/docs/relay/install/#use-clios-endpoints-from-a-terminal).
 
 Sign-ins go to your system's keyring. Where no keyring works, such as inside CLIO's
-sandbox on Linux, relay keeps them in a file only you can read in that same folder.
-Ask the agent to describe relay to see which one it uses.
+sandbox on Linux, relay keeps them in a file only you can read. Ask the agent to
+describe relay to see which one it uses.
 
-<Aside type="caution" title="Buttons are for you">
-The tab's buttons only work from the tab. The agent cannot press them, and a button
-from an old view refreshes the tab rather than acting.
+<Aside type="caution" title="The page is for you">
+The page's buttons and pickers work only from the page. The agent cannot press them.
+A button from an old view refreshes the page instead of acting, and says
+**That button was out of date, so the page has been refreshed.**
 </Aside>

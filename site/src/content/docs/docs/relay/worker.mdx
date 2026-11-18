@@ -1,0 +1,123 @@
+---
+title: Worker
+description: Sign in to a cluster once over ssh and leave a small relay worker there. Every later call travels over a link the worker dials out to, so the cluster needs no open port and you answer one-time codes once.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import workerHelp from '../../../../assets/captures/relay/worker-help.png';
+import workerHelpPhone from '../../../../assets/captures/relay/worker-help-phone.png';
+
+The **Worker** protocol is for a cluster you reach over ssh but would rather not log
+in to on every call, for example one that asks for a one-time code each time. You sign
+in once. Relay places a small relay worker on the cluster, and from then on every call
+goes over a link the worker dials out to a meeting point, called the rendezvous. Relay
+dials the same rendezvous and reaches the worker through it.
+
+The cluster needs no open port, and relay keeps no ssh session open. The worker runs
+relay's own [Local](/docs/relay/local/) protocol on the cluster, so a job there
+behaves as it would on that machine.
+
+It takes all five tools: `describe`, `run`, `exec`, `files` and `serve`.
+
+## What you need
+
+- A `Host` for the cluster in your `~/.ssh/config`, with the user name, keys and jump
+  hosts ssh needs. Relay passes only that name to ssh.
+- A rendezvous: an [frp](https://github.com/fatedier/frp) server (frps) that both your
+  computer and the cluster can reach. See [Serve a service](/docs/relay/serve/#the-rendezvous)
+  for how to set one up.
+
+## Add a Worker endpoint
+
+<Steps>
+1. On the [Compute page](/docs/compute/), choose **Add endpoint**, fill in **Your
+   own**, and choose the **Worker** tab.
+2. Set **ssh_profile** to the cluster's `Host`, and **scheduler** if you know it.
+3. Fill in the rendezvous: its **address**, **port** and **protocol**, and where relay
+   reads its token (`token_env` or `token_file`).
+4. Choose **Add endpoint**. The row reads **Needs a sign-in**.
+5. Choose **Connect** from the row's menu and answer what ssh asks, such as a
+   password or a one-time code, on relay's page.
+</Steps>
+
+In `sites.yaml`:
+
+```yaml
+- id: ares
+  name: Ares
+  adapter: worker
+  config:
+    ssh_profile: ares
+    scheduler: slurm
+    rendezvous:
+      address: frps.example.org
+      port: 443
+      protocol: wss
+      token_env: RELAY_FRP_TOKEN
+  policy: guarded
+```
+
+An endpoint can keep Worker beside another protocol. In the catalog, Polaris, Vista and
+Stampede3 list Worker as a second way in; tick **Also reach it this way** on the
+Worker tab of their edit form.
+
+## What the sign-in does
+
+In one ssh pass, relay:
+
+1. installs `uv` on the cluster if it is missing;
+2. installs `clio-relay` into the worker's folder;
+3. copies `frpc` over, unless the cluster has its own;
+4. writes the worker's settings and starts it in the background;
+5. waits for the worker to say it is ready, then closes ssh.
+
+Nothing you type reaches relay's logs. Each sign-in places a fresh worker with new
+secrets and stops the one before it. When the link drops, calls are refused with
+`unreachable`; if the worker is gone, choose **Connect** again.
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `ssh_profile` | required | The ssh `Host` that signs in to the cluster |
+| `ssh_config_file` | `~/.ssh/config` | Another ssh config file |
+| `scheduler` | `auto` | `slurm`, `pbs`, `lsf`, `cobalt`, `none`, or `auto` |
+| `work_dir` | in the worker's folder | Where job folders go on the cluster |
+| `rendezvous` | from the environment | The frps server, as below |
+| `remote_dir` | `~/.local/share/clio-relay/worker/<endpoint>` | The worker's folder on the cluster |
+| `relay_requirement` | this relay's version | What `uv` installs on the cluster |
+| `relay_wheel` | none | A local relay wheel to install instead |
+| `site_frpc` | relay's own | An `frpc` already on the cluster |
+| `python` | `3.12` | The Python the worker runs on |
+| `submit_timeout_s` | 60 | How long one scheduler submit may take |
+
+`rendezvous` takes:
+
+| Setting | What it does |
+| --- | --- |
+| `address`, `port` | The frps server, as your computer reaches it |
+| `protocol` | `wss` (default), `websocket` or `tcp` |
+| `site_address`, `site_port` | The frps server as the cluster reaches it, when that differs |
+| `token_env` or `token_file` | Where relay reads the frps token |
+
+## Operator commands
+
+`clio-relay worker` holds the commands for managing worker clusters, sessions and the
+queue by hand:
+
+```sh
+clio-relay worker cluster add --name ares --ssh-host ares
+clio-relay worker cluster list
+clio-relay worker status
+```
+
+<Capture client:visible image={await captureImage(workerHelp)}
+  alt="The output of clio-relay worker --help, listing status, init, install-frp and the endpoint, relay-host, cluster, api, session, queue and scheduler groups"
+  caption="clio-relay worker --help lists the operator commands."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(workerHelpPhone)}
+  alt="The output of clio-relay worker --help, listing status, init, install-frp and the endpoint, relay-host, cluster, api, session, queue and scheduler groups, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />

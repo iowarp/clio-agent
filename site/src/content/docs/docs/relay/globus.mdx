@@ -1,0 +1,128 @@
+---
+title: Globus
+description: Run jobs on a Globus Compute endpoint, such as ALCF Polaris, ALCF Aurora or NCSA DeltaAI, and move files with Globus Transfer. The machine needs no open port, and in CLIO your Globus sign-in is CLIO's own.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import globusShowPolaris from '../../../../assets/captures/relay/globus-show-polaris.png';
+import globusShowPolarisPhone from '../../../../assets/captures/relay/globus-show-polaris-phone.png';
+
+The **Globus** protocol runs jobs through
+[Globus Compute](https://www.globus.org/compute) and moves files through Globus
+Transfer. A Compute endpoint only makes outbound connections, so the machine needs no
+open port.
+
+It takes `describe`, `run` and `files`. The `polaris` catalog entry also lists
+[Worker](/docs/relay/worker/) and [IRI](/docs/relay/iri/) as alternatives, so on
+Polaris `exec` and `serve` go through Worker. To use IRI instead of Globus, run
+`clio-relay site switch polaris iri` and then set IRI's `resource_id`, as the
+[command line reference](/docs/relay/cli/#site) shows. Until `resource_id` is set,
+relay skips IRI and keeps using Globus.
+
+Install relay with the `globus` extra when you run it yourself:
+`uv tool install --python 3.12 --no-config "clio-relay[globus]"`. CLIO's plugin
+includes it.
+
+<Capture client:visible image={await captureImage(globusShowPolaris)}
+  alt="The output of clio-relay site show polaris: describe, run and files go to globus, and exec and serve go to worker as an alternative"
+  caption="site show polaris shows which protocol takes each tool."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(globusShowPolarisPhone)}
+  alt="The output of clio-relay site show polaris: describe, run and files go to globus, and exec and serve go to worker as an alternative, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Catalog endpoints
+
+| ID | Machine | Endpoint |
+| --- | --- | --- |
+| `polaris` | ALCF Polaris, PBS | ALCF's multi-user endpoint. Nothing is installed on Polaris. |
+| `deltaai` | NCSA DeltaAI, Slurm | NCSA's multi-user endpoint |
+| `aurora` | ALCF Aurora, PBS | Your own endpoint on an Aurora login node |
+
+All three are Secure and ask before spending. Set your project or allocation in
+**Default account**: for DeltaAI it ends in `-dtai-gh`.
+
+## Sign in
+
+The protocol uses relay's `globus` identity, with the scopes for Globus Compute and
+Globus Transfer.
+
+- **In CLIO**, the relay plugin asks CLIO for a Globus account. CLIO signs you in and
+  keeps the sign-in current, and relay uses it. Choose **Connect** on the endpoint's
+  row if it reads **Needs a sign-in**.
+- **Elsewhere**, run `clio-relay asks sign-in globus`. It opens Globus's page; paste
+  the code it gives you back into the terminal.
+
+## Add a Globus endpoint
+
+<Steps>
+1. On the [Compute page](/docs/compute/), choose **Add endpoint** and pick
+   **ALCF Polaris** or **NCSA DeltaAI** under **From the catalog**.
+2. Choose **Edit** from its row and fill in **Default account**.
+3. Choose **Probe**.
+</Steps>
+
+### Your own endpoint
+
+Where you run your own Compute endpoint, as on Aurora, configure it once on a login
+node, then put its id in `endpoint`. Add `start` so relay can bring it back when it
+goes offline. The start command runs through the [Worker](/docs/relay/worker/)
+protocol's `exec`:
+
+```yaml
+- id: aurora
+  name: ALCF Aurora
+  adapter: globus
+  identity: globus
+  config:
+    endpoint: <the id your endpoint printed>
+    scheduler: pbs
+    start:
+      adapter: worker
+      config: {ssh_profile: aurora}
+      command: [globus-compute-endpoint, start, clio-relay]
+  defaults: {account: <your project>, queue: debug}
+```
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `endpoint` | required | The Globus Compute endpoint id |
+| `scheduler` | none | `pbs`, `slurm` or `none`, shown by `describe` |
+| `queues` | none | The queues the machine offers, shown by `describe` |
+| `user_config` | none | Fixed values for the endpoint's template, such as `worker_init` |
+| `user_config_keys` | ALCF's names | Which template key takes the job's account, queue, walltime and node count |
+| `walltime_format` | `hh:mm:ss` | `hh:mm:ss`, `minutes` or `seconds`, as the template expects |
+| `job_root` | `~/.clio-relay/jobs` | Where job folders go on the machine |
+| `cancel_poll_s` | 5 | How often a running job checks for a cancel |
+| `inline_input_limit` | 6 MiB | Inputs up to this size travel inside the task |
+| `collection` | none | The machine's Globus collection, for `files` and large inputs |
+| `collection_root` | `/~/` | Where relative paths start on that collection |
+| `content_dir` | `.clio-relay/content` | Where staged inputs go on the collection |
+| `local_collection`, `local_path`, `local_dir` | none | A collection on relay's own computer, such as Globus Connect Personal |
+| `start` | none | How relay starts your own endpoint when it is offline |
+
+## How a job runs
+
+Relay submits one Compute task. The job's account, queue, walltime and nodes go in
+the endpoint's settings, so the endpoint asks the scheduler for that allocation. The
+task writes the inputs into `<job_root>/<operation id>/`, runs the command, and writes
+`stdout`, `stderr` and the exit code there.
+
+Globus Compute cannot cancel a task once it is submitted. Relay's `cancel` sends a
+second task that leaves a marker, and the running job sees it and stops. On a busy
+endpoint, that second task may wait behind the job.
+
+A multi-user endpoint gives its batch job back after a few idle minutes (four on
+ALCF's), so a job sent later may wait in the queue again.
+
+## Files
+
+`files` lists, reads and writes through Globus Transfer. Listing needs only the
+machine's `collection`. Reading and writing also need a collection on relay's
+computer, because Transfer moves data between two collections. A transfer that keeps
+failing is cancelled; one that is making progress has no time limit.
