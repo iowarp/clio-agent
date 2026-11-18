@@ -1,7 +1,6 @@
 """Provenance wiring installed at gact app assembly (#1247).
 
-app.py stays assembly-only (the ``relay_wiring.py`` precedent its baseline
-comment cites): the artifact-provenance backend construction, the centralized
+app.py stays assembly-only: the artifact-provenance backend construction, the centralized
 session-lifecycle semantic bridge, and the shutdown close live here as owner
 code, called from ``build_app`` / ``_lifespan`` as one-liners.
 """

@@ -736,18 +736,6 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         allowed_roots.extend(item for item in existing.split(os.pathsep) if item)
     monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
 
-    # Strip ambient relay wiring from tests that did not opt into a live door
-    # (``relay`` / ``live`` / ``real_case`` markers keep it). CLIO_RELAY_* can
-    # appear MID-SUITE: litellm's import-time dotenv slurps a repo-root ``.env``
-    # on the first turn that touches the LM stack, and a stale relay block there
-    # then configures a half-dead door for every later-built app (observed live
-    # 2026-08-19: ~15s connect timeouts inside child turns — the s7 parity
-    # reds). Tests that need relay config set it explicitly via monkeypatch,
-    # which runs after this fixture and still wins.
-    if not any(request.node.get_closest_marker(m) for m in ("relay", "live", "real_case")):
-        for _key in [k for k in os.environ if k.startswith("CLIO_RELAY_")]:
-            monkeypatch.delenv(_key, raising=False)
-
     config_dir = xdg_root / "clio-agent"
     config_dir.mkdir(parents=True, exist_ok=True)
     layer: dict[str, object] = {

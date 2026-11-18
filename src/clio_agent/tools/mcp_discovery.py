@@ -335,8 +335,8 @@ class NamespaceDiscoveryHealer:
         """Signal the thread to exit WITHOUT waiting — for a caller that must not block.
 
         ``ClioAgent._start_mcp_namespace_discovery`` uses this to retire a
-        stale healer from a PRIOR default-gateway build (e.g. a periodic
-        relay-catalog refresh): that call runs on the gact event loop, so a
+        stale healer from a PRIOR default-gateway build: that call runs on the
+        gact event loop, so a
         bounded :meth:`stop` join (up to ``tick_s`` + 5s) would freeze the
         whole server for that window. ``threading.Event.set`` wakes a thread
         parked in ``wait()`` immediately, so the stale thread exits promptly
