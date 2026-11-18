@@ -216,8 +216,8 @@ def present_start(args: Mapping[str, Any]) -> dict[str, Any]:
     if not name and (
         str(args.get("search") or "").strip() or str(args.get("category") or "").strip()
     ):
-        head, blocks = _query_head(args)
-        return {**head, "summary": "", "blocks": blocks}
+        head, query_blocks = _query_head(args)
+        return {**head, "summary": "", "blocks": query_blocks}
     if not name:
         return {
             "action": "List",

@@ -180,7 +180,9 @@ stated):
   person, ParaView works end to end (Q16 rows). Whether the agent should reach for an
   application unprompted is a product decision; no rule was added to make it.
 - **Accounts still needed for two rows:** Q8 (SWOT downloads, NASA Earthdata) and Q21
-  (validated and costed CDS request, a CDS token), entered in the connector cards.
+  (validated and costed CDS request, a CDS token), entered in the connector cards. The
+  prompts, references and what to record for these and the optional local reruns are in
+  [earth-ocean-local-runs.md](earth-ocean-local-runs.md).
 
 - **Secrets for skill scripts.** ECMWF's `ecmwf-polytope` and `ecmwf-cds-ads`
   scripts run through `shell_bash` and read their keys from the environment

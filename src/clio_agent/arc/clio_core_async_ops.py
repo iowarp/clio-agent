@@ -210,6 +210,8 @@ class TagIds:
 class ClioCorePutRefused(RuntimeError):
     """A completed native put was refused, with its structured return code."""
 
+    native_code: int | None  # None when the guard refused before any native call
+
     def __init__(self, name: str, code: int) -> None:
         self.native_code = code
         super().__init__(f"clio-core AsyncPutBlob({name!r}) returned code {code}")

@@ -160,6 +160,7 @@ export default defineConfig({
 						{ label: 'Explore a hurricane in HDF5 data', slug: 'docs/examples/hdf5-paraview' },
 						{ label: 'A branched study', slug: 'docs/examples/branched-study' },
 						{ label: 'A hybrid quantum classifier', slug: 'docs/examples/hybrid-qml' },
+						{ label: 'Computational chemistry', slug: 'docs/examples/chemistry' },
 						{ label: 'Research a question in depth', slug: 'docs/examples/deep-research' },
 						{ label: 'Find a decision in research notes', slug: 'docs/examples/research-notes' },
 						{ label: 'Create a report and slides', slug: 'docs/examples/reports-and-slides' },

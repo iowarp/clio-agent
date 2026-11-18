@@ -464,9 +464,19 @@ async def _enable_one(app: Any, row: dict[str, Any], item: dict[str, Any], value
 
 
 def _words(reason: str, exc: BaseException) -> str:
+    """The reason in words, then what actually happened: the failing command's own output.
+
+    The reason alone hid the cause (a clio-kit exit 1 read as "does not know this server"
+    while the server was known and its output said why), so the error text follows it.
+    """
     from clio_agent.tools.mcp_prepare import PREPARE_REASONS  # noqa: PLC0415
 
-    return (PREPARE_REASONS.get(reason) or str(exc))[:300]
+    said = PREPARE_REASONS.get(reason)
+    happened = " ".join(str(exc).split())
+    if not said:
+        return happened[:600]
+    trace.event("TOOLS", "agent_needs_enable_failed reason=%s detail=%s", reason, happened[-1500:])
+    return f"{said[:300]} What happened: {happened[-300:]}" if happened else said[:300]
 
 
 def _prepare_kit(cid: str, server: str) -> str:

@@ -22,6 +22,10 @@ import slicerDark from '@/assets/carousel/3d-printing/slicer-dark.webp';
 import routedBoard from '@/assets/carousel/electronics/kicad-routed-board.webp';
 import boardCase from '@/assets/carousel/electronics/kicad-case.webp';
 import hybridTraining from '@/assets/carousel/quantum/hybrid-training.webp';
+import imaginaryLight from '@/assets/carousel/chemistry/imaginary-mode-light.webp';
+import imaginaryDark from '@/assets/carousel/chemistry/imaginary-mode-dark.webp';
+import avogadroLight from '@/assets/carousel/chemistry/avogadro-light.webp';
+import avogadroDark from '@/assets/carousel/chemistry/avogadro-dark.webp';
 
 export interface SlideImage {
 	src: string;
@@ -132,6 +136,26 @@ const SLIDES: readonly SlideSource[] = [
 		alt: 'Two charts from a CLIO training run on MNIST 0 vs 1: loss per epoch and training accuracy per epoch over 30 epochs, comparing a classical model and a hybrid quantum-classical model',
 		link: { href: '/docs/examples/hybrid-qml/', text: 'A hybrid quantum classifier' },
 		light: hybridTraining,
+	},
+	{
+		id: 'imaginary-mode',
+		field: 'Chemistry',
+		title: 'An imaginary mode you can watch',
+		body: 'Asked for eclipsed ethane, CLIO optimized it with MACE, found its one imaginary frequency, 287i cm⁻¹, and played that mode in the 3D viewer beside the conversation: the torsion that leads to the staggered form.',
+		alt: 'CLIO with the ethane conversation on the left, reporting the MACE optimization and one imaginary frequency at 287.3i cm⁻¹, and the Burette 3D viewer open in a tab on the right, playing the mode: ethane with its two methyl groups twisting about the carbon-carbon bond',
+		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
+		light: imaginaryLight,
+		dark: imaginaryDark,
+	},
+	{
+		id: 'avogadro',
+		field: 'Chemistry',
+		title: 'Avogadro in the conversation',
+		body: 'CLIO built ethylene glycol, optimized it with MACE and opened it in Avogadro 2, whose full window runs in a tab beside the conversation, ready for editing.',
+		alt: 'CLIO with the ethylene glycol conversation on the left, reporting the MACE optimization with a table of bond lengths, and an Avogadro tab on the right filled by the Avogadro 2 window at full size, menus and display panels included, with ethylene glycol as balls and sticks',
+		link: { href: '/docs/examples/chemistry/', text: 'Computational chemistry with Alembic' },
+		light: avogadroLight,
+		dark: avogadroDark,
 	},
 ];
 
