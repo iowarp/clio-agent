@@ -351,3 +351,36 @@ def test_residency_hold_still_prevents_reaping() -> None:
 
     reaper.reap_once()
     assert not executor.closed and "/ws/r" in registry
+
+
+def test_defer_restart_if_active_closes_inline_under_residency_only() -> None:
+    executor = FakeExecutor(busy=False)
+    leases = {"/ws/r": 1}
+    reaper = _reaper({"/ws/r": executor}, leases=leases)
+    reaper.residency["/ws/r"] = 1
+
+    assert reaper.defer_restart_if_active("/ws/r", executor, leases) is False
+    assert "/ws/r" not in reaper._pending_restarts
+
+
+def test_defer_restart_if_active_defers_a_turn_lease_beside_residency() -> None:
+    executor = FakeExecutor(busy=False)
+    leases = {"/ws/r": 2}
+    reaper = _reaper({"/ws/r": executor}, leases=leases)
+    reaper.residency["/ws/r"] = 1
+
+    assert reaper.defer_restart_if_active("/ws/r", executor, leases) is True
+    assert "/ws/r" in reaper._pending_restarts
+
+
+def test_deferred_restart_drains_while_only_residency_holds() -> None:
+    executor = FakeExecutor(idle_s=5)
+    registry = {"/ws/r": executor}
+    leases = {"/ws/r": 2}
+    reaper = _reaper(registry, leases=leases)
+    reaper.residency["/ws/r"] = 1
+    assert reaper.defer_restart_if_active("/ws/r", executor, leases) is True
+
+    leases["/ws/r"] = 1  # the turn ended; the conversation is still on screen
+    assert reaper.reap_once() == ["/ws/r"]
+    assert executor.closed and "/ws/r" not in registry

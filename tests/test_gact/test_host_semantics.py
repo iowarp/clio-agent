@@ -524,8 +524,9 @@ async def test_a_surface_revision_keeps_rising_across_re_reads(
         tabs.shutdown()
 
 
+@pytest.mark.parametrize("reason", ["configuration_switched", "grant_restart"])
 async def test_a_remounted_server_is_watched_again_and_re_read(
-    tab_app: tuple[Any, _Executor],
+    tab_app: tuple[Any, _Executor], reason: str
 ) -> None:
     from clio_agent.tools.fleet_close_listeners import proxies_dropped
 
@@ -537,11 +538,12 @@ async def test_a_remounted_server_is_watched_again_and_re_read(
         old = executor._namespace_servers["hostfx"]
         assert executor.subscribes == [("hostfx", old)]
 
-        # A plugin update or rebind mounts a new server process for the namespace.
+        # A plugin update or rebind mounts a new server process for the namespace, at
+        # once or (``grant_restart``) when the reaper drains a deferred restart.
         executor._namespace_servers["hostfx"] = new = object()
         executor.count = 3
-        proxies_dropped("root", (object(),), "configuration_switched")  # someone else's
-        proxies_dropped("root", (old,), "configuration_switched")
+        proxies_dropped("root", (object(),), reason)  # someone else's
+        proxies_dropped("root", (old,), reason)
         await _until(lambda: bus.of(tabs_module.REFRESHED))
 
         assert executor.subscribes == [("hostfx", old), ("hostfx", new)]

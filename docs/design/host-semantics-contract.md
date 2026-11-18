@@ -319,12 +319,19 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
   replaces it, or CLIO reconnects it), CLIO ends the old stream, opens one on the
   server mounted now, and reads the tab again once. A server an idle reap stopped is
   not restarted for a watch; the tab's next `open` starts it.
-- A plugin update does not reach an open session, by design: a session is pinned to the
-  plugin set it resolved (docs/design/sdk/plugins-and-composition.md, "Sessions are
-  pinned"), and its servers keep running from that snapshot. New sessions get the new
-  version. To move an open session onto it, remove the plugin from the session's agent
-  and add it again (`PATCH /v1/sessions/{sid}/agent`); that re-resolves, mounts the new
-  server and re-watches the tab as above.
+- An installed plugin update reaches the sessions open now, within about two seconds of
+  resolving (after `clio-agent plugin trust`, when the update changed executable parts).
+  CLIO pins each open session that holds the older copy again, exactly as
+  `PATCH /v1/sessions/{sid}/agent` does: its servers mount from the new snapshot, each
+  open tab re-watches and reads again as above (its `owner`, `plugin_title` included,
+  follows the new manifest), and the session's stream gets `session.updated` with
+  `reason: "plugin_updated"` and `plugins: [<ids>]`. When the update changed executable
+  parts (a server command or env), the running server processes are replaced: CLIO
+  restarts the workspace's server fleet at once, or at the end of a turn that is running
+  in that workspace. A text-only update keeps them. A client re-reads `GET .../plugin-tabs`
+  on that event. An update that does not resolve yet (not yet trusted) leaves the
+  session on its copy until it does. A session that is not open moves when it is next
+  opened.
 - `close` drops the tab's surfaces and, when no session still has the tab open, ends the
   listen stream.
 - Tab surfaces are not part of the transcript and are not seen by the model. They live

@@ -173,7 +173,9 @@ class WorkspaceExecutorReaper:
                         self._pending_restarts.discard(root)
                         continue
                     try:
-                        busy = bool(executor.busy) or self._leases.get(fleet_root(root), 0) > 0
+                        # A residency hold (a conversation on screen) does not keep a
+                        # deferred restart waiting, as in :meth:`request_restart`.
+                        busy = bool(executor.busy) or self.turn_leased(root)
                     except Exception as exc:  # noqa: BLE001 - can't prove idle → keep deferred
                         trace.event(
                             "TOOLS",
@@ -319,11 +321,12 @@ class WorkspaceExecutorReaper:
         caller keeps serving the resident executor — a catalog invalidation
         never closes a fleet under a live turn (the executor-closed campaign
         kills). Returns ``False`` when the fleet is idle and unleased (safe to
-        close inline).
+        close inline). A residency hold alone is not live use (:func:`residency_lease`).
         """
 
         try:
-            active = bool(getattr(executor, "busy", False)) or leases.get(fleet_root(root), 0) > 0
+            held = leases.get(fleet_root(root), 0) - self.residency.get(fleet_root(root), 0)
+            active = bool(getattr(executor, "busy", False)) or held > 0
         except Exception:  # noqa: BLE001 - can't prove idle -> never close inline
             active = True
         if not active:
@@ -410,6 +413,9 @@ class WorkspaceExecutorReaper:
                 return RESTART_DEFERRED_BUSY
             to_close = self._registry.pop(root)
             self._pending_restarts.discard(root)
+        # As in :meth:`reap_once`: listeners let go first (an open resource watch holds the
+        # client session that ``close`` waits on).
+        fleet_closed(root, to_close, "restart")  # CV-N2
         try:
             to_close.close()
         except Exception as exc:  # noqa: BLE001 - close error is typed, restart still evicted
@@ -417,7 +423,6 @@ class WorkspaceExecutorReaper:
                 "TOOLS", "workspace_fleet_restart_close_failed root=%s reason=%s", root, exc
             )
         self._close_channels_if_last(root)
-        fleet_closed(root, to_close, "restart")  # CV-N2
         trace.event("TOOLS", "workspace_fleet_restarted root=%s reason=grant_applied_live", root)
         return RESTART_RESTARTED_LIVE
 

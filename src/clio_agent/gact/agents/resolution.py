@@ -7,7 +7,9 @@ A session freezes its resolved plugin set at start (``plugins-and-composition.md
 * ``agent_delta`` -- plugins added or removed inside this live session;
 * ``agent_resolution`` -- the digest of the pinned :class:`Resolution`.
 
-Parent updates and newly installed plugin versions reach the next session.
+Parent updates reach the next session. A newly installed version of a plugin the
+session holds moves an open session onto it once it resolves
+(:mod:`clio_agent.gact.plugin_update_follow`); a session not open moves when opened.
 Adding or removing a plugin inside a live session reruns stage 2 and pins the
 new result (:func:`pin_session_agent`). A defined subagent's child session pins
 its own resolution, computed from the parent's.

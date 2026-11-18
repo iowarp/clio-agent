@@ -1,8 +1,9 @@
 """Wire host semantics (HS1 to HS5) into the GACT app.
 
 :func:`install` runs at app build: server-owned A2UI surfaces (HS1) and the plugin
-tab routes (HS3). :func:`start` and :func:`stop` run with the server's lifespan and
-keep plugin account grant files current (HS4). Nothing here names a particular
+tab routes (HS3). :func:`start` and :func:`stop` run with the server's lifespan, keep
+plugin account grant files current (HS4) and move open sessions onto an updated
+plugin (HS3). Nothing here names a particular
 plugin or server; see ``docs/design/host-semantics-contract.md``.
 """
 
@@ -23,21 +24,28 @@ def install(app: Any) -> None:
 
 
 def start(app: Any) -> asyncio.Task[None]:
-    """Start the account grant file sync on the running loop (HS4)."""
+    """Start the account grant file sync (HS4) and the plugin update follow (HS3)."""
 
-    from clio_agent.gact import account_grant_files  # noqa: PLC0415
+    from clio_agent.gact import account_grant_files, plugin_update_follow  # noqa: PLC0415
 
+    plugin_update_follow.start(app)
     return account_grant_files.start(app)
 
 
 async def stop(app: Any) -> None:
-    """Stop the account grant file sync, if it runs, and wait for it to end."""
+    """Stop the grant file sync and the plugin update follow, and wait for them to end."""
 
-    task = getattr(app.state, "account_grants_task", None)
-    if task is None or task.done():
-        return
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    tasks = [
+        task
+        for task in (
+            getattr(app.state, "account_grants_task", None),
+            getattr(app.state, "plugin_update_follow_task", None),
+        )
+        if task is not None and not task.done()
+    ]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 __all__ = ["install", "start", "stop"]

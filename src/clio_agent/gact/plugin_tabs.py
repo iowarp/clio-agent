@@ -59,8 +59,11 @@ UNAVAILABLE = "plugin_tab.unavailable"
 SERVER_UNAVAILABLE = "plugin_tab_server_unavailable"
 RESOURCE_FAILED = "plugin_tab_resource_failed"
 
-#: Why a fleet dropped a server, when the server is mounted again at once.
-REMOUNT_REASONS = frozenset({"configuration_switched", "namespace_rebound", "restart"})
+#: Why a fleet dropped a server, when the server is mounted again at once. ``grant_restart``
+#: is a deferred restart (a changed configuration or plugin snapshot) the reaper drained.
+REMOUNT_REASONS = frozenset(
+    {"configuration_switched", "namespace_rebound", "restart", "grant_restart"}
+)
 
 #: ``(session id, plugin id, tab id)``
 TabKey = tuple[str, str, str]
@@ -507,10 +510,17 @@ class PluginTabs:
     async def rebind(self, key: TabKey) -> None:
         """Subscribe an open tab on the session's current executor, then re-read it."""
 
+        from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
+
         with self._lock:
             state = self._open.get(key)
         if state is None:
             return
+        # The server mounted now may come from an updated plugin (a new title, say).
+        scope = await run_off_loop(server_scope, self._app, state.session_id, state.scope.namespace)
+        with self._lock:
+            if scope is not None and self._open.get(key) is state:
+                state.scope = scope
         held = await self._subscribe(state, subscribed=True)
         with self._lock:
             if self._open.get(key) is state:
