@@ -295,11 +295,13 @@ class PluginTabs:
             if "unknown MCP namespace" in str(exc):
                 raise PluginTabError(503, SERVER_UNAVAILABLE, str(exc)) from exc
             raise PluginTabError(502, RESOURCE_FAILED, str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 - any failed read is the tab's typed state
+        except Exception as exc:  # noqa: BLE001 - forwards: a failed read is the tab's typed state
             raise PluginTabError(502, RESOURCE_FAILED, f"{type(exc).__name__}: {exc}") from exc
         return await run_off_loop(self._fold_contents, state, _contents(result))
 
     async def _subscribe(self, state: TabState, *, subscribed: bool) -> bool:
+        from mcp.shared.exceptions import MCPError  # noqa: PLC0415
+
         from clio_agent.gact.mcp_apps import _run_bound  # noqa: PLC0415
 
         namespace, uri = state.watch_key
@@ -312,7 +314,8 @@ class PluginTabs:
 
         try:
             return await _run_bound(self._app, state.session_id, change)
-        except Exception:  # noqa: BLE001 - without a subscription the tab still opens
+        except (MCPError, OSError, RuntimeError, ValueError, LookupError):
+            # Without a subscription the tab still opens; it just isn't pushed changes.
             logger.warning(
                 "resource subscription change failed namespace=%s uri=%s subscribed=%s",
                 namespace,

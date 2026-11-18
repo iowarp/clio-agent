@@ -26,7 +26,7 @@ from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import ToolsListChanged
 
-from clio_agent.tools import gateway, mcp_tools_changed
+from clio_agent.tools import gateway, mcp_config, mcp_tools_changed
 from clio_agent.tools.gateway import build_gateway, namespace_proxies
 from clio_agent.tools.mcp_config import MCPServerSpec
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
@@ -118,11 +118,11 @@ async def test_a_lost_stream_is_reopened_and_records_one_catch_up_change(
 async def test_a_replacement_watch_catches_up_on_its_first_acknowledgement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _scripted(monkeypatch, [[], MCPError(-32601, "Method not found")])
+    _scripted(monkeypatch, [[], [], MCPError(-32601, "Method not found")])
 
     await watch_tools(_session(), "fx", catch_up=True, retry_after=0)
 
-    # The catch-up, then a second one when the stream that ended is reopened.
+    # The first acknowledgement catches up, then the reopened stream catches up again.
     assert mcp_tools_changed.tools_changed_generation("fx") == 2
 
 
@@ -191,6 +191,8 @@ def _executor(
     monkeypatch: pytest.MonkeyPatch, namespace: str, backend: FastMCP
 ) -> AsyncMCPToolExecutor:
     monkeypatch.setattr(gateway, "transport_for", lambda spec, cwd=None: backend)
+    # The direct route builds its client through the config module's transport_for.
+    monkeypatch.setattr(mcp_config, "transport_for", lambda spec, cwd=None: backend)
     gw = build_gateway({namespace: MCPServerSpec(name=namespace, transport="stdio", command="x")})
     return AsyncMCPToolExecutor(gw, namespace_servers=namespace_proxies(gw))
 
@@ -225,8 +227,12 @@ async def test_listen_carries_added_and_removed_tools_into_the_table(
         assert refreshed[namespace][0] == [f"{namespace}_add_code_cell"]
         assert f"{namespace}_add_code_cell" in executor.get_tool_names()
 
-        await _until(namespace, mcp_tools_changed.tools_changed_generation(namespace) + 1,
-                     executor, "disconnect")
+        await _until(
+            namespace,
+            mcp_tools_changed.tools_changed_generation(namespace) + 1,
+            executor,
+            "disconnect",
+        )
         refreshed = await executor.refresh_changed_namespaces()
 
         assert refreshed[namespace][1] == [f"{namespace}_add_code_cell"]

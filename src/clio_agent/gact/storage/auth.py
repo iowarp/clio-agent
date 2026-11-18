@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 import threading
 import time
@@ -65,8 +66,8 @@ class StorageAuth:
         if callback is not None:
             try:
                 callback()
-            except Exception:  # noqa: BLE001 - a listener must not fail a sign-in
-                pass
+            except RuntimeError as exc:  # the listener's event loop has closed
+                logging.getLogger(__name__).debug("storage auth listener closed: %s", exc)
 
     def connected(self, record: SourceRecord) -> bool:
         """Report usable account access and any source-specific consent still needed."""

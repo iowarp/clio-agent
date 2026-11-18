@@ -52,9 +52,7 @@ class AsyncNamespacePreparationMixin:
 
         from fastmcp import Client  # noqa: PLC0415
 
-        watches: dict[str, asyncio.Task[None]] = self.__dict__.setdefault(
-            "_clio_tools_watches", {}
-        )
+        watches: dict[str, asyncio.Task[None]] = self.__dict__.setdefault("_clio_tools_watches", {})
         current = watches.get(namespace)
         if self._closed or (current is not None and not current.done()):
             return
@@ -81,6 +79,9 @@ class AsyncNamespacePreparationMixin:
             assert callable(backend)
             made = backend()
             backend_client = await made if inspect.isawaitable(made) else made
+            # Outside a front request the proxy's backend client stays on the legacy era,
+            # which has no listen; ask for the newest era as each proxied call does.
+            backend_client.mode = "auto"
             async with backend_client:
                 yield backend_client
 
@@ -103,9 +104,7 @@ class AsyncNamespacePreparationMixin:
     async def _stop_tools_watch(self, namespace: str | None = None) -> None:
         """Cancel ``namespace``'s tools watch, or every watch when ``namespace`` is None."""
 
-        watches: dict[str, asyncio.Task[None]] = self.__dict__.setdefault(
-            "_clio_tools_watches", {}
-        )
+        watches: dict[str, asyncio.Task[None]] = self.__dict__.setdefault("_clio_tools_watches", {})
         names = list(watches) if namespace is None else [namespace]
         stopped = [task for name in names if (task := watches.pop(name, None)) is not None]
         for task in stopped:

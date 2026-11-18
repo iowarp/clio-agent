@@ -128,7 +128,7 @@ def error_text(raw_result: Any) -> str:
 
     try:
         return result_to_text(raw_result)
-    except Exception:  # noqa: BLE001 - the text of an error is best effort
+    except (TypeError, ValueError, AttributeError, KeyError):  # an unreadable error result
         return "the tool reported an error"
 
 
