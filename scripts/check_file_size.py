@@ -1105,7 +1105,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to
     # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,
-    "src/clio_agent/tools/gateway.py": 805,
+    # (tools/gateway.py entry retired: removing ssh_execute brought it to 799 lines, under the
+    # flat 800 cap.)
     "src/clio_agent/tools/mcp_prepare.py": 1221,
 }
 
