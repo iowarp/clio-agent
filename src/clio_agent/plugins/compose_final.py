@@ -7,8 +7,9 @@ an allowlist keeps a few. :func:`final_prompt_text` re-evaluates every fragment 
 the tools the agent can call at the end of that narrowing, so an agent is never told
 about a tool it cannot call, and applies the fragment's ``when.session`` scope (``root``
 guidance is for a session a person reads, ``delegated`` guidance for one another agent
-started). Tools that are callable but not listed (deferred until searched) count as
-callable.
+started) and its ``when.providers`` (guidance written for one provider's models reaches
+only turns that run on that provider; with no provider known it reaches none). Tools
+that are callable but not listed (deferred until searched) count as callable.
 """
 
 from __future__ import annotations
@@ -20,14 +21,22 @@ __all__ = ["final_prompt_text", "fragment_reaches"]
 
 
 def fragment_reaches(
-    fragment: Mapping[str, Any], callable_names: set[str], *, delegated: bool
+    fragment: Mapping[str, Any],
+    callable_names: set[str],
+    *,
+    delegated: bool,
+    provider: str = "",
 ) -> bool:
     """Whether a composed fragment belongs in the prompt of an agent with these tools.
 
     A ``when_tools`` entry holds when a callable tool has exactly that name or starts
-    with ``<entry>_`` (an MCP or built-in namespace such as ``shell``).
+    with ``<entry>_`` (an MCP or built-in namespace such as ``shell``). A fragment with
+    ``providers`` reaches only a turn whose provider id is one of them.
     """
     if fragment.get("session") == ("root" if delegated else "delegated"):
+        return False
+    providers = fragment.get("providers") or ()
+    if providers and provider not in providers:
         return False
     for wanted in fragment.get("when_tools") or ():
         if wanted not in callable_names and not any(
@@ -52,6 +61,7 @@ def final_prompt_text(
     callable_names: Iterable[str],
     *,
     delegated: bool,
+    provider: str = "",
 ) -> str:
     """``text``, composed from ``prompt``, keeping only the fragments that reach this agent.
 
@@ -61,7 +71,9 @@ def final_prompt_text(
     """
     names = set(callable_names)
     fragments = _fragments(prompt)
-    kept = [f for f in fragments if fragment_reaches(f, names, delegated=delegated)]
+    kept = [
+        f for f in fragments if fragment_reaches(f, names, delegated=delegated, provider=provider)
+    ]
     if len(kept) == len(fragments):
         return text
     if text == "\n\n".join(str(f["text"]) for f in fragments):

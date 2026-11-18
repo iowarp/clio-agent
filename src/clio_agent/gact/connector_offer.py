@@ -464,8 +464,12 @@ def _plugin_skills(app: Any, plugins: list[str]) -> list[dict[str, str]]:
     ]
 
 
-async def offer_connector(connector: str = "", reason: str = "") -> dict[str, Any]:
-    """Offer to add a connector to this conversation; wait for Add or Not now.
+async def offer_connector(
+    connector: str = "", reason: str = "", *, required: bool = True
+) -> dict[str, Any]:
+    """Offer to add a connector to this conversation; wait for Add or Not now, or, when
+    the request does not need it (``required`` false), show the card and return
+    (:mod:`clio_agent.gact.offer_detached`).
 
     ``offer_plugin``'s connector case (:mod:`clio_agent.gact.plugin_offer`).
     """
@@ -503,8 +507,15 @@ async def offer_connector(connector: str = "", reason: str = "") -> dict[str, An
         return await asyncio.to_thread(
             _turned_on, app, found, enabled_now=False, already=True, plugins=present
         )
+    from clio_agent.gact import offer_detached  # noqa: PLC0415
+
+    pending = await asyncio.to_thread(offer_detached.pending_offer, app, session_id, found.id)
+    if pending is not None and pending.get("detached"):
+        return offer_detached.shown_result(pending, outcome=offer_detached.OFFER_PENDING)
     row = await asyncio.to_thread(_card_row, app, session_id, found, reason)
     trace.event("TOOLS", "connector_offered connector=%s session=%s", found.id, session_id)
+    if not required:
+        return await asyncio.to_thread(offer_detached.show, app, row)
     if await asyncio.to_thread(wait_for_card, app, row):
         return {
             "error": OFFER_CANCELLED,

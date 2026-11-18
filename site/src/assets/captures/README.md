@@ -389,3 +389,20 @@ captures after the walkthrough's final beat had turned the 3D view away from the
 
 Reproduce with the steps in `docs/demos/helene-hdf5.md`, then
 `WS=… SID=… node scripts/cloud/ui_check.mjs --scale 2 --theme light --steps scripts/cloud/checks/apps/helene_hero.mjs`.
+
+## Ocean and weather science — 17 November 2026
+
+The `ocean-weather/` images and the `carousel/oceanography/` slide belong to
+[Ocean and weather science](../../content/docs/docs/ocean-and-weather.mdx) and the home
+page carousel. They are untouched browser captures of live runs on the cloud stack
+(`claude_code` provider, Sonnet 5.5, CLIO brand) from plain requests in the ocean and weather
+qualification; `docs/design/earth-ocean-ledger.md` records each conversation.
+`capture-manifest.json` (`ocean_weather`) records each file's checksum, size, scale, theme,
+revisions and the step file that took it.
+
+| File | What it shows | Step file |
+| --- | --- | --- |
+| `ocean-weather/section-picked.png` | The A16N temperature section beside its T-S diagram, one cast clicked on the section and the same cast kept bright in the T-S diagram (light, 1440 x 900 at 2x). | `scripts/cloud/checks/apps/ocean_pick_cast.mjs` |
+| `ocean-weather/profiles.png` | A profile stack CLIO showed from an Argo fetch's result, without the agent building it: one curve excluded, another picked (light, 1440 x 900 at 2x). | `scripts/cloud/checks/apps/profile_stack_pick.mjs` |
+| `ocean-weather/grid-editor.png` | The grid editor on a regional model's bathymetry (dark, 1440 x 900 at 1x, from the qualification run). | — |
+| `../carousel/oceanography/section-{dark,light}.webp` | The same section and T-S diagram for the home page, sidebar collapsed (1280 x 800 at 1.25x). | `scripts/cloud/checks/apps/view_slide.mjs` |

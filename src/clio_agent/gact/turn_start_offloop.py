@@ -49,6 +49,7 @@ from clio_agent.gact.enrichment import (
     enrich_turn_context,
 )
 from clio_agent.gact.events import _publish_transcript_event
+from clio_agent.gact.finish_reminder import FINISH_WORK_SOURCE, finish_work_reminder
 from clio_agent.gact.memory.snapshot import SOURCE as MEMORY_SOURCE
 from clio_agent.gact.memory.snapshot import memory_snapshot_text
 from clio_agent.gact.part_atom_minter import open_turn_minter
@@ -161,6 +162,8 @@ def _prepare_turn_off_loop_steps(
         plugin_change = plugin_change_note(state.app, state.sid)
         # A session another agent started: its answer goes to that agent, whole.
         child_report = child_report_note(state.app, state.sid, state.sess)
+        # Carry the request through (providers the reminder names, root sessions).
+        finish = finish_work_reminder(state.app, state.sid)
         # CLIO's own additions: recorded by the agent loop as messages of their own,
         # ahead of the user's message, never glued into the user's text.
         summoned = state.user_msg.metadata.get(SUMMONS_KEY)
@@ -172,6 +175,7 @@ def _prepare_turn_off_loop_steps(
                 ("replan", replan),
                 (PLUGIN_CHANGE_SOURCE, plugin_change),
                 (CHILD_REPORT_SOURCE, child_report),
+                (FINISH_WORK_SOURCE, finish),
                 # What the person summoned; a server's marker is expanded by the agent
                 # loop, which holds the deferred catalog (summon.py).
                 *summon_injections(state.app, state.sid, summoned),

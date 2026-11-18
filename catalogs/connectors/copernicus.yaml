@@ -1,0 +1,39 @@
+# Copernicus: CliDyn/copernicus-mcp, BSD-3-Clause, a plain MCP server (no view) over the
+# Copernicus Marine Service (CMEMS) and the Climate Data Store family (CDS, ADS, EWDS).
+# CLIO starts it through the clio-kit launcher: clio-kit's copernicus server
+# (mcp-servers/copernicus) runs copernicus-mcp exactly as published, pinned to 0.7.2 (PyPI)
+# with its cmems and cds backends and locked in clio-kit, in its own environment; CLIO
+# never imports it. Large results come back as files with a provenance record, and
+# subset jobs persist across restarts. Its credentials are its own needs, kept in CLIO's
+# secret storage and given to the server through the environment it reads: a Copernicus
+# Marine account for the marine_* tools, and a CDS personal access token, without which
+# the upstream server lists no cds_* tools (earth and ocean ledger). Each CDS dataset's
+# licence is accepted once on its page. The logo, copernicus.svg, is drawn for CLIO
+# (apps ledger, "Connector logos (LG)").
+- id: copernicus
+  name: Copernicus Marine and Climate Data Store
+  logo: copernicus.svg
+  description: Search, subset and download Copernicus Marine ocean products and Climate Data Store datasets such as ERA5, with a provenance record for every file
+  plugin: copernicus
+  server:
+    command: clio-kit
+    args: [mcp-server, copernicus]
+    env:
+      COPERNICUSMARINE_SERVICE_USERNAME: ${need.marine_username}
+      COPERNICUSMARINE_SERVICE_PASSWORD: ${need.marine_password}
+      CDSAPI_KEY: ${need.cds_key}
+  needs:
+    - key: marine_username
+      kind: value
+      label: Copernicus Marine username
+      required: false
+      help: For ocean products. Register free at data.marine.copernicus.eu.
+    - key: marine_password
+      kind: secret
+      label: Copernicus Marine password
+      required: false
+    - key: cds_key
+      kind: secret
+      label: Climate Data Store personal access token
+      required: false
+      help: For ERA5 and other CDS datasets. Sign in at cds.climate.copernicus.eu and copy the token from your profile; accept each dataset's licence once on its page.

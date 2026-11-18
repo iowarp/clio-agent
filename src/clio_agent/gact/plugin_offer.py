@@ -471,14 +471,22 @@ def _joined(
     return result
 
 
-async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> dict[str, Any]:
+async def _offer_plugin(
+    app: Any, session_id: str, record: Any, reason: str, *, required: bool = True
+) -> dict[str, Any]:
+    from clio_agent.gact import offer_detached  # noqa: PLC0415
     from clio_agent.gact.connector_setup import wait_for_card  # noqa: PLC0415
 
     here = await asyncio.to_thread(_here, app, session_id)
     if here is not None and record.id in here:
         return await asyncio.to_thread(_joined, app, session_id, record, already=True)
+    pending = await asyncio.to_thread(offer_detached.pending_offer, app, session_id, record.id)
+    if pending is not None and pending.get("detached"):
+        return offer_detached.shown_result(pending, outcome=offer_detached.OFFER_PENDING)
     row = await asyncio.to_thread(_card_row, app, session_id, record, reason)
     trace.event("TOOLS", "plugin_offered plugin=%s session=%s", _ref(record), session_id)
+    if not required:
+        return await asyncio.to_thread(offer_detached.show, app, row)
     named = {
         "plugin": record.id,
         "plugin_name": record.id,
@@ -519,8 +527,11 @@ async def offer_plugin(
     search: str = "",
     category: str = "",
     needs: list[str] | None = None,
+    required: bool = False,
 ) -> dict[str, Any]:
-    """Offer to add a plugin or connector to this conversation; wait for Add or Not now.
+    """Offer to add a plugin or connector to this conversation. With ``required`` the
+    turn waits for Add or Not now; without it the card stays on screen and the turn goes
+    on (:mod:`clio_agent.gact.offer_detached`).
     With ``search`` or ``category`` instead, find what could be added (OL-D11). With
     ``needs`` and a connector already here, ask the person for those optional needs.
 
@@ -545,9 +556,11 @@ async def offer_plugin(
 
             return await offer_needs(found, reason, needs)
         if kind == "connector":
-            return await connector_offer.offer_connector(connector=found.id, reason=reason)
+            return await connector_offer.offer_connector(
+                connector=found.id, reason=reason, required=required
+            )
         if kind == "plugin":
-            return await _offer_plugin(app, session_id, found, reason)
+            return await _offer_plugin(app, session_id, found, reason, required=required)
     from clio_agent.gact import offer_search  # noqa: PLC0415
     from clio_agent.gact.offer_list import listed, overlay_or_default  # noqa: PLC0415
 
@@ -593,9 +606,12 @@ def build_offer_plugin_tool() -> Any:
             "Add or Not now; you never add it yourself. The card is how you ask: the person "
             "cannot add a plugin from your text, so a plugin you would suggest is offered "
             "with this call (alongside what you deliver), not as a sentence in your answer. "
-            "A connector's card also turns it on and asks for what it needs. On Add its "
-            "tools and skills are yours from your next step and you continue the request; "
-            "on Not now you get a refusal and nothing changed. The session facts list some "
+            "A connector's card also turns it on and asks for what it needs. With required "
+            "true (the request cannot go on without it) the turn waits for the answer: on "
+            "Add its tools and skills are yours from your next step and you continue; on "
+            "Not now you get a refusal and nothing changed. Otherwise the card stays on "
+            "screen and you go on with what you have; if the person adds it later you are "
+            "told, and offering it again brings its tools into the turn. The session facts list some "
             "of them and count the rest by category; search (words) or category reaches "
             "every one, the unlisted too, and asks the person nothing: each row says whether "
             "it is in your plugin list. The person chooses that list in "
@@ -628,6 +644,14 @@ def build_offer_plugin_tool() -> Any:
                     "Required. One sentence for the person, shown on the card: why this "
                     "request needs it and what it would do here. For a search, what you are "
                     "looking for."
+                ),
+            },
+            "required": {
+                "type": "boolean",
+                "description": (
+                    "True when the request cannot go on without this plugin, so the turn "
+                    "waits for the person's answer. False (the default) when you can go on "
+                    "without it, for example with another source: the card stays on screen."
                 ),
             },
             "needs": {

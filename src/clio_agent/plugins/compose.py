@@ -49,6 +49,7 @@ class ComposedFragment:
     path: str = ""
     when_tools: tuple[str, ...] = ()
     session: str = ""
+    providers: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -63,6 +64,8 @@ class ComposedFragment:
             row["when_tools"] = list(self.when_tools)
         if self.session:
             row["session"] = self.session
+        if self.providers:
+            row["providers"] = list(self.providers)
         return row
 
 
@@ -182,6 +185,7 @@ def compose(
                 path=fragment.path,
                 when_tools=tuple(fragment.when_tools),
                 session=fragment.when_session,
+                providers=tuple(fragment.when_providers),
             )
         )
     for section in SECTIONS[1:]:

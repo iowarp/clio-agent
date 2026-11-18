@@ -118,6 +118,8 @@ class FragmentRecord:
     generate: str = ""
     #: ``root`` or ``delegated``: the sessions it reaches; empty means both.
     when_session: str = ""
+    #: Provider ids (``claude_code``, ``anthropic``) whose turns it reaches; empty means all.
+    when_providers: tuple[str, ...] = ()
 
     @property
     def tokens(self) -> int:
@@ -258,6 +260,7 @@ class PluginRecord:
                     "plugins",
                     "when_tools",
                     "when_plugins",
+                    "when_providers",
                     "requires",
                     "aliases",
                     "inputs",

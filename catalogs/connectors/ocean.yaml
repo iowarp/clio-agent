@@ -1,0 +1,29 @@
+# Ocean: clio-kit's ocean server (mcp-servers/ocean), BSD-3-Clause, a plain MCP server
+# (no view) for ocean analysis on observations and model output. It is written by hand,
+# not only derived from the clio-kit catalogue (clio-kit/derive.yaml), for one reason: its
+# SWOT swath downloads go through earthaccess, which reads a NASA Earthdata Login from
+# the environment, and a connector's needs are the only way CLIO hands a server a secret.
+# Both needs are optional: every other tool, and searching, works without them. The
+# marEx (AGPL-3.0-or-later) and py-eddy-tracker (GPL-3.0) workers run as separate
+# processes the server calls (earth and ocean ledger, "Copyleft decision").
+- id: ocean
+  name: Ocean analysis
+  logo: ocean.svg
+  description: Analyse CTD casts, Argo and glider profiles, sections, transports, tides, eddies, particles and marine heatwaves, and check regional model set-ups, with a provenance record for every result
+  plugin: ocean
+  server:
+    command: clio-kit
+    args: [mcp-server, ocean]
+    env:
+      EARTHDATA_USERNAME: ${need.earthdata_username}
+      EARTHDATA_PASSWORD: ${need.earthdata_password}
+  needs:
+    - key: earthdata_username
+      kind: value
+      label: NASA Earthdata Login username
+      required: false
+      help: Only for downloading SWOT swaths. Register free at urs.earthdata.nasa.gov.
+    - key: earthdata_password
+      kind: secret
+      label: NASA Earthdata Login password
+      required: false

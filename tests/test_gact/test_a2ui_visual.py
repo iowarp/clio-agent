@@ -216,6 +216,18 @@ def test_unready_view_never_returns_previous_pixels() -> None:
         bridge.capture("sid", "surface", 1, timeout=0.02)
 
 
+def test_unready_view_says_why_when_the_viewer_knows() -> None:
+    """A chart that failed to load its data names the failure, not only the timeout."""
+    bridge = A2UIVisualFeedback()
+    reason = "Chart unavailable: the artifact is not a CSV or Parquet table."
+    bridge.report(
+        "sid",
+        viewer(ready=False, state={"readiness": {"ready": False, "detail": reason}}),
+    )
+    with pytest.raises(VisualFeedbackError, match="not a CSV or Parquet table"):
+        bridge.capture("sid", "surface", 1, timeout=0.02)
+
+
 def test_saved_view_control_requires_its_owner_and_advancing_epoch() -> None:
     bridge = A2UIVisualFeedback()
     before = viewer(artifact_id="artifact_saved")

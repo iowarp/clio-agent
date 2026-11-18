@@ -11,6 +11,8 @@ import stationsLight from '@/assets/carousel/earth-science/stations-light.webp';
 import stationsDark from '@/assets/carousel/earth-science/stations-dark.webp';
 import heleneLight from '@/assets/carousel/earth-science/helene-light.webp';
 import heleneDark from '@/assets/carousel/earth-science/helene-dark.webp';
+import sectionLight from '@/assets/carousel/oceanography/section-light.webp';
+import sectionDark from '@/assets/carousel/oceanography/section-dark.webp';
 import paraviewLight from '@/assets/carousel/visualization/paraview-light.webp';
 import paraviewDark from '@/assets/carousel/visualization/paraview-dark.webp';
 import measureLight from '@/assets/carousel/cad/measure-light.webp';
@@ -67,6 +69,16 @@ const SLIDES: readonly SlideSource[] = [
 		link: { href: '/docs/examples/hdf5-paraview/', text: 'Explore a hurricane in HDF5 data' },
 		light: heleneLight,
 		dark: heleneDark,
+	},
+	{
+		id: 'ocean-section',
+		field: 'Oceanography',
+		title: 'An Atlantic section and its water masses',
+		body: 'From the 145 CTD casts of the 2013 A16N cruise, CLIO drew the section from south of Iceland to 6°S beside a T-S diagram of its water masses. Pick a cast in either view and the other picks it too.',
+		alt: 'CLIO with two linked views: on the left a section of conservative temperature along the A16N cruise track against pressure to 6000 dbar, warm at the surface and cold in the deep; on the right a T-S diagram of conservative temperature against absolute salinity with density contours, its samples coloured by water mass, including Antarctic Bottom Water and Antarctic Intermediate Water',
+		link: { href: '/docs/ocean-and-weather/', text: 'Ocean and weather science' },
+		light: sectionLight,
+		dark: sectionDark,
 	},
 	{
 		id: 'paraview',

@@ -305,6 +305,11 @@ def test_the_card_follows_what_was_enabled_elsewhere(card: Any) -> None:
         patch.setattr(kit_readiness, "prepared", lambda server: True)
         card.ensure_card(app, "s1", _needing())
     assert row["status"] == "submitted" and row["settled"] == "ready_elsewhere"
+    # The settled card still names what it asked for, now ready (not "uses ").
+    assert [i["id"] for i in row["items"]] == ["alpha"]
+    assert row["items"][0]["progress"] == card.READY
+    shown = card.interaction(app, row)
+    assert shown.title.endswith("uses " + row["items"][0]["name"])
 
 
 def test_enable_all_downloads_then_enables_with_progress_in_words(

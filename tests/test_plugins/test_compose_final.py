@@ -73,3 +73,29 @@ def test_the_fragment_budget_binds_third_party_plugins_only() -> None:
         budget_exempt=frozenset({"core"}),
     )
     assert len(composed.warnings) == 1 and "x.long" in composed.warnings[0]
+
+
+_BY_PROVIDER = {
+    "sections": [
+        {"section": "identity", "fragments": [{"id": "a.identity", "text": "You are A."}]},
+        {
+            "section": "guidelines",
+            "fragments": [
+                {
+                    "id": "c.finish",
+                    "text": "Finish the work.",
+                    "providers": ["claude_code", "anthropic"],
+                },
+            ],
+        },
+    ]
+}
+
+
+def test_a_provider_fragment_reaches_only_its_providers_turns() -> None:
+    full = "You are A.\n\nFinish the work."
+    for provider in ("claude_code", "anthropic"):
+        assert final_prompt_text(full, _BY_PROVIDER, [], delegated=False, provider=provider) == full
+    for provider in ("lm_studio", "openrouter", ""):
+        text = final_prompt_text(full, _BY_PROVIDER, [], delegated=False, provider=provider)
+        assert text == "You are A."

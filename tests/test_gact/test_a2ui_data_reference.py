@@ -101,16 +101,16 @@ def _create(components: list[dict[str, Any]]) -> dict[str, Any]:
 def _export_data_uri(app: Any, sid: str, root: Path, name: str, content: str) -> str:
     """Write ``content`` under the workspace and export it, returning its dataUri."""
 
+    from clio_agent.gact.a2ui_producer._export import export_workspace_paths  # noqa: PLC0415
+
     (root / name).write_text(content, encoding="utf-8")
-    result = _create(
-        [
-            {"id": "root", "component": "clio.data-table.v1", "dataUri": name},
-        ]
+    # The export boundary alone mints the artifact:// reference; no surface (whose
+    # component would check the file's format) is needed for that.
+    outcome = export_workspace_paths(
+        app, sid, [{"id": "root", "component": "clio.data-table.v1", "dataUri": name}]
     )
-    # This first surface is throwaway -- it only exists to run the export
-    # boundary once and hand back the minted artifact:// reference.
-    assert result.get("ok") is not False, result
-    [exported] = result["exported_artifacts"]
+    assert isinstance(outcome, tuple), outcome
+    [exported] = outcome[1]["exported_artifacts"]
     return str(exported["uri"])
 
 
@@ -400,10 +400,14 @@ def test_text_component_data_uri_that_is_undecodable_is_a_typed_refusal(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     app, sid, root = _producer_session(tmp_path, monkeypatch)
+    from clio_agent.gact.a2ui_producer._export import export_workspace_paths  # noqa: PLC0415
+
     (root / "binary.dat").write_bytes(b"\xff\xfe\x00\x01\x80\x81")
-    exported = _create([{"id": "root", "component": "clio.data-table.v1", "dataUri": "binary.dat"}])
-    assert exported.get("ok") is not False, exported
-    uri = str(exported["exported_artifacts"][0]["uri"])
+    outcome = export_workspace_paths(
+        app, sid, [{"id": "root", "component": "clio.data-table.v1", "dataUri": "binary.dat"}]
+    )
+    assert isinstance(outcome, tuple), outcome
+    uri = str(outcome[1]["exported_artifacts"][0]["uri"])
 
     result = _create(
         [{"id": "root", "component": "clio.code.v1", "dataUri": uri, "language": "python"}]
@@ -463,6 +467,33 @@ def test_map_selection_field_is_validated_against_real_columns(
     assert bad is not None
     assert bad["reason"] == "a2ui_field_not_in_dataset"
     assert "selectionField='not_a_real_column'" in bad["detail"]
+
+
+def test_chart_data_uri_naming_json_rows_is_refused_at_creation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A chart whose fields live in its spec still names a file it must read as a table."""
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    (root / "rows.json").write_text('[{"year": 1937, "msl_mm": 815.2}]', encoding="utf-8")
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.chart.v1",
+                "dataUri": "rows.json",
+                "spec": {
+                    "mark": "point",
+                    "encoding": {
+                        "x": {"field": "year", "type": "quantitative"},
+                        "y": {"field": "msl_mm", "type": "quantitative"},
+                    },
+                },
+            }
+        ]
+    )
+    assert result.get("ok") is False, result
+    assert result["reason"] == "a2ui_data_reference_unsupported_format"
+    assert "CSV or Parquet" in result["detail"]
 
 
 def test_geojson_map_reference_validates_shape_and_feature_property(

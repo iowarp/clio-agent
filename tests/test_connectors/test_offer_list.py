@@ -158,7 +158,7 @@ def test_offer_plugin_finds_the_unticked_marked_and_offers_one_named(
 
     offered: list[str] = []
 
-    async def offer_connector(connector: str, reason: str) -> dict[str, Any]:
+    async def offer_connector(connector: str, reason: str, required: bool = True) -> dict[str, Any]:
         offered.append(connector)
         return {"connector": connector}
 

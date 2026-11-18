@@ -253,11 +253,14 @@ def ensure_card(app: Any, session_id: str, resolution: Any = None) -> dict[str, 
     if existing is not None:
         # Still asking: the items follow what was enabled elsewhere meanwhile.
         if [item["id"] for item in items] != [item["id"] for item in existing["items"]]:
-            existing.update(items=items, updated_at=_now())
             if not items:
-                existing.update(status="submitted", settled="ready_elsewhere")
+                # Ready without the card: it keeps naming what it asked for, now ready.
+                for item in existing["items"]:
+                    item["progress"] = READY
+                existing.update(status="submitted", settled="ready_elsewhere", updated_at=_now())
                 _publish(app, existing, "connector.setup.resolved")
             else:
+                existing.update(items=items, updated_at=_now())
                 existing["connector_name"] = ", ".join(item["name"] for item in items)
                 _publish(app, existing)
         return existing
