@@ -17,6 +17,7 @@ INJECTED fakes (faked ``which`` + ``version_reader``, an explicit ``platform`` s
 
 from __future__ import annotations
 
+import tomllib
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import Any
@@ -310,7 +311,7 @@ def test_validate_profile_rejects_non_dict() -> None:
 
 def test_synthesize_profile_emits_network_table() -> None:
     """synth emits the REQUIRED Recipe-A network table (enabled/full/allow_upstream_proxy)."""
-    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    profile = sc.synthesize_codex_profile(["/ws"], platform="darwin")
     assert profile["network"] == {
         "enabled": True,
         "mode": "full",
@@ -318,6 +319,39 @@ def test_synthesize_profile_emits_network_table() -> None:
     }
     # The synthesized table round-trips clio's own validation.
     sc.validate_codex_profile(profile)
+
+
+def test_linux_profile_enables_the_managed_proxy_without_local_or_socks() -> None:
+    """Linux isolates the child behind Codex's proxy; nothing may bypass CLIO's upstream."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    assert profile["network"] == {
+        "enabled": True,
+        "mode": "full",
+        "allow_upstream_proxy": True,
+        "enable_socks5": False,
+        "enable_socks5_udp": False,
+        "allow_local_binding": False,
+        "domains": {"*": "allow"},
+    }
+    sc.validate_codex_profile(profile)
+
+
+@pytest.mark.parametrize(
+    ("key", "drift"),
+    [
+        ("allow_local_binding", True),
+        ("enable_socks5", True),
+        ("enable_socks5_udp", 0),
+        ("domains", {"example.com": "allow"}),
+    ],
+)
+def test_validate_profile_rejects_drifted_linux_proxy(key: str, drift: Any) -> None:
+    """Local binding or SOCKS would let Codex dial around CLIO, so drift is a typed reject."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    profile["network"][key] = drift
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(profile)
+    assert "Linux requires" in str(exc.value)
 
 
 def _valid_profile_with_net(network: Any) -> dict[str, Any]:
@@ -582,6 +616,17 @@ def test_render_layer_toml_network_block_shape() -> None:
     assert 'mode = "full"' in block
     assert "allow_upstream_proxy = true" in block
     assert "mitm" not in body
+
+
+def test_linux_layer_turns_on_the_managed_proxy() -> None:
+    """The Linux layer enables Codex's proxy feature with SOCKS and local binding off."""
+    profile = sc.synthesize_codex_profile(["/ws"], profile_name="clio", platform="linux")
+    body = sc._render_layer_toml("clio", profile, elevated=False)
+    parsed = tomllib.loads(body)
+    assert parsed["features"] == {"network_proxy": True}
+    assert parsed["permissions"]["clio"]["network"] == profile["network"]
+    darwin = sc.synthesize_codex_profile(["/ws"], profile_name="clio", platform="darwin")
+    assert "[features]" not in sc._render_layer_toml("clio", darwin, elevated=False)
 
 
 def test_write_layer_validates_before_writing(tmp_path: Path) -> None:

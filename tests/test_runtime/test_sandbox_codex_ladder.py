@@ -24,6 +24,7 @@ from clio_agent.runtime import sandbox
 from clio_agent.runtime import sandbox_codex as sc
 from clio_agent.runtime.sandbox_codex_probe import (
     REASON_CODEX_LINUX_FENCE_UNAVAILABLE,
+    REASON_CODEX_LINUX_NET_UNISOLATED,
     EnforcementVerdict,
 )
 from clio_agent.runtime.sandbox_landlock import LandlockProbe
@@ -98,6 +99,55 @@ def test_macos_codex_egress_is_labelled_env_cooperative() -> None:
     result = sandbox._resolve_backend(platform="darwin", codex_detection=_codex_ok())
     assert result.mechanism == sandbox.MECHANISM_CODEX and result.active is True
     assert sandbox_net.net_mechanism_label(result) == "env-cooperative"
+
+
+@pytest.mark.parametrize(
+    ("verdict", "label"),
+    [
+        (EnforcementVerdict(True, "codex_linux_fence_verified", net_isolated=True), "proxy"),
+        (
+            EnforcementVerdict(True, REASON_CODEX_LINUX_NET_UNISOLATED, "reached the host"),
+            "env-cooperative",
+        ),
+    ],
+)
+def test_linux_codex_claims_proxy_enforcement_only_when_isolated(
+    verdict: EnforcementVerdict, label: str
+) -> None:
+    """The fence still confines writes either way; only the network claim follows the probe."""
+    from clio_agent.runtime import sandbox_net  # noqa: PLC0415
+
+    result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_ENABLED": "true"},
+        platform="linux",
+        codex_detection=_codex_ok(),
+        codex_linux_probe=lambda _binary: verdict,
+    )
+    assert result.mechanism == sandbox.MECHANISM_CODEX and result.active is True
+    assert result.details["net_enforcement"] == label
+    assert result.details["codex_net"] == {
+        "isolated": verdict.net_isolated,
+        "reason": verdict[1],
+    }
+    expected = "proxy-enforced" if verdict.net_isolated else "env-cooperative"
+    assert sandbox_net.net_mechanism_label(result) == expected
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_linux_fence_without_a_chokepoint_channel_stays_offline(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No per-child channel must not let Codex's proxy dial out directly on enforcing Linux."""
+    from clio_agent.runtime import net_chokepoint, sandbox_net  # noqa: PLC0415
+
+    monkeypatch.setattr(net_chokepoint, "open_child_channel", lambda *_a, **_k: None)
+    state = sandbox._resolve_backend(platform=platform, codex_detection=_codex_ok())
+    child, port, overlay = sandbox_net.open_child_egress(state, ["/ws"])
+    assert (child, port) == ("", None)
+    if platform == "linux":
+        assert overlay["HTTPS_PROXY"] == overlay["all_proxy"] == "http://127.0.0.1:9"
+    else:
+        assert overlay == {}
 
 
 @pytest.mark.parametrize(

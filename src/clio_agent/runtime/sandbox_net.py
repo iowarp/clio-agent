@@ -157,7 +157,8 @@ def open_child_egress(
 
     Returns ``(child_id, port, env_overlay)``. ``port`` is ``None`` when no channel could be
     opened — the fence still composes; egress falls back to the shared unattributed listener
-    (a typed reason, never a silent hole), and ``env_overlay`` is empty. Otherwise the overlay
+    (a typed reason, never a silent hole), and ``env_overlay`` is empty, except on an enforcing
+    Linux fence, where it names a closed upstream so the child stays offline. Otherwise the overlay
     points ``HTTP(S)_PROXY``/``ALL_PROXY`` at the per-child channel (the child's route to the
     chokepoint on the floor/Landlock tier; srt overrides it inside the sandbox but the port
     identity is the per-child one). The channel carries the tier's honest net mechanism and
@@ -166,6 +167,7 @@ def open_child_egress(
     """
     child_id = f"child_{uuid.uuid4().hex[:12]}"
     workspace_root = str(write_roots[0]) if write_roots else ""
+    port: Optional[int] = None
     try:
         from clio_agent.runtime.net_chokepoint import open_child_channel  # noqa: PLC0415
 
@@ -178,15 +180,39 @@ def open_child_egress(
             child_id,
             exc,
         )
-        return "", None, {}
     if not port:
-        return "", None, {}
-    proxy_url = f"http://{_LOOPBACK_HOST}:{port}"
+        return "", None, _closed_upstream(state)
+    return child_id, port, _proxy_overlay(f"http://{_LOOPBACK_HOST}:{port}")
+
+
+def _closed_upstream(state: "SandboxResult") -> dict[str, str]:
+    """Without a channel, keep an enforcing Linux fence closed instead of letting Codex dial out.
+
+    Codex's managed proxy connects directly when it has no upstream, which would turn a
+    chokepoint failure into unrecorded egress. Pointing it at a port nobody listens on makes
+    every tunnel fail instead. Other tiers keep the old behavior (no overlay).
+    """
+    from clio_agent.runtime.sandbox import NET_ENFORCEMENT_PROXY  # noqa: PLC0415
+
+    details = state.details if isinstance(state.details, dict) else {}
+    if details.get("net_enforcement") != NET_ENFORCEMENT_PROXY or not str(
+        details.get("platform", "")
+    ).startswith("linux"):
+        return {}
+    logger.warning("egress channel unavailable: the Linux fence keeps the child offline")
+    return _proxy_overlay(f"http://{_LOOPBACK_HOST}:{_CLOSED_PORT}")
+
+
+#: The TCP discard port: nothing listens on it, so every proxied connection is refused.
+_CLOSED_PORT = 9
+
+
+def _proxy_overlay(proxy_url: str) -> dict[str, str]:
     overlay: dict[str, str] = {}
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         overlay[key] = proxy_url
         overlay[key.lower()] = proxy_url
-    return child_id, port, overlay
+    return overlay
 
 
 __all__ = [

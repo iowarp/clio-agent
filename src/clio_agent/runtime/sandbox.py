@@ -54,8 +54,8 @@ REASON_NOT_INSTALLED = "sandbox_not_installed"  # wrap_confined ran before insta
 REASON_FENCE_ACTIVE = "fence_active"
 
 # Network-enforcement labels (owner decision #974.3/#974.7 — honest per tier).
-#: On a proxy-forcing tier the OS fence FORCES children through the clio proxy → real enforcement.
-#: (No current backend forces this; kept as the honest positive label for :mod:`sandbox_net`.)
+#: On a proxy-forcing tier the OS fence FORCES children through the clio proxy → real enforcement
+#: (Linux Codex once its probe proves the child's network namespace routes only to the proxy).
 NET_ENFORCEMENT_PROXY = "proxy"
 #: On the Codex/Landlock/floor tier egress is proxy-ENV cooperation only (raw sockets bypass) —
 #: the record says so, per-edge (never claim proxy enforcement off a forcing tier).
@@ -247,6 +247,8 @@ def _resolve_backend(
             )
         verdict = fence_probe(cdet.binary_path) if fence_probe is not None else (True, "")
         if verdict[0]:
+            if hasattr(verdict, "net_isolated"):  # the real Linux probe also judges the network
+                base_details["codex_net"] = {"isolated": verdict.net_isolated, "reason": verdict[1]}
             return _activate_codex(cdet, base_details)
         codex_probe_failure = {"reason": verdict[1], "detail": getattr(verdict, "detail", "")}
         base_details["codex_probe"] = codex_probe_failure
@@ -301,12 +303,15 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
     The macOS layer does not enable codex's managed proxy, so a child reaches CLIO's
     chokepoint only through the proxy environment variables; a client that ignores them
     connects directly, unrecorded and outside deny mode. That tier is therefore reported
-    ``env-cooperative``, never ``proxy``.
+    ``env-cooperative``, never ``proxy``. Linux claims ``proxy`` only when the probe proved
+    the child's network namespace has no route but the managed proxy.
     """
     mxc = base_details.get("codex", {}).get("implementation") == "mxc"
     if mxc:
         net_enforcement = "proxy-external"
-    elif base_details.get("platform") == "darwin":
+    elif base_details.get("platform") == "darwin" or not base_details.get("codex_net", {}).get(
+        "isolated", True
+    ):
         net_enforcement = NET_ENFORCEMENT_ENV_COOPERATIVE
     else:
         net_enforcement = NET_ENFORCEMENT_PROXY

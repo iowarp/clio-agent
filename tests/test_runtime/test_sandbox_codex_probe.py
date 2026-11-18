@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import psutil
 import pytest
@@ -115,3 +118,89 @@ def test_a_plain_pair_from_an_injected_verifier_still_reads(tmp_path: Path) -> N
         marker_writer=lambda *args, **kwargs: None,
     )
     assert "the confined write was not refused" in result.detail
+
+# --------------------------------------------------------------------------- #
+# Linux fence probe — the child must have no network route but Codex's proxy.  #
+# --------------------------------------------------------------------------- #
+
+
+def _fake_fence(witnesses: tuple[str, ...]) -> Any:
+    """A ``run_probe`` stand-in that writes ``witnesses`` in the probe's write root."""
+
+    def run(argv: list[str], **_kwargs: Any) -> probe.ProbeRun:
+        root = Path(argv[argv.index("-C") + 1])
+        for name in witnesses:
+            (root / name).write_text("", encoding="utf-8")
+        return probe.ProbeRun(0, False, "")
+
+    return run
+
+
+def test_linux_probe_claims_isolation_only_when_the_witness_proves_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(probe, "run_probe", _fake_fence(("started", "net-isolated")))
+    verdict = probe.probe_codex_linux_fence("codex")
+    assert tuple(verdict) == (True, "codex_linux_fence_verified")
+    assert verdict.net_isolated is True
+
+
+def test_linux_probe_runs_the_witness_with_the_proxy_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The probe composes the same Linux layer real spawns use: Codex's managed proxy on."""
+    seen: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> probe.ProbeRun:
+        seen.append(argv)
+        return _fake_fence(("started", "net-isolated"))(argv, **kwargs)
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(probe, "run_probe", run)
+    probe.probe_codex_linux_fence("codex")
+    argv = seen[0]
+    layer = (tmp_path / f"{argv[argv.index('-p') + 1]}.config.toml").read_text(encoding="utf-8")
+    assert "network_proxy = true" in layer and "allow_local_binding = false" in layer
+    child = argv[argv.index("--") + 1 :]
+    assert child[:3] == [sys.executable, "-I", "-c"]
+    assert child[3] == probe._LINUX_NET_WITNESS and child[4].isdigit()
+
+
+def test_linux_probe_reports_a_shared_network_honestly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Run the real witness unfenced: it reaches the host listener, so isolation is not claimed."""
+
+    def run(argv: list[str], **_kwargs: Any) -> probe.ProbeRun:
+        root = argv[argv.index("-C") + 1]
+        env = {k: v for k, v in os.environ.items() if k != "CODEX_NETWORK_PROXY_ACTIVE"}
+        done = subprocess.run(argv[argv.index("--") + 1 :], cwd=root, env=env, timeout=30)
+        return probe.ProbeRun(done.returncode, False, "")
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(probe, "run_probe", run)
+    verdict = probe.probe_codex_linux_fence("codex")
+    assert tuple(verdict) == (True, probe.REASON_CODEX_LINUX_NET_UNISOLATED)
+    assert verdict.net_isolated is False
+    assert "reached the host loopback" in verdict.detail
+
+
+def test_linux_probe_without_the_managed_proxy_is_not_isolated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(probe, "run_probe", _fake_fence(("started",)))
+    verdict = probe.probe_codex_linux_fence("codex")
+    assert tuple(verdict) == (True, probe.REASON_CODEX_LINUX_NET_UNISOLATED)
+    assert "managed network proxy was not active" in verdict.detail
+
+
+def test_linux_probe_that_cannot_start_a_child_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(probe, "run_probe", _fake_fence(()))
+    verdict = probe.probe_codex_linux_fence("codex")
+    assert tuple(verdict) == (False, probe.REASON_CODEX_LINUX_FENCE_UNAVAILABLE)
+    assert verdict.net_isolated is False

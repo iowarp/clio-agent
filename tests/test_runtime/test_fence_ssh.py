@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,13 @@ from clio_agent.runtime import fence_ssh, net_connect, sandbox
 HELPER = str(Path(net_connect.__file__).resolve())
 
 
-def _fake_http_proxy(status: bytes) -> tuple[int, list[bytes]]:
-    """One-shot proxy: records the CONNECT head, answers ``status``, then echoes until EOF."""
+def _fake_http_proxy(
+    status: bytes, *, delay: float = 0.0, echo: bool = True
+) -> tuple[int, list[bytes]]:
+    """One-shot proxy: records the CONNECT head, answers ``status``, then echoes until EOF.
+
+    ``delay`` holds the answer back (an approval wait); ``echo=False`` closes right after it.
+    """
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)
@@ -36,8 +42,9 @@ def _fake_http_proxy(status: bytes) -> tuple[int, list[bytes]]:
                     return
                 head += chunk
             seen.append(head)
+            time.sleep(delay)
             conn.sendall(b"HTTP/1.1 " + status + b"\r\n\r\n")
-            if status.startswith(b"200"):
+            if echo and status.startswith(b"200"):
                 while chunk := conn.recv(1024):
                     conn.sendall(chunk)
 
@@ -148,6 +155,47 @@ def test_the_helper_joins_stdio_to_the_tunnel() -> None:
     assert done.returncode == 0, done.stderr
     assert done.stdout == b"payload over the tunnel"
     assert seen[0].startswith(b"CONNECT example.org:22 ")
+
+
+def test_the_linux_fence_refusal_explains_local_addresses(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    port, _seen = _fake_http_proxy(b"403 Forbidden\r\nx-proxy-error: blocked-by-allowlist")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
+    assert net_connect.main(["/nowhere", "connect", "10.0.0.5", "22"]) == 1
+    err = capsys.readouterr().err
+    assert "the Linux sandbox refused 10.0.0.5:22 (blocked-by-allowlist)" in err
+    assert "loopback, private and unresolvable addresses are blocked" in err
+
+
+def test_a_slow_answer_is_awaited_past_the_dial_timeout(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLIO holds the CONNECT while a person decides; the helper says so and keeps waiting."""
+    monkeypatch.setattr(net_connect, "_APPROVAL_NOTICE_S", 0.2)
+    monkeypatch.setattr(net_connect, "_DIAL_TIMEOUT_S", 0.5)
+    port, _seen = _fake_http_proxy(b"200 Connection established", delay=1.5)
+    sock, _first = net_connect.open_tunnel("example.org", 22, f"http://127.0.0.1:{port}")
+    with sock:
+        sock.sendall(b"ok")
+        assert sock.recv(2) == b"ok"
+    assert "waiting for CLIO's proxy to open example.org:22" in capsys.readouterr().err
+
+
+def test_a_tunnel_closed_before_any_byte_is_reported() -> None:
+    """Behind Codex's proxy a refusal arrives as a 200 followed by an immediate close."""
+    port, _seen = _fake_http_proxy(b"200 Connection established", echo=False)
+    env = {**os.environ, "HTTPS_PROXY": f"http://127.0.0.1:{port}"}
+    done = subprocess.run(
+        [sys.executable, "-I", HELPER, "/nowhere", "connect", "example.org", "22"],
+        input=b"",
+        capture_output=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 1
+    assert b"closed before the server answered" in done.stderr
 
 
 # --------------------------------------------------------------------------- #
