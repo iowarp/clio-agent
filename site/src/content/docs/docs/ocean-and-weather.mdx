@@ -9,6 +9,7 @@ import { captureImage } from "../../../lib/captures";
 import sectionPicked from "../../../assets/captures/ocean-weather/section-picked.png";
 import profiles from "../../../assets/captures/ocean-weather/profiles.png";
 import gridEditor from "../../../assets/captures/ocean-weather/grid-editor.png";
+import cruisePlan from "../../../assets/captures/ocean-weather/cruise-plan.png";
 
 <Aside type="note" title="Development build">
 The ocean and weather plugins are in the development build.
@@ -74,6 +75,14 @@ natural view arrives with it in the conversation:
 - **Grid editor**: select cells of a model grid and choose an edit; each edit is recorded
   by longitude and latitude so it can be replayed onto a regenerated grid.
 - **Skew-T chart**: soundings with temperature, dew point and the surface parcel.
+- **Route**: a planned route (a cruise, a glider mission, a sampling line) as a line from
+  port through its named stops and back, with what it is planned against, such as an
+  eddy's track. Drag a stop and choose **Ask to replan**: the agent re-times the plan and
+  says what the move changes.
+
+Every map draws latitude and longitude lines with their values, a scale bar, and the names
+of a few labelled points, so a view of open ocean still says where it is and how far apart
+things are.
 
 <Capture client:visible image={await captureImage(profiles)}
   alt="A profile stack of one year of Arabian Sea Argo floats: 90 temperature profiles against pressure to 1200 dbar, one picked and drawn in the accent colour with an Exclude button beside its name, the count reading 90 profiles, 1 excluded, and the excluded profile shown as a struck-through chip beside Include all"
@@ -87,6 +96,11 @@ do, and fixes what looks wrong before it answers.
 <Capture client:visible image={await captureImage(sectionPicked)}
   alt="A temperature section of the A16N cruise beside a T-S diagram; one station is selected on the section, and in the T-S diagram that cast's samples stay bright while the others are dimmed"
   caption="A cast picked on the section, and the same cast in the T-S diagram."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(cruisePlan)}
+  alt="A cruise plan for a Gulf of Mexico eddy: the eddy's track and two rings at one and two radii, a route from Gulfport through stations crossing the eddy, one station moved to the north-east by the person and the route redrawn to it, with latitude and longitude lines and a 100 km scale"
+  caption="Five days of ship time to catch an eddy: a station moved on the map, and the plan re-timed and redrawn."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 <Capture client:visible image={await captureImage(gridEditor)}

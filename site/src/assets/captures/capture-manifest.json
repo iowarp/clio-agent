@@ -320,7 +320,7 @@
         "sha256": "8854765c17c3020e932f24e62668ffa99a51e0c60e29db0fd407ac5725ac403a",
         "pixels": "2880x1800",
         "scale": 2,
-        "source": "sess_255e12e2e60d, take2 turn 2 answer (track and central pressure) with the field viewer open; the composer holds the next request with @sst_2024-09.nc › /SSTK",
+        "source": "sess_255e12e2e60d, take2 turn 2 answer (track and central pressure) with the field viewer open; the composer holds the next request with @sst_2024-09.nc \u203a /SSTK",
         "step_file": "scripts/cloud/checks/apps/helene_hdf5.mjs"
       },
       {
@@ -406,6 +406,15 @@
         "scale": 1,
         "theme": "dark",
         "source": "sess_8537be6a4e13 (Q14), the grids editor app on the regional model's bathymetry"
+      },
+      {
+        "file": "ocean-weather/cruise-plan.png",
+        "sha256": "80a02670b992510f58bf7b91ef619cae9128deced4f51295a58c1406be29b2fb",
+        "pixels": "1440x900",
+        "scale": 1,
+        "theme": "dark",
+        "source": "sess_67da4062ea65 (Q13 as O17, follow-up to the Q7 rerun), CLIO's cruise-plan map after the person moved station B5 and sent it: the route redrawn, gridlines, scale and non-overlapping names (gact-tui a2825a58)",
+        "step_file": "scripts/cloud/checks/apps/map_move_point.mjs"
       },
       {
         "file": "../carousel/oceanography/section-dark.webp",
