@@ -14,15 +14,18 @@ readiness per organization and across organizations". Branch in every repo:
 | 3. Core geospatial operations (clio-kit) | Done on clio-kit `claude/ndp-data-access`: new `geoprocess` server (`a78f824`) |
 | 4. Discovery skill and shared `resolve-region` (marketplace) | Done on marketplace `claude/ndp-data-access` (`fce1ba6`): `geospatial` plugin (moved `resolve-region`, `get-geospatial-data`, `harmonize-layers`), ndp `find-ndp-data-for-place`, tile tool claimed |
 | 5. Harmonization and recorded merge | Skill written (`harmonize-layers`); provenance sidecar format awaiting the earth-ocean session's answer; not exercised live |
-| 6. Map with time for rasters and vectors | GeoTIFF/COG/VRT grid layers on `clio.layered-map.v1` built on clio-agent branch `claude/ndp-data-access-map` (`0ea9e1d`, based on the earth-ocean branch, agreed with that session); vectors already worked (`shapes`). Live render verified with a tool-directed prompt (R8). The agent-facing catalog text in clio-schemas still says grids are NetCDF or Zarr only (Needs user) |
+| 6. Map with time for rasters and vectors | Done and proven from a plain request (R7, Tahoe): GeoTIFF/COG/VRT grid layers on `clio.layered-map.v1` (`c6b798db2`), recognised by content as well as name (`c7789b72d`); catalog text corrected in clio-schemas `26e3f78` (made by the earth-ocean session); shapes layers fill and colour by category or layer (gact-tui `0c2ef381e`) |
 | 7. Domain skills (marketplace) | Done (`70088e8`): `wildfire` (fire-perimeters, fire-risk-and-fuels), `landscape` (terrain-from-lidar with a D8 flow-routing script, planning-layers); the ndp agent carries both |
-| Qualification runs | In progress: Tahoe habitat run 1 (R3) done, partial; snow-depth case grounded (R4) |
+| Qualification runs | R9 (2026-11-18 evening, default agent, plain requests): see [R9](#r9-the-qualification-set-on-the-fixed-stack). Every completed case passes on science and shows its result in an A2UI view; Tahoe draws an interactive layered map with GeoTIFF layers |
 
 ## Needs user
 
-- **clio-schemas access for this session.** Attaching `iowarp/clio-schemas` was
-  refused by the session's permission check. Its layered-map text says grid layers
-  read only NetCDF or Zarr, which stopped R6i's map (R6i, failure 1).
+- ~~clio-schemas access for this session~~ resolved 2026-11-18: the earth-ocean
+  session made the change (clio-schemas `26e3f78`), pinned here in `39416b9fe`.
+- **Approving prompts for unattended runs.** When a harness browser dies, its run
+  waits on a permission prompt or a question (Konza, BCO, snow depth in R9). This
+  session may not answer CLIO's permission prompts itself; such runs were cancelled
+  and run again through the harness.
 
 - ~~Repository access~~ resolved 2026-11-17: the user allowed attaching clio-kit and
   clio-agent-marketplace; both are on `claude/ndp-data-access`.
@@ -34,7 +37,8 @@ readiness per organization and across organizations". Branch in every repo:
   before drawing (R8a). Proposed text: "Registered NetCDF, zipped Zarr or
   GeoTIFF/COG/VRT grid (grid layers); for a GeoTIFF, variable names a band by
   number, bandN or description." The validator and renderer already accept it.
-- **Map branch placement.** The GeoTIFF layer change sits on
+- ~~Map branch placement~~ resolved 2026-11-18: the earth-ocean branches and the
+  map commit are merged into `claude/ndp-data-access` in all four repos. Was: The GeoTIFF layer change sits on
   `claude/ndp-data-access-map` (based on `claude/earth-ocean-weather`) because it
   extends that unmerged branch; the earth-ocean session left the merge to the
   owner. This is the one place the "one branch name per repo" rule could not hold.
@@ -872,3 +876,73 @@ Failed:
 
 Verdict: **fail on CLIO presentation**; the science and data path pass for this
 case.
+
+### R9: the qualification set on the fixed stack
+
+2026-11-18, 19:20–21:40 UTC. Every request plain, on CLIO's default agent (dynamic
+plugins: each run offered and added `ndp` and what else it needed), signed in to NDP.
+Command per case: `STUDY_AGENT= bash scripts/cloud/ndp_batch.sh KEY`; follow-ups
+with `scripts/cloud/ndp_continue.sh KEY WS SID` (requests in `ndp_requests.json`
+`followups`). Exports: `ndp-runs/exports/<case>-<session>.*` (JSON and HTML
+transcript, gzipped, scanned for credentials). Captures at 1440x900 and 390x844 in
+`.cloud-run/shots/ndp-<case>-*`; the ones referenced here are copied to
+`ndp-ledger-shots/r9-*`.
+
+The first wave (Sonnet 5.5, `CLIO_LM_MODEL` default) found CLIO bugs, fixed before
+the second wave (Opus 5.5) in the order found:
+
+| Commit | Fix |
+| --- | --- |
+| `673b1188e` | A script's tool calls and range reads count as turn progress (R6h stopped as silent) |
+| `6125041e9` | A range URL answers only for its own file, not GDAL's sidecar probes |
+| `eedca8385` | `connected_data_search_ndp` takes `dataset_id`, `resource_offset`, `resource_format` (paging was refused: "Arg dataset_id is not in the tool's args") |
+| `eae530b2e` | NDP range reads reuse the resolved address and connection (0.3-0.4 s per 16 KiB read before) |
+| `ea3177014` | A later download hard-links unchanged files instead of copying them (one 1.2 GB file was on disk four times) |
+| `c7789b72d` | A GeoTIFF draws on the layered map whatever name it was registered under |
+| clio-kit `bea2434` | Geo's PNG basemap from Esri's keyless canvas (CARTO now answers "API KEY REQUIRED") |
+| clio-schemas `26e3f78` | Grid layers documented as reading GeoTIFF/COG/VRT/IMG (earth-ocean session) |
+| gact-tui `0c2ef381e` | Shapes layers fill and colour by category or by layer |
+
+| Case | Model | Session | Science | A2UI and visual review |
+| --- | --- | --- | --- | --- |
+| Discovery 1 (WWMT GNSS) | Sonnet | `sess_a94590ce3030` | pass: 3 datasets, columns, real rows, honest limits | table |
+| Discovery 5 (Himawari) | Sonnet | `sess_ae8c09a35c6b` | pass: data links vs software link | table |
+| October Alta (SLR) | Sonnet | `sess_ed170d0e46c8` | pass: bootstrap CI, storm-level test, method limits | `clio.chart.v1`, captured and revised |
+| USGS 3DEP lidar (Tahoe City) | Sonnet | `sess_97771bac6463` | pass: 2.4 M ground points via EPT; noticed NDP's 2010 tile links 404 | Image surface |
+| OpenTopography (Wolverton) | Sonnet | `sess_f3f0d0730c4e` | pass: 1 m DTM, slope classes | Image surface (first try refused for `alt`) |
+| Case 01 (San Diego hazards) | Sonnet | `sess_1fbbe47f7ff7` | partial: air quality done, flood and alerts missing | Geo PNG with the CARTO watermark (fixed since) |
+| Case 04 (Fresno CIMIS) | Sonnet | `sess_a04f101fffa4` | pass | PNG link, no surface |
+| Snow depth (SSCZO lidar) | Opus | `sess_cdfff373304d` | pass: snow-on minus snow-off 1 m DTMs, 1.9 m mean, elevation gradient, checked below the snowline, caught a hillshade posing as a DTM | Image surface, captured |
+| Case 03 (LA fire and weather) | Opus | `sess_2c6ad727c21d` | pass: 4 NIFC layers, industrial hotspots separated | Image surface (Esri basemap), captured |
+| Wildfire Task Force (fuels) | Opus | `sess_c65770871584` | pass: 14 t/ac mean, worked around a WCS 500 | Column of metrics, map and histogram, captured |
+| CAL OES (Sonoma) | Opus | `sess_5f5b1ae57d4d` | pass: inventory of 130 datasets, 185 perimeters clipped to the county | Image surface, revised twice |
+| NIFC (Tahoe 20 km) | Opus | `sess_7a1732b31b8b` | pass: 199 fires in 78 years | map and chart, revised three times |
+| TRPA (deer fawning) | Opus | `sess_5d578571a872` | pass: 9.7% of basin, 15.6% of land | metric cards and map |
+| WFSI (fuel moisture) | Opus | `sess_de515d93ea34` | pass: Fort Stewart 2022, DOI, real samples | figure surface |
+| EarthScope (P142) | Opus | `sess_7d3b5b05053e` | pass: 10.0 days, 99.4% complete, gaps listed | time-series surface |
+| Konza (2022 burn) | Opus | `sess_ce452c7d9a5e` | pass: timed plume passage; tested the wind with lagged, autocorrelation-aware statistics; says what the data cannot show | multi-panel figure surface |
+| **Tahoe correlation** | Opus | `sess_1298c9f71757` | pass: six organizations (TRPA, USFWS, CAL FIRE FRAP, NIFC, NASA WERK, CFO) on a 30 m grid, per-layer burn table, terrain and fuel by habitat | **reviewed overview figure plus an interactive `clio.layered-map.v1`**: WERK DTM, CFO canopy, FBFM40 fuel and slope as GeoTIFF grid layers, habitat, critical habitat, basin and fire perimeters as shapes (`r9-tahoe-layered-map-1440.png`) |
+
+Multi-turn (follow-ups in the same conversation):
+
+- Tahoe follow-up 1 (zoom on the burn): the agent reused its data, compared burned
+  with unburned habitat within 2 km rings, captured its figure, found three layout
+  defects and fixed them before answering.
+- Snow depth follow-up 1 (other years): the turn was interrupted by a restart; CLIO
+  resumed it on its own and the agent searched for later lidar flights (NEON
+  2011-13, 3DEP 2020-22).
+
+Seen in this wave and not yet fixed:
+
+- **Harness browsers crash on long live turns.** A conversation tab holds about
+  1 GB; while a turn streams for 45-75 minutes the renderer grew to 3.5-4 GB and was
+  killed (Konza, BCO, Tahoe follow-ups). Opening a finished conversation is fine.
+  Likely a leak in live streaming in gact-tui.
+- **Restart resumes every interrupted turn**, including runs a person had left;
+  two duplicates were cancelled by hand.
+- **No storage view for the agent.** Disk was reclaimed by hand three times (old
+  snapshots, session scratch). CLIO needs a way for the agent to see and release
+  what it downloaded.
+- **Sonnet shows results as PNG links more often than Opus**, with the same
+  guidance in its prompt (case 04, Tahoe R6i).
+
