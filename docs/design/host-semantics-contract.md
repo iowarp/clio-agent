@@ -50,7 +50,7 @@ today.
 {
   "extensions": {
     "ai.iowarp.clio": {
-      "catalogs": ["<a2ui catalog id>"],
+      "catalogs": ["basic"],
       "tabs": [
         {
           "id": "status",
@@ -84,7 +84,10 @@ today.
 | `elicitation.loopback` | Boolean, default `false` | Not a boolean |
 | `elicitation.origins` | List of `https://host[:port]` origins, no path | Other scheme, a path, a wildcard |
 
-`catalogs` is unchanged. HS1 uses it as the server's producible set.
+`catalogs` is unchanged: a built-in catalog's name (`"basic"`), and any catalog the
+plugin ships under `ai.iowarp.clio/a2ui/<name>/`. HS1 uses the `catalogId`s these
+resolve to (Basic is `https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json`)
+as the server's producible set.
 
 ## HS1 and HS1a: A2UI from a server
 
@@ -111,8 +114,9 @@ reads it **per request**:
   project's domain. If A2UI publishes one, CLIO advertises both.
 - `clientCapabilities` is the A2UI v0.9.1 client-capabilities object, verbatim, as the
   A2UI-over-MCP guide places it under `capabilities.a2ui`.
-- `supportedCatalogIds` is the set of catalogs the receiving server's own plugin declares
-  in `catalogs`. A server with no plugin, or a plugin with no `catalogs`, gets no A2UI
+- `supportedCatalogIds` holds the `catalogId`s of the catalogs the receiving server's own
+  plugin declares in `catalogs` (full ids, not the manifest's short names). A server with
+  no plugin, or a plugin with no `catalogs`, gets no A2UI
   extension entry. CLIO never advertises `1.0`.
 - A server must send A2UI only on a request whose stamped capabilities carry this
   extension, and must always send the full text result beside it. It never infers
@@ -175,13 +179,15 @@ task completes. Progress notifications carry no A2UI.
 
 ## HS2: actions on a server's surface go to that server
 
-The client sends the same envelope as for any surface, to the same route
-`POST /v1/sessions/{sid}/a2ui/actions`:
+The client sends the same request as for any surface, to the same route
+`POST /v1/sessions/{sid}/a2ui/actions`, with header `x-a2ui-version: v0.9.1` (else 406)
+and the existing wrapper body `{"message", "correlation"?, "metadata"?}` (any other
+top-level field is 422 `validation_error`):
 
 ```json
-{"version": "v0.9.1",
- "action": {"name": "refresh", "surfaceId": "s1", "sourceComponentId": "btn",
-            "timestamp": "...", "context": {"row": "a", "token": "..."}}}
+{"message": {"version": "v0.9.1",
+             "action": {"name": "refresh", "surfaceId": "s1", "sourceComponentId": "btn",
+                        "timestamp": "...", "context": {"row": "a", "token": "..."}}}}
 ```
 
 When the surface has a server owner:
@@ -208,10 +214,28 @@ The response is HTTP 200:
 
 `outcome` is `applied` (A2UI changed something), `no_update` (no A2UI in the result),
 `task_pending` (the task is still running; changes arrive as events), or `tool_error`
-(the result had `isError`; `error_text` holds its text). Refusals are typed HTTP errors:
+(the result had `isError`; `error_text` holds its text). A `task_pending` response also
+carries `task_handle`, the CLIO task the call became. Refusals are typed HTTP errors:
 `a2ui_server_tool_not_app_visible` (403), `a2ui_server_unavailable` (503, the owner is
 not mounted in this session), `a2ui_surface_not_owned` and the HS1 reasons (422).
 Duplicate submissions are deduplicated as today.
+
+A `data_source/login/<provider>` action answers as any client sign-in action does, and
+the client then runs its own sign-in for `provider`, which it takes from the action name it
+sent:
+
+```json
+{"name": "data_source/login/globus", "status": "accepted", "action_id": "...",
+ "state": "consumed", "delivery": "client_ui", "destination": "client"}
+```
+
+In the conversation the reply also carries `"surface"`, as every conversation action
+reply does. On a tab (HS3) it also carries `"provider"` and the `"context"` CLIO filled. A
+client may treat any 200 as "start sign-in" and needs no field of the body. A 422
+`a2ui_source_login_out_of_scope` means sign-in is not available here (no account service,
+or the session is gone). GitHub has no
+declared scopes to request (its App's permissions are fixed), so a GitHub account only
+needs to be connected.
 
 The context is opaque to CLIO. A server that needs to bind an action to what it rendered
 (for example a single-use token) puts that in the context it renders.
@@ -219,7 +243,11 @@ The context is opaque to CLIO. A server that needs to bind an action to what it 
 ## HS3: plugin tabs
 
 A tab is listed for a session when the session's agent mounts the tab's plugin. Its
-server runs in that session's server set.
+server runs in that session's server set. Tabs are per session: the client builds a
+session's tab strip from that session's `GET .../plugin-tabs`, never from tabs it
+remembers from another session. Opening a tab the session does not list is
+`plugin_tab_not_found` (404); a tab the session does list is fully live there, with its
+own read and watch, whichever session first opened it.
 
 ```text
 GET  /v1/sessions/{sid}/plugin-tabs
@@ -231,20 +259,31 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/open
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/close
      -> {"closed": true}
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
-     body and response as HS2
+     header x-a2ui-version: v0.9.1 (else 406)
+     body {"message": {"version": "v0.9.1", "action": {...}}, "correlation"?, "metadata"?}
+          (the same body as /v1/sessions/{sid}/a2ui/actions)
+     response as HS2
 ```
 
-- `open` sends `resources/read` for the tab's resource and, when the server declares
-  `resources.subscribe`, `resources/subscribe`. The read result is the tab's whole state:
-  its A2UI items replace every surface the tab held. The first batch must start with
-  `createSurface`.
-- On `notifications/resources/updated` for that URI, CLIO reads again and replaces the
-  tab's surfaces. CLIO does not poll.
-- `close` drops the tab's surfaces and, when no session still has the tab open, sends
-  `resources/unsubscribe`.
+- An unknown tab is `plugin_tab_not_found` (404). `actions` on a tab that is not open is
+  `plugin_tab_not_open` (404).
+- `open` sends `resources/read` for the tab's resource and starts watching it for
+  updates. The read result is the tab's whole state: its A2UI items replace every
+  surface the tab held. The first batch must start with `createSurface`.
+- Watching: CLIO opens a `subscriptions/listen` stream with
+  `resourceSubscriptions: [<tab resource>]` (2026-07-28). A server that cannot listen
+  (an older protocol version, or `-32601`) may instead send
+  `notifications/resources/updated` for the URI unsolicited on its connection. CLIO
+  never sends `resources/subscribe`, which 2026-07-28 removed.
+- On `notifications/resources/updated` for that URI, either way, CLIO reads again and
+  replaces the tab's surfaces. A listen stream that drops is reopened, and then read
+  again once. CLIO does not poll.
+- `close` drops the tab's surfaces and, when no session still has the tab open, ends the
+  listen stream.
 - Tab surfaces are not part of the transcript and are not seen by the model. They live
-  in memory for the open tab. Actions on them follow HS2; their results are applied to
-  the tab.
+  in memory for the open tab (a server restart forgets them; `actions` then answers
+  `plugin_tab_not_open` and the client calls `open`). Every tab surface carries the tab
+  server's `owner`. Actions on them follow HS2; their results are applied to the tab.
 - `available: false` with a typed `reason` (`plugin_tab_server_unavailable`,
   `plugin_tab_resource_failed`) when the server is not mounted or the read failed. A read
   that returns refused A2UI opens the tab empty with the HS1 reason.
@@ -312,14 +351,21 @@ from a task's `input_required`:
   `elicitation_url_not_declared`. Loopback from a remote (HTTP) server is
   `elicitation_url_insecure_scheme`.
 
-The question CLIO shows carries where the origin came from, so the UI can say it:
+The question CLIO shows carries where the origin came from, so the UI can say it. In the
+question's `metadata.elicitation`, beside the existing url-mode fields:
 
 ```json
-"metadata": {"url": "http://127.0.0.1:41234/ask/...", "origin": "http://127.0.0.1:41234",
-             "origin_trust": "plugin_loopback", "plugin": "<plugin id>", "server": "<server>"}
+{"mode": "url", "url": "http://127.0.0.1:41234/ask/...", "origin": "http://127.0.0.1:41234",
+ "origin_trust": "plugin_loopback", "plugin": "<plugin id>", "server": "<server>"}
 ```
 
-`origin_trust` is `configured`, `plugin_origin` or `plugin_loopback`.
+`origin_trust` is `configured`, `plugin_origin` or `plugin_loopback`. `plugin` is "" for a
+server no plugin declares.
+
+In the pending interaction (`GET /v1/sessions/{sid}/interactions` and its events), the
+question's `metadata.elicitation` fields are also spread flat into `payload`, as every
+url-mode field already is: `payload.origin`, `payload.origin_trust`, `payload.plugin` and
+`payload.server` sit beside `payload.url`. `payload.metadata` keeps the nested copy.
 
 ## Events for the UI
 
@@ -335,8 +381,23 @@ On `GET /v1/sessions/{sid}/events` (SSE):
 | `plugin_tab.refreshed` | `{"tab_id", "revision", "surface_ids"}` after a re-read replaced the tab |
 | `plugin_tab.unavailable` | `{"tab_id", "reason", "detail"}` |
 
-A tab's `revision` increases on every change; a client that sees a gap calls `open`
-again.
+Tab revisions, per open tab:
+
+- `open` returns the tab's whole state and its `revision`; the client replaces what it
+  held with it.
+- Every `plugin_tab.surface.upserted` and `plugin_tab.surface.deleted` adds exactly 1.
+  An event with `revision <= current` is stale (it was folded into an `open` reply) and is
+  ignored. An event with `revision > current + 1` is a gap: call `open` again.
+- A re-read publishes `upserted` for every surface it holds and `deleted` for every
+  surface it dropped, then `plugin_tab.refreshed`. `refreshed` adds nothing: its
+  `revision` equals the last surface event's, and `surface_ids` are the tab's whole live
+  set (ids only). The client drops any tab surface not in `surface_ids`; a
+  `revision != current`, or an id it does not hold, means it missed events: call `open`.
+- `plugin_tab.unavailable` carries no revision and leaves the surfaces in place. The next
+  `refreshed` for the tab means it is available again.
+- After the SSE stream reconnects, or on any `stream.gap`, call `open` again for each open
+  tab. The stream's replay is bounded and does not report every overflow, so it is not
+  enough on its own. `open` on an open tab re-reads it and keeps its watch.
 
 ## Decisions to confirm
 
