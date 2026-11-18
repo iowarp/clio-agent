@@ -25,7 +25,14 @@ does not; `main` is 146 commits ahead of `develop` (checked 2026-11-17).
 Cloud container: 4 CPUs, 15 GB RAM, no GPU (`nvidia-smi` absent), 26 GB free
 disk. System packages installed with apt for this work: `libnetcdf-dev`,
 `libnetcdff-dev`, `gfortran`, `libopenmpi-dev`, `openmpi-bin`, `nco`, `cdo`,
-`netcdf-bin`. Rows that need a GPU (Q14's MOM6 test run is CPU, but Q19, Q20,
+`netcdf-bin`. Tools built or installed for qualification, all under
+`.cloud-run/tools/` (disposable, not in the repository): TempestExtremes from source
+(commit cafb070), and ParaView 6.2.1 from conda-forge through py-rattler (the
+prebuilt Kitware download was refused by the permission system; a package manager
+was the allowed route), which renders offscreen without X. QGIS came from apt
+for Q17. MOM6 for Q14 was built by the agent from public sources the person placed
+in the workspace (this session's proxy serves `git clone` of public repositories
+but refuses GitHub web pages, tarballs and `gh` for them). Rows that need a GPU (Q14's MOM6 test run is CPU, but Q19, Q20,
 Q25 run AI models) are recorded against this hardware.
 
 Reachable without credentials (HTTP probe, 2026-11-17): Ifremer and IOOS
@@ -154,8 +161,8 @@ stated):
   and a stack is read by reference far past the chart's inline row cap.
   Confirm, or ask for it as a `clio.chart.v1` preset plus a separate
   exclusion list.
-- **Unmerged pins.** clio-agent on this branch pins clio-schemas `474575c` and
-  clio-kit `f49bbf8f`, gact-tui `519081d`, commits on `claude/earth-ocean-weather` that are not
+- **Unmerged pins.** clio-agent on this branch pins clio-schemas `474575c`,
+  clio-kit `a770a886`, gact-tui `1e9858ef` and the marketplace `47e0871`, commits on `claude/earth-ocean-weather` that are not
   merged into their develop/main; the pin comment says develop pins merged
   commits. They must be re-pinned to the merge commits before this lands.
 - **Pre-existing failure, not from this work.** gact-tui
@@ -164,6 +171,16 @@ stated):
   nor declared unserved. The three grid routes added here are declared.
   `src/components/clio/connected-source-picker.test.tsx` (two remote-host
   cases) also fails on this branch with and without this work's changes.
+  `a2ui-data-table-source.test.tsx` (columns from the queried result) failed once
+  in a full parallel run and passes alone (load-sensitive).
+- **Agent judgement, open: ParaView from a plain request.** Asked "show me the 3D
+  structure of this eddy in my run" three times, the agent drew static figures and
+  never offered the ParaView connector listed beside it, even after its description
+  led with 3D views and the finish check named plugins the person has. Named by the
+  person, ParaView works end to end (Q16 rows). Whether the agent should reach for an
+  application unprompted is a product decision; no rule was added to make it.
+- **Accounts still needed for two rows:** Q8 (SWOT downloads, NASA Earthdata) and Q21
+  (validated and costed CDS request, a CDS token), entered in the connector cards.
 
 - **Secrets for skill scripts.** ECMWF's `ecmwf-polytope` and `ecmwf-cds-ads`
   scripts run through `shell_bash` and read their keys from the environment
