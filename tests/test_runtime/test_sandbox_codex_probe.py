@@ -119,6 +119,7 @@ def test_a_plain_pair_from_an_injected_verifier_still_reads(tmp_path: Path) -> N
     )
     assert "the confined write was not refused" in result.detail
 
+
 # --------------------------------------------------------------------------- #
 # Linux fence probe — the child must have no network route but Codex's proxy.  #
 # --------------------------------------------------------------------------- #
