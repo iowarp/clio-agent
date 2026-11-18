@@ -198,6 +198,9 @@ When the surface has a server owner:
    `<namespace>_<name>` on the owner and refuses with `a2ui_server_tool_not_app_visible`
    (403) unless the tool exists and its `_meta.ui.visibility` is absent or includes
    `"app"`. A tool listed with visibility `["app"]` only is never shown to the model.
+   "Exists" means the owner's own `tools/list` lists it now, read over the namespace's
+   connection (starting the server if it is not running). It does not depend on any
+   turn having run, so a tab action works straight after an agent restart.
 3. CLIO sends `tools/call` with `arguments` = the action's `context`, verbatim. No model
    turn runs. The call is recorded as a view call (it never splits an open turn).
 4. If the call is task-augmented, CLIO follows the task. An `input_required` becomes a
@@ -300,10 +303,16 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
   replaces the tab's surfaces. A listen stream that drops is reopened, and then read
   again once. CLIO does not poll.
 - The watch belongs to the server process it was opened on. When the server is mounted
-  again (the session's agent removes and re-adds its plugin, a plugin update or a
-  connector change replaces it, or CLIO reconnects it), CLIO ends the old stream, opens
-  one on the server mounted now, and reads the tab again once. A server an idle reap
-  stopped is not restarted for a watch; the tab's next `open` starts it.
+  again (the session's agent removes and re-adds its plugin, a connector change
+  replaces it, or CLIO reconnects it), CLIO ends the old stream, opens one on the
+  server mounted now, and reads the tab again once. A server an idle reap stopped is
+  not restarted for a watch; the tab's next `open` starts it.
+- A plugin update does not reach an open session, by design: a session is pinned to the
+  plugin set it resolved (docs/design/sdk/plugins-and-composition.md, "Sessions are
+  pinned"), and its servers keep running from that snapshot. New sessions get the new
+  version. To move an open session onto it, remove the plugin from the session's agent
+  and add it again (`PATCH /v1/sessions/{sid}/agent`); that re-resolves, mounts the new
+  server and re-watches the tab as above.
 - `close` drops the tab's surfaces and, when no session still has the tab open, ends the
   listen stream.
 - Tab surfaces are not part of the transcript and are not seen by the model. They live

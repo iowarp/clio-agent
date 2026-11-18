@@ -1,0 +1,109 @@
+---
+title: "Run work on clusters with the Compute tab"
+description: Install the relay plugin, add the clusters and computers you use as sites, check that CLIO can reach them, and change or remove them from the Compute tab.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Development build">
+The relay plugin and its Compute tab are in the development build.
+</Aside>
+
+Relay lets the agent run work on computers other than the one running CLIO: a
+cluster you reach over SSH, a supercomputer through Tapis, or this computer. Each one
+is a **site**. The Compute tab is where you keep your sites: add them, check that CLIO
+can reach them, sign in where a site needs it, and change or remove them. The agent
+uses the sites you keep there. It never adds one on its own.
+
+The tab and relay's command line, `clio-relay site`, change the same sites in the
+same way. Nothing in the tab needs the command line, and nothing on the command line is
+missing from the tab.
+
+## Turn it on
+
+<Steps>
+1. Open **Extensions**, find **clio-relay** in the marketplace and install it.
+2. Turn it on for the conversation. A **Compute** tab appears in the workbench beside
+   **Files**.
+3. Open **Compute**. With no sites yet it says **No sites yet. Add one below.**
+</Steps>
+
+## Add a site
+
+The tab has two ways to add a site.
+
+**From the catalog.** The catalog lists clusters relay already knows, such as TACC
+Stampede3 and Vista, ALCF Polaris and Aurora, and NCSA DeltaAI. Choose one under
+**Site**, optionally give it your own **Site ID**, and choose **Add from catalog**.
+Relay fills in the address, how to reach it and its defaults.
+
+**Your own.** Fill in **Site ID** (lowercase letters, digits, `-` and `_`) and a
+**Name**. Then, under **How relay reaches it**, pick a tab for the way in, such as
+`local` for this computer or `ssh` for a server, and fill in its settings. Each way in
+shows the settings it needs, and only those. Then choose **Add site**.
+
+Two settings apply to every site:
+
+- **Policy**: **Guarded** runs only packages that have been reviewed; **Open** runs
+  what the agent writes.
+- **Ask before spending**: **Always**, **Never**, or above a number of node-hours.
+  Above that, the agent asks you before it submits a job.
+
+A field that is wrong says so beneath it, for example **Enter a site ID**, and
+nothing is saved until you fix it. When the site is added the tab says **Added** and
+the site's name, and its card appears under **Sites**.
+
+## Read a site's card
+
+Each card shows:
+
+| Row | What it means |
+| --- | --- |
+| **Adapter** | The way in relay uses now, such as `ssh` or `tapis`. |
+| **Status** | **Ready**, **Needs a sign-in** or **Unavailable**, with the reason. |
+| **Last probe** | What the last check found: **Ready**, **Missing an allocation**, **Needs a sign-in**, **Unreachable** or **Not configured**. |
+| **Policy** and **Ask before spending** | The settings above. |
+| **Default account**, **Default queue**, **Default duration** | What a job uses when the agent does not choose. |
+| **Identity** and **Sign-in** | For a site that needs a sign-in, whose account it uses and whether you are signed in. |
+| **System ID** | For a Tapis site, the system relay registered after you signed in. |
+
+If relay cannot read one site, that card reads **Unavailable** and says why, and the
+rest of the tab keeps working.
+
+## Check, change and remove a site
+
+- **Probe** checks that relay can reach the site and run there, and updates
+  **Last probe**.
+- **Connect** appears when a site needs a sign-in. CLIO first asks you to allow it
+  with **Sign in to a site**. Where CLIO holds the account, such
+  as Globus, it uses CLIO's own sign-in. Otherwise the card shows **Open the sign-in
+  page**. When you finish, the card reads **Signed in**. If relay has no sign-in set up
+  for that site's provider, the card says what is missing instead. A TACC host refuses an account
+  with no allocation on it, so after you sign in such a card reads **Missing an
+  allocation**.
+- **Adapter in use** and **Switch adapter** appear when a site has more than one way
+  in, for example a TACC cluster you reach by Tapis or by SSH. Switching keeps the site
+  and its history.
+- **Edit** opens the site's settings. **Save** keeps your changes; **Cancel** leaves
+  them.
+- **Remove** asks first. **Remove site** removes it; **Keep it** does not. The site's
+  past operations stay on record.
+
+If you change a site from the command line while the tab is open, the tab updates by
+itself. The refresh button at the top of the tab reads it again at any time.
+
+## Where your sites and sign-ins live
+
+When CLIO runs relay, relay keeps its sites in the plugin's own data folder, inside
+CLIO's home folder at `config/plugins/data/clio-relay/config`. To change the same sites
+from a terminal, point relay's command line at that folder with
+`CLIO_RELAY_CONFIG_DIR`.
+
+Sign-ins go to your system's keyring. Where no keyring works, such as inside CLIO's
+sandbox on Linux, relay keeps them in a file only you can read in that same folder.
+Ask the agent to describe relay to see which one it uses.
+
+<Aside type="caution" title="Buttons are for you">
+The tab's buttons only work from the tab. The agent cannot press them, and a button
+from an old view refreshes the tab rather than acting.
+</Aside>

@@ -203,6 +203,23 @@ def test_only_app_visible_tools_take_surface_actions() -> None:
         )
 
 
+def test_surface_actions_resolve_from_the_servers_own_tool_list() -> None:
+    listed = [
+        SimpleNamespace(name="bump", meta={"ui": {"visibility": ["app"]}}),
+        SimpleNamespace(name="hidden", meta={"ui": {"visibility": ["model"]}}),
+    ]
+    executor = SimpleNamespace(
+        get_all_tool_definitions=lambda: {},  # no turn has run yet
+        list_namespace_tools=lambda namespace: listed if namespace == "hostfx" else [],
+    )
+
+    assert resolve_server_tool(executor, "hostfx", "bump") == "hostfx_bump"
+    for namespace, name in (("hostfx", "hidden"), ("hostfx", "gone"), ("other", "bump")):
+        with pytest.raises(ServerActionError) as caught:
+            resolve_server_tool(executor, namespace, name)
+        assert caught.value.reason == "a2ui_server_tool_not_app_visible"
+
+
 def test_an_outcome_reports_what_the_action_did() -> None:
     applied = ServerActionOutcome(tool="bump", outcome="applied", surface_ids=["s"])
     pending = ServerActionOutcome(tool="slow", outcome="task_pending", task_handle="task_1")
@@ -260,7 +277,11 @@ class _Executor:
         return subscribed
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
-        return {"hostfx_bump": {"name": "hostfx_bump", "_meta": {"ui": {"visibility": ["app"]}}}}
+        return {}  # the turn catalog: empty until a turn runs, as after an agent restart
+
+    def list_namespace_tools(self, namespace: str) -> list[Any]:
+        assert namespace == "hostfx"
+        return [{"name": "bump", "_meta": {"ui": {"visibility": ["app"]}}}]
 
     def call_tool_result(self, name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((name, arguments))

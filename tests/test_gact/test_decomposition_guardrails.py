@@ -283,7 +283,10 @@ from clio_agent.gact.app import build_app
 # (routes/session_usage.py, from routes/session_creation.py) and the attached-client
 # count, POST/GET /v1/server/clients and DELETE .../{client_id} (gact/attached_clients.py,
 # from routes/lifecycle.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 490
+# 490 -> 494: plugin tabs (routes/plugin_tabs.py, docs/design/host-semantics-contract.md):
+# GET /v1/sessions/{sid}/plugin-tabs and POST .../plugin-tabs/{plugin}/{tab}/open, .../close
+# and .../actions.
+EXPECTED_ROUTE_METHOD_PAIRS = 494
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

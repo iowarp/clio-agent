@@ -78,8 +78,27 @@ def login_context(app: Any, session_id: str) -> dict[str, str]:
     return {"clio_id": str(service.store.clio_id), "workspace_id": str(session.workspace_id)}
 
 
-def resolve_server_tool(executor: Any, namespace: str, name: str) -> str:
-    """``<namespace>_<name>`` when it exists and apps may call it.
+def _server_tool(executor: Any, namespace: str, name: str) -> Any:
+    """The server's own definition of its tool ``name``, else ``None``.
+
+    Read from the server's current ``tools/list`` over the namespace's connection, not
+    from the executor's turn catalog: that catalog is empty until the session's first
+    turn, and a tab's action can come before any turn (after an agent restart, say).
+    An executor that cannot list one namespace falls back to its catalog.
+    """
+
+    lister = getattr(executor, "list_namespace_tools", None)
+    if not callable(lister):
+        return executor.get_all_tool_definitions().get(f"{namespace}_{name}")
+    for tool in lister(namespace):
+        listed = tool.get("name") if isinstance(tool, Mapping) else getattr(tool, "name", "")
+        if str(listed or "") == name:
+            return tool
+    return None
+
+
+def resolve_server_tool_definition(executor: Any, namespace: str, name: str) -> tuple[str, Any]:
+    """``(<namespace>_<name>, definition)`` when the server has the tool and apps may call it.
 
     Raises:
         ServerActionError: 403 ``a2ui_server_tool_not_app_visible`` otherwise.
@@ -87,15 +106,24 @@ def resolve_server_tool(executor: Any, namespace: str, name: str) -> str:
 
     from clio_agent.gact.mcp_apps import _tool_visible_to_app  # noqa: PLC0415
 
-    full = f"{namespace}_{name}"
-    tool = executor.get_all_tool_definitions().get(full) if name else None
+    tool = _server_tool(executor, namespace, name) if name else None
     if tool is None or not _tool_visible_to_app(tool):
         raise ServerActionError(
             403,
             "a2ui_server_tool_not_app_visible",
             f"tool {name!r} is not callable from a surface of server {namespace!r}",
         )
-    return full
+    return f"{namespace}_{name}", tool
+
+
+def resolve_server_tool(executor: Any, namespace: str, name: str) -> str:
+    """``<namespace>_<name>`` when the server has the tool and apps may call it.
+
+    Raises:
+        ServerActionError: 403 ``a2ui_server_tool_not_app_visible`` otherwise.
+    """
+
+    return resolve_server_tool_definition(executor, namespace, name)[0]
 
 
 def task_handle(raw_result: Any) -> str:
@@ -141,8 +169,7 @@ async def call_server_action(
     from clio_agent.tools import view_only_results  # noqa: PLC0415
 
     def call(executor: Any) -> Any:
-        full = resolve_server_tool(executor, scope.namespace, name)
-        definition = executor.get_all_tool_definitions().get(full)
+        full, definition = resolve_server_tool_definition(executor, scope.namespace, name)
         with view_only_results.scope(full, definition):
             return executor.call_tool_result(full, dict(context))
 
@@ -205,5 +232,6 @@ __all__ = [
     "login_context",
     "login_provider",
     "resolve_server_tool",
+    "resolve_server_tool_definition",
     "task_handle",
 ]
