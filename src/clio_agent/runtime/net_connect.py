@@ -1,0 +1,439 @@
+"""Reach SSH through the fence: a CONNECT helper and the ``ssh``/``scp``/``sftp`` launcher (RL37).
+
+A fenced shell has no direct route out: its traffic leaves only through the fence's proxy,
+which the child finds in ``HTTPS_PROXY``/``ALL_PROXY``. OpenSSH does not read those variables,
+so this file gives it a ``ProxyCommand`` that does:
+
+* ``net_connect.py <shim-dir> connect <host> <port>`` opens ``CONNECT host:port`` through the
+  proxy (HTTP, or SOCKS5 when the variable says so) and joins standard input and output to the
+  tunnel. With no proxy in the environment it dials the host directly.
+* ``net_connect.py <shim-dir> ssh|scp|sftp <args>`` runs the real program with that helper as
+  its ``ProxyCommand``. ``scp`` and ``sftp`` get ``-S <shim-dir>/ssh``. A ``ProxyJump`` is
+  rewritten as a chain of these launchers, so every hop crosses the proxy too.
+
+The proxy records each tunnel as ``net.egress`` with the host and port, and a host the policy
+refuses gets ``403``, which the helper reports on standard error.
+
+This module runs as a script on CLIO's interpreter in isolated mode (``python -I``), so it
+imports only the standard library: it must start fast inside the fence and never import CLIO.
+:mod:`clio_agent.runtime.fence_ssh` writes the ``ssh``/``scp``/``sftp`` shims that call it.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+from urllib.parse import unquote, urlsplit
+
+#: Tools this launcher wraps; the shim directory holds one shim for each.
+TOOLS = ("ssh", "scp", "sftp")
+
+#: Proxy variables in the order the helper reads them; the first non-empty one wins.
+PROXY_VARIABLES = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+)
+
+#: ssh(1) short options that take a value (OpenSSH 8 to 10 getopt string).
+_SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
+#: scp(1) and sftp(1) short options that take a value.
+_COPY_VALUE_FLAGS = {"scp": frozenset("cDFiJloPSX"), "sftp": frozenset("BbcDFiJloPRSsX")}
+#: Bound on a proxy's reply head; a larger head is not a proxy answering CONNECT.
+_MAX_REPLY_HEAD = 64 * 1024
+_CHUNK = 64 * 1024
+_DIAL_TIMEOUT_S = 30.0
+
+
+class ProxyRefused(OSError):
+    """The proxy answered ``CONNECT`` with anything but ``200``."""
+
+    def __init__(self, status: int, line: str) -> None:
+        super().__init__(line)
+        self.status = status
+        self.line = line
+
+
+def _say(message: str) -> None:
+    sys.stderr.write(f"clio: {message}\n")
+    sys.stderr.flush()
+
+
+# --------------------------------------------------------------------------- #
+# The CONNECT helper.
+# --------------------------------------------------------------------------- #
+
+
+def proxy_from_environment(env: dict[str, str] | os._Environ[str]) -> str:
+    """The proxy URL the fence gave this process, or ``""`` when it gave none."""
+    for key in PROXY_VARIABLES:
+        value = (env.get(key) or "").strip()
+        if value:
+            return value if "://" in value else f"http://{value}"
+    return ""
+
+
+def _authority(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+
+
+def _read_head(sock: socket.socket) -> tuple[bytes, bytes]:
+    """Read a reply head up to the blank line; return ``(head, bytes after it)``."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > _MAX_REPLY_HEAD:
+            raise ProxyRefused(0, "the proxy reply head is too large")
+    head, _sep, rest = data.partition(b"\r\n\r\n")
+    return head, rest
+
+
+def _http_connect(proxy: str, host: str, port: int) -> tuple[socket.socket, bytes]:
+    parts = urlsplit(proxy)
+    sock = socket.create_connection(
+        (parts.hostname or "127.0.0.1", parts.port or 8080), timeout=_DIAL_TIMEOUT_S
+    )
+    target = _authority(host, port)
+    lines = [f"CONNECT {target} HTTP/1.1", f"Host: {target}"]
+    if parts.username is not None:
+        token = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
+        lines.append("Proxy-Authorization: Basic " + base64.b64encode(token.encode()).decode())
+    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+    head, rest = _read_head(sock)
+    status_line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace").strip()
+    fields = status_line.split()
+    status = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else 0
+    if status != 200:
+        sock.close()
+        raise ProxyRefused(status, status_line or "the proxy closed the connection")
+    return sock, rest
+
+
+def _socks5_connect(proxy: str, host: str, port: int) -> tuple[socket.socket, bytes]:
+    parts = urlsplit(proxy)
+    sock = socket.create_connection(
+        (parts.hostname or "127.0.0.1", parts.port or 1080), timeout=_DIAL_TIMEOUT_S
+    )
+    user = unquote(parts.username or "")
+    methods = b"\x00\x02" if user else b"\x00"
+    sock.sendall(b"\x05" + bytes([len(methods)]) + methods)
+    reply = _recv_exact(sock, 2)
+    if reply[1] == 0x02:
+        password = unquote(parts.password or "")
+        sock.sendall(
+            b"\x01"
+            + bytes([len(user)])
+            + user.encode()
+            + bytes([len(password)])
+            + password.encode()
+        )
+        if _recv_exact(sock, 2)[1] != 0:
+            sock.close()
+            raise ProxyRefused(407, "the SOCKS proxy refused the credentials")
+    elif reply[1] != 0x00:
+        sock.close()
+        raise ProxyRefused(0, "the SOCKS proxy offered no usable sign-in method")
+    name = host.strip("[]").encode("idna")
+    sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + port.to_bytes(2, "big"))
+    head = _recv_exact(sock, 4)
+    if head[1] != 0:
+        sock.close()
+        # SOCKS5 0x02 is "connection not allowed by ruleset": the policy refused the host.
+        raise ProxyRefused(403 if head[1] == 0x02 else 502, f"SOCKS5 reply {head[1]}")
+    length = {1: 4, 4: 16}.get(head[3]) or _recv_exact(sock, 1)[0]
+    _recv_exact(sock, length + 2)
+    return sock, b""
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ProxyRefused(0, "the proxy closed the connection")
+        data += chunk
+    return data
+
+
+def open_tunnel(host: str, port: int, proxy: str) -> tuple[socket.socket, bytes]:
+    """A socket joined to ``host:port``: through ``proxy`` when one is set, else direct."""
+    if not proxy:
+        return socket.create_connection((host, port), timeout=_DIAL_TIMEOUT_S), b""
+    scheme = urlsplit(proxy).scheme.lower()
+    if scheme.startswith("socks"):
+        return _socks5_connect(proxy, host, port)
+    return _http_connect(proxy, host, port)
+
+
+def _pump(sock: socket.socket, first: bytes) -> None:
+    """Join standard input and output to ``sock`` until the far side closes."""
+    sock.settimeout(None)
+    stdin, stdout = sys.stdin.fileno(), sys.stdout.fileno()
+
+    def upstream() -> None:
+        try:
+            while chunk := os.read(stdin, _CHUNK):
+                sock.sendall(chunk)
+        except OSError:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    threading.Thread(target=upstream, daemon=True).start()
+    if first:
+        os.write(stdout, first)
+    while chunk := sock.recv(_CHUNK):
+        view = memoryview(chunk)
+        while view:
+            view = view[os.write(stdout, view) :]
+
+
+def connect_main(host: str, port_text: str) -> int:
+    """``connect <host> <port>``: the ``ProxyCommand`` body."""
+    try:
+        port = int(port_text)
+    except ValueError:
+        _say(f"port {port_text!r} is not a number")
+        return 2
+    proxy = proxy_from_environment(os.environ)
+    try:
+        sock, first = open_tunnel(host, port, proxy)
+    except ProxyRefused as exc:
+        if exc.status == 403:
+            _say(f"the sandbox network policy refused {_authority(host, port)} ({exc.line})")
+        else:
+            _say(f"the sandbox proxy did not open {_authority(host, port)} ({exc.line})")
+        return 1
+    except OSError as exc:
+        route = "through the sandbox proxy" if proxy else "directly"
+        _say(f"could not reach {_authority(host, port)} {route}: {exc}")
+        return 1
+    try:
+        _pump(sock, first)
+    except OSError:
+        return 1
+    finally:
+        sock.close()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# The ssh / scp / sftp launcher.
+# --------------------------------------------------------------------------- #
+
+
+def real_program(name: str, shim_dir: str) -> str:
+    """The real ``name`` on ``PATH``, skipping the shim directory."""
+    shim = os.path.normcase(os.path.realpath(shim_dir))
+    path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and os.path.normcase(os.path.realpath(entry)) != shim
+    )
+    return shutil.which(name, path=path) or ""
+
+
+def split_ssh_args(
+    args: list[str], value_flags: frozenset[str] = _SSH_VALUE_FLAGS
+) -> tuple[list[str], list[str]]:
+    """Split arguments into ``(options, operands)`` like getopt with ``value_flags``."""
+    options: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return options, args[index + 1 :]
+        if not arg.startswith("-") or arg == "-":
+            break
+        options.append(arg)
+        index += 1
+        for position in range(1, len(arg)):
+            if arg[position] in value_flags:
+                if position == len(arg) - 1 and index < len(args):
+                    options.append(args[index])
+                    index += 1
+                break
+    return options, args[index:]
+
+
+def _option_items(
+    options: list[str], value_flags: frozenset[str] = _SSH_VALUE_FLAGS
+) -> list[tuple[str, str, list[str]]]:
+    """``(flag, value, raw tokens)`` for each option group, flag ``""`` for value-less groups."""
+    items: list[tuple[str, str, list[str]]] = []
+    index = 0
+    while index < len(options):
+        arg = options[index]
+        index += 1
+        flag, value, raw = "", "", [arg]
+        for position in range(1, len(arg)):
+            if arg[position] in value_flags:
+                flag = arg[position]
+                if position == len(arg) - 1 and index < len(options):
+                    value = options[index]
+                    raw.append(value)
+                    index += 1
+                else:
+                    value = arg[position + 1 :]
+                break
+        items.append((flag, value, raw))
+    return items
+
+
+def _is_proxy_option(flag: str, value: str) -> bool:
+    if flag == "J":
+        return True
+    if flag != "o":
+        return False
+    key = value.split("=", 1)[0].split(None, 1)[0].strip().lower()
+    return key in {"proxyjump", "proxycommand"}
+
+
+def _effective_config(real_ssh: str, args: list[str]) -> dict[str, str]:
+    """``ssh -G``'s view of these arguments; empty when ssh cannot say."""
+    options, rest = split_ssh_args(args)
+    if not rest:
+        return {}
+    try:
+        done = subprocess.run(
+            [real_ssh, "-G", *options, rest[0]],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if done.returncode != 0:
+        return {}
+    config: dict[str, str] = {}
+    for line in done.stdout.splitlines():
+        key, _sep, value = line.partition(" ")
+        config.setdefault(key.lower(), value.strip())
+    return config
+
+
+def _quote_command(argv: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def _escape_percent(text: str) -> str:
+    return text.replace("%", "%%")
+
+
+def _hop_destination(hop: str) -> str:
+    """A ProxyJump hop as an ssh destination (``user@host:port`` becomes an ``ssh://`` URI)."""
+    if hop.startswith("ssh://"):
+        return hop
+    user, at, hostport = hop.rpartition("@")
+    host, colon, port = hostport.rpartition(":")
+    if colon and port.isdigit() and (":" not in host or host.startswith("[")):
+        return f"ssh://{user}{at}{host}:{port}"
+    return hop
+
+
+def ssh_argv(real_ssh: str, shim_dir: str, args: list[str]) -> list[str]:
+    """The real ssh argv: the helper as ``ProxyCommand``, or the jump chain through the shims."""
+    options, rest = split_ssh_args(args)
+    flags = "".join(option[1:] for option in options if option.startswith("-"))
+    if not rest or "G" in flags or "V" in flags:
+        return [real_ssh, *args]
+    config = _effective_config(real_ssh, args)
+    proxy_command = config.get("proxycommand", "none")
+    if proxy_command.lower() != "none":
+        # A configured ProxyCommand stays; one that runs `ssh -W` meets these shims on PATH.
+        return [real_ssh, *args]
+    shim_ssh = os.path.join(shim_dir, "ssh.cmd" if os.name == "nt" else "ssh")
+    jump = config.get("proxyjump", "none")
+    if jump.lower() != "none":
+        hops = [hop for hop in jump.split(",") if hop]
+        inner = [_escape_percent(shim_ssh)]
+        if len(hops) > 1:
+            inner += ["-J", _escape_percent(",".join(hops[:-1]))]
+        inner += ["-W", "[%h]:%p", _escape_percent(_hop_destination(hops[-1]))]
+    else:
+        inner = [
+            _escape_percent(sys.executable),
+            "-I",
+            _escape_percent(os.path.abspath(__file__)),
+            _escape_percent(shim_dir),
+            "connect",
+            "%h",
+            "%p",
+        ]
+    kept: list[str] = []
+    for flag, value, raw in _option_items(options):
+        if not _is_proxy_option(flag, value):
+            kept.extend(raw)
+    return [
+        real_ssh,
+        "-o",
+        "ProxyJump=none",
+        "-o",
+        f"ProxyCommand={_quote_command(inner)}",
+        *kept,
+        *(["--"] if "--" in args else []),
+        *rest,
+    ]
+
+
+def copy_argv(real: str, shim_dir: str, args: list[str], tool: str = "scp") -> list[str]:
+    """``scp``/``sftp`` with the ssh launcher as their transport, unless ``-S`` names one."""
+    value_flags = _COPY_VALUE_FLAGS.get(tool, _COPY_VALUE_FLAGS["scp"])
+    options, _rest = split_ssh_args(args, value_flags)
+    if any(flag == "S" for flag, _value, _raw in _option_items(options, value_flags)):
+        return [real, *args]
+    shim_ssh = os.path.join(shim_dir, "ssh.cmd" if os.name == "nt" else "ssh")
+    return [real, "-S", shim_ssh, *args]
+
+
+def _run(argv: list[str]) -> int:
+    if os.name == "nt":
+        try:
+            return subprocess.call(argv)
+        except KeyboardInterrupt:
+            return 130
+    os.execv(argv[0], argv)
+    return 127  # pragma: no cover - execv does not return
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        _say("usage: net_connect.py <shim-dir> connect <host> <port> | ssh|scp|sftp [args]")
+        return 2
+    shim_dir, tool, args = argv[0], argv[1], argv[2:]
+    if tool == "connect":
+        if len(args) != 2:
+            _say("usage: net_connect.py <shim-dir> connect <host> <port>")
+            return 2
+        return connect_main(args[0], args[1])
+    if tool not in TOOLS:
+        _say(f"unknown tool {tool!r}")
+        return 2
+    real = real_program(tool, shim_dir)
+    if not real:
+        _say(f"{tool} is not installed on this machine")
+        return 127
+    if tool == "ssh":
+        return _run(ssh_argv(real, shim_dir, args))
+    return _run(copy_argv(real, shim_dir, args, tool))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
