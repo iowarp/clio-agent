@@ -180,10 +180,12 @@ async def watch_resource(
     reader refetches whatever changed while it was gone.
 
     A server that cannot listen (a connection before 2026-07-28, or a server that
-    answers ``-32601`` as fastmcp does today) ends the watch quietly: such a server
+    answers ``-32601``) ends the watch quietly. On an older protocol such a server
     sends ``notifications/resources/updated`` unsolicited, which
-    :func:`list_changed_message_handler` reports instead. The 2025 per-resource
-    subscribe request (removed in 2026-07-28) is never sent.
+    :func:`list_changed_message_handler` reports instead. On a 2026-07-28 connection
+    the SDK drops that notification, so a server there must serve listen for its
+    updates to arrive. The 2025 per-resource subscribe request (removed in
+    2026-07-28) is never sent.
 
     Raises:
         MCPError: The server rejected the listen request for another reason.
@@ -214,14 +216,16 @@ async def watch_resource(
             return
         except MCPError as exc:
             if exc.code == METHOD_NOT_FOUND:
-                trace.event(
-                    "TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri
-                )
+                trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
                 return
             raise
         except (SubscriptionLost, TimeoutError) as exc:
             trace.event(
-                "TOOLS", "mcp_listen_resource_lost namespace=%s uri=%s reason=%s", namespace, uri, exc
+                "TOOLS",
+                "mcp_listen_resource_lost namespace=%s uri=%s reason=%s",
+                namespace,
+                uri,
+                exc,
             )
         resumed = True
         await asyncio.sleep(delay)

@@ -275,6 +275,27 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
   (an older protocol version, or `-32601`) may instead send
   `notifications/resources/updated` for the URI unsolicited on its connection. CLIO
   never sends `resources/subscribe`, which 2026-07-28 removed.
+- Server obligation at 2026-07-28: an update reaches CLIO only on the listen stream. The
+  `mcp` SDK drops a bare `notifications/resources/updated` sent on a 2026-07-28
+  connection (`send_resource_updated` is a no-op there), so a server that only sends it
+  never refreshes the tab. A server must serve `subscriptions/listen` and publish
+  `ResourceUpdated(uri)` to it. FastMCP 4.1 does not serve listen by itself. Register
+  the SDK's handler on its low-level server and publish on the bus:
+
+  ```python
+  from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
+  from mcp.shared.subscriptions import ResourceUpdated
+
+  bus = InMemorySubscriptionBus()
+  server._mcp_server.add_request_handler(
+      "subscriptions/listen", mcp_types.SubscriptionsListenRequestParams, ListenHandler(bus)
+  )
+  ...
+  await bus.publish(ResourceUpdated(uri=PANEL_URI))
+  ```
+
+  `tests/fixtures/plugins/host_semantics/server.py` does exactly this, and also sends the
+  bare notification for clients on an older protocol.
 - On `notifications/resources/updated` for that URI, either way, CLIO reads again and
   replaces the tab's surfaces. A listen stream that drops is reopened, and then read
   again once. CLIO does not poll.

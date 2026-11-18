@@ -1,8 +1,9 @@
 """Watching one resource for updates (host semantics HS3).
 
-The 2026-07-28 protocol watches a resource through ``subscriptions/listen``; a
-server without it (fastmcp today) pushes ``notifications/resources/updated``
-unsolicited. Both reach :mod:`clio_agent.tools.mcp_resource_updates`.
+The 2026-07-28 protocol watches a resource through ``subscriptions/listen``, and the
+SDK drops a bare ``notifications/resources/updated`` on such a connection. A server on
+an older protocol pushes it unsolicited instead. Both reach
+:mod:`clio_agent.tools.mcp_resource_updates`.
 """
 
 from __future__ import annotations
@@ -142,16 +143,26 @@ async def test_the_fixture_server_pushes_its_panel_update(
 
     hostfx = _hostfx()
     server = hostfx.build_server()
-    async with Client(server, message_handler=list_changed_message_handler("hostfx")) as client:
+    async with Client(server) as client:
+
+        async def connect() -> Any:
+            return client
+
+        watch = asyncio.create_task(
+            watch_resource(connect, "hostfx", hostfx.PANEL_URI, retry_after=0.05)
+        )
         shown = await client.call_tool("show_panel", {})
         read = await client.read_resource(hostfx.PANEL_URI)
-        await client.call_tool("bump", {"by": 2})
-        for _ in range(100):
+        for _ in range(200):
+            await client.call_tool("bump", {"by": 2})
+            await asyncio.sleep(0.02)
             if updates:
                 break
-            await asyncio.sleep(0.01)
+        watch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watch
 
-    assert updates == [("hostfx", hostfx.PANEL_URI)]
+    assert updates and set(updates) == {("hostfx", hostfx.PANEL_URI)}
     registry = CatalogRegistry()
     producible = frozenset({basic_catalog_id()})
     resources = a2ui_resources(result_blocks(shown))

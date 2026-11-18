@@ -6,7 +6,11 @@ Test-only. It imports fastmcp, never clio_agent, so it runs as the stdio server 
 
 - ``show_panel`` returns its A2UI as an embedded ``application/a2ui+json`` resource (HS1);
 - ``bump`` is visible to apps only; a surface button calls it (HS2), and it tells the
-  client the panel changed with ``notifications/resources/updated`` (HS3);
+  client the panel changed (HS3). At 2026-07-28 a ``notifications/resources/updated``
+  reaches a client only on a ``subscriptions/listen`` stream it opened, and the SDK
+  drops a bare one. FastMCP does not serve listen itself, so the server registers the
+  SDK's ``ListenHandler`` on its low-level server and publishes ``ResourceUpdated`` on
+  the bus. It also sends the bare notification for clients on an older protocol;
 - ``a2ui://host-fixture/panel`` is the panel resource a tab reads (HS3);
 - ``slow_bump`` is a required task whose terminal result carries A2UI;
 - ``grant_status`` reads the account grant file the client names (HS4) and reports
@@ -29,6 +33,8 @@ from fastmcp.apps import AppConfig
 from fastmcp.tools.base import ToolResult
 from fastmcp.utilities.tasks import TaskConfig
 from fastmcp_tasks.extension import TasksExtension
+from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
+from mcp.shared.subscriptions import ResourceUpdated
 
 PANEL_URI = "a2ui://host-fixture/panel"
 A2UI_MIME = "application/a2ui+json"
@@ -84,6 +90,10 @@ def build_server(grant_file: str = "") -> FastMCP:
 
     server = FastMCP("hostfx")
     server.add_extension(TasksExtension())
+    bus = InMemorySubscriptionBus()
+    server._mcp_server.add_request_handler(
+        "subscriptions/listen", mcp_types.SubscriptionsListenRequestParams, ListenHandler(bus)
+    )
     state = {"count": 0}
 
     @server.resource(PANEL_URI, mime_type=A2UI_MIME)
@@ -108,6 +118,7 @@ def build_server(grant_file: str = "") -> FastMCP:
         """Add ``by`` to the count (called by the panel's button)."""
 
         state["count"] += int(by)
+        await bus.publish(ResourceUpdated(uri=PANEL_URI))
         await ctx.session.send_resource_updated(PANEL_URI)
         return ToolResult(
             content=[

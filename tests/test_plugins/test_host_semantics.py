@@ -165,9 +165,7 @@ def test_remembered_slices_give_declared_accounts_and_catalogs(tmp_path: Path) -
     assert host_semantics.declared_accounts() == {"globus": {"host-fixture": [GLOBUS_SCOPE]}}
     assert host_semantics.declared_account_scopes("globus") == [GLOBUS_SCOPE]
     assert host_semantics.declared_account_scopes("google_drive") == []
-    assert host_semantics.plugin_host("host-fixture", "hostfx")["catalogs"] == [
-        basic_catalog_id()
-    ]
+    assert host_semantics.plugin_host("host-fixture", "hostfx")["catalogs"] == [basic_catalog_id()]
 
     class Spec:
         source = "plugin:host-fixture"
