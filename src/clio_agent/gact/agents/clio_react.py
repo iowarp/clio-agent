@@ -390,23 +390,11 @@ class _Loop:
         return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
 
     def _refresh_tools(self) -> None:
-        """Offer the tools a connected MCP server added or removed (``tools/list_changed``).
+        """A plugin joining with ``compact``, then MCP ``tools/list_changed`` (owner:
+        :func:`clio_agent.gact.agents.turn_rebuild.refresh_running_tools`)."""
+        from clio_agent.gact.agents.turn_rebuild import refresh_running_tools  # noqa: PLC0415
 
-        :mod:`clio_agent.gact.agents.live_tool_refresh` owns the refresh; a call this
-        step that unlocked tools makes them callable at the next step.
-        """
-        refresh = getattr(self.agent, "_clio_tool_refresh", None)
-        if refresh is not None and refresh(self.agent.tools):
-            from clio_agent.gact.agents.deferred_tools import sync_deferred_catalog  # noqa: PLC0415
-            from clio_agent.gact.agents.prompt_basis import (
-                note_deferred_added_in_turn,  # noqa: PLC0415
-            )
-            from clio_agent.gact.agents.tool_settings import reapply_tool_settings  # noqa: PLC0415
-
-            reapply_tool_settings(self.agent)
-            if added := sync_deferred_catalog(self.agent):  # named by the next note (TD11)
-                note_deferred_added_in_turn(self.session, added)
-            self.tools = self._listed_tools()
+        refresh_running_tools(self)
 
     def _arrivals(self, *, human_only: bool = False) -> bool:
         """Inspect Core-pending arrivals; only the next input commit delivers them."""

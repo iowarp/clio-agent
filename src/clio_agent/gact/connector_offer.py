@@ -533,6 +533,20 @@ async def offer_connector(connector: str = "", reason: str = "") -> dict[str, An
         already=False,
         plugins=list(row.get("plugins") or ()),
     )
+    if row.get("plugins"):  # its plugin's own tools join this turn (turn_rebuild)
+        from clio_agent.gact.agents.turn_rebuild import (  # noqa: PLC0415
+            DEFAULT_APPLY,
+            join_running_turn,
+            joined_message,
+        )
+
+        turn = await asyncio.to_thread(
+            join_running_turn, app, session_id, str(row.get("apply") or DEFAULT_APPLY)
+        )
+        result["apply"] = turn.get("apply")
+        result["tools"] = sorted({*(result.get("tools") or ()), *(turn.get("joined") or ())})
+        if said := joined_message(turn):
+            result["message"] += " " + said
     return {**result, "reason": reason}
 
 

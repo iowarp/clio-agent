@@ -352,6 +352,13 @@ async def respond(
         raise SetupResponseError(404, "not_found", f"interaction not found: {interaction_id}")
     if row["status"] != "pending":
         raise SetupResponseError(409, "interaction_resolved", "interaction is already resolved")
+    if row.get("intent") in ("enable", "add_plugin") and action == "submit":
+        from clio_agent.gact.agents.turn_rebuild import apply_mode  # noqa: PLC0415
+
+        try:  # how the plugin joins the running turn (now, compact or note)
+            row["apply"] = apply_mode(metadata)
+        except ValueError as exc:
+            raise SetupResponseError(422, "validation_error", str(exc)) from None
     if row.get("intent") == "agent_needs":
         from clio_agent.gact import agent_needs  # noqa: PLC0415
 
