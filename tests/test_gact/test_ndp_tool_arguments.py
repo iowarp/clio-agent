@@ -20,11 +20,11 @@ from clio_agent.gact.storage.ndp_tools import build_ndp_discovery_tools
     "tool", build_ndp_discovery_tools() + build_ndp_endpoint_tools(), ids=lambda t: t.name
 )
 def test_a_tool_takes_its_functions_arguments(tool: object) -> None:
-    func = getattr(tool, "func")
+    func = tool.func
     target = inspect.unwrap(func)
     params = {
         name
         for name, p in inspect.signature(target).parameters.items()
         if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)
     }
-    assert params <= set(getattr(tool, "args")), sorted(params - set(getattr(tool, "args")))
+    assert params <= set(tool.args), sorted(params - set(tool.args))
