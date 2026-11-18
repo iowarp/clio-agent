@@ -922,6 +922,7 @@ the second wave (Opus 5.5) in the order found:
 | WFSI (fuel moisture) | Opus | `sess_de515d93ea34` | pass: Fort Stewart 2022, DOI, real samples | figure surface |
 | EarthScope (P142) | Opus | `sess_7d3b5b05053e` | pass: 10.0 days, 99.4% complete, gaps listed | time-series surface |
 | Konza (2022 burn) | Opus | `sess_ce452c7d9a5e` | pass: timed plume passage; tested the wind with lagged, autocorrelation-aware statistics; says what the data cannot show | multi-panel figure surface |
+| BCO-DMO (California Current) | Opus | `sess_b751746bce71` | pass on discovery: no BCO-DMO organization or data in this catalog (searched four ways); offered the CalCOFI bottle dataset (1949-2021, 222 stations) as the only California Current cruise measurements and asked before substituting. The question is left for a person | question card |
 | **Tahoe correlation** | Opus | `sess_1298c9f71757` | pass: six organizations (TRPA, USFWS, CAL FIRE FRAP, NIFC, NASA WERK, CFO) on a 30 m grid, per-layer burn table, terrain and fuel by habitat | **reviewed overview figure plus an interactive `clio.layered-map.v1`**: WERK DTM, CFO canopy, FBFM40 fuel and slope as GeoTIFF grid layers, habitat, critical habitat, basin and fire perimeters as shapes (`r9-tahoe-layered-map-1440.png`) |
 
 Multi-turn (follow-ups in the same conversation):
