@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from contextlib import suppress
+import inspect
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from clio_agent.runtime import trace
@@ -36,6 +37,81 @@ class AsyncNamespacePreparationMixin:
 
             self._connected_namespaces.add(namespace)
             spawn_diet.namespace_connected(namespace)
+        if namespace is not None:
+            self._ensure_tools_watch(namespace)
+
+    def _ensure_tools_watch(self, namespace: str) -> None:
+        """Hold one ``tools_list_changed`` listen stream on a connected namespace.
+
+        Started once the namespace's server has answered (its process is up), and
+        again for each new connection after an eviction. The stream runs on the
+        namespace's own client when it is connected directly, and on a client of the
+        proxy's backend otherwise (the front is CLIO's own proxy, which has no listen).
+        See :func:`clio_agent.tools.mcp_listen.watch_tools`.
+        """
+
+        from fastmcp import Client  # noqa: PLC0415
+
+        watches: dict[str, asyncio.Task[None]] = self.__dict__.setdefault(
+            "_clio_tools_watches", {}
+        )
+        current = watches.get(namespace)
+        if self._closed or (current is not None and not current.done()):
+            return
+        client = self._namespace_clients.get(namespace)
+        if not isinstance(client, Client) or namespace not in self._connected_namespaces:
+            return
+        direct = self._namespace_direct_routes.get(namespace, False)
+        backend = getattr(self._namespace_servers.get(namespace), "client_factory", None)
+        if not direct and not callable(backend):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        watched: set[str] = self.__dict__.setdefault("_clio_tools_watched", set())
+        catch_up = namespace in watched
+        watched.add(namespace)
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[Any]:
+            if direct:
+                yield self._namespace_clients.get(namespace)
+                return
+            assert callable(backend)
+            made = backend()
+            backend_client = await made if inspect.isawaitable(made) else made
+            async with backend_client:
+                yield backend_client
+
+        watches[namespace] = asyncio.create_task(
+            self._run_tools_watch(namespace, session, catch_up),
+            name=f"clio-mcp-tools-watch:{namespace}",
+        )
+
+    async def _run_tools_watch(self, namespace: str, session: Any, catch_up: bool) -> None:
+        from mcp.shared.exceptions import MCPError  # noqa: PLC0415
+
+        from clio_agent.tools.mcp_listen import watch_tools  # noqa: PLC0415
+
+        try:
+            await watch_tools(session, namespace, catch_up=catch_up)
+        except (MCPError, OSError, RuntimeError, AttributeError, TypeError) as exc:
+            # The watch is an addition: calls and the unsolicited push path still work.
+            trace.event("TOOLS", "mcp_listen_tools_failed namespace=%s error=%r", namespace, exc)
+
+    async def _stop_tools_watch(self, namespace: str | None = None) -> None:
+        """Cancel ``namespace``'s tools watch, or every watch when ``namespace`` is None."""
+
+        watches: dict[str, asyncio.Task[None]] = self.__dict__.setdefault(
+            "_clio_tools_watches", {}
+        )
+        names = list(watches) if namespace is None else [namespace]
+        stopped = [task for name in names if (task := watches.pop(name, None)) is not None]
+        for task in stopped:
+            task.cancel()
+        if stopped:
+            await asyncio.gather(*stopped, return_exceptions=True)
 
     def _namespace_call_failed(self, namespace: str | None, error: Exception) -> None:
         """A lazy proxy handshake does not prove its subprocess ever connected."""
@@ -316,6 +392,7 @@ class AsyncNamespacePreparationMixin:
     async def _evict_namespace_client(self, namespace: str) -> None:
         """Close + drop a namespace's stale cached client ahead of a heal reconnect."""
 
+        await self._stop_tools_watch(namespace)
         ctx = self._namespace_ctxs.pop(namespace, None)
         self._namespace_clients.pop(namespace, None)
         self._namespace_direct_routes.pop(namespace, None)

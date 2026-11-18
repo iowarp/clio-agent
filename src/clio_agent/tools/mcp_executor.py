@@ -601,6 +601,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             )
         if direct_client is not None:
             self._namespace_succeeded(namespace)
+        self._ensure_tools_watch(namespace)
         return client
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
@@ -711,6 +712,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             watch.cancel()
         if watches:
             await asyncio.gather(*watches, return_exceptions=True)
+        await self._stop_tools_watch()
 
         for namespace, ctx in list(self._namespace_ctxs.items()):
             try:
