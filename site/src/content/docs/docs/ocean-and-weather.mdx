@@ -113,9 +113,12 @@ do, and fixes what looks wrong before it answers.
 Everything runs on the machine that runs CLIO's backend. Two parts need more than the
 plugins install by themselves:
 
-- **AI forecast models** (FourCastNet and DLWP through Earth2Studio) need a CUDA GPU to run
-  at a useful speed. Without one they run only when you allow it, slowly. ECMWF's own AI
-  forecasts (AIFS) come from open data and need no GPU.
+- **AI forecast models** (FourCastNet and DLWP through Earth2Studio) and **CorrDiff**
+  downscaling over Taiwan need a CUDA GPU to run at a useful speed. Without one they run only
+  when you allow it: on four CPU cores one CorrDiff sample took under five minutes. Their
+  environment (about 3 GB) is built the first time one is used. ECMWF's own AI forecasts
+  (AIFS) come from open data and need no GPU. Downscaled and coarse fields arrive together on
+  one map, as layers on one colour scale.
 - **TempestExtremes**, which tracks blobs and cyclones in gridded fields, is built from
   source and pointed to with `TEMPESTEXTREMES_BIN`.
 
