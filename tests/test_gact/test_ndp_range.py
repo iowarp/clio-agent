@@ -99,3 +99,28 @@ def test_a_whole_read_still_streams(monkeypatch: pytest.MonkeyPatch) -> None:
     with source.open_read(source.entries()[0]) as stream:
         assert stream.read() == BODY
     assert "Range" not in seen[0].headers
+
+
+def test_later_ranges_reuse_the_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    signed = {"n": 0}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "endpoint.test":
+            signed["n"] += 1
+            return httpx.Response(
+                302, headers={"Location": f"https://data.test/o?sig={signed['n']}"}
+            )
+        assert "Authorization" not in request.headers
+        if request.url.query != f"sig={signed['n']}".encode():  # an older signature expired
+            return httpx.Response(403)
+        return _ranged(request)
+
+    seen = _serve(monkeypatch, respond)
+    source = _source("pelican://osg-htc.org/science/tile.tif")
+    reader = source.range_reader(source.entries()[0])
+    for start in range(0, 16 * 1024, 1024):
+        assert reader.read_range(start, 1024) == BODY[start : start + 1024]
+    assert reader.resolved == 1 and sum(r.url.host == "endpoint.test" for r in seen) == 1
+    signed["n"] += 1  # the Endpoint signs anew: the kept address now answers 403
+    assert reader.read_range(10, 5) == BODY[10:15]
+    assert reader.resolved == 2

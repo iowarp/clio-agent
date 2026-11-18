@@ -11,10 +11,17 @@ A server that ignores ``Range`` and answers 200 with the whole object is refused
 :data:`~clio_agent.gact.storage.range_handles.RANGE_UNSUPPORTED` (the reason names the
 server's answer), never read whole in its place: the agent then downloads the file
 deliberately, within its size limit.
+
+GDAL reads a raster in small ranges (16 KiB by default), thousands per tile. The first
+read resolves the route (the Endpoint's redirect to a signed URL); later reads reuse
+that address and the open connection, and resolve again only when the address stops
+answering a range (an expired signature). Resolving every read cost 0.3-0.4 s each and
+made a basin's lidar mosaic run for over half an hour without finishing a tile.
 """
 
 from __future__ import annotations
 
+import threading
 from typing import Callable
 
 import httpx
@@ -39,6 +46,49 @@ class NDPRangeReader:
         self.send, self.size = send, size
         self.requests = 0
         self.bytes_read = 0
+        self.resolved = 0  # how many times the route was resolved
+        self._lock = threading.Lock()
+        # (final URL, headers it takes, open client) from the last resolved read.
+        self._route: tuple[str, dict[str, str], httpx.Client] | None = None
+
+    def _fetch(self, span: str) -> bytes:
+        """One ranged GET on the reused route, else resolved afresh (route kept)."""
+        with self._lock:
+            route = self._route
+        if route is not None:
+            url, headers, client = route
+            try:
+                with client.stream("GET", url, headers={**headers, "Range": span}) as response:
+                    if response.status_code == 206:
+                        return b"".join(response.iter_bytes(chunk_size=65536))
+            except httpx.HTTPError:
+                pass  # the reused connection or address failed: resolve the route again
+            with self._lock:
+                if self._route is route:
+                    self._route = None
+        response, client = self.send({"Range": span})
+        keep = False
+        try:
+            if response.status_code != 206:
+                raise ValueError(_refused(response.status_code))
+            data = b"".join(response.iter_bytes(chunk_size=65536))
+            auth = response.request.headers.get("Authorization")
+            with self._lock:
+                self.resolved += 1
+                if self._route is None:
+                    self._route = (
+                        str(response.request.url),
+                        {"Authorization": auth} if auth else {},
+                        client,
+                    )
+                    keep = True
+            return data
+        except httpx.HTTPError as exc:
+            raise ValueError("NDP stopped streaming this range; retry the read") from exc
+        finally:
+            response.close()
+            if not keep:
+                client.close()
 
     def total_size(self) -> int:
         """The object's size: the catalog's, or the total of a one-byte ranged answer."""
@@ -61,17 +111,7 @@ class NDPRangeReader:
         end = start + length - 1
         if self.size:
             end = min(end, self.size - 1)
-        response, client = self.send({"Range": f"bytes={start}-{end}"})
-        try:
-            if response.status_code != 206:
-                raise ValueError(_refused(response.status_code))
-            data = b"".join(response.iter_bytes(chunk_size=65536))
-        except httpx.HTTPError as exc:
-            raise ValueError("NDP stopped streaming this range; retry the read") from exc
-        finally:
-            response.close()
-            client.close()
-        data = data[: end - start + 1]
+        data = self._fetch(f"bytes={start}-{end}")[: end - start + 1]
         self.requests += 1
         self.bytes_read += len(data)
         return data
