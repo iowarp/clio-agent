@@ -648,7 +648,13 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = N
     session too: an external server's call is then owned by the session's latest
     assignment, as the call that opened the view was. With no turn there is no
     Cancel, so the call is bound to ``request`` instead (:mod:`.view_call_cancel`).
+    Before the session's first turn after a restart, the host is built from the
+    session's own model first, as that turn would build it.
     """
+
+    from clio_agent.gact.session_host_agent import ensure_session_host  # noqa: PLC0415
+
+    await ensure_session_host(app, sid)
 
     def invoke() -> Any:
         token = gact_context.set_session_id(sid)
