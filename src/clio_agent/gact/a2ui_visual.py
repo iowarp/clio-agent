@@ -23,6 +23,24 @@ MAX_IMAGE_BYTES = 5_000_000
 VIEWER_TTL = 4.0
 
 
+_NOT_MOUNTED = (
+    "No CLIO window has this surface mounted: its conversation is not open, or the surface "
+    "is in an older part of a long conversation that is not loaded. It can be captured while "
+    "a person has its conversation open in CLIO with that part loaded; it need not be on "
+    "screen, since a surface scrolled out of view is captured where it is. Otherwise ask the "
+    "person to open it, or show the view again in a new surface."
+)
+_VIEWER_HIDDEN = (
+    "The surface is open but hidden: its CLIO window is in the background or minimized, "
+    "or the section holding it is collapsed. It can be captured once that window is in "
+    "the foreground with the section expanded."
+)
+_VIEWER_CLOSED = (
+    "The viewer showing this surface closed during the capture: its conversation was "
+    "closed, reloaded or left. Retry while the conversation is open."
+)
+
+
 class VisualFeedbackError(ValueError):
     """An explicit unavailable, stale, failed, or timed-out visual operation."""
 
@@ -198,10 +216,10 @@ class A2UIVisualFeedback:
 
     def _assert_current(self, request: _Capture, *, allow_epoch_change: bool = False) -> None:
         row = self._viewers.get((request.session_id, request.report.viewer_id))
-        if row is None or time.monotonic() - row.seen >= VIEWER_TTL or not row.report.visible:
-            raise VisualFeedbackError(
-                "a2ui_viewer_unavailable", "The requested viewer is no longer visible."
-            )
+        if row is None or time.monotonic() - row.seen >= VIEWER_TTL:
+            raise VisualFeedbackError("a2ui_viewer_unavailable", _VIEWER_CLOSED)
+        if not row.report.visible:
+            raise VisualFeedbackError("a2ui_viewer_unavailable", _VIEWER_HIDDEN)
         if (
             row.report.surface_id != request.report.surface_id
             or row.report.artifact_id != request.report.artifact_id
@@ -211,6 +229,31 @@ class A2UIVisualFeedback:
             raise VisualFeedbackError(
                 "a2ui_view_stale", "The view changed during capture; inspect and retry."
             )
+
+    def _unavailable_detail(
+        self, sid: str, surface_id: str, artifact_id: str, viewer_id: str
+    ) -> str:
+        """Why no viewer can take this capture, and what would make one able to."""
+        hidden = any(
+            session == sid
+            and row.report.surface_id == surface_id
+            and row.report.artifact_id == artifact_id
+            and (not viewer_id or row.report.viewer_id == viewer_id)
+            for (session, _), row in self._viewers.items()
+        )
+        if hidden:
+            return _VIEWER_HIDDEN
+        if artifact_id:
+            return (
+                "No CLIO window has this saved dashboard open. It can be captured while a "
+                "person has it open."
+            )
+        if viewer_id:
+            return (
+                "That viewer is no longer open. Inspect the surface again for the viewers "
+                "showing it now."
+            )
+        return _NOT_MOUNTED
 
     def control(
         self,
@@ -323,7 +366,8 @@ class A2UIVisualFeedback:
             ]
             if not eligible:
                 raise VisualFeedbackError(
-                    "a2ui_viewer_unavailable", "Open the requested surface or dashboard first."
+                    "a2ui_viewer_unavailable",
+                    self._unavailable_detail(sid, surface_id, artifact_id, viewer_id),
                 )
             matched = [
                 row
@@ -379,7 +423,9 @@ class A2UIVisualFeedback:
                     "a2ui_viewer_busy",
                     "Matching viewers are already capturing; retry after they complete.",
                 )
-            row = sorted(matched, key=lambda item: item.report.viewer_id)[0]
+            # The most recently renewed lease: a viewer that just unmounted still has
+            # one until it lapses, and must not win over one that is still reporting.
+            row = sorted(matched, key=lambda item: (-item.seen, item.report.viewer_id))[0]
             request = _Capture(sid, row.report.model_copy(deep=True), component_id, deadline)
             request_id = uuid.uuid4().hex
             self._requests[request_id] = request
