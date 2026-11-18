@@ -146,3 +146,32 @@ def test_the_cards_choice_is_validated() -> None:
     assert turn_rebuild.apply_mode({"apply": "now"}) == "now"
     with pytest.raises(ValueError, match="apply must be one of"):
         turn_rebuild.apply_mode({"apply": "later"})
+
+
+def test_a_plugin_offer_says_one_thing_about_where_its_tools_are(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import plugin_offer
+    from clio_agent.plugins.records import PluginRecord
+
+    record = PluginRecord(
+        id="geo",
+        version="1",
+        description="Geo.",
+        kind="plugin",
+        format="agent-plugins",
+        root="/p/geo",
+        marketplace="lab",
+        mcp_servers={"geo": {"command": "x"}},
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution.session_resolution",
+        lambda _a, _s: SimpleNamespace(mcp_servers={"geo": {"plugin": "geo"}}),
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.connector_offer.join_running_turn", lambda *_a, **_k: (["geo_x"], "")
+    )
+    turn = {"apply": "note", "joined": ["geo_x"], "listed": [], "introductions": ""}
+    message = plugin_offer._joined(None, "s", record, already=False, turn=turn)["message"]
+    assert "are in your tool list" not in message
+    assert "without changing your tool list" in message

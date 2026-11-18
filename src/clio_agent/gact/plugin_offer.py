@@ -439,11 +439,11 @@ def _joined(
             f"its skills load with load_skill from your next step: "
             f"{', '.join(skill['id'] for skill in skills)}"
         )
-    if tools:
+    joined_turn = bool(turn and (turn.get("joined") or turn.get("pending")))
+    if tools and not joined_turn:  # else the join's own sentence says where they are
         parts.append(f"its {len(tools)} tools are in your tool list from your next step")
     if reasons:
         parts.append(f"its servers could not join this turn ({', '.join(reasons)})")
-    joined_turn = bool(turn and (turn.get("joined") or turn.get("pending")))
     if later and not joined_turn:
         parts.append(f"its tools {', '.join(later)} arrive with the next message")
     result: dict[str, Any] = {
