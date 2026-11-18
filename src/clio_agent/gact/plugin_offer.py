@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -497,6 +498,13 @@ async def _offer_plugin(
 # -------------------------------------------------------------------- the tool
 
 
+def _summon_outcome(target: str, result: Mapping[str, Any]) -> dict[str, Any]:
+    """An @-named plugin's outcome for the turn's answer: added, or why not."""
+
+    reason = result.get("error") or result.get("refusal")
+    return {"error": str(reason)} if reason else {"handle": target}
+
+
 async def offer_plugin(
     reason: str,
     plugin: str = "",
@@ -531,12 +539,21 @@ async def offer_plugin(
             from clio_agent.gact.connector_needs_offer import offer_needs  # noqa: PLC0415
 
             return await offer_needs(found, reason, needs)
-        if kind == "connector":
-            return await connector_offer.offer_connector(
-                connector=found.id, reason=reason, required=required
+        if kind in {"connector", "plugin"}:
+            from clio_agent.gact import summon  # noqa: PLC0415
+
+            # A plugin the person @-named: this call is what the summons asked for.
+            claimed = summon.claim(summon.PLUGIN, plugin.strip()) or summon.claim(
+                summon.PLUGIN, found.id
             )
-        if kind == "plugin":
-            return await _offer_plugin(app, session_id, found, reason, required=required)
+            if kind == "connector":
+                result = await connector_offer.offer_connector(
+                    connector=found.id, reason=reason, required=required
+                )
+            else:
+                result = await _offer_plugin(app, session_id, found, reason, required=required)
+            summon.started(claimed, _summon_outcome(found.id, result))
+            return result
     from clio_agent.gact import offer_search  # noqa: PLC0415
     from clio_agent.gact.offer_list import listed, overlay_or_default  # noqa: PLC0415
 
