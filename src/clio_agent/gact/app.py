@@ -782,11 +782,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     """
 
     loop = asyncio.get_running_loop()
-    # Construction starts before the executor build: ARC initialization and relay
-    # surface discovery import production dependencies too. Keep the entire startup
-    # boundary typed. A missing dependency or relay discovery failure must not leave
-    # a server that advertises provider readiness while every turn returns the vague
-    # ``not_configured`` state.
+    # Construction starts before the executor build: ARC initialization imports
+    # production dependencies too. Keep the entire startup boundary typed. A missing
+    # dependency must not leave a server that advertises provider readiness while
+    # every turn returns the vague ``not_configured`` state.
     try:
         # The ONE per-process ARC, injected so the agent never mints its own (no per-build
         # ARC churn / trace ⊋ ARC split). Built on a worker thread (server_boot): a clio-core

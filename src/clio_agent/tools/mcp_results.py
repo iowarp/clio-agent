@@ -30,10 +30,7 @@ parse-and-compare (:func:`_is_json_serialization_twin`), never a heuristic or
 prose match, and always conservative -- a parse failure or any structural
 mismatch means "not proven a twin", so the text survives.
 :func:`call_tool_result_to_observer` applies this at the top level (the ONE
-seam described above); :func:`consume_dual_emission_twin` applies the same
-rule to a plain CallToolResult-shaped mapping that never reaches that
-function -- e.g. a durable relay task's own inlined ``result`` field, one hop
-inside a tool's ``structuredContent``.
+seam described above).
 """
 
 from __future__ import annotations
@@ -251,42 +248,6 @@ def _drop_serialization_twin_blocks(blocks: Sequence[Any], structured: Any) -> l
     return kept
 
 
-def consume_dual_emission_twin(result: Any) -> Any:
-    """Consume a CallToolResult-shaped mapping's redundant content/structured twin.
-
-    Applies the module's #832 dual-emission consume rule (see module
-    docstring) to a plain mapping that never passes through
-    :func:`call_tool_result_to_observer` -- e.g. a durable relay task's own
-    inlined ``result`` field (``tools/remote_mcp.py``'s
-    ``_task_result_as_job_wire``), which can carry the SAME standard MCP dual
-    emission a live ``CallToolResult`` does. The structured object is
-    authoritative; a verified twin ``content[].text`` block is dropped, a
-    genuinely distinct block is left untouched. Non-mapping input, or a
-    mapping with no structured sibling to compare against, passes through
-    unchanged -- never invents a twin to drop.
-    """
-
-    if not isinstance(result, Mapping):
-        return result
-    structured = result.get("structuredContent")
-    if structured is None:
-        structured = result.get("structured_content")
-    if structured is None:
-        return result
-    content = result.get("content")
-    if not isinstance(content, list) or not content:
-        return result
-    filtered = _drop_serialization_twin_blocks(content, structured)
-    if filtered == content:
-        return result
-    updated = dict(result)
-    if filtered:
-        updated["content"] = filtered
-    else:
-        updated.pop("content", None)
-    return updated
-
-
 def content_blocks_for_wire(observer_result: Any) -> list[dict[str, Any]] | None:
     """Return one observer projection's content blocks for a wire ``Part``.
 
@@ -392,6 +353,5 @@ __all__ = [
     "MCPResultClassification",
     "call_tool_result_to_observer",
     "classify_call_tool_result",
-    "consume_dual_emission_twin",
     "content_blocks_for_wire",
 ]

@@ -2,7 +2,7 @@
 
 Implements brief Part A.3's protocol mechanics exactly: browser + loopback
 (default), paste the redirect URL (fallback / always raced against the
-loopback), and device code (headless: clio-relay HPC login nodes, any server
+loopback), and device code (headless: HPC login nodes, any server
 with no local browser). All three end in the same code exchange
 (:func:`exchange_code`). The stateful orchestrator that drives these three
 methods (:class:`~clio_agent.providers.codex.login_flow.CodexLoginFlow`)
