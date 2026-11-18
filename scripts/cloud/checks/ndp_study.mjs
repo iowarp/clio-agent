@@ -12,6 +12,12 @@
 // session, waits for the turn to finish, then opens the Science log from the canvas menu
 // and captures its list and, when the study has views, its Views mode. It prints the
 // calls the agent made, the study's entries by type and its views.
+//
+// Multi-turn: STUDY_FOLLOWUPS (a JSON list of plain requests) is sent turn by turn in
+// the same conversation after the first one settles, each captured ("followup-N").
+// STUDY_WORKSPACE and STUDY_SESSION continue an existing conversation instead of
+// starting one (STUDY_TEXT may then be empty). STUDY_MINUTES bounds each turn's wait
+// (default 60).
 import path from "node:path";
 
 const AGENT = process.env.AGENT_URL || "http://127.0.0.1:8787";
@@ -87,16 +93,23 @@ export default async function (page, shot) {
   const root = process.env.STUDY_ROOT;
   const text = process.env.STUDY_TEXT;
   const log = [];
-  const workspace = await api("POST", "/v1/workspaces", { name: path.basename(root), root_path: root });
+  const minutes = Number(process.env.STUDY_MINUTES || 60);
+  const followups = JSON.parse(process.env.STUDY_FOLLOWUPS || "[]");
+  const continuing = Boolean(process.env.STUDY_SESSION);
+  const workspace = continuing
+    ? { id: process.env.STUDY_WORKSPACE }
+    : await api("POST", "/v1/workspaces", { name: path.basename(root), root_path: root });
   // No STUDY_AGENT: the session gets CLIO's default agent, as a new conversation does.
-  const session = await api("POST", "/v1/sessions", {
-    workspace_id: workspace.id,
-    ...(process.env.STUDY_AGENT ? { agent: { id: process.env.STUDY_AGENT } } : {}),
-  });
+  const session = continuing
+    ? { id: process.env.STUDY_SESSION }
+    : await api("POST", "/v1/sessions", {
+        workspace_id: workspace.id,
+        ...(process.env.STUDY_AGENT ? { agent: { id: process.env.STUDY_AGENT } } : {}),
+      });
   await page.goto(new URL(`/workspaces/${workspace.id}/sessions/${session.id}`, page.url()).toString());
   await page.waitForTimeout(6000);
   const enable = page.getByRole("button", { name: /Enable all/i });
-  if (await enable.count()) {
+  if (!continuing && (await enable.count())) {
     await enable.first().click();
     log.push("clicked Enable all on the agent-needs card");
     // The card's own phase (ask, working, done), read from the interactions API.
@@ -113,9 +126,16 @@ export default async function (page, shot) {
     }
     await shot("enabled");
   } else log.push("no agent-needs card");
-  await send(page, text);
-  log.push(`turn settled: ${await waitIdle(page, session.id, log, 25)}`);
-  await shot("reply");
+  if (text) {
+    await send(page, text);
+    log.push(`turn settled: ${await waitIdle(page, session.id, log, minutes)}`);
+    await shot("reply");
+  }
+  for (const [index, followup] of followups.entries()) {
+    await send(page, followup);
+    log.push(`follow-up ${index + 1} settled: ${await waitIdle(page, session.id, log, minutes)}`);
+    await shot(`followup-${index + 1}`);
+  }
 
   const study = await api("GET", `/v1/sessions/${session.id}/science-log`);
   const openCanvas = page.getByRole("button", { name: "Open workspace canvas" });
