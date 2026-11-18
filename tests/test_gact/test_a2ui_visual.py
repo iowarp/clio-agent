@@ -142,14 +142,55 @@ def test_unavailable_says_whether_the_surface_is_unmounted_hidden_or_closed(
     bridge.report("sid", viewer(visible=False))
     with pytest.raises(VisualFeedbackError, match="open but hidden.*foreground"):
         bridge.capture("sid", "surface", 1)
-    # A lease that lapses while the capture waits: the viewer closed, said as such.
+    # A lease that lapses before its viewer claims the capture: it closed, said as such.
     monkeypatch.setattr("clio_agent.gact.a2ui_visual.VIEWER_TTL", 0.3)
     bridge.report("sid", viewer(view_revision=1))
     with ThreadPoolExecutor(1) as pool:
         future = pool.submit(bridge.capture, "sid", "surface", 1)
-        claim(bridge, viewer(view_revision=1))
         with pytest.raises(VisualFeedbackError, match="closed during the capture"):
             future.result(timeout=3)
+
+
+def test_concurrent_captures_survive_a_page_too_busy_to_renew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live: three parallel captures, one of a suspended surface, on one page.
+
+    Capturing one view held the page's main thread for seconds, so no viewer on it
+    renewed its lease, and every capture failed as if its viewer had closed. A viewer
+    working on a claimed capture keeps its lease until the capture's deadline.
+    """
+    monkeypatch.setattr("clio_agent.gact.a2ui_visual.VIEWER_TTL", 0.2)
+    bridge = A2UIVisualFeedback()
+    reports = {
+        surface: viewer(f"viewer-{surface}", surface_id=surface)
+        for surface in ("section-a", "section-b", "glider")
+    }
+    reports["glider"] = viewer(
+        "viewer-glider",
+        surface_id="glider",
+        view_revision=4,
+        state={"suspended": True, "readiness": {"ready": True, "detail": ""}},
+    )
+    for report in reports.values():
+        bridge.report("sid", report)
+    with ThreadPoolExecutor(3) as pool:
+        futures = {surface: pool.submit(bridge.capture, "sid", surface, 1) for surface in reports}
+        # Each viewer renews and claims its own request, as the page's viewers do.
+        jobs: dict[str, dict[str, Any]] = {}
+        deadline = time.monotonic() + CAPTURE_TIMEOUT
+        while len(jobs) < len(reports) and time.monotonic() < deadline:
+            for surface, report in reports.items():
+                for job in bridge.report("sid", report):
+                    jobs[surface] = job
+            time.sleep(0.005)
+        assert set(jobs) == set(reports)
+        time.sleep(0.6)  # The page is busy: no viewer renews for three TTLs.
+        for surface, report in reports.items():
+            bridge.complete("sid", reply(jobs[surface], report))
+        for surface, future in futures.items():
+            _, evidence = future.result(timeout=3)
+            assert evidence["viewer"]["surface_id"] == surface
 
 
 def test_capture_goes_to_the_viewer_still_reporting_not_a_lapsing_lease() -> None:

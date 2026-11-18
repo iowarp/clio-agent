@@ -101,10 +101,25 @@ class A2UIVisualFeedback:
         self._viewers: dict[tuple[str, str], _Viewer] = {}
         self._requests: dict[str, _Capture] = {}
 
+    def _working(self, key: tuple[str, str], now: float) -> bool:
+        """Whether this viewer claimed a request still in progress, within its deadline.
+
+        Capturing runs on the page's main thread; a large view can hold it for seconds,
+        and then no viewer on the page renews its lease. A viewer at work on a claimed
+        request keeps its lease until that request's deadline, which bounds the wait.
+        """
+        return any(
+            (job.session_id, job.report.viewer_id) == key and job.claimed and job.deadline > now
+            for job in self._requests.values()
+        )
+
+    def _live(self, key: tuple[str, str], row: _Viewer, now: float) -> bool:
+        return now - row.seen < VIEWER_TTL or self._working(key, now)
+
     def _prune(self) -> None:
         now = time.monotonic()
         self._viewers = {
-            key: row for key, row in self._viewers.items() if now - row.seen < VIEWER_TTL
+            key: row for key, row in self._viewers.items() if self._live(key, row, now)
         }
 
     def report(self, sid: str, report: ViewerReport) -> list[dict[str, Any]]:
@@ -215,8 +230,9 @@ class A2UIVisualFeedback:
             self._condition.notify_all()
 
     def _assert_current(self, request: _Capture, *, allow_epoch_change: bool = False) -> None:
-        row = self._viewers.get((request.session_id, request.report.viewer_id))
-        if row is None or time.monotonic() - row.seen >= VIEWER_TTL:
+        key = (request.session_id, request.report.viewer_id)
+        row = self._viewers.get(key)
+        if row is None or not self._live(key, row, time.monotonic()):
             raise VisualFeedbackError("a2ui_viewer_unavailable", _VIEWER_CLOSED)
         if not row.report.visible:
             raise VisualFeedbackError("a2ui_viewer_unavailable", _VIEWER_HIDDEN)
