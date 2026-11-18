@@ -9,6 +9,10 @@ on:
       - "external/gact-tui"
       - "external/gact-tui/**"
       - ".github/workflows/docker.yml"
+      # The images build the project: packaging inputs can break them (force-include).
+      - "pyproject.toml"
+      - "uv.lock"
+      - "catalogs/connectors/**"
     # Release images: the push-to-ghcr step is gated on a v* tag ref, but without
     # this trigger the workflow never RAN on tags - release images were silently
     # never pushed (found on v0.6.0). The exact gitlink path above also ensures
@@ -31,6 +35,10 @@ on:
       - "external/gact-tui"
       - "external/gact-tui/**"
       - ".github/workflows/docker.yml"
+      # The images build the project: packaging inputs can break them (force-include).
+      - "pyproject.toml"
+      - "uv.lock"
+      - "catalogs/connectors/**"
 
 env:
   REGISTRY: ghcr.io
