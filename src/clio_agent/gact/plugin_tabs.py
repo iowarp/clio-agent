@@ -28,6 +28,7 @@ from clio_agent.gact.a2ui import (
     validate_client_action,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.plugin_tab_revisions import carry_revisions
 from clio_agent.gact.server_actions import (
     ServerActionError,
     deliver_server_action,
@@ -46,6 +47,7 @@ from clio_agent.gact.server_surfaces import (
     result_blocks,
     server_scope,
 )
+from clio_agent.tools import fleet_close_listeners
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,9 @@ UNAVAILABLE = "plugin_tab.unavailable"
 
 SERVER_UNAVAILABLE = "plugin_tab_server_unavailable"
 RESOURCE_FAILED = "plugin_tab_resource_failed"
+
+#: Why a fleet dropped a server, when the server is mounted again at once.
+REMOUNT_REASONS = frozenset({"configuration_switched", "namespace_rebound", "restart"})
 
 #: ``(session id, plugin id, tab id)``
 TabKey = tuple[str, str, str]
@@ -85,6 +90,8 @@ class TabState:
     reason: str = ""
     detail: str = ""
     subscribed: bool = False
+    #: The mounted server the watch was started on; a remount drops it (HS3).
+    watch_proxy: Any = None
     actions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
@@ -159,6 +166,7 @@ class PluginTabs:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._remove_listener: Any = None
+        self._remove_drop_listener: Any = None
 
     # -- listing -----------------------------------------------------------------
 
@@ -310,7 +318,13 @@ class PluginTabs:
             method = getattr(executor, "set_resource_subscription", None)
             if method is None:
                 return False
-            return bool(method(namespace, uri, subscribed=subscribed))
+            held = bool(method(namespace, uri, subscribed=subscribed))
+            inner = getattr(executor, "_async_executor", executor)
+            servers = getattr(inner, "_namespace_servers", None)
+            with self._lock:
+                held_on = servers.get(namespace) if isinstance(servers, Mapping) else None
+                state.watch_proxy = held_on if held else None
+            return held
 
         try:
             return await _run_bound(self._app, state.session_id, change)
@@ -350,7 +364,8 @@ class PluginTabs:
         except PluginTabError as exc:
             self._unavailable(key, exc.reason, str(exc))
             with self._lock:
-                state.surfaces, state.reason, state.detail = {}, exc.reason, str(exc)
+                # The records stay, so the tab's next read keeps their revisions rising.
+                state.reason, state.detail = exc.reason, str(exc)
             return {
                 "tab": _tab_wire(declared, reason=exc.reason),
                 "surfaces": [],
@@ -358,6 +373,7 @@ class PluginTabs:
             }
         with self._lock:
             self._failures.pop(key, None)
+            surfaces = carry_revisions(state.surfaces, surfaces)
             state.surfaces, state.reason, state.detail = surfaces, reason, detail
             state.revision += 1
             need_subscribe = not state.subscribed
@@ -412,6 +428,7 @@ class PluginTabs:
                         if self._open.get(key) is state:
                             self._failures.pop(key, None)
                             before = state.surfaces
+                            surfaces = carry_revisions(before, surfaces)
                             state.surfaces, state.reason, state.detail = surfaces, reason, detail
                             self._publish_changes(state, before, surfaces, refreshed=True)
                 with self._lock:
@@ -442,6 +459,60 @@ class PluginTabs:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
+    def _on_proxies_dropped(self, root: str, proxies: tuple[Any, ...], reason: str) -> None:
+        """A fleet stopped routing to ``proxies`` (on the dropping thread): hand off only.
+
+        A tab watching one of them lost its watch with that server. A remount (a changed
+        configuration or plugin, a rebound connector, a restart) watches the server
+        mounted now; a reap only forgets the watch, and the tab's next ``open`` starts it.
+        """
+
+        del root
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        with self._lock:
+            keys = [
+                key
+                for key, state in self._open.items()
+                if any(state.watch_proxy is proxy for proxy in proxies)
+            ]
+            for key in keys:
+                self._open[key].subscribed = False
+                self._open[key].watch_proxy = None
+        if keys and reason in REMOUNT_REASONS:
+            loop.call_soon_threadsafe(self._start_rebinds, keys)
+
+    def session_agent_changed(self, session_id: str) -> None:
+        """The session's agent changed: watch each open tab's server as mounted now."""
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        with self._lock:
+            keys = [key for key in self._open if key[0] == session_id]
+        if keys:
+            loop.call_soon_threadsafe(self._start_rebinds, keys)
+
+    def _start_rebinds(self, keys: list[TabKey]) -> None:
+        for key in keys:
+            task = asyncio.ensure_future(self.rebind(key))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def rebind(self, key: TabKey) -> None:
+        """Subscribe an open tab on the session's current executor, then re-read it."""
+
+        with self._lock:
+            state = self._open.get(key)
+        if state is None:
+            return
+        held = await self._subscribe(state, subscribed=True)
+        with self._lock:
+            if self._open.get(key) is state:
+                state.subscribed = held
+        await self.refresh(key)
+
     def _ensure_listener(self) -> None:
         from clio_agent.tools.mcp_resource_updates import add_listener  # noqa: PLC0415
 
@@ -460,11 +531,28 @@ class PluginTabs:
 
             self._remove_listener = add_listener(listener)
             remove.append(self._remove_listener)
+        if self._remove_drop_listener is None:
+            ref_drop = weakref.ref(self)
+            remove_drop: list[Any] = []
+
+            def dropped(root: str, proxies: tuple[Any, ...], reason: str) -> None:
+                tabs = ref_drop()
+                if tabs is None:
+                    if remove_drop:
+                        remove_drop.pop()()
+                    return
+                tabs._on_proxies_dropped(root, proxies, reason)
+
+            self._remove_drop_listener = fleet_close_listeners.listen(dropped)
+            remove_drop.append(self._remove_drop_listener)
 
     def shutdown(self) -> None:
         if self._remove_listener is not None:
             self._remove_listener()
             self._remove_listener = None
+        if self._remove_drop_listener is not None:
+            self._remove_drop_listener()
+            self._remove_drop_listener = None
         for task in list(self._tasks):
             task.cancel()
         with self._lock:
@@ -638,6 +726,14 @@ def apply_task_result(app: Any, handle: str, result: Any) -> bool:
     return isinstance(tabs, PluginTabs) and tabs.apply_task_result(handle, result)
 
 
+def session_agent_changed(app: Any, session_id: str) -> None:
+    """Re-watch the session's open tabs after its agent (and so its servers) changed."""
+
+    tabs = getattr(app.state, "plugin_tabs", None)
+    if isinstance(tabs, PluginTabs):
+        tabs.session_agent_changed(session_id)
+
+
 __all__ = [
     "REFRESHED",
     "RESOURCE_FAILED",
@@ -649,6 +745,7 @@ __all__ = [
     "PluginTabs",
     "TabState",
     "apply_task_result",
+    "session_agent_changed",
     "declared_tabs",
     "plugin_tabs",
 ]

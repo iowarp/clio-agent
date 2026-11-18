@@ -299,6 +299,11 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
 - On `notifications/resources/updated` for that URI, either way, CLIO reads again and
   replaces the tab's surfaces. A listen stream that drops is reopened, and then read
   again once. CLIO does not poll.
+- The watch belongs to the server process it was opened on. When the server is mounted
+  again (the session's agent removes and re-adds its plugin, a plugin update or a
+  connector change replaces it, or CLIO reconnects it), CLIO ends the old stream, opens
+  one on the server mounted now, and reads the tab again once. A server an idle reap
+  stopped is not restarted for a watch; the tab's next `open` starts it.
 - `close` drops the tab's surfaces and, when no session still has the tab open, ends the
   listen stream.
 - Tab surfaces are not part of the transcript and are not seen by the model. They live
@@ -414,6 +419,10 @@ Tab revisions, per open tab:
   `revision` equals the last surface event's, and `surface_ids` are the tab's whole live
   set (ids only). The client drops any tab surface not in `surface_ids`; a
   `revision != current`, or an id it does not hold, means it missed events: call `open`.
+- Each surface's own `surface.revision` only rises while the tab is open, across re-reads
+  too. A surface whose content changed since the host last published it takes the next
+  revision; an unchanged one keeps its revision (and its record). A client may key a
+  surface's rendering on `surface.revision`.
 - `plugin_tab.unavailable` carries no revision and leaves the surfaces in place. The next
   `refreshed` for the tab means it is available again.
 - After the SSE stream reconnects, or on any `stream.gap`, call `open` again for each open

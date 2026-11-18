@@ -244,6 +244,8 @@ class _Executor:
         self.watching: dict[tuple[str, str], bool] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.fail_read: Exception | None = None
+        self.subscribes: list[tuple[str, Any]] = []
+        self._namespace_servers: dict[str, Any] = {"hostfx": object()}
 
     def read_resource(self, namespace: str, uri: str) -> Any:
         if self.fail_read is not None:
@@ -253,6 +255,8 @@ class _Executor:
 
     def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
         self.watching[(namespace, uri)] = subscribed
+        if subscribed:
+            self.subscribes.append((namespace, self._namespace_servers[namespace]))
         return subscribed
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -391,6 +395,105 @@ async def test_an_update_re_reads_the_tab_and_publishes_its_changes(
 
         resource_updated("other", hostfx.PANEL_URI)
         await asyncio.sleep(0.05)
+        assert len(bus.of(tabs_module.REFRESHED)) == 1
+    finally:
+        tabs.shutdown()
+
+
+async def _until(predicate: Any) -> None:
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+
+
+async def test_a_surface_revision_keeps_rising_across_re_reads(
+    tab_app: tuple[Any, _Executor],
+) -> None:
+    app, executor = tab_app
+    bus: _Bus = app.state.bus
+    tabs = tabs_module.PluginTabs(app)
+    try:
+        opened = await tabs.open("s1", "host-fixture", "panel")
+        first = opened["surfaces"][0]["revision"]
+
+        async def re_read(count: int) -> dict[str, Any]:
+            executor.count = count
+            seen = len(bus.of(tabs_module.REFRESHED))
+            resource_updated("hostfx", hostfx.PANEL_URI)
+            await _until(lambda: len(bus.of(tabs_module.REFRESHED)) > seen)
+            return bus.of(tabs_module.SURFACE_UPSERTED)[-1]["surface"]
+
+        changed = await re_read(5)
+        unchanged = await re_read(5)
+        changed_again = await re_read(7)
+
+        # A fresh fold would give the same message count each time; the host carries on.
+        assert changed["revision"] == first + 1
+        assert unchanged["revision"] == first + 1
+        assert unchanged["message_revisions"] == changed["message_revisions"]
+        assert changed_again["revision"] == first + 2
+        assert max(changed_again["message_revisions"]) == first + 2
+        assert min(changed_again["message_revisions"]) < first + 2  # createSurface kept
+
+        reopened = await tabs.open("s1", "host-fixture", "panel")
+        assert reopened["surfaces"][0]["revision"] == first + 2
+    finally:
+        tabs.shutdown()
+
+
+async def test_a_remounted_server_is_watched_again_and_re_read(
+    tab_app: tuple[Any, _Executor],
+) -> None:
+    from clio_agent.tools.fleet_close_listeners import proxies_dropped
+
+    app, executor = tab_app
+    bus: _Bus = app.state.bus
+    tabs = tabs_module.PluginTabs(app)
+    try:
+        await tabs.open("s1", "host-fixture", "panel")
+        old = executor._namespace_servers["hostfx"]
+        assert executor.subscribes == [("hostfx", old)]
+
+        # A plugin update or rebind mounts a new server process for the namespace.
+        executor._namespace_servers["hostfx"] = new = object()
+        executor.count = 3
+        proxies_dropped("root", (object(),), "configuration_switched")  # someone else's
+        proxies_dropped("root", (old,), "configuration_switched")
+        await _until(lambda: bus.of(tabs_module.REFRESHED))
+
+        assert executor.subscribes == [("hostfx", old), ("hostfx", new)]
+        assert "Count: 3" in json.dumps(bus.of(tabs_module.SURFACE_UPSERTED)[-1]["surface"])
+
+        # An idle reap only forgets the watch; the tab's next open starts it again.
+        proxies_dropped("root", (new,), "idle_ttl")
+        await asyncio.sleep(0.05)
+        assert len(executor.subscribes) == 2
+        await tabs.open("s1", "host-fixture", "panel")
+        assert executor.subscribes[-1] == ("hostfx", new)
+        assert len(executor.subscribes) == 3
+    finally:
+        tabs.shutdown()
+
+
+async def test_an_agent_change_watches_the_open_tabs_again(
+    tab_app: tuple[Any, _Executor],
+) -> None:
+    app, executor = tab_app
+    bus: _Bus = app.state.bus
+    tabs = tabs_module.PluginTabs(app)
+    try:
+        tabs_module.session_agent_changed(app, "s1")  # nothing open yet: no-op
+        app.state.plugin_tabs = tabs
+        await tabs.open("s1", "host-fixture", "panel")
+        executor._namespace_servers["hostfx"] = readded = object()
+
+        tabs_module.session_agent_changed(app, "other")
+        tabs_module.session_agent_changed(app, "s1")
+        await _until(lambda: bus.of(tabs_module.REFRESHED))
+
+        assert executor.subscribes[-1] == ("hostfx", readded)
+        assert len(executor.subscribes) == 2
         assert len(bus.of(tabs_module.REFRESHED)) == 1
     finally:
         tabs.shutdown()

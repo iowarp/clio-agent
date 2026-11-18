@@ -513,53 +513,6 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             client = self._client
         return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
 
-    async def set_resource_subscription(
-        self, namespace: str, uri: str, *, subscribed: bool
-    ) -> bool:
-        """Start or stop watching ``uri`` on exactly ``namespace`` for updates (HS3).
-
-        A watch holds one ``subscriptions/listen`` stream for the URI
-        (:func:`clio_agent.tools.mcp_listen.watch_resource`); a server without
-        listen pushes ``notifications/resources/updated`` unsolicited instead. Either
-        way updates reach :mod:`clio_agent.tools.mcp_resource_updates`. Returns
-        whether a watch is now held.
-        """
-
-        from clio_agent.tools.mcp_listen import watch_resource  # noqa: PLC0415
-
-        if self._closed:
-            raise RuntimeError("AsyncMCPToolExecutor is closed")
-        proxy = self._namespace_servers.get(namespace)
-        if proxy is None:
-            raise ValueError(f"unknown MCP namespace {namespace!r}")
-        key = (namespace, uri)
-        current = self._resource_watches.get(key)
-        if not subscribed:
-            if current is not None:
-                self._resource_watches.pop(key, None)
-                current.cancel()
-                await asyncio.gather(current, return_exceptions=True)
-            return False
-        if current is not None and not current.done():
-            return True
-        await self._namespace_client(namespace, proxy)  # connect now; failures surface here
-
-        async def connect() -> Any:
-            return await self._namespace_client(namespace, proxy)
-
-        async def run() -> None:
-            try:
-                await watch_resource(connect, namespace, uri)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - a dead watch is logged, the tab still reads
-                logger.exception("MCP resource watch failed namespace=%s uri=%s", namespace, uri)
-
-        self._resource_watches[key] = asyncio.create_task(
-            run(), name=f"clio-mcp-resource-watch:{namespace}"
-        )
-        return True
-
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
         """Connect a declared namespace, retaining era, route and cache-lock evidence."""
         from clio_agent.tools import spawn_diet
@@ -602,6 +555,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         if direct_client is not None:
             self._namespace_succeeded(namespace)
         self._ensure_tools_watch(namespace)
+        self._ensure_resource_watches(namespace)
         return client
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
@@ -706,12 +660,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._close_requested = True
         self._closed = True
 
-        watches = list(self._resource_watches.values())
-        self._resource_watches.clear()
-        for watch in watches:
-            watch.cancel()
-        if watches:
-            await asyncio.gather(*watches, return_exceptions=True)
+        await self._stop_resource_watches()
         await self._stop_tools_watch()
 
         for namespace, ctx in list(self._namespace_ctxs.items()):

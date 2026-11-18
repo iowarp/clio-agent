@@ -171,6 +171,7 @@ async def watch_resource(
     namespace: str,
     uri: str,
     *,
+    catch_up: bool = False,
     retry_after: float = 1.0,
     max_retry_after: float = 30.0,
 ) -> None:
@@ -182,7 +183,10 @@ async def watch_resource(
     reader reads the whole resource, so a sub-resource update reports the watched
     URI). A stream that is lost, times out or ends is opened again after a backoff
     on a fresh ``connect()``, and once re-acknowledged one update is reported, so the
-    reader refetches whatever changed while it was gone.
+    reader refetches whatever changed while it was gone. ``catch_up`` reports one on
+    the first acknowledgement too, for a watch that replaces an earlier connection's.
+    A closed connection ends the watch: the executor starts a new one on the namespace's
+    next connection.
 
     A server that cannot listen (a connection before 2026-07-28, or a server that
     answers ``-32601``) ends the watch quietly. On an older protocol such a server
@@ -196,15 +200,16 @@ async def watch_resource(
         MCPError: The server rejected the listen request for another reason.
     """
 
+    from anyio import BrokenResourceError, ClosedResourceError
     from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost, listen
     from mcp.shared.exceptions import MCPError
     from mcp.shared.subscriptions import ResourceUpdated
-    from mcp_types.jsonrpc import METHOD_NOT_FOUND
+    from mcp_types.jsonrpc import CONNECTION_CLOSED, METHOD_NOT_FOUND
 
     from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
 
     delay = retry_after
-    resumed = False
+    resumed = catch_up
     while True:
         client = await connect()
         trace.event("TOOLS", "mcp_listen_resource_start namespace=%s uri=%s", namespace, uri)
@@ -219,9 +224,23 @@ async def watch_resource(
         except ListenNotSupportedError:
             trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
             return
+        except (BrokenResourceError, ClosedResourceError) as exc:
+            trace.event(
+                "TOOLS",
+                "mcp_listen_resource_closed namespace=%s uri=%s reason=%r",
+                namespace,
+                uri,
+                exc,
+            )
+            return
         except MCPError as exc:
             if exc.code == METHOD_NOT_FOUND:
                 trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
+                return
+            if exc.code == CONNECTION_CLOSED:
+                trace.event(
+                    "TOOLS", "mcp_listen_resource_closed namespace=%s uri=%s", namespace, uri
+                )
                 return
             raise
         except (SubscriptionLost, TimeoutError) as exc:

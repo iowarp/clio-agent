@@ -18,10 +18,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from anyio import BrokenResourceError, ClosedResourceError
 from mcp.client import subscriptions as subscriptions_module
 from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import ResourceUpdated
+from mcp_types.jsonrpc import CONNECTION_CLOSED
 
 from clio_agent.gact.a2ui import apply_batch
 from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id
@@ -29,6 +31,7 @@ from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
 from clio_agent.gact.server_surfaces import a2ui_resources, payload_messages, result_blocks
 from clio_agent.tools import mcp_resource_updates
 from clio_agent.tools.mcp_listen import list_changed_message_handler, watch_resource
+from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMixin
 
 URI = "a2ui://fixture/panel"
 _SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "plugins" / "host_semantics"
@@ -173,3 +176,88 @@ async def test_the_fixture_server_pushes_its_panel_update(
     assert list(surfaces) == [("s", hostfx.SURFACE_ID)]
     contents = read if isinstance(read, list) else read.contents
     assert json.loads(contents[0].text)[0]["createSurface"]["catalogId"] == basic_catalog_id()
+
+
+@pytest.mark.parametrize(
+    "closed",
+    [
+        ClosedResourceError(),
+        BrokenResourceError(),
+        MCPError(CONNECTION_CLOSED, "Connection closed"),
+    ],
+)
+async def test_a_closed_connection_ends_the_watch_after_its_catch_up(
+    monkeypatch: pytest.MonkeyPatch, updates: list[tuple[str, str]], closed: Exception
+) -> None:
+    opened = _scripted(monkeypatch, [[closed]])
+
+    await watch_resource(_connect(), "fx", URI, catch_up=True, retry_after=0)
+
+    # A watch replacing an earlier connection's reports one update on acknowledgement;
+    # the closed connection ends it without reconnecting (the next connection starts one).
+    assert opened == [[URI]]
+    assert updates == [("fx", URI)]
+
+
+class _Namespaces(AsyncNamespacePreparationMixin):
+    """The executor's namespace bookkeeping, with a connection per mounted server."""
+
+    def __init__(self) -> None:
+        self._client = object()
+        self._closed = False
+        self._mcp_tools: dict[str, Any] = {}
+        self._namespace_clients: dict[str, Any] = {}
+        self._namespace_ctxs: dict[str, Any] = {}
+        self._namespace_direct_routes: dict[str, bool] = {}
+        self._namespace_heal_attempted: set[str] = set()
+        self._namespace_locks: dict[str, Any] = {}
+        self._namespace_servers: dict[str, Any] = {"fx": "server-1"}
+        self._connected_namespaces: set[str] = set()
+        self._resource_watches: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self.connected: list[Any] = []
+
+    async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
+        client = SimpleNamespace(server=proxy)
+        self.connected.append(proxy)
+        self._namespace_clients[namespace] = client
+        self._namespace_direct_routes[namespace] = True
+        self._ensure_resource_watches(namespace)
+        return client
+
+
+async def test_a_remounted_namespace_watches_its_resource_on_the_new_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.tools import mcp_listen
+
+    watched: list[tuple[str, str, bool, Any]] = []
+
+    async def watch(connect: Any, namespace: str, uri: str, *, catch_up: bool = False) -> None:
+        client = await connect()
+        watched.append((namespace, uri, catch_up, client.server))
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(mcp_listen, "watch_resource", watch)
+    executor = _Namespaces()
+
+    assert await executor.set_resource_subscription("fx", URI, subscribed=True) is True
+    assert await executor.set_resource_subscription("fx", URI, subscribed=True) is True
+    await asyncio.sleep(0.01)
+    first = executor._resource_watches[("fx", URI)]
+    assert watched == [("fx", URI, False, "server-1")]
+
+    # A remount: the namespace now routes to a new server and its connection is reset.
+    executor._namespace_servers["fx"] = "server-2"
+    await executor.reset_namespace("fx")
+    await asyncio.sleep(0.01)
+
+    assert first.cancelled()
+    assert executor.connected == ["server-1", "server-2"]
+    assert watched[1:] == [("fx", URI, True, "server-2")]
+    assert not executor._resource_watches[("fx", URI)].done()
+
+    assert await executor.set_resource_subscription("fx", URI, subscribed=False) is False
+    assert executor._resource_watches == {}
+    await executor.reset_namespace("fx")  # nothing wanted: no reconnect
+    assert executor.connected == ["server-1", "server-2"]
+    await executor._stop_resource_watches()

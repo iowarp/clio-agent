@@ -29,6 +29,7 @@ class AsyncNamespacePreparationMixin:
     _namespace_locks: dict[str, Any]
     _namespace_servers: Mapping[str, Any]
     _connected_namespaces: set[str]
+    _resource_watches: dict[tuple[str, str], asyncio.Task[None]]
 
     def _namespace_succeeded(self, namespace: str | None) -> None:
         """Learn a launcher only after its first actual routed call succeeds."""
@@ -111,6 +112,112 @@ class AsyncNamespacePreparationMixin:
             task.cancel()
         if stopped:
             await asyncio.gather(*stopped, return_exceptions=True)
+
+    async def set_resource_subscription(
+        self, namespace: str, uri: str, *, subscribed: bool
+    ) -> bool:
+        """Start or stop watching ``uri`` on exactly ``namespace`` for updates (HS3).
+
+        A watch holds one ``subscriptions/listen`` stream for the URI
+        (:func:`clio_agent.tools.mcp_listen.watch_resource`); a server without
+        listen pushes ``notifications/resources/updated`` unsolicited instead. Either
+        way updates reach :mod:`clio_agent.tools.mcp_resource_updates`. The watch
+        belongs to the namespace's connection: an eviction or a remount ends it and the
+        next connection starts it again (:meth:`_ensure_resource_watches`). Returns
+        whether a watch is now held.
+        """
+
+        if self._closed:
+            raise RuntimeError("AsyncMCPToolExecutor is closed")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None:
+            raise ValueError(f"unknown MCP namespace {namespace!r}")
+        key = (namespace, uri)
+        wanted = self._resource_watch_wanted()
+        if not subscribed:
+            wanted.discard(key)
+            self.__dict__.setdefault("_clio_resources_watched", set()).discard(key)
+            await self._stop_resource_watches(namespace, uri)
+            return False
+        wanted.add(key)
+        current = self._resource_watches.get(key)
+        if current is not None and not current.done():
+            return True
+        await self._namespace_client(namespace, proxy)  # connect now; failures surface here
+        self._ensure_resource_watches(namespace)
+        return True
+
+    def _resource_watch_wanted(self) -> set[tuple[str, str]]:
+        return self.__dict__.setdefault("_clio_resources_wanted", set())
+
+    def _ensure_resource_watches(self, namespace: str) -> None:
+        """Start every wanted resource watch on ``namespace`` that is not running.
+
+        Called on each new connection. A watch that replaces an earlier one reports a
+        catch-up update, so its reader refetches what changed while nothing listened.
+        """
+
+        if self._closed:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        watched: set[tuple[str, str]] = self.__dict__.setdefault("_clio_resources_watched", set())
+        for key in sorted(self._resource_watch_wanted()):
+            current = self._resource_watches.get(key)
+            if key[0] != namespace or (current is not None and not current.done()):
+                continue
+            catch_up = key in watched
+            watched.add(key)
+            self._resource_watches[key] = asyncio.create_task(
+                self._run_resource_watch(key[0], key[1], catch_up),
+                name=f"clio-mcp-resource-watch:{namespace}",
+            )
+
+    async def _run_resource_watch(self, namespace: str, uri: str, catch_up: bool) -> None:
+        from mcp.shared.exceptions import MCPError  # noqa: PLC0415
+
+        from clio_agent.tools.mcp_listen import watch_resource  # noqa: PLC0415
+
+        async def connect() -> Any:
+            proxy = self._namespace_servers.get(namespace)  # the mounted server, not a stale one
+            if proxy is None:
+                raise LookupError(f"MCP namespace {namespace!r} is no longer mounted")
+            return await self._namespace_client(namespace, proxy)
+
+        try:
+            await watch_resource(connect, namespace, uri, catch_up=catch_up)
+        except (MCPError, OSError, RuntimeError, LookupError, AttributeError, TypeError) as exc:
+            # A dead watch leaves the reader working; it just stops hearing updates.
+            trace.event(
+                "TOOLS",
+                "mcp_listen_resource_failed namespace=%s uri=%s error=%r",
+                namespace,
+                uri,
+                exc,
+            )
+
+    async def _stop_resource_watches(
+        self, namespace: str | None = None, uri: str | None = None
+    ) -> None:
+        """Cancel resource watches on ``namespace`` (and ``uri``), or all when None.
+
+        Stopping keeps the watch wanted; only an unsubscribe forgets it.
+        """
+
+        keys = [
+            key
+            for key in self._resource_watches
+            if (namespace is None or key[0] == namespace) and (uri is None or key[1] == uri)
+        ]
+        stopped = [task for key in keys if (task := self._resource_watches.pop(key, None))]
+        for task in stopped:
+            task.cancel()
+        # A watch whose own reconnect evicted the namespace is already being cancelled.
+        others = [task for task in stopped if task is not asyncio.current_task()]
+        if others:
+            await asyncio.gather(*others, return_exceptions=True)
 
     def _namespace_call_failed(self, namespace: str | None, error: Exception) -> None:
         """A lazy proxy handshake does not prove its subprocess ever connected."""
@@ -323,13 +430,34 @@ class AsyncNamespacePreparationMixin:
         return await self._namespace_client(namespace, proxy)
 
     async def reset_namespace(self, namespace: str) -> None:
-        """Close ``namespace``'s persistent connection so the next use starts it again."""
+        """Close ``namespace``'s persistent connection so the next use starts it again.
+
+        A namespace with a wanted resource watch reconnects at once, to whatever server
+        is mounted now, so a reader watching it keeps hearing updates after a remount.
+        """
+
+        from mcp.shared.exceptions import MCPError  # noqa: PLC0415
 
         lock = self._namespace_locks.setdefault(namespace, asyncio.Lock())
         async with lock:
             await self._evict_namespace_client(namespace)
             self._connected_namespaces.discard(namespace)
             self._namespace_heal_attempted.discard(namespace)
+        proxy = self._namespace_servers.get(namespace)
+        if self._closed or proxy is None:
+            return
+        if not any(key[0] == namespace for key in self._resource_watch_wanted()):
+            return
+        try:
+            await self._namespace_client(namespace, proxy)
+        except (MCPError, OSError, RuntimeError, LookupError, ValueError) as exc:
+            # The watch starts again with the namespace's next successful connection.
+            trace.event(
+                "TOOLS",
+                "mcp_listen_resource_reconnect_failed namespace=%s error=%r",
+                namespace,
+                exc,
+            )
 
     async def _namespace_client(self, namespace: str, proxy: Any) -> Any:
         """Return this namespace's client, connecting / healing it under its own lock.
@@ -392,6 +520,7 @@ class AsyncNamespacePreparationMixin:
         """Close + drop a namespace's stale cached client ahead of a heal reconnect."""
 
         await self._stop_tools_watch(namespace)
+        await self._stop_resource_watches(namespace)
         ctx = self._namespace_ctxs.pop(namespace, None)
         self._namespace_clients.pop(namespace, None)
         self._namespace_direct_routes.pop(namespace, None)
