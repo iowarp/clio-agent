@@ -29,6 +29,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import context, external_task_connections, external_task_inputs
 from clio_agent.gact import view_call_ledger as view_calls
+from clio_agent.gact.assignment_anchor import owning_assignment
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
 from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
@@ -289,8 +290,7 @@ class ExternalTasks:
         # call it interrupts (spawn_invocation.started_tasks) instead of the agent
         # starting the same call again after a crash.
         sid, invocation = context.active_session_id(), spawn_invocation_id()
-        # A view read: it never waits behind queued writes on the history writer.
-        assignment = await asyncio.to_thread(self.history.latest_assignment, sid)
+        assignment = await owning_assignment(self.app, sid, description)
         if assignment is None:
             raise ValueError("MCP calls require an owning assignment")
         session = self.app.state.sessions.get(sid)

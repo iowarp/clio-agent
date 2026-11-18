@@ -212,7 +212,11 @@ When the surface has a server owner:
    turn runs. The call is recorded as a view call (it never splits an open turn). Before
    any turn has run (for example straight after an agent restart), CLIO first builds the
    session's host from the session's own model, as that turn would; the same applies to a
-   tab's `open` and its re-reads. The call goes through the normal tool approval: a tool
+   tab's `open` and its re-reads. Every call has an owning task: in a session that has
+   never run a turn, CLIO records an already finished root assignment to own it (no
+   message, no turn), and the session's first message starts the next one as usual. The
+   agent's own calls are unchanged; a turn always creates their owner. The call goes
+   through the normal tool approval: a tool
    that needs it raises the usual `permission.requested` (kind `external_mcp`), and the
    HTTP request waits until the user answers it (`POST /v1/permissions/{id}`).
 4. If the call is task-augmented, CLIO follows the task. An `input_required` becomes a

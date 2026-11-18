@@ -646,7 +646,9 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = N
 
     A view's call arrives outside any turn, so the session is bound as the turn
     session too: an external server's call is then owned by the session's latest
-    assignment, as the call that opened the view was. With no turn there is no
+    assignment, as the call that opened the view was. A session that never ran a
+    turn has none, so the call records a settled one first
+    (:mod:`.assignment_anchor`). With no turn there is no
     Cancel, so the call is bound to ``request`` instead (:mod:`.view_call_cancel`).
     Before the session's first turn after a restart, the host is built from the
     session's own model first, as that turn would build it.
