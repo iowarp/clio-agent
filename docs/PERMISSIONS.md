@@ -141,7 +141,7 @@ asks; a view tool annotated `readOnlyHint` asks nothing unless a rule or default
 so. Other built-ins (`search_tools`, `load_skill`, plans, todos, memory) are CLIO's own
 bookkeeping: only a rule or default makes them ask or refuses them. Built-ins that act
 outside but ask by their own gate call or card keep doing so without the declaration
-(`ssh_execute`, `connected_data_connect`, `run_code`, `offer_plugin`'s card).
+(`connected_data_connect`, `run_code`, `offer_plugin`'s card).
 
 **Deny hides the tool.** A tool whose default is `deny`, or that a person's rule names
 exactly and denies, is left out of the agent's tools: the tool list, the deferred
@@ -358,35 +358,24 @@ cannot enforce these exclusions, shell execution fails before starting a child.
 
 ### Network chokepoint + deny mode (#978/#979)
 
-Agents with `shell_bash` also receive `ssh_execute` for remote commands. An
-agent may explicitly declare `ssh_execute` without receiving local shell
-access. Read-only side sessions do not receive this effectful tool. It reuses
-the shared SSH profile/custom route and jump chain, existing keys/agent and
-strict known-host verification. Approval names the route and exact remote
-command before connecting; **Bypass checks** records the usual automatic
-approval. Private keys are not copied into the shell workspace.
+**SSH from the shell.** Remote work uses the ordinary `ssh`, `scp`, `sftp` and
+git-over-SSH commands in `shell_bash`; CLIO has no separate SSH tool. Inside an
+enforced fence the shell's `ssh`, `scp` and `sftp` resolve to small shims
+(`runtime/fence_ssh.py`) that run the real program with CLIO's CONNECT helper
+(`runtime/net_connect.py`) as its `ProxyCommand`. Git reaches the same shim through
+`PATH`, or through `GIT_SSH` when the person has not set an ssh command of their own
+(`GIT_SSH_COMMAND` and `core.sshCommand` still win). A `ProxyCommand` from the
+person's ssh config is kept, and a `ProxyJump` chain is rewritten so every hop goes
+through the helper. The connection therefore crosses the chokepoint below like any
+other egress: it is recorded as `net.egress` with its host and port 22, and a host
+outside the workspace's network policy is refused with an explicit message instead
+of a hang. The person's keys, agent and `known_hosts` are used as they are; nothing
+is copied into the workspace. Remote commands run with the SSH account's
+permissions, and the local write fence does not constrain the remote filesystem.
+On the floor (no fence) the shims are not installed and `ssh` connects directly.
 
-This is a trusted SSH transport operation, separate from a local shell's
-HTTP-proxy network fence. A raw `ssh` subprocess does not automatically use
-HTTP proxy variables, so approving a local shell command alone cannot make
-its direct TCP connection work. The managed `ssh_execute` connector provides
-finite remote execution through CLIO's configured routes. Ordinary shell SSH
-is still a valid capability, but proxy integration for the enforced network
-route remains unresolved; this tool does not establish Bash/OpenSSH parity.
-Use the NDP connector for NDP service operations. Neither requires disabling
-the local sandbox. Remote commands run with the SSH account's permissions;
-the local workspace write fence does not constrain the remote filesystem.
-The tool captures both output streams, spills large output into session-owned
-files and reports the real exit status. Its finite command deadline or
-cancellation closes the SSH channel, but does not prove remote descendants
-stopped; inspect remote state before retrying an uncertain command.
-
-The normal tool catalog describes its command, profile/custom route, command
-deadline and output limits. Its typed result contains the normalized route,
-stdout/stderr, exit status, stop reason, truncation flags and optional spill
-receipts. Command input and actual output use the existing terminal blocks,
-including an explicit empty-capture message when both streams are empty.
-See [SSH contract and qualification](verification/ssh-agent-execution-2026-10-19.md#contract-and-presentation-follow-up).
+Results recorded by the former built-in SSH tool in old sessions keep their
+recorded presentation and render through the generic tool view.
 
 Child egress defaults to **ALLOW + RECORD**: every spawned child routes through one
 clio-owned CONNECT-only proxy (`runtime/net_chokepoint.py`), and each connection is
@@ -398,10 +387,10 @@ cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge label 
 claims enforcement the tier can't provide.
 
 On macOS the Codex write fence does not restrict network routes. Tools that honor
-`HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) go through CLIO's
-proxy and are recorded. A client that ignores those variables (raw `ssh`, raw sockets,
-some Node `fetch` clients) connects directly: that connection works but is not
-recorded.
+`HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's
+`ssh`/`scp`/`sftp` shims go through CLIO's proxy and are recorded. A client that
+ignores those variables (an `ssh` called by absolute path, raw sockets, some Node
+`fetch` clients) connects directly: that connection works but is not recorded.
 
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a

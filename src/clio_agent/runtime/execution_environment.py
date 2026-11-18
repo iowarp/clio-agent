@@ -114,6 +114,9 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
     environment.update(_clio_tools(environment))
     _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))
+    from clio_agent.runtime.fence_ssh import fence_ssh_environment  # noqa: PLC0415
+
+    environment.update(fence_ssh_environment(environment))
     path = environment.get("PATH", os.environ.get("PATH", ""))
     if shutil.which("gh", path=path):
         return environment

@@ -55,8 +55,8 @@ MCP_TASK_RECORD_NOT_DURABLE = "mcp_task_record_not_durable"
 #: #1231: a backend's registered ``on_poll`` observer factory
 #: (``tools/task_observers.py``) raised while being resolved for one task drive.
 #: The factory is downgraded to absent (as if nothing were registered) rather than
-#: breaking the drive it was about to observe -- mirrors relay_console's own
-#: never-break-the-wait discipline one layer up, for the generic registry seam.
+#: breaking the drive it was about to observe: the generic registry seam never
+#: breaks the wait.
 MCP_TASK_OBSERVER_FACTORY_FAILED = "mcp_task_observer_factory_failed"
 #: #1201: an execution-path client resolved ``tools.mcp.connect_mode=auto`` but
 #: negotiated the LEGACY era anyway (the #1186 race: a slow first response burns

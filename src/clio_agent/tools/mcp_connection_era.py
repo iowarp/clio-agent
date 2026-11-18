@@ -43,7 +43,7 @@ real, unmirrored connection is entered) and at every other DIRECT
 (still meaningful for a directly-targeted executor, e.g. tests, and kept for
 the per-server runtime record), the dynamic-agent external tool call
 (``gact/elicitation_bridge.py``), the per-call REST dispatch
-(``gact/routes/mcp.py``), the relay door (``tools/relay_transport.py``), and
+(``gact/routes/mcp.py``), and
 the diagnostic handshake probe (``providers/handshake/mcp.py``, which now
 ALSO feeds this module's registry instead of only its own one-off report).
 

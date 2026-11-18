@@ -1280,7 +1280,6 @@ clio_agent/gact/spotter_clearance.py
 clio_agent/gact/spotter_permission.py
 clio_agent/gact/spotter_quarantine.py
 clio_agent/gact/spotter_watcher.py
-clio_agent/gact/ssh_recorded_presentation.py
 clio_agent/gact/storage/__init__.py
 clio_agent/gact/storage/accounts.py
 clio_agent/gact/storage/adapters.py

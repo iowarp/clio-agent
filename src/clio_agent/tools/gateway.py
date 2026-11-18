@@ -239,14 +239,6 @@ def build_gateway(
         capabilities: Optional client-capability declaration (#1111) forwarded to
             the default proxy factory so each declared server's backend advertises
             it. Ignored when ``proxy_factory`` is supplied.
-            reserved ``remote`` namespace. Its bare server names are mounted back
-            into the exact relay aliases ``remote_<ns>_<tool>``.
-
-            reserved jarvis namespace.
-            A2: register/bootstrap/status/session/proxy over the local clio-relay
-            CLI) mounted under the reserved relay_ops namespace.
-            retained on the gateway for diagnostics even when only part of the relay
-            surface could be mounted.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
