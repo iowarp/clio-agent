@@ -137,7 +137,11 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
     """
 
     async def _handler(message: Any) -> None:
-        from mcp_types import PromptListChangedNotification, ToolListChangedNotification
+        from mcp_types import (
+            PromptListChangedNotification,
+            ResourceUpdatedNotification,
+            ToolListChangedNotification,
+        )
 
         if isinstance(message, ToolListChangedNotification):
             _record_list_changed(namespace)
@@ -145,6 +149,10 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
             from clio_agent.tools.mcp_prompts import mark_prompts_changed  # noqa: PLC0415
 
             mark_prompts_changed(namespace)
+        elif isinstance(message, ResourceUpdatedNotification):
+            from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
+
+            resource_updated(namespace, str(message.params.uri))
 
     return _handler
 

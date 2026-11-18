@@ -418,6 +418,7 @@ def make_mcp_client(
     server_id: str = "",
     list_changed_namespace: str = "",
     initialization_timeout: float | None = None,
+    a2ui_catalogs: Sequence[str] = (),
 ) -> Any:
     """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
@@ -618,7 +619,7 @@ def make_mcp_client(
     # `session_elicitation_callback`).
     from clio_agent.tools.mcp_extension_registry import extensions_declaration  # noqa: PLC0415
 
-    declaration = extensions_declaration(client_cls, target)
+    declaration = extensions_declaration(client_cls, target, a2ui_catalogs=tuple(a2ui_catalogs))
     if declaration.extensions:
         kwargs["extensions"] = list(declaration.extensions)
 

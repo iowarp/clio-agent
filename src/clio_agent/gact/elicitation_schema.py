@@ -23,12 +23,16 @@ from clio_agent.gact.types import UserQuestion, UserQuestionOption
 
 __all__ = [
     "ELICITATION_QUESTION_SOURCE",
+    "URL_TRUST_CONFIGURED",
+    "URL_TRUST_PLUGIN_LOOPBACK",
+    "URL_TRUST_PLUGIN_ORIGIN",
     "FormTranslation",
     "build_form_content",
     "build_form_metadata",
     "build_url_metadata",
     "check_elicitation_answer",
     "check_url_trust",
+    "classify_url_trust",
     "default_answer_metadata",
     "punycode_warning",
     "translate_form_schema",
@@ -334,6 +338,9 @@ def build_url_metadata(
     forwarded_from_session: str,
     task_id: str | None = None,
     input_key: str | None = None,
+    origin_trust: str = "",
+    plugin: str = "",
+    server: str = "",
 ) -> dict[str, dict[str, Any]]:
     """Assemble the url-mode ``metadata.elicitation`` block for a new question.
 
@@ -344,7 +351,9 @@ def build_url_metadata(
     renders from. ``punycode_host_raw`` carries the host EXACTLY as it
     appeared (still ACE-encoded for an ``xn--`` host) alongside the decoded
     ``punycode_host``, so a consent surface can show both forms rather than
-    only the decoded one (Opus review, C1-S4).
+    only the decoded one (Opus review, C1-S4). ``origin`` and ``origin_trust``
+    (see :func:`classify_url_trust`) say why the origin was accepted, and
+    ``plugin``/``server`` name the plugin server that asked ("" when none).
     """
 
     warning, display_host, raw_host = punycode_warning(url)
@@ -352,6 +361,10 @@ def build_url_metadata(
         "elicitation": {
             "mode": "url",
             "url": url,
+            "origin": _origin(url),
+            "origin_trust": origin_trust,
+            "plugin": plugin,
+            "server": server,
             # Client MUST render in an isolated, non-inspectable container
             # (ephemeral, no shared session/referrer) — see the bridge module docstring.
             "container": "isolated",
@@ -389,17 +402,65 @@ def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
     trust flow is not configured, so every url is rejected as not-declared.
     """
 
-    if not trusted_origins:
-        return "elicitation_url_not_declared"
+    return classify_url_trust(url, trusted_origins)[0]
+
+
+#: Where an accepted url-mode origin's trust came from (``metadata.elicitation.origin_trust``).
+URL_TRUST_CONFIGURED = "configured"
+URL_TRUST_PLUGIN_ORIGIN = "plugin_origin"
+URL_TRUST_PLUGIN_LOOPBACK = "plugin_loopback"
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
+
+
+def _is_loopback_http(url: str) -> bool:
+    """``http://127.0.0.1:<port>`` or ``http://localhost:<port>``, nothing else."""
+
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "http" or parts.username or parts.password:
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    return port is not None and (parts.hostname or "").lower() in _LOOPBACK_HOSTS
+
+
+def classify_url_trust(
+    url: str,
+    trusted_origins: Sequence[str],
+    *,
+    plugin_origins: Sequence[str] = (),
+    loopback: bool = False,
+    launched: bool = False,
+) -> tuple[str | None, str]:
+    """Decide a url-mode url's trust: ``(reject reason or None, origin_trust)``.
+
+    ``trusted_origins`` is the configured allow-list every server shares. A
+    plugin's server adds its own ``plugin_origins`` (https only) and, when the
+    plugin sets ``loopback`` and CLIO launched the server (``launched``),
+    ``http://127.0.0.1:<port>`` and ``http://localhost:<port>``. Loopback from a
+    server CLIO did not launch is ``elicitation_url_insecure_scheme``. Nothing is
+    fetched. ``origin_trust`` is "" whenever the url is refused.
+    """
+
+    if not (trusted_origins or plugin_origins or loopback):
+        return "elicitation_url_not_declared", ""
+    if _is_loopback_http(url):
+        if loopback and launched:
+            return None, URL_TRUST_PLUGIN_LOOPBACK
+        return "elicitation_url_insecure_scheme", ""
     parts = urlsplit(url)
     if parts.scheme.lower() != "https":
-        return "elicitation_url_insecure_scheme"
-    allowed = {_origin(o) if "://" in o else o.lower() for o in trusted_origins}
+        return "elicitation_url_insecure_scheme", ""
     origin = _origin(url)
     host = parts.netloc.lower()
-    if origin not in allowed and host not in allowed:
-        return "elicitation_url_untrusted_origin"
-    return None
+    allowed = {_origin(o) if "://" in o else o.lower() for o in trusted_origins}
+    if origin in allowed or host in allowed:
+        return None, URL_TRUST_CONFIGURED
+    if origin in {_origin(o) for o in plugin_origins if "://" in o}:
+        return None, URL_TRUST_PLUGIN_ORIGIN
+    return "elicitation_url_untrusted_origin", ""
 
 
 def punycode_warning(url: str) -> tuple[bool, str, str]:

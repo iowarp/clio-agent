@@ -419,12 +419,17 @@ def direct_client_factory(
     """
 
     def _factory() -> Any:
+        from clio_agent.plugins.host_semantics import spec_a2ui_catalogs  # noqa: PLC0415
         from clio_agent.tools.mcp_config import transport_for  # noqa: PLC0415
         from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
         transport = transport_for(spec, cwd=cwd)
         return make_mcp_client(
-            transport, handlers=handlers, capabilities=capabilities, server_id=namespace
+            transport,
+            handlers=handlers,
+            capabilities=capabilities,
+            server_id=namespace,
+            a2ui_catalogs=spec_a2ui_catalogs(spec),
         )
 
     return _factory

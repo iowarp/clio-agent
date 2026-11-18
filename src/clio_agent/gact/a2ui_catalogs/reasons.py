@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 
 _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "a2ui_server_surface_refused": {
+        "severity": "warning",
+        "detail": (
+            "an MCP server's tool result or resource carried A2UI that CLIO refused; "
+            "the row's refusal field holds the typed HS1 reason"
+        ),
+    },
     "a2ui_catalog_unknown": {
         "severity": "warning",
         "detail": (

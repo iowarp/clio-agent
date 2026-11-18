@@ -116,6 +116,17 @@ def _record_reply(
         self.history.record_snapshot(observed, observation_id=uuid4().hex)
         if observed.terminal_at is not None:
             finish_terminal(self, observed.handle)
+    if observed.terminal_at is not None and reply.status == "completed" and reply.result:
+        from clio_agent.gact.server_surfaces import apply_task_result  # noqa: PLC0415
+
+        apply_task_result(
+            self.app,
+            current.owner.session_id,
+            host.backend.server,
+            current.tool or "",
+            observed.handle,
+            reply.result,
+        )
 
 
 async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, request: Any) -> Any:
@@ -179,6 +190,14 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
             return resolve_locked()
 
     task, key, raw = await self.history.io.run(resolve)
+    url_scope = None
+    if getattr(params, "mode", "form") == "url":
+        from clio_agent.gact.off_loop import run_off_loop
+        from clio_agent.gact.server_surfaces import server_scope
+
+        url_scope = await run_off_loop(
+            server_scope, self.app, task.owner.session_id, host.backend.server
+        )
 
     def question() -> tuple[str, Any | None]:
         with self.history.serialized():
@@ -218,7 +237,7 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                 from clio_agent.gact.elicitation_schema import (
                     build_form_metadata,
                     build_url_metadata,
-                    check_url_trust,
+                    classify_url_trust,
                     translate_form_schema,
                 )
 
@@ -233,8 +252,21 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                     "input_key": key,
                 }
                 if mode == "url":
-                    problem = check_url_trust(params.url, trusted_origins())
-                    metadata = build_url_metadata(params.url, **correlation)
+                    declared = dict((url_scope.host if url_scope else {}).get("elicitation") or {})
+                    problem, origin_trust = classify_url_trust(
+                        params.url,
+                        trusted_origins(),
+                        plugin_origins=tuple(declared.get("origins") or ()),
+                        loopback=bool(declared.get("loopback")),
+                        launched="stdio" in host.backend.transport.casefold(),
+                    )
+                    metadata = build_url_metadata(
+                        params.url,
+                        **correlation,
+                        origin_trust=origin_trust,
+                        plugin=url_scope.plugin if url_scope else "",
+                        server=url_scope.server if url_scope else host.backend.server,
+                    )
                     definition = QuestionDefinition.model_validate(
                         {
                             "prompt": params.message,

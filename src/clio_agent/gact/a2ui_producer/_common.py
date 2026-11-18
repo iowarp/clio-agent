@@ -21,6 +21,7 @@ from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
     A2UIFunctionNotInCatalogError,
+    A2UISurfaceOwnerError,
     A2UITranscriptFrozenError,
     A2UIValidationError,
 )
@@ -221,6 +222,8 @@ def apply_messages(
             hint=catalog_hint(app, exc.catalog_id),
         )
     except A2UIMcpAppArgumentsError as exc:
+        return refusal(exc.reason, detail=str(exc))
+    except A2UISurfaceOwnerError as exc:
         return refusal(exc.reason, detail=str(exc))
     except A2UIValidationError as exc:
         return refusal(

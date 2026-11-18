@@ -511,6 +511,28 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             client = self._client
         return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
 
+    async def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
+        """Subscribe to (or unsubscribe from) ``uri`` on exactly ``namespace``.
+
+        Returns ``False`` without a request when the server does not declare
+        ``resources.subscribe``; the caller then gets no update notifications.
+        """
+
+        if self._closed:
+            raise RuntimeError("AsyncMCPToolExecutor is closed")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None:
+            raise ValueError(f"unknown MCP namespace {namespace!r}")
+        client = await self._namespace_client(namespace, proxy)
+        capabilities = getattr(client, "server_capabilities", None)
+        resources = getattr(capabilities, "resources", None)
+        session = getattr(client, "session", None)
+        if not getattr(resources, "subscribe", False) or session is None:
+            return False
+        operation = session.subscribe_resource if subscribed else session.unsubscribe_resource
+        await asyncio.wait_for(operation(uri), timeout=self._timeout)
+        return True
+
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
         """Connect a declared namespace, retaining era, route and cache-lock evidence."""
         from clio_agent.tools import spawn_diet

@@ -47,7 +47,15 @@ _EXTENSION_FIELDS = (
     "servers",
     "kernel_bindings",
     "follows",
+    "tabs",
+    "accounts",
+    "elicitation",
 )
+#: Providers a plugin may ask account grants from (HS4); CLIO's own sign-in covers each.
+ACCOUNT_PROVIDERS = ("github", "google_drive", "globus", "ndp")
+_TAB_FIELDS = {"id", "title", "icon", "server", "resource"}
+_TAB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+_HTTPS_ORIGIN = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 #: What one ``servers.<name>`` entry may set.
 _SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
@@ -186,6 +194,112 @@ def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
             settings(entry, f"{where}.tools.{tool}")
 
 
+def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
+    """Shape of ``tabs``, ``accounts`` and ``elicitation`` (host semantics HS3 to HS5).
+
+    A tab's ``server`` is checked against ``mcp.json`` by :func:`host_semantics`.
+    """
+
+    tabs = ext.get("tabs", [])
+    if not isinstance(tabs, list):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.tabs must be a list of objects")
+    seen: set[str] = set()
+    for index, tab in enumerate(tabs):
+        where = f"{plugin}: {NAMESPACE}.tabs[{index}]"
+        if not isinstance(tab, dict) or set(tab) - _TAB_FIELDS:
+            raise ManifestError(f"{where} may set only {', '.join(sorted(_TAB_FIELDS))}")
+        tab_id = tab.get("id")
+        if not isinstance(tab_id, str) or not _TAB_ID.match(tab_id) or tab_id in seen:
+            raise ManifestError(f"{where}.id must be a unique id of a-z, 0-9 and '-'")
+        seen.add(tab_id)
+        title = tab.get("title")
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 40:
+            raise ManifestError(f"{where}.title must be text of 1 to 40 characters")
+        if "icon" in tab and not isinstance(tab["icon"], str):
+            raise ManifestError(f"{where}.icon must be an icon name")
+        if "server" in tab and (not isinstance(tab["server"], str) or not tab["server"]):
+            raise ManifestError(f"{where}.server must name a server in mcp.json")
+        resource = tab.get("resource")
+        if not isinstance(resource, str) or not resource.startswith("a2ui://"):
+            raise ManifestError(f"{where}.resource must be an a2ui:// URI")
+    accounts = ext.get("accounts", [])
+    if not isinstance(accounts, list):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.accounts must be a list of objects")
+    providers: set[str] = set()
+    for index, account in enumerate(accounts):
+        where = f"{plugin}: {NAMESPACE}.accounts[{index}]"
+        if not isinstance(account, dict) or set(account) - {"provider", "scopes"}:
+            raise ManifestError(f"{where} may set only provider and scopes")
+        provider = account.get("provider")
+        if provider not in ACCOUNT_PROVIDERS or provider in providers:
+            raise ManifestError(
+                f"{where}.provider must be one of {', '.join(ACCOUNT_PROVIDERS)}, once each"
+            )
+        providers.add(provider)
+        scopes = account.get("scopes", [])
+        if not isinstance(scopes, list) or not all(isinstance(s, str) and s for s in scopes):
+            raise ManifestError(f"{where}.scopes must be a list of scope strings")
+    elicitation = ext.get("elicitation", {})
+    if not isinstance(elicitation, dict) or set(elicitation) - {"loopback", "origins"}:
+        raise ManifestError(f"{plugin}: {NAMESPACE}.elicitation may set only loopback and origins")
+    if "loopback" in elicitation and not isinstance(elicitation["loopback"], bool):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.elicitation.loopback must be true or false")
+    origins = elicitation.get("origins", [])
+    if not isinstance(origins, list) or not all(
+        isinstance(o, str) and _HTTPS_ORIGIN.match(o) for o in origins
+    ):
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.elicitation.origins must list https://host[:port] origins"
+        )
+
+
+def host_semantics(
+    ext: Mapping[str, Any], plugin: str, servers: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The plugin's normalized ``tabs``, ``accounts`` and ``elicitation`` ({} for none).
+
+    Each tab names its server: the declared one, or the plugin's only server.
+    """
+
+    out: dict[str, Any] = {}
+    tabs = []
+    for tab in ext.get("tabs") or []:
+        server = tab.get("server")
+        if server is None:
+            if len(servers) != 1:
+                raise ManifestError(
+                    f"{plugin}: tab {tab['id']!r} must name its server; mcp.json has "
+                    f"{len(servers)} servers"
+                )
+            server = next(iter(servers))
+        elif server not in servers:
+            raise ManifestError(f"{plugin}: tab {tab['id']!r} names unknown server {server!r}")
+        tabs.append(
+            {
+                "id": tab["id"],
+                "title": tab["title"].strip(),
+                "icon": str(tab.get("icon") or ""),
+                "server": server,
+                "resource": tab["resource"],
+            }
+        )
+    if tabs:
+        out["tabs"] = tabs
+    accounts = [
+        {"provider": row["provider"], "scopes": list(row.get("scopes") or [])}
+        for row in ext.get("accounts") or []
+    ]
+    if accounts:
+        out["accounts"] = accounts
+    elicitation = ext.get("elicitation") or {}
+    if elicitation.get("loopback") or elicitation.get("origins"):
+        out["elicitation"] = {
+            "loopback": bool(elicitation.get("loopback")),
+            "origins": [origin.lower() for origin in elicitation.get("origins") or []],
+        }
+    return out
+
+
 def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     """Validate and return the ``ai.iowarp.clio`` extension object."""
 
@@ -235,6 +349,7 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
         if key in ext and not isinstance(ext[key], dict):
             raise ManifestError(f"{plugin}: {NAMESPACE}.{key} must be an object")
     _check_disclosure(ext, plugin)
+    _check_host_semantics(ext, plugin)
     if kind == "pack" and not ext.get("members"):
         raise ManifestError(f"{plugin}: a pack must list its members")
     return ext

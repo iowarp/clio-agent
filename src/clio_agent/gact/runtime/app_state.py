@@ -45,6 +45,7 @@ def resolve_tool_runtime() -> ToolRuntimeHooks | None:
         tool_interceptor=getattr(state, "pending_tool_interceptor", None),
         cancellation_checker=getattr(state, "pending_cancellation_checker", None),
         mcp_app_observer=getattr(state, "pending_mcp_app_observer", None),
+        a2ui_result_observer=getattr(state, "pending_a2ui_result_observer", None),
         post_tool=getattr(state, "pending_post_tool", None),
     )
 

@@ -9,7 +9,9 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -112,6 +114,49 @@ class PendingSignIn:
     device: github_oauth.DeviceAuthorization | None = field(default=None, repr=False)
     receiver: StorageOAuthReturn | None = field(default=None, repr=False)
     write_access: bool = False
+    declared_scopes: tuple[str, ...] = ()
+
+
+#: Providers whose sign-in request carries scopes; a GitHub App's permissions are fixed
+#: on the App, so a plugin's GitHub scopes request nothing.
+SCOPED_PROVIDERS = frozenset({"google_drive", "globus", "ndp"})
+
+
+def declared_scopes(provider: str) -> list[str]:
+    """Scopes registered plugins declare for ``provider`` (HS4), for its sign-in request."""
+
+    if provider not in SCOPED_PROVIDERS:
+        return []
+    from clio_agent.plugins.host_semantics import declared_account_scopes  # noqa: PLC0415
+
+    return declared_account_scopes(provider)
+
+
+def lacks_declared_scopes(account: dict[str, object]) -> bool:
+    """Whether a plugin now declares a scope this account's sign-in did not request."""
+
+    wanted = declared_scopes(str(account.get("provider") or ""))
+    if not wanted:
+        return False
+    granted = account.get("declared_scopes")
+    have = {str(scope) for scope in granted} if isinstance(granted, list) else set()
+    return any(scope not in have for scope in wanted)
+
+
+def _with_scopes(scope: str, extra: list[str]) -> str:
+    words = scope.split()
+    words.extend(item for item in extra if item not in words)
+    return " ".join(words)
+
+
+def _iso(epoch: object) -> str:
+    try:
+        stamp = float(epoch)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if stamp <= 0:
+        return ""
+    return datetime.fromtimestamp(stamp, UTC).isoformat().replace("+00:00", "Z")
 
 
 class StorageAuth:
@@ -127,6 +172,17 @@ class StorageAuth:
         self._exchanging: dict[str, PendingSignIn] = {}
         self._sftp_credentials: dict[str, tuple[dict[str, object], SftpCredentials]] = {}
         self._lock = threading.RLock()
+        #: Called (no arguments) after an account grant is saved or forgotten; it must
+        #: only hand work off. The account grant files (HS4) follow it.
+        self.on_change: Callable[[], None] | None = None
+
+    def _changed(self) -> None:
+        callback = self.on_change
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - a listener must not fail a sign-in
+                pass
 
     def connected(self, record: SourceRecord) -> bool:
         """Report usable account access and any source-specific consent still needed."""
@@ -144,7 +200,11 @@ class StorageAuth:
             entries = self._entries()
             account = self._account(entries, record)
             binding = entries.get(record.source.id, {})
-            return bool(account and not binding.get("consent_required"))
+            return bool(
+                account
+                and not binding.get("consent_required")
+                and not lacks_declared_scopes(account)
+            )
 
     @staticmethod
     def account_login(principal: str, clio_id: str, provider: str) -> SourceRecord:
@@ -189,6 +249,7 @@ class StorageAuth:
                 entry.get("kind") == "account"
                 and owned_by(entry, principal, clio_id, host_id, provider)
                 and usable(entry)
+                and not lacks_declared_scopes(entry)
                 for entry in self._entries().values()
             )
 
@@ -222,6 +283,7 @@ class StorageAuth:
                 != (principal, clio_id, host_id, provider)
             }
             self._vault.write_entries(entries)
+        self._changed()
 
     def reset_source(self, source_id: str) -> None:
         """Clear only source consent and account selection when its setup changes."""
@@ -378,6 +440,7 @@ class StorageAuth:
             time.time() + 600,
         )
         pending.write_access = record.linked_access != "read_only"
+        pending.declared_scopes = tuple(declared_scopes(app.provider))
         with self._lock:
             for key, flow in list(self._pending.items()):
                 if flow.expires_at <= time.time() or flow.source_id == source.id:
@@ -394,7 +457,7 @@ class StorageAuth:
         if app.provider in {"github", "ndp"}:
             try:
                 device = (
-                    ndp_oauth.begin(app, verifier)
+                    ndp_oauth.begin(app, verifier, extra_scopes=pending.declared_scopes)
                     if app.provider == "ndp"
                     else github_oauth.begin(app.client_id)
                 )
@@ -418,14 +481,15 @@ class StorageAuth:
             .rstrip(b"=")
             .decode()
         )
-        scope = (
+        scope = _with_scopes(
             (
                 "https://www.googleapis.com/auth/drive.readonly"
                 if record.linked_access == "read_only"
                 else "https://www.googleapis.com/auth/drive"
             )
             if app.provider == "google_drive"
-            else self._globus_scopes(record)
+            else self._globus_scopes(record),
+            list(pending.declared_scopes),
         )
         parameters = {
             "client_id": app.client_id,
@@ -561,6 +625,7 @@ class StorageAuth:
                 else "read_only",
                 "tokens": tokens,
                 "saved_at": time.time(),
+                "declared_scopes": list(pending.declared_scopes),
             }
             entries[source.id] = {
                 **source_binding(record),
@@ -568,6 +633,7 @@ class StorageAuth:
                 "consent_scopes": consent_scopes,
             }
             self._vault.write_entries(entries)
+        self._changed()
         return True
 
     def _complete_device(
@@ -600,9 +666,11 @@ class StorageAuth:
             "kind": "account",
             "tokens": tokens,
             "saved_at": time.time(),
+            "declared_scopes": list(pending.declared_scopes),
         }
         entries[record.source.id] = {**source_binding(record), "account_id": account_id}
         self._vault.write_entries(entries)
+        self._changed()
         return True
 
     @staticmethod
@@ -654,6 +722,24 @@ class StorageAuth:
                     and f"https://auth.globus.org/scopes/{collection_id}/https"
                     in str(row.get("scope", "")).split()
                 }
+            if app.provider == "globus":
+                # HS4: tokens for other resource servers whose scopes a plugin declared.
+                wanted = set(declared_scopes("globus"))
+                scope_tokens = {
+                    str(row["resource_server"]): {
+                        "access_token": row["access_token"],
+                        "refresh_token": row.get("refresh_token", ""),
+                        "expires_at": time.time() + float(row.get("expires_in", 3600)),
+                        "scope": str(row.get("scope", "")),
+                    }
+                    for row in candidates
+                    if row.get("resource_server")
+                    and row.get("resource_server") != resource_server
+                    and isinstance(row.get("access_token"), str)
+                    and wanted & set(str(row.get("scope", "")).split())
+                }
+                if scope_tokens:
+                    result["scope_tokens"] = scope_tokens
             return result
         except httpx.HTTPError as exc:
             raise ValueError("The storage sign-in service could not be reached") from exc
@@ -661,8 +747,17 @@ class StorageAuth:
             if owned:
                 client.close()
 
-    def token(self, record: SourceRecord, *, resource_server: str | None = None) -> str:
-        """Resolve/refresh a credential privately for an approved provider adapter."""
+    def token(
+        self,
+        record: SourceRecord,
+        *,
+        resource_server: str | None = None,
+        refresh_within: float = 60.0,
+    ) -> str:
+        """Resolve/refresh a credential privately for an approved provider adapter.
+
+        The credential is refreshed when it expires within ``refresh_within`` seconds.
+        """
         with self._lock:
             entries = self._entries()
             entry = self._account(entries, record)
@@ -672,7 +767,14 @@ class StorageAuth:
             if not isinstance(tokens, dict):
                 raise PermissionError("Sign in to this source again")
             bundle = tokens
-            if resource_server is not None:
+            scope_tokens = bundle.get("scope_tokens")
+            if (
+                resource_server is not None
+                and isinstance(scope_tokens, dict)
+                and isinstance(scope_tokens.get(resource_server), dict)
+            ):
+                tokens = scope_tokens[resource_server]
+            elif resource_server is not None:
                 if (
                     record.source.provider != "globus"
                     or resource_server != record.configuration.collection_id
@@ -684,7 +786,7 @@ class StorageAuth:
                     raise PermissionError("Authorize downloads from this collection")
             if (
                 not tokens.get("non_expiring")
-                and float(tokens.get("expires_at", 0)) < time.time() + 60
+                and float(tokens.get("expires_at", 0)) < time.time() + refresh_within
             ):
                 refresh = tokens.get("refresh_token")
                 if not refresh:
@@ -738,6 +840,59 @@ class StorageAuth:
                 return token, NON_EXPIRING_TOKEN_LIFETIME_S
             return token, max(1, int(float(tokens.get("expires_at", 0)) - time.time()))
 
+    def grant_tokens(
+        self, principal: str, clio_id: str, provider: str, *, refresh_within: float
+    ) -> list[dict[str, object]]:
+        """The account's current tokens as grant-file rows (HS4), refreshed when near expiry.
+
+        One row per resource server the grant covers; refresh tokens are never included.
+        Empty when the account is not connected or lacks a declared scope.
+        """
+        record = self.account_login(principal, clio_id, provider)
+        with self._lock:
+            if not self.connected(record):
+                return []
+            main_server = "transfer.api.globus.org" if provider == "globus" else ""
+            self.token(record, refresh_within=refresh_within)
+            entry = self._account(self._entries(), record) or {}
+            tokens = entry.get("tokens")
+            if not isinstance(tokens, dict):
+                return []
+            extra = tokens.get("scope_tokens")
+            for server in list(extra) if isinstance(extra, dict) else []:
+                try:
+                    self.token(record, resource_server=server, refresh_within=refresh_within)
+                except (PermissionError, ValueError):
+                    continue
+            entry = self._account(self._entries(), record) or {}
+            tokens = entry.get("tokens")
+            if not isinstance(tokens, dict):
+                return []
+            rows: list[tuple[str, dict[str, object]]] = [(main_server, tokens)]
+            extra = tokens.get("scope_tokens")
+            if isinstance(extra, dict):
+                rows.extend((str(k), v) for k, v in extra.items() if isinstance(v, dict))
+            now = time.time()
+            out: list[dict[str, object]] = []
+            for server, row in rows:
+                expires = row.get("expires_at", 0)
+                if not row.get("non_expiring") and float(expires or 0) <= now:  # type: ignore[arg-type]
+                    continue
+                scopes = str(row.get("scope") or "").split()
+                if not scopes and row is tokens:
+                    declared = entry.get("declared_scopes")
+                    scopes = [str(s) for s in declared] if isinstance(declared, list) else []
+                out.append(
+                    {
+                        "resource_server": server,
+                        "access_token": str(row.get("access_token") or ""),
+                        "token_type": "Bearer",
+                        "expires_at": "" if row.get("non_expiring") else _iso(expires),
+                        "scopes": scopes,
+                    }
+                )
+            return out
+
     def cancel(self, record: SourceRecord, flow_id: str) -> None:
         """Cancel only this owner's pending device flow without signing out other sources."""
         with self._lock:
@@ -778,3 +933,4 @@ class StorageAuth:
             if source_id in entries:
                 entries[source_id]["disconnected"] = True
                 self._vault.write_entries(entries)
+        self._changed()

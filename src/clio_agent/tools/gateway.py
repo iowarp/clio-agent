@@ -132,6 +132,7 @@ def _proxy_for_spec(
         _mirror_front_era_mode,
     )
 
+    from clio_agent.plugins.host_semantics import spec_a2ui_catalogs  # noqa: PLC0415
     from clio_agent.tools.mcp_connection_era import instrument_client_era  # noqa: PLC0415
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
@@ -141,6 +142,7 @@ def _proxy_for_spec(
         capabilities=capabilities,
         client_cls=ProxyClient,
         list_changed_namespace=spec.name,
+        a2ui_catalogs=spec_a2ui_catalogs(spec),
     )
 
     def _client_factory() -> Any:

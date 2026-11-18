@@ -79,6 +79,14 @@ _DEFAULT_HINTS: dict[str, str] = {
         "reuse a live id from a prior result's session_surface_ids, or call "
         "create_a2ui_surface to make a new surface"
     ),
+    "a2ui_surface_not_owned": (
+        "an MCP server owns this surface and only it can change it; create "
+        "your own surface with a new surface_id instead"
+    ),
+    "a2ui_surface_owner_conflict": (
+        "an MCP server already owns a live surface with this id; pick a "
+        "different surface_id"
+    ),
     "a2ui_catalog_unknown": (
         "call create_a2ui_surface with an empty catalog_id to auto-select "
         "from this session's producible catalogs instead of naming one"
