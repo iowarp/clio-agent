@@ -125,7 +125,7 @@ def test_every_shipped_logo_loads_and_every_clio_kit_server_has_one(
 
     derive = yaml.safe_load((SHIPPED / "clio-kit" / "derive.yaml").read_text())
     logos = derive["logos"]
-    servers = {*derive["names"], *logos} - {"paraview", "geo"}
+    servers = {*derive["names"], *logos} - {"paraview", "geo"} - set(derive.get("withheld") or {})
     assert servers <= set(logos), "a clio-kit server without a logo shows a monogram"
     catalogue = {"servers": {name: {} for name in servers}, "packages": {}}
     monkeypatch.setattr(kit_entries, "components", lambda: catalogue)
@@ -139,7 +139,7 @@ def test_every_shipped_logo_loads_and_every_clio_kit_server_has_one(
             if path is not None:
                 assert path.read_text().lstrip().startswith(("<svg", "<?xml")), path
                 assert "<script" not in path.read_text()
-    assert catalog.entries["ndp"].logo_dark == "ndp-dark.svg"
+    assert "ndp" not in catalog.entries  # withheld: CLIO's own NDP source replaces it
     assert catalog.entries["pdf"].logo_dark == "pdf-dark.svg"
     # Every connector shipped here has a logo; none falls back to a monogram.
     assert [cid for cid, entry in catalog.entries.items() if not entry.logo] == []

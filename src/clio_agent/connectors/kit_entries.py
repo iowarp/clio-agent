@@ -12,6 +12,10 @@ group labels and logos the catalogue cannot say). A ``logos`` value is one SVG b
 ``derive.yaml``, or ``{light, dark}`` for a logo with a dark-theme variant; it is
 validated and served like a hand-written entry's ``logo`` and ``logo_dark`` (LG-D2).
 
+A server listed under ``withheld`` in ``derive.yaml`` is not offered as a connector:
+CLIO reaches that service another way, and the entry gives the reason. Each one left
+out is traced (:data:`KIT_SERVER_WITHHELD`), so the omission is never silent.
+
 A hand-written entry with the same id wins (it has the logo and the needs); it only
 takes the group from here. Each entry whose server is a clio-kit server records that
 server's name as ``kit``, which the agent-load card uses to say a download comes.
@@ -36,6 +40,8 @@ import yaml
 DERIVE_DIR = "clio-kit"
 DERIVE_FILE = "derive.yaml"
 LAUNCHER = "clio-kit"
+#: Traced for each clio-kit server ``derive.yaml`` withholds as a connector.
+KIT_SERVER_WITHHELD = "kit_server_withheld"
 _DESCRIPTION_MAX = 300
 #: The group of an entry no workflow package lists.
 OTHER_GROUP = ""
@@ -163,8 +169,20 @@ def derived_raw(folder: Path) -> list[dict[str, Any]]:
     logos = dict(data.get("logos") or {})
     groups = _groups(data, packages)
     servers = dict(catalogue.get("servers") or {})
+    withheld = dict(data.get("withheld") or {})
     rows = []
     for server in sorted(servers):
+        if server in withheld:
+            from clio_agent.runtime import trace  # noqa: PLC0415
+
+            trace.event(
+                "CONNECTORS",
+                "%s server=%s reason=%s",
+                KIT_SERVER_WITHHELD,
+                server,
+                withheld[server],
+            )
+            continue
         row = {
             "id": server,
             "name": str(names.get(server) or _words(server)),
