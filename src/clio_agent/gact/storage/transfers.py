@@ -69,6 +69,44 @@ def remove_owned_tree(path: Path, owner_root: Path) -> None:
     rmtree_extended(path)
 
 
+def _unchanged_files(
+    store: SourceStore, record: SourceRecord, owner_root: Path, entries: list[FileEntry]
+) -> dict[str, tuple[Path, str]]:
+    """Files of the previous copy that ``entries`` still name unchanged, with their hash.
+
+    Each download of a selection publishes a new immutable snapshot of every selected
+    file. Fetching an unchanged file again filled the disk: a 1.2 GB sensor file was
+    copied into four snapshots as an agent downloaded the rest of a dataset one file at
+    a time. A file with the same path, revision and size as in the previous snapshot,
+    whose bytes are there and hashed, is hard-linked into the new snapshot instead.
+    """
+    if not record.manifest_id:
+        return {}
+    try:
+        previous = store.get("manifest", record.manifest_id, Manifest)
+    except KeyError:
+        return {}
+    before = {row.path: row for row in previous.entries if row.kind == "file"}
+    folder = owner_root / previous.id
+    reused: dict[str, tuple[Path, str]] = {}
+    for entry in entries:
+        old = before.get(entry.path)
+        sha = previous.hashes.get(entry.path)
+        if (
+            entry.kind != "file"
+            or old is None
+            or not sha
+            or not entry.revision
+            or old.revision != entry.revision
+            or (old.size or 0) != (entry.size or 0)
+        ):
+            continue
+        path = safe_child(folder, entry.path)
+        if path.is_file() and not path.is_symlink():
+            reused[entry.path] = (path, sha)
+    return reused
+
+
 def materialize(
     store: SourceStore,
     record: SourceRecord,
@@ -111,7 +149,9 @@ def materialize(
         store.update_operation(operation.id, bytes_total=total)
         if progress is not None:
             progress(0, total)
-        required = total * (2 if not record.download_read_only else 1)
+        reused = _unchanged_files(store, record, owner_root, entries)
+        fetched = total - sum(int(row.size or 0) for row in entries if row.path in reused)
+        required = fetched + (total if not record.download_read_only else 0)
         if shutil.disk_usage(owner_root).free < required:
             raise ValueError("Insufficient capacity for the source baseline and working copy")
         if not record.download_read_only and shutil.disk_usage(workspace_root).free < total:
@@ -132,6 +172,12 @@ def materialize(
                 os.makedirs(win_extended_path(destination), exist_ok=True)
                 continue
             os.makedirs(win_extended_path(destination.parent), exist_ok=True)
+            if entry.path in reused:  # unchanged since the previous copy: link, no fetch
+                previous, sha = reused[entry.path]
+                os.link(win_extended_path(previous), win_extended_path(destination))
+                hashes[entry.path] = sha
+                done += int(entry.size or 0)
+                continue
             digest = hashlib.sha256()
             file_bytes = 0
             # Globus reports exact sizes; a truncated or grown read is a failed transfer.
