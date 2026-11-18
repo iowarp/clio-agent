@@ -912,6 +912,7 @@ the second wave (Opus 5.5) in the order found:
 | OpenTopography (Wolverton) | Sonnet | `sess_f3f0d0730c4e` | pass: 1 m DTM, slope classes | Image surface (first try refused for `alt`) |
 | Case 01 (San Diego hazards) | Sonnet | `sess_1fbbe47f7ff7` | partial: air quality done, flood and alerts missing | Geo PNG with the CARTO watermark (fixed since) |
 | Case 04 (Fresno CIMIS) | Sonnet | `sess_a04f101fffa4` | pass | PNG link, no surface |
+| Case 04 (Fresno CIMIS) | Opus | `sess_08892bbc305e` | pass: station #80, cross-checked against Parlier (r = 0.86) | profile figure surface |
 | Snow depth (SSCZO lidar) | Opus | `sess_cdfff373304d` | pass: snow-on minus snow-off 1 m DTMs, 1.9 m mean, elevation gradient, checked below the snowline, caught a hillshade posing as a DTM | Image surface, captured |
 | Case 03 (LA fire and weather) | Opus | `sess_2c6ad727c21d` | pass: 4 NIFC layers, industrial hotspots separated | Image surface (Esri basemap), captured |
 | Wildfire Task Force (fuels) | Opus | `sess_c65770871584` | pass: 14 t/ac mean, worked around a WCS 500 | Column of metrics, map and histogram, captured |
@@ -925,9 +926,18 @@ the second wave (Opus 5.5) in the order found:
 
 Multi-turn (follow-ups in the same conversation):
 
-- Tahoe follow-up 1 (zoom on the burn): the agent reused its data, compared burned
-  with unburned habitat within 2 km rings, captured its figure, found three layout
-  defects and fixed them before answering.
+- Tahoe, four turns in `sess_1298c9f71757` (export taken after the last):
+  - Follow-up 1 (zoom on the burn): reused its data, compared burned with unburned
+    habitat within 2 km rings, captured its figure, found three layout defects and
+    fixed them before answering (`r9-tahoe-followup1-burned-zoom.png`).
+  - Follow-up 2 (the basin's own lidar): 21 tiles of the Lake Tahoe Basin Lidar 2010
+    0.5 m DTM through NDP (7.65 GB); seeing about 4 GB free, the agent streamed them
+    one at a time into a 3 m grid aligned with its 30 m one. Burned habitat sat on
+    steeper, more north-facing ground; the 30 m DEM understated steep ground
+    (`r9-tahoe-followup2-lidar-terrain.png`).
+  - Follow-up 3 (rank exposed owl and goshawk areas): all 64 PACs scored by
+    unburned share, high-load fuel and slope, top 12 mapped with fires, habitat and
+    lidar slope, each score broken down (`r9-tahoe-followup3-pac-exposure.png`).
 - Snow depth follow-up 1 (other years): the turn was interrupted by a restart; CLIO
   resumed it on its own and the agent searched for later lidar flights (NEON
   2011-13, 3DEP 2020-22).
