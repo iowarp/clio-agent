@@ -45,9 +45,24 @@ class GeoTiffTileError(ValueError):
         self.reason = reason
 
 
-def is_geotiff(name: str) -> bool:
-    """Whether an artifact's registered name is a raster this module reads."""
-    return name.lower().endswith(SUFFIXES)
+#: The first bytes of a TIFF or BigTIFF (either byte order) and of a GDAL VRT.
+_MAGIC = (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
+
+
+def is_geotiff(name: str, path: Path | None = None) -> bool:
+    """Whether an artifact is a raster this module reads: by its registered name, else by
+    its first bytes. An agent registers a GeoTIFF under any name ("Elevation DTM"), and
+    a name-only check refused it as "not a grid" while the same file by path drew."""
+    if name.lower().endswith(SUFFIXES):
+        return True
+    if path is None:
+        return False
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return False
+    return head[:4] in _MAGIC or head.lstrip().startswith(b"<VRTDataset")
 
 
 def _open(path: Path) -> Any:

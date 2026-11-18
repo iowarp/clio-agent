@@ -88,3 +88,17 @@ def test_registered_geotiff_routes(tmp_path: Path) -> None:
     tile = client.get(f"/v1/artifacts/{artifact_id}/tiles/14/{x}/{y}.png")
     assert tile.status_code == 200, tile.text
     assert tile.headers["content-type"] == "image/png"
+
+
+def test_a_geotiff_registered_under_any_name_still_draws(tmp_path: Path) -> None:
+    """The stored blob and its registered name may carry no suffix ("Elevation DTM")."""
+    from clio_agent.gact.artifacts.geotiff_tiles import is_geotiff
+
+    blob = _dem(tmp_path / "dem.tif").rename(tmp_path / "blob")
+    assert is_geotiff("Elevation DTM", blob)
+    info = grid_info(blob, variable=None, select=None, name="Elevation DTM")
+    assert info["variables"] == ["elevation"]
+    other = tmp_path / "notes"
+    other.write_text("not a raster")
+    assert not is_geotiff("notes", other)
+    assert is_geotiff("mosaic.vrt") and not is_geotiff("table.csv", None)

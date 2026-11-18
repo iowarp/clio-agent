@@ -114,7 +114,7 @@ def grid_info(
     path: Path, *, variable: str | None, select: dict[str, Any] | None, name: str | None = None
 ) -> dict[str, Any]:
     """Variables, extent, leading-dimension values and a value range for a legend."""
-    if geotiff_tiles.is_geotiff(name or path.name):
+    if geotiff_tiles.is_geotiff(name or path.name, path):
         try:
             info = geotiff_tiles.grid_info(path, band=geotiff_tiles.band_index(path, variable))
         except geotiff_tiles.GeoTiffTileError as exc:
@@ -255,7 +255,7 @@ def render_tile(
         raise RasterQueryError("tile_invalid", f"Tile {z}/{x}/{y} is outside the tile pyramid.")
     if colormap not in COLORMAPS:
         raise RasterQueryError("colormap_invalid", f"Colormap must be one of {sorted(COLORMAPS)}.")
-    if geotiff_tiles.is_geotiff(name or path.name):
+    if geotiff_tiles.is_geotiff(name or path.name, path):
         # GeoTIFF/COG/VRT in any CRS: GDAL warps the tile's blocks to Web Mercator.
         try:
             band = geotiff_tiles.band_index(path, variable)
