@@ -1,0 +1,492 @@
+---
+title: "Connectors"
+description: Find connectors and plugins, bring them into the conversations that need them, let the agent offer the one a request needs, and add your own MCP server.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import discover from '../../../assets/captures/connectors/discover-catalog.png';
+import connectorCard from '../../../assets/captures/connectors/connector-card.png';
+import picker from '../../../assets/captures/connectors/add-plugin-picker.png';
+import pickerPlugins from '../../../assets/captures/connectors/add-plugin-picker-plugins.png';
+import offerGeo from '../../../assets/captures/connectors/offer-connector-geo.png';
+import offerPlugin from '../../../assets/captures/connectors/offer-plugin.png';
+import viewPlugin from '../../../assets/captures/connectors/offer-view-plugin.png';
+import pluginAnswered from '../../../assets/captures/connectors/offer-plugin-answered.png';
+import addByCommand from '../../../assets/captures/connectors/add-by-command.png';
+import marketplaces from '../../../assets/captures/connectors/marketplaces.png';
+import earthdata from '../../../assets/captures/connectors/earthdata-results.png';
+import agentLoad from '../../../assets/captures/connectors/agent-load-card.png';
+
+<Aside type="note" title="Development build">
+Connectors are in the development build. v0.9.6.6 does not have them. See
+[Features and versions](/docs/versions/).
+</Aside>
+
+CLIO gives the agent new abilities in two forms:
+
+- A **connector** is an MCP server packaged for CLIO: a molecule viewer, a PDF viewer,
+  a NASA data search. It has a logo, it says what it needs from you, such as an address
+  or a sign-in, and it lists its tools. Many connectors also show their results as a
+  live [app](/docs/apps/).
+- A **plugin** brings skills: instructions for doing a kind of work well. It may also
+  bring an MCP server. The ParaView plugin, for example, brings a skill for working
+  with ParaView and the server that drives it; the Home Assistant plugin brings two
+  skills and the ha-mcp server.
+
+Extensions shows each as what it is. A connector's row reads **Connector** and
+**1 MCP server (4 tools)**; a plugin's row reads **Plugin** and what it brings, such as
+**2 skills, 1 MCP server (27 tools)**. A plugin that brings a server is listed once, as
+the plugin.
+
+You add both to a conversation the same way, and the agent can offer either one when a
+request needs it. Adding one changes only that conversation, so a conversation that
+does not use ParaView never carries ParaView's tools.
+
+## Walk-through: find a connector or plugin and bring it in
+
+<Steps>
+
+1. **Browse.** Open **Settings → Extensions and connectors**, then **Discover**. It
+   shows CLIO's catalog as cards, grouped by domain (**Data formats**, **HPC**, **Earth
+   science** and so on), each heading with its count; a long group shows its first four
+   cards and **Show all**. A card has the logo, the name, what it is and what it brings
+   ("Plugin, 1 skill, 1 MCP server"), a short description, what it still needs from you
+   and where it comes from (**From clio-kit**, **From the CLIO catalog**). Every
+   scientific server of the clio-kit CLIO ships is in it: one that a plugin brings with
+   skills is listed once, as that plugin, and every other one as a connector. Nothing of
+   a clio-kit server is installed until you enable it. **Plugins** or **Connectors**
+   above the list narrows it to one kind, and the search box finds one by name. Below,
+   **Suggested** lets you bring your own plugin, skills or marketplace, and the public MCP
+   Registry lists more MCP servers you can install.
+
+   <Capture client:visible image={await captureImage(discover)}
+     alt="Settings, Extensions and connectors, Discover: cards in two columns under domain headings with counts: Analysis and plots (3) with ParaView (Plugin, 1 skill, 1 MCP server), pandas and Plot (Connector, 1 MCP server); Chemistry and biology (1) with Burette; Data formats (4) with ADIOS2 and Compression. Each card has its logo, a description, where it comes from and a round + button named Enable"
+     caption="The catalog in Discover, grouped by domain. Each card's + enables it."
+   />
+
+2. **Enable it once.** Choose **+** (**Enable**) on its card. CLIO installs it (for a
+   clio-kit server, it downloads the server's tools first), starts it and lists its
+   tools; the card reads **Downloading its tools…** or **Starting…** meanwhile, then
+   **Enabled** beside a check. When an entry needs something from you first (an address
+   or a token), **+** opens its card beside the list instead: fill in the rows under
+   **Setup**, choose **Save**, then **Enable**. Choosing a card's name opens the same
+   card, with its settings and **Turn off**. Enabling puts it in no conversation.
+
+   A connector that works with a program you install yourself says so on its card
+   while it is off, after what enabling does: for example, "Downloads its tools when
+   you enable it. Needs the program installed on this machine." CLIO does not install
+   that program for you.
+
+   <Capture client:visible image={await captureImage(connectorCard)}
+     alt="The Geo connector's card beside the Discover list: Ready, 12 tools, Kind Connector (an MCP server), It needs nothing from you, and In conversations: Enabled, with how to add it to a conversation and a Turn off button"
+     caption="A connector's card. Enabled means installed and ready; each conversation adds it when it needs it."
+   />
+
+3. **Add it to a conversation.** In the conversation, open the **Agent** tab and choose
+   **Add plugin**. The menu has three groups: **Connectors**, with each enabled
+   connector's logo and state in words, then **Packs**, then **Plugins**. Choose one.
+   Its tools and skills join this conversation only.
+
+   <Capture client:visible image={await captureImage(picker)}
+     alt="A new conversation's Agent tab with the Add plugin menu open: under Connectors, Burette, NASA Earthdata, Geo and PDF viewer, each Ready with its tool count and description; under Packs, clio-analysis from clio-kit"
+     caption="The Add plugin menu: enabled connectors first."
+   />
+
+   <Capture client:visible image={await captureImage(pickerPlugins)}
+     alt="The same menu scrolled down: more packs from clio-kit and clio, then under Plugins, Home Assistant with 2 skills, 1 MCP server (27 tools) and Ready"
+     caption="Further down, the Plugins group. Home Assistant is enabled, so it is offered."
+   />
+
+4. **Or just ask.** You do not have to add anything first. Ask for what you want, and
+   the agent offers the connector or plugin that does it (next section).
+
+</Steps>
+
+In a conversation that has already started, adding or removing a connector or plugin
+asks how the change reaches the agent, as described in
+[Agents and plugins](/docs/agents-and-plugins/#how-a-change-reaches-the-agent). The
+conversation's plugin list then shows the connector as **Connector you added**; remove
+it there to take it out of this conversation.
+
+To have a connector or plugin in every new conversation of an agent, add it to that
+agent: open the agent in **Settings → Agents**, or save a conversation's setup as an
+agent.
+
+## When an agent needs what is not enabled
+
+Installing CLIO downloads no connector or tool server. When you start a conversation
+with an agent, or switch to one, whose plugins use connectors that are not enabled or
+not set up yet, the conversation asks once, before your first message:
+
+<Capture client:visible image={await captureImage(agentLoad)}
+  alt="A new EarthScope conversation: the card reads EarthScope uses Geo and National Data Platform, which are not enabled. Enable them?, then Geo, Connector, downloads its tools, and National Data Platform, Plugin, downloads its tools, then Not now: EarthScope works without them and can offer them later, and Enable all, Not now and Settings (2)"
+  caption="An agent's first conversation asks before anything is downloaded."
+/>
+
+Each row names a connector, or a plugin that brings one with skills, and what enabling
+it does: downloads its tools, turns it on, needs a value from you, or asks you to sign
+in when it is first used. A required value that is missing shows on the card.
+
+- **Enable all** downloads and turns them on in the background. Each row then says
+  where it is (**Downloading its tools…**, **Turning it on…**, **Ready, 10 tools**, or
+  why it could not be enabled, with **Try again**), and the agent has them from its
+  next step. **Hide** keeps it going while you work; **Close** puts the card away.
+- **Settings** leaves one out, and holds the optional values each one takes.
+- **Not now** leaves the agent working without them, and is remembered for that
+  agent in this workspace, so its next conversations do not ask again. The agent can
+  still offer one when a request needs it (next section), and Discover lists them.
+
+## When the agent offers a connector or plugin
+
+The agent knows which connectors and plugins this conversation does not have: each by
+name, with a line about what it does and, for a plugin, the marketplace it comes from.
+It is told about the first 20 (`plugins.offer_listed`) and how many there are. To
+choose which, open **Settings → Extensions and connectors → Plugins CLIO can offer →
+Choose…**: every candidate is listed with a tick box, the default 20 marked **Default**.
+Untick one the agent should not offer, tick one beyond the 20 it should, then **Save**;
+**Reset to default** brings back the 20. The change applies from the agent's next turn.
+The agent is also told how many more there are, and can search them by words or by
+category; one you left out shows as left out, so it can say it exists.
+When your request needs one, it asks with a card instead of guessing or working around
+it. The card has four rows:
+
+1. The logo and **Add Geo to this conversation?**, with its state at the right:
+   **Enabled**, **Not enabled (Add turns it on)**, or **Plugin from** its marketplace.
+2. What it is, in one line.
+3. **Why**: the agent's reason, on one line. Select it to read all of it.
+4. **Add**, **Not now**, what Add brings (for example **1 MCP server (12 tools)** or
+   **2 skills and 1 MCP server (27 tools)**), and **View connector** or **View
+   plugin**, which shows what it brings without answering the card. A connector with
+   optional settings also shows **Settings** with their number.
+
+Rows it requires, such as an address or a token, appear on the card above the buttons,
+filled in when you have already given them.
+
+A connector that needs a program already installed on this machine has one more line
+while it is off, **On this machine**, saying what that is. The agent-load card ends
+the same row with it.
+
+Choose **Add** and the connector or plugin joins this conversation only, enabled first
+if it was off, and the agent continues your request in the same reply, with the new
+tools and skills. Choose **Not now** and nothing changes. The agent never adds
+anything by itself, and it does not offer what a request has no use for.
+
+### A connector: stations on a globe
+
+In a workspace holding a list of GNSS stations, the request was "Show the GNSS stations
+in example_stations_rainier.csv on a globe, coloured by station kind." The
+conversation did not have Geo, so the agent read the file and offered it:
+
+<Capture client:visible image={await captureImage(offerGeo)}
+  alt="A conversation in the cascadia workspace. The agent looked for globe tools, read example_stations_rainier.csv and offered Geo; the card reads Add Geo to this conversation?, Enabled, Show stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe, make map images, and find places by name, Why: Showing the 10 Rainier GNSS stations on an interactive 3D globe, coloured by station kind, then Add, Not now, Brings 1 MCP server (12 tools) to this conversation, and View connector"
+  caption="The offer card for a connector, with View connector. After Add, the globe appeared in the same reply."
+/>
+
+The [Apps walk-through](/docs/apps/#walk-through-stations-on-a-globe) follows this
+conversation from the card onwards.
+
+### A plugin with skills
+
+A plugin is offered the same way. In a `lab-sensors` workspace, with the Home Assistant
+plugin enabled and pointed at ha-mcp's public demo instance, the request was "What is
+the temperature at home right now, and how has the outside temperature changed over the
+last day?"
+
+<Capture client:visible image={await captureImage(offerPlugin)}
+  alt="The offer card in the lab-sensors conversation: Add Home Assistant to this conversation?, Enabled, its description, the agent's reason, then Add, Not now, Brings 2 skills and 1 MCP server (27 tools) to this conversation, View plugin and Settings (2)"
+  caption="The offer card for a plugin. Its address and token are already saved, so the card keeps its four rows and they wait under Settings (2), where Save as default is too. A required row still missing would show on the card."
+/>
+
+<Capture client:visible image={await captureImage(viewPlugin)}
+  alt="View plugin over the conversation: the home-assistant plugin from the clio marketplace, its description, its skills home-assistant-best-practices and home-assistant-sensors with what each is for, and its MCP server home-assistant, not started"
+  caption="View plugin shows what Add brings before you answer; close it and the card is still waiting. Taken at a second request in the same workspace."
+/>
+
+<Capture client:visible image={await captureImage(pluginAnswered)}
+  alt="The answer in the same reply: 22.5 °C from the living-room sensor, a table of the two outside sensors that did not change over the day, and the note that these look like demo sensors"
+  caption="After Add, the agent loaded a skill of the plugin and used its tools in the same reply. The readings are the demo instance's."
+/>
+
+## Add your own MCP server
+
+For a service that is not in the catalog, choose **Add → Add by URL or command** in
+Extensions. Give it a name, then either the address of a remote MCP server (**URL**) or
+a command that starts one on the machine running CLIO (**Command**), with its
+arguments as a JSON list.
+
+<Capture client:visible image={await captureImage(addByCommand)}
+  alt="The Add by URL or command dialog over Extensions, set to Command: name hdf5, command clio-kit, arguments mcp-server and hdf5, with Advanced folded and an Add button"
+  caption="A local MCP server added by command. Here, clio-kit's HDF5 server."
+/>
+
+CLIO adds it as a connector with a monogram, and you add it to conversations like any
+other. Its card shows the address, and a **Sign in** row when the service asks for one.
+**Remove** deletes a connector you added this way. Anything under **Advanced**, such as
+request headers, an authentication mode or environment variables, makes it a plain MCP
+connection instead; see [Connect tools and services](/docs/mcp-servers/).
+
+Discover also lists servers from the public MCP Registry, each with **Install**, which
+fills in the same form.
+
+## Where plugins come from: marketplaces
+
+Plugins come from marketplaces. The `clio` marketplace ships with CLIO and is trusted
+when it is installed. You can add others, such as a lab's own marketplace or IOWarp's
+`clio-kit`, under **Extensions → Marketplaces**, then trust them before their plugins
+can run. The agent can offer the plugins of every marketplace you add, the most
+recently added first.
+
+<Capture client:visible image={await captureImage(marketplaces)}
+  alt="Extensions filtered to Marketplaces: clio-kit and iowarp-clio-coder from GitHub, the second via clio-kit, the private local marketplace on this host, and the shipped clio marketplace, each Trusted, with Update"
+  caption="Installed marketplaces. clio-kit lists a second marketplace, iowarp-clio-coder, which installed with it."
+/>
+
+See [Add and manage marketplaces](/docs/marketplaces/manage/) for adding, trusting,
+updating and removing them.
+
+## State in words
+
+A connector's or plugin's state reads the same everywhere it appears:
+
+| State | Meaning |
+|---|---|
+| **Ready** (on a card, **Ready, 4 tools**) | It answered and its tools are available. In a list, the tool count is in what it brings: **1 MCP server (4 tools)**. |
+| **Needs** followed by what, such as **Needs a sign-in** | A required row is empty. Optional rows never hold a connector back. |
+| **Can’t be reached** | CLIO started or called it and it did not answer. The card gives the reason, for example that nothing answered at the address. |
+| **Not enabled** | It is turned off. |
+| **In this conversation** | Shown in a conversation's **Add plugin** menu for one it already has. |
+
+**Turn off** stops it. A conversation you added it to keeps it in its list but cannot
+use it, and says it left because the connector is turned off; enable the connector
+again and it is back in that conversation. Its values and secrets are kept, so
+enabling it again needs nothing more.
+
+## The setup card
+
+Each row of a connector's card is one thing the connector needs:
+
+- **Address** or **value**: a text field, or a list to pick from. Some rows say
+  **The agent can set this**.
+- **Secret**: a masked field, for a token or a key. After you save it, the field
+  stays empty and says **Saved. Type a new one to replace it**. Leaving it empty
+  keeps the saved secret.
+- **Sign-in**: a **Sign in** button that opens the service's own sign-in page. The
+  row then reads **Signed in** or **Not signed in**.
+
+Rows marked **Required** must be filled before the connector is ready. When you change
+a value, CLIO reconnects to the service, or restarts it if it runs on your machine, and
+lists its tools again.
+
+### Values for one conversation, and defaults
+
+The values in Extensions are your **defaults**: every conversation uses them unless it
+has its own. A value given inside a conversation, by you on a card or by the agent, is
+that **conversation's own**. Pointing ParaView at node08 in one conversation leaves
+another conversation's ParaView on this machine, and the views in both stay open.
+
+On a card in a conversation, each address or value row has **Save as default**. Leave
+it clear to keep the value in this conversation only; the row then reads **This
+conversation only** and shows the default it replaces. Tick it to make the value your
+default for new conversations too. Secrets and sign-ins are always yours for every
+conversation.
+
+A conversation with values of its own gets its own copy of the server, so it never
+changes what another conversation is connected to. Reopening a view in a conversation
+uses that conversation's values.
+
+A secret goes to the service only. It is kept in CLIO's credential file in your
+configuration folder, readable only by you, and never appears in the conversation, in
+what the model reads, or in the logs.
+
+### When a call needs something first
+
+If the agent calls a tool of a connector that still needs something, the call waits and
+a setup card appears in the conversation. It names the tool that is waiting and shows
+only the missing rows.
+
+- Fill them in, or sign in, and choose **Continue**. The same call then runs and
+  returns its result. You do not need to ask again. A card that needs only a sign-in
+  continues by itself once you have signed in.
+- Choose **Decline**, or press Esc, to refuse. The call returns a refusal that names
+  the connector, and the agent tells you it could not use it.
+- Stopping the reply also ends the waiting call.
+
+The same card appears when a service stops accepting a sign-in it accepted before.
+
+## What the agent can change, and what asks first
+
+Some values are things you might say in passing: "the ParaView I want is on node08". A
+row marked **The agent can set this** can be changed by the agent with its
+`set_connector_value` tool, several values in one call. It sets them for the
+conversation it is in, never as your defaults. The agent can never set a secret or sign
+in for you, change a row that is not marked, or turn a connector on or off.
+
+Calls to a connector's tools, to an app's own tools and to `set_connector_value` follow
+the conversation's [permissions](/docs/permissions/). Under **Ask first** each one asks,
+with **Allow once**, **This session** and **This workspace**; under **Bypass checks**
+none asks. The offer card itself is the question for adding a connector or plugin.
+
+## Connectors CLIO includes
+
+None is enabled until you enable it. Each runs on the machine that runs CLIO, except
+Burette, which is a hosted service. The catalog's plugins are listed after them.
+
+### Geo
+
+Shows stations, regions, footprints and tracks from GeoJSON on an interactive 3D globe,
+makes map images, finds places by name, and queries public map layers. It runs IOWarp's
+Geo server through the `clio-kit` launcher and needs nothing from you. Click a feature
+on the globe and the agent is told which one; in a dashboard, the globe's selection can
+be linked to a table both ways. See the [Apps walk-through](/docs/apps/).
+
+The globe needs the Geo server 2.4.0 or later, which comes with the `clio-kit` release
+that carries it. The globe is drawn with CesiumJS, loaded from cesium.com, over
+OpenStreetMap tiles.
+
+### PDF viewer
+
+Runs the [MCP Apps PDF example server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/pdf-server)
+(`@modelcontextprotocol/server-pdf` 2.0.4) through `npx`, and shows a paper in a viewer
+you can page through, search and zoom, in the conversation, in a tab or in a dashboard.
+It needs Node.js 20 or later. It opens papers by address from arXiv, bioRxiv, medRxiv,
+ChemRxiv, Zenodo, OSF, HAL and similar archives. Ask, for example, "Show me arXiv
+2611.15421 so I can read it". The agent reads the page you are on, can jump to a
+section, search the paper and take a picture of a page. It cannot open a file from your
+workspace yet.
+
+### NASA Earthdata
+
+Runs [earthdata-mcp-server](https://github.com/datalayer/earthdata-mcp-server) 0.6.0
+through `uvx` (about 250 MB on first use). It searches NASA's Earthdata catalog for
+Earth-science datasets and their files. Searching needs no account. To download files,
+enter your free [NASA Earthdata Login](https://urs.earthdata.nasa.gov) username and
+password in its two optional rows; the password is kept as a secret.
+
+<Capture client:visible image={await captureImage(earthdata)}
+  alt="A water-storage conversation: the agent searched NASA Earthdata for the JPL GRACE/GRACE-FO mascon product's 2023 granules, found one file covering 2002 to 2026, tried a download that failed without an Earthdata Login, and answered from the mission's public month table, saying what it could not verify"
+  caption="A granule search with NASA Earthdata. Without an Earthdata Login the download failed, and the agent said so."
+/>
+
+### Burette
+
+[Burette](https://github.com/SergeiNikolenko/Burette) shows molecular structures from
+the Protein Data Bank in Mol*, and draws or edits molecules in Ketcher. It is a hosted
+service and needs nothing from you. Ask, for example, "Show PDB 1CRN". Its viewer draws
+nothing in a frame 600 pixels wide or narrower; open it in a tab and widen the panel.
+
+### SPICE circuit simulation
+
+Runs [ltspice-mcp](https://github.com/cognitohazard/ltspice-mcp) 0.8.0 through `uvx`,
+and plots waveforms in the conversation. Install ngspice, or LTspice on Windows, first.
+It does not support macOS.
+
+## Plugins CLIO includes
+
+These plugins bring skills together with an MCP server, and are enabled the same way.
+None is enabled until you enable it.
+
+### Home Assistant
+
+Reads sensors and their history from your [Home Assistant](https://www.home-assistant.io),
+controls devices, and writes automations, scripts, scenes and dashboards: a lab's or a
+greenhouse's monitors as much as a home's. It runs ha-mcp 9.2.0 through `uvx` and offers
+27 of its tools. Its two skills are `home-assistant-sensors`, for finding entities and
+reading state and history, and `home-assistant-best-practices`, taken unchanged from the
+homeassistant-ai skills project, for writing configuration the native way. Both rows are
+required:
+
+| Row | What to enter |
+| --- | --- |
+| **Your Home Assistant address** | The address you open Home Assistant at, for example `http://homeassistant.local:8123`. |
+| **Long-lived access token** | In Home Assistant, open your profile, then **Security**, and create one. Kept as a secret. |
+
+ha-mcp starts and lists its tools even when the address or token is wrong, so the card
+can read **Ready** until the first call fails; the agent then says that Home Assistant
+did not answer. Its tools can change your Home Assistant, such as switching a device or
+saving an automation; those calls follow your [permissions](/docs/permissions/), and you
+can ask the agent to show a change without saving it.
+
+### ParaView
+
+Brings a skill for working with scenes and the server that opens your data in ParaView
+and shows it in a live view in a tab. It needs ParaView 6.0 or later where ParaView
+runs. Its server has three settings, all optional, and the agent can set each:
+
+| Row | What to enter |
+|---|---|
+| **Where ParaView runs** | Empty for this machine. Otherwise an SSH host name, including an alias from your `~/.ssh/config`. |
+| **Jump host** | A host to go through, when your SSH configuration does not already give one. |
+| **Command to run first** | A line that puts `pvpython` on the path, for example `module load paraview`. |
+
+On this machine, CLIO looks for `pvpython` after running the first command. If there is
+none, the first scene request says so and tells the agent how to point ParaView at
+another machine.
+
+#### ParaView on another machine
+
+Two hops such as `ssh login` then `ssh node08` are one setting: **Where ParaView runs**
+`node08`, **Jump host** `login`. You can also just tell the agent: "Connect to the
+ParaView on node08, through login. It needs `module load paraview` first."
+
+- CLIO uses your own `ssh`, keys, agent and `~/.ssh/config`, over one connection.
+  Nothing listens on the network on either side.
+- The first time on a machine takes a minute or two. CLIO prepares a folder,
+  `~/.clio/paraview/<version>/`, with what the view needs. If that machine cannot
+  reach the Python package index, it builds the folder from the jump host, which
+  shares your home folder on most clusters. Later connections reuse it and take
+  seconds.
+- If a ParaView server (`pvserver`) is already running on that machine on port 11111,
+  the view joins it and shows that session's data.
+- File paths are paths on the machine where ParaView runs.
+- If the connection drops, the scene is kept there and the next request reconnects.
+  With no connection for 30 minutes, ParaView on that machine saves the scene and
+  stops.
+
+<Aside type="caution" title="Key-based SSH only">
+A host that asks for a password or a one-time code on every connection does not work.
+The first request fails at once with a message that interactive sign-in is needed.
+Use an SSH key or agent that the host accepts.
+</Aside>
+
+### 3D-print slicer
+
+<Aside type="note" title="Coming with clio-kit">
+The slicer comes from clio-kit, as its `clio-slicer` plugin. It appears in Discover
+once the clio-kit release that CLIO uses ships it.
+</Aside>
+
+Slices a 3D model (STL, 3MF, STEP or OBJ) for a 3D printer and shows the result layer by
+layer, with a skill for choosing presets, orienting a part, adding supports and reading
+the estimates. It is listed under **Fabrication** in Discover.
+
+- **It uses the slicer you already have.** Install
+  [PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/) or
+  [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) first; its card says so while it
+  is off. CLIO finds `prusa-slicer` or `orca-slicer` on your path, or the program that
+  the `SLICER_BIN` environment variable names. It never downloads a slicer. If none is
+  found, the agent tells you so, and nothing is sliced.
+- **Say it the way you would say it to a person.** For example, "Slice the bracket for
+  a Prusa MK4 in PETG at 0.2 mm". The agent picks the printer, quality and material
+  presets that your slicer ships, and tells you which ones it used.
+- **The layer view** colours toolpaths by type, such as outer and inner walls, infill,
+  bridges, support and travel. Each type is named in the legend, with its share of the
+  print time and a switch to show or hide it. The view also has a layer slider, the
+  print time, the filament in grams and metres, the layer count and height, and the
+  slicer's warnings, written out. Click a toolpath to see its type, height and G-code
+  line. The agent can move the view to a layer, and a dashboard can link it to a chart
+  of time per layer.
+- **What stays where.** The G-code stays with the slicer's server until you ask for it.
+  The agent then writes it, or a table of time per layer, into your folder. Your
+  slicer's own settings are never read or changed.
+
+It never sends anything to a printer.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Apps" href="/docs/apps/" description="Use a connector's view in the conversation, in a tab or in a dashboard." />
+  <LinkCard title="Agents and plugins" href="/docs/agents-and-plugins/" description="What a conversation's agent is made of, and how a change reaches it." />
+  <LinkCard title="Write a connector entry" href="/docs/sdk/connectors/" description="Add a connector to the catalog, and a plugin that follows it." />
+</CardGrid>

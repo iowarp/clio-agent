@@ -152,7 +152,11 @@ Installs the `.deb` with `apt`, the `.rpm` with `dnf` or `zypper`, or the Arch p
 </Tabs>
 
 On macOS and Linux the script then prepares the app's tools as you, the way the Windows
-installer does, so the first launch is quick. Add `--download-only DIR`
+installer does, so the first launch is quick. No connector or scientific tool server is
+downloaded then: when an agent needs one, the conversation asks before downloading it
+(see [Connectors](/docs/connectors/#when-an-agent-needs-what-is-not-enabled)). For a
+machine that will be offline, add `--prepare-tool-servers` (`-PrepareToolServers` on
+Windows) to prepare the installed agents' servers now. Add `--download-only DIR`
 (`-DownloadOnly DIR` on Windows) to keep the verified installer without installing it.
 
 ## Install script
@@ -233,7 +237,7 @@ Windows with `& ([scriptblock]::Create((irm https://clio.iowarp.ai/desktop.ps1))
 |---|---|
 | none | the latest stable release |
 | `--dev` | the newest release, betas included |
-| `--version <version>` | one release, for example `--version 0.9.7.1` |
+| `--version <version>` | one release, for example `--version 0.9.7` |
 | `--source` | the source code on `main`, built on your computer |
 | `--dev --source` | the source code on `develop` |
 

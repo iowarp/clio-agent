@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 test('home page keeps the download in reach and its demo and tabs working on desktop and mobile', async ({ page }) => {
 	for (const width of [1440, 390]) {
 		await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+		// These follow the system scheme on purpose; with nothing stored the site is dark.
+		await page.addInitScript(() => localStorage.setItem('starlight-theme', ''));
 		await page.emulateMedia({ colorScheme: 'light' });
 		await page.goto('/');
 		await page.evaluate(() => document.fonts.ready);
@@ -81,4 +83,16 @@ test('private research recordings and downloadable documents are absent', async 
 		'/media/source-context-recovery.png',
 		'/media/source-accounts.png',
 	]) expect((await page.request.get(path)).status()).toBe(404);
+});
+
+test('the site is dark until the visitor picks a theme, on the home page and the docs', async ({ page }) => {
+	await page.emulateMedia({ colorScheme: 'light' });
+	for (const path of ['/', '/docs/']) {
+		await page.goto(path);
+		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+	}
+	await page.getByRole('button', { name: 'Light', exact: true }).first().click();
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+	await page.goto('/docs/');
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 });

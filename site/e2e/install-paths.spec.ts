@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 for (const width of [390, 1440]) {
   test(`install guidance offers the desktop installer and keeps the frozen TUI out of deployment at ${width}px`, async ({ page, request }) => {
     await page.setViewportSize({ width, height: 1000 });
+    // These follow the system scheme on purpose; with nothing stored the site is dark.
+    await page.addInitScript(() => localStorage.setItem('starlight-theme', ''));
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('/#download');
     const downloads = page.getByRole('region', { name: 'Download CLIO', exact: true });
