@@ -313,7 +313,9 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
   bare notification for clients on an older protocol.
 - On `notifications/resources/updated` for that URI, either way, CLIO reads again and
   replaces the tab's surfaces. A listen stream that drops is reopened, and then read
-  again once. CLIO does not poll.
+  again once. CLIO does not poll. One update is one re-read: an update stamped with a
+  listen subscription id is taken from that stream only, and only an unstamped one is
+  taken as a bare push.
 - The watch belongs to the server process it was opened on. When the server is mounted
   again (the session's agent removes and re-adds its plugin, a connector change
   replaces it, or CLIO reconnects it), CLIO ends the old stream, opens one on the

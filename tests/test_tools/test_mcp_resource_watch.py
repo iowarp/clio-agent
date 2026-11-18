@@ -139,6 +139,53 @@ async def test_an_unsolicited_update_is_reported_for_its_namespace(
     assert updates == [("fx", URI)]
 
 
+async def test_an_update_from_a_listen_stream_is_left_to_its_watch(
+    updates: list[tuple[str, str]],
+) -> None:
+    from mcp.shared.subscriptions import SUBSCRIPTION_ID_META_KEY
+    from mcp_types import ResourceUpdatedNotification, ToolListChangedNotification
+
+    handler = list_changed_message_handler("fx")
+    stamp = {"_meta": {SUBSCRIPTION_ID_META_KEY: 7}}
+    await handler(ResourceUpdatedNotification(params={"uri": URI, **stamp}))
+    await handler(ToolListChangedNotification(params=stamp))
+
+    assert updates == []
+
+
+async def test_one_change_is_reported_once_with_a_push_handler_and_a_watch(
+    updates: list[tuple[str, str]],
+) -> None:
+    from fastmcp import Client
+
+    hostfx = _hostfx()
+    server = hostfx.build_server()
+    handler = list_changed_message_handler("hostfx")
+    async with Client(server, message_handler=handler) as client:
+
+        async def connect() -> Any:
+            return client
+
+        watch = asyncio.create_task(
+            watch_resource(connect, "hostfx", hostfx.PANEL_URI, retry_after=0.05)
+        )
+        await client.call_tool("show_panel", {})
+        for _ in range(200):
+            await client.call_tool("bump", {"by": 1})
+            await asyncio.sleep(0.02)
+            if updates:
+                break
+        await asyncio.sleep(0.2)
+        updates.clear()
+        await client.call_tool("bump", {"by": 1})
+        await asyncio.sleep(0.3)
+        watch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watch
+
+    assert updates == [("hostfx", hostfx.PANEL_URI)]
+
+
 async def test_the_fixture_server_pushes_its_panel_update(
     updates: list[tuple[str, str]],
 ) -> None:

@@ -36,7 +36,7 @@ stream per connected namespace and reopens it when it is lost, because at
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol
 
@@ -141,6 +141,11 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
 
     Ignores every other message type -- a caller with other notifications to handle
     composes this alongside its own handler rather than this one growing a dispatch table.
+
+    A notification stamped with a ``subscriptions/listen`` subscription id belongs to a
+    stream this host opened (:func:`watch_tools`, :func:`watch_resource`), which reports
+    it. The SDK still tees such frames to ``message_handler``, so this handler skips them
+    and each change is reported once.
     """
 
     async def _handler(message: Any) -> None:
@@ -150,6 +155,8 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
             ToolListChangedNotification,
         )
 
+        if _from_listen_stream(message):
+            return
         if isinstance(message, ToolListChangedNotification):
             _record_list_changed(namespace)
         elif isinstance(message, PromptListChangedNotification):
@@ -164,6 +171,13 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
             resource_updated(namespace, str(message.params.uri))
 
     return _handler
+
+
+def _from_listen_stream(message: Any) -> bool:
+    from mcp.shared.subscriptions import SUBSCRIPTION_ID_META_KEY
+
+    meta = getattr(getattr(message, "params", None), "meta", None)
+    return isinstance(meta, Mapping) and meta.get(SUBSCRIPTION_ID_META_KEY) is not None
 
 
 async def watch_resource(
