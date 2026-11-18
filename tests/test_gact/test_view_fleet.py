@@ -104,9 +104,17 @@ def test_a_view_holds_the_fleet_and_the_idle_window_restarts_when_it_goes() -> N
     assert reaper.reap_once() == ["/ws"]
 
 
-def test_a_view_that_leaves_before_its_hold_lands_releases_it() -> None:
+def test_a_view_that_leaves_before_its_hold_lands_releases_it(monkeypatch: Any) -> None:
     agent = _Agent(ttl_s=60)
     app = _app(agent)
+    released = threading.Event()
+    release = view_fleet._release
+
+    def release_and_signal(sid: str) -> None:
+        release(sid)
+        released.set()
+
+    monkeypatch.setattr(view_fleet, "_release", release_and_signal)
 
     async def scenario() -> None:
         task = asyncio.create_task(view_fleet.viewing(app, "s").__aenter__())
@@ -116,11 +124,11 @@ def test_a_view_that_leaves_before_its_hold_lands_releases_it() -> None:
             await task
         except asyncio.CancelledError:
             pass
+        # The release is scheduled on this loop's executor once the cancelled acquire
+        # lands; leaving asyncio.run first shuts that executor down under it.
+        assert await asyncio.to_thread(released.wait, 60)
 
     asyncio.run(scenario())
-    deadline = time.monotonic() + 5
-    while (agent.leases or view_fleet.held_views()) and time.monotonic() < deadline:
-        time.sleep(0.01)
     assert agent.leases == {} and view_fleet.held_views() == {}
 
 
