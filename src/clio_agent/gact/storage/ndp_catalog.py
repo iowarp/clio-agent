@@ -124,6 +124,38 @@ class NDPSelection(StorageModel):
     dataset: NDPDataset
 
 
+def _name_suffix(item: NDPResource) -> str:
+    """The file suffix of a resource's name or URL path (``.img``), or ``""``."""
+    for text in (item.name, urlsplit(item.url).path):
+        tail = text.rsplit("/", 1)[-1]
+        if "." in tail:
+            suffix = "." + tail.rsplit(".", 1)[-1].lower()
+            if 1 < len(suffix) <= 8 and suffix[1:].isalnum():
+                return suffix
+    return ""
+
+
+def _format_label(item: NDPResource) -> str:
+    """The record's format; when the record leaves it blank, the file suffix, so labelled."""
+    if item.format:
+        return item.format
+    suffix = _name_suffix(item)
+    return f"unspecified ({suffix} from the file name)" if suffix else "unspecified"
+
+
+def _visible_resource(item: NDPResource) -> dict[str, Any]:
+    """A resource without its URL; a blank record format carries the file's suffix.
+
+    NDP records often leave ``format`` blank for tiled rasters and point clouds. The
+    suffix of the file name (``.img``, ``.laz``) is what the data says it is; it is
+    reported as such, and the record's own field is left as the record states it.
+    """
+    row = item.model_dump(exclude={"url"})
+    if not item.format and (suffix := _name_suffix(item)):
+        row["name_suffix"] = suffix
+    return row
+
+
 class NDPCatalog:
     """Adapt existing science discovery to saved-account and selected-source custody."""
 
@@ -397,11 +429,11 @@ class NDPCatalog:
             **dataset.model_dump(exclude={"endpoint", "resources"}),
             "endpoint_id": dataset.endpoint.id,
             "endpoint_name": dataset.endpoint.name,
-            "resources": [item.model_dump(exclude={"url"}) for item in shown],
+            "resources": [_visible_resource(item) for item in shown],
             "resource_count": len(resources),
         }
         if resource_offset or end < len(resources):
-            formats = Counter(item.format or "unspecified" for item in resources)
+            formats = Counter(_format_label(item) for item in resources)
             out["resources_listed"] = f"{resource_offset + 1}-{end} of {len(resources)}"
             out["resource_formats"] = dict(formats.most_common(10))
             if end < len(resources):

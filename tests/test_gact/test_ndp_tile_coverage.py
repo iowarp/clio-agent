@@ -304,3 +304,19 @@ def test_search_hit_with_few_resources_lists_them_all() -> None:
     row = NDPCatalog.visible(item)
     assert row["resource_count"] == 2 and len(row["resources"]) == 2
     assert "resources_listed" not in row and "next_resource_offset" not in row
+
+
+def test_a_blank_record_format_reports_the_file_suffix() -> None:
+    """NDP leaves format blank on tiled lidar rasters; the file name still says .img."""
+    blank = [
+        NDPResource(id=f"t{n}", path=f"{n}-x.img", name=f"TILE - DTMhe_{n}.img", url="", format="")
+        for n in range(30)
+    ]
+    item = dataset(*blank, resource("dem.vrt", fmt=""), resource("readme", fmt=""))
+    row = NDPCatalog.visible(item)
+    assert row["resources"][0]["name_suffix"] == ".img" and row["resources"][0]["format"] == ""
+    assert row["resource_formats"] == {
+        "unspecified (.img from the file name)": 30,
+        "unspecified (.vrt from the file name)": 1,
+        "unspecified": 1,
+    }

@@ -174,6 +174,29 @@ def test_a_large_dataset_says_which_resources_are_listed_and_how_to_page() -> No
         assert expected in text
 
 
+def test_a_resource_without_a_stated_format_shows_its_file_suffix() -> None:
+    row = {
+        "datasets": [
+            {
+                "id": "lidar",
+                "title": "Basin Lidar",
+                "resources": [
+                    {
+                        "id": "t1",
+                        "name": "DTM_1.img",
+                        "format": "",
+                        "name_suffix": ".img",
+                        "size": 0,
+                    }
+                ],
+            }
+        ],
+        "total": 1,
+    }
+    text = body(ndp_presentation({"query": "lidar"}, row, None))
+    assert "DTM_1.img (format not stated; .img from the file name, 0 bytes)" in text
+
+
 def test_organizations_are_real_names_and_their_catalog_identities() -> None:
     view = ndp_presentation(
         {},

@@ -101,6 +101,14 @@ def _coverage_lines(coverage: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _resource_format(item: Mapping[str, Any]) -> str:
+    if item.get("format"):
+        return str(item["format"])
+    if item.get("name_suffix"):
+        return f"format not stated; {item['name_suffix']} from the file name"
+    return "unspecified format"
+
+
 def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """Show the actual discovery page, its resource identities, warnings and next page."""
     row = _row(result, structured)
@@ -164,7 +172,7 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
                     "items": [
                         _safe(
                             f"{item.get('name') or item.get('path', '')}"
-                            f" ({item.get('format') or 'unspecified format'}, "
+                            f" ({_resource_format(item)}, "
                             f"{item.get('size', 0)} bytes)\nResource ID: {item.get('id', '')}"
                         )
                         for item in resources
