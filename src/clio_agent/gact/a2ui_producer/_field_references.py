@@ -115,7 +115,8 @@ def _section(app: FastAPI, component: dict[str, Any], where: str, bindings: Any)
         return resolved
     record, _version, path = resolved
     names = [component.get("variable"), *(component.get("variables") or [])]
-    for variable in [n for n in names if isinstance(n, str)] or [None]:
+    variables: list[str | None] = [n for n in names if isinstance(n, str)] or [None]
+    for variable in variables:
         try:
             section_sample(path, variable=variable, width=2, height=2, name=record.name)
         except RasterQueryError as exc:
