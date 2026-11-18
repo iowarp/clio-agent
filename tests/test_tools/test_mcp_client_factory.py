@@ -342,9 +342,12 @@ def test_proxy_for_spec_routes_backend_through_factory(
         capabilities: Any = None,
         client_cls: Any = None,
         list_changed_namespace: str = "",
+        a2ui_catalogs: Any = (),
     ) -> Any:  # noqa: A002
         # The backend records the server's tools/list_changed under its namespace.
         assert list_changed_namespace == "ext"
+        # A server no plugin declares produces no A2UI catalogs (HS1a).
+        assert tuple(a2ui_catalogs) == ()
         calls.append((target, handlers, capabilities, client_cls))
         return Client(stub)  # a real client (has .new()) so the proxy accepts it
 
