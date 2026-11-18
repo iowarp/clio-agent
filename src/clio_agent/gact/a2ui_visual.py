@@ -356,7 +356,8 @@ class A2UIVisualFeedback:
             if matched and not any(row.report.ready for row in matched):
                 raise VisualFeedbackError(
                     "a2ui_render_not_ready",
-                    "Required data or rendering did not become ready within the capture budget; inspect viewer state.",
+                    "Required data or rendering did not become ready within the capture budget"
+                    + _viewer_reasons(matched),
                 )
             matched = [row for row in matched if row.report.ready]
             if not matched:
@@ -405,6 +406,24 @@ class A2UIVisualFeedback:
                 }
             finally:
                 self._requests.pop(request_id, None)
+
+
+def _viewer_reasons(rows: list[_Viewer]) -> str:
+    """What the viewers say keeps the view from being ready (a chart's own error).
+
+    A view that failed to render stays not ready; its reason, not only the timeout,
+    tells the producer what to change (its data, a field name).
+    """
+
+    reasons: list[str] = []
+    for row in rows:
+        readiness = (
+            row.report.state.get("readiness") if isinstance(row.report.state, dict) else None
+        )
+        detail = str(readiness.get("detail") or "").strip() if isinstance(readiness, dict) else ""
+        if detail and detail not in reasons:
+            reasons.append(detail[:300])
+    return f": {'; '.join(reasons)}" if reasons else "; inspect viewer state."
 
 
 def decode_png(encoded: str) -> tuple[bytes, dict[str, int]]:

@@ -335,8 +335,8 @@ def _validate_tabular_fields(
             "a2ui_data_reference_unsupported_format",
             detail=(
                 f"component {component_id!r} dataUri names {record.name!r}, which is "
-                "not a registered CSV or Parquet table; *Field names cannot be "
-                "validated against it"
+                "not a registered CSV or Parquet table, the formats this component "
+                "reads; write the rows as CSV or Parquet"
             ),
         )
     from clio_agent.gact.artifacts.table_query import _read_schema  # noqa: PLC0415
@@ -765,17 +765,19 @@ def validate_component_data_references(
                 if isinstance(component.get(prop), str) and component[prop]
             }
             data_query = component.get("dataQuery")
-            if wanted_fields or isinstance(data_query, dict):
-                outcome = _validate_tabular_fields(
-                    record,
-                    version,
-                    path,
-                    component_id=component_id,
-                    wanted_fields=wanted_fields,
-                    data_query=data_query,
-                )
-                if outcome is not None:
-                    return outcome
+            # Always, not only when *Field names are given: a chart whose fields live in
+            # its spec still reads the table, and a file the table query cannot read
+            # would otherwise show only as an error in the view.
+            outcome = _validate_tabular_fields(
+                record,
+                version,
+                path,
+                component_id=component_id,
+                wanted_fields=wanted_fields,
+                data_query=data_query,
+            )
+            if outcome is not None:
+                return outcome
         elif name == _WORKFLOW_COMPONENT:
             outcome = _validate_workflow_shape(path, component_id=component_id)
             if outcome is not None:
