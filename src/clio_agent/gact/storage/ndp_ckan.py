@@ -83,9 +83,20 @@ class NDPCkanCatalog:
         return data["result"]
 
     def search(
-        self, url: str, query: str, organization: str, offset: int, limit: int
+        self,
+        url: str,
+        query: str,
+        organization: str,
+        offset: int,
+        limit: int,
+        *,
+        resource_format: str = "",
     ) -> tuple[list[dict[str, Any]], int]:
-        """Search literal word prefixes and page before retrieving dataset metadata."""
+        """Search literal word prefixes and page before retrieving dataset metadata.
+
+        ``resource_format`` keeps datasets with a resource of that format (CKAN
+        ``res_format``), quoted like the organization so it is a value, never syntax.
+        """
         # This is a human text box, not a Solr expression editor. Tokenization
         # keeps operators out and prefix matching supports unfamiliar names.
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)
@@ -95,8 +106,13 @@ class NDPCkanCatalog:
             "start": offset,
             "sort": "score desc, name asc",
         }
+        filters = []
         if organization:
-            parameters["fq"] = "organization:" + json.dumps(organization, ensure_ascii=False)
+            filters.append("organization:" + json.dumps(organization, ensure_ascii=False))
+        if resource_format:
+            filters.append("res_format:" + json.dumps(resource_format, ensure_ascii=False))
+        if filters:
+            parameters["fq"] = " AND ".join(filters)
         result = self._request(url, "package_search", parameters)
         if not isinstance(result, dict) or not isinstance(result.get("results"), list):
             raise ValueError("NDP catalog returned an invalid dataset page")

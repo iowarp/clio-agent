@@ -134,6 +134,7 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
             ("organization", "Publisher"),
             ("endpoint_id", "Catalog"),
             ("dataset_id", "Dataset"),
+            ("resource_format", "Resource format"),
             ("resource_offset", "Resources from"),
         )
         if args.get(key)
@@ -174,6 +175,7 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
                             f"{item.get('name') or item.get('path', '')}"
                             f" ({_resource_format(item)}, "
                             f"{item.get('size', 0)} bytes)\nResource ID: {item.get('id', '')}"
+                            + (f"\n{item['description']}" if item.get("description") else "")
                         )
                         for item in resources
                     ],

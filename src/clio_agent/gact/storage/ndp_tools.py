@@ -52,6 +52,7 @@ def connected_data_search_ndp(
     offset: int = 0,
     dataset_id: str = "",
     resource_offset: int = 0,
+    resource_format: str = "",
 ) -> dict[str, Any]:
     """Find NDP datasets and resources without downloading or connecting them.
 
@@ -66,21 +67,35 @@ def connected_data_search_ndp(
     next_resource_offset is set. To list more of one dataset, call again with its
     dataset_id (and endpoint_id) and resource_offset: 200 resources per page, no
     new catalog query. For raster tiles over a region, connected_data_ndp_tiles_covering
-    picks the covering ones directly. To attach selected resources, call
+    picks the covering ones directly. resource_format keeps datasets with at least one
+    resource of that format as the record states it (GeoTIFF, CSV, LAZ, Esri REST);
+    records often leave format blank, so a dataset without a match may still hold the
+    data: each resource also carries name_suffix and its own description. To attach selected resources, call
     connected_data_connect(provider="ndp", root=dataset.id, label=dataset.title,
     configuration={"endpoint_id": dataset.endpoint_id, "resource_ids": [ids]}).
     endpoint_id selects a catalog from connected_data_status.ndp_catalogs; omit
     it for central discovery. A saved ndpep_ connection is accepted only when
     it matches an already configured catalog destination and authentication.
     """
-    if offset < 0 or resource_offset < 0 or len(query) > 1000 or len(organization) > 512:
+    if (
+        offset < 0
+        or resource_offset < 0
+        or len(query) > 1000
+        or len(organization) > 512
+        or len(resource_format) > 64
+    ):
         raise ValueError("Use nonnegative offsets and a bounded catalog query")
     service = _service()
     if dataset_id:
         catalog = _catalog_id(service, endpoint_id) if endpoint_id else ""
         return service.ndp.resource_page(dataset_id, catalog, resource_offset)
     return service.ndp.search(
-        query, _catalog_id(service, endpoint_id), organization=organization, offset=offset, limit=50
+        query,
+        _catalog_id(service, endpoint_id),
+        organization=organization,
+        offset=offset,
+        limit=50,
+        resource_format=resource_format,
     )
 
 

@@ -26,6 +26,8 @@ MAX_DATASET_RESOURCES = 1000
 # Resources each search hit lists. A tiled dataset holds hundreds, and listing them all
 # put megabytes into every search; the rest are paged with ``resource_page``.
 SEARCH_RESOURCES = 20
+#: Characters of a resource's own description kept for search results.
+RESOURCE_TEXT = 300
 RESOURCE_PAGE = 200
 
 # Former built-in Endpoint API default. It never was a public service and no longer answers.
@@ -99,6 +101,8 @@ class NDPResource(StorageModel):
     format: str = ""
     size: int = 0
     revision: str = ""
+    #: The record's own words for the resource (cut at RESOURCE_TEXT characters).
+    description: str = ""
 
 
 class NDPDataset(StorageModel):
@@ -230,8 +234,14 @@ class NDPCatalog:
         organization: str = "",
         offset: int = 0,
         limit: int = 50,
+        resource_format: str = "",
     ) -> dict[str, Any]:
-        """Search configured catalogs and preserve exact selections without downloading bytes."""
+        """Search configured catalogs and preserve exact selections without downloading bytes.
+
+        ``resource_format`` keeps datasets with at least one resource of that format
+        (the record's ``format``, case-insensitive): a catalog filter on public
+        catalogs, a filter of the returned rows on an Endpoint's own search.
+        """
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("Use a nonnegative offset and a page size from 1 to 100")
         endpoints = [item for item in self.endpoints() if not endpoint_id or item.id == endpoint_id]
@@ -257,7 +267,12 @@ class NDPCatalog:
                 client.timeout = httpx.Timeout(15, connect=5)
                 if endpoint.catalog_url:
                     records, count = self._public_catalog.search(
-                        endpoint.catalog_url, query, organization, offset, limit
+                        endpoint.catalog_url,
+                        query,
+                        organization,
+                        offset,
+                        limit,
+                        resource_format=resource_format,
                     )
                     coverage = {
                         str(record.get("id")): record_coverage(record) for record in records
@@ -303,6 +318,16 @@ class NDPCatalog:
                     rows = run_in_new_loop(
                         client.search_datasets_simple(terms=[query], server=endpoint.server)
                     )
+                if not endpoint.catalog_url and resource_format:
+                    wanted = resource_format.casefold()
+                    rows = [
+                        row
+                        for row in rows
+                        if any(
+                            str((item or {}).get("format") or "").casefold() == wanted
+                            for item in row.resources
+                        )
+                    ]
                 if not endpoint.catalog_url:
                     count = min(len(rows), 500)
                     if len(rows) > 500:
@@ -355,6 +380,9 @@ class NDPCatalog:
                             url=url,
                             size=int(size) if str(size).isdigit() else 0,
                             format=str(resource.get("format") or ""),
+                            description=" ".join(str(resource.get("description") or "").split())[
+                                :RESOURCE_TEXT
+                            ],
                             revision=hashlib.sha256(
                                 json.dumps(resource, sort_keys=True).encode()
                             ).hexdigest(),

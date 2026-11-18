@@ -279,7 +279,7 @@ def test_search_warns_when_a_dataset_has_more_resources_than_can_be_selected(
         ],
     }
     monkeypatch.setattr(catalog, "access", lambda endpoint, token: (None, ""))
-    monkeypatch.setattr(catalog._public_catalog, "search", lambda *args: ([record], 1))
+    monkeypatch.setattr(catalog._public_catalog, "search", lambda *args, **kwargs: ([record], 1))
     result = catalog.search("sierra")
     assert result["warnings"] == [
         "3DEP 1-m DEM Dataset: CA_SierraNevada_B22: CLIO keeps the first 1000 of 1048 "
