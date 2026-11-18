@@ -150,6 +150,25 @@ def test_linux_fence_without_a_chokepoint_channel_stays_offline(
         assert overlay == {}
 
 
+@pytest.mark.parametrize(("given", "recorded"), [(None, "/scratch"), ("/ws", "/ws")])
+def test_egress_channel_belongs_to_the_childs_workspace(
+    given: str | None, recorded: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deny mode looks the workspace up from the channel, not from a leading scratch root."""
+    from clio_agent.runtime import net_chokepoint, sandbox_net  # noqa: PLC0415
+
+    opened: dict[str, str] = {}
+
+    def channel(child_id: str, *, mechanism: str = "", workspace_root: str = "") -> int:
+        opened["root"] = workspace_root
+        return 4321
+
+    monkeypatch.setattr(net_chokepoint, "open_child_channel", channel)
+    state = sandbox._resolve_backend(platform="linux", codex_detection=_codex_ok())
+    sandbox_net.open_child_egress(state, ["/scratch", "/ws"], workspace_root=given)
+    assert opened["root"] == recorded
+
+
 @pytest.mark.parametrize(
     ("cdet", "reason"),
     [

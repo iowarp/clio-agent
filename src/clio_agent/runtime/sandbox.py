@@ -504,6 +504,7 @@ def wrap_confined(
     state: Optional[SandboxResult] = None,
     cwd: Path | str | None = None,
     office: bool = False,
+    egress_root: Path | str | None = None,
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
@@ -518,6 +519,8 @@ def wrap_confined(
     ``office`` marks CLIO's own LibreOffice worker; on macOS it runs under
     :mod:`sandbox_office_seatbelt` instead of Codex (same territory, two mach services, and a
     private short directory for LibreOffice's single-instance pipe that :meth:`release` removes).
+    ``egress_root`` is the workspace the child's network egress belongs to (deny mode and
+    approvals are per workspace); without it the first write root is used.
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -564,7 +567,7 @@ def wrap_confined(
         from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
 
         net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
-            resolved_state, write_roots
+            resolved_state, write_roots, workspace_root=egress_root
         )
         env_overlay.update(net_env)
         # Redirect the confined child's profile-cache / temp writes into its granted write

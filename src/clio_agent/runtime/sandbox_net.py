@@ -151,7 +151,10 @@ def net_mechanism_label(state: "SandboxResult") -> str:
 
 
 def open_child_egress(
-    state: "SandboxResult", write_roots: Sequence[Path] | Sequence[str]
+    state: "SandboxResult",
+    write_roots: Sequence[Path] | Sequence[str],
+    *,
+    workspace_root: Path | str | None = None,
 ) -> tuple[str, Optional[int], dict[str, str]]:
     """Open a per-child chokepoint channel for a confined child (B4). Guarded, typed.
 
@@ -162,11 +165,15 @@ def open_child_egress(
     points ``HTTP(S)_PROXY``/``ALL_PROXY`` at the per-child channel (the child's route to the
     chokepoint on the floor/Landlock tier; srt overrides it inside the sandbox but the port
     identity is the per-child one). The channel carries the tier's honest net mechanism and
-    the child's primary write territory so the ``used web:domain@time`` join can scope by
-    workspace without a timing heuristic.
+    the child's workspace (``workspace_root``, else its first write root) so deny mode, approvals
+    and the ``used web:domain@time`` join scope by workspace without a timing heuristic. The
+    first write root is often a session scratch folder, which belongs to no workspace.
     """
     child_id = f"child_{uuid.uuid4().hex[:12]}"
-    workspace_root = str(write_roots[0]) if write_roots else ""
+    if workspace_root:
+        workspace_root = str(workspace_root)
+    else:
+        workspace_root = str(write_roots[0]) if write_roots else ""
     port: Optional[int] = None
     try:
         from clio_agent.runtime.net_chokepoint import open_child_channel  # noqa: PLC0415

@@ -56,6 +56,7 @@ def confine(argv: list[str], safe_cwd: Path, *, outside_sandbox: bool) -> "Confi
     seam carries no pdeathsig today, so it stays off here.
     """
     from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
 
     if outside_sandbox:
         return sandbox.ConfinedSpawn(
@@ -79,4 +80,5 @@ def confine(argv: list[str], safe_cwd: Path, *, outside_sandbox: bool) -> "Confi
         profile=sandbox.PROFILE_SHELL,
         pdeathsig=False,
         cwd=safe_cwd,
+        egress_root=get_active_tool_workspace_root() or safe_cwd,
     )
