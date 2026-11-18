@@ -146,7 +146,11 @@ def owner_key(owner: Mapping[str, Any] | None) -> tuple[str, str, str] | None:
 
     if not owner:
         return None
-    return (str(owner.get("kind") or ""), str(owner.get("plugin") or ""), str(owner.get("server") or ""))
+    return (
+        str(owner.get("kind") or ""),
+        str(owner.get("plugin") or ""),
+        str(owner.get("server") or ""),
+    )
 
 
 class _MemoizedCatalogResolver:

@@ -25,7 +25,11 @@ SYNC_INTERVAL_S = 60.0
 def sync_account_grants(app: Any) -> None:
     """Write, refresh or delete every declared account grant file once (blocking)."""
 
-    from clio_agent.plugins.account_grants import read_grant, remove_grant, write_grant  # noqa: PLC0415
+    from clio_agent.plugins.account_grants import (  # noqa: PLC0415
+        read_grant,
+        remove_grant,
+        write_grant,
+    )
     from clio_agent.plugins.host_semantics import declared_accounts  # noqa: PLC0415
 
     declared = declared_accounts()

@@ -32,6 +32,7 @@ real, live-provable invalidation path against the fastmcp fleet TODAY while
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -42,6 +43,7 @@ __all__ = [
     "combined_message_handler",
     "list_changed_message_handler",
     "watch_list_changed",
+    "watch_resource",
 ]
 
 
@@ -150,11 +152,80 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
 
             mark_prompts_changed(namespace)
         elif isinstance(message, ResourceUpdatedNotification):
+            # A server without ``subscriptions/listen`` (fastmcp today) pushes
+            # resource updates unsolicited; see :func:`watch_resource`.
             from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
 
             resource_updated(namespace, str(message.params.uri))
 
     return _handler
+
+
+async def watch_resource(
+    connect: Callable[[], Awaitable[_SessionHolder]],
+    namespace: str,
+    uri: str,
+    *,
+    retry_after: float = 1.0,
+    max_retry_after: float = 30.0,
+) -> None:
+    """Watch one resource over ``subscriptions/listen`` until cancelled.
+
+    Opens a listen stream with ``resource_subscriptions=[uri]`` on the client
+    ``connect`` returns, and reports every ``ResourceUpdated`` event for it to
+    :func:`clio_agent.tools.mcp_resource_updates.resource_updated` as ``uri`` (a
+    reader reads the whole resource, so a sub-resource update reports the watched
+    URI). A stream that is lost, times out or ends is opened again after a backoff
+    on a fresh ``connect()``, and once re-acknowledged one update is reported, so the
+    reader refetches whatever changed while it was gone.
+
+    A server that cannot listen (a connection before 2026-07-28, or a server that
+    answers ``-32601`` as fastmcp does today) ends the watch quietly: such a server
+    sends ``notifications/resources/updated`` unsolicited, which
+    :func:`list_changed_message_handler` reports instead. The 2025 per-resource
+    subscribe request (removed in 2026-07-28) is never sent.
+
+    Raises:
+        MCPError: The server rejected the listen request for another reason.
+    """
+
+    from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost, listen
+    from mcp.shared.exceptions import MCPError
+    from mcp.shared.subscriptions import ResourceUpdated
+    from mcp_types.jsonrpc import METHOD_NOT_FOUND
+
+    from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
+
+    delay = retry_after
+    resumed = False
+    while True:
+        client = await connect()
+        trace.event("TOOLS", "mcp_listen_resource_start namespace=%s uri=%s", namespace, uri)
+        try:
+            async with listen(client.session, resource_subscriptions=[uri]) as subscription:
+                delay = retry_after
+                if resumed:
+                    resource_updated(namespace, uri)
+                async for event in subscription:
+                    if isinstance(event, ResourceUpdated):
+                        resource_updated(namespace, uri)
+        except ListenNotSupportedError:
+            trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
+            return
+        except MCPError as exc:
+            if exc.code == METHOD_NOT_FOUND:
+                trace.event(
+                    "TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri
+                )
+                return
+            raise
+        except (SubscriptionLost, TimeoutError) as exc:
+            trace.event(
+                "TOOLS", "mcp_listen_resource_lost namespace=%s uri=%s reason=%s", namespace, uri, exc
+            )
+        resumed = True
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, max_retry_after)
 
 
 def _record_list_changed(namespace: str) -> None:

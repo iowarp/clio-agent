@@ -27,14 +27,46 @@ _BY_PLUGIN: dict[str, dict[str, dict[str, Any]]] = {}
 PLUGIN_SOURCE_PREFIX = "plugin:"
 
 
+def catalog_ids(record: PluginRecord) -> list[str]:
+    """The ``catalogId`` of every A2UI catalog ``record`` declares, in declared order.
+
+    A built-in catalog is named in the manifest by name (``"basic"``) or id; a
+    catalog the plugin ships is read from its ``catalog.json``. An unknown or unreadable
+    one is left out (the plugin's catalog diagnostics already report it).
+    """
+
+    import json  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs  # noqa: PLC0415
+
+    builtins: dict[str, str] = {}
+    for entry in load_builtin_catalogs():
+        builtins[entry.name] = builtins[entry.catalog_id] = entry.catalog_id
+    out: list[str] = []
+    for catalog in record.catalogs:
+        catalog_id = ""
+        if catalog.path:
+            try:
+                data = json.loads((Path(catalog.path) / "catalog.json").read_text("utf-8"))
+                catalog_id = str(data.get("catalogId") or "") if isinstance(data, dict) else ""
+            except (OSError, ValueError):
+                catalog_id = ""
+        else:
+            catalog_id = builtins.get(catalog.id, "")
+        if catalog_id and catalog_id not in out:
+            out.append(catalog_id)
+    return out
+
+
 def server_host(record: PluginRecord, server: str) -> dict[str, Any]:
     """The host semantics ``record`` declares for its server ``server`` ({} for none)."""
 
     host = record.host or {}
     out: dict[str, Any] = {}
-    catalogs = [catalog.id for catalog in record.catalogs if catalog.id]
+    catalogs = catalog_ids(record)
     if catalogs:
-        out["catalogs"] = list(dict.fromkeys(catalogs))
+        out["catalogs"] = catalogs
     tabs = [dict(tab) for tab in host.get("tabs") or [] if tab.get("server") == server]
     if tabs:
         out["tabs"] = tabs
@@ -114,6 +146,7 @@ def declared_account_scopes(provider: str) -> list[str]:
 __all__ = [
     "PLUGIN_SOURCE_PREFIX",
     "account_variable",
+    "catalog_ids",
     "declared_account_scopes",
     "declared_accounts",
     "plugin_host",

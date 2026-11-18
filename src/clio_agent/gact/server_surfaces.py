@@ -306,7 +306,9 @@ def _make_result_observer(app: Any) -> Callable[[str, Any, str], list[str] | Non
     return observe
 
 
-def apply_task_result(app: Any, session_id: str, namespace: str, tool: str, handle: str, result: Any) -> None:
+def apply_task_result(
+    app: Any, session_id: str, namespace: str, tool: str, handle: str, result: Any
+) -> None:
     """Apply A2UI from a task's terminal result (HS1), once per task."""
 
     try:

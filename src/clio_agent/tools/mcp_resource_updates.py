@@ -1,9 +1,10 @@
 """``notifications/resources/updated`` fan-out to host listeners.
 
-A server that declares ``resources.subscribe`` sends ``notifications/resources/updated``
-for a URI a client subscribed to. The execution-path client's message handler
-(:func:`clio_agent.tools.mcp_listen.list_changed_message_handler`) reports each one
-here with the namespace it arrived on; host features register a listener to react.
+A server sends ``notifications/resources/updated`` for a URI a client watches, over a
+``subscriptions/listen`` stream (:func:`clio_agent.tools.mcp_listen.watch_resource`) or
+unsolicited on its connection (reported by the execution-path client's message handler,
+:func:`clio_agent.tools.mcp_listen.list_changed_message_handler`). Either path reports
+each one here with the namespace it arrived on; host features register a listener to react.
 Listeners run on the client's event loop, so they must only hand work off (for example
 with ``loop.call_soon_threadsafe``), never block or call back into the executor.
 """

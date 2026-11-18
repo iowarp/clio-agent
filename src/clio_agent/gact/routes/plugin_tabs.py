@@ -47,7 +47,9 @@ def register_plugin_tab_routes(app: FastAPI) -> None:
         return await plugin_tabs(app).close(sid, plugin, tab)
 
     @app.post("/v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions")
-    async def plugin_tab_action(sid: str, plugin: str, tab: str, request: Request) -> dict[str, Any]:
+    async def plugin_tab_action(
+        sid: str, plugin: str, tab: str, request: Request
+    ) -> dict[str, Any]:
         if getattr(request.state, "a2ui_protocol_version", None) != A2UI_V091:
             raise _error(406, "unsupported_protocol", f"A2UI {A2UI_V091} must be negotiated")
         require_session(sid)

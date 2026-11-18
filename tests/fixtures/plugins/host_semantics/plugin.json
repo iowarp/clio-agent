@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "host-fixture",
+  "version": "0.1.0",
+  "description": "Test-only plugin that exercises every host semantic (HS1 to HS5) through its own MCP server.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "extensions": {
+    "ai.iowarp.clio": {
+      "catalogs": ["basic"],
+      "tabs": [
+        {"id": "panel", "title": "Fixture panel", "icon": "layout",
+         "resource": "a2ui://host-fixture/panel"}
+      ],
+      "accounts": [
+        {"provider": "globus",
+         "scopes": ["https://auth.globus.org/scopes/00000000-0000-0000-0000-000000000000/all"]}
+      ],
+      "elicitation": {"loopback": true, "origins": ["https://example.org"]}
+    }
+  }
+}

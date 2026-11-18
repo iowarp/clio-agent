@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "hostfx": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${PLUGIN_ROOT}/server.py", "--grant", "${CLIO_ACCOUNT_GLOBUS_FILE}"],
+      "env": {"HOSTFX_DATA": "${PLUGIN_DATA}"}
+    }
+  }
+}

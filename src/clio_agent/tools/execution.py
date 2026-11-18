@@ -745,11 +745,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         finally:
             task_calls.TASK_CALL.reset(task_call_token)
         model_text = outcome.model_text
-        if (
-            hooks.a2ui_result_observer is not None
-            and not return_raw
-            and outcome.source_namespace
-        ):
+        if hooks.a2ui_result_observer is not None and not return_raw and outcome.source_namespace:
             try:
                 notes = hooks.a2ui_result_observer(
                     name, outcome.raw_result, outcome.source_namespace
@@ -842,7 +838,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         )
 
     def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
-        """Subscribe to or unsubscribe from one resource on exactly ``namespace``."""
+        """Start or stop watching one resource on exactly ``namespace`` for updates."""
 
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")

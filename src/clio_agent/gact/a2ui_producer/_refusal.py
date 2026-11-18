@@ -84,8 +84,7 @@ _DEFAULT_HINTS: dict[str, str] = {
         "your own surface with a new surface_id instead"
     ),
     "a2ui_surface_owner_conflict": (
-        "an MCP server already owns a live surface with this id; pick a "
-        "different surface_id"
+        "an MCP server already owns a live surface with this id; pick a different surface_id"
     ),
     "a2ui_catalog_unknown": (
         "call create_a2ui_surface with an empty catalog_id to auto-select "

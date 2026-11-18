@@ -3,9 +3,9 @@
 A plugin declares ``tabs`` in its ``ai.iowarp.clio`` extension, each naming one of its
 servers and an ``a2ui://`` resource. A session lists the tabs of the plugin servers its
 agent mounts. Opening a tab reads the resource; its A2UI contents are the tab's whole
-state. When the server declares ``resources.subscribe`` CLIO subscribes, and each
-``notifications/resources/updated`` for the URI re-reads it. Actions on a tab's surfaces
-go to its server (HS2) and their results apply to the tab.
+state. CLIO then watches the URI (a ``subscriptions/listen`` stream, or the server's
+unsolicited pushes), and each ``notifications/resources/updated`` for it re-reads it.
+Actions on a tab's surfaces go to its server (HS2) and their results apply to the tab.
 
 Tab state is in memory, per session, outside the transcript, and never seen by the
 model. Nothing here names a particular plugin or server.
@@ -275,9 +275,7 @@ class PluginTabs:
                 refusal = refusal_of(exc)
                 outcome.reason, outcome.detail = refusal.reason, refusal.detail
             if outcome.reason:
-                publish_refusal(
-                    self._app, state.session_id, state.scope, tool="", outcome=outcome
-                )
+                publish_refusal(self._app, state.session_id, state.scope, tool="", outcome=outcome)
                 return {}, outcome.reason, outcome.detail
             first = False
         return surfaces, "", ""
@@ -334,7 +332,11 @@ class PluginTabs:
         if scope is None:
             detail = f"server {declared['server']!r} is not mounted in this session"
             self._unavailable(key, SERVER_UNAVAILABLE, detail)
-            return {"tab": _tab_wire(declared, reason=SERVER_UNAVAILABLE), "surfaces": [], "revision": 0}
+            return {
+                "tab": _tab_wire(declared, reason=SERVER_UNAVAILABLE),
+                "surfaces": [],
+                "revision": 0,
+            }
         with self._lock:
             state = self._open.get(key)
             if state is None:
@@ -346,15 +348,19 @@ class PluginTabs:
             self._unavailable(key, exc.reason, str(exc))
             with self._lock:
                 state.surfaces, state.reason, state.detail = {}, exc.reason, str(exc)
-            return {"tab": _tab_wire(declared, reason=exc.reason), "surfaces": [], "revision": state.revision}
+            return {
+                "tab": _tab_wire(declared, reason=exc.reason),
+                "surfaces": [],
+                "revision": state.revision,
+            }
         with self._lock:
             self._failures.pop(key, None)
             state.surfaces, state.reason, state.detail = surfaces, reason, detail
             state.revision += 1
             need_subscribe = not state.subscribed
         if need_subscribe:
-            # Per tab, on the session's own bound executor: ``resources/subscribe`` is
-            # idempotent, so a client shared by several sessions is subscribed once.
+            # Per tab, on the session's own bound executor: an executor holds one watch
+            # per URI, so a client shared by several sessions watches it once.
             state.subscribed = await self._subscribe(state, subscribed=True)
         return {
             "tab": _tab_wire(declared, reason=reason),
@@ -369,8 +375,10 @@ class PluginTabs:
             self._failures.pop(key, None)
             for handle in [h for h, k in self._handles.items() if k == key]:
                 self._handles.pop(handle, None)
-            last = state is not None and state.subscribed and not any(
-                other.watch_key == state.watch_key for other in self._open.values()
+            last = (
+                state is not None
+                and state.subscribed
+                and not any(other.watch_key == state.watch_key for other in self._open.values())
             )
         if last and state is not None:
             await self._subscribe(state, subscribed=False)
@@ -499,7 +507,9 @@ class PluginTabs:
                         {k: v for k, v in after.items() if k in touched},
                         refreshed=False,
                     )
-                outcome.surface_ids = list(dict.fromkeys(surface_id for _, surface_id, _ in applied))
+                outcome.surface_ids = list(
+                    dict.fromkeys(surface_id for _, surface_id, _ in applied)
+                )
             except ServerSurfaceRefusal as exc:
                 outcome.reason, outcome.detail = exc.reason, exc.detail
             except A2UIValidationError as exc:
@@ -525,12 +535,16 @@ class PluginTabs:
 
         key: TabKey = (session_id, plugin, tab)
         if set(body) - {"message", "correlation", "metadata"}:
-            raise PluginTabError(422, "validation_error", "A2UI action body contains unknown fields")
+            raise PluginTabError(
+                422, "validation_error", "A2UI action body contains unknown fields"
+            )
         message = body.get("message")
         if not isinstance(message, Mapping):
             raise PluginTabError(422, "validation_error", "A2UI action message is required")
         raw_action = message.get("action")
-        surface_id = str(raw_action.get("surfaceId") or "") if isinstance(raw_action, Mapping) else ""
+        surface_id = (
+            str(raw_action.get("surfaceId") or "") if isinstance(raw_action, Mapping) else ""
+        )
         with self._lock:
             state = self._open.get(key)
             surface = state.surfaces.get((session_id, surface_id)) if state is not None else None
@@ -565,11 +579,12 @@ class PluginTabs:
         try:
             if provider:
                 result = {
-                    "status": "delivered",
-                    "destination": "client",
-                    "delivery": "client_ui",
-                    "action_id": action_id,
                     "name": name,
+                    "status": "accepted",
+                    "action_id": action_id,
+                    "state": "consumed",
+                    "delivery": "client_ui",
+                    "destination": "client",
                     "provider": provider,
                     "context": login_context(self._app, session_id),
                 }
