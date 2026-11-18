@@ -1,6 +1,6 @@
 """Per-server host semantics a plugin declares (HS1 to HS5).
 
-A plugin's ``ai.iowarp.clio`` extension declares ``catalogs``, ``tabs``,
+A plugin's ``ai.iowarp.clio`` extension declares ``catalogs``, ``tabs``, ``navigation``,
 ``accounts`` and ``elicitation`` (see ``docs/design/host-semantics-contract.md``).
 CLIO applies them per MCP server: :func:`server_host` is the slice one server of
 the plugin gets, carried on the resolution's ``mcp_servers`` row as ``host``.
@@ -72,6 +72,9 @@ def server_host(record: PluginRecord, server: str) -> dict[str, Any]:
     tabs = [dict(tab) for tab in host.get("tabs") or [] if tab.get("server") == server]
     if tabs:
         out["tabs"] = tabs
+    navigation = host.get("navigation")
+    if navigation and navigation.get("server") == server:
+        out["navigation"] = dict(navigation)
     if host.get("accounts"):
         out["accounts"] = [dict(row) for row in host["accounts"]]
     if host.get("elicitation"):

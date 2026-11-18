@@ -51,10 +51,13 @@ _EXTENSION_FIELDS = (
     "accounts",
     "elicitation",
     "title",
+    "navigation",
 )
 #: Providers a plugin may ask account grants from (HS4); CLIO's own sign-in covers each.
 ACCOUNT_PROVIDERS = ("github", "google_drive", "globus", "ndp")
 _TAB_FIELDS = {"id", "title", "icon", "server", "resource"}
+#: The id of a plugin's ``navigation`` page when it names none.
+NAVIGATION_ID = "page"
 _TAB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _HTTPS_ORIGIN = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 #: What one ``servers.<name>`` entry may set.
@@ -196,9 +199,11 @@ def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
 
 
 def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
-    """Shape of ``title``, ``tabs``, ``accounts`` and ``elicitation`` (HS3 to HS5).
+    """Shape of ``title``, ``tabs``, ``navigation``, ``accounts`` and ``elicitation``.
 
-    A tab's ``server`` is checked against ``mcp.json`` by :func:`host_semantics`.
+    ``navigation`` is one page in the host's primary navigation: a tab's fields, with
+    ``id`` defaulting to :data:`NAVIGATION_ID`, unique among the tabs. A tab's ``server``
+    is checked against ``mcp.json`` by :func:`host_semantics`.
     """
 
     title = ext.get("title")
@@ -207,9 +212,19 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
     tabs = ext.get("tabs", [])
     if not isinstance(tabs, list):
         raise ManifestError(f"{plugin}: {NAMESPACE}.tabs must be a list of objects")
+    navigation = ext.get("navigation")
+    if navigation is not None:
+        if not isinstance(navigation, dict):
+            raise ManifestError(f"{plugin}: {NAMESPACE}.navigation must be an object")
+        # A page is a tab the host shows in its primary navigation: same fields, same ids.
+        tabs = [*tabs, {"id": NAVIGATION_ID, **navigation}]
     seen: set[str] = set()
     for index, tab in enumerate(tabs):
-        where = f"{plugin}: {NAMESPACE}.tabs[{index}]"
+        where = (
+            f"{plugin}: {NAMESPACE}.navigation"
+            if navigation is not None and index == len(tabs) - 1
+            else f"{plugin}: {NAMESPACE}.tabs[{index}]"
+        )
         if not isinstance(tab, dict) or set(tab) - _TAB_FIELDS:
             raise ManifestError(f"{where} may set only {', '.join(sorted(_TAB_FIELDS))}")
         tab_id = tab.get("id")
@@ -260,17 +275,19 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
 def host_semantics(
     ext: Mapping[str, Any], plugin: str, servers: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """The plugin's normalized ``title``, ``tabs``, ``accounts`` and ``elicitation``.
+    """The plugin's normalized ``title``, ``tabs``, ``navigation``, ``accounts`` and
+    ``elicitation``.
 
-    ({} for none.) Each tab names its server: the declared one, or the plugin's only
-    server. ``title`` is the plugin's readable name, for the host's UI.
+    ({} for none.) Each tab, and the navigation page, names its server: the declared
+    one, or the plugin's only server. ``title`` is the plugin's readable name, for the
+    host's UI.
     """
 
     out: dict[str, Any] = {}
     if ext.get("title"):
         out["title"] = str(ext["title"]).strip()
-    tabs = []
-    for tab in ext.get("tabs") or []:
+
+    def normalized(tab: Mapping[str, Any]) -> dict[str, Any]:
         server = tab.get("server")
         if server is None:
             if len(servers) != 1:
@@ -281,17 +298,19 @@ def host_semantics(
             server = next(iter(servers))
         elif server not in servers:
             raise ManifestError(f"{plugin}: tab {tab['id']!r} names unknown server {server!r}")
-        tabs.append(
-            {
-                "id": tab["id"],
-                "title": tab["title"].strip(),
-                "icon": str(tab.get("icon") or ""),
-                "server": server,
-                "resource": tab["resource"],
-            }
-        )
+        return {
+            "id": tab["id"],
+            "title": tab["title"].strip(),
+            "icon": str(tab.get("icon") or ""),
+            "server": server,
+            "resource": tab["resource"],
+        }
+
+    tabs = [normalized(tab) for tab in ext.get("tabs") or []]
     if tabs:
         out["tabs"] = tabs
+    if ext.get("navigation"):
+        out["navigation"] = normalized({"id": NAVIGATION_ID, **ext["navigation"]})
     accounts = [
         {"provider": row["provider"], "scopes": list(row.get("scopes") or [])}
         for row in ext.get("accounts") or []

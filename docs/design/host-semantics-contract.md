@@ -81,6 +81,7 @@ today.
 | `tabs[].icon` | A Lucide icon name. An unknown name renders a generic icon | Not text |
 | `tabs[].server` | A server name in this plugin's `mcp.json`. May be omitted when the plugin has exactly one server | Unknown, or omitted with several servers |
 | `tabs[].resource` | An `a2ui://` URI | Other scheme |
+| `navigation` | Optional, one page in the host's primary navigation (see HS3 plugin pages): a tab's fields, `id` optional (default `page`) and different from every tab id | Not an object, or a field fails a tab's rule |
 | `accounts[].provider` | One of `github`, `google_drive`, `globus`, `ndp` | Unknown provider, duplicate |
 | `accounts[].scopes` | List of scope strings, may be empty | Not a list of text |
 | `elicitation.loopback` | Boolean, default `false` | Not a boolean |
@@ -272,7 +273,7 @@ own read and watch, whichever session first opened it.
 GET  /v1/sessions/{sid}/plugin-tabs
      -> {"tabs": [{"id": "<plugin>/<tab>", "plugin": "...", "plugin_title"?: "...",
                    "title": "...", "icon": "...", "server": "...", "resource": "a2ui://...",
-                   "available": true, "reason": ""}]}
+                   "placement": "tab", "available": true, "reason": ""}]}
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/open
      -> {"tab": {...}, "surfaces": [<surface wire>, ...], "revision": 3}
 POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/close
@@ -347,6 +348,69 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
 - `available: false` with a typed `reason` (`plugin_tab_server_unavailable`,
   `plugin_tab_resource_failed`) when the server is not mounted or the read failed. A read
   that returns refused A2UI opens the tab empty with the HS1 reason.
+
+## HS3: plugin pages (primary navigation)
+
+A plugin may also declare one page in the host's primary navigation (the left bar,
+below New session and Search). A page has a tab's fields and behaves as a tab, but it is
+global: it belongs to no conversation and the same page is shown from every session.
+
+```json
+"navigation": {"id": "compute", "title": "Compute", "icon": "server",
+               "resource": "a2ui://example/page"}
+```
+
+- `id` is optional (default `page`), matches the tab id pattern and differs from every
+  tab id of the plugin. `title` is 1 to 40 characters. `server` defaults to the plugin's
+  only server, as for a tab. One page per plugin.
+- Context: the host keeps one hidden session per page, its context. It is created on the
+  first `open` and reused after that (and across restarts). Its agent is the default
+  agent with the plugin added, its `session_kind` is `page`, and it has no messages. It
+  is left out of `kinds=conversation,branch` lists; a client that lists sessions another
+  way leaves out `session_kind: "page"`. No turn runs in it. Its model is the session
+  default model; a context created before any model was chosen takes the default on its
+  next `open` or action. With no model at all the host cannot read the page, and `open`
+  returns it with `available: false`.
+- Everything a tab has, a page has, through its context: the resource watch, rising
+  revisions, HS2 actions, the first-click assignment anchor, the `external_mcp`
+  permission prompt, refused-surface and URL questions, and the remount on a plugin
+  update.
+
+```text
+GET  /v1/plugin-pages
+     -> {"pages": [{"id": "<plugin>/<page>", "plugin": "...", "page": "...",
+                    "plugin_title"?: "...", "title": "...", "icon": "...",
+                    "server": "...", "resource": "a2ui://...", "placement": "primary",
+                    "available": true, "reason": "",
+                    "context_session_id": "sess_..." | null}]}
+POST /v1/plugin-pages/{plugin}/{page}/open      body {}
+     -> {"page": {...}, "context_session_id": "sess_...",
+         "surfaces": [<surface wire>, ...], "revision": 1}
+POST /v1/plugin-pages/{plugin}/{page}/close
+     -> {"closed": true}
+POST /v1/plugin-pages/{plugin}/{page}/actions
+     header x-a2ui-version: 0.9.1 (else 406)
+     body and response as a tab's actions
+```
+
+- The list covers every installed plugin that declares a page. An untrusted plugin's
+  page is `available: false, reason: "plugin_not_trusted"`, and opening it is 409 with
+  that reason. A page whose last read failed carries the tab reasons
+  (`plugin_tab_server_unavailable`, `plugin_tab_resource_failed`).
+- An unknown page is `plugin_page_not_found` (404). `actions` before the first `open` is
+  `plugin_page_not_open` (404); after a server restart it is `plugin_tab_not_open` and
+  the client calls `open` again.
+- Events arrive on the context's stream, `GET /v1/sessions/{context_session_id}/events`:
+  `plugin_page.surface.upserted {page_id, revision, surface}`,
+  `plugin_page.surface.deleted {page_id, revision, surface_id}`,
+  `plugin_page.refreshed {page_id, revision, surface_ids}` and
+  `plugin_page.unavailable {page_id, reason, detail}`, with a tab event's rules.
+  Permission prompts and questions arrive there with their usual types and are answered
+  through the context's routes. `session.updated` with `reason: "plugin_updated"` tells
+  the client to re-read `GET /v1/plugin-pages`.
+- A page's resource is never listed as a tab: `GET .../plugin-tabs` shows only
+  `placement: "tab"` rows, and opening the page as a tab of an ordinary session is
+  `plugin_tab_not_found`.
 
 ## HS4: account grants
 
@@ -443,8 +507,9 @@ On `GET /v1/sessions/{sid}/events` (SSE):
 | `plugin_tab.surface.deleted` | `{"tab_id", "revision", "surface_id"}` |
 | `plugin_tab.refreshed` | `{"tab_id", "revision", "surface_ids"}` after a re-read replaced the tab |
 | `plugin_tab.unavailable` | `{"tab_id", "reason", "detail"}` |
+| `plugin_page.surface.upserted`, `.surface.deleted`, `.refreshed`, `.unavailable` | As the `plugin_tab.*` events, with `page_id` for `tab_id`; only on a page's context stream |
 
-Tab revisions, per open tab:
+Tab revisions, per open tab (a page's are the same, on its `plugin_page.*` events):
 
 - `open` returns the tab's whole state and its `revision`; the client replaces what it
   held with it.

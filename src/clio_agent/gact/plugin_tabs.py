@@ -2,7 +2,9 @@
 
 A plugin declares ``tabs`` in its ``ai.iowarp.clio`` extension, each naming one of its
 servers and an ``a2ui://`` resource. A session lists the tabs of the plugin servers its
-agent mounts. Opening a tab reads the resource; its A2UI contents are the tab's whole
+agent mounts. Its ``navigation`` page is a tab too, opened only in the page's
+host-owned context (:mod:`~clio_agent.gact.plugin_pages`). Opening a tab reads the
+resource; its A2UI contents are the tab's whole
 state. CLIO then watches the URI (a ``subscriptions/listen`` stream, or the server's
 unsolicited pushes), and each ``notifications/resources/updated`` for it re-reads it.
 Actions on a tab's surfaces go to its server (HS2) and their results apply to the tab.
@@ -128,7 +130,11 @@ def declared_tabs(app: Any, session_id: str) -> list[dict[str, Any]]:
             continue
         plugin = str(row["plugin"])
         host = row.get("host") or {}
-        for tab in host.get("tabs") or ():
+        # A plugin's navigation page is a tab the host shows in its primary navigation.
+        entries = [(tab, "tab") for tab in host.get("tabs") or ()]
+        if host.get("navigation"):
+            entries.append((host["navigation"], "primary"))
+        for tab, placement in entries:
             declared = {
                 "id": f"{plugin}/{tab['id']}",
                 "plugin": plugin,
@@ -137,6 +143,7 @@ def declared_tabs(app: Any, session_id: str) -> list[dict[str, Any]]:
                 "icon": str(tab.get("icon") or ""),
                 "server": str(namespace),
                 "resource": str(tab["resource"]),
+                "placement": placement,
             }
             if host.get("title"):
                 declared["plugin_title"] = str(host["title"])
@@ -145,7 +152,9 @@ def declared_tabs(app: Any, session_id: str) -> list[dict[str, Any]]:
 
 
 def _tab_wire(declared: Mapping[str, Any], *, reason: str = "") -> dict[str, Any]:
-    row = {key: declared[key] for key in ("id", "plugin", "title", "icon", "server", "resource")}
+    keys = ("id", "plugin", "title", "icon", "server", "resource")
+    row = {key: declared[key] for key in keys}
+    row["placement"] = declared.get("placement", "tab")
     if declared.get("plugin_title"):
         row["plugin_title"] = declared["plugin_title"]
     row["available"] = reason not in (SERVER_UNAVAILABLE, RESOURCE_FAILED)
@@ -186,19 +195,35 @@ class PluginTabs:
                 reason=failures.get((session_id, tab["plugin"], tab["tab"]), ("", ""))[0],
             )
             for tab in declared_tabs(self._app, session_id)
+            if tab.get("placement", "tab") == "tab"
         ]
 
+    def failure(self, session_id: str, plugin: str, tab: str) -> str:
+        """Why the open tab's last read failed ("" when it did not)."""
+
+        with self._lock:
+            return self._failures.get((session_id, plugin, tab), ("", ""))[0]
+
     def _declared(self, session_id: str, plugin: str, tab: str) -> dict[str, Any]:
+        from clio_agent.gact.plugin_pages import page_context  # noqa: PLC0415
+
         for row in declared_tabs(self._app, session_id):
-            if row["plugin"] == plugin and row["tab"] == tab:
+            if row["plugin"] != plugin or row["tab"] != tab:
+                continue
+            # A navigation page opens only in its own host-owned context.
+            primary = row.get("placement", "tab") != "tab"
+            if not primary or page_context(self._app, session_id) == (plugin, tab):
                 return row
         raise PluginTabError(404, "plugin_tab_not_found", f"no tab {plugin}/{tab} in this session")
 
     # -- events ------------------------------------------------------------------
 
     def _publish(self, session_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        from clio_agent.gact.plugin_pages import page_event  # noqa: PLC0415
+
         bus = getattr(self._app.state, "bus", None)
         if bus is not None:
+            event_type, payload = page_event(self._app, session_id, event_type, payload)
             bus.publish(Event(type=event_type, session_id=session_id, payload=payload))
 
     def _publish_changes(

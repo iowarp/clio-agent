@@ -14,13 +14,15 @@ from typing import Any
 
 
 def install(app: Any) -> None:
-    """Install the server-surface observer and register the plugin tab routes."""
+    """Install the server-surface observer and register the plugin tab and page routes."""
 
+    from clio_agent.gact.routes.plugin_pages import register_plugin_page_routes  # noqa: PLC0415
     from clio_agent.gact.routes.plugin_tabs import register_plugin_tab_routes  # noqa: PLC0415
     from clio_agent.gact.server_surfaces import install_server_surfaces  # noqa: PLC0415
 
     install_server_surfaces(app)
     register_plugin_tab_routes(app)
+    register_plugin_page_routes(app)
 
 
 def start(app: Any) -> asyncio.Task[None]:

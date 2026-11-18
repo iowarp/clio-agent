@@ -108,6 +108,30 @@ def test_a_plugin_title_reaches_each_server_slice(tmp_path: Path) -> None:
     assert "title" not in load_plugin(_plain(tmp_path), trusted=True).host
 
 
+def test_a_navigation_page_is_normalized_like_a_tab(tmp_path: Path) -> None:
+    root = plugin(
+        tmp_path,
+        "paged",
+        ext={
+            "tabs": [{"id": "one", "title": "One", "server": "a", "resource": "a2ui://x/one"}],
+            "navigation": {"title": " Home ", "server": "b", "resource": "a2ui://x/home"},
+        },
+        servers={"a": _stdio(), "b": _stdio()},
+    )
+    record = load_plugin(root, trusted=True)
+
+    assert record.host["navigation"] == {
+        "id": "page",
+        "title": "Home",
+        "icon": "",
+        "server": "b",
+        "resource": "a2ui://x/home",
+    }
+    assert "navigation" not in host_semantics.server_host(record, "a")
+    assert host_semantics.server_host(record, "b")["navigation"]["id"] == "page"
+    assert "navigation" not in load_plugin(_plain(tmp_path), trusted=True).host
+
+
 @pytest.mark.parametrize(
     ("ext", "servers", "fragment"),
     [
@@ -142,6 +166,30 @@ def test_a_plugin_title_reaches_each_server_slice(tmp_path: Path) -> None:
         ({"elicitation": {"other": True}}, {"s": _stdio()}, "only loopback and origins"),
         ({"title": " "}, {"s": _stdio()}, ".title must be"),
         ({"title": 3}, {"s": _stdio()}, ".title must be"),
+        ({"navigation": []}, {"s": _stdio()}, "navigation must be an object"),
+        (
+            {"navigation": {"title": "P", "resource": "https://x/p"}},
+            {"s": _stdio()},
+            r"navigation\.resource must be",
+        ),
+        (
+            {
+                "tabs": [{"id": "page", "title": "T", "resource": "a2ui://x/t"}],
+                "navigation": {"title": "P", "resource": "a2ui://x/p"},
+            },
+            {"s": _stdio()},
+            r"navigation\.id must be",
+        ),
+        (
+            {"navigation": {"title": "P", "resource": "a2ui://x/p", "order": 1}},
+            {"s": _stdio()},
+            "navigation may set only",
+        ),
+        (
+            {"navigation": {"title": "P", "resource": "a2ui://x/p"}},
+            {"a": _stdio(), "b": _stdio()},
+            "must name its server",
+        ),
     ],
 )
 def test_bad_host_declarations_fail_to_load(

@@ -286,7 +286,10 @@ from clio_agent.gact.app import build_app
 # 490 -> 494: plugin tabs (routes/plugin_tabs.py, docs/design/host-semantics-contract.md):
 # GET /v1/sessions/{sid}/plugin-tabs and POST .../plugin-tabs/{plugin}/{tab}/open, .../close
 # and .../actions.
-EXPECTED_ROUTE_METHOD_PAIRS = 494
+# 494 -> 498: plugin pages, a plugin's entry in the primary navigation
+# (routes/plugin_pages.py): GET /v1/plugin-pages and POST
+# /v1/plugin-pages/{plugin}/{page}/open, .../close and .../actions.
+EXPECTED_ROUTE_METHOD_PAIRS = 498
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

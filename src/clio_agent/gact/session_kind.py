@@ -1,11 +1,11 @@
-"""Distinguish conversation branches from sessions owned by an agent or lookup."""
+"""Distinguish conversation branches from sessions owned by an agent, lookup or page."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Literal
 
-SessionKind = Literal["conversation", "branch", "agent", "lookup"]
+SessionKind = Literal["conversation", "branch", "agent", "lookup", "page"]
 
 
 def session_kind(session: Any) -> SessionKind:
@@ -16,6 +16,9 @@ def session_kind(session: Any) -> SessionKind:
     agent = agent if isinstance(agent, Mapping) else {}
     if metadata.get("side_session"):
         return "lookup"
+    if metadata.get("plugin_page"):
+        # The host-owned context of a plugin's navigation page (gact.plugin_pages).
+        return "page"
     if metadata.get("session_type") == "agent_task" or agent.get("mode") == "subagent":
         return "agent"
     if metadata.get("session_kind") == "branch":
