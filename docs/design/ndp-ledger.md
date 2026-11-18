@@ -729,3 +729,28 @@ tokens and keys (none found):
 
 - R6f: `ndp-runs/exports/r6f-sess_6d4c207e4fc2.json.gz` (3.5 MB),
   `ndp-runs/exports/r6f-sess_6d4c207e4fc2.transcript.html.gz` (7.7 MB).
+
+### Why R6f skipped the basin's lidar
+
+NDP's "Lake Tahoe Basin Lidar" record (OpenTopography, 174 resources; its box is
+the basin) leaves every resource's `format` blank, though each file is an ERDAS
+IMG elevation tile (`… DTMhe_38119F81.img`) that `read_raster_window` reads. CLIO's
+search reported only `formats: {unspecified: 174}`. The agent's reasoning was "their
+format is unclear and that route looks hard", and it never tried a read. It took
+elevation from the USGS 3DEP 1/3″ service instead and reported the NDP tiles as
+having "no usable format". That statement was false.
+USGS 3DEP's `CA-NV_LakeTahoe_2010` record carries only an extent GeoJSON, with no
+link to the point cloud.
+
+Fixes:
+
+- clio-agent `99d6fd9`: a resource with no stated format carries its file suffix
+  (`name_suffix`). The tally reads `unspecified (.img from the file name)`, and the
+  search card shows it. The record's own field is unchanged.
+- marketplace `80af98e`: `find-ndp-data-for-place` says a blank format is missing
+  metadata. Identify the file from its suffix and one `describe_geo_service` read,
+  and set a candidate aside for format only after a read fails.
+
+Open: R6f's terrain came from a non-NDP service where NDP held the data. A rerun
+should use the basin lidar (tile selection by region, then a windowed read or the
+dataset's VRT).
