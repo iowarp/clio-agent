@@ -13,6 +13,8 @@ confinement never false-positives on a legitimate ``uv``/``npm`` cache write.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -176,7 +178,26 @@ def _platform_tool_cache_dirs() -> list[Path]:
         Path(platformdirs.user_cache_dir("clio-kit", appauthor=False)),
     ):
         _create_granted_root(owned)
+    tools = _windows_uv_tool_dir()
+    if tools is not None:
+        dirs.append(tools)
     return dirs
+
+
+def _windows_uv_tool_dir() -> Path | None:
+    """uv's tool folder on Windows, which ``uvx`` locks (``tools/.lock``) on every run.
+
+    Windows uv keeps tools under Roaming AppData, outside the ``uv`` data folder above
+    (Local AppData), so a fenced plugin server started with ``uvx`` failed to take the lock.
+    On other platforms the folder already sits inside uv's granted data folder.
+    """
+    if sys.platform != "win32":
+        return None
+    configured = os.environ.get("UV_TOOL_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    roaming = os.environ.get("APPDATA")
+    return Path(roaming) / "uv" / "tools" if roaming else None
 
 
 def read_only_write_roots() -> tuple[Path, ...]:

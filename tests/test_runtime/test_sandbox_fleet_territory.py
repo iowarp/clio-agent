@@ -100,3 +100,26 @@ def test_clio_kit_folders_exist_before_the_fence_rules_on_them(tmp_path, monkeyp
     assert tmp_path / "data" / "clio-kit" in dirs
     assert (tmp_path / "data" / "clio-kit").is_dir()
     assert (tmp_path / "cache" / "clio-kit").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("platform", "env", "expected"),
+    [
+        ("win32", {"APPDATA": "R:/roaming"}, Path("R:/roaming/uv/tools")),
+        ("win32", {"APPDATA": "R:/roaming", "UV_TOOL_DIR": "T:/tools"}, Path("T:/tools")),
+        ("linux", {"APPDATA": "R:/roaming", "UV_TOOL_DIR": "T:/tools"}, None),
+    ],
+)
+def test_windows_fleet_can_lock_uv_tools(platform, env, expected, tmp_path, monkeypatch) -> None:
+    """uvx locks Roaming ``uv/tools/.lock``; Windows keeps it outside uv's Local data folder."""
+    from clio_agent.runtime import sandbox_roots
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(sandbox_roots.sys, "platform", platform)
+    assert sandbox_roots._windows_uv_tool_dir() == expected
+    if expected is not None:
+        assert expected in sandbox_roots._platform_tool_cache_dirs()
