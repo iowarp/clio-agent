@@ -123,7 +123,32 @@ def _content_block_model_text(block: Any) -> str:
     return f"[{block_type}]" if block_type else ""
 
 
-def result_to_text(result: Any) -> str:
+#: The MIME type of an A2UI payload carried as an MCP resource (host semantics HS1).
+A2UI_RESOURCE_MIME_TYPE = "application/a2ui+json"
+
+
+def is_a2ui_block(block: Any) -> bool:
+    """Whether ``block`` is an embedded resource carrying an A2UI payload."""
+
+    if str(_content_block_field(block, "type") or "") != "resource":
+        return False
+    resource = _content_block_field(block, "resource")
+    mime = str(_content_block_field(resource, "mime_type", "mimeType") or "") if resource else ""
+    return mime.split(";", 1)[0].strip().lower() == A2UI_RESOURCE_MIME_TYPE
+
+
+def _blocks_model_text(blocks: list[Any], a2ui_notes: Sequence[str]) -> str:
+    """Join block texts, replacing each A2UI resource block's placeholder with its note."""
+
+    notes = iter(a2ui_notes)
+    pieces: list[str] = []
+    for block in blocks:
+        piece = next(notes, "") if a2ui_notes and is_a2ui_block(block) else ""
+        pieces.append(piece or _content_block_model_text(block))
+    return "\n".join(piece for piece in pieces if piece)
+
+
+def result_to_text(result: Any, *, a2ui_notes: Sequence[str] = ()) -> str:
     """The text the model sees for one MCP tool result: text content first.
 
     When the result carries text content blocks, the model gets the content, every
@@ -141,6 +166,9 @@ def result_to_text(result: Any) -> str:
     their placeholders, never ``"null"``. ``allow_nan=False`` keeps NaN/Infinity out of
     encoded text; a value ``json.dumps`` refuses for any structural reason falls back to
     ``str()`` with the logged reason :data:`MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON`.
+
+    ``a2ui_notes`` are the host's one-line outcomes for the result's A2UI resource
+    blocks, in block order (HS1); each replaces that block's placeholder.
     """
     content = getattr(result, "content", None)
     blocks = (
@@ -153,12 +181,12 @@ def result_to_text(result: Any) -> str:
         and str(_content_block_field(block, "text") or "")
         for block in blocks
     ):
-        return "\n".join(piece for piece in map(_content_block_model_text, blocks) if piece)
+        return _blocks_model_text(blocks, a2ui_notes)
     data = getattr(result, "data", result)
     if isinstance(data, str):
         return data
-    if data is None and blocks:
-        placeholder = "\n".join(piece for piece in map(_content_block_model_text, blocks) if piece)
+    if (data is None or (a2ui_notes and blocks)) and blocks:
+        placeholder = _blocks_model_text(blocks, a2ui_notes)
         if placeholder:
             return placeholder
     try:
@@ -173,4 +201,9 @@ def result_to_text(result: Any) -> str:
         return str(data)
 
 
-__all__ = ["MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON", "result_to_text"]
+__all__ = [
+    "A2UI_RESOURCE_MIME_TYPE",
+    "MCP_RESULT_TO_TEXT_REPR_FALLBACK_REASON",
+    "is_a2ui_block",
+    "result_to_text",
+]

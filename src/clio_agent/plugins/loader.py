@@ -34,6 +34,7 @@ from clio_agent.plugins.manifest import (
     NAMESPACE,
     ManifestError,
     clio_extension,
+    host_semantics,
     read_manifest,
     read_mcp_config,
     within,
@@ -634,6 +635,10 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
                 f"{plugin}: connection namespace {namespace!r} is already declared"
             )
         servers[namespace] = {"type": "clio-connection", "connection": connection}
+    try:
+        host = host_semantics(ext, plugin, servers)
+    except ManifestError as exc:
+        raise PluginLoadError(str(exc)) from exc
     exec_digest, text_digest = tree_digests(root, referenced=referenced_files(root, servers))
     skills, skill_diags = _skills(root, plugin)
     if library is not None:
@@ -761,6 +766,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         python_pending=has_python and not trusted,
         disclosure={key: ext[key] for key in ("defer", "servers") if key in ext},
         follows=str(ext.get("follows") or ""),
+        host=host,
     )
     if kind == "pack":
         content = [

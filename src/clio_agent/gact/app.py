@@ -678,6 +678,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Collect the capabilities snapshot now, so the first probe already finds it.
     capabilities_snapshot.start(app)
     server_boot.start(app)  # clio-core attach + first doctor pass, both off-loop (typed rows)
+    from clio_agent.gact import account_grant_files  # noqa: PLC0415
+
+    grants_task = account_grant_files.start(app)  # HS4: plugin account grant files
     from clio_agent.gact import highway_writer, task_runtime
 
     readiness: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -719,7 +722,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         lm_config_task = getattr(app.state, "lm_config_task", None)
         reprobe_task = getattr(app.state, "provider_catalog_reprobe_task", None)
         await server_boot.stop_producers(
-            task, agent_task, lm_config_task, provider_catalog_task, reprobe_task
+            task, agent_task, lm_config_task, provider_catalog_task, reprobe_task, grants_task
         )
 
         # Settle turns and task owners while their durable stores are still alive.
@@ -1137,6 +1140,10 @@ def build_app(
     # observer. It is intentionally not folded into ``tool_observer`` because
     # that observer writes result evidence into durable traces.
     install_mcp_app_runtime(app)
+    # HS1: A2UI that a plugin server returns becomes a server-owned surface.
+    from clio_agent.gact.server_surfaces import install_server_surfaces  # noqa: PLC0415
+
+    install_server_surfaces(app)
     # #735 unified-concurrency seam: install the STATELESS tool-runtime resolver
     # once (idempotent). It dispatches on the live turn's ``active_app()`` so N
     # apps in one process each read THEIR OWN ``app.state.pending_*`` hooks — no
@@ -1499,6 +1506,9 @@ def build_app(
     register_browser_routes(app)  # the shared tab: pages, live view, allowing a host
     composer_runtime.register_composer_routes(app, deps)
     register_a2ui_routes(app, deps)
+    from clio_agent.gact.routes.plugin_tabs import register_plugin_tab_routes  # noqa: PLC0415
+
+    register_plugin_tab_routes(app)  # HS3: a plugin server's A2UI resource as a tab
 
     # ---- /v1/agent-tasks + /v1/sessions/{sid}/agent-tasks (#948 S2 / #950) ----
     # The AgentTask projection read + cancel routes, over

@@ -17,6 +17,7 @@ from mcp.server.mcpserver import Context as SDKContext
 from mcp.server.mcpserver import MCPServer
 
 from clio_agent.tools.mcp_extension_registry import (
+    A2UI_EXTENSION_ID,
     AGENT_ELICITATION_EXTENSION_ID,
     ENTERPRISE_MANAGED_AUTH_EXTENSION_ID,
     KNOWN_EXTENSIONS,
@@ -134,14 +135,18 @@ def test_known_extensions_catalog_covers_every_active_entry_and_the_two_enumerat
         TASKS_EXTENSION_ID,
         UI_EXTENSION_ID,
         AGENT_ELICITATION_EXTENSION_ID,
+        A2UI_EXTENSION_ID,
         OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,
         ENTERPRISE_MANAGED_AUTH_EXTENSION_ID,
     }
 
 
 def test_known_extensions_flags_match_native_sdk_and_clio_declarations() -> None:
-    """Catalog claims cover both native Tasks and CLIO's ad-only capabilities."""
-    declaration = extensions_declaration(Client, object())
+    """Catalog claims cover both native Tasks and CLIO's ad-only capabilities.
+
+    The A2UI ad is built only for a server whose plugin ships catalogs, so the
+    declaration here is for such a server."""
+    declaration = extensions_declaration(Client, object(), a2ui_catalogs=("example/catalog",))
     native = build_internal_client_extensions(None)
     actively_built = {ext.identifier for ext in [*native, *declaration.extensions]}
     for entry in KNOWN_EXTENSIONS:

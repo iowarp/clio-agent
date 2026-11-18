@@ -575,6 +575,8 @@ class A2UIStore:
         part_id: str = "",
         persist_part: _PersistPart | None = None,
         expected_revisions: Mapping[str, int] | None = None,
+        owner: Mapping[str, Any] | None = None,
+        producible: frozenset[str] | None = None,
     ) -> A2UIBatchOutcome:
         """Apply a batch and report what it created plus the session's registry.
 
@@ -586,6 +588,10 @@ class A2UIStore:
             part_id: Transcript part id; minted when empty.
             persist_part: Writer for the transcript part; the session message
                 log is used when omitted.
+            owner: The MCP server producing the batch (HS1), recorded on the part
+                and on each surface it creates; ``None`` for the agent.
+            producible: Catalog ids a ``createSurface`` may name; the session's
+                producible set when omitted.
 
         Returns:
             The applied records plus the created/live-registry truth, all read
@@ -628,7 +634,11 @@ class A2UIStore:
             # place: a createSurface against an installed-but-inactive plugin
             # catalog is refused with a2ui_catalog_not_producible regardless of
             # which door it came through.
-            producible = frozenset(session_producible_catalog_ids(self._app, session_id))
+            producible = (
+                frozenset(producible)
+                if producible is not None
+                else frozenset(session_producible_catalog_ids(self._app, session_id))
+            )
             folded, applied = apply_batch(
                 current,
                 session_id,
@@ -639,21 +649,25 @@ class A2UIStore:
                 message_id=message_id,
                 part_id=persisted_part_id,
                 observed_at=timestamp,
+                owner=owner,
             )
             first_surface = applied[0][1]
             existing = current.get((session_id, first_surface))
+            metadata = {
+                "recorded_at": timestamp,
+                "run_id": run_id,
+                "message_id": message_id,
+                "projection_only": bool(existing is not None and existing.state != "deleted"),
+            }
+            if owner:
+                metadata["owner"] = dict(owner)
             part = Part(
                 id=persisted_part_id,
                 type="a2ui",
                 surface_id=first_surface,
                 a2ui_protocol_version=A2UI_V091,
                 a2ui_messages=[dict(message) for message in messages],
-                metadata={
-                    "recorded_at": timestamp,
-                    "run_id": run_id,
-                    "message_id": message_id,
-                    "projection_only": bool(existing is not None and existing.state != "deleted"),
-                },
+                metadata=metadata,
             )
             writer = persist_part or (lambda candidate: self._persist_part(session_id, candidate))
             if not writer(part):

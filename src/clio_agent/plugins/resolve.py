@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
+from clio_agent.plugins.host_semantics import server_host
 from clio_agent.plugins.kernel_bindings import resolution_rows as kernel_binding_rows
 from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
@@ -475,6 +476,7 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                 "callers": disclosed.get("callers"),
                 "permission": disclosed.get("permission"),
                 "tools": dict(disclosed.get("tools") or {}),
+                **({"host": host} if (host := server_host(record, name)) else {}),
             }
         for skill in record.skills:
             if skill.id in skill_owner:

@@ -46,6 +46,7 @@ ActionDelivery = Literal[
     "run_cancel",
     "run_retry",
     "client_ui",
+    "server",
     "rejected",
 ]
 

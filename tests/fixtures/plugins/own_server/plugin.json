@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "own-server",
+  "version": "0.1.0",
+  "description": "A plugin that ships and launches its own MCP server, with no connector catalog entry.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause"
+}
