@@ -754,3 +754,44 @@ Fixes:
 Open: R6f's terrain came from a non-NDP service where NDP held the data. A rerun
 should use the basin lidar (tile selection by region, then a windowed read or the
 dataset's VRT).
+
+### R6g: Tahoe correlation on CLIO's default agent, NDP through the source only (fail)
+
+Session `sess_ad01213cb38d` (110 calls, 7 failed). Plain request, CLIO's default
+agent, the person signed in to NDP (test realm). Stack on clio-agent `4dacb0d`:
+mid-turn plugin join, the `ndp` MCP server removed and its connector withheld, and
+the A2UI tools listed. Export: `ndp-runs/exports/correlation-tahoe-sess_ad01213cb38d.*`.
+Captures: `r6g-correlation-1440.png`, `r6g-correlation-390.png`.
+
+Worked:
+
+- **Plugins loaded as needed.** The agent offered `ndp`, `geospatial` and `terrain`;
+  each joined the running turn in note mode (`plugin_joined_running_turn`).
+- **NDP through the source path only.** 33 `connected_data_search_ndp`, then
+  `connected_data_connect` ×12, `connected_data_open` ×13 and
+  `connected_data_download` ×11. No MCP NDP calls, and no NDP connector
+  (`kit_server_withheld`).
+- **The basin lidar.** Tiles were selected by region
+  (`connected_data_ndp_tiles_covering` ×2), and terrain came from one OpenTopography
+  tile.
+- **Coverage report.** What overlaps, what does not, and what could not be
+  determined, each with its reason.
+
+Failed:
+
+1. **No A2UI view and no visual review.** `create_a2ui_surface` was listed and the
+   visuals guidance was in the prompt, but the agent drew PNGs with
+   `geo_render_feature_map`. Its basemap needs an API key (the first PNG was
+   watermarked), and the agent did not view the second. This stack's only A2UI
+   map (`clio.map.v1`) draws points; polygons and rasters need the layered map on
+   `claude/ndp-data-access-map`.
+2. **Attached NDP sources cannot be read by window** (`connected_data_open`:
+   `range_unsupported`, and resource URLs are private by design). The agent
+   downloaded one whole 570 MB lidar tile, so terrain covers one west-shore tile.
+   Fuels and vegetation rasters were not read at all.
+3. Three catalog searches failed ("NDP catalog could not complete this
+   search"); not yet investigated.
+
+Verdict: **fail on CLIO presentation and on coverage.** The plumbing the run was
+meant to prove works live: dynamic plugins, the mid-turn join, and NDP through
+the source with the person's sign-in.
