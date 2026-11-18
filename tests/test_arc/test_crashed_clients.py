@@ -21,7 +21,7 @@ from typing import Any
 import psutil
 import pytest
 
-from clio_agent.arc import crashed_clients, runtime_stop, storage
+from clio_agent.arc import crashed_clients, runtime_ownership, runtime_stop, storage
 from clio_agent.arc.runtime_stop import StopOutcome
 from clio_agent.runtime.clio_core_replacement_health import probe_clio_core_daemon_replacement
 
@@ -201,7 +201,11 @@ def test_connect_or_spawn_spawns_fresh_instead_of_adopting_after_a_client_crash(
     def spawn(_core: object, cfg: str, _level: str) -> None:
         spawned.append(cfg)
         listening["now"] = True
+        # A real spawn records its daemon, which then holds the port (FN-14 checks it).
+        me = psutil.Process(os.getpid())
+        storage._daemon_pidfile().write_text(f"{me.pid} {me.create_time()!r}", encoding="utf-8")
 
+    monkeypatch.setattr(runtime_ownership, "listener_belongs_to", lambda _pid, _port: True)
     monkeypatch.setattr(storage, "_runtime_alive", lambda _port: listening["now"])
     monkeypatch.setattr(runtime_stop, "stop_runtime_daemon", stop)
     monkeypatch.setattr(storage, "_spawn_runtime_daemon", spawn)

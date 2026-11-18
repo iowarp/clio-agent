@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.connectors.materialize import in_use
 from clio_agent.gact.mcp_auth import McpSignIns, managed_oauth
 from clio_agent.gact.mcp_user_configuration import get_user_mcp_server, set_user_mcp_server
 from clio_agent.gact.routes._body import json_body
@@ -18,15 +19,25 @@ def sign_ins(app: FastAPI) -> McpSignIns:
     owner = getattr(app.state, "mcp_sign_ins", None)
     if owner is None:
 
-        async def connected() -> None:
+        async def connected(name: str) -> None:
             from clio_agent.gact.routes.mcp_configuration import (
                 _refresh_agent_tool_gateway,  # noqa: PLC0415
             )
 
             await _refresh_agent_tool_gateway(app)
+            _connector_signed(app, name)
 
         owner = app.state.mcp_sign_ins = McpSignIns(connected)
     return owner
+
+
+def _connector_signed(app: FastAPI, name: str) -> None:
+    """A connector's sign-in changed its state: tell the UI (``connector.changed``)."""
+    from clio_agent.connectors import state  # noqa: PLC0415
+    from clio_agent.gact.connectors_service import publish_changed  # noqa: PLC0415
+
+    if name in state.all_entries():
+        publish_changed(app, name, [])
 
 
 def _redirect_uri(value: Any, origin: str) -> str:
@@ -128,8 +139,8 @@ def register_mcp_auth_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Remote MCP connection not found")
         await sign_ins(app).cancel_name(name)
         connection_id = (spec.get("auth") or {}).get("connection_id")
-        await asyncio.to_thread(
-            DurableFileTokenStorage(str(spec["url"]), connection_id=connection_id).clear
-        )
+        url = str(in_use(spec)["url"])  # a connector's template names its address in use
+        await asyncio.to_thread(DurableFileTokenStorage(url, connection_id=connection_id).clear)
         await _refresh_agent_tool_gateway(app)
+        _connector_signed(app, name)
         return {"name": name, "state": "signed_out"}

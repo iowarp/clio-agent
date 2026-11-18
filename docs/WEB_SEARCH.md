@@ -72,14 +72,23 @@ signed/token query. A PDF is also saved locally (`pdf_path`) for `view_pdf`.
 
 ## Literature sources
 
-`literature_search` always asks OpenAlex and Crossref and adds sources by the
-`field` and `kind` the model chose: arXiv (physical, computing, preprints), Europe PMC
-(life sciences, preprints), OSTI.gov (energy, engineering, earth, physical) and
-DataCite (datasets). Semantic Scholar answers only with the person's key. Works are
-merged across sources by DOI, arXiv id or PMID, and works found by more sources come
-first. OpenAlex without a key has a small daily budget per network; Settings can
-request a free OpenAlex key for the person's email (it works after they click the
-emailed link).
+`literature_search` always asks OpenAlex and Crossref. With the default `field=any` it
+also asks every broad source: arXiv, ChemRxiv, Europe PMC, OSTI.gov and DataCite. A
+`field` narrows the search to the sources that cover it: arXiv for physical and
+computing, ChemRxiv for chemistry, Europe PMC for life sciences, OSTI.gov for energy,
+engineering, earth and physical sciences. `kind=preprint` adds arXiv, ChemRxiv and Europe
+PMC; `kind=dataset` adds DataCite. Semantic Scholar answers only with the person's key.
+
+ChemRxiv's own API refuses automated clients, so its preprints are found through
+Crossref (ChemRxiv's DOI prefix `10.26434`); those requests share Crossref's queue and
+terms. bioRxiv and medRxiv preprints arrive through Europe PMC.
+
+Works are merged across sources by DOI, arXiv id or PMID, and works found by more
+sources come first; `found_in` names them. `literature_lookup` follows one work's
+references and citing works (OpenAlex, then OpenCitations) and its preprint and
+published versions. OpenAlex without a key has a small daily budget per network;
+Settings can request a free OpenAlex key for the person's email (it works after they
+click the emailed link).
 
 ## One request queue per provider
 

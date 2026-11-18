@@ -1,0 +1,7 @@
+[
+ {"open": "pv-fix2"},
+ {"send": "Connect to the ParaView on node08, through login, and open /home/researcher/data/wavelet.vti with an isosurface of RTData. On node08, ParaView needs `module load paraview` first."},
+ {"view": true},
+ {"shot": "h3-remote-open"},
+ {"hero": "h3-remote-open-hero"}
+]

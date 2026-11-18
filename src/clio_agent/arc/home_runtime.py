@@ -89,15 +89,9 @@ def host_runtime_dir(*, create: bool = True) -> Path:
     """The machine's shared daemon bookkeeping (Desktop reads it too)."""
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
     from clio_agent.arc.clio_core_config import host_key  # noqa: PLC0415 - cycle
-    from clio_agent.arc.clio_core_host_migration import (  # noqa: PLC0415 - cycle
-        migrate_legacy_runtime_state,
-    )
 
     state = paths.host_state_dir() / "core-hosts" / host_key()
     legacy = Path.home() / ".clio" / "hosts" / host_key()
-    # Preserve the pre-host compatibility migration for known Agent bookkeeping.
-    # The helper refuses live/shared state and never moves Core-owned files.
-    migrate_legacy_runtime_state(Path.home() / ".clio", legacy)
     if legacy.exists() and not state.exists():
         logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
         state = legacy

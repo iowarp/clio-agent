@@ -115,3 +115,36 @@ def test_child_task_error_reason_projects_the_backstop_reasons() -> None:
         child_task_error_reason({"details": {"reason": "mcp_task_drive_timeout_backstop"}})
         == "mcp_task_drive_timeout_backstop"
     )
+
+
+class _UnfoldableContextAgent:
+    """A stub agent whose loop could not fold its stored context (FN-16)."""
+
+    def forward(self, question: str, session_id: str) -> Any:
+        from types import SimpleNamespace
+
+        from clio_agent.gact.agents.context_errors import ContextFoldError
+
+        raise ContextFoldError("malformed_thinking", SimpleNamespace(id="seg_1", kind="thought"))
+
+
+def test_a_context_error_carries_its_stable_code_for_the_client(tmp_path: Path) -> None:
+    """FN-16: a context fold failure was shown as a bare ``agent_error``; the client
+    could not say why the reply failed or offer Rewind / Continue in a copy. Its own
+    code now rides ``details["reason"]`` beside the existing top-level taxonomy."""
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_UnfoldableContextAgent())
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
+        ack = c.post(
+            f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "hi"}]}
+        )
+        assert ack.status_code == 202, ack.text
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "error"
+        msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        [failed] = [m for m in msgs if m["role"] == "assistant" and m.get("error_info")]
+        info = failed["error_info"]
+        assert info["error"] == "agent_error"
+        assert info["details"]["reason"] == "context_fold_failed"
+        assert info["details"]["problem"] == "malformed_thinking"

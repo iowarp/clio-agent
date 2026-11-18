@@ -410,9 +410,10 @@ def test_estimate_bytes_counts_nested_and_image_payloads() -> None:
     # (parts.py, types.py and this test file are byte-identical between that
     # baseline and this fix round's HEAD, so the AF1 fix round did not cause this
     # growth -- it only updates the recorded watermark). Phase 11b's compaction
-    # record and notice fields (trigger/compaction_id/code) -> 1,587. It remains
-    # three orders of magnitude lighter than either heavy payload.
-    assert 1_100 <= light_bytes < 1_600
+    # record and notice fields (trigger/compaction_id/code) -> 1,587. An MCP App
+    # part's ``display_mode`` (MA1) -> 1,617. It remains three orders of magnitude
+    # lighter than either heavy payload.
+    assert 1_100 <= light_bytes < 1_700
 
 
 # The optional Part fields each 0.3 part type populates. The byte estimate must

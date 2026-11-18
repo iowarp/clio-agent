@@ -23,7 +23,7 @@ from clio_agent.gact.agents.agent_prompt import final_agent_prompt
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.live_tool_refresh import (
     LiveToolScope,
-    live_tool_refresher,
+    agent_tool_refresher,
     refresh_executor_tools,
 )
 from clio_agent.gact.agents.lm_resolution import (
@@ -660,12 +660,17 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
             object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
-            object.__setattr__(self.program, "_clio_tool_refresh", live_tool_refresher(live))
+            object.__setattr__(self.program, "_clio_tool_refresh", agent_tool_refresher(live))
             object.__setattr__(
                 self.program,
                 "_clio_unlisted",
                 unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
             )
+            if agent_def.metadata.get("bare"):
+                # A bare agent's request carries no system prompt and lists no tools at
+                # all, not even ``submit``: a reply without tool calls is the answer.
+                object.__setattr__(self.program, "_clio_bare", True)
+                object.__setattr__(self.program, "_clio_unlisted", frozenset({"submit"}))
             with _build_phase("build.deferred"):
                 deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
             # A spawn-requested BestOfN / Refine strategy wraps the program.

@@ -153,3 +153,65 @@ def test_timed_out_raster_worker_keeps_its_permit_until_it_exits(
             release.set()
 
     asyncio.run(exercise())
+
+
+def test_a_netcdf4_time_series_draws_the_selected_frame_in_coordinates(tmp_path) -> None:
+    import pandas as pd
+    import xarray as xr
+
+    from clio_agent.gact.artifacts.raster_query import RasterQueryError, load_raster
+
+    values = np.arange(3 * 4 * 5, dtype="f4").reshape(3, 4, 5)
+    path = tmp_path / "msl.nc"
+    xr.Dataset(
+        {"MSL": (("time", "latitude", "longitude"), values)},
+        coords={
+            "time": pd.date_range("2024-09-26", periods=3, freq="6h"),
+            "latitude": [35.0, 34.75, 34.5, 34.25],
+            "longitude": [260.0, 260.25, 260.5, 260.75, 261.0],
+        },
+    ).to_netcdf(path, engine="h5netcdf")
+    first = load_raster(path, name=path.name, variable="MSL", band=1)
+    assert first.frame == (
+        {"dim": "time", "value": "2024-09-26T00:00:00Z", "index": 0, "count": 3},
+    )
+    assert first.bounds == (259.875, 35.125, 261.125, 34.125)  # cell edges, north at the top
+    assert (first.x_label, first.y_label) == ("longitude", "latitude")
+    chosen = load_raster(
+        path, name=path.name, variable="MSL", band=1, select={"time": "2024-09-26T07:00"}
+    )
+    assert chosen.frame[0]["index"] == 1 and chosen.values[0, 0] == values[1, 0, 0]
+    with pytest.raises(RasterQueryError) as refused:
+        load_raster(path, name=path.name, variable="MSL", band=1, select={"time": "soon"})
+    assert refused.value.code == "raster_selection_invalid"
+
+
+def test_a_selected_time_may_be_iso_with_z_or_a_number_in_the_files_units(tmp_path) -> None:
+    import xarray as xr
+
+    from clio_agent.gact.artifacts.raster_query import load_raster
+
+    path = tmp_path / "msl.nc"
+    xr.Dataset(
+        {
+            "MSL": (
+                ("time", "latitude", "longitude"),
+                np.arange(3 * 2 * 2, dtype="f4").reshape(3, 2, 2),
+            )
+        },
+        coords={
+            "time": (
+                "time",
+                np.array([1093416, 1093422, 1093428]),
+                {"units": "hours since 1900-01-01 00:00:00"},
+            ),
+            "latitude": [30.0, 29.75],
+            "longitude": [270.0, 270.25],
+        },
+    ).to_netcdf(path, engine="h5netcdf")
+    by_iso = load_raster(
+        path, name=path.name, variable="MSL", band=1, select={"time": "2024-09-26T06:00:00Z"}
+    )
+    by_number = load_raster(path, name=path.name, variable="MSL", band=1, select={"time": 1093428})
+    assert by_iso.frame[0]["index"] == 1 and by_iso.frame[0]["value"] == "2024-09-26T06:00:00Z"
+    assert by_number.frame[0]["index"] == 2

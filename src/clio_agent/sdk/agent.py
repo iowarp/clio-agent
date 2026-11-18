@@ -67,9 +67,10 @@ class AgentSpec:
     requires: dict[str, Any] = field(default_factory=dict)
     prefers: dict[str, Any] = field(default_factory=dict)
     source: str = ""
+    bare: bool = False
 
     def body(self) -> dict[str, Any]:
-        return {
+        body: dict[str, Any] = {
             "id": self.id,
             "version": self.version,
             "name": self.name,
@@ -82,6 +83,10 @@ class AgentSpec:
             "prefers": self.prefers,
             "source": self.source,
         }
+        # Only a bare agent carries the key, so every existing spec keeps its checksum.
+        if self.bare:
+            body["bare"] = True
+        return body
 
     @property
     def checksum(self) -> str:
@@ -108,6 +113,7 @@ class AgentSpec:
             requires=dict(data.get("requires") or {}),
             prefers=dict(data.get("prefers") or {}),
             source=str(data.get("source") or ""),
+            bare=bool(data.get("bare", False)),
         )
         expected = str(data.get("checksum") or "")
         if expected and expected != spec.checksum:
@@ -141,6 +147,11 @@ class Agent:
     plugins: ClassVar[list[str]] = [CORE_PLUGIN, MEMORY_PLUGIN]
     requires: ClassVar[Requires] = Requires()
     prefers: ClassVar[Prefers] = Prefers()
+    #: A bare agent's model sees only the conversation: no system prompt, no tools or
+    #: skills (not even ``submit``) and no per-turn context injections; every reply is
+    #: the answer. For experiments that need the model's input to be exactly the
+    #: person's text, such as attention attribution over the prompt.
+    bare: ClassVar[bool] = False
 
     @classmethod
     def spec(cls) -> AgentSpec:
@@ -189,6 +200,7 @@ class Agent:
             requires=requires.to_dict(),
             prefers=prefers.to_dict(),
             source=_source_name(cls),
+            bare=bool(cls.bare),
         )
 
 

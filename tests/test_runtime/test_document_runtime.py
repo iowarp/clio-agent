@@ -479,6 +479,23 @@ def test_execution_probe_requests_light_inventory_and_still_checks_lock(
         runtime._probe(Path("env/bin/python"), discovery_only=True)
 
 
+def test_install_probe_leaves_office_to_the_installer_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The installer's own Office conversion check replaces a second cold start here."""
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        commands.append(command)
+        return json.dumps({"packages": {}})
+
+    monkeypatch.setattr(runtime, "_run", run)
+    runtime._probe(Path("env/bin/python"), office_checked=True)
+    runtime._probe(Path("env/bin/python"))
+    assert commands[0][-1] == "--office-checked"
+    assert "--office-checked" not in commands[1]
+
+
 def test_javascript_preserves_changed_task_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

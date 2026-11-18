@@ -17,6 +17,7 @@ from typing import Any
 
 import mcp_types
 from fastmcp import Context
+from mcp.server.request_state import RequestStateSecurity
 
 from clio_agent.search import broker
 from clio_agent.search.reasons import note
@@ -25,24 +26,52 @@ from clio_agent.search.web import SearchFailure
 _FIELD = "choice"
 _REQUEST = "search_decision"
 
+#: How long a question's round stays answerable. The MCP SDK seals each input-required
+#: round with a 600 s expiry by default, so a person who answered after ten minutes got
+#: "Invalid or expired requestState", a failed search, and the same question again: their
+#: answer was lost (KiCad ledger KN9). CLIO never times a person out (rule 6); the SDK
+#: requires a finite expiry, so the round lasts a week. The state holds only the question's
+#: topic, and the keys are per process, so a restart still ends old rounds.
+PERSON_ROUND_TTL_S = 7 * 24 * 3600
+
+
+def person_round_security() -> RequestStateSecurity:
+    """Request-state sealing for a server whose rounds wait on a person."""
+
+    return RequestStateSecurity.ephemeral(ttl=PERSON_ROUND_TTL_S)
+
+
+def request_key(topic: str) -> str:
+    """The input key for ``topic``'s question, distinct per decision.
+
+    One call can ask several questions in turn (decline Keenable, then Exa asks).
+    MCP refuses an input key reused with different content, so each decision's
+    question has its own key (2026-11-13: "Inline input identity was reused with
+    changed content" left the second source unasked).
+    """
+
+    return f"{_REQUEST}:{topic}"
+
 
 def input_required(decision: broker.Decision) -> mcp_types.InputRequiredResult:
     """The MCP round that asks the person ``decision``."""
 
     values = [value for value, _ in decision.options]
     labels = [label for _, label in decision.options]
-    schema = {
-        "type": "object",
-        "properties": {
-            _FIELD: {"type": "string", "title": "Choice", "enum": values, "enumNames": labels}
-        },
-        "required": [_FIELD],
+    field: dict[str, Any] = {
+        "type": "string",
+        "title": "Choice",
+        "enum": values,
+        "enumNames": labels,
     }
+    if decision.default:
+        field["default"] = decision.default  # what proceeding means, for a script run
+    schema = {"type": "object", "properties": {_FIELD: field}, "required": [_FIELD]}
     request = mcp_types.ElicitRequest(
         params=mcp_types.ElicitRequestFormParams(message=decision.message, requested_schema=schema)
     )
     return mcp_types.InputRequiredResult(
-        input_requests={_REQUEST: request},
+        input_requests={request_key(decision.topic): request},
         request_state=json.dumps({"topic": decision.topic}),
         result_type="input_required",
     )
@@ -64,7 +93,7 @@ def apply_responses(ctx: Context) -> None:
         topic = ""
     if not topic:
         return
-    answer = responses.get(_REQUEST)
+    answer = responses.get(request_key(topic))
     action = getattr(answer, "action", "")
     content = getattr(answer, "content", None) or {}
     value = str(content.get(_FIELD) or "") if isinstance(content, dict) else ""
@@ -97,4 +126,10 @@ async def answered_run(ctx: Context, body: Callable[[], Awaitable[dict[str, Any]
         }
 
 
-__all__ = ["answered_run", "apply_responses", "input_required"]
+__all__ = [
+    "PERSON_ROUND_TTL_S",
+    "answered_run",
+    "apply_responses",
+    "input_required",
+    "person_round_security",
+]

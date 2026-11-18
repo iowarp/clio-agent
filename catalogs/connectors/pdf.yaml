@@ -1,0 +1,21 @@
+# PDF viewer: the PDF example server of the MCP Apps extension (modelcontextprotocol/ext-apps,
+# examples/pdf-server; MIT, the repository moving to Apache-2.0), published on npm as
+# @modelcontextprotocol/server-pdf. CLIO starts it through the clio-kit launcher, as it does
+# ParaView: clio-kit's pdf server (mcp-servers/pdf) runs that package exactly as published,
+# pinned to 2.0.4 and locked in clio-kit (package-lock.json), and needs Node.js 20 or newer
+# on this machine (the catalogue's prerequisite note, shown as `requires`). The group,
+# Research, comes from clio-kit's clio-research bundle (derive.yaml). Its display_pdf tool
+# returns a ui:// view (PDF.js). It reads PDFs by URL from academic archives (arXiv, bioRxiv,
+# medRxiv, ChemRxiv, Zenodo, OSF, HAL, ...); a local file only from its own command line or
+# a client's roots. It has no needs (apps ledger, "More connectors"). Logo: pdf.svg is the
+# server's own pdf-icon.svg (ea3e9d0, MIT), byte for byte; pdf-dark.svg is the same paths
+# recoloured for a dark theme, where the black mark read at about 1.2:1 (MC-O1, LG).
+- id: pdf
+  name: PDF viewer
+  logo: pdf.svg
+  logo_dark: pdf-dark.svg
+  description: Read scientific papers from arXiv, bioRxiv, Zenodo and other archives in an interactive PDF viewer
+  server:
+    command: clio-kit
+    args: [mcp-server, pdf]
+  needs: []

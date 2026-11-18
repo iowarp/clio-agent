@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
+from clio_agent.gact.artifacts.declared_path_edges import declared_path_scan
 from clio_agent.gact.artifacts.designation import (
     ARTIFACT_SUFFIXES,
     OUTPUT_PATH_ARG_NAMES,
@@ -259,10 +260,13 @@ def detect_used_edges(
     if root is None or tool_name.rsplit(".", 1)[-1] == "create_artifact":
         return EdgeScan([], [])
     registry = get_registry(app)
-    edges: list[ProvEdge] = []
+    declared = declared_path_scan(tool_name, args, ok=allow_external_inputs)  # server _meta
+    edges: list[ProvEdge] = [*declared.edges]
     notes: list[dict[str, Any]] = []
     seen: set[str] = set()
     for arg_name, raw in _candidate_arg_strings(args):
+        if arg_name in declared.skip:
+            continue  # declared remote, not a file, or a local write: never a local input
         try:
             candidate = Path(raw)
             # Resolve a relative/bare value against the WORKSPACE ROOT, not the server

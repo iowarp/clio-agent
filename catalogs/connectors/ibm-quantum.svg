@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<!-- CLIO connector icon: a qubit on a Bloch sphere. Drawn for CLIO (our own work, not IBM's or any third-party mark: IBM permits no use of its logos without written permission); IBM Quantum ledger QC2-D1. -->
+<rect width="24" height="24" rx="5.5" fill="#5B3FA8"/>
+<g fill="none" stroke="#fff" stroke-linecap="round"><circle cx="12" cy="12.4" r="7.2" stroke-width="1.6"/><ellipse cx="12" cy="12.4" rx="7.2" ry="2.5" stroke-width="1.1" stroke-dasharray="1.6 1.4"/><path d="M12 12.4 L16.2 6.9" stroke-width="1.8"/></g><circle cx="16.4" cy="6.6" r="1.7" fill="#fff"/><circle cx="12" cy="12.4" r="1.1" fill="#fff"/>
+</svg>

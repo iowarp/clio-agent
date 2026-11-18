@@ -202,11 +202,26 @@ class PluginRecord:
     executable_digest: str = ""
     text_digest: str = ""
     keywords: tuple[str, ...] = ()
+    #: The category its marketplace entry declares (a Claude Code marketplace's
+    #: ``category``), else empty: what ``offer_plugin`` searches by category (OL-D11).
+    category: str = ""
     #: Python parts present but not imported, because the plugin is not trusted yet.
     python_pending: bool = False
     #: Tool disclosure from the ``ai.iowarp.clio`` extension: ``defer`` for the whole
     #: plugin and ``servers`` (per MCP server: ``defer``, ``description``).
     disclosure: dict[str, Any] = field(default_factory=dict)
+    #: The connector this plugin follows (``follows`` in ``ai.iowarp.clio``, CN9): it
+    #: joins and leaves the person's additions with that connector and is not offered
+    #: in plugin pickers.
+    follows: str = ""
+
+    def __post_init__(self) -> None:
+        # A plugin whose one server is a known clio-kit server follows that server's
+        # connector (LZ-D8): shown once with it, mounted only while it is on.
+        if not self.follows and self.mcp_servers:
+            from clio_agent.connectors.kit_entries import kit_follow  # noqa: PLC0415
+
+            object.__setattr__(self, "follows", kit_follow(self.mcp_servers))
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -283,6 +298,8 @@ class PluginRecord:
             executable_digest=data.get("executable_digest") or "",
             text_digest=data.get("text_digest") or "",
             keywords=tuple(data.get("keywords") or ()),
+            category=str(data.get("category") or ""),
             python_pending=bool(data.get("python_pending")),
             disclosure=dict(data.get("disclosure") or {}),
+            follows=str(data.get("follows") or ""),
         )

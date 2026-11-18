@@ -180,24 +180,41 @@ async def test_stop_requested_from_another_event_loop_stops_on_the_runners_loop(
         await asyncio.wait_for(runner.drain(), 2)
 
 
-@pytest.mark.asyncio
-async def test_a_cancelled_turn_is_logged_as_cancelled_not_as_a_failure(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def _turn_cancelled() -> BaseException:
     from clio_agent.gact.runtime.globals import _TurnCancelled
 
+    return _TurnCancelled(SimpleNamespace(message="stopped by the person"))
+
+
+def _flow_call_cancelled() -> BaseException:
+    from clio_agent.flows.outcomes import CallCancelled
+
+    return CallCancelled("subagent 'researcher' ended cancelled", handle="task_r")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stopped",
+    [_turn_cancelled, _flow_call_cancelled, asyncio.CancelledError],
+    ids=["turn", "flow-call", "retired-wait"],
+)
+async def test_a_cancelled_turn_is_logged_as_cancelled_not_as_a_failure(
+    caplog: pytest.LogCaptureFixture, stopped: Any
+) -> None:
+    """SABOTAGE: drop ``CallCancelled`` from ``_stopped`` and a flow stopped with
+    Stop everything logs ``session_worker_failed`` at ERROR with a traceback."""
     loop = asyncio.get_running_loop()
     outcome: list[BaseException] = []
     settled = asyncio.Event()
     requested = True
 
     def work() -> None:
-        raise _TurnCancelled(SimpleNamespace(message="stopped by the person"))
+        raise stopped()
 
     async def segment() -> None:
         try:
             await runner.run_sync("primary", work)
-        except _TurnCancelled as error:
+        except BaseException as error:
             outcome.append(error)
         finally:
             settled.set()
@@ -219,3 +236,46 @@ async def test_a_cancelled_turn_is_logged_as_cancelled_not_as_a_failure(
     rows = [r for r in caplog.records if r.name == "clio_agent.gact.turn_runner"]
     assert [r.levelname for r in rows if "session_worker" in r.getMessage()] == ["INFO"]
     assert "session_worker_cancelled" in rows[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_stopped_mid_work_reports_no_unhandled_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stop while the worker runs: its later cancellation is the turn's outcome.
+
+    SABOTAGE: await ``asyncio.shield(result)`` again and asyncio logs
+    "_TurnCancelled exception in shielded future" with a traceback.
+    """
+    loop = asyncio.get_running_loop()
+    entered, release = asyncio.Event(), threading.Event()
+    requested = True
+
+    def work() -> None:
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(5), "Test worker release was not delivered"
+        raise _turn_cancelled()
+
+    async def segment() -> None:
+        await runner.run_sync("primary", work)
+
+    async def admit(_sid: str) -> tuple[str, Coroutine[Any, Any, Any]] | None:
+        nonlocal requested
+        if not requested:
+            return None
+        requested = False
+        return "turn", segment()
+
+    runner = TurnRunner(SimpleNamespace(state=SimpleNamespace()), admit)
+    runner.bind_loop(loop)
+    with caplog.at_level("INFO"):
+        runner.signal("primary")
+        await asyncio.wait_for(entered.wait(), 2)
+        stop = asyncio.create_task(runner.stop("primary"))
+        await asyncio.sleep(0.02)
+        release.set()
+        await asyncio.wait_for(stop, 2)
+        await asyncio.wait_for(runner.drain(), 2)
+    messages = [r.getMessage() for r in caplog.records]
+    assert not [m for m in messages if "shielded future" in m], messages
+    assert not [r for r in caplog.records if r.levelname == "ERROR"], messages

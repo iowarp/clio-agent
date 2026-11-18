@@ -47,19 +47,6 @@ CTE_STORE_MIGRATION_SKIPPED_SHARED = "cte_store_migration_skipped_shared"
 CTE_STORE_MIGRATION_SKIPPED_IN_USE = "cte_store_migration_skipped_in_use"
 CTE_STORE_MIGRATION_FAILED = "cte_store_migration_failed"
 CTE_STORE_MIGRATION_RELOCATION_INCOMPLETE = "cte_store_migration_relocation_incomplete"
-RUNTIME_STATE_MIGRATED = "runtime_state_migrated_to_host_dir"
-RUNTIME_STATE_MIGRATION_SKIPPED_SHARED = "runtime_state_migration_skipped_shared"
-RUNTIME_STATE_MIGRATION_SKIPPED_IN_USE = "runtime_state_migration_skipped_in_use"
-RUNTIME_STATE_MIGRATION_FAILED = "runtime_state_migration_failed"
-
-# The daemon bookkeeping entries the old layout kept directly in ~/.clio.
-_RUNTIME_ENTRIES = (
-    "clio-runtime.pid",
-    "clio-runtime.clients",
-    "clio-runtime.lock",
-    "clio-runtime.log",
-    "clio-runtime-crash.json",
-)
 
 
 def migrate_legacy_cte_store(legacy_dir: Path, host_dir: Path, *, runtime_root: Path) -> str | None:
@@ -117,55 +104,6 @@ def migrate_legacy_cte_store(legacy_dir: Path, host_dir: Path, *, runtime_root: 
         len(entries),
     )
     return CTE_STORE_MIGRATED
-
-
-def migrate_legacy_runtime_state(legacy_root: Path, host_dir: Path) -> str | None:
-    """Move the old ``~/.clio`` daemon bookkeeping into ``~/.clio/hosts/<host>`` once.
-
-    Only the bookkeeping entries move (pidfile, client registry, lock, daemon log,
-    crash record); clio-core's own files in ``~/.clio`` are not CLIO's to move.
-
-    Returns:
-        The typed reason logged, or None when there was nothing to do.
-    """
-
-    entries = [legacy_root / name for name in _RUNTIME_ENTRIES if (legacy_root / name).exists()]
-    if not entries or _already_populated(host_dir):
-        return None
-    if _other_hosts(host_dir):
-        logger.warning(
-            "reason=%s state=%s host_dir=%s (another host's state exists beside it)",
-            RUNTIME_STATE_MIGRATION_SKIPPED_SHARED,
-            legacy_root,
-            host_dir,
-        )
-        return RUNTIME_STATE_MIGRATION_SKIPPED_SHARED
-    if _runtime_in_use(legacy_root):
-        logger.warning(
-            "reason=%s state=%s (a clio-core daemon or client recorded there is still live)",
-            RUNTIME_STATE_MIGRATION_SKIPPED_IN_USE,
-            legacy_root,
-        )
-        return RUNTIME_STATE_MIGRATION_SKIPPED_IN_USE
-    try:
-        _move_all(entries, host_dir)
-    except OSError as exc:
-        logger.warning(
-            "reason=%s state=%s host_dir=%s error=%s (left in place)",
-            RUNTIME_STATE_MIGRATION_FAILED,
-            legacy_root,
-            host_dir,
-            exc,
-        )
-        return RUNTIME_STATE_MIGRATION_FAILED
-    logger.warning(
-        "reason=%s from=%s to=%s entries=%s",
-        RUNTIME_STATE_MIGRATED,
-        legacy_root,
-        host_dir,
-        ",".join(entry.name for entry in entries),
-    )
-    return RUNTIME_STATE_MIGRATED
 
 
 def _other_hosts(host_dir: Path) -> list[str]:

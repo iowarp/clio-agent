@@ -169,7 +169,10 @@ def search_result(
         more = f" and {len(names) - listed} more" if len(names) > listed else ""
         lines.append(
             f'No deferred tool matches "{query}". The deferred tools are: {shown}{more}. '
-            "Search again by exact name (select:name) or other keywords."
+            "Search again by exact name (select:name) or other keywords. Only this "
+            "conversation's tools are searched: what a plugin or connector not in this "
+            "conversation brings is not, and the session facts list those (offer_plugin "
+            "offers one)."
         )
     return "\n".join(lines).strip(), structured
 
@@ -249,6 +252,8 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
                 "text": f"Not found: {', '.join(missing)}",
             }
         )
+    if row.get("loading"):
+        blocks.append({"id": "loading", "type": "text", "text": str(row["loading"])})
     if tools:
         summary = f"Loaded {len(tools)} tool{'s' if len(tools) != 1 else ''}"
         status = ""
@@ -292,6 +297,19 @@ def build_search_tools_tool() -> Any:
         loop = active_loop()
         catalog = getattr(getattr(loop, "agent", None), "_clio_deferred_catalog", None)
         text, structured = search_result(catalog, query, limit)
+        if structured["missing"] or not structured["tools"]:  # a view may still be loading
+            from clio_agent.gact.mcp_app_tools import loading_note  # noqa: PLC0415
+
+            if loading := loading_note(_ctx.active_app(), _ctx.active_session_id()):
+                text, structured["loading"] = f"{text}\n\n{loading}", loading
+        if not structured["tools"]:  # it may name a plugin or connector to add instead
+            from clio_agent.gact.plugin_offer import (  # noqa: PLC0415
+                offerable_matching,
+                search_note,
+            )
+
+            if rows := offerable_matching(_ctx.active_app(), _ctx.active_session_id(), query):
+                text, structured["offerable"] = f"{text}\n\n{search_note(rows)}", rows
         names = [row["name"] for row in structured["tools"]]
         _record_loaded(_ctx.active_app(), _ctx.active_session_id(), names)
         trace.event(

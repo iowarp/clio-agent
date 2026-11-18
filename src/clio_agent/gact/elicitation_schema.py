@@ -152,6 +152,19 @@ def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict
     }
 
 
+def _scalar_enum_names(spec: Mapping[str, Any], enum: Any) -> list[str] | None:
+    """The labels a scalar enum declares (``enumNames``), when there is one per value."""
+
+    names = spec.get("enumNames")
+    if not isinstance(enum, Sequence) or isinstance(enum, (str, bytes)):
+        return None
+    if not isinstance(names, Sequence) or isinstance(names, (str, bytes)):
+        return None
+    if len(names) != len(enum) or not all(isinstance(n, str) for n in names):
+        return None
+    return list(names)
+
+
 def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict[str, Any] | str:
     """Build one scalar/enum field descriptor, or return a typed degrade reason."""
 
@@ -170,7 +183,7 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         "enum": list(enum)
         if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
         else None,
-        "enum_names": None,
+        "enum_names": _scalar_enum_names(spec, enum),
         "multi": False,
         "item_type": "",
         "min_items": None,

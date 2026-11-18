@@ -55,6 +55,13 @@ _MCP_APP_OBSERVER_SKIP_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "or the discovered definition reaching this call is stale/incomplete"
         ),
     },
+    "mcp_app_skipped_view_only_call": {
+        "severity": "info",
+        "detail": (
+            "a view called a tool only views see (visibility without model); the call "
+            "feeds the view that made it and opens no new view"
+        ),
+    },
     "mcp_app_skipped_error_result": {
         "severity": "info",
         "detail": (
@@ -80,6 +87,8 @@ _MCP_APP_OBSERVER_SKIP_LOG_TEMPLATES: dict[str, str] = {
         "ordinary, non-App shape) reason=%s detail=%s"
     ),
 }
+#: Reasons of ordinary traffic: a non-App call, and a view's own reads and polls.
+_HIGH_VOLUME = frozenset({"mcp_app_skipped_no_resource_uri", "mcp_app_skipped_view_only_call"})
 _DEFAULT_SKIP_LOG_TEMPLATE = "MCP App result dropped tool=%s reason=%s detail=%s"
 
 #: The RARE-reason ring (``error_result`` / ``no_session``) -- #1308's actual
@@ -105,11 +114,7 @@ def record_observer_skip(reason: str, **fields: Any) -> dict[str, Any]:
     if definition is None:
         raise ValueError(f"Unknown MCP App observer skip reason: {reason}")
     payload: dict[str, Any] = {"reason": reason, **definition, **fields}
-    ring = (
-        _NO_RESOURCE_URI_SKIPS
-        if reason == "mcp_app_skipped_no_resource_uri"
-        else _MCP_APP_OBSERVER_SKIPS
-    )
+    ring = _NO_RESOURCE_URI_SKIPS if reason in _HIGH_VOLUME else _MCP_APP_OBSERVER_SKIPS
     with _MCP_APP_OBSERVER_SKIPS_LOCK:
         ring.append(payload)
     stream_audit("mcp_app_observer_skip", **payload)

@@ -58,6 +58,13 @@ def _from_payload(
     content = payload.get("content") if payload else None
     reasoning = payload.get("reasoning_content") if payload else None
     declaration = (payload or {}).get("attention") or metadata.get("attention")
+    # What the provider reported: lets an alignment failure name its likely cause.
+    extra: dict[str, Any] = {}
+    if payload and payload.get("finish_reason"):
+        extra["finish_reason"] = str(payload["finish_reason"])
+    usage = (payload or {}).get("usage")
+    if isinstance(usage, dict) and isinstance(usage.get("output_tokens"), int):
+        extra["output_tokens"] = usage["output_tokens"]
     return LmCall(
         event_id=event_id,
         session_id=session_id,
@@ -69,6 +76,7 @@ def _from_payload(
         content=str(content) if isinstance(content, str) else None,
         declaration=declaration if isinstance(declaration, dict) else None,
         source=source,
+        extra=extra,
         reasoning=reasoning if isinstance(reasoning, str) and reasoning else None,
     )
 

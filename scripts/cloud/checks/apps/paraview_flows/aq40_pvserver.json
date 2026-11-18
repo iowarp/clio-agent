@@ -1,0 +1,9 @@
+[
+ {"open": "pv-session"},
+ {"send": "Someone already has ParaView running on node08 (reach it through login; it needs `module load paraview` first) with data loaded. Show me what that ParaView session has."},
+ {"view": true},
+ {"status": "the running session"},
+ {"shot": "aq40-view"},
+ {"hero": "aq40-hero"},
+ {"shell": "bash $PV_CLUSTER ps node08 2>&1 | tail -n 12", "label": "AQ40 node08 processes"}
+]

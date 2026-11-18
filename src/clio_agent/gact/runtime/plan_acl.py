@@ -60,13 +60,19 @@ _TASK_CONTROLS: tuple[str, ...] = (
 #: ``run_code`` runs in plan mode only behind an enforced fence, in a kernel whose write roots
 #: are the session's scratch folder and temp (TD47, :mod:`clio_agent.gact.code_mode.tool`); its
 #: nested calls still meet this ACL one by one, so a script's writes are denied like direct ones.
-PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
-    "plan_exit",
-    "ask_user",
+#: Tools that read external context (the web and literature built-ins): they change nothing on
+#: this computer, so both plan-restricted modes allow them; Deep research runs as Architect and
+#: its researchers need them. Their own first-use approval still asks the person.
+_EXTERNAL_CONTEXT: tuple[str, ...] = (
     "web_fetch",
     "web_search",
     "literature_search",
     "literature_lookup",
+)
+PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
+    "plan_exit",
+    "ask_user",
+    *_EXTERNAL_CONTEXT,
     "run_code",
     *_TASK_CONTROLS,
 )
@@ -74,7 +80,12 @@ PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
 #: The registered-publication tool Architect mode ALLOWS despite the @40 deny-everything default.
 #: ``create_artifact`` remains subject to workspace containment, overwrite, custody, and registry
 #: checks; this does not grant direct file/edit/shell tools. An explicit user deny still wins.
-PLAN_ACL_ARCHITECT_TOOLS: tuple[str, ...] = ("create_artifact", "ask_user", *_TASK_CONTROLS)
+PLAN_ACL_ARCHITECT_TOOLS: tuple[str, ...] = (
+    "create_artifact",
+    "ask_user",
+    *_EXTERNAL_CONTEXT,
+    *_TASK_CONTROLS,
+)
 
 #: The policy mode a read-only side session resolves under (``gact/side_sessions.py``): the
 #: deny-everything default with NO carve-out, so only tools that DECLARE no side effects (fast-allowed
@@ -309,9 +320,12 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
             f"This tool{tool_ref} would modify the system, so it is blocked. "
             "Write the plan with plan_update, or hand it back with plan_exit to execute."
         )
+    # ``architect`` is how the person's "Deep research" choice runs; the model and the
+    # person read that name, never the internal mode value.
     return (
-        f"You are in Architect Mode: direct file modification is blocked except registered "
-        f"artifact publication. This tool{tool_ref} would modify the system, so it is blocked. "
+        "You are in Deep research mode: it searches and reads but does not change files, "
+        "except publishing a registered report. "
+        f"This tool{tool_ref} would modify the system, so it is blocked. "
         "Describe source changes as diffs for the user to apply."
     )
 

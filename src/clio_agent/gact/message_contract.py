@@ -28,6 +28,24 @@ class MessageBehavior(BaseModel):
     confirmation_policy: Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"] = "ask"
 
 
+def continued_behavior(messages: Any) -> dict[str, Any]:
+    """The behavior a continuation turn carries: that of the person's latest message.
+
+    A continuation (a restart's recovery, a task result, an approval) continues the
+    request the person last sent, so it runs with the behavior they chose for it. A
+    Deep research request keeps its deep-researcher agent after a restart instead of
+    resuming as the conversation's default agent. ``{}`` when no message chose one.
+    """
+
+    for message in reversed(list(messages or ())):
+        if getattr(message, "role", "") != "user":
+            continue
+        metadata = getattr(message, "metadata", None)
+        behavior = metadata.get("behavior") if isinstance(metadata, dict) else None
+        return dict(behavior) if isinstance(behavior, dict) else {}
+    return {}
+
+
 class PostMessageRequest(BaseModel):
     """Typed user message submission with explicit delivery intent."""
 

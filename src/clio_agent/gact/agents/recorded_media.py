@@ -55,7 +55,9 @@ def _attached(call_id: str, descriptor: Mapping[str, Any]) -> tuple[Any, ...]:
     path = str(descriptor.get("path") or "")
     pages = str(descriptor.get("pages") or "")
     kind = "PDF" if str(descriptor.get("media_type") or "") == "application/pdf" else "image"
-    label = f"[{kind} viewed by the script: {path}{f' pages {pages}' if pages else ''}]"
+    label = str(descriptor.get("label") or "") or (
+        f"[{kind} viewed by the script: {path}{f' pages {pages}' if pages else ''}]"
+    )
     try:
         part = _media(descriptor)
     except ValueError as exc:
@@ -87,6 +89,19 @@ def _result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolRes
     content: tuple[Any, ...] = (
         (media,) if media is not None else (TextPart(text=_observation_text(value)),)
     )
+    if (
+        media is not None
+        and isinstance(value, Mapping)
+        and isinstance(value.get("model_text"), str)
+    ):
+        # A look at an app view: the image, then what it shows in words (identity,
+        # the view's last report, what the snapshot could not paint).
+        return ToolResultPart(
+            id=call_id,
+            content=(*content, TextPart(text=value["model_text"])),
+            name=name,
+            is_error=is_error,
+        )
     if (
         media is not None
         and isinstance(value, Mapping)

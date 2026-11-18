@@ -726,7 +726,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 930,  # Row identity/merging moved to tool_call_merge.
+    "src/clio_agent/gact/tool_observer.py": 923,  # Structured-content bound moved to structured_wire_bound.
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -923,7 +923,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # (tools/harness_notes.py).
     # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
     # comma dropped from one observer call freed 6.
-    "src/clio_agent/tools/execution.py": 986,
+    "src/clio_agent/tools/execution.py": 985,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1071,7 +1071,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
-    "src/clio_agent/ui/cli.py": 1014,
+    "src/clio_agent/ui/cli.py": 1002,
     # (agent_elicitation.py's entry retired, #1331 review round: the file was a
     # NEW god-file at 1001 lines, never a legitimate baseline target -- the 800
     # cap is a backstop, not a license. Split by behavior into owner modules
@@ -1096,17 +1096,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # #2234 (+40, 816 -> 856): Windows download cancel (replace retry, chunked cancellable
     # verification, taskkill of the identity-checked supervisor) -- same one-script constraint.
     "src/clio_agent/gact/infrastructure/node_models.py": 856,
-    "src/clio_agent/gact/permission_gate.py": 837,
+    "src/clio_agent/gact/permission_gate.py": 826,
     # (protocol/v3/message.py entry retired: action cards and comment chips moved to sibling
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,
-    "src/clio_agent/gact/sessions.py": 844,
+    "src/clio_agent/gact/sessions.py": 839,
     "src/clio_agent/gact/turn_finalize.py": 803,
-    "src/clio_agent/gact/types.py": 802,
-    "src/clio_agent/runtime/sandbox_cli.py": 833,
+    # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to
+    # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,
     "src/clio_agent/tools/gateway.py": 805,
-    "src/clio_agent/tools/mcp_prepare.py": 1226,
+    "src/clio_agent/tools/mcp_prepare.py": 1221,
 }
 
 # Root of the source tree to scan, relative to the repository root.

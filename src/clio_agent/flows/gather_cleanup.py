@@ -72,7 +72,7 @@ async def quiesce_gather(
             outcomes = []
             for handle in handles:
                 await asyncio.wait_for(
-                    ctx.app.state.conversations.cancel(caller, handle), timeout=5
+                    ctx.app.state.conversations.cancel(caller, handle, cascade=True), timeout=5
                 )
                 outcomes.append(
                     await asyncio.wait_for(

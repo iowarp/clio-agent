@@ -16,6 +16,7 @@ from typing import Any
 
 from clio_agent.plugins.prebuilt import adopt_prebuilt
 from clio_agent.plugins.records import Diagnostic, PluginRecord
+from clio_agent.plugins.resolution_digest import resolution_digest
 from clio_agent.plugins.resolve import (
     NO_DELTA,
     Catalog,
@@ -43,7 +44,7 @@ DEFAULT_MARKETPLACE_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
 # The commit an installed product fetches: the checkout's submodule pin, never the
 # repository's default branch. tests/test_plugins/test_default_marketplace_pin.py keeps
 # it equal to the pin.
-DEFAULT_MARKETPLACE_COMMIT = "99bf35a035596445f51ec21a490aedc6375a17b3"
+DEFAULT_MARKETPLACE_COMMIT = "dbc82afa849b2e3e93e7e9d76123a2002084f32e"
 _SUBMODULE = Path(__file__).resolve().parents[3] / "external" / "clio-agent-marketplace"
 
 
@@ -189,6 +190,15 @@ class PluginService:
                         result["marketplace"],
                         result.get("message", ""),
                     )
+                else:
+                    # An upgrade whose reader reads its snapshot differently (``follows``).
+                    logger.info(
+                        "installed marketplace re-read reason=reader_changed marketplace=%s "
+                        "plugins=%d diagnostics=%d",
+                        result["marketplace"],
+                        len(result.get("plugins") or []),
+                        len(result.get("diagnostics") or []),
+                    )
             if not self._install_default:
                 self._ready = True
                 return
@@ -213,14 +223,19 @@ class PluginService:
     def catalog(self, extra: list[PluginRecord] | None = None) -> Catalog:
         self.ready()
         records = self.store.records()
+        # Every enabled connector's carrier is a plugin the person can add (CN9 *Amended*).
+        from clio_agent.connectors.follow import carriers  # noqa: PLC0415
+
+        extra = [*carriers(records), *(extra or [])]
         if extra:
             replaced = {(r.marketplace, r.id) for r in extra}
             records = [r for r in records if (r.marketplace, r.id) not in replaced] + list(extra)
         extra_ids = {(r.marketplace, r.id) for r in extra or []}
         return Catalog(
             records=records,
-            trusted=lambda record: (record.marketplace, record.id) in extra_ids
-            or self.store.trusted(record),
+            trusted=lambda record: (
+                (record.marketplace, record.id) in extra_ids or self.store.trusted(record)
+            ),
             native_tools=self._native_tools
             if self._native_tools is not None
             else native_tool_names(),
@@ -352,13 +367,25 @@ class PluginService:
                 "description": entry.user_agent.description,
                 "parent": root.ref,
             }
+        # A connector's plugin is added like any plugin; one whose connector is off
+        # leaves with a typed ``removed`` row instead of failing (``connectors.follow``).
+        from clio_agent.connectors.follow import drop_off  # noqa: PLC0415
+
+        applied, dropped = drop_off(user_delta.then(delta), self.store.records())
         resolution = resolve_agent(
             self.catalog(extra),
             root.spec,
             marketplace=root.marketplace,
-            delta=user_delta.then(delta),
+            delta=applied,
             identity=identity,
         )
+        if dropped:
+            resolution.removed = [*resolution.removed, *dropped]
+        # A server whose connector is off is left out, typed (``connectors.server_gate``).
+        from clio_agent.connectors.server_gate import gate  # noqa: PLC0415
+
+        if gate(resolution) or dropped:
+            resolution.digest = resolution_digest(resolution.body())
         if entry.user_agent is not None:
             resolution.agent = {
                 **resolution.agent,
@@ -374,6 +401,10 @@ class PluginService:
         self, parent: Resolution, subagent_id: str, *, pin: bool = True
     ) -> Resolution:
         resolution = resolve_subagent(self.catalog(), parent, subagent_id)
+        from clio_agent.connectors.server_gate import gate  # noqa: PLC0415
+
+        if gate(resolution):
+            resolution.digest = resolution_digest(resolution.body())
         if pin:
             self.store.save_resolution(resolution.digest, resolution.to_dict())
         return resolution

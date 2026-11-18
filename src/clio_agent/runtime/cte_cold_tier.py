@@ -268,6 +268,16 @@ def metadata_log_warn_bytes() -> int:
 
 
 def probe_cte_metadata_log(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+    """The metadata log's size row and, when this boot found anything, whether it was
+    restored whole (``clio_core_metadata_restore``, FN-14)."""
+    from clio_agent.runtime.clio_core_metadata_restore_health import (  # noqa: PLC0415
+        probe_clio_core_metadata_restore,
+    )
+
+    return [*_metadata_log_size_rows(env=env), *probe_clio_core_metadata_restore()]
+
+
+def _metadata_log_size_rows(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
     """Report the size of clio-core's metadata write-ahead log.
 
     clio-core truncates the log after each completed metadata snapshot, so it normally

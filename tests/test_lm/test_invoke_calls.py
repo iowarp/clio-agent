@@ -259,3 +259,43 @@ def test_an_invented_result_tag_is_not_a_placeholder(invoke: None) -> None:
     split = split_reply("<invoke_result>\nok\n</invoke_result>", call_prefix="c",
                         available_tools=TOOLS, schemas=SCHEMAS)  # fmt: skip
     assert split.calls == []
+
+
+def test_a_string_or_list_parameter_written_as_a_json_list_is_the_list(invoke: None) -> None:
+    """AQ32: an MCP tool's ``signals: list[str] | Literal["all"]`` accepts a string, so
+    ``["v(out)"]`` reached it as the string '["v(out)"]' and the tool refused it, three
+    times running. SABOTAGE: read any string-accepting parameter raw and ``signals`` is
+    a string again. The literal ``all`` and text that is not JSON stay strings."""
+    signals = {"anyOf": [{"type": "array", "items": {"type": "string"}},
+                         {"const": "all", "type": "string"}]}  # fmt: skip
+    schemas = {"plot": {"properties": {"signals": signals, "title": {"type": "string"}}}}
+
+    def read(value: str, title: str = "t") -> dict:
+        [call] = split_reply(_call("plot", signals=value, title=title), call_prefix="c",
+                             available_tools=["plot"], schemas=schemas).calls  # fmt: skip
+        return call.input
+
+    assert read('["v(out)"]') == {"signals": ["v(out)"], "title": "t"}
+    assert read("all")["signals"] == "all"
+    assert read("[v(out)")["signals"] == "[v(out)"
+    assert read("all", title='["x"]')["title"] == '["x"]'  # a plain string stays raw
+    by_ref = {"plot": {"properties": {"signals": {"$ref": "#/$defs/Signals"}}}}
+    [call] = split_reply(_call("plot", signals='{"names": ["v(out)"]}'), call_prefix="c",
+                         available_tools=["plot"], schemas=by_ref).calls  # fmt: skip
+    assert call.input == {"signals": {"names": ["v(out)"]}}  # a $ref may be a structure
+
+
+def test_a_block_repeating_one_identical_call_is_cut_after_its_last_whole_copy(
+    invoke: None,
+) -> None:
+    same = _call("shell_bash", command="ls")
+    varied = "".join(_call("shell_bash", command=f"ls {n}") for n in range(20))
+    assert invoke_calls.repeated_call_end(varied, TOOLS) is None
+    assert invoke_calls.repeated_call_end(same * 8, TOOLS) is None  # at the limit
+    reply = "Loading.\n" + same * 30 + '<invoke name="shell_bash">\n<parameter'
+    end = invoke_calls.repeated_call_end(reply, TOOLS)
+    assert end is not None
+    kept = reply[:end]
+    assert kept.endswith("</invoke>") and kept.count("<invoke ") == 9
+    split = split_reply(kept, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
+    assert len(split.calls) == 9 and all(c.name == "shell_bash" for c in split.calls)

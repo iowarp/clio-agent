@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from clio_agent.runtime import codex_desktop_access as access
-from clio_agent.runtime import sandbox_cli
+from clio_agent.runtime import fleet_runtime_paths, sandbox_cli
 from clio_agent.tools import desktop_mcp_runtime
 
 
@@ -19,7 +19,7 @@ def test_bundled_plan_uses_only_its_runtime_cache_and_temp(
     monkeypatch.setattr(desktop_mcp_runtime, "resolve_bundled_runtime_root", lambda: tmp_path)
     monkeypatch.setattr(access.paths, "user_cache_dir", lambda: tmp_path / "private-cache")
     monkeypatch.delenv("CLIO_KIT_CACHE_DIR", raising=False)
-    plan = sandbox_cli._resolve_fleet_runtime_paths()
+    plan = fleet_runtime_paths._resolve_fleet_runtime_paths()
     assert plan[:2] == [
         ("bundled_runtime", str(tmp_path), True),
         ("clio_kit_cache", str(tmp_path / "private-cache" / "mcp-runtime"), True),

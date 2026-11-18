@@ -1,0 +1,6 @@
+[
+ {"open": "pv-fix2-locked2"},
+ {"send": "Connect to the ParaView on the host called locked and open /home/researcher/data/wavelet.vti there."},
+ {"shell": "pgrep -af 'ssh .*locked' || echo 'no ssh to locked'", "label": "H5 after the turn"},
+ {"shot": "h5-locked-answer-clean"}
+]

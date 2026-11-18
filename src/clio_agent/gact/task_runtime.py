@@ -20,6 +20,7 @@ from clio_agent.gact.obligations import Obligations
 from clio_agent.gact.question_events import QuestionEvents
 from clio_agent.gact.question_surface import prepare_question_gate
 from clio_agent.gact.questions import QuestionCommands
+from clio_agent.gact.restart_interruptions import RESUMES_TURN
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import prepare_child_session
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
@@ -93,6 +94,9 @@ async def start(app: Any) -> None:
     app.state.questions.before_post = lambda task, definition: prepare_question_gate(
         app, task, definition
     )
+    from clio_agent.gact.unattended import auto_reply  # noqa: PLC0415
+
+    app.state.questions.auto_reply = lambda task, definition: auto_reply(app, task, definition)
     app.state.external_tasks = ExternalTasks(app)
 
     def authorize(submission: SubmissionContext) -> None:
@@ -183,6 +187,12 @@ async def start(app: Any) -> None:
         from clio_agent.gact.turn import _run_turn_in_background
         from clio_agent.gact.types import Message, Part
 
+        def continuation_behavior(session_id: str) -> dict[str, Any]:
+            from clio_agent.gact.message_contract import continued_behavior  # noqa: PLC0415
+
+            behavior = continued_behavior(app.state.messages.get(session_id, []))
+            return {"behavior": behavior} if behavior else {}
+
         def prepare() -> tuple[Message, str]:
             original = history.read_content(segment.trigger.content)
             message_id = original.get("message_id") if isinstance(original, dict) else None
@@ -258,6 +268,10 @@ async def start(app: Any) -> None:
                 if not isinstance(raw_metadata, dict):
                     raise ValueError("Trusted continuation metadata is malformed")
                 producer_metadata = raw_metadata
+            resumed = original.get("resumes_turn") if isinstance(original, dict) else None
+            if segment.trigger.kind == "control" and isinstance(resumed, str) and resumed:
+                # A restart's recovery continues the interrupted turn (CC-O1).
+                producer_metadata = {RESUMES_TURN: resumed}
             source = (
                 original.get("source", segment.trigger.kind)
                 if isinstance(original, dict)
@@ -285,6 +299,7 @@ async def start(app: Any) -> None:
                         "system_injection": True,
                         "assignment_handle": segment.assignment.handle,
                         "parent_turn_id": assignment_details.parent_turn_id,
+                        **continuation_behavior(segment.session_id),
                         **producer_metadata,
                     },
                 ),

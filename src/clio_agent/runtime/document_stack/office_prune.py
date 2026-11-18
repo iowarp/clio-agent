@@ -66,6 +66,68 @@ WINDOWS_UNREAD_PROGRAM_FILES = frozenset(
 # it wants is missing, so the other 17 themes and the help images (about 66 MB) are
 # unread.
 KEPT_ICON_THEMES = frozenset({"colibre", "colibre_dark"})
+# ``share/config/soffice.cfg`` describes the desktop UI: the dialogs, menus, toolbars,
+# status bars and sidebars LibreOffice builds when a window or dialog opens. CLIO never
+# opens its Office with a UI. A trace of the first start, the profile seed and every
+# conversion CLIO and its skills run (Writer, Calc, Impress and Draw documents to and from
+# OOXML, ODF, legacy formats, RTF, HTML, text and CSV, image export, PDF and image import,
+# and corrupt input) read 21 of its 1,912 files: Writer's single-mode toolbars, the
+# Impress view's toolbar, tab bar, slide layouts and transitions, and three svt widgets.
+# These subtrees of it (relative to soffice.cfg) held none of them: about 1,700 files.
+UNREAD_UI_TREES = frozenset(
+    {
+        ("cui",),
+        ("dbaccess",),
+        ("desktop",),
+        ("editeng",),
+        ("filter",),
+        ("formula",),
+        ("fps",),
+        ("sfx",),
+        ("svx",),
+        ("uui",),
+        ("vcl",),
+        ("writerperfect",),
+        ("xmlsec",),
+        *(
+            ("modules", module)
+            for module in (
+                "BasicIDE",
+                "StartModule",
+                "dbapp",
+                "dbbrowser",
+                "dbquery",
+                "dbrelation",
+                "dbreport",
+                "dbtable",
+                "dbtdata",
+                "sabpilot",
+                "sbibliography",
+                "scalc",
+                "scanner",
+                "schart",
+                "sdraw",
+                "sglobal",
+                "smath",
+                "spropctrlr",
+                "sweb",
+                "swform",
+                "swreport",
+                "swxform",
+            )
+        ),
+        ("modules", "swriter", "ui"),
+    }
+)
+# The menus, context menus and status bars of every module (``modules/<module>/<folder>``),
+# which the same trace never read.
+UNREAD_UI_MODULE_FOLDERS = frozenset({"menubar", "popupmenu", "statusbar"})
+# The options dialog of the dict-* extensions' Lightproof grammar checkers
+# (``dict-*/dialog``): its layout (.xdl) and its strings in every UI language
+# (.properties, .default), about 500 files only Tools > Options shows. The dialog's
+# configuration (.xcs, .xcu) loads at start and stays.
+UNREAD_DICTIONARY_DIALOG_SUFFIXES = frozenset({".default", ".properties", ".xdl"})
+UI_CONFIGURATION = ("share", "config", "soffice.cfg")
 # Packages of LibreOffice's own Python (``program/python-core-*/lib``) for installing
 # and testing packages, which LibreOffice never imports (about 760 files).
 UNREAD_PYTHON_PACKAGES = frozenset(
@@ -79,12 +141,26 @@ def _remove_tree(path: Path) -> int:
     return files
 
 
+def _ui_configuration(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+    """``parts`` relative to the image's ``share/config/soffice.cfg``, if below it."""
+    for index in range(len(parts) - 2):
+        if parts[index : index + 3] == UI_CONFIGURATION:
+            return parts[index + 3 :]
+    return None
+
+
 def _unread_folder(parts: tuple[str, ...]) -> bool:
     """Whether the folder ``parts`` (relative to an image) is one of the unread trees."""
     for size in (2, 3):
         if len(parts) >= size and parts[-size:] in UNREAD_TREES:
             return True
     if len(parts) >= 2 and parts[-2:] in WINDOWS_UNREAD_TREES and platform.system() == "Windows":
+        return True
+    ui = _ui_configuration(parts)
+    if ui is not None and (
+        ui in UNREAD_UI_TREES
+        or (len(ui) == 3 and ui[0] == "modules" and ui[2] in UNREAD_UI_MODULE_FOLDERS)
+    ):
         return True
     return (
         len(parts) >= 3
@@ -127,6 +203,29 @@ def _unread_program_file(parts: tuple[str, ...]) -> bool:
     )
 
 
+def _unread_dictionary_dialog(folder: Path | PurePath, name: str) -> bool:
+    """Whether ``name`` in ``folder`` is a dict-* extension's options dialog layout or
+    strings (``extensions/dict-*/dialog``)."""
+    return (
+        folder.name == "dialog"
+        and folder.parent.name.startswith("dict-")
+        and folder.parent.parent.name == "extensions"
+        and PurePath(name.lower()).suffix in UNREAD_DICTIONARY_DIALOG_SUFFIXES
+    )
+
+
+def _descend(parts: tuple[str, ...]) -> bool:
+    """Whether pruning looks inside the folder ``parts``: translations and extensions are
+    near the top of every layout, the unread UI trees at most three levels below
+    soffice.cfg, and the extensions' dialogs one level below them."""
+    if len(parts) < 6:
+        return True
+    ui = _ui_configuration(parts)
+    if ui is not None:
+        return len(ui) < 3
+    return parts[-1] == "dialog" and parts[-2].startswith("dict-") and parts[-3] == "extensions"
+
+
 def unread(relative: PurePath) -> bool:
     """Whether ``prune_unread`` would remove this file of an image (a path below it).
 
@@ -142,6 +241,8 @@ def unread(relative: PurePath) -> bool:
     if len(parts) > 1 and _unread_file(parts[-2], parts[-1]):
         return True
     if _unread_icon_theme(parts) or _unread_program_file(parts):
+        return True
+    if _unread_dictionary_dialog(relative.parent, parts[-1]):
         return True
     for index, part in enumerate(parts[:-1]):
         parent = parts[index - 1] if index else ""
@@ -174,12 +275,13 @@ def prune_unread(image: Path) -> int:
     extensions, the non-English UI translations (``resource/<lang>``) and their
     configuration packs (``registry/res/*_<lang>.xcd``, which every start reads: about
     2 s per cold conversion), the desktop-only ``UNREAD_TREES``, the translated readmes
-    and the ``UNREAD_PYTHON_PACKAGES`` of LibreOffice's Python, and on Windows also the
+    and the ``UNREAD_PYTHON_PACKAGES`` of LibreOffice's Python, the desktop UI
+    definitions in ``UNREAD_UI_TREES`` and ``UNREAD_UI_MODULE_FOLDERS`` and the
+    grammar checkers' options dialogs, and on Windows also the
     ``WINDOWS_UNREAD_TREES``, the ``WINDOWS_UNREAD_PROGRAM_FILES`` and the icon themes
-    outside ``KEPT_ICON_THEMES``. The
-    application, filters,
-    fonts, hyphenation patterns and English (``en*``) stay, so conversions are
-    pixel-identical. Returns the number of files removed.
+    outside ``KEPT_ICON_THEMES``. The application, filters, fonts, hyphenation patterns,
+    the UI configuration a conversion builds and English (``en*``) stay, so conversions
+    are pixel-identical. Returns the number of files removed.
 
     macOS is skipped: LibreOffice.app is TDF's notarized bundle, and removing any
     sealed resource fails ``codesign --verify`` and Gatekeeper.
@@ -222,13 +324,13 @@ def prune_unread(image: Path) -> int:
                 _unread_file(path.name, name)
                 or _unread_icon_theme(entry)
                 or _unread_program_file(entry)
+                or _unread_dictionary_dialog(path, name)
             ):
                 (path / name).unlink()
                 removed += 1
-        # Translations and extensions are near the top of every layout; skip the rest.
         names[:] = [
             name
             for name in names
-            if (path / name).exists() and len((path / name).relative_to(image).parts) < 6
+            if (path / name).exists() and _descend((path / name).relative_to(image).parts)
         ]
     return removed

@@ -4,8 +4,7 @@ Given an agent's frozen spec and the installed plugin records:
 
 1. expand packs to the full plugin set;
 2. apply the user's delta (additions, then removals);
-3. pull in hard requirements, and cascade the removal of a required plugin to
-   every plugin that requires it;
+3. pull in hard requirements; cascade a required plugin's removal to every plugin needing it;
 4. check trust, validity, version ranges, collisions and the model
    requirement union;
 5. order hooks child to parent, then by ``before``/``after``; a cycle fails;
@@ -613,6 +612,7 @@ def _finish(
                 "removable": entry.record.id != CORE_PLUGIN,
                 "executable_digest": entry.record.executable_digest,
                 "text_digest": entry.record.text_digest,
+                "follows": entry.record.follows,
             }
             for entry in entries
         ],
@@ -688,12 +688,11 @@ def resolve_agent(
     """Resolve ``spec`` (from ``marketplace``) with ``delta`` applied."""
 
     builder = _Builder(catalog, marketplace)
-    selections = []
     depth_of = {layer: index for index, layer in enumerate(spec.layers)}
-    for selection in spec.plugins:
-        selections.append(
-            (selection.ref, "agent", selection.layer, depth_of.get(selection.layer, 0))
-        )
+    selections = [
+        (selection.ref, "agent", selection.layer, depth_of.get(selection.layer, 0))
+        for selection in spec.plugins
+    ]
     removed = _resolve_set(builder, selections, delta, user_depth=len(spec.layers))
     entries = sorted(builder.entries.values(), key=lambda e: e.order)
     identity = dict(identity or {})
@@ -709,6 +708,7 @@ def resolve_agent(
         "spec_checksum": spec.checksum,
         "parent": identity.get("parent", ""),
         "kind": "agent",
+        **({"bare": True} if spec.bare else {}),  # only when set: other digests unchanged
     }
     return _finish(
         builder,

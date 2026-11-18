@@ -21,6 +21,7 @@ from clio_agent.arc.task_types import (
     TaskSnapshot,
     argument_digest,
 )
+from clio_agent.gact.assignment_pending import pending_work
 from clio_agent.gact.assignment_response import assignment_outputs
 from clio_agent.gact.fleet.child_model import warm_model_catalog
 from clio_agent.gact.fleet.guard import guard_spending
@@ -300,11 +301,7 @@ def _finish_segment(
             return
         if current is None or current.cancellation_requested_at is not None:
             return
-        pending = [
-            self.history.task_snapshot(handle)
-            for handle in self.history.tree_handles(segment.session_id, active_only=True)
-            if handle != current.handle
-        ]
+        pending = pending_work(self.history, segment.session_id, current.handle)
         details = (
             AssignmentDetails.model_validate(self.history.read_content(current.details))
             if current.details

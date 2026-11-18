@@ -17,6 +17,12 @@ a daemon, so the rules here are:
   state directory's daemon to a free port block and records that port in the
   generated ``cte.yaml``, so the move holds across restarts. A hand-written config
   is not rewritten; the attach refuses with a typed reason that names the setting.
+* A daemon this home just spawned (or a starting one it adopts) is attached to only
+  when, after the wait, it holds the port. Two homes that both find the port free spawn
+  at once; the loser's daemon exits on the bound port, and the winner's listener used to
+  answer the loser's wait, so the loser attached to the other home's store (FN-14: its
+  conversations were written there and answered 404 after a restart).
+  :func:`confirm_own_daemon_on_port` moves the loser off that port and spawns again, typed.
 
 The rules are the same on Linux, macOS and Windows.
 """
@@ -30,6 +36,7 @@ import re
 import socket
 import sys
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -41,6 +48,7 @@ logger = logging.getLogger(__name__)
 DAEMON_NOT_OWNED = "clio_core_daemon_not_owned"
 FOREIGN_DAEMON_ON_PORT = "clio_core_foreign_daemon_on_port"
 PORT_MOVED = "clio_core_port_moved_off_foreign_daemon"
+SPAWN_LOST_PORT = "clio_core_spawn_lost_port_to_foreign_daemon"
 
 #: clio-core binds a small contiguous block from its base port (the 65530 ceiling of
 #: ``arc.core_port`` leaves room for it); a candidate base needs the whole block free.
@@ -230,4 +238,66 @@ def move_off_foreign_daemon(config_path: str, foreign_port: int, state_dir: Path
     raise ClioCoreForeignDaemonError(
         f"Another user's or home's clio-core daemon holds port {foreign_port} and no free "
         f"port block was found from {_CANDIDATE_FIRST}; set arc.core_port to a free port."
+    )
+
+
+def _lost_to_foreign(port: int, alive: Callable[[int], bool]) -> bool:
+    """Whether a daemon this home does not own answers on ``port`` after a spawn wait."""
+    return alive(port) and daemon_ownership(port, listening=True) == "foreign"
+
+
+def confirm_own_daemon_on_port(
+    port: int,
+    config_path: str,
+    state_dir: Path,
+    *,
+    alive: Callable[[int], bool],
+    wait: Callable[[int], None],
+    respawn: Callable[[int], None],
+) -> bool:
+    """Wait for this home's spawned daemon and prove it is the one listening on ``port``.
+
+    ``wait`` returns as soon as anything answers on the port. When that listener is not
+    this home's pidfile daemon (another home won a simultaneous spawn and ours exited on
+    the bound port), this home's daemon is retired, its generated config moves to a free
+    port block (:func:`move_off_foreign_daemon`, logged with :data:`PORT_MOVED`) and
+    ``respawn`` starts it there once. Never attaches to the other home's daemon.
+
+    Returns:
+        ``True`` when the daemon was moved and spawned again (the config's port changed).
+
+    Raises:
+        ClioCoreForeignDaemonError: Lost the port twice, or the config is hand-written.
+        DaemonSpawnFailed: The daemon failed to start with no other daemon on its port.
+    """
+    from clio_agent.arc import runtime_stop  # noqa: PLC0415 - cycle
+    from clio_agent.arc.runtime_crash import DaemonSpawnFailed, DaemonStillStarting  # noqa: PLC0415
+
+    for attempt in range(2):
+        try:
+            wait(port)
+        except DaemonStillStarting:
+            raise
+        except DaemonSpawnFailed:
+            if not _lost_to_foreign(port, alive):
+                raise
+        if not _lost_to_foreign(port, alive):
+            return attempt > 0
+        logger.warning(
+            "clio-core daemon spawned by this home did not get port %d: another home's "
+            "daemon holds it (reason=%s attempt=%d config=%s)",
+            port,
+            SPAWN_LOST_PORT,
+            attempt + 1,
+            config_path,
+        )
+        if attempt > 0:
+            break
+        runtime_stop.kill_daemon_pidfile()
+        port = move_off_foreign_daemon(config_path, port, state_dir)
+        respawn(port)
+    raise ClioCoreForeignDaemonError(
+        f"This home's clio-core daemon could not get port {port}: another home's daemon "
+        "took it while it started, twice. CLIO never attaches to a daemon it did not "
+        "start; start CLIO again, or set arc.core_port to a free port."
     )

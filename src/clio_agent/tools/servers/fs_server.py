@@ -1,6 +1,6 @@
 """Filesystem MCP server for CLIO.
 
-Six curated tools. Four read, without executing anything; two write:
+Seven curated tools. Four read, without executing anything; three write:
 
     - read_file: read a range of a text file's lines, numbered, sized to the result bound.
     - list_directory: discover an approved folder's immediate entries (bounded).
@@ -8,6 +8,7 @@ Six curated tools. Four read, without executing anything; two write:
     - glob: find files by path pattern, newest first.
     - write_file: create a file or replace its whole content (Claude Code's Write).
     - edit_file: replace an exact string in an existing file (Claude Code's Edit).
+    - git_commit: record the folder's changes in git, run by CLIO with hooks disabled.
 
 Every tool honors file_policy + workspace boundaries. Reads inside the policy are
 always allowed. The two writes change the file on disk; their declared annotations
@@ -26,8 +27,10 @@ from pydantic import Field
 
 from clio_agent.runtime.check_scope import checked
 from clio_agent.tools import fs_edit
+from clio_agent.tools import git_commit as _git_commit
 from clio_agent.tools.builtin_annotations import (
     _FILE_WRITE_ANNOTATIONS,
+    _GIT_COMMIT_ANNOTATIONS,
     _READ_FILE_ANNOTATIONS,
 )
 from clio_agent.tools.builtin_annotations import (
@@ -195,6 +198,45 @@ def edit_file(
     """
 
     return fs_edit.edit_file(path, old_string, new_string, replace_all)
+
+
+@fs_server.tool(annotations=_GIT_COMMIT_ANNOTATIONS)
+@checked
+def git_commit(
+    path: Annotated[
+        str, Field(description="The folder whose changes to record, inside the workspace.")
+    ],
+    message: Annotated[str, Field(min_length=1, description="The commit message.")],
+    files: Annotated[
+        list[str] | None,
+        Field(
+            description="Exact paths, relative to path, to commit; omit to commit every "
+            "change under path."
+        ),
+    ] = None,
+    init: Annotated[
+        bool,
+        Field(description="Create the repository at path when there is none."),
+    ] = False,
+    author: Annotated[
+        str,
+        Field(
+            description="'Name <email>' to commit as, only when the person gave it; "
+            "otherwise their git identity is used."
+        ),
+    ] = "",
+) -> dict[str, Any]:
+    """Record changes in git: stage and commit them, creating the repository with init.
+
+    Use this for git changes: your commands and file tools cannot write a repository's
+    .git. CLIO runs git itself, with repository hooks disabled, after the person approves.
+    Untracked files are included, so a new repository's first commit takes everything
+    under path that .gitignore does not exclude. The result names the commit, its branch
+    and the files it changed, or why nothing was committed. Reading history (status, log,
+    diff) works with ordinary git commands.
+    """
+
+    return _git_commit.git_commit(path, message, files, init, author)
 
 
 __all__ = ["FS_TOOL_ANNOTATIONS", "fs_server"]

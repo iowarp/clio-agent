@@ -1,0 +1,64 @@
+# Home Assistant: homeassistant-ai/ha-mcp, MIT, a plain MCP server (no view) over the
+# person's own Home Assistant through its REST and WebSocket APIs. CLIO starts it through
+# the clio-kit launcher: clio-kit's home-assistant server (mcp-servers/home-assistant)
+# runs ha-mcp exactly as published, pinned to 9.2.0 (PyPI) and locked in clio-kit, in its
+# own Python 3.13 environment; CLIO never imports it. The group, Home and devices, comes
+# from clio-kit's clio-home bundle (derive.yaml). It reads HOMEASSISTANT_URL and
+# HOMEASSISTANT_TOKEN (a long-lived access token, made in Home Assistant under the
+# person's profile, Security). ha-mcp has 81 tools; the entry offers the ones that read
+# the home, act on devices and write automations, scripts, scenes, helpers and
+# dashboards. Restarting, files, add-ons, HACS, updates, the security policy and removing
+# devices, entities, areas or integrations stay in Home Assistant's own UI (apps ledger,
+# "Connectors as plugins"). The Home Assistant logo is a trademark and its assets are
+# CC BY-NC-SA 4.0 (home-assistant/assets), so the entry does not use it: its logo,
+# home-assistant.svg, is a generic house drawn for CLIO (apps ledger, "Connector logos (LG)").
+# ha-mcp maps the token "demo" to its public demo instance (https://ha-mcp-demo-server.qc-h.net,
+# reset weekly), which is how this entry was qualified without a home of our own.
+- id: home-assistant
+  name: Home Assistant
+  logo: home-assistant.svg
+  description: Read sensors and their history from your Home Assistant, control devices, and write automations, scripts, scenes and dashboards
+  server:
+    command: clio-kit
+    args: [mcp-server, home-assistant]
+    env:
+      HOMEASSISTANT_URL: ${need.url}
+      HOMEASSISTANT_TOKEN: ${need.token}
+  needs:
+    - key: url
+      kind: address
+      label: Your Home Assistant address
+      help: The address you open Home Assistant at, for example http://homeassistant.local:8123.
+    - key: token
+      kind: secret
+      label: Long-lived access token
+      help: In Home Assistant, open your profile, then Security, and create a long-lived access token.
+  tools:
+    - ha_get_overview
+    - ha_search
+    - ha_get_state
+    - ha_get_history
+    - ha_get_entity
+    - ha_get_device
+    - ha_list_floors_areas
+    - ha_get_zone
+    - ha_list_services
+    - ha_call_service
+    - ha_bulk_control
+    - ha_get_system_health
+    - ha_get_automation_traces
+    - ha_config_get_automation
+    - ha_config_set_automation
+    - ha_config_remove_automation
+    - ha_config_get_script
+    - ha_config_set_script
+    - ha_config_remove_script
+    - ha_config_get_scene
+    - ha_config_set_scene
+    - ha_config_remove_scene
+    - ha_config_list_helpers
+    - ha_config_set_helper
+    - ha_config_get_dashboard
+    - ha_config_set_dashboard
+    - ha_set_entity
+  plugin: home-assistant

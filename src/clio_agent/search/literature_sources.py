@@ -211,6 +211,13 @@ async def openalex_list(filter_expr: str, limit: int, *, key: str) -> list[Paper
 # ------------------------------------------------------------------- Crossref
 
 
+def _full_title(title: str, subtitles: list[str]) -> str:
+    """A title with its subtitle, unless the title already carries it."""
+    if not subtitles or not title or subtitles[0].lower() in title.lower():
+        return title
+    return f"{title}: {subtitles[0]}"
+
+
 def crossref_record(row: dict[str, Any]) -> PaperRecord:
     """One Crossref work as a record (``relation`` becomes ``versions``)."""
 
@@ -220,6 +227,9 @@ def crossref_record(row: dict[str, Any]) -> PaperRecord:
     )
     year = issued[0][0] if issued and issued[0] and isinstance(issued[0][0], int) else None
     titles = row.get("title") or [""]
+    # Crossref splits "Chimp: Efficient lossless ..." into a title and a subtitle;
+    # the work's full title joins them, as it appears on the paper.
+    subtitles = [plain(part) for part in row.get("subtitle") or [] if plain(part)]
     venues = row.get("container-title") or [""]
     authors = [
         " ".join(filter(None, (a.get("given"), a.get("family")))) or str(a.get("name") or "")
@@ -242,7 +252,7 @@ def crossref_record(row: dict[str, Any]) -> PaperRecord:
     )
     kind = str(row.get("subtype") or row.get("type") or "")
     record = PaperRecord(
-        title=plain(titles[0] if titles else ""),
+        title=_full_title(plain(titles[0] if titles else ""), subtitles),
         ids=_ids(doi=doi, arxiv=arxiv_id_of(doi) if doi.startswith("10.48550") else ""),
         authors=authors,
         year=year,
@@ -285,6 +295,42 @@ async def crossref_search(
     if not isinstance(items, list):
         raise SourceError("crossref", http.FAILED, "no items list")
     return [crossref_record(row) for row in items if isinstance(row, dict)]
+
+
+#: ChemRxiv's DOI prefix. Its own API refuses automated clients, so its preprints
+#: are found through Crossref, which registers every ChemRxiv DOI.
+CHEMRXIV_PREFIX = "10.26434"
+
+
+async def chemrxiv_search(
+    query: str, limit: int, *, email: str, after: str, before: str
+) -> list[PaperRecord]:
+    """ChemRxiv preprints matching ``query``, through Crossref's ChemRxiv prefix."""
+
+    filters = [f"prefix:{CHEMRXIV_PREFIX}"]
+    if after:
+        filters.append(f"from-posted-date:{after}")
+    if before:
+        filters.append(f"until-posted-date:{before}")
+    params: dict[str, Any] = {
+        "query": query,
+        "rows": min(limit, 50),
+        "filter": ",".join(filters),
+        **_crossref_params(email),
+    }
+    response = await http.request("crossref", "GET", f"{CROSSREF}/works", params=params)
+    data = http.json_body("crossref", response)
+    items = data.get("message", {}).get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise SourceError("chemrxiv", http.FAILED, "no items list")
+    records = []
+    for row in items:
+        if isinstance(row, dict):
+            record = crossref_record(row)
+            record.found_in = ["chemrxiv"]
+            record.kind = record.kind or "preprint"
+            records.append(record)
+    return records
 
 
 async def crossref_work(doi: str, *, email: str) -> dict[str, Any]:

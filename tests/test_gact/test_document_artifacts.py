@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import time
+import threading
 import zipfile
 from pathlib import Path
 from typing import cast
@@ -32,6 +32,24 @@ from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_gact.test_post_messages import FakeClioAgent
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+# A loaded CI runner can take seconds to boot the app and dispatch a turn; the per-test
+# hang guard (180 s) still bounds a dispatch that never comes.
+_DISPATCH_WAIT_S = 120
+
+
+class _SignallingAgent(FakeClioAgent):
+    """FakeClioAgent that signals each dispatch, so a test awaits it, not a wall clock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dispatched = threading.Event()
+
+    def forward(self, question: str, session_id: str) -> object:
+        try:
+            return super().forward(question, session_id)
+        finally:
+            self.dispatched.set()
 
 
 def _workspace_session(client: TestClient, root: Path) -> tuple[str, str]:
@@ -133,7 +151,7 @@ def test_review_is_version_bound_dispatched_once_and_preserved_as_typed_part(
     root.mkdir()
     markdown = root / "report.md"
     markdown.write_text("# Finding\nInitial text.\n")
-    agent = FakeClioAgent()
+    agent = _SignallingAgent()
 
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as client:
         _workspace_id, session_id = _workspace_session(client, root)
@@ -156,9 +174,7 @@ def test_review_is_version_bound_dispatched_once_and_preserved_as_typed_part(
         }
         first = client.post(f"/v1/sessions/{session_id}/comment-sessions", json=payload)
         second = client.post(f"/v1/sessions/{session_id}/comment-sessions", json=payload)
-        deadline = time.time() + 5
-        while not agent.calls and time.time() < deadline:
-            time.sleep(0.02)
+        assert agent.dispatched.wait(_DISPATCH_WAIT_S), "the review was never dispatched"
         messages = client.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
 
     assert first.status_code == 202, first.text

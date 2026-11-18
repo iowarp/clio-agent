@@ -62,6 +62,24 @@ def test_converter_probes_all_overlap(
     }
 
 
+def test_inventory_leaves_office_to_a_concurrent_installer_check(
+    inventory_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skipped converter is reported unchecked and never started; the rest still run."""
+    launched: list[str] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        launched.append(command[0])
+        return f"{command[0]} version"
+
+    monkeypatch.setattr(inventory_module, "find_native", lambda name: name)
+    monkeypatch.setattr(inventory_module, "run", run)
+    result = inventory_module.native_inventory(tmp_path, skip=frozenset({"soffice"}))
+    assert list(result) == list(inventory_module.NATIVE_TOOLS)
+    assert result["soffice"] == {"status": "not_checked"}
+    assert sorted(launched) == sorted(set(inventory_module.NATIVE_TOOLS) - {"soffice"})
+
+
 def test_probe_failure_and_missing_tool_do_not_discard_other_results(
     inventory_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

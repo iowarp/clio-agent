@@ -17,14 +17,48 @@ _SHUTDOWN_MESSAGE = "turn cancelled by server shutdown"
 
 
 def turn_cancelled_by_shutdown(app: Any | None = None) -> bool:
-    """Whether the server's shutdown drain (not a client) is cancelling turns.
+    """Whether the server's shutdown (not a client) is cancelling turns.
 
-    ``app`` defaults to the active GACT app of the calling context.
+    True once the turn drain is closing, and also from the moment the server was asked
+    to exit (``uvicorn``'s ``should_exit``: SIGTERM, SIGINT or a managed shutdown),
+    which comes first. ``clio stop`` signals the server's whole process group, so a
+    provider's command-line child is stopped by the same signal and its turn fails
+    before the drain starts (CC-F3). ``app`` defaults to the active GACT app.
     """
     if app is None:
         app = _ctx.active_app()
-    runner = getattr(getattr(app, "state", None), "turn_runner", None)
-    return getattr(runner, "closing", False) is True
+    state = getattr(app, "state", None)
+    runner = getattr(state, "turn_runner", None)
+    if getattr(runner, "closing", False) is True:
+        return True
+    server = getattr(state, "uvicorn_server", None)
+    return getattr(server, "should_exit", False) is True
+
+
+def ended_by_shutdown(app: Any, outcome: Any) -> bool:
+    """Whether a turn that ended with an error did so because the server is stopping.
+
+    Such a segment is left open, as the shutdown drain leaves the turns it cancels, so
+    the restart resumes its assignment in place (``conversation_recovery``). Settling
+    it ``failed`` made a race decide between resumed and lost: a turn whose provider
+    child died with the server's own SIGTERM before the drain settled first (CC-F4).
+    """
+    return getattr(outcome, "error", None) is not None and turn_cancelled_by_shutdown(app)
+
+
+def shutdown_error_info(sid: str, exc: BaseException, *, app: Any | None = None) -> Any:
+    """The cancellation a turn that failed while the server stops gets, or ``None``.
+
+    A turn whose model or tool call failed because the server is shutting down was
+    stopped by the shutdown, not by its provider: it reads as ``cancelled`` with
+    ``reason=server_shutdown`` like a turn the drain cancels, and keeps the failure it
+    saw as ``details.diagnostic``.
+    """
+    if not turn_cancelled_by_shutdown(app):
+        return None
+    info = _cancelled_error_info(sid, execution_cancellation="best_effort", app=app)
+    info.details["diagnostic"] = f"{type(exc).__name__}: {exc}"[:500]
+    return info
 
 
 def cancellation_outcome(

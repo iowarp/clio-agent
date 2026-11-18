@@ -122,8 +122,9 @@ def test_malformed_optional_extract_keeps_the_direct_answer(extract_config: Any)
         [
             *_steps(4),
             Reply(text="The map and its filters are ready."),
-            Reply(text="not a structured extract"),
-            Reply(text="still not a structured extract"),
+            # The extract and its one format correction, each with DSPy's JSON
+            # fallback in this harness's default adapter.
+            *(Reply(text="not a structured extract") for _ in range(4)),
         ],
         "question -> answer, summary",
     )
@@ -131,17 +132,44 @@ def test_malformed_optional_extract_keeps_the_direct_answer(extract_config: Any)
     assert pred.answer == "The map and its filters are ready."
     assert not hasattr(pred, "summary") or pred.summary is None
     assert pred.termination_reason == "direct_response"
-    assert len(engine.requests) == 7
+    assert len(engine.requests) == 9
 
 
 def test_malformed_required_extract_still_fails_without_an_answer(extract_config: Any) -> None:
     extract_config()
     with pytest.raises(AdapterParseError):
         _run(
-            [*_steps(4), Reply(text="not structured"), Reply(text="still not structured")],
+            [*_steps(4), *(Reply(text="not structured") for _ in range(4))],
             "question -> answer",
             max_iters=4,
         )
+
+
+def test_an_unreadable_extract_gets_one_format_correction(extract_config: Any) -> None:
+    """Live: the extract answered under Markdown headings and the researcher's turn
+    was lost. The correction says which fields to write and how; the reply that
+    follows it is read.
+
+    SABOTAGE: drop the retry in ``clio_react_extract.extract`` and this raises
+    ``AdapterParseError``.
+    """
+    from clio_agent.lm.adapters import _chat_adapter_cls
+
+    extract_config()
+    lm, engine = scripted_lm(
+        [
+            *_steps(4),
+            Reply(text="## Reasoning\nFrom the trajectory.\n\n## Answer\nBest found: 42."),
+            _extracted(answer="Best found: 42."),
+        ]
+    )
+    with dspy.context(lm=lm, adapter=_chat_adapter_cls()(use_json_adapter_fallback=False)):
+        pred = ClioReAct("question -> answer", tools=[search], max_iters=4)(question="what?")
+
+    assert pred.termination_reason == "max_iters"
+    assert pred.answer == "Best found: 42."
+    assert len(engine.requests) == 6
+    assert "[[ ## format_problem ## ]]" in str(engine.requests[-1])
 
 
 def test_a_loop_that_ran_out_of_steps_gets_its_answer_extracted(extract_config: Any) -> None:

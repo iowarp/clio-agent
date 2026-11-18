@@ -412,6 +412,24 @@ def scratch_root(workspace: Path, *, create: bool = True) -> Path:
     return root
 
 
+def end_on_termination() -> None:
+    """Turn SIGTERM/SIGHUP into an exit that unwinds, so ``finally`` cleanup runs.
+
+    A confined worker starts LibreOffice in its own process group (:func:`run`), out
+    of reach of a signal sent to this worker's group; the installer detaches the
+    LibreOffice image it mounted when a quitting desktop sends SIGTERM after SIGINT.
+    Windows has neither signal.
+    """
+    if os.name == "nt":
+        return
+
+    def terminated(number: int, _frame: object) -> None:
+        raise SystemExit(128 + number)
+
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, terminated)
+
+
 def run(
     command: list[str],
     *,

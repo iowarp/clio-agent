@@ -41,6 +41,11 @@ from typing import Any, Literal
 
 KIND_WRITE_DENIED = "write_denied"
 KIND_ELEVATION_REQUIRED = "elevation_required"
+#: Blocked inside the write roots, on a path the server's own account may write: the
+#: sandboxed child lacks the account's privileges there (a root server's child cannot
+#: replace another account's files), so no folder grant helps; the command may run
+#: outside the sandbox with the person's allow (:mod:`.sandbox_outside`).
+KIND_PRIVILEGE_DENIED = "privilege_denied"
 KIND_OFFICE_IN_SHELL = "office_in_shell"
 CONFIRMED = "confirmed"
 POSSIBLE = "possible"
@@ -75,7 +80,12 @@ DENIAL_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
 #: #2139: AppKit LibreOffice aborts (SIGABRT) under the macOS shell fence.
 _OFFICE_COMMAND = re.compile(r"\b(?:soffice|libreoffice)\b", re.IGNORECASE)
 _ABORT_EXIT_CODES = (134, -6)
-_ELEVATION_TEXT = re.compile(r"requires elevation|\bERROR_ELEVATION_REQUIRED\b", re.IGNORECASE)
+_ELEVATION_TEXT = re.compile(
+    r"requires elevation|\bERROR_ELEVATION_REQUIRED\b"
+    # sudo asking for a password a confined, terminal-less command cannot give (macOS, Linux)
+    r"|sudo: (?:a terminal is required|a password is required|no tty present)",
+    re.IGNORECASE,
+)
 #: Quoted text in a denial line (straight and typographic quotes, as GNU tools print).
 _QUOTED = re.compile(r"'([^'\r\n]+)'|\"([^\"\r\n]+)\"|‘([^’\r\n]+)’|“([^”\r\n]+)”")
 #: Each quote kind alone, so a path quoted inside another quote (a ``repr``) is found too.
@@ -132,6 +142,7 @@ class BoundaryDiagnosis:
             KIND_WRITE_DENIED,
             KIND_ELEVATION_REQUIRED,
             KIND_OFFICE_IN_SHELL,
+            KIND_PRIVILEGE_DENIED,
         ):
             return None
         return cls(
@@ -198,7 +209,7 @@ def diagnose_boundary(
             kind=KIND_ELEVATION_REQUIRED,
             confidence=CONFIRMED,
             mechanism=mechanism,
-            message=_elevation_message(),
+            message=_elevation_message(platform),
             signature="ERROR_ELEVATION_REQUIRED",
         )
     if (
@@ -232,6 +243,17 @@ def diagnose_boundary(
     outside = [p for p in resolved if not within_roots(p, write_roots, platform=platform)]
     blocked = [p for p in outside if _person_could_write(p, flavor)]
     if not blocked:
+        inside = [p for p in resolved if p not in outside]
+        privileged = [p for p in inside if _account_may_write(p, flavor)]
+        if privileged and not narrowed:
+            return BoundaryDiagnosis(
+                kind=KIND_PRIVILEGE_DENIED,
+                confidence=POSSIBLE,
+                mechanism=mechanism,
+                paths=tuple(privileged),
+                message=_privilege_message(privileged, seam),
+                signature=signature,
+            )
         return None  # an ordinary permission error inside the territory, or outside the fence
     if narrowed:
         return BoundaryDiagnosis(
@@ -285,6 +307,47 @@ def diagnose_confined(
         narrowed=_scope_narrowed() if narrowed is None else narrowed,
     )
     return diagnosis.to_payload() if diagnosis is not None else None
+
+
+#: The ``signature`` of a diagnosis made from a call's declared write targets, not its text.
+WRITE_TARGET_SIGNATURE = "write_target_outside_territory"
+
+
+def diagnose_write_targets(
+    targets: Sequence[Path | str],
+    *,
+    write_roots: Sequence[Path | str],
+    mechanism: str,
+    platform: str = sys.platform,
+    seam: Seam = "tool",
+) -> BoundaryDiagnosis | None:
+    """Diagnose a failed confined call from the local paths it was asked to write.
+
+    A confined stdio MCP server reports its failures as prose, which may describe anything:
+    a remote host's ``Permission denied`` reads like a fenced write. This diagnosis reads no
+    text. It needs a fence that ran (``mechanism`` not ``none``) and absolute local
+    ``targets`` the call's arguments name as writes; only targets outside ``write_roots``
+    that the person's own account could write stay. ``None`` when none does.
+    """
+    if not mechanism or mechanism == "none":
+        return None
+    flavor = _flavor(platform)
+    absolute = [str(t) for t in targets if str(t) and flavor.absolute(str(t))]
+    resolved = _dedupe(_resolve(t, None, flavor) for t in absolute)
+    outside = [p for p in resolved if not within_roots(p, write_roots, platform=platform)]
+    blocked = [p for p in outside if _person_could_write(p, flavor)]
+    if not blocked:
+        return None
+    roots = _dedupe(nearest_existing_parent(p, platform=platform) for p in blocked)
+    return BoundaryDiagnosis(
+        kind=KIND_WRITE_DENIED,
+        confidence=CONFIRMED,
+        mechanism=mechanism,
+        paths=tuple(blocked),
+        request_roots=tuple(roots),
+        message=write_denied_message(roots, seam=seam),
+        signature=WRITE_TARGET_SIGNATURE,
+    )
 
 
 def _scope_narrowed() -> bool:
@@ -372,6 +435,38 @@ def _person_could_write(path: str, flavor: _Flavor) -> bool:
     return not _is_dir(parent) or os.access(parent, os.W_OK)
 
 
+def _server_is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _account_may_write(path: str, flavor: _Flavor) -> bool:
+    """Whether the server, running as root, may write this path its child could not.
+
+    A root server may write files another account owns; its sandboxed child runs without
+    those privileges. A server running as an ordinary account gives its child the same
+    rights, so a denial inside the territory there is an ordinary permission error.
+    Windows' ``os.access`` ignores ACLs, so nothing is claimed there.
+    """
+    if not flavor.native or flavor.windows or not _server_is_root():
+        return False
+    target = Path(path)
+    if not target.exists():
+        target = Path(nearest_existing_parent(path))
+    return os.access(target, os.W_OK)
+
+
+def _privilege_message(paths: Sequence[str], seam: Seam) -> str:
+    where = "this command" if seam == "shell" else "this step"
+    return (
+        f"The sandbox blocked {where} inside folders it may already write "
+        f"({_folders(paths)}): commands run there without this account's full privileges, "
+        "so allowing more folders will not help. If the step really needs it (installing "
+        "system software, changing files another account owns), call shell_bash again with "
+        "outside_sandbox=true and an access_reason: CLIO shows the person the exact command "
+        "and runs it outside the sandbox only if they allow. Never ask for a password."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Signatures and candidate paths.                                              #
 # --------------------------------------------------------------------------- #
@@ -407,6 +502,14 @@ def _line_candidates(lines: Sequence[str], flavor: _Flavor) -> list[str]:
             for match in _BEFORE_STRERROR.finditer(line):
                 token = match.group(1).strip(_TRIM)
                 if _path_like(token, flavor, quoted=False):
+                    found.append(token)
+    if not found and not flavor.windows:
+        # A tool that names the path earlier in the line ("Problem unlinking the file
+        # /var/lib/apt/... - PrepareFiles (13: Permission denied)"): absolute paths only.
+        for line in lines:
+            for token in line.split():
+                token = token.strip(_TRIM)
+                if token.startswith("/") and _path_like(token, flavor, quoted=False):
                     found.append(token)
     return found
 
@@ -523,11 +626,31 @@ def _office_message() -> str:
     )
 
 
-def _elevation_message() -> str:
+def _elevation_message(platform: str = sys.platform) -> str:
+    """Administrator rights go through the person twice: CLIO's card, then the OS's own
+    prompt, which takes any password itself. CLIO never sees a password."""
+    ask = (
+        "This needs administrator rights, which no folder grant gives. Call shell_bash again "
+        "with outside_sandbox=true and an access_reason: CLIO asks the person first, then runs "
+        "the command outside the sandbox"
+    )
+    if platform.startswith("win"):
+        how = ", and Windows shows them its own approval prompt (UAC)."
+    elif platform == "darwin":
+        how = (
+            ' wrapped as osascript -e \'do shell script "<command>" with administrator '
+            "privileges', and macOS asks them for their password in its own dialog. Don't use "
+            "sudo: a sandboxed command has no terminal to type into."
+        )
+    else:
+        how = (
+            " wrapped as pkexec <command>, and the system asks them to authenticate in its own "
+            "dialog. Where there is no graphical session, give the person the exact sudo "
+            "command to run in their own terminal instead."
+        )
     return (
-        "This needs administrator rights. CLIO's sandbox can't elevate a command, so no "
-        "permission prompt can be shown from here. Tell the person the exact file to run and "
-        "that Windows will ask them to approve the change. Don't try other ways to elevate."
+        f"{ask}{how} If they decline, tell them the exact command or file to run themselves. "
+        "Never ask for a password in the conversation and don't try other ways to elevate."
     )
 
 
@@ -596,9 +719,11 @@ __all__ = [
     "KIND_OFFICE_IN_SHELL",
     "KIND_WRITE_DENIED",
     "POSSIBLE",
+    "WRITE_TARGET_SIGNATURE",
     "BoundaryDiagnosis",
     "diagnose_boundary",
     "diagnose_confined",
+    "diagnose_write_targets",
     "hedged",
     "nearest_existing_parent",
     "publish_call_boundary",

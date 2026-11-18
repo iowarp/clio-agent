@@ -459,6 +459,11 @@ class AssignmentDetails(TaskRecord):
     execution_deadline: str | None = None
     inference_concurrency: int | None = Field(default=None, ge=1)
     cancellation_members: tuple[str, ...] | None = None
+    #: Who asked to cancel: ``person`` (an owner's control), ``agent`` (a model's
+    #: ``cancel_tasks``) or ``parent`` (an ancestor's cancellation reaching this one).
+    cancellation_by: Literal["person", "agent", "parent"] | None = None
+    #: Why, when the request named it (``conversation_stop``).
+    cancellation_reason: str | None = None
     input_evidence: tuple[AssignmentEvidence, ...] = ()
     evidence_assignment: str | None = None
 
@@ -489,11 +494,24 @@ class WorkflowCheckpoint(TaskRecord):
 
 
 class QuestionOption(TaskRecord):
-    """One displayed option and its exact answer value."""
+    """One displayed option and its exact answer value (the label when none is given)."""
 
     label: str
     value: str
     description: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _value_defaults_to_label(cls, data: Any) -> Any:
+        # An agent that lists only labels, or names each option by an ``id``, had its whole
+        # question refused and asked again: an ``id`` is the option's value, else its label.
+        if not isinstance(data, Mapping):
+            return data
+        option = dict(data)
+        named = option.pop("id", None)
+        if not option.get("value"):
+            option["value"] = named or option.get("label")
+        return option
 
 
 class QuestionDefinition(TaskRecord):

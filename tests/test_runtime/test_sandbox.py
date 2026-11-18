@@ -500,12 +500,46 @@ def test_effective_write_roots_share_file_policy_source() -> None:
     assert roots[: len(policy.allowed_roots)] == policy.allowed_roots
 
 
-def test_shell_roots_do_not_pull_in_the_fleet_tool_caches() -> None:
-    """The per-invocation shell profile is narrower than fleet (no mcp-uv-cache)."""
+def _covers(root: Path, target: Path) -> bool:
+    root, target = root.expanduser().resolve(), target.expanduser().resolve()
+    return target == root or target.is_relative_to(root)
+
+
+@pytest.mark.parametrize("narrowed", [False, True])
+def test_the_shell_cannot_write_clio_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, narrowed: bool
+) -> None:
+    """No shell root is or contains CLIO's server environments, settings, credentials or
+    plugin store (KiCad ledger FN-3: an `rm -rf` of the cache broke a running server)."""
+    from clio_agent import paths
+    from clio_agent.plugins.service import plugin_store_root
     from clio_agent.tools.mcp_config import _mcp_uv_cache_dir
 
-    shell_roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL)
-    assert _mcp_uv_cache_dir() not in shell_roots
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    policy = SimpleNamespace(
+        allowed_roots=[workspace], write_roots=[workspace / "node"] if narrowed else []
+    )
+    shell = sandbox.effective_write_roots(
+        sandbox.PROFILE_SHELL, policy=policy, workspace_root=str(workspace)
+    )
+    protected = [
+        _mcp_uv_cache_dir(),
+        paths.user_config_dir(),
+        paths.user_config_dir() / "mcp.yaml",
+        plugin_store_root(),
+        paths.user_cache_dir(),
+    ]
+    for root in shell:
+        for target in protected:
+            assert not _covers(root, target), (root, target)
+    # The shell's own redirected caches stay writable.
+    first = policy.write_roots[0] if narrowed else workspace
+    assert any(_covers(root, paths.workspace_cache_dir(str(first))) for root in shell)
+    fleet = sandbox.effective_write_roots(
+        sandbox.PROFILE_FLEET, policy=policy, workspace_root=str(workspace)
+    )
+    assert any(_covers(root, _mcp_uv_cache_dir()) for root in fleet)
 
 
 # --------------------------------------------------------------------------- #

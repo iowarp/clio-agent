@@ -63,7 +63,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact import permission_timeout
+from clio_agent.gact import permission_timeout, unattended
 from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
@@ -82,11 +82,16 @@ from clio_agent.gact.permission_context import (
 from clio_agent.gact.permission_context import (
     _normalize_mcp_tool_annotations as _normalize_mcp_tool_annotations,
 )
-from clio_agent.gact.permission_delivery import publish_permission_event, publish_waiting_call
+from clio_agent.gact.permission_delivery import (
+    permission_summary,
+    publish_permission_event,
+    publish_waiting_call,
+)
 from clio_agent.gact.permission_delivery import (
     record_resolved_permission as _record_resolved_permission,
 )
 from clio_agent.gact.permission_evidence import emit_permission_resolution, permission_identity
+from clio_agent.gact.permission_outside_sandbox import answer_fields, answered_or_outside
 from clio_agent.gact.planning import active_playbook_allowed_tools
 from clio_agent.gact.runtime import tool_permission_layers as layers
 from clio_agent.gact.runtime.globals import _resolve_tool_session
@@ -97,7 +102,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     resolve_detail,
 )
 from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
-from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, STANDARD_ANSWERS, allows
+from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, allows
 from clio_agent.gact.runtime.permission_policies import (
     _append_permission_policy_from_resolution,
     _flush_permission_policies,
@@ -107,7 +112,7 @@ from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.tools.catalog import get_tool_entry
+from clio_agent.tools.catalog import action_subject, get_tool_entry
 from clio_agent.tools.tool_observation import call_identity_claimed, peek_call_identity
 
 if TYPE_CHECKING:
@@ -484,19 +489,11 @@ def _ask_person(
     cancelled: Any,
 ) -> str:
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
-    running = call_identity_claimed()
-    holder: dict[str, Any] = {}
+    if (refused := unattended.refuse_ask(app, sid, name, args, approval_mode)) is not None:
+        return refused  # nobody to ask in an unattended run: denied, typed
+    running, holder = call_identity_claimed(), dict[str, Any]()
     decision = _ask_and_wait(
-        app,
-        sid,
-        name,
-        args,
-        context,
-        subject,
-        approval_mode,
-        policy_action,
-        cancelled,
-        holder,
+        app, sid, name, args, context, subject, approval_mode, policy_action, cancelled, holder
     )
     # A call that was already running while it waited reads as running again.
     if running and decision == "allow" and holder.get("row"):
@@ -531,18 +528,13 @@ def _ask_and_wait(
             # The waiting call's own row identity (the tool entity's id).
             **({"call_id": call_id} if call_id else {}),
         },
-        "summary": (
-            str(context["summary"])[:500]
-            if context and context.get("kind") == "native" and context.get("summary")
-            else f"{subject} call: {name}"
-        ),
+        "summary": permission_summary(name, context, subject),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "pending",
     }
     if _is_external_mcp_permission_context(context):
         row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
-    # A call from inside a run_code script shows the script and offers its grant.
-    row.update(script_grants.row_fields(list(STANDARD_ANSWERS)))
+    row.update(answer_fields(context))  # its answers, and a run_code script's grant
     # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
     # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
     # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
@@ -643,8 +635,8 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
         stash_pre_tool_intercept(None)
-        if layers.answered(name):  # a person approved this very call (``native_gate``)
-            return "allow"
+        if (answered := answered_or_outside(app, name, args, context)) is not None:
+            return answered  # a person approved this very call, or must for outside_sandbox
         # #1032: reads inside permitted territory need no action approval. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
         # here as the FIRST branch — before any hook or the plan/architect lock —
@@ -655,11 +647,8 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.folder_access import request_folder_access, requested_folders
 
         folders = requested_folders(name, args)
-        subject = (
-            "external MCP tool"
-            if _is_external_mcp_permission_context(context)
-            else "destructive tool"
-        )
+        external = _is_external_mcp_permission_context(context)
+        subject = "external MCP tool" if external else action_subject(name)
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)

@@ -12,6 +12,14 @@ _FILE_WRITE_ANNOTATIONS: dict[str, Any] = {
     "openWorldHint": False,
 }
 
+#: fs_git_commit adds commits (and, on request, the repository): it never rewrites or
+#: drops history, so it is not destructive, but it is a closed-world write.
+_GIT_COMMIT_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "openWorldHint": False,
+}
+
 #: Namespaced tool name → declared annotations for the fs built-ins. Exported so
 #: :mod:`clio_agent.tools.catalog` projects the read/write tags from the SAME
 #: mapping the decorators declare — one declaration, two consumers.
@@ -22,6 +30,9 @@ FS_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     "fs_read_file": _READ_FILE_ANNOTATIONS,
     "fs_write_file": _FILE_WRITE_ANNOTATIONS,
     "fs_edit_file": _FILE_WRITE_ANNOTATIONS,
+    # Records the folder's changes in its repository: a bounded write inside the
+    # approved folder (its ``.git``), never the network, so it asks like an edit.
+    "fs_git_commit": _GIT_COMMIT_ANNOTATIONS,
 }
 
 

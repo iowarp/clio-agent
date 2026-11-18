@@ -502,6 +502,60 @@ def diet_transport_args(
     return argv[0], argv[1:], merged_env
 
 
+def plan_key_for(namespace: str) -> str | None:
+    """The cache key of ``namespace``'s plan: the one applied to its last spawn, else
+    the one its learn-on-connect registration names (``None`` when it has neither)."""
+
+    with _scan_lock:
+        key = _applied_plans.get(namespace)
+        pending = _pending_learns.get(namespace)
+    if key is None and pending is not None:
+        key = _plan_key(pending[1], pending[2])
+    return key
+
+
+def plan_cached(key: str) -> bool:
+    """Whether the plan under ``key`` is still in the cache (not dropped since)."""
+
+    return key in _load_cache()
+
+
+def environment_prepared(namespace: str, environment: str) -> bool:
+    """``clio-kit mcp-server --prepare`` reported ``environment`` for ``namespace``.
+
+    Prepare is clio-kit's word on which environment the server runs in, and it may
+    replace the one a learned plan recorded (a new source hash, or the old one removed
+    as broken). A plan whose interpreter is not inside ``environment`` is dropped,
+    typed ``env_superseded``, so the next spawn takes the declared command (and is
+    learned again). Returns whether a plan was dropped.
+    """
+
+    key = plan_key_for(namespace)
+    if key is None or not environment:
+        return False
+    with _scan_lock:
+        plans = _load_cache()
+        plan = plans.get(key)
+        argv = plan.get("argv") if isinstance(plan, dict) else None
+        if not isinstance(argv, list) or not argv:
+            return False
+        prepared = Path(os.path.normcase(os.path.abspath(environment)))
+        interpreter = Path(os.path.normcase(os.path.abspath(str(argv[0]))))
+        if prepared in interpreter.parents:
+            return False
+        plans.pop(key, None)
+        _save_cache(plans)
+        _scans_scheduled.discard(key)
+    trace.event(
+        "TOOLS",
+        "mcp_spawn_diet_fallback server=%s reason=env_superseded plan_env=%s prepared=%s",
+        namespace,
+        interpreter.parent.parent,
+        prepared,
+    )
+    return True
+
+
 def spawn_failed(namespace: str) -> None:
     """Executor hook: a namespace's stdio connect failed — drop its dieted plan.
 

@@ -4,7 +4,11 @@ Each migration converts what an older CLIO wrote into what this one reads, and r
 done marker in the clio-core store it converts (no separate store). ``clio-agent migrate``
 (:mod:`clio_agent.gact.store_migrate_command`) runs every owed migration offline; the
 installers and the desktop's install-time prepare step run that command, so a normal
-start finds every marker and reads nothing else.
+start finds every marker and reads nothing else. A drag-installed desktop (macOS DMG,
+Linux AppImage, a package installed without the CLIO installer) has no install step,
+so its first start records the markers; on a new store that converts nothing, so the
+health row stays ready (a standalone ``clio-agent migrate`` there would only add a
+store open and close before the start).
 
 Boot only checks the markers (:func:`ensure_at_boot`, one record read each). A migration
 that is still owed (an install that skipped the step, a runtime swapped in without it, a
@@ -422,6 +426,7 @@ def ensure_at_boot(app: Any, name: str) -> bool:
         report.setdefault(name, MigrationResult(name, "already_done"))
         return False
     reason = item.boot_reason or OWED_AT_BOOT
+    new_store = item.has_input is None and not _holds_input(app)
     logger.warning(
         "store migration owed at boot reason=%s name=%s; running it once now. Installs and "
         "upgrades run `clio-agent migrate` so boot does not have to.",
@@ -440,8 +445,18 @@ def ensure_at_boot(app: Any, name: str) -> bool:
         raise
     if result.status == "done":
         result.reason = reason
+        if new_store:
+            result.details.setdefault("input", "none")
     report[name] = result
     return True
+
+
+def _holds_input(app: Any) -> bool:
+    # Boot asks this for an owed migration without its own ``has_input``; a history
+    # without a store counts as holding input, so its row never claims a new store.
+    if getattr(app.state.task_history, "arc", None) is None:
+        return True
+    return _holds_conversation(app)
 
 
 def _boot_report(app: Any) -> dict[str, MigrationResult]:
@@ -469,13 +484,14 @@ def health_rows(app: Any) -> list[Any]:
     rows = [result.as_dict() for result in report.values()]
     failed = [r for r in report.values() if r.status == "failed"]
     ran = [r for r in report.values() if r.status == "done"]
+    converted = [r for r in ran if r.details.get("input") != "none"]
     if failed:
         state = IntegrationState.UNAVAILABLE
         summary = "Store migration failed at boot: " + ", ".join(
             f"{r.name} ({r.reason})" for r in failed
         )
         next_action = "Stop CLIO, run `clio-agent migrate` and read its output."
-    elif ran:
+    elif converted:
         state = IntegrationState.DEGRADED
         summary = (
             "This install skipped `clio-agent migrate`; boot ran "
@@ -483,6 +499,16 @@ def health_rows(app: Any) -> list[Any]:
             + " once."
         )
         next_action = "Nothing to do: the markers are recorded and later boots only check them."
+    elif ran:
+        # A new store (a desktop drag install's first start): `clio-agent migrate` would
+        # have written the same markers and converted nothing, so nothing was skipped.
+        state = IntegrationState.READY
+        seconds = sum(r.seconds for r in ran)
+        summary = (
+            f"New store: boot recorded {len(ran)} migration marker(s) in {seconds:.1f}s; "
+            "there was nothing to convert."
+        )
+        next_action = ""
     else:
         state = IntegrationState.READY
         summary = f"Store migrations done; boot checked {len(report)} marker(s) and ran none."

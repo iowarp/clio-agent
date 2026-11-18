@@ -31,6 +31,11 @@ FS_ANNOTATIONS: dict[str, dict[str, bool]] = {
         "destructiveHint": True,
         "openWorldHint": False,
     },
+    "git_commit": {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "openWorldHint": False,
+    },
 }
 SHELL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "bash": {

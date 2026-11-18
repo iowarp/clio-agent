@@ -322,6 +322,8 @@ def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
     agent = _Recorder("FILE_REVIEW_OK")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
+    # The project is the conversations' folder (a first run's default is CLIO's data folder).
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(tmp_path))
     command_dir = tmp_path / ".clio" / "commands"
     command_dir.mkdir(parents=True)
     (command_dir / "review.md").write_text(
@@ -412,6 +414,8 @@ def test_compatible_claude_command_file_is_listed(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
+    # The project is the conversations' folder (a first run's default is CLIO's data folder).
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(tmp_path))
     command_dir = tmp_path / ".claude" / "commands"
     command_dir.mkdir(parents=True)
     (command_dir / "summarize.md").write_text(
@@ -446,6 +450,8 @@ def test_command_file_with_shell_field_is_visible_but_disabled(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
+    # The project is the conversations' folder (a first run's default is CLIO's data folder).
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(tmp_path))
     command_dir = tmp_path / ".clio" / "commands"
     command_dir.mkdir(parents=True)
     (command_dir / "unsafe.md").write_text(
@@ -536,6 +542,8 @@ def test_a_workspace_goal_file_is_reserved_and_goal_still_runs_the_builtin(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
+    # The project is the conversations' folder (a first run's default is CLIO's data folder).
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(tmp_path))
     (tmp_path / ".clio" / "commands").mkdir(parents=True)
     (tmp_path / ".clio" / "commands" / "goal.md").write_text("Not the goal.", encoding="utf-8")
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
@@ -552,6 +560,8 @@ def test_workspace_clio_file_shadows_claude_file_and_user_files_list(
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(tmp_path)
+    # The project is the conversations' folder (a first run's default is CLIO's data folder).
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(tmp_path))
     for folder, text in (
         (tmp_path / ".clio" / "commands", "From clio."),
         (tmp_path / ".claude" / "commands", "From claude."),

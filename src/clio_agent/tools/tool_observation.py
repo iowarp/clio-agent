@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
+from clio_agent.tools import recorded_results, view_only_results
+
 logger = logging.getLogger(__name__)
 
 #: The structured-value lane: when a caller binds a list here (a ``run_code`` script's
@@ -24,6 +26,10 @@ OBSERVATION_GROUP: ContextVar[Any | None] = ContextVar("clio_observation_group",
 #: True while a refused call's completion is reported (:func:`notify_refused_call`), so
 #: the observer records it as denied, not as a call that ran and failed.
 REFUSED_CALL: ContextVar[bool] = ContextVar("clio_refused_call", default=False)
+#: The completed call's result before its record was bounded, for the observer's effects
+#: (a write's change record and previous content), which must see it whole. Set only for
+#: the observer call.
+WHOLE_RESULT: ContextVar[Any | None] = ContextVar("clio_whole_result", default=None)
 
 
 class RefusedCallError(PermissionError):
@@ -125,6 +131,26 @@ def notify_tool_observer(
         sink.append((error, result))
     if observer is None:
         return None
+    # The record keeps a bounded copy: no content of a view-only call (MC-F3), and a
+    # large result as its head and a file (GG-F3). The caller keeps the whole result.
+    args = view_only_results.recorded_arguments(args)
+    whole = WHOLE_RESULT.set(result if phase == "completed" else None)
+    try:
+        if phase == "completed":
+            result = recorded_results.observed(result)
+        return _observe(observer, name, args, phase, error, result)
+    finally:
+        WHOLE_RESULT.reset(whole)
+
+
+def _observe(
+    observer: ToolObserver | LegacyToolObserver,
+    name: str,
+    args: Mapping[str, Any],
+    phase: str,
+    error: str | None,
+    result: Any | None,
+) -> Any | None:
     group = OBSERVATION_GROUP.get()
     if group is not None:  # a background script's nested call: recorded grouped (CT5)
         return group.observe(observer, name, args, phase, error, result)
@@ -164,7 +190,7 @@ def notify_refused_call(
         error = _tool_cancellation_error(
             name,
             "permission_wait",
-            message=f"tool call cancelled by client before it was approved: {name!r} did not run",
+            before_approval=f"{name!r} did not run",
         )
         notify_tool_observer(observer, name, args, "completed", str(error))
         return error

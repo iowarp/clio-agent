@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<!-- CLIO connector icon: groups and datasets in a hierarchy. Drawn for CLIO (our own work, not a third-party mark); apps ledger "Connector logos (LG)". -->
+<rect width="24" height="24" rx="5.5" fill="#3370C0"/>
+<g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9.5" y="4.5" width="5" height="4" rx="1"/><path d="M12 8.5v3M7 11.5h10M7 11.5v3.5M17 11.5v3.5"/><rect x="4.5" y="15" width="5" height="4.5" rx="1"/><rect x="14.5" y="15" width="5" height="4.5" rx="1"/></g>
+</svg>

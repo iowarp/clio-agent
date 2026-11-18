@@ -299,3 +299,39 @@ def test_other_failures_of_a_deployable_server_kind_get_no_key_hint() -> None:
 
     assert message.endswith("(HTTP 404)")
     assert MANAGED_SERVER_KEY_HINT not in message
+
+
+@pytest.mark.parametrize(
+    ("should_exit", "closing", "expected"),
+    [(True, False, "cancelled"), (False, True, "cancelled"), (False, False, "agent_error")],
+)
+def test_a_turn_that_fails_while_the_server_stops_reads_as_stopped_by_the_shutdown(
+    monkeypatch: pytest.MonkeyPatch, should_exit: bool, closing: bool, expected: str
+) -> None:
+    """``clio stop`` signals the whole process group, so the provider's command-line
+    child dies with the server's own SIGTERM and the turn fails before the drain runs.
+    That turn was stopped by the shutdown (CC-F3), not by a provider fault.
+
+    SABOTAGE: drop the ``should_exit`` check in ``turn_cancelled_by_shutdown`` and the
+    first case reads as ``agent_error`` ("agent.forward raised ... exit code 143").
+    """
+    from clio_agent.gact import context as gact_context
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            uvicorn_server=SimpleNamespace(should_exit=should_exit),
+            turn_runner=SimpleNamespace(closing=closing),
+        )
+    )
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    state = _state("claude_code")
+    state.sid = "sess_stop"
+    exc = RuntimeError("claude agent sdk transport failed mid-stream: exit code 143")
+    info = forward_error_info(state, exc, "partial")
+    assert info.error == expected
+    if expected == "cancelled":
+        assert info.message == "turn cancelled by server shutdown"
+        assert info.details["reason"] == "server_shutdown"
+        assert info.details["session_id"] == "sess_stop"
+        assert "exit code 143" in info.details["diagnostic"]
+        assert info.recoverable is True

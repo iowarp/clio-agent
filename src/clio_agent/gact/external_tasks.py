@@ -28,16 +28,19 @@ from clio_agent.arc.task_types import (
     argument_digest,
 )
 from clio_agent.gact import context, external_task_connections, external_task_inputs
+from clio_agent.gact import view_call_ledger as view_calls
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
 from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
+from clio_agent.gact.spawn_invocation import spawn_invocation_id
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
 from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.tools import recorded_results, view_only_results
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
-from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
+from clio_agent.tools.task_call_context import permission_snapshot, safe_description
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
     TaskAwareClient,
@@ -67,6 +70,7 @@ class ExternalConnection:
     invocation: SubmissionContext | None = None
     rpcs: set[asyncio.Task[Any]] = field(default_factory=set)
     closing: bool = False
+    superseded: bool = False  # replaced while busy (EXTERNAL_MCP_CONNECTION_SUPERSEDED)
     #: This connection's tool listing, read once per connected client (reset on reconnect).
     tools: dict[str, Any] | None = None
 
@@ -84,6 +88,8 @@ class ExternalTasks:
         # and their records, written behind their replies (read_only_outcomes).
         self._lazy: dict[str, LazyAdmission] = {}
         self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
+        self._unwatch_fleets: Callable[[], None] | None = None
+        external_task_connections.watch_fleets(self)
 
     connection = external_task_connections.connection
     _retire_connection = external_task_connections.retire_connection
@@ -115,6 +121,9 @@ class ExternalTasks:
                 await self.history.io.run(self.history.read_content, current.submission)
             )
             if submission.backend.owner != "external_mcp":
+                continue
+            if view_calls.is_view_call(submission):  # the view's, not the agent's (MC-F2)
+                await view_calls.restored_cut_off(self, handle)
                 continue
             if current.backend is None or not current.backend.task_id:
                 await self._record_or_defer(
@@ -276,7 +285,10 @@ class ExternalTasks:
         component = host.tools.get(name)
         if component is None:
             raise ValueError("Tool is unavailable on the selected server")
-        sid, invocation = context.active_session_id(), TASK_CALL.get().invocation_id or uuid4().hex
+        # The model's tool call is in the id, so recovery can name this task to the
+        # call it interrupts (spawn_invocation.started_tasks) instead of the agent
+        # starting the same call again after a crash.
+        sid, invocation = context.active_session_id(), spawn_invocation_id()
         # A view read: it never waits behind queued writes on the history writer.
         assignment = await asyncio.to_thread(self.history.latest_assignment, sid)
         if assignment is None:
@@ -300,13 +312,13 @@ class ExternalTasks:
             invocation_id=invocation,
             tool=name,
             argument_digest=argument_digest(public),
-            arguments=public,
+            arguments=dict(view_only_results.recorded_arguments(public)),  # MC-F3
             output_schema=component.output_schema,
             tool_version=getattr(component, "version", None),
             workspace=workspace.root_path,
             permissions=permission_snapshot(self.app, sid),
             confinement={},
-            attribution={"agent": context.active_react_scope()},
+            attribution={"agent": context.active_react_scope(), **view_calls.attribution()},
             execution_limits={},
             backend=host.backend,
         )
@@ -406,12 +418,13 @@ class ExternalTasks:
                 stopped = True
                 if rpc.cancelled():
                     raise
+                await external_task_connections.abandon_view_call(self, host, handle, rpc, lazy)
             except Exception as error:
                 logger.exception(
                     "Task boundary reason=external_submission_failed error_type=%s",
                     type(error).__name__,
                 )
-                reason = str(error)
+                reason = external_task_connections.failure_reason(host, error)
                 failure = submission_failure(error)
                 if failure == "rejected":
                     await self._record_or_defer(
@@ -437,7 +450,8 @@ class ExternalTasks:
                         is_error=True,
                     )
                 await self._record_or_defer(
-                    "external-call:" + handle, admitted(partial(self._attention, handle, reason))
+                    "external-call:" + handle,
+                    admitted(view_calls.uncertain(self, submission, handle, reason)),
                 )
                 return accepted_result(
                     {
@@ -448,7 +462,8 @@ class ExternalTasks:
                         "retry_safe": False,
                     }
                 )
-        accepted = any(call.submission.handle == handle for call in host.calls.values()) or (
+        kept = recorded_results.ledger_reply(reply)  # a bounded record; the reply goes back whole
+        accepted = external_task_connections.accepted_call(host, handle) or (
             lazy is None
             and (await self.history.io.run(self.history.task_snapshot, handle)).backend is not None
         )
@@ -459,11 +474,11 @@ class ExternalTasks:
             # already settled, is its one record, written behind it (read_only_outcomes).
             self.outcomes.record(
                 "external-inline:" + handle,
-                partial(confirm, partial(self._inline_updates, reply=reply, at=now()), uuid4().hex),
+                partial(confirm, partial(self._inline_updates, reply=kept, at=now()), uuid4().hex),
                 minted=minted_names(handle, reference),
                 creates=lambda: (
                     (sid, content_reference(sid, description).scope),
-                    (sid, content_reference(sid, self._inline_value(reply)).scope),
+                    (sid, content_reference(sid, self._inline_value(kept)).scope),
                 ),
                 minted_scopes=((sid, content.scope),),  # it embeds the minted reference
                 recorded=partial(self._recorded_behind, host),
@@ -471,7 +486,7 @@ class ExternalTasks:
         elif not accepted:
             await self._record_or_defer(
                 "external-inline:" + handle,
-                partial(self._inline_result, handle, reply),
+                partial(self._inline_result, handle, kept),
                 retire=lambda: self._retire_connection(host),
             )
         if stopped:

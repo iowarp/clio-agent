@@ -31,6 +31,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: ``(posted question, definition) -> reply or None``.
+AutoReply = Callable[[TaskSnapshot, QuestionDefinition], QuestionReply | None]
+
+
 class ObsoleteQuestionGate(ValueError):
     """A confirmed approval no longer addresses its original assignment or input."""
 
@@ -47,6 +51,9 @@ class QuestionCommands:
         self.history = history
         self.on_change: Callable[[TaskSnapshot], None] | None = None
         self.before_post: Callable[[TaskSnapshot, QuestionDefinition], None] | None = None
+        #: Answers a Question the moment it is posted when no person can (an unattended
+        #: run, :mod:`clio_agent.gact.unattended`); ``None`` leaves it to a person.
+        self.auto_reply: AutoReply | None = None
 
     def create(
         self,
@@ -231,7 +238,8 @@ class QuestionCommands:
             self.history.record_snapshot(posted, observation_id=uuid4().hex)
             if self.on_change is not None:
                 self.on_change(posted)
-            return posted
+            reply = self.auto_reply(posted, definition) if self.auto_reply is not None else None
+            return self.answer(posted.handle, reply) if reply is not None else posted
 
     def annotate(self, handle: str, metadata: dict[str, Any]) -> TaskSnapshot:
         """Record trusted routing facts without replacing a Question's input contract."""

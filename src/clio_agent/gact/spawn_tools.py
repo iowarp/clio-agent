@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from clio_agent.gact.fleet.child_model import accepted_model
+from clio_agent.gact.spawn_invocation import spawn_invocation_id
 from clio_agent.gact.task_declarations import _STRING, _runtime, _tool
 from clio_agent.tools.task_call_context import TASK_CALL
 
@@ -149,7 +150,7 @@ def build_spawn_runtime_tools(
             placement,
             input_task_ids,
             strategy,
-            TASK_CALL.get().invocation_id or uuid4().hex,
+            spawn_invocation_id(),
             model,
             name,
         )
@@ -163,7 +164,7 @@ def build_spawn_runtime_tools(
         maximum = limits.get("max_items", 0)
         if not spawns or maximum and len(spawns) > maximum:
             raise ValueError("Spawn batch is empty or exceeds its declared item budget")
-        invocation = TASK_CALL.get().invocation_id or uuid4().hex
+        invocation = spawn_invocation_id()
 
         async def one(index: int, assignment: dict[str, Any]) -> dict[str, Any]:
             try:

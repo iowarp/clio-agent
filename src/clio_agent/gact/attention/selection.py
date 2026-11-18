@@ -178,7 +178,12 @@ def output_steps(
             f"the recorded output re-tokenizes to {n} tokens"
             + (" (reasoning not recorded)" if not reasoning else " (with or without reasoning)")
             + f", the capture has {record.decode_steps} decode steps",
-            {"request_id": record.request_id, "output_tokens": n},
+            {
+                "request_id": record.request_id,
+                "output_tokens": n,
+                "decode_steps": record.decode_steps,
+                "tokenizer": str(getattr(renderer, "identity", "") or ""),
+            },
         )
     tok_lo, tok_hi = encoded.token_span(out_lo, out_hi)
     if tok_hi <= tok_lo:

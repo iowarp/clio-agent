@@ -8,6 +8,13 @@
 #   bash scripts/cloud/stack.sh restart
 #   bash scripts/cloud/stack.sh status
 #   bash scripts/cloud/stack.sh logs      # last lines of both logs
+#   bash scripts/cloud/stack.sh agent-start|agent-stop   # the agent server alone
+#   bash scripts/cloud/stack.sh ui-start|ui-stop         # the web UI alone
+#
+# CLIO_AGENT_BIN runs another clio-agent executable (a released version in its own
+# venv) on the same state folders and ports, as an update does
+# (scripts/acceptance/continuity_check.py); CLIO_UI_DIR does the same for the web UI
+# with another gact-tui checkout.
 #
 # Ports: AGENT_PORT (default 8787, the UI's default service address) and
 # UI_PORT (default 5173); FIXTURE_PORT (default 8790) serves the browser fixture
@@ -26,7 +33,28 @@ UI_PORT="${UI_PORT:-5173}"
 FIXTURE_PORT="${FIXTURE_PORT:-8790}"
 FIXTURE_TLS_PORT="${FIXTURE_TLS_PORT:-8791}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
-export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-haiku-5-5}"
+# The agent's log file, as the installed `clio` launcher names it with CLIO_LOG, so the
+# service's "Report a problem" page finds the same file `stack.sh logs` shows.
+export CLIO_LOG="${CLIO_LOG:-$STATE/agent.log}"
+export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-sonnet-5-5}"
+# CLIO_CLOUD_ISOLATE=1 gives this stack its own CLIO config, data, state and cache
+# folders under .cloud-run/xdg, so several stacks (one per worktree, on their own
+# ports) can run side by side without sharing sessions or saved connections.
+# HOME is left alone, so the signed-in Claude CLI keeps working.
+if [ "$UI_PORT" != "5173" ] && [ -z "${CLIO_GACT_CORS_ORIGINS:-}" ]; then
+  # A UI on another port must be a trusted browser origin of this stack's agent.
+  export CLIO_GACT_CORS_ORIGINS="http://127.0.0.1:$UI_PORT,http://localhost:$UI_PORT"
+fi
+if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
+  for role in CONFIG DATA STATE CACHE; do
+    dir="$STATE/xdg/$(echo "$role" | tr '[:upper:]' '[:lower:]')"
+    mkdir -p "$dir"
+    export "XDG_${role}_HOME=$dir"
+  done
+  # Several stacks share one cloud disk: keep each clio-core store small (it
+  # preallocates about 1 GB otherwise).
+  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-128MB}"
+fi
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
 export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"
 
@@ -50,8 +78,14 @@ wait_http() {  # wait_http <url> <seconds>
 
 start_agent() {
   if alive "$STATE/agent.pid"; then echo "agent: already running"; return 0; fi
+  local bin=(uv run --no-sync clio-agent)
+  [ -n "${CLIO_AGENT_BIN:-}" ] && bin=("$CLIO_AGENT_BIN")
+  # Keep the log of the run before this one (agent.log.all), for reading traces
+  # across a restart.
+  [ -f "$STATE/agent.log" ] && cat "$STATE/agent.log" >> "$STATE/agent.log.all"
+  echo "=== $(date -u +%FT%TZ) start ${bin[*]}" >> "$STATE/agent.log.all"
   launch "$STATE/agent.pid" "$STATE/agent.log" "$ROOT" \
-    uv run --no-sync clio-agent serve --host 127.0.0.1 --port "$AGENT_PORT"
+    "${bin[@]}" serve --host 127.0.0.1 --port "$AGENT_PORT"
   if wait_http "http://127.0.0.1:$AGENT_PORT/v1/health" 180; then
     echo "agent: http://127.0.0.1:$AGENT_PORT (provider $CLIO_LM_PROVIDER, model $CLIO_LM_MODEL)"
   else
@@ -61,8 +95,14 @@ start_agent() {
 
 start_ui() {
   if alive "$STATE/ui.pid"; then echo "ui: already running"; return 0; fi
-  local web="$ROOT/external/gact-tui/web"
+  # CLIO_UI_DIR runs another gact-tui checkout (a released tag) in the same place.
+  local tui="${CLIO_UI_DIR:-$ROOT/external/gact-tui}"
+  local web="$tui/web"
   [ -f "$web/package.json" ] || { echo "ui: $web missing (run scripts/cloud/session_start.sh)"; return 1; }
+  # Run the UI as CLIO (logo, name, accent), as the release builds do, not the
+  # neutral GACT profile. The override is gitignored in gact-tui.
+  local brand="$tui/brand.config.local.json"
+  [ -f "$brand" ] || printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$ROOT" > "$brand"
   launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
   if wait_http "http://127.0.0.1:$UI_PORT/" 120; then
     echo "ui: http://127.0.0.1:$UI_PORT"
@@ -88,10 +128,12 @@ stop_one() {  # stop_one <name>
   if alive "$pidf"; then
     local pgid; pgid="$(cat "$pidf")"
     kill -TERM -- "-$pgid" 2>/dev/null
-    for _ in $(seq 1 20); do kill -0 -- "-$pgid" 2>/dev/null || break; sleep 0.5; done
+    # 30 s, as `clio stop` gives: above the server's 20 s shutdown budget, so it stops
+    # its clio-core daemon itself instead of being killed in the middle (FN-14).
+    for _ in $(seq 1 60); do kill -0 -- "-$pgid" 2>/dev/null || break; sleep 0.5; done
     if kill -0 -- "-$pgid" 2>/dev/null; then
       kill -KILL -- "-$pgid" 2>/dev/null
-      echo "$1: force-stopped (did not exit within 10s)"
+      echo "$1: force-stopped (did not exit within 30s)"
     else
       echo "$1: stopped"
     fi
@@ -112,6 +154,10 @@ case "${1:-status}" in
   stop) stop_one ui; stop_one agent; stop_one fixture ;;
   restart) stop_one ui; stop_one agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
   status) status ;;
+  agent-start) start_agent ;;
+  agent-stop) stop_one agent ;;
+  ui-start) start_ui ;;
+  ui-stop) stop_one ui ;;
   logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" "$STATE/fixture.log" 2>/dev/null ;;
-  *) echo "usage: $0 start|stop|restart|status|logs"; exit 2 ;;
+  *) echo "usage: $0 start|stop|restart|status|logs|agent-start|agent-stop|ui-start|ui-stop"; exit 2 ;;
 esac

@@ -20,7 +20,10 @@ Two layers, both catalog-aware:
    alone cannot see those. Its one catalog-aware change: a ``functionCall``
    (any mapping carrying a ``call`` key) is allowed iff the name is
    declared in the resolved catalog's ``functions`` map; previously every
-   function call was unconditionally rejected.
+   function call was unconditionally rejected. One value is exempt from the
+   scan and kept to size and nesting bounds instead: the ``arguments`` of a
+   ``clio.mcp-app.v1`` component, which are a tool's call arguments and are
+   never rendered (GG-F1).
 """
 
 from __future__ import annotations
@@ -79,6 +82,23 @@ class A2UIEventContextInvalidError(A2UIValidationError):
         super().__init__(f"A2UI event context is invalid at {pointer}: {message}")
 
 
+class A2UIMcpAppArgumentsError(A2UIValidationError):
+    """Raised when a ``clio.mcp-app.v1`` component's ``arguments`` exceed their bounds.
+
+    GG-F1: those arguments are the opening tool's own call arguments, so the
+    presentation-key scan skips them (:func:`_validate_app_arguments`); they
+    keep a size and a nesting bound instead. ``reason`` is the typed refusal
+    key (``a2ui_mcp_app_arguments_too_large`` or
+    ``a2ui_mcp_app_arguments_too_deep``) that the producer tools and the HTTP
+    door report in place of the generic ``a2ui_validation_failed``.
+    """
+
+    def __init__(self, reason: str, component_id: str, detail: str) -> None:
+        self.reason = reason
+        self.component_id = component_id
+        super().__init__(f"{reason}: component {component_id!r} arguments {detail}")
+
+
 _FORBIDDEN_KEYS = frozenset(
     {
         "css",
@@ -99,8 +119,28 @@ _FORBIDDEN_KEYS = frozenset(
 )
 #: Property names whose string literals are URLs (checked case-insensitively).
 A2UI_URL_KEYS = frozenset(
-    {"url", "uri", "datauri", "meshuri", "materialuri", "rasteruri", "geojsonuri"}
+    {
+        "url",
+        "uri",
+        "datauri",
+        "meshuri",
+        "materialuri",
+        "rasteruri",
+        "geojsonuri",
+        "recordinguri",
+    }
 )
+
+
+#: The component whose ``arguments`` are a tool call's own arguments, never rendered.
+MCP_APP_COMPONENT = "clio.mcp-app.v1"
+#: Encoded size bound for those arguments: the same 64 KiB a saved view call may
+#: keep (``gact/mcp_app_calls.py::MAX_SAVED_ARGUMENT_BYTES``). A view with more
+#: data reads it from a file or its own view id, as Geo's ``view`` does.
+MAX_MCP_APP_ARGUMENT_BYTES = 64 * 1024
+#: Walk depth of a component inside an ``updateComponents`` payload: the payload
+#: is walked at depth 0, its ``components`` list at 1 and each component at 2.
+_COMPONENT_DEPTH = 2
 
 
 def _most_specific_error(errors: list[ValidationError]) -> ValidationError:
@@ -249,6 +289,70 @@ def _validate_function_call(value: Mapping[str, Any], *, entry: "CatalogEntry | 
         raise A2UIFunctionNotInCatalogError(name, catalog_id)
 
 
+def _walk_app_arguments(
+    value: Any, *, component_id: str, depth: int, max_depth: int, max_string: int
+) -> None:
+    if depth > max_depth:
+        raise A2UIMcpAppArgumentsError(
+            "a2ui_mcp_app_arguments_too_deep",
+            component_id,
+            f"nest deeper than the A2UI nesting limit of {max_depth} levels",
+        )
+    if isinstance(value, str):
+        if len(value) > max_string:
+            raise A2UIMcpAppArgumentsError(
+                "a2ui_mcp_app_arguments_too_large",
+                component_id,
+                f"hold a string of {len(value)} characters; the limit is {max_string}",
+            )
+        return
+    children: Any = ()
+    if isinstance(value, list):
+        children = value
+    elif isinstance(value, Mapping):
+        if not all(isinstance(child_key, str) for child_key in value):
+            raise A2UIValidationError("A2UI object keys must be strings")
+        children = value.values()
+    for child in children:
+        _walk_app_arguments(
+            child,
+            component_id=component_id,
+            depth=depth + 1,
+            max_depth=max_depth,
+            max_string=max_string,
+        )
+
+
+def _validate_app_arguments(
+    arguments: Any, *, component_id: str, depth: int, max_depth: int, max_string: int
+) -> None:
+    """Bound a ``clio.mcp-app.v1`` component's ``arguments`` without the safety scan.
+
+    GG-F1: the renderer never interprets these values. It passes them, as
+    authored, to the opening tool through the gated call path (a ``{"path"}``
+    there is the tool's own value, not a binding). So the forbidden-key,
+    URL-scheme, binding and function-call rules do not apply: a tool's
+    ``style`` argument (Geo's layer colours) is data for that tool. The value
+    keeps the payload's nesting limit, the per-string limit and an encoded
+    size limit, each a typed :class:`A2UIMcpAppArgumentsError`.
+    """
+
+    _walk_app_arguments(
+        arguments,
+        component_id=component_id,
+        depth=depth,
+        max_depth=max_depth,
+        max_string=max_string,
+    )
+    size = len(json.dumps(arguments, separators=(",", ":"), ensure_ascii=False).encode())
+    if size > MAX_MCP_APP_ARGUMENT_BYTES:
+        raise A2UIMcpAppArgumentsError(
+            "a2ui_mcp_app_arguments_too_large",
+            component_id,
+            f"are {size} bytes; the limit is {MAX_MCP_APP_ARGUMENT_BYTES}",
+        )
+
+
 def validate_value(
     value: Any,
     *,
@@ -314,9 +418,25 @@ def validate_value(
             raise A2UIValidationError("A2UI data bindings must be a non-empty string path")
     if "call" in value and isinstance(value.get("call"), str):
         _validate_function_call(value, entry=entry)
+    # GG-F1: only a component of an updateComponents message, never a lookalike
+    # object in a data-model value or an action context.
+    app_component = (
+        depth == _COMPONENT_DEPTH
+        and key == "components"
+        and value.get("component") == MCP_APP_COMPONENT
+    )
     for child_key, child_value in value.items():
         if not isinstance(child_key, str):
             raise A2UIValidationError("A2UI object keys must be strings")
+        if app_component and child_key == "arguments":
+            _validate_app_arguments(
+                child_value,
+                component_id=str(value.get("id") or ""),
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_string=max_string,
+            )
+            continue
         if child_key in _FORBIDDEN_KEYS:
             raise A2UIValidationError(f"A2UI property is prohibited: {child_key}")
         # The scheme allowlist (_validate_url, below) applies to LITERAL URL
@@ -348,7 +468,10 @@ __all__ = [
     "A2UI_URL_KEYS",
     "A2UI_URL_SCHEMES",
     "A2UIFunctionNotInCatalogError",
+    "A2UIMcpAppArgumentsError",
     "A2UIValidationError",
+    "MAX_MCP_APP_ARGUMENT_BYTES",
+    "MCP_APP_COMPONENT",
     "is_allowed_a2ui_url",
     "validate_components",
     "validate_value",

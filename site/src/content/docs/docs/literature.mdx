@@ -1,0 +1,129 @@
+---
+title: Find papers and review the literature
+description: Search scholarly sources for papers, preprints, reports and datasets, follow references and citations, and ask for a literature review with verified sources.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import literatureSettings from '../../../assets/captures/search/settings-literature.png';
+import results from '../../../assets/captures/search/chat-literature-results.png';
+
+<PreviewGuide features="Literature search and the Literature settings" since="v0.9.7" />
+
+CLIO searches scholarly sources directly, without a key. Ask for papers the way
+you would ask a colleague:
+
+```text
+Find three recent papers on lossy compression of scientific
+data stored in HDF5, with DOIs.
+```
+
+The agent has two literature tools:
+
+| Tool | What it does |
+| --- | --- |
+| **Search literature** | Finds papers, preprints, reports and datasets across the sources below. The agent can limit a search to dates, to a field, or to preprints, reviews or datasets. |
+| **Look up a work** | Gives one work's details from its DOI, arXiv id, PubMed id or OpenAlex id: where to read it, its references, the works that cite it, and its preprint and published versions. |
+
+To read a paper, the agent opens its readable link, such as the arXiv HTML
+page or the open-access full text, with the web tool **Read page**. See
+[Search the web](/docs/web-search/).
+
+## Sources
+
+Every literature source that is on is searched together. You do not set an
+order.
+
+| Source | What it covers | Free use |
+| --- | --- | --- |
+| OpenAlex | Works across every field, with citations and open-access links | About 100 searches a day per network without a key; looking up one work is free |
+| Crossref | DOI metadata for journals and preprints, and the links between them | No daily limit; paced |
+| arXiv | Preprints in physics, computing, mathematics and related fields | One request every three seconds |
+| ChemRxiv | Chemistry preprints, found through Crossref | Shares Crossref's pace |
+| Europe PMC | Life-science literature and preprints, including bioRxiv and medRxiv, with full text where it is open | No key needed |
+| OSTI.gov | U.S. Department of Energy reports and papers | No key needed |
+| OpenCitations | What a work cites and which works cite it | No key needed |
+| DataCite | DOIs for datasets and software | No key needed |
+| Semantic Scholar | Works across every field | Only with your key |
+
+ChemRxiv is searched in releases after v0.9.7.
+
+OpenAlex and Crossref answer every search. The other sources join when they
+cover the topic: arXiv for physical sciences and computing, ChemRxiv for
+chemistry, Europe PMC for life sciences, OSTI.gov for energy, engineering and
+earth sciences, and DataCite for datasets. A search for preprints adds arXiv,
+ChemRxiv and Europe PMC.
+
+The same work found by several sources appears once. CLIO matches works by DOI,
+arXiv id or PubMed id, and lists works found by more sources first. Each result
+names the sources that found it, and links a preprint to its published version
+when the sources record the link.
+
+When a source is busy or its free allowance is used up, the other sources'
+results still arrive, and the agent is told which source was missing and why.
+Requests to each source go through one queue for the whole CLIO service, paced to
+the source's published limits.
+
+<Capture client:visible image={await captureImage(results)}
+  alt="An opened Search literature row: notes that OpenAlex's free allowance for today is used and that a ChemRxiv request waited in line, then works with authors, venue, year, DOI and the sources that found them"
+  caption="An opened literature search. The notes at the top say which source was missing and why; each work names the sources that found it. Every work found, with full abstracts, is saved with the conversation." />
+
+## Change the sources
+
+Open **Settings → Web search** and choose the **Literature** tab.
+
+<Capture client:visible image={await captureImage(literatureSettings)}
+  alt="Settings, Web search, Literature tab: OpenAlex with its free allowance and a Get a free OpenAlex key link, then Crossref, arXiv, ChemRxiv, Europe PMC, OSTI.gov, OpenCitations and DataCite, each with an on/off switch"
+  caption="Each source shows what it covers, its free use and whether you approved it. Turn a source off to leave it out of every search." />
+
+- **Get a free OpenAlex key** asks OpenAlex to email you a key. It raises the
+  daily allowance tenfold. CLIO keeps searching without the key until you open
+  the link in the email.
+- **Add key** stores a key you already have. Semantic Scholar is searched only
+  when it has your key.
+- The first literature search asks you once whether CLIO may send queries to the
+  literature sources, under every confirmation policy.
+
+## Ask for a literature review
+
+For a review, ask a question that names its scope in **Deep research** mode.
+CLIO plans the search, sends several researchers through the literature and the
+web, has an independent critic check each claim against the source it quotes,
+and writes a report from the verified claims only.
+
+<Steps>
+
+1. Start a new conversation. Open the mode button beside the model (it shows
+   **Execute**) and choose **Deep research**.
+2. Describe the review: the topic, the questions to answer and any limits.
+
+   ```text
+   Write a literature review of machine-learning surrogates
+   for wildfire spread prediction since 2019: which modelling
+   approaches are used, which datasets they train on, and how
+   accurate they are compared with physics-based models.
+   ```
+
+3. Approve the search sources when CLIO asks. Follow the researchers in
+   **Work** while they run; see [Follow work in progress](/docs/following-work/).
+4. Read the report. Its **References** list the papers with their authors, year,
+   venue and DOI where the sources provide them.
+
+</Steps>
+
+See [Run deep research](/docs/deep-research/) for how the run works, what the
+report contains and how to change its limits.
+
+<Aside type="tip">
+Name the field and a date range in your request. The agent turns them into
+search filters, which works better than putting years or journal names in the
+search words.
+</Aside>
+
+## Related
+
+- [Run deep research](/docs/deep-research/)
+- [Search the web](/docs/web-search/)
+- [Write a paper](/docs/papers/)

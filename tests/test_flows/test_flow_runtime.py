@@ -55,12 +55,37 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
     assert run["max_concurrency"] == 0 and response.json()["max_concurrency"] == 0
     assert {(c["together"], c["gather_limit"]) for c in calls} == {(calls[0]["together"], 2)}
     assert {c["gather_limit"] for c in response.json()["calls"]} == {2}
+    # Each child's name travels from ctx.call(label=...) to the checkpoint and the view.
+    assert sorted(c["label"] for c in calls) == ["Part 0", "Part 1", "Part 2"]
+    assert sorted(c["label"] for c in response.json()["calls"]) == ["Part 0", "Part 1", "Part 2"]
     timings = response.json()["timings"]
     assert set(timings) == {owner.handle, *(row["handle"] for row in calls)}
     for handle, timing in timings.items():
         snapshot = history.task_snapshot(handle)
         assert timing["created_at"] == snapshot.created_at
         assert timing["terminal_at"] == snapshot.terminal_at
+
+
+def test_gather_can_leave_each_members_workflow_state_on_its_own_result(
+    flow_app: TestClient,
+) -> None:
+    sid = new_session(flow_app, "clio/statefanner")
+    post(flow_app, sid, "go")
+    _answer(flow_app, sid)
+    run = _checkpoint(flow_app, sid)
+    assert run["status"] == "completed", run.get("result")
+    result = run["result"]
+    # The merged gather records the second member's different packet as a conflict;
+    # merge_state=False reads each packet from its own result and records nothing.
+    assert result["merged_conflicts"] == 1
+    events = [e for e in run["events"].values() if e["event"] == "workflow_state_conflict"]
+    assert len(events) == 1
+    assert [row["from"] for row in result["own_packets"]] == [
+        "STATE 0",
+        "STATE 1",
+        "STATE again 0",
+        "STATE again 1",
+    ]
 
 
 def test_gather_member_failure_never_cancels_the_others(flow_app: TestClient) -> None:

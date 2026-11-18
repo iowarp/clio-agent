@@ -42,7 +42,7 @@ def test_active_workspace_builds_and_caches_per_root(monkeypatch) -> None:
         return f"executor:{gateway}"
 
     monkeypatch.setattr(agent, "_build_tool_gateway", fake_build)
-    monkeypatch.setattr("clio_agent.agent.create_sync_tool_executor", fake_create)
+    monkeypatch.setattr("clio_agent.tools.workspace_fleet.create_sync_tool_executor", fake_create)
 
     # Roots are filed under ``canonical_workspace_root``, so a root reaches the
     # gateway/registry in ONE spelling no matter how the workspace stored it.
@@ -91,10 +91,13 @@ def test_workspace_executor_preserves_user_service_declarations_without_plugin_s
     executor = SimpleNamespace(_async_executor=SimpleNamespace())
 
     monkeypatch.setattr(agent, "_build_tool_gateway", lambda **_kwargs: gateway)
-    monkeypatch.setattr("clio_agent.agent.namespace_specs", lambda _gateway: {"web": web_spec})
-    monkeypatch.setattr("clio_agent.agent.namespace_proxies", lambda _gateway: {})
     monkeypatch.setattr(
-        "clio_agent.agent.create_sync_tool_executor", lambda _gateway, **_kwargs: executor
+        "clio_agent.tools.workspace_fleet.namespace_specs", lambda _gateway: {"web": web_spec}
+    )
+    monkeypatch.setattr("clio_agent.tools.workspace_fleet.namespace_proxies", lambda _gateway: {})
+    monkeypatch.setattr(
+        "clio_agent.tools.workspace_fleet.create_sync_tool_executor",
+        lambda _gateway, **_kwargs: executor,
     )
     monkeypatch.setattr("clio_agent.tools.listing_cache.load_listing", lambda *_a, **_kw: None)
 
@@ -176,13 +179,13 @@ def _two_snapshot_agent(monkeypatch, *, defer: bool):
     monkeypatch.setattr(
         agent, "_build_tool_gateway", lambda **kw: SimpleNamespace(server_set=kw["server_set"])
     )
-    for owner in ("clio_agent.agent", "clio_agent.tools.fleet_server_merge"):
+    for owner in ("clio_agent.tools.workspace_fleet", "clio_agent.tools.fleet_server_merge"):
         monkeypatch.setattr(f"{owner}.namespace_specs", specs_of)
         monkeypatch.setattr(f"{owner}.namespace_proxies", lambda _gateway: {})
     monkeypatch.setattr(
         "clio_agent.tools.fleet_server_merge.namespace_direct_factories", lambda _gateway: {}
     )
-    monkeypatch.setattr("clio_agent.agent.create_sync_tool_executor", create)
+    monkeypatch.setattr("clio_agent.tools.workspace_fleet.create_sync_tool_executor", create)
     monkeypatch.setattr("clio_agent.tools.listing_cache.load_listing", lambda *_a, **_kw: None)
     return agent, built, old, new
 

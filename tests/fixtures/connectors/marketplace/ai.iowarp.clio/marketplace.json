@@ -1,0 +1,4 @@
+{
+  "name": "clio-connector-fixtures",
+  "description": "Test plugins that follow the fixture connectors in tests/fixtures/connectors. Never shipped."
+}

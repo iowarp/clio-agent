@@ -1,0 +1,12 @@
+---
+id: clio.reminder.session_facts_plugins
+title: Session facts, plugins not in this conversation
+description: Names the plugins and connectors the person has that this conversation does not have, each with a one-line summary, so the agent knows what exists beyond its tools and skills and can offer one when a request needs it. Past the listed ones it counts the rest by category, naming only the connectors turned on and the plugins installed, and says where the person chooses the list. The person adds an entry to the conversation in its card; the agent never does. Part of session_facts; only when there is one.
+x_kind: reminder
+x_active: true
+x_trigger: session_facts, when a plugin or connector is not in this conversation
+x_variables: plugins, total, left_out, unlisted
+---
+Plugins and connectors the person has that are not in this conversation ({{ total }}{{ ", " ~ plugins|length ~ " shown" if total > plugins|length else "" }}). Each is made for one kind of work and brings what general tools lack for it: domain tools, the field's methods as skills, access to a service or program, interactive views of the results. The person installed them for their work, so when a request is that kind of work, or needs something your own tools lack, one of them (listed here, or found by offer_plugin's search) may serve it better than building the same thing by hand. None of that is yours until the person adds one here; offer_plugin asks them, and on Add it is yours from your next step in this same turn. A plugin's [marketplace] is where the person added it from:
+{% for p in plugins %}- {{ p.name }}{{ " (" ~ p.id ~ ", connector, " ~ ("on" if p.enabled else "off") ~ ")" if p.kind == "connector" else ("" if p.name == p.id else " (" ~ p.id ~ ")") ~ " [" ~ p.marketplace ~ "]" }}: {{ p.summary }}
+{% endfor %}{% if total > plugins|length %}{{ total - plugins|length }} more not listed here{% if unlisted %}, counted by category, naming only the connectors turned on and the plugins installed ({% for c in unlisted %}{{ c.category or "uncategorized" }} {{ c.count }}{{ ": " ~ c.names|join(", ") if c.names is defined and c.names else "" }}{{ "" if loop.last else "; " }}{% endfor %}){% endif %}; offer_plugin with search or category finds every one of them.{% if left_out %} {{ left_out }} of them {{ "is" if left_out == 1 else "are" }} not in your plugin list (the person's choice in Settings → Extensions → "Plugins CLIO can offer"); offer_plugin offers {{ "it" if left_out == 1 else "them" }} the same way.{% endif %}{% endif %}

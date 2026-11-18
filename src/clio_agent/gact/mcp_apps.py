@@ -9,33 +9,41 @@ the model and durable tool telemetry never receive private app metadata.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import secrets
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact import context as gact_context
+from clio_agent.gact import mcp_app_fleet, view_call_cancel, view_call_transcript
+from clio_agent.gact.mcp_app_cleanup import publish_closed
+from clio_agent.gact.mcp_app_fleet import MCP_APP_SERVER_STOPPED, server_stopped
+from clio_agent.gact.mcp_app_label import view_label
 from clio_agent.gact.mcp_app_observer_reasons import (
     record_observer_skip as _record_observer_skip,
 )
 from clio_agent.gact.mcp_app_observer_reasons import (
     recorded_mcp_app_observer_skips as recorded_mcp_app_observer_skips,
 )
+from clio_agent.gact.mcp_app_reopen_declaration import split_reopen_declaration
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
-    _alternate_loopback_origin,
     _csp_header,
     _host_origin,
     _request_origin,
     _safe_sources,
     _sandbox_url,
+)
+from clio_agent.gact.mcp_app_service_declaration import (
+    ViewService,
+    split_service_declaration,
 )
 from clio_agent.gact.runtime.globals import (
     _gact_app_context,
@@ -43,6 +51,7 @@ from clio_agent.gact.runtime.globals import (
     _tool_session_context,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
+from clio_agent.tools import call_origin, view_only_results
 from clio_agent.tools.mcp_extension_registry import (
     MCP_APP_MIME_TYPE as MCP_APP_MIME_TYPE,
 )
@@ -56,12 +65,46 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
-_REGISTRY_LIMIT = 64
-_REGISTRY_TTL_S = 60 * 60
 _MAX_PRIVATE_RESULT_BYTES = 1024 * 1024
-_MAX_MODEL_CONTEXT_BYTES = 128 * 1024
 
 logger = logging.getLogger(__name__)
+
+DISPLAY_MODES = ("inline", "fullscreen")
+
+
+def registry_limit() -> int:
+    """How many unpinned (inline) App records the process keeps at once (MA6).
+
+    Config: ``gact.mcp_apps.registry_limit`` / ``CLIO_MCP_APP_REGISTRY_LIMIT``
+    (default 64). Records pinned by a tab or an A2UI surface are not counted.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.mcp_apps.registry_limit",
+        env="CLIO_MCP_APP_REGISTRY_LIMIT",
+        default=64,
+        cast=conf.as_int,
+    )
+
+
+def registry_ttl_s() -> float:
+    """Idle seconds after which an unpinned (inline) App record expires (MA6).
+
+    Config: ``gact.mcp_apps.registry_ttl_s`` / ``CLIO_MCP_APP_REGISTRY_TTL_S``
+    (default 3600). A pinned record and a record with a declared cleanup tool
+    never expire: no timer runs on a view the person has open (rule 6).
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "gact.mcp_apps.registry_ttl_s",
+        env="CLIO_MCP_APP_REGISTRY_TTL_S",
+        default=3600.0,
+        cast=conf.as_float,
+    )
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -219,9 +262,22 @@ class MCPAppRecord:
     html: str | None = None
     csp: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
-    model_context: dict[str, Any] = field(default_factory=dict)
-    model_context_digest: str = ""
-    model_context_bytes: int = 0
+    service: ViewService | None = None  # MA23: taken off tool_result at admission
+    #: The arguments the server declared for reopening (MA19), and why one was refused.
+    reopen_arguments: dict[str, Any] | None = None
+    reopen_reason: str = ""
+    #: ``inline`` (the card) or ``fullscreen`` (a workbench tab), MA1/MA4.
+    display_mode: str = "inline"
+    #: Mounted in a visible A2UI surface (MA5); set through ``PUT …/pin``.
+    surface_pinned: bool = False
+    #: Weak reference to the fleet whose server opened the view (``mcp_app_fleet``).
+    fleet: Any = None
+
+    @property
+    def pinned(self) -> bool:
+        """A record in a tab or a surface is neither expired nor counted (MA6)."""
+
+        return self.display_mode == "fullscreen" or self.surface_pinned
 
 
 class MCPAppAdmissionError(RuntimeError):
@@ -235,11 +291,23 @@ class MCPAppAdmissionError(RuntimeError):
 class MCPAppRegistry:
     """Bounded active-App registry plus a lossless cleanup ownership ledger."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, limit: int | None = None, ttl_s: float | None = None) -> None:
+        self.limit = registry_limit() if limit is None else limit
+        self.ttl_s = registry_ttl_s() if ttl_s is None else ttl_s
         self._records: OrderedDict[str, MCPAppRecord] = OrderedDict()
         self._cleanup_records: OrderedDict[str, MCPAppRecord] = OrderedDict()
         self._closing_records: dict[str, MCPAppRecord] = {}
         self._lock = threading.RLock()
+        #: Told of every record that leaves (``mcp_app_cleanup.publish_closed``): the UI
+        #: then shows the app ended instead of keeping a dead frame.
+        self.on_closed: Callable[[MCPAppRecord, str], None] | None = None
+
+    def _closed(self, record: MCPAppRecord | None, reason: str) -> None:
+        if record is not None and self.on_closed is not None:
+            try:
+                self.on_closed(record, reason)
+            except Exception:  # noqa: BLE001 - typed; a notice never blocks a close
+                logger.exception("mcp_app_close_notice_failed reason=%s", reason)
 
     def register(
         self,
@@ -250,10 +318,13 @@ class MCPAppRegistry:
         resource_uri: str,
         tool_input: Mapping[str, Any],
         tool_result: Mapping[str, Any],
+        display_mode: str = "inline",
     ) -> MCPAppRecord:
         """Store one private result after enforcing size and count bounds."""
 
         namespace = source_namespace.strip() if isinstance(source_namespace, str) else ""
+        tool_result, service = split_service_declaration(tool_result)
+        tool_result, reopen_arguments, reopen_reason = split_reopen_declaration(tool_result)
         encoded = json.dumps(tool_result, sort_keys=True, default=str).encode("utf-8")
         record = MCPAppRecord(
             app_instance_id=secrets.token_urlsafe(18),
@@ -265,6 +336,10 @@ class MCPAppRegistry:
             tool_input=dict(tool_input),
             tool_result=dict(tool_result),
             cleanup=_private_cleanup(tool_result),
+            service=service,
+            reopen_arguments=reopen_arguments,
+            reopen_reason=reopen_reason,
+            display_mode=display_mode if display_mode in DISPLAY_MODES else "inline",
         )
         with self._lock:
             self._expire_locked()
@@ -273,8 +348,8 @@ class MCPAppRegistry:
                 rejection = "MCP App result has no exact originating server namespace"
             elif len(encoded) > _MAX_PRIVATE_RESULT_BYTES:
                 rejection = "MCP App private result exceeds the 1 MiB admission limit"
-            elif len(self._records) >= _REGISTRY_LIMIT:
-                rejection = f"MCP App active-instance limit ({_REGISTRY_LIMIT}) has been reached"
+            elif not record.pinned and self._unpinned_count_locked() >= self.limit:
+                rejection = f"MCP App active-instance limit ({self.limit}) has been reached"
             if rejection is not None:
                 # The remote tool has already succeeded. Never silently discard
                 # ownership metadata for a resource-bearing result: retain the
@@ -304,12 +379,39 @@ class MCPAppRegistry:
             self._records.move_to_end(app_instance_id)
             return record
 
+    def set_display_mode(
+        self, session_id: str, app_instance_id: str, data_ref: str, mode: str
+    ) -> MCPAppRecord:
+        """Record where the App's one frame is (MA4); ``fullscreen`` pins it (MA6)."""
+
+        if mode not in DISPLAY_MODES:
+            raise ValueError(f"display mode must be one of {', '.join(DISPLAY_MODES)}")
+        with self._lock:
+            record = self.get(session_id, app_instance_id, data_ref)
+            record.display_mode = mode
+            return record
+
+    def set_surface_pinned(
+        self, session_id: str, app_instance_id: str, data_ref: str, pinned: bool
+    ) -> MCPAppRecord:
+        """Pin or unpin a record mounted in an A2UI surface (MA5/MA6)."""
+
+        with self._lock:
+            record = self.get(session_id, app_instance_id, data_ref)
+            record.surface_pinned = bool(pinned)
+            return record
+
+    def _unpinned_count_locked(self) -> int:
+        return sum(1 for record in self._records.values() if not record.pinned)
+
     def remove(self, app_instance_id: str) -> MCPAppRecord | None:
         """Remove and return an App record."""
 
         with self._lock:
             record = self._records.pop(app_instance_id, None)
-            return record or self._cleanup_records.pop(app_instance_id, None)
+            record = record or self._cleanup_records.pop(app_instance_id, None)
+            self._closed(record, "closed")
+            return record
 
     def claim_close(self, session_id: str, app_instance_id: str, data_ref: str) -> MCPAppRecord:
         """Atomically reserve one capability for exactly one cleanup attempt."""
@@ -325,6 +427,7 @@ class MCPAppRegistry:
                 raise KeyError(app_instance_id)
             self._records.pop(app_instance_id)
             self._closing_records[app_instance_id] = record
+            self._closed(record, "closed")
             return record
 
     def finish_close(self, app_instance_id: str) -> None:
@@ -353,6 +456,7 @@ class MCPAppRegistry:
             for record in removed:
                 self._records.pop(record.app_instance_id, None)
                 self._cleanup_records.pop(record.app_instance_id, None)
+                self._closed(record, "session_ended")
             return removed
 
     def records_for_session(self, session_id: str) -> list[MCPAppRecord]:
@@ -381,17 +485,25 @@ class MCPAppRegistry:
             )
 
     def _expire_locked(self) -> None:
-        deadline = time.monotonic() - _REGISTRY_TTL_S
+        deadline = time.monotonic() - self.ttl_s
         # A cleanup-bearing record represents an owned remote attachment. It
         # cannot be TTL-evicted because doing so would discard the only cleanup
-        # identity. Records without cleanup semantics may expire normally.
+        # identity. A pinned record is a view the person has open in a tab or a
+        # surface (MA6, rule 6). Other records may expire normally.
         expired = [
             key
             for key, record in self._records.items()
-            if record.cleanup is None and record.last_access < deadline
+            if record.cleanup is None and not record.pinned and record.last_access < deadline
         ]
-        for key in expired:
-            self._records.pop(key, None)
+        # A view whose server's fleet was closed is not live: Reopen replays it (MA19).
+        stopped = [key for key, record in self._records.items() if server_stopped(record)]
+        for key in stopped:
+            logger.warning("%s app_instance_id=%s", MCP_APP_SERVER_STOPPED, key)
+        for key, reason in (
+            *((k, "expired") for k in expired),
+            *((k, "server_stopped") for k in stopped),
+        ):
+            self._closed(self._records.pop(key, None), reason)
 
 
 def _not_found() -> HTTPException:
@@ -414,6 +526,8 @@ def _registry(app: FastAPI) -> MCPAppRegistry:
     if not isinstance(registry, MCPAppRegistry):
         registry = MCPAppRegistry()
         app.state.mcp_app_registry = registry
+    if registry.on_closed is None:
+        registry.on_closed = lambda record, reason: publish_closed(app, record, reason)
     return registry
 
 
@@ -434,6 +548,9 @@ def _make_mcp_app_observer(app: FastAPI):
                 tool=name,
                 source_namespace=source_namespace or "",
             )
+            return
+        if view_only_results.active() is not None:
+            _record_observer_skip("mcp_app_skipped_view_only_call", tool=name)
             return
         result_wire = call_tool_result_to_wire(raw_result)
         if result_wire.get("isError") is True:
@@ -463,6 +580,11 @@ def _make_mcp_app_observer(app: FastAPI):
         except MCPAppAdmissionError as exc:
             _schedule_rejected_cleanup(app, exc.record)
             raise
+        mcp_app_fleet.admitted(app, record)  # which fleet's server draws it
+        from clio_agent.gact.mcp_app_calls import record_opening_call  # noqa: PLC0415
+
+        if record_opening_call(app, sid, record, tool):
+            return  # a person's reopen mounts its own part (MA19)
 
         # Import lazily to preserve the tools <- runtime <- gact direction and
         # avoid a module cycle during gact startup.
@@ -485,6 +607,8 @@ def _make_mcp_app_observer(app: FastAPI):
                 tool_name=record.tool_name,
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
+                display_mode=record.display_mode,
+                title=view_label(record.source_namespace, tool, record.tool_input),
                 metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )
@@ -517,14 +641,29 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
     return executor
 
 
-async def _run_bound(app: FastAPI, sid: str, operation: Any) -> Any:
-    """Run a blocking executor operation in the exact session context."""
+async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = None) -> Any:
+    """Run a blocking executor operation in the exact session context.
+
+    A view's call arrives outside any turn, so the session is bound as the turn
+    session too: an external server's call is then owned by the session's latest
+    assignment, as the call that opened the view was. With no turn there is no
+    Cancel, so the call is bound to ``request`` instead (:mod:`.view_call_cancel`).
+    """
 
     def invoke() -> Any:
-        with _gact_app_context(app), _tool_session_context(sid):
-            return operation(_bound_executor(app, sid))
+        token = gact_context.set_session_id(sid)
+        try:
+            with (
+                _gact_app_context(app),
+                _tool_session_context(sid),
+                view_call_transcript.collecting(app, sid),  # never inside an open turn
+                call_origin.scope("view"),  # the server sees the view's call (FP-D7)
+            ):
+                return operation(_bound_executor(app, sid))
+        finally:
+            gact_context.reset(token)
 
-    return await asyncio.to_thread(invoke)
+    return await view_call_cancel.run(app, invoke, request=request)
 
 
 def _resolve_app_tool(executor: Any, record: MCPAppRecord, requested: str) -> str:
@@ -545,90 +684,6 @@ def _resolve_app_tool(executor: Any, record: MCPAppRecord, requested: str) -> st
     return full_name
 
 
-async def _cleanup_record(app: FastAPI, record: MCPAppRecord) -> None:
-    """Run one declared App cleanup through the normal tool boundary."""
-
-    if record.cleanup is None:
-        return
-    cleanup_tool, cleanup_args = record.cleanup
-
-    def cleanup(executor: Any) -> Any:
-        full_name = _resolve_app_tool(executor, record, cleanup_tool)
-        return executor.call_tool_result(full_name, cleanup_args)
-
-    result = await _run_bound(app, record.session_id, cleanup)
-    if call_tool_result_to_wire(result).get("isError") is True:
-        raise RuntimeError(f"MCP App cleanup tool {cleanup_tool!r} returned an error result")
-
-
-def _schedule_rejected_cleanup(app: FastAPI, record: MCPAppRecord) -> None:
-    """Immediately clean a post-call result whose UI admission was rejected.
-
-    The compact cleanup record remains in the registry until this succeeds. If
-    no running host loop is available, normal session/process teardown retries
-    it instead of losing the ownership identity.
-    """
-
-    if record.cleanup is None:
-        return
-    loop = getattr(app.state, "mcp_app_loop", None)
-    if not isinstance(loop, asyncio.AbstractEventLoop) or not loop.is_running():
-        logger.error(
-            "MCP App admission rejected; cleanup retained for teardown app_instance_id=%s",
-            record.app_instance_id,
-        )
-        return
-
-    async def attempt() -> None:
-        try:
-            await _cleanup_record(app, record)
-        except Exception:  # noqa: BLE001 - retain ownership and retry on teardown
-            logger.exception(
-                "MCP App rejected-admission cleanup failed; retained app_instance_id=%s",
-                record.app_instance_id,
-            )
-        else:
-            _registry(app).remove(record.app_instance_id)
-
-    asyncio.run_coroutine_threadsafe(attempt(), loop)
-
-
-async def cleanup_session_mcp_apps(app: FastAPI, session_id: str) -> None:
-    """Close every App owned by a session before destroying that session.
-
-    Each cleanup runs through the same namespace routing, permission gate,
-    observers, and session context as an ordinary tool call. Successfully
-    closed records are removed immediately; failed records remain available so
-    the operator can retry instead of silently leaking the remote attachment.
-    """
-
-    registry = _registry(app)
-    failures: list[str] = []
-    for record in registry.records_for_session(session_id):
-        try:
-            await _cleanup_record(app, record)
-        except Exception as exc:  # noqa: BLE001 - attempt every owned App cleanup
-            failures.append(f"{record.app_instance_id}: {exc}")
-        else:
-            registry.remove(record.app_instance_id)
-    if failures:
-        raise RuntimeError("; ".join(failures))
-
-
-async def cleanup_all_mcp_apps(app: FastAPI) -> None:
-    """Close every retained App before the host tears down MCP transports."""
-
-    registry = _registry(app)
-    failures: list[str] = []
-    for session_id in registry.session_ids():
-        try:
-            await cleanup_session_mcp_apps(app, session_id)
-        except RuntimeError as exc:
-            failures.append(f"{session_id}: {exc}")
-    if failures:
-        raise RuntimeError("; ".join(failures))
-
-
 def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
     """Register MCP App routes while preserving the public integration seam."""
 
@@ -637,9 +692,19 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
     )
 
     register_routes(app, deps)
+    from clio_agent.gact.mcp_app_calls import register_mcp_app_reopen_routes  # noqa: PLC0415
 
+    register_mcp_app_reopen_routes(app)
+
+
+from clio_agent.gact.mcp_app_cleanup import (  # noqa: E402 - owner module, re-exported
+    _schedule_rejected_cleanup,
+    cleanup_all_mcp_apps,
+    cleanup_session_mcp_apps,
+)
 
 __all__ = [
+    "DISPLAY_MODES",
     "MCP_APP_MIME_TYPE",
     "MCPAppAdmissionError",
     "MCPAppRegistry",
@@ -651,8 +716,9 @@ __all__ = [
     "read_resource_result_to_wire",
     "recorded_mcp_app_observer_skips",
     "register_mcp_app_routes",
+    "registry_limit",
+    "registry_ttl_s",
     "_SANDBOX_DOCUMENT",
-    "_alternate_loopback_origin",
     "_csp_header",
     "_host_origin",
     "_request_origin",

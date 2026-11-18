@@ -1,0 +1,40 @@
+# ASE: clio-kit's ase server (mcp-servers/ase), molecular calculations on structure files
+# with EMT, xTB, MACE, UMA, NWChem or ORCA. Adapted in part from ChemGraph (Apache-2.0).
+# CLIO starts it through the clio-kit launcher. xTB, MACE and UMA build their own
+# environment on first use; NWChem and ORCA are separate programs the person installs
+# (the nwchem and orca plugins say how), and UMA needs a Hugging Face token that accepted
+# the UMA licence. Each need is optional: an empty value leaves the server's own lookup
+# (environment, then PATH; ~/.cache/huggingface/token for UMA) in charge. The group,
+# Chemistry, comes from clio-kit's clio-chemistry bundle (derive.yaml). Logo: ours.
+- id: ase
+  name: ASE
+  logo: ase.svg
+  description: Build molecules from SMILES, change their geometry, and compute energies, optimized structures, vibrations, thermochemistry and IR spectra
+  server:
+    command: clio-kit
+    args: [mcp-server, ase]
+    env:
+      NWCHEM_COMMAND: ${need.nwchem}
+      ORCA_COMMAND: ${need.orca}
+      HF_TOKEN: ${need.hf_token}
+  needs:
+    - key: nwchem
+      kind: value
+      label: NWChem program
+      required: false
+      agent_settable: true
+      group: Quantum chemistry programs
+      help: Leave empty to find nwchem on PATH. Otherwise the path to the nwchem executable (for example one Spack installed).
+    - key: orca
+      kind: value
+      label: ORCA program
+      required: false
+      agent_settable: true
+      group: Quantum chemistry programs
+      help: ORCA is downloaded from the ORCA forum after registration. The full path to the orca executable.
+    - key: hf_token
+      kind: secret
+      label: Hugging Face token (UMA)
+      required: false
+      help: Only for the UMA calculator. A token from a Hugging Face account that accepted the UMA licence (facebook/UMA).
+  plugin: ase

@@ -1,0 +1,30 @@
+[
+ {
+  "session": "sess_7d7497b994ce",
+  "workspace": "ws_c94ba014b008"
+ },
+ {
+  "showTab": true
+ },
+ {
+  "view": true
+ },
+ {
+  "status": "after restart"
+ },
+ {
+  "shot": "aq47-restarted"
+ },
+ {
+  "hero": "aq47-hero-restarted"
+ },
+ {
+  "send": "How long did reconnecting to node08 take this time, and did it install anything?"
+ },
+ {
+  "send": "Look at the ParaView view and tell me what you see, then list the scene's objects, how each is shown, and the time."
+ },
+ {
+  "shot": "aq47-answer"
+ }
+]

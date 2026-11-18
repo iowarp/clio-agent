@@ -197,6 +197,57 @@ def test_duplicates_of_the_runtime_are_pruned_and_new_packages_stay(tmp_path: Pa
     ]
 
 
+def test_publish_moves_a_finished_install_into_the_overlay(tmp_path: Path) -> None:
+    overlay = tmp_path / "runtime-packages" / "key"
+    _fake_dist(overlay, "clio-overlay-old", "1.0", "clio_overlay_old")
+    _fake_dist(overlay, "clio-overlay-kept", "1.0", "clio_overlay_kept")
+    staging = package_overlay.staging_dir(overlay)
+    assert staging.parent == overlay.parent and not any(staging.iterdir())
+    _fake_dist(staging, "pytest", importlib.metadata.version("pytest"), "pytest_copy")
+    _fake_dist(staging, "clio-overlay-old", "2.0", "clio_overlay_old")
+    _fake_dist(staging, "clio-overlay-new", "1.0", "clio_overlay_new")
+
+    assert package_overlay.publish(staging, overlay) == ["clio-overlay-new", "clio-overlay-old"]
+
+    assert not staging.exists()
+    assert not (overlay / "pytest_copy").exists()  # a runtime duplicate never lands
+    versions = {
+        d.metadata["Name"]: d.version for d in importlib.metadata.distributions(path=[str(overlay)])
+    }
+    assert versions == {
+        "clio-overlay-old": "2.0",
+        "clio-overlay-kept": "1.0",
+        "clio-overlay-new": "1.0",
+    }
+
+
+def test_publishing_the_runtimes_version_drops_the_overlay_copy(tmp_path: Path) -> None:
+    """A rollback to the runtime's version leaves the runtime's copy showing through."""
+    overlay = tmp_path / "runtime-packages" / "key"
+    _fake_dist(overlay, "pytest", "0.0.1", "pytest_copy")
+    staging = package_overlay.staging_dir(overlay)
+    _fake_dist(staging, "pytest", importlib.metadata.version("pytest"), "pytest_copy")
+
+    assert package_overlay.publish(staging, overlay) == []
+
+    assert not (overlay / "pytest_copy").exists()
+    assert not list(overlay.glob("pytest-*.dist-info"))
+
+
+def test_prune_stale_spares_an_install_still_staging(tmp_path: Path) -> None:
+    import os  # noqa: PLC0415
+
+    overlay = tmp_path / "runtime-packages" / "key"
+    overlay.mkdir(parents=True)
+    active = package_overlay.staging_dir(overlay)
+    abandoned = package_overlay.staging_dir(overlay)
+    old = abandoned.stat().st_mtime - 7 * 3600
+    os.utime(abandoned, (old, old))
+
+    assert package_overlay.prune_stale(overlay) == [abandoned]
+    assert active.is_dir() and not abandoned.exists()
+
+
 def test_runtime_constraints_pin_what_the_runtime_ships(tmp_path: Path) -> None:
     pins = package_overlay.runtime_constraints(tmp_path / "overlay")
     assert f"pytest=={importlib.metadata.version('pytest')}" in pins

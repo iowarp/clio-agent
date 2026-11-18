@@ -112,14 +112,19 @@ class ClioCorePutFailure:
     payload_bytes: int
     error: str
     occurred_at: str
+    #: clio-core's own return code for the refusal (12/13: no room to place it), if any.
+    native_code: int | None = None
 
-    def to_details(self) -> dict[str, str | int]:
+    def to_details(self) -> dict[str, str | int | None]:
         """Return JSON-safe health details without exposing payload content."""
         return asdict(self)
 
 
 _failure_lock = threading.Lock()
 _lost_write: ClioCorePutFailure | None = None
+#: The last write this process lost, kept after a later write succeeds: a lost write
+#: leaves the task history waiting to reconcile it, whatever succeeded since.
+_last_lost_write: ClioCorePutFailure | None = None
 
 
 def _record_lost_write(*, name: str, payload: bytes, exc: RuntimeError) -> None:
@@ -130,16 +135,18 @@ def _record_lost_write(*, name: str, payload: bytes, exc: RuntimeError) -> None:
         payload: The bytes that never landed (only their length is retained).
         exc: The final native refusal, verbatim.
     """
-    global _lost_write
+    global _lost_write, _last_lost_write
+    native_code = getattr(exc, "native_code", None)
     record = ClioCorePutFailure(
         reason=CLIO_CORE_PUT_WRITE_LOST,
         name=name,
         payload_bytes=len(payload),
         error=str(exc),
         occurred_at=datetime.now(UTC).isoformat(),
+        native_code=native_code if isinstance(native_code, int) else None,
     )
     with _failure_lock:
-        _lost_write = record
+        _lost_write = _last_lost_write = record
     logger.error(
         "reason=%s name=%s payload_bytes=%d error=%s",
         record.reason,
@@ -172,11 +179,17 @@ def last_lost_put_write() -> ClioCorePutFailure | None:
         return _lost_write
 
 
+def last_lost_put_write_ever() -> ClioCorePutFailure | None:
+    """The last write this process lost, even if a later write succeeded."""
+    with _failure_lock:
+        return _last_lost_write
+
+
 def _reset_put_write_health_for_tests() -> None:
     """Reset the process-local write-health state for isolated tests."""
-    global _lost_write
+    global _lost_write, _last_lost_write
     with _failure_lock:
-        _lost_write = None
+        _lost_write = _last_lost_write = None
 
 
 def put_blob_with_retry(

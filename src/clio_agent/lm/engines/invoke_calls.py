@@ -18,6 +18,7 @@ block. Selected by ``lm.text_tool_protocol`` (``json`` or ``invoke``).
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from collections.abc import Collection, Mapping
@@ -144,12 +145,32 @@ def _accepts_string(schema: Mapping[str, Any]) -> bool:
     return kind == "string" or (isinstance(kind, list) and "string" in kind)
 
 
+def _accepts_structure(schema: Mapping[str, Any]) -> bool:
+    """Whether ``schema`` also takes a JSON array or object (``list[str] | Literal["all"]``)."""
+    kind = schema.get("type")
+    if kind is None:
+        options = schema.get("anyOf") or schema.get("oneOf") or []
+        # Untyped, or a ``$ref`` into the tool's definitions: anything, structures too.
+        return not options or any(_accepts_structure(o) for o in options if isinstance(o, Mapping))
+    kinds = kind if isinstance(kind, list) else [kind]
+    return "array" in kinds or "object" in kinds
+
+
 def _value(raw: str, schema: Mapping[str, Any]) -> Any:
     text = raw[1:] if raw.startswith("\n") else raw
     text = text[:-1] if text.endswith("\n") else text
-    if _accepts_string(schema):
-        return text
-    return json.loads(text)
+    if not _accepts_string(schema):
+        return json.loads(text)
+    if _accepts_structure(schema) and text.lstrip()[:1] in ("[", "{"):
+        # A string-or-structure parameter written as a JSON array or object is that
+        # structure; read as text it reaches the tool as the string '["v(out)"]'.
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return text
+        if isinstance(parsed, (list, dict)):
+            return parsed
+    return text
 
 
 def parse_invoke_calls(
@@ -237,6 +258,42 @@ def writing_past_block(reply: str, known: Collection[str]) -> bool:
         return False
     past = reply[end:].lstrip()
     return not any(c.startswith(past) or past.startswith(c) for c in _BLOCK_CONTINUATIONS)
+
+
+#: Identical ``<invoke>`` elements in a row after which a reply is repeating itself.
+REPEATED_CALLS_LIMIT = 8
+
+
+def repeated_call_end(
+    reply: str, known: Collection[str], limit: int = REPEATED_CALLS_LIMIT
+) -> int | None:
+    """Where to stop a reply whose call block keeps repeating one identical call.
+
+    A model can write the same ``<invoke>`` (same tool, same parameters) hundreds of
+    times in one reply (561 ``search_tools`` loads in one 209 s reply, 2026-11-13).
+    Once ``limit`` identical elements follow one another, the rest adds nothing: the
+    loop runs identical calls once (``tool_calls_collapsed``). Returns the end of the
+    last complete element in ``plain_call_tags(reply)``, or ``None`` while the block
+    is still varied or too short.
+    """
+    plain = plain_call_tags(reply)
+    fences = [m.span() for m in _FENCED.finditer(plain)]
+    invokes = [m for m in _INVOKE.finditer(plain) if not any(a <= m.start() < b for a, b in fences)]
+    if len(invokes) <= limit or not any(m["name"] in known for m in invokes):
+        return None
+    run, end = 1, invokes[0].end()
+    for previous, invoke in itertools.pairwise(invokes):
+        if invoke.start() != _GAP.match(plain, end).end():  # type: ignore[union-attr]
+            return None  # the block ended; a later block is writing_past_block's case
+        end = invoke.end()
+        same = (invoke["name"], invoke["body"].strip()) == (
+            previous["name"],
+            previous["body"].strip(),
+        )
+        run = run + 1 if same else 1
+        if run > limit:
+            return end
+    return None
 
 
 def _parse(

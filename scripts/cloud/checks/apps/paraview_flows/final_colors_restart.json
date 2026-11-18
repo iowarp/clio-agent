@@ -1,0 +1,21 @@
+[
+ {"open": "final-pv2"},
+ {"send": "Open /home/user/wt/final/clio-agent/.cloud-run/apps-work/final-pv2/wavelet.vti in ParaView and show me a slice through the middle, normal to Z, coloured by RTData with the Viridis colour map and a colour legend."},
+ {"view": true},
+ {"maximize": true},
+ {"panel": "Pipeline"},
+ {"row": "wavelet.vti"},
+ {"filter": "Contour"},
+ {"panel": "Pipeline"},
+ {"shot": "fin-pvc-before-restart-hero"},
+ {"closePanel": true},
+ {"restore": true},
+ {"restart": true},
+ {"view": true},
+ {"maximize": true},
+ {"panel": "Pipeline"},
+ {"shot": "fin-pvc-after-restart-hero"},
+ {"closePanel": true},
+ {"shot": "fin-pvc-after-restart-collapsed-hero"},
+ {"restore": true}
+]

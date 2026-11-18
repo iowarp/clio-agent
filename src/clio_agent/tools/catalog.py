@@ -172,6 +172,20 @@ _BUILTIN_ANNOTATIONS: dict[str, dict[str, Any]] = {
 }
 
 
+def action_subject(name: str) -> str:
+    """The permission gate's noun for a call that is not a read.
+
+    A built-in declared non-destructive (``destructiveHint`` false) is a ``network tool``
+    when it reaches hosted services (``openWorldHint``), else a ``tool``; any other
+    action keeps ``destructive tool``.
+    """
+
+    annotations = _BUILTIN_ANNOTATIONS.get(name) or {}
+    if annotations.get("destructiveHint") is not False:
+        return "destructive tool"
+    return "network tool" if annotations.get("openWorldHint") else "tool"
+
+
 def _builtin_entry(
     name: str,
     owner: str,
@@ -219,6 +233,9 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "fs_edit_file": _builtin_entry(
         "fs_edit_file", "workspace", {"workspace", "edit"}, domain="workspace"
+    ),
+    "fs_git_commit": _builtin_entry(
+        "fs_git_commit", "workspace", {"workspace", "edit"}, domain="workspace"
     ),
     "fs_read_file": _builtin_entry(
         "fs_read_file", "workspace", {"workspace"}, domain="workspace", planner_visible=False

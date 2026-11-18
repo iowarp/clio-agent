@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fixture-secret-skills",
+  "version": "0.1.0",
+  "description": "Follows the Fixture Secret connector: a skill for its test server.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "extensions": {
+    "ai.iowarp.clio": {
+      "follows": "fixture-secret",
+      "connections": {"fixture-secret": "fixture-secret"}
+    }
+  }
+}

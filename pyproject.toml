@@ -66,6 +66,8 @@ dependencies = [
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
     "websockets>=13.0",
+    # Develop builds clio-kit from git (the tool.uv.sources entry below); a release
+    # pins the published PyPI version instead (release-clio).
     "clio-kit==2.12.7",  # Source-locked scientific MCP components and launcher.
     # web_fetch turns HTML pages into Markdown (clio_agent.search.fetch).
     "trafilatura>=1.12",
@@ -73,7 +75,9 @@ dependencies = [
     "fastmcp-tasks==4.1.2",
     "mcp==2.2.0",  # reviewed native Tasks wire/client contract
     "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
-    "clio-schemas==0.7.0",
+    # Develop builds clio-schemas from git (the tool.uv.sources entry below); a
+    # release pins the published PyPI version instead (release-clio).
+    "clio-schemas==0.8.0b1",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -162,6 +166,7 @@ dependencies = [
     "odfpy>=1.4.1,<2",
     "pypdf>=5.1.0,<7",
     "xarray>=2024.10",
+    "h5netcdf>=1.3",  # NetCDF-4 (HDF5) files for xarray readers such as raster views
     "zarr>=3",
     "rasterio>=1.4",
     "pillow>=10",
@@ -303,7 +308,11 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/clio_agent"]
+packages = ["src/clio_agent", "src/clio"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# Connector entries and their logos ship with the release (connectors.entries.shipped_dir).
+"catalogs/connectors" = "clio_agent/_catalogs/connectors"
 
 [tool.hatch.build.targets.sdist]
 # Keep the source tarball small + PyPI-uploadable (project limit is 100 MB): ship
@@ -312,6 +321,8 @@ packages = ["src/clio_agent"]
 # balloon the sdist to >200 MB and get rejected ("400 File too large").
 include = [
     "src/clio_agent",
+    "src/clio",
+    "catalogs/connectors",
     "pyproject.toml",
     "README.md",
     "uv.lock",
@@ -391,3 +402,18 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp==2.2.0"]
+
+[tool.uv.sources]
+# Develop pins the merged sibling commits so their unreleased work runs without a
+# release: clio-schemas (clio.mcp-app.v1 with recordingUri, the s3 connected-source
+# provider, the map's flat-map and globe facts) and clio-kit (paraview-mcp 3.1.0, geo 2.4.0, the slicer, and the pdf,
+# earthdata, home-assistant and spice servers that run their pinned upstream releases,
+# apps ledger KM; the chemistry servers ase, decimer, fdmnes, graspa and pubchem and the
+# clio-chemistry bundle with avogadro, from clio-kit's claude/chemistry-in-clio branch until it merges,
+# docs/design/chemistry-in-clio-status.md). A clio-kit built
+# from git takes components its version's release does not publish from that same
+# commit, verified against its catalogue. A release removes both entries and pins the
+# published PyPI versions (release-clio; docs/design/sdk/mcp-apps-ledger.md, GP). uv
+# only: the built wheel's metadata keeps the plain specifiers above.
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "33b0024d34679383d84e0e8e6e3cdec653dbf579" }
+clio-kit = { git = "https://github.com/iowarp/clio-kit", rev = "19296639e7818d2d7298f7e4a16d7eab80906bdd" }

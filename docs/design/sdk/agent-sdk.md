@@ -84,6 +84,8 @@ class Factorio(ScienceAgent):
 
 **Flow.** A flow is the agent's orchestration program, a `dspy.Module` whose `forward(task, ctx)` calls subagents, peers and tools through the runtime context. It lives in the `flows/` folder of the plugin that contributes it, and the agent selects one by id. `react` from `core` is the default. Every `ctx` call is an ordinary CLIO task, so flows get handles, Stop, cancellation and restart recovery from the task layer. The orchestration document defines the primitives and their semantics.
 
+**Bare agents.** `bare = True` makes the model see only the conversation: no system prompt (not even a placeholder), no tools or skills (not even `submit`), and none of CLIO's per-turn context injections (memory, working state, plan and todos); every reply is the answer. The agent still carries `core`, which every agent must. It is meant for experiments that need the model's input to be exactly the person's text, such as attributing an answer's attention over the prompt. The flag is part of the spec checksum only when set, so existing specs keep their checksums.
+
 A conversation call's final value and its public response are distinct.
 `result.answer` (also `result["answer"]`) remains the final value; use it for
 scalar parsing or an explicit value reference. `result.response_text` presents

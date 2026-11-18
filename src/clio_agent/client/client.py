@@ -1,22 +1,21 @@
-"""Synchronous typed client for the GACT v1 API.
+"""Synchronous typed client for CLIO: run agents and flows, or use the API directly.
 
-:class:`ClioClient` is the SDK's single entry point: a context-manager
-httpx client plus small per-resource namespaces (``sessions``,
-``messages``, ``workspaces``, ``permissions``). It talks the wire
-described by the reconciled contract (``gact-tui/contract/SPEC.md``)
-and never imports gact server code.
+:class:`ClioClient` is the SDK's single entry point, opened as a context manager
+with :class:`~clio_agent.client.options.ClioOptions`. Opening it attaches to the
+CLIO server at ``options.url`` or starts one on this machine; closing it lets go
+(and stops a server it started once no other client uses it). See
+:mod:`clio_agent.client.connection`.
+
+``run`` / ``run_flow`` / ``session`` / ``stream_flow`` put an agent or a flow to
+work without asking anyone anything (:mod:`clio_agent.client.run`); the per-resource
+namespaces (``sessions``, ``messages``, ``workspaces``, ``permissions``,
+``documents``) are the typed GACT v1 API (``gact-tui/contract/SPEC.md``).
 
 Example:
-    >>> from clio_agent.client import ClioClient
-    >>> with ClioClient("http://127.0.0.1:17800") as client:
-    ...     if not client.capabilities().supports("sessions"):
-    ...         raise RuntimeError("backend has no session surface")
-    ...     sess = client.sessions.create(title="demo")
-    ...     ack = client.messages.post(sess.id, text="hello")
-    ...     with client.sessions.events(sess.id) as stream:
-    ...         for event in stream:
-    ...             if event.type == "message.completed":
-    ...                 break
+    >>> from clio import ClioClient, ClioOptions
+    >>> with ClioClient(options=ClioOptions(workspace=".", agent="factorio")) as c:
+    ...     result = c.run("Reduce the mass of the bracket in bracket.inp by 30%")
+    ...     print(result.text, [a.path for a in result.artifacts])
 """
 
 from __future__ import annotations
@@ -27,8 +26,11 @@ from typing import Any, Literal
 
 import httpx
 
+from clio_agent.client.connection import Connection, close_connection, open_connection
 from clio_agent.client.errors import ClioConnectionError, error_from_response
 from clio_agent.client.events import EventStream
+from clio_agent.client.options import ClioOptions
+from clio_agent.client.run_api import RunAPI
 from clio_agent.client.types import (
     Agent,
     Capabilities,
@@ -48,8 +50,6 @@ from clio_agent.client.types import (
 
 logger = logging.getLogger("clio_agent.client")
 
-# CLIO's product default port (``gact.port``); the client never reads server configuration.
-DEFAULT_BASE_URL = "http://127.0.0.1:17800"
 
 PermissionAction = Literal["allow", "deny", "allow_session", "allow_workspace", "allow_script"]
 
@@ -60,12 +60,12 @@ def _drop_missing(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if v is not None}
 
 
-class ClioClient:
-    """Client for one GACT backend.
+class ClioClient(RunAPI):
+    """Client for one CLIO server.
 
     Args:
-        base_url: The backend origin (clio's default bind is
-            ``http://127.0.0.1:17800``; ``gact.port`` changes it).
+        options: What the script sets once (:class:`ClioOptions`); the default
+            attaches to (or starts) the configured local server.
         timeout: Per-request timeout in seconds for plain REST calls.
             SSE streams use ``stream_read_timeout`` for reads instead
             (heartbeats arrive at least every 15 s, so the default of
@@ -73,47 +73,72 @@ class ClioClient:
         retries: Bounded retry budget for *connection-level* failures
             on idempotent GETs — never for HTTP errors, never for
             writes, and every retry is logged. 0 (default) disables.
-        transport: Optional ``httpx.BaseTransport`` override; used by
-            the test-suite to drive an in-process ASGI app.
+        transport: Optional ``httpx.BaseTransport`` that serves the API in-process
+            (the test-suite drives an ASGI app with it). With one, nothing is
+            attached, started or registered.
     """
 
     def __init__(
         self,
-        base_url: str = DEFAULT_BASE_URL,
+        options: ClioOptions | None = None,
         *,
         timeout: float = 30.0,
         stream_read_timeout: float = 60.0,
         retries: int = 0,
-        headers: dict[str, str] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        self.options = options or ClioOptions()
         self._retries = max(0, retries)
         self._stream_read_timeout = stream_read_timeout
+        self._in_process = transport is not None
+        token = None if self._in_process else self.options.resolved_token()
         self._http = httpx.Client(
-            base_url=base_url,
+            base_url=self.options.base_url,
             timeout=timeout,
-            headers=headers,
+            headers={"Authorization": f"Bearer {token}"} if token else None,
             transport=transport,
         )
+        self.connection: Connection | None = None
         self._capabilities: Capabilities | None = None
         self.sessions = SessionsAPI(self)
         self.messages = MessagesAPI(self)
         self.workspaces = WorkspacesAPI(self)
         self.permissions = PermissionsAPI(self)
         self.documents = DocumentsAPI(self)
+        self._workspace_ids: dict[str, str] = {}
 
     # -- lifecycle ---------------------------------------------------- #
 
     def __enter__(self) -> ClioClient:
+        self.open()
         return self
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    def close(self) -> None:
-        """Release the underlying HTTP connection pool."""
+    def open(self) -> ClioClient:
+        """Attach to the server or start one, and register (idempotent).
 
-        self._http.close()
+        Raises:
+            ServerSetupError: No server answers and none may be started, a server
+                could not start, or it has no model provider. The message names the
+                problem and the fix.
+        """
+
+        if self.connection is None and not self._in_process:
+            self.connection = open_connection(self.options, self._http)
+        return self
+
+    def close(self) -> None:
+        """Let go of the server (stopping one this client started when it was the last
+        one attached) and release the connection pool."""
+
+        try:
+            if self.connection is not None:
+                connection, self.connection = self.connection, None
+                close_connection(connection, self._http)
+        finally:
+            self._http.close()
 
     # -- transport ---------------------------------------------------- #
 
@@ -128,6 +153,7 @@ class ClioClient:
     ) -> httpx.Response:
         """One REST call; non-2xx (minus ``ok_statuses``) raises typed errors."""
 
+        self.open()
         attempts_left = self._retries if method == "GET" else 0
         while True:
             try:
@@ -151,6 +177,7 @@ class ClioClient:
     def _stream(self, method: str, path: str, *, headers: dict[str, str]) -> Any:
         """Open a streaming request (SSE) with stream-appropriate timeouts."""
 
+        self.open()
         timeout = httpx.Timeout(30.0, read=self._stream_read_timeout)
         return self._http.stream(method, path, headers=headers, timeout=timeout)
 
@@ -241,24 +268,53 @@ class SessionsAPI:
         title: str = "",
         mode: str = "edit",  # P1.1 #1063: ``chat`` mode removed (unenforced == edit)
         edit_mode: str = "diff",
-        routing_mode: str = "auto",
+        agent: str | None = None,
+        model: str | None = None,
+        approval_mode: str | None = None,
+        flow: dict[str, Any] | None = None,
+        unattended: bool = False,
+        max_turns: int | None = None,
+        max_budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Session:
-        """POST /v1/sessions."""
+        """POST /v1/sessions.
 
-        response = self._client._request(
-            "POST",
-            "/v1/sessions",
-            json={
-                "workspace_id": workspace_id,
-                "title": title,
-                "mode": mode,
-                "edit_mode": edit_mode,
-                "routing_mode": routing_mode,
-                "metadata": metadata or {},
-            },
-        )
+        ``agent`` is an installed agent id (or ``marketplace/id``), ``model`` an
+        ``account/model`` id; unset, the server's defaults apply. ``flow``
+        (``{"id", "options"}``) makes the session run that flow as its own work: the
+        first message is its input. ``unattended`` marks a run nobody watches
+        (questions answered "not available", asks denied, plugins trusted);
+        ``max_turns`` / ``max_budget_usd`` limit its whole session tree.
+        """
+
+        body: dict[str, Any] = {
+            "workspace_id": workspace_id,
+            "title": title,
+            "mode": mode,
+            "edit_mode": edit_mode,
+            "metadata": metadata or {},
+            "unattended": unattended,
+        }
+        if agent:
+            body["agent"] = {"id": agent}
+        if model:
+            account, _, model_id = model.partition("/")
+            body["model"] = {"provider_id": account, "model_id": model_id}
+        optional = {
+            "approval_mode": approval_mode,
+            "flow": flow,
+            "max_turns": max_turns,
+            "max_budget_usd": max_budget_usd,
+        }
+        body.update(_drop_missing(optional))
+        response = self._client._request("POST", "/v1/sessions", json=body)
         return Session.model_validate(response.json())
+
+    def usage(self, session_id: str) -> dict[str, Any]:
+        """GET /v1/sessions/{id}/usage — model turns, tokens and cost over the session
+        and everything it spawned (the flow route's spend, summed)."""
+
+        return dict(self._client._request("GET", f"/v1/sessions/{session_id}/usage").json())
 
     def list(
         self,
@@ -293,7 +349,7 @@ class SessionsAPI:
         title: str | None = None,
         mode: str | None = None,
         edit_mode: str | None = None,
-        routing_mode: str | None = None,
+        approval_mode: str | None = None,
         metadata: dict[str, Any] | None = None,
         archived: bool | None = None,
     ) -> Session:
@@ -305,7 +361,7 @@ class SessionsAPI:
                 "title": title,
                 "mode": mode,
                 "edit_mode": edit_mode,
-                "routing_mode": routing_mode,
+                "approval_mode": approval_mode,
                 "metadata": metadata,
                 "archived": archived,
             }

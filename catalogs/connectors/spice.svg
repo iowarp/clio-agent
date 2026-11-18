@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<!-- CLIO connector icon: a circuit chip. Drawn for CLIO (our own work, not a third-party mark); apps ledger "Connector logos (LG)". -->
+<rect width="24" height="24" rx="5.5" fill="#8A6510"/>
+<g fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M10 4.3V7M14 4.3V7M10 17v2.7M14 17v2.7M4.3 10H7M4.3 14H7M17 10h2.7M17 14h2.7"/></g><circle fill="#fff" cx="10.2" cy="10.2" r="1"/>
+</svg>

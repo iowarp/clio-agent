@@ -1,0 +1,18 @@
+[
+  {"open": "pv-grow"},
+  {"send": "On node08, open /home/researcher/data/growing/growing.vti.series in ParaView as an isosurface of pressure at 0.5. A simulation is still writing that series, so keep showing its newest step."},
+  {"view": true},
+  {"status": "opened"},
+  {"shot": "aq46-following"},
+  {"wait": 30000},
+  {"status": "30 s later, following"},
+  {"shot": "aq46-followed"},
+  {"timeIndex": 1},
+  {"shot": "aq46-parked"},
+  {"wait": 30000},
+  {"status": "30 s later, parked"},
+  {"shot": "aq46-parked-newer"},
+  {"send": "Which time step is the newest one in that series right now, and which one am I looking at?"},
+  {"status": "after the answer"},
+  {"shot": "aq46-answer"}
+]

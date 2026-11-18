@@ -18,6 +18,7 @@ import pytest
 from clio_agent.client import (
     ClioClient,
     ClioConnectionError,
+    ClioOptions,
     Message,
     MessageCompleted,
     MessageCreated,
@@ -225,7 +226,7 @@ def test_graceful_reconnect_resumes_without_duplicates(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     flaky = _FlakyTransport(transport)
-    with ClioClient("http://testserver", transport=flaky) as client:
+    with ClioClient(ClioOptions(url="http://testserver"), transport=flaky) as client:
         sess = client.sessions.create(title="sse reconnect")
         ack = client.messages.post(sess.id, text="drop me")
         _wait_for_settled_turn(client, sess.id, ack.message_id)
@@ -255,7 +256,7 @@ def test_stream_drop_without_reconnect_budget_raises(
     transport: StreamingASGITransport,
 ) -> None:
     flaky = _FlakyTransport(transport, allowed_chunks=2)
-    with ClioClient("http://testserver", transport=flaky) as client:
+    with ClioClient(ClioOptions(url="http://testserver"), transport=flaky) as client:
         sess = client.sessions.create(title="sse no budget")
         ack = client.messages.post(sess.id, text="drop hard")
         _wait_for_settled_turn(client, sess.id, ack.message_id)

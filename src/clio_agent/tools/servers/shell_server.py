@@ -33,6 +33,7 @@ from clio_agent.tools.builtin_annotations import (
     SHELL_TOOL_ANNOTATIONS as SHELL_TOOL_ANNOTATIONS,
 )
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
+from clio_agent.tools.servers import shell_confinement as confinement
 from clio_agent.tools.servers.shell_commands import (
     command_length_error,
     is_command_length_exception,
@@ -468,6 +469,12 @@ async def bash(
     access_reason: Annotated[
         str, Field(description="Explain why this command needs the declared external paths.")
     ] = "",
+    outside_sandbox: Annotated[
+        bool,
+        Field(
+            description="Run this one command outside CLIO's sandbox. Use it only when the sandbox, not the account, blocked the command (a boundary of kind privilege_denied, or a system install the sandbox cannot run even with folders allowed), and give access_reason. CLIO shows the person the exact command and runs it only if they allow; it never takes a password."
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 
@@ -487,7 +494,13 @@ async def bash(
             "native_submission_required", "Background shell must use the native MCP task client."
         )
     return await execute_shell(
-        ctx, command, cwd, timeout_s, max_output_bytes, access_paths=access_paths
+        ctx,
+        command,
+        cwd,
+        timeout_s,
+        max_output_bytes,
+        access_paths=access_paths,
+        outside_sandbox=outside_sandbox,
     )
 
 
@@ -510,20 +523,20 @@ async def execute_shell(
     *,
     cleanup: ShellCleanupObserver | None = None,
     access_paths: list[str] | None = None,
+    outside_sandbox: bool = False,
 ) -> dict[str, Any]:
-    """Execute the retained confined workload, shared by both native shell modes."""
+    """Execute the retained confined workload, shared by both native shell modes.
+
+    ``outside_sandbox`` runs it unfenced, only with a person's allow (:mod:`shell_confinement`).
+    """
     if not isinstance(command, str) or not command.strip():
         return _error(
             "invalid_command",
             "command must be a non-empty string.",
             details={"field": "command"},
         )
-    if access_paths:
-        # Declaring a path never grants it; execution rechecks actual folder rights.
-        from clio_agent.gact.folder_access import requested_folders
-
-        if requested_folders("shell_bash", {"access_paths": access_paths}):
-            return _error("folder_access_required", "Ask the user to permit these folders first.")
+    if refused := confinement.folder_refusal(access_paths, outside_sandbox):
+        return refused
     command = command.strip()
     max_chars = _SHELL_LIMITS.max_command_chars
     if len(command) > max_chars:
@@ -573,22 +586,10 @@ async def execute_shell(
 
     # #975: route the shell subprocess through the single confinement composer with the
     # per-invocation `shell` profile (write territory computed from THIS command's cwd).
-    # Floor-first â€” the backend is passthrough this slice, so argv/env are byte-identical;
-    # the shell seam carries no pdeathsig today, so it stays off here.
-    from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
-
+    if outside_sandbox and (refused := confinement.outside_refusal(command, call_id)):
+        return refused
     try:
-        confined = sandbox.wrap_confined(
-            argv[0],
-            argv[1:],
-            write_roots=sandbox.effective_write_roots(
-                sandbox.PROFILE_SHELL, workspace_root=str(safe_cwd)
-            ),
-            net_policy=sandbox.NET_ALLOW_RECORD,
-            profile=sandbox.PROFILE_SHELL,
-            pdeathsig=False,
-            cwd=safe_cwd,
-        )
+        confined = confinement.confine(argv, safe_cwd, outside_sandbox=outside_sandbox)
     except Exception:
         _log_shell_phase(call_id, "confinement", phase_started, outcome="failed")
         raise

@@ -278,3 +278,114 @@ its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`)
 | `papers/wtfp-plan-and-check.png` | `/wtfp:plan-and-check background` as a two-step workflow run. |
 | `papers/wtfp-comment-applied.png` | A comment on the paper and the edit to `introduction.tex`. |
 
+## Web search, literature and deep research
+
+The `search/` images are dark-mode browser captures at two device pixels per CSS pixel
+of real development sessions on 13 November 2026, on a fresh CLIO state with no search
+keys and nothing approved (agent branch `claude/nifty-mccarthy-ybiwgz` on develop
+`4cb6d13a`, UI develop `4d040650`, model Claude Haiku 5.5 through the Claude Code
+provider). Nothing is painted or composited.
+
+| File | Viewport | What it shows |
+| --- | --- | --- |
+| `settings-web.png` | 1440 x 900 | Settings, Web search, Web tab before any search. |
+| `settings-web-phone.png` | 390 x 844 | The same tab on a phone. |
+| `settings-literature.png` | 1440 x 900 | The Literature tab. |
+| `chat-permission.png` | 1440 x 1000 | The Ask first permission request for the first literature search. |
+| `chat-approval.png` | 1440 x 1000 | The first-use question for Keenable. |
+| `chat-web-results.png`, `chat-literature-results.png` | 1440 x 1000 | Opened search rows from the same conversation. |
+| `deep-mode-menu.png` | 1440 x 1000, cropped | The composer's mode menu. |
+| `deep-delivered.png`, `deep-report.png` | 1440 x 1000 | A Deep research run from a plain literature-review request under Ask first: the end of the answer, and the report opened. The run took 49 minutes and wrote a 5,283-word report. |
+| `deep-run-graph.png` | 1440 x 1000 at 2x | A finished Deep research run (deep-research 0.6.0, Sonnet 5.5) from a plain request under Ask first, shown full screen: three named directions, a check per researcher, Coordinate, and three follow-ups. The run took 11 minutes, verified 106 claims and wrote a 5,441-word report. Captured 14 November 2026 from gact-tui develop `63c67331`. |
+| `article-*.png` | 1440 x 1000 at 2x | The worked example [Research a question in depth](../../content/docs/docs/examples/deep-research.mdx), from one plain Deep research request under Ask first (deep-research 0.6.0, Sonnet 5.5, captured 14 November 2026 from gact-tui develop `63c67331`): `article-running` the run at six minutes, `article-check-step` and `article-coordinate` the finished run full screen with a step selected, `article-answer-end` the end of the answer, `article-report` the report opened. The run took 16 minutes: four directions, three follow-ups, 143 verified and 44 rejected claims, a 6,078-word report delivered with open review notes. `article-approval` is the literature-source question from an earlier run of the same question in the same profile (the final run's sources were already allowed). |
+
+The chat requests were plain questions with no tool or step named. The capture script
+answered the search approvals and allowed the search tools for the session, as a person
+would; it answered nothing else. The OpenAlex note in `chat-literature-results.png` is
+real: earlier development runs from the same network had used OpenAlex's keyless daily
+allowance. Reproduce with `scripts/cloud/capture_search_docs.mjs` against a stack started
+with `bash scripts/cloud/stack.sh start` and a fresh `CLIO_AGENT_HOME`.
+
+## Connectors and apps
+
+Untouched screenshots of real development sessions on the cloud stack (`claude_code`
+provider, Sonnet 5.5), dark mode, 1440 x 900, CLIO brand. Files at 2880 x 1800 were taken
+at two device pixels per CSS pixel; the rest at one. `capture-manifest.json`
+(`connectors_and_apps`) records each file's checksum, size and source. The record of each
+run is in `docs/design/sdk/mcp-apps-ledger.md`: the `DOCS` rows (stack N=35, 14 November
+2026) for the fresh captures, the `PF` rows (stack N=38) for the two offer cards
+retaken after the compact-card fix, and the stream named below for those copied from
+the qualification gallery. Requests are plain unless a row says otherwise; permission prompts
+were answered "This session" and offer cards "Add" by the harness,
+`scripts/cloud/checks/apps/docs_capture.mjs`.
+
+The station list `example_stations_rainier.csv` is example data (ten made-up codes at
+real places). The Home Assistant captures use ha-mcp's public demo instance
+(`https://ha-mcp-demo-server.qc-h.net`, token `demo`, reset weekly) with read requests
+only; its sensors are demo sensors. `wave.pvd` is synthetic test data. The Extensions,
+picker and offer captures were retaken after the `plugins` stream (connectors and
+plugins shown as what they are), on a fresh stack.
+
+| File | What it shows | Source |
+| --- | --- | --- |
+| `apps/geo-card-inline.png` | Geo's globe in its card in the conversation, workspace `cascadia`. | `docs`, DOCS-C1 |
+| `apps/geo-in-tab.png` | The same view in a workbench tab; the card reads Open in a tab. | `docs`, DOCS-C1 |
+| `apps/geo-maximized.png` | The view maximized, navigation collapsed. | `docs`, DOCS-C1 |
+| `apps/geo-look.png` | The agent's answer after looking at the globe in its tab. | `docs`, DOCS-C2 |
+| `apps/geo-reopened.png` | The view reopened in its tab after CLIO restarted. | `docs`, DOCS-C2 |
+| `apps/geo-dashboard-linked.png` | The globe and a station table in one dashboard, selection linked both ways. | `geo-globe`, GG3 |
+| `apps/paraview-in-tab.png` | The ParaView plugin's view in a tab, workspace `wave-study`. | `final`, FQ-WEB |
+| `apps/paraview-region-comment.png` | A region comment being written on the ParaView view. | `final`, FQ-WEB |
+| `apps/paraview-region-comment-answer.png` | The agent's answer to that comment. | `final`, FQ-WEB |
+| `apps/paraview-dashboard-time-linked.png` | ParaView and two charts in one dashboard, linked by time, from a plain request. | `final`, FQ-WEB |
+| `apps/pdf-dashboard-table.png` | The PDF viewer in a dashboard beside a table built from the paper. | `more-conn`, MC4 |
+| `connectors/discover-catalog.png` | Discover: the catalog as cards grouped by domain, each with its logo, what it brings, its description, where it comes from and its + (Enable). | `discover`, DC |
+| `connectors/agent-load-card.png` | The agent-load card: EarthScope asks to enable Geo and National Data Platform, each with its logo. | `logos`, LG |
+| `connectors/connector-card.png` | Geo's card after Enable: Ready, 12 tools, Connector (an MCP server), In conversations. | `docs`, DOCS-C9 |
+| `connectors/add-plugin-picker.png` | A new conversation's Add plugin menu: Connectors, then Packs. | `docs`, DOCS-C10 |
+| `connectors/add-plugin-picker-plugins.png` | The same menu scrolled: the Plugins group with Home Assistant. | `docs`, DOCS-C10 |
+| `connectors/offer-connector-geo.png` | The compact offer card for the Geo connector, with View connector. | `prefinal`, PF-C2 |
+| `connectors/offer-plugin.png` | The compact offer card for the Home Assistant plugin; its saved address and token wait under Settings (2). | `prefinal`, PF-C1 |
+| `connectors/offer-view-plugin.png` | View plugin over the waiting card: two skills, one MCP server. | `docs`, DOCS-C13 |
+| `connectors/offer-plugin-answered.png` | The reply after Add: a skill loaded and the plugin's tools used. | `docs`, DOCS-C13 |
+| `connectors/add-by-command.png` | Add by URL or command, filled for a local command; not added. | `docs`, DOCS-C11 |
+| `connectors/marketplaces.png` | Installed marketplaces, with clio-kit from GitHub. | `docs`, DOCS-C11 |
+| `connectors/earthdata-results.png` | A NASA Earthdata granule search, and a download refused without a login. | `docs`, DOCS-C3 |
+| `files/cad-step-assembly.png` | A two-part STEP assembly in the file viewer, with its size and parts list. | `cad`, CAD2 |
+| `files/cad-region-comment.png` | A region comment on the whistle's section, a 1.60 mm wall measured. | `fileview`, FV-Q1 |
+
+Reproduce with `bash scripts/cloud/stack.sh start` (`CLIO_CLOUD_ISOLATE=1`) and
+`node scripts/cloud/ui_check.mjs --theme dark --steps scripts/cloud/checks/apps/docs_capture.mjs`
+with the `DOCS_MODE` the step file describes.
+
+## Hurricane Helene in HDF5 and ParaView — 15 November 2026
+
+The `helene/` images belong to the worked example
+[Explore a hurricane in HDF5 data](../../content/docs/docs/examples/hdf5-paraview.mdx). They are
+untouched light-mode browser captures of one live run on the cloud stack (`claude_code`
+provider, Sonnet 5.5, CLIO brand), 1440 x 900 at two device pixels per CSS pixel unless
+the table says otherwise: workspace `Helene`, conversation `sess_255e12e2e60d`.
+`capture-manifest.json` (`helene_hdf5_paraview`) records each file's checksum, size, the
+agent, UI and marketplace revisions, and the step file that took it. Dark-mode and phone
+copies of the hero shots are in the session's gallery, not on the site.
+
+The data are the ERA5 files `scripts/demo/helene/fetch_era5.py` downloads from the public
+NSF NCAR bucket, each cropped to 5–45° N, 105–60° W (all variables and attributes kept) to
+fit the recording machine's disk. The requests are the plain requests of
+`scripts/cloud/checks/apps/helene_hdf5.mjs`; the clouds request names ParaView and the look,
+and the last request ("put it back: from above, tilted a little") was added for the
+captures after the walkthrough's final beat had turned the 3D view away from the storm.
+
+| File | What it shows | Step file |
+| --- | --- | --- |
+| `helene/field-msl.png` | `/MSL` opened from the person's reference, at 26 Sep 12 UTC (step 612 of 720), canvas maximized. | `helene_hero.mjs` |
+| `helene/track-answer.png` | The track answer and its caveats beside the field; the next request with `@sst_2024-09.nc › /SSTK` in the composer. | `helene_hdf5.mjs` |
+| `helene/deepen-answer.png` | The deepening and sea-surface temperature answer, with its limits. | `helene_hdf5.mjs` |
+| `helene/clouds-first-view.png` | The agent's first ParaView view of the 26th, after the person added ParaView from the offer card. | `helene_hdf5.mjs` |
+| `helene/dashboard.png` | The shared dashboard (second version), maximized, its track and charts at the 3D view's time. | `helene_hero.mjs` |
+| `helene/dashboard-3d-linked.png` | The same dashboard at its live ParaView view, step 23 of 32, time linked both ways. | `helene_hero.mjs` |
+| `helene/paraview.png` | The ParaView view in its tab, maximized, from above and tilted, 26 Sep 18 UTC. | `helene_hero.mjs` |
+| `helene/export-offline-recording.png` | 1440 x 900 at one pixel per CSS pixel: the conversation export opened from `file://`; the 3D view shows its recording. | `helene_offline.mjs` |
+
+Reproduce with the steps in `docs/demos/helene-hdf5.md`, then
+`WS=… SID=… node scripts/cloud/ui_check.mjs --scale 2 --theme light --steps scripts/cloud/checks/apps/helene_hero.mjs`.

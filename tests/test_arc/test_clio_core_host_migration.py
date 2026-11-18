@@ -16,9 +16,6 @@ from clio_agent.arc.clio_core_host_migration import (
     CTE_STORE_MIGRATION_FAILED,
     CTE_STORE_MIGRATION_SKIPPED_IN_USE,
     CTE_STORE_MIGRATION_SKIPPED_SHARED,
-    RUNTIME_STATE_MIGRATED,
-    RUNTIME_STATE_MIGRATION_SKIPPED_IN_USE,
-    RUNTIME_STATE_MIGRATION_SKIPPED_SHARED,
     migrate_legacy_cte_store,
 )
 from clio_agent.arc.clio_core_indexer import indexer_block
@@ -178,60 +175,3 @@ def test_a_failed_move_puts_back_what_it_moved(
     assert sorted(entry.name for entry in legacy.iterdir() if entry.name != "hosts") == before
     assert not (legacy / "hosts" / "desk").exists()
     assert "disk went away" in caplog.text
-
-
-def _legacy_runtime(home: Path, pid: int) -> Path:
-    root = home / ".clio"
-    (root / "clio-runtime.clients").mkdir(parents=True)
-    (root / "clio-runtime.pid").write_text(f"{pid} ", encoding="utf-8")
-    (root / "clio-runtime.log").write_text("old daemon log\n", encoding="utf-8")
-    (root / "clio-runtime.lock").write_text("", encoding="utf-8")
-    (root / "clio.yaml").write_text("clio-core's own config\n", encoding="utf-8")
-    return root
-
-
-def test_old_bookkeeping_moves_into_this_hosts_dir_once(
-    home: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    root = _legacy_runtime(home, DEAD_PID)
-    with caplog.at_level(logging.WARNING):
-        state = clio_core_config.runtime_state_dir()
-        again = clio_core_config.runtime_state_dir()
-
-    assert state == again == root / "hosts" / "desk"
-    assert (state / "clio-runtime.log").read_text(encoding="utf-8") == "old daemon log\n"
-    assert (state / "clio-runtime.clients").is_dir()
-    assert not (root / "clio-runtime.pid").exists()
-    # clio-core's own files are not CLIO's to move.
-    assert (root / "clio.yaml").exists()
-    assert caplog.text.count(f"reason={RUNTIME_STATE_MIGRATED}") == 1
-
-
-def test_bookkeeping_of_a_live_daemon_stays(home: Path, caplog: pytest.LogCaptureFixture) -> None:
-    root = _legacy_runtime(home, os.getpid())
-    with caplog.at_level(logging.WARNING):
-        state = clio_core_config.runtime_state_dir()
-    assert (root / "clio-runtime.pid").exists()
-    assert not (state / "clio-runtime.pid").exists()
-    assert f"reason={RUNTIME_STATE_MIGRATION_SKIPPED_IN_USE}" in caplog.text
-
-
-def test_bookkeeping_on_a_shared_home_with_another_host_stays(
-    home: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    root = _legacy_runtime(home, DEAD_PID)
-    (root / "hosts" / "ares").mkdir(parents=True)
-    with caplog.at_level(logging.WARNING):
-        clio_core_config.runtime_state_dir()
-    assert (root / "clio-runtime.log").exists()
-    assert f"reason={RUNTIME_STATE_MIGRATION_SKIPPED_SHARED}" in caplog.text
-
-
-def test_an_explicit_state_dir_is_never_migrated_into(
-    home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    root = _legacy_runtime(home, DEAD_PID)
-    monkeypatch.setenv("CLIO_RUNTIME_STATE_DIR", str(tmp_path / "private"))
-    assert clio_core_config.runtime_state_dir() == tmp_path / "private"
-    assert (root / "clio-runtime.log").exists()
-    assert list((tmp_path / "private").iterdir()) == []

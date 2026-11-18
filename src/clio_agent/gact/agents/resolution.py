@@ -154,6 +154,10 @@ def pin_session_agent(
     app.state.sessions.update(
         session_id, metadata_patch=patch, agent={"id": resolution.agent["id"]}
     )
+    # A new or switched agent whose plugins need what is not ready asks once (LZ-D2).
+    from clio_agent.gact.agent_needs import ensure_card_safely  # noqa: PLC0415
+
+    ensure_card_safely(app, session_id, resolution)
     return resolution
 
 
@@ -185,9 +189,18 @@ def session_resolution(app: Any, session_id: str) -> Resolution:
 
     metadata = _session_metadata(app, session_id)
     digest = str(metadata.get(AGENT_RESOLUTION_KEY) or "")
-    if digest:
-        return pinned_resolution(app, digest, str(metadata.get(AGENT_REF_KEY) or ""))
-    return pin_session_agent(app, session_id)
+    if not digest:
+        return pin_session_agent(app, session_id)
+    ref = str(metadata.get(AGENT_REF_KEY) or "")
+    resolution = pinned_resolution(app, digest, ref)
+    from clio_agent.connectors.follow import drifted  # noqa: PLC0415
+
+    if not metadata.get(SUBAGENT_KEY) and drifted(resolution):
+        # A connector whose plugin this conversation has was turned off, or on again.
+        from clio_agent.gact.connector_follow import follow_connectors  # noqa: PLC0415
+
+        return follow_connectors(app, session_id)
+    return resolution
 
 
 def resolution_agent_def(resolution: Resolution) -> AgentDef:
@@ -207,6 +220,8 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
             {(row["plugin"], str(Path(row["path"]).parent.parent)) for row in resolution.skills}
         ),
     }
+    if agent.get("bare"):
+        metadata["bare"] = True
     structured = dict(agent.get("structured_outputs") or {})
     if resolution.workflow_state is not None:
         # A plugin declaring a workflow_state vocabulary makes its agents emit it.
@@ -304,6 +319,12 @@ def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentD
     return resolution_agent_def(child)
 
 
+def is_bare(agent_def: AgentDef) -> bool:
+    """Whether a resolved agent is bare (see :attr:`clio_agent.sdk.agent.Agent.bare`)."""
+
+    return bool((agent_def.metadata or {}).get("bare"))
+
+
 def apply_session_tool_allowlist(
     app: Any, agent_def: AgentDef, *, session_id: str = ""
 ) -> AgentDef:
@@ -313,8 +334,20 @@ def apply_session_tool_allowlist(
     all, so a server's elicitation message cannot drive a tool-capable turn.
     ``tool_allowlist`` is stamped when the child session is minted. Only the
     explicit empty list is handled; an absent or non-empty allowlist is a no-op.
+
+    A bare agent (``Agent.bare``) is stripped the same way on every turn, and also
+    loses its system prompt: its model sees only the conversation.
     """
 
+    if is_bare(agent_def):
+        return agent_def.model_copy(
+            update={
+                "tools": [],
+                "skills": [],
+                "module": {"kind": "chain_of_thought"},
+                "system_prompt": "",
+            }
+        )
     allowlist = _session_metadata(app, session_id).get("tool_allowlist")
     if not isinstance(allowlist, (list, tuple)) or allowlist:
         return agent_def
@@ -405,16 +438,23 @@ def supplied_server_values(
     ``${CLIO_PROVENANCE_CONFIG}`` writes the provenance handoff for the
     session's workspace. An incomplete handoff is traced, not hidden; the
     server reads the problems from the file it was given.
+    ``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback prefix of the byte-range route.
     """
 
     from clio_agent.plugins.servers import (  # noqa: PLC0415
         PROVENANCE_CONFIG_VAR,
+        RANGE_ORIGIN_VAR,
         references_variable,
     )
 
     specs = {name: row.get("spec") for name, row in mcp_servers.items()}
+    values: dict[str, str] = {}
+    if references_variable(specs, RANGE_ORIGIN_VAR):
+        from clio_agent.gact.storage.range_handles import range_origin  # noqa: PLC0415
+
+        values[RANGE_ORIGIN_VAR] = range_origin(app)
     if not references_variable(specs, PROVENANCE_CONFIG_VAR):
-        return {}
+        return values
     from clio_agent.gact.provenance.handoff import write_provenance_handoff  # noqa: PLC0415
     from clio_agent.runtime import trace  # noqa: PLC0415
 
@@ -426,7 +466,8 @@ def supplied_server_values(
             path,
             ",".join(problem.code for problem in handoff.problems),
         )
-    return {PROVENANCE_CONFIG_VAR: str(path)}
+    values[PROVENANCE_CONFIG_VAR] = str(path)
+    return values
 
 
 def session_server_set(app: Any, session_id: str) -> str:
@@ -454,10 +495,16 @@ def session_server_set(app: Any, session_id: str) -> str:
     supplied = supplied_server_values(
         app, servers, workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id)
     )
+    from clio_agent.gact.connector_values import session_overlay  # noqa: PLC0415
     from clio_agent.gact.mcp_user_configuration import list_user_mcp_servers  # noqa: PLC0415
 
     try:
-        return register_server_set(servers, supplied, connections=list_user_mcp_servers())
+        return register_server_set(
+            servers,
+            supplied,
+            connections=list_user_mcp_servers(),
+            connector_values=session_overlay(app, session_id),
+        )
     except ConnectionUnavailable as exc:
         raise SessionAgentUnavailable(
             "",

@@ -58,14 +58,14 @@ def _tool(
     return task
 
 
-def _context(app: Any, sid: str, root: TaskSnapshot) -> FlowContext:
+def _context(app: Any, sid: str, root: TaskSnapshot, run: str = "tool-evidence") -> FlowContext:
     return FlowContext(
         app=app,
         session_id=sid,
         module=SimpleNamespace(resolution=None),
         flow=ReceiptFlow(),
         root_handle=root.handle,
-        run_invocation="tool-evidence",
+        run_invocation=run,
         task="Read exact results",
     )
 
@@ -116,6 +116,24 @@ def test_tool_evidence_cannot_be_read_from_an_unrelated_assignment(
     _tool(app, other, {"private": "other assignment"})
     with pytest.raises(CallRefused, match="assignment subtree"):
         asyncio.run(_context(app, sid, root).tool_results(other.handle))
+
+
+def test_a_restarted_run_reads_evidence_of_the_calls_it_kept(
+    request: pytest.FixtureRequest,
+) -> None:
+    """A restart keeps the earlier run's finished calls; their evidence is its own."""
+    app, client, sid, root = request.getfixturevalue("world")
+    child_sid = client.post("/v1/sessions", json={"title": "Researcher"}).json()["id"]
+    child = record_assignment_fixture(app, child_sid, parent_sid=sid)
+    task = _tool(app, child, {"source": "kept"})
+    successor = record_assignment_fixture(app, sid)
+    restarted = _context(app, sid, successor, "restarted-run")
+    with pytest.raises(CallRefused, match="assignment subtree"):
+        asyncio.run(restarted.tool_results(child.handle))
+    restarted = _context(app, sid, successor, "restarted-run-2")
+    restarted.journal.resume_from = [(root.handle, "tool-evidence")]
+    rows = asyncio.run(restarted.tool_results(child.handle))
+    assert [row["task"]["handle"] for row in rows] == [task.handle]
 
 
 def test_tool_evidence_rechecks_authorization_after_content_read(

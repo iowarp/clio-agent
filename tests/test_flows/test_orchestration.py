@@ -149,10 +149,63 @@ def test_replaying_a_settled_flow_reattaches_to_its_handles(flow_app: TestClient
 
     after = _run(flow_app, handle)
     assert prediction.answer == before["result"]["answer"]
+    # A started flow whose run returned says its assignment is complete.
+    assert prediction.assignment_disposition == "complete"
     assert {k: v["handle"] for k, v in after["calls"].items()} == {
         k: v["handle"] for k, v in before["calls"].items()
     }
     assert sorted(row["handle"] for row in _tree(flow_app, sid)) == tasks_before
+
+
+def test_a_started_flow_settles_when_its_run_ends_over_an_uncertain_call(
+    flow_app: TestClient,
+) -> None:
+    """The run's end settles its assignment; an orphaned uncertain call does not hold it.
+
+    Live (2026-11-14): the server crashed during a deep-research run. On restart the
+    researchers' in-flight searches and fetches became ``task_state_uncertain``, open
+    for good. The run resumed, finished and saved its report, but those calls counted
+    as pending work under the flow, so its task stayed yielded with nothing to wake
+    it, and the agent that started it waited forever.
+    """
+
+    from uuid import uuid4
+
+    gate = threading.Event()
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _orchestrator(flow_app, member_gate=gate)
+    post(flow_app, sid, "convene the council on the retention policy")
+    handle = wait_until(lambda: started.get("handle"))
+    members = wait_until(lambda: _member_handles(flow_app, handle))
+    history = flow_app.app.state.task_history
+    member = _snapshot(flow_app, members[0])
+    orphan = member.model_copy(
+        update={
+            "handle": "task_" + uuid4().hex,
+            "kind": "MCP",
+            "tool": "fetch",
+            "invocation_id": uuid4().hex,
+            "owner": member.owner.model_copy(
+                update={"assignment_id": member.handle, "parent_handle": member.handle}
+            ),
+            "status": "task_state_uncertain",
+            "raw_status": "active",
+            "activity": "",
+            "terminal_at": None,
+            "result": None,
+        }
+    )
+    with history.serialized():
+        history.record_snapshot(orphan, observation_id=uuid4().hex)
+    gate.set()
+
+    flow_task = wait_until(
+        lambda: (task := _snapshot(flow_app, handle)).terminal_at is not None and task,
+        timeout=90,
+    )
+    assert flow_task.status == "completed"
+    assert _run(flow_app, handle)["status"] == "completed"
+    assert _snapshot(flow_app, orphan.handle).terminal_at is None  # still honestly unknown
 
 
 def test_cancelling_a_started_flow_settles_its_subtree(flow_app: TestClient) -> None:

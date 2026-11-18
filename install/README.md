@@ -64,6 +64,25 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
   agent puts that folder first on its own PATH at start-up, however it was launched
   (the `clio` launcher, Desktop or a service), and the uninstaller removes it with
   the installation.
+  On Windows, `install.ps1` keeps the Python of a clio-kit it owns in
+  `$CLIO_PREFIX\uv-python`, unless uv already manages a matching Python for you: that
+  one is reused where it is and left there on uninstall. It owns the one in `$CLIO_PREFIX\uv-tools`, and one it
+  installs in your own uv tool folder while none is there, which it records in
+  `$CLIO_PREFIX\clio-kit-owned.json`. `uninstall.ps1` runs `uv tool uninstall clio-kit`
+  only for that recorded one and removes `uv-python` with the prefix. Pythons uv
+  installs for CLIO are never registered with the Python launcher (`HKCU\Software\Python`)
+  or given a `python3.x.exe` on PATH.
+- **No tool server is built during the install.** The launcher is installed, and the
+  marketplace (text only) is installed with the managed packages, but no clio-kit
+  server environment is downloaded: that used to take minutes and thousands of files
+  on a cold cache. Instead, when you start a conversation with an agent whose plugins
+  need a connector or server that is not enabled, CLIO asks once, in the conversation,
+  whether to enable them; enabling downloads each one then, with its progress shown in
+  words. **Prepare servers now for offline use:** for an offline or air-gapped
+  machine, pass `--prepare-tool-servers` to `install.sh` (`-PrepareToolServers` to
+  `install.ps1`) to also build the servers the installed agents carry, as before.
+  `python -m clio_agent.runtime.install_tool_servers` does the same later, from the
+  installed environment.
 
 - `clio` launcher — a small CLI that boots the server on `:17800` if
   not already running, opens Web, and manages the server
@@ -81,7 +100,7 @@ Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
 
 No `go` is needed.
 
-CLIO 0.9.7.1 selects standard Python 3.14 with the GIL enabled for source, release
+CLIO 0.9.7 selects standard Python 3.14 with the GIL enabled for source, release
 and bundled installations.
 
 ### Persistent backend-only install with uv
@@ -159,7 +178,7 @@ $u = 'https://clio.iowarp.ai/install.ps1'
 `--ref <branch, tag or commit>` for source. The older spellings still work:
 `CLIO_VERSION=<v>` is `--version <v>`, `CLIO_REF=<ref>` is `--source --ref <ref>`.
 For this release, `CLIO_VERSION=0.9.7.1 bash install/install.sh` selects the stable
-0.9.7.1 frontend and backend.
+0.9.7 frontend and backend.
 `GACT_REF` and `GACT_VERSION` no longer select a frontend: the TUI is frozen.
 `CLIO_INSTALLER_REF` selects a different launcher-script ref.
 

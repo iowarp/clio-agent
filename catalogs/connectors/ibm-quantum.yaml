@@ -1,0 +1,39 @@
+# IBM Quantum: Jaime's fork of the Qiskit MCP servers (JaimeCernuda/ibm-quantum-mcp-servers,
+# Apache-2.0), its ibm-quantum-mcp-server member: the Qiskit circuit, IBM Quantum Runtime
+# and Qiskit docs tools in one process, with local simulation (exact, ideal shots, a fake
+# device's noise) and four MCP Apps views (circuit, layout, results, backend). CLIO starts
+# it through uvx from the pinned commit and never bundles or imports it (plan QC1).
+# Both needs are optional: with neither, every local tool works and a hardware call answers
+# with a typed key_needed. The key goes to CLIO's credential store; QISKIT_MCP_NO_SAVED_ACCOUNT
+# keeps the server from reading or writing ~/.qiskit (CN8). IBM permits no use of its logos
+# without written permission (ibm.com/legal/copytrade), so the logo, ibm-quantum.svg, is ours:
+# a qubit on a Bloch sphere, drawn for CLIO (IBM Quantum ledger QC2-D1).
+- id: ibm-quantum
+  name: IBM Quantum
+  group: Quantum computing
+  logo: ibm-quantum.svg
+  description: Write and simulate quantum programs, see their circuits and results, and run them on IBM quantum computers
+  server:
+    command: uvx
+    args:
+      - --from
+      - git+https://github.com/JaimeCernuda/ibm-quantum-mcp-servers@79918c9852243c80cd4a2a5ffd737d530e57cac4#subdirectory=ibm-quantum-mcp-server
+      - ibm-quantum-mcp-server
+    env:
+      QISKIT_IBM_TOKEN: ${need.token}
+      QISKIT_IBM_RUNTIME_MCP_INSTANCE: ${need.instance}
+      QISKIT_MCP_NO_SAVED_ACCOUNT: "1"
+  needs:
+    - key: token
+      kind: secret
+      label: IBM Quantum API key
+      required: false
+      group: Real hardware
+      help: Only for real hardware. Simulation needs no key.
+    - key: instance
+      kind: value
+      label: Instance CRN
+      required: false
+      group: Real hardware
+      help: The Open Plan instance, starting with crn:v1. From the Instances page.
+  plugin: ibm-quantum

@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -85,8 +86,12 @@ def _install_command(
     *,
     target: Path | None = None,
     constraints: Path | None = None,
+    uv_flags: Sequence[str] = (),
 ) -> list[str]:
-    """The installer argv: in place, or into ``target`` pinned to ``constraints``."""
+    """The installer argv: in place, or into ``target`` pinned to ``constraints``.
+
+    ``uv_flags`` are added only to a uv command.
+    """
     uv = _uv_executable(python_executable)
     placement: list[str] = []
     if target is not None:
@@ -97,6 +102,7 @@ def _install_command(
     if uv:
         if target is not None:
             placement.append("--compile-bytecode")
+        placement += uv_flags
         return [uv, "pip", "install", "--python", python_executable, *placement, *requirements]
     if target is not None:
         placement.append("--upgrade")
@@ -127,15 +133,118 @@ def _run_installer(
     overlay.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clio-agent-overlay-") as tmp:
         constraints = _overlay_constraints(overlay, requirements, Path(tmp))
-        command = _install_command(
-            executable, requirements, target=overlay, constraints=constraints
-        )
-        result = _run_install_command(command)
+        result = _install_runtime_gaps(executable, requirements, overlay, constraints, display_name)
+        if result is None:
+            result = _install_into_overlay(
+                executable, requirements, overlay, constraints, display_name
+            )
     if result.returncode == 0:
-        package_overlay.prune_duplicates(overlay)
         package_overlay.prune_stale(overlay)
         package_overlay.prepend(overlay)
     return result
+
+
+def _install_into_overlay(
+    executable: str,
+    requirements: Sequence[str],
+    overlay: Path,
+    constraints: Path,
+    display_name: str,
+    *,
+    no_deps: bool = False,
+    supersedes: Sequence[str] = (),
+) -> subprocess.CompletedProcess[str]:
+    """Install ``requirements`` into a staging directory, then publish it into ``overlay``."""
+    staging = package_overlay.staging_dir(overlay)
+    try:
+        command = _install_command(
+            executable,
+            requirements,
+            target=staging,
+            constraints=constraints,
+            uv_flags=["--no-deps"] if no_deps else (),
+        )
+        result = _run_install_command(command)
+        if result.returncode == 0:
+            try:
+                package_overlay.publish(staging, overlay, supersedes=supersedes)
+            except OSError as exc:
+                return subprocess.CompletedProcess(
+                    command, 1, result.stdout, f"could not publish {display_name}: {exc}"
+                )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return result
+
+
+def _dry_run_pins(output: str) -> list[str] | None:
+    """The ``name==version`` lines of a uv ``--dry-run``, or ``None`` if one is not a pin."""
+    pins: list[str] = []
+    for line in output.splitlines():
+        if not line.startswith(" + "):
+            continue
+        name, separator, version = line[3:].strip().partition("==")
+        if not separator or not name or not version or " " in name + version:
+            return None
+        pins.append(f"{name}=={version}")
+    return pins or None
+
+
+def _install_runtime_gaps(
+    executable: str,
+    requirements: Sequence[str],
+    overlay: Path,
+    constraints: Path,
+    display_name: str,
+) -> subprocess.CompletedProcess[str] | None:
+    """Install only the resolved distributions the runtime lacks, without dependencies.
+
+    The full ``--target`` install stages the whole closure (every runtime dependency,
+    bytecode-compiled) and :func:`package_overlay.publish` then prunes all but the
+    distributions the runtime lacks. Resolving with ``--dry-run`` first and installing
+    just those, with ``--no-deps``, publishes the same distributions at the same
+    versions. The resolved closure is passed to ``publish`` so it supersedes the same
+    overlay copies the full install would. Returns ``None`` when this cannot be done
+    (no uv, a failed or unparsable resolve, a failed install), for the full install.
+    """
+    if not _uv_executable(executable):
+        return None
+    staging = package_overlay.staging_dir(overlay)
+    try:
+        dry_run = _run_install_command(
+            _install_command(
+                executable,
+                requirements,
+                target=staging,
+                constraints=constraints,
+                uv_flags=["--dry-run"],
+            )
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if dry_run.returncode != 0:
+        return None
+    resolved = _dry_run_pins(f"{dry_run.stdout}\n{dry_run.stderr}")
+    if resolved is None:
+        return None
+    lacking = package_overlay.runtime_lacks(resolved, overlay)
+    if not lacking:
+        return None
+    try:
+        result = _install_into_overlay(
+            executable,
+            lacking,
+            overlay,
+            constraints,
+            display_name,
+            no_deps=True,
+            supersedes=[pin.split("==", 1)[0] for pin in resolved],
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result if result.returncode == 0 else None
 
 
 def _bounded_install_error(result: subprocess.CompletedProcess[str]) -> str:

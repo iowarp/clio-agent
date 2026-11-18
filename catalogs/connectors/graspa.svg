@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<!-- CLIO connector icon: gas molecules in a porous framework. Drawn for CLIO (our own work, not a third-party mark); docs/design/chemistry-in-clio-status.md. -->
+<rect width="24" height="24" rx="5.5" fill="#1E7468"/>
+<g fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"><path d="M5 5h14v14H5zM5 12h14M12 5v14"/></g><g fill="#fff"><circle cx="8.5" cy="8.5" r="1.5"/><circle cx="15.5" cy="15.5" r="1.5"/><circle cx="15.5" cy="8.5" r="1.1"/></g>
+</svg>

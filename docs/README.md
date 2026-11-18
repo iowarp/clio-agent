@@ -33,6 +33,10 @@ lives under [archive/](archive/README.md).
 - [WEB_SEARCH.md](WEB_SEARCH.md) — the `web_search` backend: CLIO's private SearXNG, a CLIO Web Search gateway, or none.
 - [Managed infrastructure](https://clio.iowarp.ai/docs/managed-infrastructure/) (website; source `site/src/content/docs/docs/managed-infrastructure.mdx`) — services CLIO installs, what each OS and GPU supports, and host requirements.
 
+## Demos
+
+- [demos/helene-hdf5.md](demos/helene-hdf5.md) — Hurricane Helene in ERA5: the HDF5 walkthrough, how to record it, and the tool-calls/scripts, local/S3 benchmark.
+
 ## Providers
 
 - [providers/](providers/README.md) — LM provider configuration and how to add a provider.

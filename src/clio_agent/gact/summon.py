@@ -412,6 +412,11 @@ def expand_server_summons(entries: list[tuple[str, str]], program: Any) -> list[
         server = str(json.loads(block).get("server") or "")
         note = f"The person pointed this message at the {server} tools."
         names = [entry.name for entry in catalog.by_owner().get(server, [])] if catalog else []
+        from clio_agent.gact.mcp_app_tools import loading_note  # noqa: PLC0415
+
+        # A view of this server still loading: its own tools are not in the catalog yet.
+        if loading := loading_note(_ctx.active_app(), _ctx.active_session_id(), [server]):
+            note = f"{note}\n\n{loading}"
         if not names:
             expanded.append((source, note))
             continue

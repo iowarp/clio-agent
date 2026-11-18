@@ -17,12 +17,16 @@ remediation names that exact command plus the ``uv tool dir --bin`` PATH step.
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher
 from clio_agent.tools.mcp_config import MCPServerSpec
+
+if TYPE_CHECKING:
+    from clio_agent.plugins.records import PluginRecord
 
 WhichChecker = Callable[[str], str | None]
 
@@ -37,7 +41,7 @@ _CLIO_KIT_REMEDIATION = (
 
 
 def discover_declared_mcp_servers(
-    *, env: Mapping[str, str] | None = None
+    *, env: Mapping[str, str] | None = None, records: Iterable[PluginRecord] | None = None
 ) -> dict[str, MCPServerSpec]:
     """Discover the MCP servers declared by installed plugins + user/workspace config.
 
@@ -49,6 +53,8 @@ def discover_declared_mcp_servers(
     Args:
         env: Environment mapping used for ``${VAR}`` expansion in declarations
             (defaults to the process environment when ``None``).
+        records: The plugin records whose servers are merged (every usable record
+            of the plugin store when ``None``).
 
     Returns:
         A ``{name: MCPServerSpec}`` mapping of every declared server.
@@ -57,9 +63,11 @@ def discover_declared_mcp_servers(
     from clio_agent.plugins.service import PluginService
     from clio_agent.tools.mcp_config import load_mcp_servers
 
+    if records is None:
+        records = PluginService().store.records()
     rows = {
         name: {"plugin": record.id, "root": record.root, "spec": spec}
-        for record in PluginService().store.records()
+        for record in records
         for name, spec in record.mcp_servers.items()
     }
     # Doctor and health have no workspace: the user file and the launch folder are

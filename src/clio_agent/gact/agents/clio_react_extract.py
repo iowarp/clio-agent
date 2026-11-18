@@ -16,14 +16,18 @@ to ``docs/design/react-loop-completion-2026-09.md``.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any
 
 import dspy
 from dspy.lm15 import Message, TextPart, ThinkingPart, ToolCallPart, ToolResultPart
+from dspy.utils.exceptions import AdapterParseError
 
 from clio_agent import conf
 from clio_agent.providers.stateful_common import outside_stateful_scope
+
+_log = logging.getLogger(__name__)
 
 EXTRACT_REASONS = frozenset({"direct_response", "max_iters"})
 
@@ -100,9 +104,39 @@ def extract(
     fallback = dspy.Signature(fields, signature.instructions).append(
         "trajectory", dspy.InputField(), type_=str
     )
+    trajectory = trajectory_text(steps)
     with outside_stateful_scope(), dspy.context(lm=lm):
-        pred = dspy.ChainOfThought(fallback)(**inputs, trajectory=trajectory_text(steps))
+        try:
+            pred = dspy.ChainOfThought(fallback)(**inputs, trajectory=trajectory)
+        except AdapterParseError as error:
+            # One format correction, told what could not be read: a reply under its own
+            # Markdown headings (live: "## Reasoning / ## Answer") lost a researcher's
+            # whole turn. Nothing is inferred from the unreadable reply itself.
+            expected = ["reasoning", *missing]
+            _log.warning(
+                "React extract reply unreadable reason=react_extract_format_retry fields=%s",
+                ",".join(expected),
+            )
+            corrected = fallback.append(
+                "format_problem",
+                dspy.InputField(desc="Why your previous reply could not be read"),
+                type_=str,
+            )
+            problem = (
+                f"Your previous reply could not be read ({_first_line(error)}). Write every "
+                "output field, each under its own [[ ## field ## ]] header and in that "
+                "order: " + ", ".join(expected) + ". Do not use Markdown headings for them."
+            )
+            pred = dspy.ChainOfThought(corrected)(
+                **inputs, trajectory=trajectory, format_problem=problem
+            )
     return {name: getattr(pred, name) for name in missing}
+
+
+def _first_line(error: Exception) -> str:
+    """The parse error's first line (its message, never the unreadable reply)."""
+    text = getattr(error, "message", "") or str(error)
+    return text.strip().splitlines()[0][:200] if text.strip() else type(error).__name__
 
 
 def trajectory_text(steps: Sequence[Message]) -> str:

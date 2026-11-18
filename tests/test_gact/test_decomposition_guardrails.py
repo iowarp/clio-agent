@@ -260,7 +260,30 @@ from clio_agent.gact.app import build_app
 # /v1/search/query and PUT/DELETE /v1/search/engine-keys/{engine} with GET/PATCH
 # /v1/search/providers, PUT/DELETE /v1/search/providers/{source}/key, POST
 # /v1/search/openalex-key and the search-service POST /v1/search, POST /v1/fetch, GET /v1/limits.
-EXPECTED_ROUTE_METHOD_PAIRS = 447
+# 447 -> 455: connectors (routes/connectors.py, mcp-apps-surfaces-plan CN1 to CN12): GET
+# /v1/connectors, POST /v1/connectors, GET and DELETE /v1/connectors/{id}, GET .../logo,
+# PUT .../values, POST .../enable and POST .../disable.
+# 455 -> 471: MCP Apps surfaces, all under /v1/sessions/{sid}/mcp-apps/ in owner modules:
+# PUT {app_id}/display-mode, POST {app_id}/downloads, PUT {app_id}/pin (mcp_app_routes.py);
+# GET {app_id}/live, POST reopen (mcp_app_calls.py); PUT {app_id}/app-tools, POST
+# {app_id}/app-tool-results/{call_id} (mcp_app_tool_routes.py); the service proxy
+# {app_id}/service/{data_ref} GET and HEAD, and .../{path:path} GET, HEAD, POST, PUT, PATCH,
+# DELETE and OPTIONS (mcp_app_service_proxy.py).
+# 471 -> 473: looking at a view (gact/mcp_app_look_routes.py, CM1): PUT
+# {app_id}/shown and POST {app_id}/looks/{call_id}.
+# 478 -> 480: client-rendered file views (gact/file_view_routes.py, FV-D3): PUT
+# /v1/sessions/{sid}/file-views/{view_id} and POST .../{view_id}/looks/{call_id}.
+# 480 -> 481: what a stop reaches (routes/sessions.py, docs/design/stop-and-restart.md): GET /v1/sessions/{sid}/stop-scope.
+# 481 -> 484: GET, PUT and DELETE /v1/plugins/offer-list, the person's choice of the plugins
+# the agent may offer (a8e4dca76, routes/offer_list.py, registered from routes/connectors.py);
+# merged with #2364 without a recount.
+# 484 -> 486: Report a problem (routes/problem_report.py, registered with the release check
+# from routes/system_support.py): GET /v1/system/problem-report and .../download.
+# 486 -> 490: running agents and flows from Python: GET /v1/sessions/{sid}/usage
+# (routes/session_usage.py, from routes/session_creation.py) and the attached-client
+# count, POST/GET /v1/server/clients and DELETE .../{client_id} (gact/attached_clients.py,
+# from routes/lifecycle.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 490
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -311,6 +334,7 @@ def test_build_app_registers_expected_route_count() -> None:
         ("/v1/sessions/{sid}/message-state", "GET"),
         ("/v1/workspaces/{wid}/sources/{source_id}/operations/{handle}/cancel", "POST"),
         ("/v1/sessions/{sid}/legacy-transcript", "GET"),
+        ("/v1/sessions/{sid}/stop-scope", "GET"),
     } <= set(route_pairs)
     assert ("/v1/infrastructure/models/details", "GET") in route_pairs
     assert ("/v1/html-renderer", "GET") not in route_pairs

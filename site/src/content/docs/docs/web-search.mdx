@@ -1,0 +1,152 @@
+---
+title: Search the web
+description: How CLIO searches the web and reads pages, which services it uses, and how to approve, order, limit or upgrade them.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { Aside } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import webSettings from '../../../assets/captures/search/settings-web.png';
+import webSettingsPhone from '../../../assets/captures/search/settings-web-phone.png';
+import permission from '../../../assets/captures/search/chat-permission.png';
+import approval from '../../../assets/captures/search/chat-approval.png';
+import results from '../../../assets/captures/search/chat-web-results.png';
+
+<PreviewGuide features="Web search, literature search and the Web search settings" since="v0.9.7" />
+
+CLIO can search the web and read pages as soon as it is installed. There is
+nothing to set up and no key to create. Ask an ordinary question, and the agent
+searches when the answer needs current or outside information.
+
+```text
+What changed in the HDF5 2.0 release compared with 1.14?
+```
+
+The agent has two web tools:
+
+| Tool | What it does |
+| --- | --- |
+| **Search web** | Finds pages. The agent can limit a search to dates, to sites, or to research papers, news or PDFs. |
+| **Read page** | Reads one page as text, including PDFs. |
+
+For papers, preprints and datasets, CLIO has separate literature tools; see
+[Find papers and review the literature](/docs/literature/).
+
+## Approve the first search
+
+Searches leave your computer, so CLIO asks before it uses a search service for
+the first time. Two kinds of request can appear.
+
+Under the **Ask first** confirmation policy, the first web or literature call in a
+conversation asks for permission, like any other action that reaches the
+network. Choose **This session** to let the conversation search without asking
+again. Plan and Deep research modes allow searching without this request. See
+[Choose what CLIO may do](/docs/permissions/).
+
+<Capture client:visible image={await captureImage(permission)}
+  alt="A permission request for a literature search, with Allow once, This session, This workspace and Deny"
+  caption="Under Ask first, the first search in a conversation asks for permission. This session covers the rest of the conversation." />
+
+The first query to each search service asks whether CLIO may use that service.
+This question appears under every confirmation policy, including **Bypass
+checks**, and only you can answer it. CLIO remembers your answer for that
+service.
+
+<Capture client:visible image={await captureImage(approval)}
+  alt="A question asking to allow searches through Keenable, with the choices Allow searches through Keenable and Don't use Keenable"
+  caption="The first query to each service asks once. The searches waiting for your answer are shown above it." />
+
+## Read the results
+
+Each search appears as one row with its query and how many results it returned.
+Open a row to see the results the agent received: each page's title, date and
+snippet. The full answer from the search service is saved with the
+conversation, and the agent can read it before searching again.
+
+<Capture client:visible image={await captureImage(results)}
+  alt="An opened Search web row for HDF5 2.0 release notes, listing pages with their titles, dates and snippets"
+  caption="An opened search row lists the pages found, with dates and snippets. The agent then read the most relevant pages before answering." />
+
+## Where searches go
+
+CLIO sends web searches to hosted search services. None of them needs a key.
+
+| Service | Free use without a key |
+| --- | --- |
+| Keenable | 1,000 searches an hour, shared by everyone on your network |
+| Exa | Not published |
+| Firecrawl | Not published |
+| You.com | 100 searches a day, shared by everyone on your network |
+| Parallel | Not published; the free mode is its faster, lighter one |
+
+CLIO uses the first service in your order that is on, approved and available.
+When a service cannot apply a filter, such as a date range, CLIO applies it to
+the results and tells the agent the filter was approximate.
+
+To read a page, CLIO downloads it from this computer first. When a site blocks
+the download, or the page is a PDF or needs a script to show its text, an approved
+search service's reader reads it instead. CLIO sends a page to a reader only when
+it is a public address: never a private network address, an intranet name or a
+link that carries a password or a token.
+
+## When a service fails or runs out
+
+A service can be busy, down, or out of free searches. CLIO handles each case and
+tells the agent what happened, so a failure is not mistaken for "no results".
+
+- **Too many requests.** The service rests and the next service in your order
+  answers the search.
+- **The service fails.** CLIO tries again a second later. If it fails again, the
+  agent is told that the service has a temporary problem and that it can try
+  again shortly. A second failure in a row moves searches to the next service,
+  and the failing one rests for five minutes.
+- **The free allowance is used up.** CLIO asks you once, for every search that is
+  waiting: switch to the next service, switch and always switch from now on, add
+  a key for this service, or stop searching until the allowance resets.
+
+CLIO keeps one queue per service for the whole CLIO service, however many
+conversations and agents are searching. It paces requests to each service's
+published limits, counts what it has used this hour or day, and stops before a
+free allowance runs out. Other programs on your network share keyless
+allowances, so a service can still refuse a request.
+
+## Change the services
+
+Open **Settings → Web search**. The **Web** tab lists the web services in the
+order CLIO tries them.
+
+<Capture client:visible image={await captureImage(webSettings)}
+  alt="Settings, Web search, Web tab: five services in order with their free use, approval status, a key button and an on/off switch, then Switch sources automatically and a search service address"
+  caption="Each service shows its free use, how much of it this CLIO used, and whether you approved it." />
+
+- **Reorder** services by dragging them or with the arrows. CLIO tries them top
+  to bottom.
+- **Turn a service off** with its switch. CLIO skips it.
+- **Add key** stores a key you created with that service. A key raises its limits.
+  CLIO keeps keys in its credential store, not in its configuration files, and a
+  service with a key moves to the front of the order unless you keep your order.
+- **Switch sources automatically** answers the "allowance used up" question for
+  you: CLIO moves to the next service without asking.
+- **Search service address** points CLIO at another CLIO service that searches for
+  your site. It answers searches first, with one rate limit and cache for
+  everyone who uses it.
+- **Web search** at the top turns web search off for every conversation on this
+  CLIO service.
+
+<Capture client:visible image={await captureImage(webSettingsPhone)}
+  alt="The same Web search settings on a phone, with each service's controls below its description"
+  caption="On a narrow screen, each service's status and controls appear below its description."
+  sizes="(min-width: 50rem) 22rem, 100vw" />
+
+<Aside type="note">
+Settings apply to the connected CLIO service, not to one conversation. On a
+shared lab service, the administrator's choices apply to everyone who uses it.
+</Aside>
+
+## Related
+
+- [Find papers and review the literature](/docs/literature/)
+- [Run deep research](/docs/deep-research/)
+- [Choose what CLIO may do](/docs/permissions/)
+- [Check answers and sources](/docs/evidence/)

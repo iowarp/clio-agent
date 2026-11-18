@@ -52,9 +52,15 @@ def _send(client: TestClient, session_id: str, pinned: dict, marks: list[dict], 
 
 
 def _wait(agent: FakeClioAgent, count: int) -> None:
-    deadline = time.time() + 5
+    """Wait for the background turn to reach the agent; fail clearly if it never does.
+
+    The bound is generous because a loaded CI runner can take seconds to start the turn;
+    a fast run returns as soon as the call lands.
+    """
+    deadline = time.time() + 60
     while len(agent.calls) < count and time.time() < deadline:
         time.sleep(0.02)
+    assert len(agent.calls) >= count, f"the agent got {len(agent.calls)} of {count} turns in 60 s"
 
 
 def _app(tmp_path: Path, agent: FakeClioAgent) -> Any:

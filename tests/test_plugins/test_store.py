@@ -85,6 +85,26 @@ def test_parallel_resolution_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert list(paths[0].parent.iterdir()) == [paths[0]]
 
 
+def test_installed_records_skip_the_builtins_which_declare_no_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Install-time server discovery reads only installed records.
+
+    That equals full discovery only while no built-in declares an MCP server.
+    """
+    builtins = builtin_records()
+    assert builtins and all(not record.mcp_servers for record in builtins)
+    service = _service(tmp_path)
+    service.store.install(str(_market(tmp_path / "m")), name="demo", default=True)
+    builtin_ids = {record.id for record in builtins}
+    expected = [record.id for record in service.store.records() if record.id not in builtin_ids]
+    from clio_agent.plugins import store as store_module
+
+    monkeypatch.setattr(store_module, "builtin_records", lambda: pytest.fail("built-ins loaded"))
+    fresh = PluginStore(tmp_path / "store")
+    assert expected and [record.id for record in fresh.installed_records()] == expected
+
+
 def test_external_marketplace_needs_the_trust_step(tmp_path: Path) -> None:
     service = _service(tmp_path)
     summary = service.store.install(str(_market(tmp_path / "m")))

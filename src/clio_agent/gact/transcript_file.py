@@ -418,6 +418,10 @@ def install_transcript_error_handler(app: "FastAPI") -> None:
 
     @app.exception_handler(LaneReplaceError)
     async def _transcript_replace_failed(_request: object, exc: LaneReplaceError) -> JSONResponse:
+        from clio_agent.gact import core_write_refusal  # noqa: PLC0415
+
+        if not exc.committed and (refused := core_write_refusal.write_refusal(exc, _request)):
+            return refused  # nothing can be stored: say so, typed (MC-F3)
         if exc.committed:
             message = (
                 "The conversation was changed, but clio-core could not remove its "

@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
-from functools import partial
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from clio_agent.arc.task_types import (
     AssignmentDetails,
-    ContextBoundary,
     MailItem,
     TaskProgress,
     TaskSnapshot,
@@ -332,8 +329,8 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
             boundary = committed.boundary if committed is not None else details.context
             if boundary is not None and scope_epoch(boundary.scope) != details.context_epoch:
                 boundary = None
-            if boundary is not None:
-                self._record_interrupted_calls(task, boundary)
+            # A call left without a result is given one when the next forward folds the
+            # scope (agents.context_repair), whatever state the assignment settled in.
             detail_ref = self.history.write_content(
                 task.owner.session_id,
                 details.model_copy(update={"context": boundary}).model_dump(mode="json"),
@@ -346,6 +343,9 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
                     "assignment": task.description,
                     "confirmed_input": committed.id if committed is not None else None,
                     "context": boundary.model_dump(mode="json") if boundary else None,
+                    # The turn this recovery continues: its reply reads as resumed, not
+                    # as one to retry (CC-O1, ``task_runtime`` carries it to the reply).
+                    "resumes_turn": committed.turn_id or None if committed is not None else None,
                 },
             )
             identity = (
@@ -407,42 +407,6 @@ def _startup_unconfirmed(self: Conversations, handle: str, message: str) -> None
         )
         self.history.record_snapshot(observed, observation_id=uuid4().hex)
         publish_task_notice(self.history, observed, episode=observed.attention_episode or "")
-
-
-def _record_interrupted_calls(
-    self: Conversations, task: TaskSnapshot, boundary: ContextBoundary
-) -> None:
-    """Record uncertainty for orphaned call observations without replay or history copying."""
-    segments = self.history.arc.context_view(boundary.session_id, boundary.scope).segments
-    from clio_agent.arc.context_restore import unanswered_calls
-
-    for offset, (position, call) in enumerate(unanswered_calls(segments)):
-        identity = call.content["id"]
-        observation = {
-            "call_id": identity,
-            "text": json.dumps(
-                {
-                    "error": "operation_outcome_uncertain",
-                    "message": "The service restarted before this tool observation was saved. Inspect task handles and effects before deciding whether to retry.",
-                    "resubmitted": False,
-                }
-            ),
-            "is_error": True,
-        }
-        from clio_agent.gact.agents.clio_react_record import _token_estimate
-
-        self.history.confirm_write(
-            partial(
-                self.history.arc.insert_segment,
-                task.owner.session_id,
-                boundary.scope,
-                position + offset,
-                "observation",
-                observation,
-                token_count=_token_estimate(observation),
-                turn_id="recovery:" + task.handle,
-            )
-        )
 
 
 logger = logging.getLogger(__name__)
@@ -527,6 +491,7 @@ async def _retired_segment(
     """Reconcile Stop once, after physical retirement and before slot release."""
     from clio_agent.gact.conversation_assignments import observe_child_lifecycle
     from clio_agent.gact.read_only_outcomes import outcomes_recorded
+    from clio_agent.gact.runtime.turn_cancellation_info import turn_cancelled_by_shutdown
 
     await outcomes_recorded(self.app)  # read-only calls' records, written behind replies
     task = self.history.task_snapshot(segment.assignment.handle)
@@ -538,6 +503,10 @@ async def _retired_segment(
     identity = "stop:" + segment.turn_id
     self._model_recording.setdefault(sid, set()).add(identity)
 
+    # The service stopping (uvicorn asked to exit) reads like the owner's own close,
+    # even before the drain sets it: interrupted, resumed after the restart (CC-F4).
+    closing = self._closing or turn_cancelled_by_shutdown(self.app)
+
     def record() -> None:
         with self.history.serialized():
             self.note_startup_interruption(sid)
@@ -547,7 +516,7 @@ async def _retired_segment(
                 return
             if current.cancellation_requested_at is not None:
                 withdraw_assignment_input(self.history, sid, handle)
-            elif not self._closing and not self.model_paused(sid):
+            elif not closing and not self.model_paused(sid):
                 pending = self.history.mail_item(sid, segment.trigger.id)
                 if (
                     pending == segment.trigger
@@ -566,7 +535,7 @@ async def _retired_segment(
                             "activity": "cancelling"
                             if current.cancellation_requested_at
                             else "interrupted"
-                            if self._closing
+                            if closing
                             else "paused"
                             if self.model_paused(sid)
                             else "stopped",

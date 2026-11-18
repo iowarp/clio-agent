@@ -91,14 +91,9 @@ def _oauth_provider_from_config(
     storage = config.storage or DurableFileTokenStorage(
         server_url, connection_id=config.connection_id
     )
-    if (
-        config.require_existing_tokens
-        and config.redirect_handler is None
-        and isinstance(storage, DurableFileTokenStorage)
-        and not storage.has_tokens()
-    ):
-        raise MCPTransportError("MCP sign-in required; connect this service in CLIO")
-
+    # A connection with no saved sign-in still mounts: its first request raises the
+    # typed ``MCPSignInNeeded`` (``DurableOAuthProvider``), and a connector's call waits
+    # for its setup card before that (CN5).
     try:
         metadata = (
             config.client_metadata
