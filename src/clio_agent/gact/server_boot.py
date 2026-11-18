@@ -148,6 +148,9 @@ async def close_request_owners(app: "FastAPI") -> None:
     from clio_agent.gact import shared_result  # noqa: PLC0415
 
     shared_result.close_all(app)  # polled-route collections (health, MCP inventory)
+    from clio_agent.gact import host_semantics_boot  # noqa: PLC0415
+
+    await host_semantics_boot.stop(app)  # HS4 grant sync, before the stores it reads close
     from clio_agent.gact.routes.session_creation import close_creation_executor  # noqa: PLC0415
 
     close_creation_executor(app)
@@ -316,7 +319,11 @@ def start(app: "FastAPI") -> None:
 
     A construction failure is logged with its reason here and is also visible on the
     ``clio_core_attach`` row; the next :func:`process_arc_off_loop` caller retries.
+    The plugin account grant sync (HS4) starts for every app.
     """
+    from clio_agent.gact import host_semantics_boot  # noqa: PLC0415
+
+    host_semantics_boot.start(app)
     if not getattr(app.state, "server_boot", False):
         return
     from clio_agent.arc import history_mode  # noqa: PLC0415

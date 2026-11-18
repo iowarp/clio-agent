@@ -330,6 +330,8 @@ class SyncNamespacePreparationMixin:
     _async_executor: Any
     _closed: bool
     _loop: asyncio.AbstractEventLoop
+    _timeout: float | None
+    _run_coroutine: Any  # the executor's bounded run on its loop
 
     def _run_while_server_works(self, coro: Any, *, action: str) -> Any:
         """Run ``coro`` on the executor loop while the MCP server(s) it starts keep working.
@@ -422,3 +424,18 @@ class SyncNamespacePreparationMixin:
         asyncio.run_coroutine_threadsafe(
             self._async_executor.reset_namespace(namespace), self._loop
         ).result()
+
+    def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
+        """Start or stop watching one resource on exactly ``namespace`` for updates (HS3)."""
+
+        if self._closed:
+            raise RuntimeError("SyncMCPToolExecutor is closed")
+        return bool(
+            self._run_coroutine(
+                self._async_executor.set_resource_subscription(
+                    namespace, uri, subscribed=subscribed
+                ),
+                timeout=self._timeout,
+                action=f"MCP resource subscription {uri!r}",
+            )
+        )

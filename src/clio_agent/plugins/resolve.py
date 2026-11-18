@@ -23,11 +23,11 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
-from clio_agent.plugins.host_semantics import server_host
 from clio_agent.plugins.kernel_bindings import resolution_rows as kernel_binding_rows
 from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
 from clio_agent.plugins.resolution_digest import resolution_digest
+from clio_agent.plugins.server_rows import server_row
 from clio_agent.sdk.agent import CORE_PLUGIN, AgentSpec
 from clio_agent.sdk.versions import PluginRef, VersionRangeError
 
@@ -466,18 +466,7 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                     record.id,
                 )
                 continue
-            disclosed = (record.disclosure.get("servers") or {}).get(name) or {}
-            servers[name] = {
-                "plugin": record.id,
-                "root": record.root,
-                "spec": spec,
-                "defer": disclosed.get("defer", record.disclosure.get("defer")),
-                "description": disclosed.get("description", ""),
-                "callers": disclosed.get("callers"),
-                "permission": disclosed.get("permission"),
-                "tools": dict(disclosed.get("tools") or {}),
-                **({"host": host} if (host := server_host(record, name)) else {}),
-            }
+            servers[name] = server_row(record, name, spec)
         for skill in record.skills:
             if skill.id in skill_owner:
                 builder.error(

@@ -5,13 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import os
 import secrets
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -28,135 +26,21 @@ from clio_agent.gact.storage.accounts import (
     source_binding,
     usable,
 )
+from clio_agent.gact.storage.declared_scopes import (
+    declared_scopes,
+    globus_scope_tokens,
+    grant_rows,
+    lacks_declared_scopes,
+    with_scopes,
+)
 from clio_agent.gact.storage.globus_consent import TRANSFER_SCOPE, collection_scopes
 from clio_agent.gact.storage.models import SftpCredentials, SourceRecord
-from clio_agent.gact.storage.oauth_clients import (
-    GITHUB_CLIENT_ID,
-    GLOBUS_CLIENT_ID,
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-)
+from clio_agent.gact.storage.oauth_application import OAuthApplication, PendingSignIn, application
 from clio_agent.gact.storage.oauth_return import StorageOAuthReturn
 from clio_agent.tools.atomic_json_store import AtomicJsonFileStore
 
 #: Lifetime reported for a grant with no expiry, so a consumer still re-reads it hourly.
 NON_EXPIRING_TOKEN_LIFETIME_S = 3600
-
-
-@dataclass(frozen=True)
-class OAuthApplication:
-    """CLIO-owned application configuration, provisioned by the distributor."""
-
-    provider: str
-    client_id: str
-    redirect_uri: str
-    authorize_url: str
-    token_url: str
-    client_secret: str = field(default="", repr=False)
-
-
-def application(provider: str) -> OAuthApplication:
-    """Use CLIO's native registration, with optional distributor overrides."""
-    if provider == "ndp":
-        return ndp_oauth.application()
-    if provider == "google_drive":
-        prefix = "CLIO_STORAGE_GOOGLE"
-        authorize = "https://accounts.google.com/o/oauth2/v2/auth"
-        token = "https://oauth2.googleapis.com/token"
-        default_client_id = GOOGLE_CLIENT_ID
-        default_client_secret = GOOGLE_CLIENT_SECRET
-        # Desktop replaces this qualification fallback with its loopback receiver.
-        default_redirect = "http://127.0.0.1:48173/clio-storage-return"
-    elif provider == "globus":
-        prefix = "CLIO_STORAGE_GLOBUS"
-        authorize = "https://auth.globus.org/v2/oauth2/authorize"
-        token = "https://auth.globus.org/v2/oauth2/token"
-        default_client_id = GLOBUS_CLIENT_ID
-        default_client_secret = ""
-        default_redirect = "https://auth.globus.org/v2/web/auth-code"
-    elif provider == "github":
-        prefix = "CLIO_STORAGE_GITHUB"
-        authorize = default_redirect = "https://github.com/login/device"
-        token = github_oauth.TOKEN_URL
-        default_client_id = GITHUB_CLIENT_ID
-        default_client_secret = ""
-    else:
-        raise ValueError("This source does not use browser sign-in")
-    client_id = os.environ.get(prefix + "_CLIENT_ID", default_client_id)
-    # A custom client must supply its own matching value; never mix registrations.
-    client_secret = os.environ.get(
-        prefix + "_CLIENT_SECRET", default_client_secret if client_id == default_client_id else ""
-    )
-    return OAuthApplication(
-        provider,
-        client_id,
-        os.environ.get(prefix + "_REDIRECT_URI", default_redirect),
-        authorize,
-        token,
-        client_secret,
-    )
-
-
-@dataclass(repr=False)
-class PendingSignIn:
-    """Single-use PKCE state bound to the exact approved source and principal."""
-
-    source_id: str
-    principal: str
-    clio_id: str
-    host_id: str
-    root: str
-    mode: str
-    app: OAuthApplication
-    state: str
-    verifier: str
-    expires_at: float
-    device: github_oauth.DeviceAuthorization | None = field(default=None, repr=False)
-    receiver: StorageOAuthReturn | None = field(default=None, repr=False)
-    write_access: bool = False
-    declared_scopes: tuple[str, ...] = ()
-
-
-#: Providers whose sign-in request carries scopes; a GitHub App's permissions are fixed
-#: on the App, so a plugin's GitHub scopes request nothing.
-SCOPED_PROVIDERS = frozenset({"google_drive", "globus", "ndp"})
-
-
-def declared_scopes(provider: str) -> list[str]:
-    """Scopes registered plugins declare for ``provider`` (HS4), for its sign-in request."""
-
-    if provider not in SCOPED_PROVIDERS:
-        return []
-    from clio_agent.plugins.host_semantics import declared_account_scopes  # noqa: PLC0415
-
-    return declared_account_scopes(provider)
-
-
-def lacks_declared_scopes(account: dict[str, object]) -> bool:
-    """Whether a plugin now declares a scope this account's sign-in did not request."""
-
-    wanted = declared_scopes(str(account.get("provider") or ""))
-    if not wanted:
-        return False
-    granted = account.get("declared_scopes")
-    have = {str(scope) for scope in granted} if isinstance(granted, list) else set()
-    return any(scope not in have for scope in wanted)
-
-
-def _with_scopes(scope: str, extra: list[str]) -> str:
-    words = scope.split()
-    words.extend(item for item in extra if item not in words)
-    return " ".join(words)
-
-
-def _iso(epoch: object) -> str:
-    try:
-        stamp = float(epoch)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return ""
-    if stamp <= 0:
-        return ""
-    return datetime.fromtimestamp(stamp, UTC).isoformat().replace("+00:00", "Z")
 
 
 class StorageAuth:
@@ -481,7 +365,7 @@ class StorageAuth:
             .rstrip(b"=")
             .decode()
         )
-        scope = _with_scopes(
+        scope = with_scopes(
             (
                 "https://www.googleapis.com/auth/drive.readonly"
                 if record.linked_access == "read_only"
@@ -724,21 +608,7 @@ class StorageAuth:
                 }
             if app.provider == "globus":
                 # HS4: tokens for other resource servers whose scopes a plugin declared.
-                wanted = set(declared_scopes("globus"))
-                scope_tokens = {
-                    str(row["resource_server"]): {
-                        "access_token": row["access_token"],
-                        "refresh_token": row.get("refresh_token", ""),
-                        "expires_at": time.time() + float(row.get("expires_in", 3600)),
-                        "scope": str(row.get("scope", "")),
-                    }
-                    for row in candidates
-                    if row.get("resource_server")
-                    and row.get("resource_server") != resource_server
-                    and isinstance(row.get("access_token"), str)
-                    and wanted & set(str(row.get("scope", "")).split())
-                }
-                if scope_tokens:
+                if scope_tokens := globus_scope_tokens(candidates, resource_server):
                     result["scope_tokens"] = scope_tokens
             return result
         except httpx.HTTPError as exc:
@@ -868,30 +738,7 @@ class StorageAuth:
             tokens = entry.get("tokens")
             if not isinstance(tokens, dict):
                 return []
-            rows: list[tuple[str, dict[str, object]]] = [(main_server, tokens)]
-            extra = tokens.get("scope_tokens")
-            if isinstance(extra, dict):
-                rows.extend((str(k), v) for k, v in extra.items() if isinstance(v, dict))
-            now = time.time()
-            out: list[dict[str, object]] = []
-            for server, row in rows:
-                expires = row.get("expires_at", 0)
-                if not row.get("non_expiring") and float(expires or 0) <= now:  # type: ignore[arg-type]
-                    continue
-                scopes = str(row.get("scope") or "").split()
-                if not scopes and row is tokens:
-                    declared = entry.get("declared_scopes")
-                    scopes = [str(s) for s in declared] if isinstance(declared, list) else []
-                out.append(
-                    {
-                        "resource_server": server,
-                        "access_token": str(row.get("access_token") or ""),
-                        "token_type": "Bearer",
-                        "expires_at": "" if row.get("non_expiring") else _iso(expires),
-                        "scopes": scopes,
-                    }
-                )
-            return out
+            return grant_rows(entry, tokens, main_server)
 
     def cancel(self, record: SourceRecord, flow_id: str) -> None:
         """Cancel only this owner's pending device flow without signing out other sources."""

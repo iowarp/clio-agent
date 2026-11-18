@@ -323,10 +323,21 @@ def apply_task_result(
         )
 
 
+def _active_result_observer() -> Any:
+    """The live call's app's observer (``None`` app-less), so concurrent apps stay apart."""
+
+    from clio_agent.gact.context import active_app  # noqa: PLC0415
+
+    return getattr(getattr(active_app(), "state", None), "pending_a2ui_result_observer", None)
+
+
 def install_server_surfaces(app: Any) -> None:
     """Install the per-app tool-result observer that applies server A2UI."""
 
+    from clio_agent.tools.mcp_a2ui_result import install_resolver  # noqa: PLC0415
+
     app.state.pending_a2ui_result_observer = _make_result_observer(app)
+    install_resolver(_active_result_observer)
 
 
 __all__ = [

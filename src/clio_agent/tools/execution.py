@@ -25,6 +25,7 @@ from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools import tool_path_contract as tool_paths
+from clio_agent.tools.mcp_a2ui_result import model_result
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,
     AsyncMCPToolExecutor,
@@ -37,7 +38,6 @@ from clio_agent.tools.mcp_executor import (
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
-from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
 from clio_agent.tools.path_hints import missing_path_hint
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
@@ -136,9 +136,6 @@ class ToolRuntimeHooks:
     # The ordinary observer gets only the sanitized public MCP projection; MCP Apps
     # need the full CallToolResult (private ``_meta``) held in a session-local store.
     mcp_app_observer: Optional[MCPAppObserver] = None
-    # HS1: applies A2UI resources in a plugin server's tool result and returns the
-    # one-line note the model sees for each, in content order (None: no A2UI).
-    a2ui_result_observer: Optional[Callable[[str, Any, str], "list[str] | None"]] = None
     # P2.3 PostToolUse: applied after a tool result (or a synthesized one) to
     # observe / rewrite the model-visible observation / feed a deny reason back.
     post_tool: Optional[PostToolHook] = None
@@ -744,24 +741,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             raise
         finally:
             task_calls.TASK_CALL.reset(task_call_token)
-        model_text = outcome.model_text
-        if hooks.a2ui_result_observer is not None and not return_raw and outcome.source_namespace:
-            try:
-                notes = hooks.a2ui_result_observer(
-                    name, outcome.raw_result, outcome.source_namespace
-                )
-            except Exception as exc:  # noqa: BLE001 - the tool itself succeeded
-                logger.exception(
-                    "A2UI server surface admission failed tool=%r reason=a2ui_server_surface_failed: %s",
-                    name,
-                    exc,
-                )
-                notes = None
-            if notes:
-                from clio_agent.tools.mcp_result_text import result_to_text  # noqa: PLC0415
-
-                model_text = result_to_text(outcome.raw_result, a2ui_notes=notes)
-        result = bounded_model_tool_result(model_text)  # caller's thread: workspace custody
+        result = model_result(name, outcome, return_raw=return_raw)  # caller's thread: custody
         mcp_result_media.show_to_model(outcome.raw_result, name)  # its images reach the model
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
@@ -835,21 +815,6 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._async_executor.read_resource(namespace, uri),
             timeout=self._timeout,
             action=f"MCP resource {uri!r}",
-        )
-
-    def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
-        """Start or stop watching one resource on exactly ``namespace`` for updates."""
-
-        if self._closed:
-            raise RuntimeError("SyncMCPToolExecutor is closed")
-        return bool(
-            self._run_coroutine(
-                self._async_executor.set_resource_subscription(
-                    namespace, uri, subscribed=subscribed
-                ),
-                timeout=self._timeout,
-                action=f"MCP resource subscription {uri!r}",
-            )
         )
 
     def _record_tool_failure(self, name: str, error_text: str) -> str:
