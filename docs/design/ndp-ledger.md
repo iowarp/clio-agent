@@ -20,6 +20,10 @@ readiness per organization and across organizations". Branch in every repo:
 
 ## Needs user
 
+- **clio-schemas access for this session.** Attaching `iowarp/clio-schemas` was
+  refused by the session's permission check. Its layered-map text says grid layers
+  read only NetCDF or Zarr, which stopped R6i's map (R6i, failure 1).
+
 - ~~Repository access~~ resolved 2026-11-17: the user allowed attaching clio-kit and
   clio-agent-marketplace; both are on `claude/ndp-data-access`.
 - **clio-schemas access** (refused 2026-11-17, `add_repo` "Unauthorized Access";
@@ -831,3 +835,40 @@ Failed:
    reply is the agent's running narration.
 
 Verdict: **fail on two CLIO bugs, both fixed; rerun next (R6i).**
+
+### R6i: Tahoe correlation with the watchdog and range fixes (fail on presentation)
+
+Session `sess_7f97e81644bb` (174 calls, 10 failed, 13 min 35 s, ended `end_turn`).
+Same plain request and command as R6h; stack on clio-agent `9878b0516`. Export:
+`ndp-runs/exports/correlation-tahoe-sess_7f97e81644bb.*`. Captures:
+`r6i-correlation-1440.png`, `r6i-correlation-390.png`; the agent's figure
+`r6i-agent-figure.png`.
+
+Worked:
+
+- **A finished cross-organization answer.** TRPA habitat (14 layers) and USFWS
+  critical habitat, NIFC WFIGS perimeters 2020–2025, CAL OES fuel treatments, the
+  California Forest Observatory 2020 surface fuels (read by range from NDP), on a
+  30 m grid inside the TRPA boundary with the lake masked. It reports what burned
+  per layer, fuels inside and outside habitat, terrain bands, where two
+  organizations' layers agree (USFWS and TRPA frog habitat), a mislabelled CAL OES
+  layer, and what it could not read (two statewide raster services answered 500).
+- **The turn was not stopped** while its scripts worked (`673b1188e`).
+- **Visual review of its own figure:** it rendered the three panels and viewed
+  them (`view_image`) before answering.
+
+Failed:
+
+1. **No A2UI surface.** The agent planned a `clio.layered-map.v1` with shapes
+   layers, loaded the component's schema, and concluded that "the grid layers
+   can't go on the map because they need NetCDF". It then delivered a static PNG.
+   The catalog says so in two places (`MapLayer.gridUri`: "Registered NetCDF or
+   zipped Zarr grid"; `instructions.md`: "a `grid` layer reads a registered NetCDF
+   or zipped Zarr"), while the server has drawn GeoTIFF/COG/VRT/IMG grids since
+   `c6b798db2`. The fix is in clio-schemas (see Needs user).
+2. **Terrain not from NDP.** The 1 m Tahoe lidar spans about 100 tiles, so the agent
+   used Copernicus GLO-30 and said so. A mosaic (VRT) of the tiles read by range is
+   the NDP path; not attempted.
+
+Verdict: **fail on CLIO presentation**; the science and data path pass for this
+case.
