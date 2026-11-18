@@ -420,9 +420,10 @@ Tab revisions, per open tab:
   tab. The stream's replay is bounded and does not report every overflow, so it is not
   enough on its own. `open` on an open tab re-reads it and keeps its watch.
 
-## Decisions to confirm
+## Decisions (confirmed)
 
-1. The A2UI extension identifier `org.a2ui/a2ui` and its settings shape.
+1. The A2UI extension identifier is `org.a2ui/a2ui`. If A2UI publishes an official
+   identifier, CLIO advertises both.
 2. Tabs are per session: a tab shows when the session's agent mounts the plugin, because
-   servers run in a session's server set. A tab that shows in every session needs the
-   plugin in the default agent, or a host-wide server set, which is a larger change.
+   servers run in a session's server set. A plugin whose tab should show by default goes
+   in CLIO's default agent. There is no host-wide server set.

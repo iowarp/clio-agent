@@ -119,6 +119,40 @@ effective provenance configuration. Two resolved plugins declaring the same
 server name is `mcp_server_collision`. A server's tools are namespaced by the
 server name (`web_...`).
 
+A plugin may declare its own server here with no connector catalog entry: the
+server starts from the plugin's declaration alone.
+
+### Host semantics
+
+A plugin and its own MCP server can use five host capabilities. None is specific to
+one server, and a server that uses them stays a plain MCP server for any other client.
+[The host semantics contract](design/host-semantics-contract.md) is the exact wire
+contract.
+
+- HS1, A2UI from a server: a tool result, a task's terminal result or a resource read
+  may carry an embedded `application/a2ui+json` resource. CLIO renders it as a surface
+  owned by that server, in the catalogs the plugin lists in
+  `extensions["ai.iowarp.clio"].catalogs`. CLIO advertises the `org.a2ui/a2ui`
+  extension to servers.
+- HS2, actions: an action on a server's surface calls a tool of that server, including
+  tools visible only to apps (`_meta.ui.visibility: ["app"]`), and its A2UI result
+  updates the surface.
+- HS3, tabs: `extensions["ai.iowarp.clio"].tabs` lists `{id, title, icon, resource}`.
+  The tab reads the resource and reopens on every update. At 2026-07-28 an update
+  reaches CLIO only on a `subscriptions/listen` stream: the server must serve listen
+  and publish `ResourceUpdated` (FastMCP needs the SDK's `ListenHandler` registered;
+  see the contract).
+- HS4, accounts: `accounts` lists `{provider, scopes}`. Once the user grants them, CLIO
+  writes the tokens to a 0600 file and passes its path as
+  `$CLIO_ACCOUNT_<PROVIDER>_FILE`, which the declaration may also use in `args` or
+  `env`.
+- HS5, URL elicitation: `elicitation` declares `loopback` and trusted `https`
+  `origins`, accepted from that plugin's servers only. The question CLIO shows names the
+  origin and why it is trusted (`origin_trust`); any other URL is refused.
+
+`tests/fixtures/plugins/host_semantics/` is a complete example: a plugin and a FastMCP
+server that use all five.
+
 ### Skills
 
 `skills/<name>/SKILL.md` follows the Agent Skills format. The frontmatter `name`
