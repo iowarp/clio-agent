@@ -268,12 +268,22 @@ def test_transport_for_resolves_relative_launcher_to_absolute(tmp_path):
     assert stdio.cwd == str(work)  # still spawns in the workspace
 
 
-def test_transport_for_missing_cwd_fails_loud():
-    """A nonexistent working directory raises a precise MCPSpawnError, never os error 2."""
+def test_transport_for_missing_cwd_fails_loud(tmp_path):
+    """A working directory that cannot be created raises a precise MCPSpawnError, never
+    os error 2."""
     from clio_agent.tools.mcp_config import MCPSpawnError
 
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
     with pytest.raises(MCPSpawnError, match="working directory"):
-        transport_for(spec_from_declaration("geo", "sh -c true"), cwd="/no/such/dir/xyz123")
+        transport_for(spec_from_declaration("geo", "sh -c true"), cwd=str(blocker / "root"))
+
+
+def test_transport_for_recreates_a_deleted_workspace_root(tmp_path):
+    """The workspace root went between runs: the server's transport creates it again."""
+    root = tmp_path / "gone"
+    stdio = transport_for(spec_from_declaration("geo", f"{sys.executable} -c pass"), cwd=str(root))
+    assert root.is_dir() and stdio.cwd == str(root)
 
 
 def test_transport_for_unresolved_command_fails_loud():

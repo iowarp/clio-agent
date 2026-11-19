@@ -33,7 +33,24 @@ from clio_agent.tools import spawn_diet
 TRANSPORT_REDECLARED = "transport_redeclared"
 
 
-class DietStdioTransport(StdioTransport):
+class RootedStdioTransport(StdioTransport):
+    """A stdio transport that recreates its missing working directory before it spawns.
+
+    The directory is the conversation's workspace root, which can be deleted while the
+    conversation's servers stay mounted; the next spawn would then fail with ENOENT.
+    """
+
+    async def connect(self, **kwargs: Any) -> Any:
+        """Spawn (or reuse) the server, in its working directory made again if it went."""
+
+        if self.cwd and (self._connect_task is None or self._connect_task.done()):
+            from clio_agent.tools.mount_failures import recreate_root  # noqa: PLC0415
+
+            recreate_root(str(self.cwd), "missing_before_spawn")
+        return await super().connect(**kwargs)
+
+
+class DietStdioTransport(RootedStdioTransport):
     """A stdio transport built from a learned plan; it re-declares once the plan is gone."""
 
     def __init__(
@@ -84,11 +101,11 @@ def stdio_transport(spec: Any, cwd: str | None, dieted: bool) -> Callable[..., A
     """The constructor ``transport_for`` builds a stdio transport with.
 
     A dieted launch gets :class:`DietStdioTransport`, bound to the plan it applied and to
-    a rebuild of the same spec; any other launch is a plain ``StdioTransport``.
+    a rebuild of the same spec; any other launch is a :class:`RootedStdioTransport`.
     """
 
     if not dieted:
-        return StdioTransport
+        return RootedStdioTransport
     from clio_agent.tools.mcp_config import transport_for  # noqa: PLC0415 - cycle
 
     return partial(
@@ -114,4 +131,10 @@ def record_prepared(namespace: str, result: Mapping[str, Any]) -> None:
     spawn_diet.environment_prepared(namespace, environment)
 
 
-__all__ = ["TRANSPORT_REDECLARED", "DietStdioTransport", "record_prepared", "stdio_transport"]
+__all__ = [
+    "TRANSPORT_REDECLARED",
+    "DietStdioTransport",
+    "RootedStdioTransport",
+    "record_prepared",
+    "stdio_transport",
+]

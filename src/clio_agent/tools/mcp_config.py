@@ -557,11 +557,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         cwd = os.path.abspath(cwd) if cwd else cwd
         # Fail-loud preflight (iowarp/clio-agent MCP spawn diagnosability): catch the
         # two preconditions that otherwise make the subprocess die post-spawn with a
-        # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` is
-        # the prime default-deployment culprit: the workspace dir is passed both as the
-        # subprocess working directory (chdir target) and as ``CLIO_KIT_ARTIFACTS``, so
-        # if it does not exist the spawn fails with ENOENT.
-        if cwd is not None and not os.path.isdir(cwd):
+        # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` (the
+        # workspace dir: chdir target and ``CLIO_KIT_ARTIFACTS``) is recreated first.
+        from clio_agent.tools.mount_failures import recreate_root  # noqa: PLC0415
+
+        if cwd is not None and not recreate_root(cwd, "missing_before_transport"):
             raise MCPSpawnError(
                 f"MCP server {spec.name!r}: working directory {cwd!r} does not exist, so "
                 f"the stdio subprocess cannot start (chdir/artifacts-root ENOENT). "

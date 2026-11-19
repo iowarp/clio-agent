@@ -3,7 +3,8 @@
 A stdio server is spawned in the conversation's workspace root, so a root that no longer
 exists (deleted between runs, or never created by a client that wrote the store directly)
 would refuse every stdio server of the conversation at once. :func:`ensure_root` recreates
-it before mounting, as the workspace routes do when a root is set.
+it before mounting, as the workspace routes do when a root is set, and
+:func:`recreate_root` again when a transport is built or a server spawns.
 
 Any other refusal is recorded by root and server name (:func:`record`), so the agent reads
 the reason where the tools are missing (``search_tools``, ``offer_plugin``) instead of
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 _FAILED: dict[tuple[str, str], str] = {}
 
-__all__ = ["clear", "ensure_root", "failures", "note", "record"]
+__all__ = ["clear", "ensure_root", "failures", "note", "record", "recreate_root"]
 
 
 def ensure_root(cwd: str | None, specs: Mapping[str, Any]) -> None:
@@ -38,16 +39,30 @@ def ensure_root(cwd: str | None, specs: Mapping[str, Any]) -> None:
 
     if not cwd or os.path.isdir(cwd):
         return
-    if not any(getattr(spec, "transport", "") == "stdio" for spec in specs.values()):
-        return
+    if any(getattr(spec, "transport", "") == "stdio" for spec in specs.values()):
+        recreate_root(cwd, "missing_before_mount")
+
+
+def recreate_root(cwd: str, reason: str) -> bool:
+    """Create the missing root ``cwd`` a stdio server is about to use; whether it exists now.
+
+    Also called when a server's transport is built and before each spawn, since the root
+    can go while a conversation's servers stay mounted (``reason`` says which).
+    """
+
+    if not cwd:
+        return False
+    if os.path.isdir(cwd):
+        return True
     from clio_agent.runtime import trace  # noqa: PLC0415
 
     try:
         Path(cwd).mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         trace.event("TOOLS", "workspace_root_unavailable root=%s reason=%s", cwd, exc)
-        return
-    trace.event("TOOLS", "workspace_root_recreated root=%s reason=missing_before_mount", cwd)
+        return False
+    trace.event("TOOLS", "workspace_root_recreated root=%s reason=%s", cwd, reason)
+    return True
 
 
 def record(cwd: str | None, name: str, exc: BaseException) -> None:
