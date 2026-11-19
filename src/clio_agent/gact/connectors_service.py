@@ -313,8 +313,12 @@ def publish_changed(app: Any, connector_id: str, sessions: list[str]) -> None:
         )
 
 
-async def apply(app: Any, found: Entry) -> dict[str, Any]:
-    """Apply the connector's current choices everywhere (CN7) and return its row."""
+async def apply(app: Any, found: Entry, *, keep_if_unchanged: bool = False) -> dict[str, Any]:
+    """Apply the connector's current choices everywhere (CN7) and return its row.
+
+    ``keep_if_unchanged``: the connector was on already, so when its saved connection is
+    unchanged the running servers keep running (see below).
+    """
 
     from clio_agent.gact.connector_follow import follow_in_open_sessions  # noqa: PLC0415
     from clio_agent.gact.connector_rebind import rebind_namespace  # noqa: PLC0415
@@ -324,14 +328,36 @@ async def apply(app: Any, found: Entry) -> dict[str, Any]:
 
     choice = state.choice(found.id)
     if choice.enabled:
+        before = await asyncio.to_thread(saved_connection, found.id)
         saved = await asyncio.to_thread(save_connection, found, choice)
-        await _refresh_agent_tool_gateway(app)
+        # Reloading the saved configuration rebuilds every workspace's servers at their
+        # next idle point, which drops each conversation's server state (an open scene,
+        # a notebook kernel). Enabling a connector that is on already (its setup card
+        # answered again) reloads it only when its saved connection changed; the rebind
+        # below gives running servers any new values in place.
+        declaration_changed = not (
+            keep_if_unchanged
+            and before is not None
+            and before == await asyncio.to_thread(saved_connection, found.id)
+        )
+        if declaration_changed:
+            await _refresh_agent_tool_gateway(app)
+        else:
+            trace.event("TOOLS", "connector_apply_unchanged connector=%s", found.id)
+        cached = _probes(app).get(found.id)
+        checked = (
+            not declaration_changed
+            and cached is not None
+            and cached.get("status") == "ready"
+            and cached.get("key") == _probe_key(found, choice)
+        )
         agent = getattr(app.state, "agent", None)
         steps: list[Coroutine[Any, Any, Any]] = []
         relist_failed: dict[str, str] = {}
         if agent is not None:
             steps.append(asyncio.to_thread(rebind_namespace, agent, found.id, saved, relist_failed))
-        if not any(need.kind != "sign-in" for need in missing(found, choice)):
+        # A server already checked under these exact choices is not started again to check it.
+        if not checked and not any(need.kind != "sign-in" for need in missing(found, choice)):
             steps.append(probe(app, found, choice, force=True))
         # The running servers' rebind and the probe are separate processes: run them
         # together, so a value change costs one server start, not two in a row.
@@ -425,8 +451,9 @@ async def enable(app: Any, connector_id: str) -> dict[str, Any]:
                 f"A saved connection named {found.id!r} already exists. Remove it first.",
                 409,
             )
+    was_enabled = state.choice(found.id).enabled
     await asyncio.to_thread(state.update, found.id, enabled=True)
-    return await apply(app, found)
+    return await apply(app, found, keep_if_unchanged=was_enabled)
 
 
 async def disable(app: Any, connector_id: str) -> dict[str, Any]:
