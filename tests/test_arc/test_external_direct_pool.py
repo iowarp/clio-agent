@@ -1,0 +1,389 @@
+"""A direct server connection kept alive across calls, against actual SDK, stdio and Core.
+
+Before the pool, every call to a direct (stdio) server started the server again: a 7 s
+cold start per page action for a ``uvx`` server, and a stateful server (a scene, a
+notebook kernel) lost its state between calls. Calls through one fleet proxy, parallel
+ones included, now share the connection an executor holds for its namespace: one
+process per fleet.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+from collections.abc import AsyncIterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import psutil
+import pytest
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
+from mcp.shared.exceptions import MCPError
+
+from clio_agent.arc.memory import ARCMemory
+from clio_agent.arc.task_types import QuestionReply, TaskSnapshot
+from clio_agent.gact import context
+from clio_agent.gact import external_task_connections as connections
+from clio_agent.gact.external_tasks import ExternalTasks
+from clio_agent.gact.questions import QuestionCommands
+from clio_agent.gact.task_operations import TaskOperations
+from clio_agent.gact.workspaces import WorkspaceStore
+from clio_agent.tools import shared_direct_connections
+from clio_agent.tools.task_call_context import TASK_CALL, TaskCall
+from tests.test_arc.test_conversation_owner_contracts import create_environment
+
+SERVER = """
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+import psutil
+from fastmcp import Context, FastMCP
+
+with Path(sys.argv[1]).open("a") as starts:
+    starts.write(json.dumps({"pid": os.getpid(), "created_at": psutil.Process().create_time()}) + "\\n")
+server = FastMCP("pooled-direct")
+state: dict[str, str] = {}
+
+@server.tool
+def pid() -> dict[str, int]:
+    return {"pid": os.getpid()}
+
+@server.tool
+def remember(value: str) -> dict[str, str]:
+    state["value"] = value
+    return state
+
+@server.tool
+def recall() -> dict[str, str]:
+    return state or {"value": "nothing"}
+
+@server.tool
+async def nap(seconds: float) -> dict[str, int]:
+    await asyncio.sleep(seconds)
+    return {"pid": os.getpid()}
+
+@server.tool
+async def choose(tag: str, ctx: Context) -> dict[str, str]:
+    response = await ctx.elicit("Choose a value for " + tag, response_type=str)
+    return {"tag": tag, "value": response.data if response.action == "accept" else response.action}
+
+server.run(transport="stdio", show_banner=False)
+"""
+
+
+class _Env(SimpleNamespace):
+    app: Any
+    root: TaskSnapshot
+    external: ExternalTasks
+    starts: Path
+    script: Path
+    tmp: Path
+
+    def client(self) -> Client:
+        transport = StdioTransport(
+            sys.executable, ["-B", str(self.script), str(self.starts)], cwd=str(self.tmp)
+        )
+        return Client(transport, mode="legacy", timeout=20)
+
+    async def call(self, tool: str, args: dict[str, Any], owner: Any, tag: str) -> Any:
+        app_token = context.set_app(self.app)
+        session_token = context.set_session_id(self.root.owner.session_id)
+        invocation_token = TASK_CALL.set(TaskCall(invocation_id="pool-" + tag))
+        try:
+            return await self.external.call(
+                "pooled", self.client(), tool, args, auth_scope="scope", pool_owner=owner
+            )
+        finally:
+            TASK_CALL.reset(invocation_token)
+            context.reset(session_token)
+            context.reset(app_token)
+
+    def started(self) -> list[dict[str, Any]]:
+        if not self.starts.exists():
+            return []
+        return [json.loads(line) for line in self.starts.read_text().splitlines()]
+
+    async def settle(self) -> None:
+        while self.external._retiring:
+            await asyncio.gather(*tuple(self.external._retiring))
+
+
+def _gone(process: dict[str, Any]) -> bool:
+    try:
+        return psutil.Process(process["pid"]).create_time() != process["created_at"]
+    except psutil.NoSuchProcess:
+        return True
+
+
+@pytest.fixture
+async def env(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[_Env]:
+    app, conversations, root = await create_environment(arc, tmp_path)
+    app.state.task_recovery = conversations.recovery
+    app.state.questions = QuestionCommands(conversations.history)
+
+    async def cancel(task: TaskSnapshot, caller: Any) -> dict[str, Any]:
+        if task.kind == "Question":
+            closed = await asyncio.to_thread(app.state.questions.cancel, task.handle)
+            return {"handle": closed.handle, "status": closed.status}
+        return await conversations.cancel(caller, task.handle)
+
+    app.state.task_operations = TaskOperations(conversations.history, cancel)
+    monkeypatch.setattr("clio_agent.gact.agent_elicitation._enabled", lambda: False)
+
+    def setup_workspace() -> None:
+        app.state.workspaces = WorkspaceStore(path=tmp_path / "workspaces.json")
+        workspace = app.state.workspaces.create(name="Pool", root_path=str(tmp_path))
+        session = app.state.sessions.get(root.owner.session_id)
+        assert session is not None
+        session.workspace_id = workspace.id
+        app.state.sessions._persist(session)
+
+    await asyncio.to_thread(setup_workspace)
+    script = tmp_path / "pooled_server.py"
+    script.write_text(SERVER, encoding="utf-8")
+    starts = tmp_path / "starts.jsonl"
+    (tmp_path / "owned-processes.json").write_text(
+        json.dumps({"purpose": "Direct pool contract", "script": str(script), "ports": []}),
+        encoding="utf-8",
+    )
+    environment = _Env(
+        app=app,
+        root=root,
+        external=ExternalTasks(app),
+        starts=starts,
+        script=script,
+        tmp=tmp_path,
+    )
+    try:
+        yield environment
+    finally:
+        await environment.external.close()
+        await conversations.shutdown()
+        await conversations.recovery.drain()
+        assert all(_gone(process) for process in environment.started()), (
+            "An owned stdio server survived shutdown"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_calls_share_the_held_connection_instead_of_starting_the_server(env: _Env) -> None:
+    """SABOTAGE: make ``connections._lease`` always open a connection; each call starts one."""
+    proxy = object()
+    client, release = await env.external.hold("pooled", "scope", proxy, env.client())
+    assert "pid" in {tool.name for tool in await client.list_tools()}
+    [opened] = env.started()
+    held = opened["pid"]
+
+    first = await env.call("pid", {}, proxy, "first")
+    await env.call("remember", {"value": "scene"}, proxy, "remember")
+    recalled = await env.call("recall", {}, proxy, "recall")
+    await env.settle()
+
+    assert first.structured_content == {"pid": held}
+    assert recalled.structured_content == {"value": "scene"}, "Server state survives calls"
+    assert [start["pid"] for start in env.started()] == [held]
+    assert len(env.external.connections) == 1
+
+    await release()
+    await env.settle()
+    assert not env.external.connections, "The last release closes an idle connection"
+    assert all(_gone(process) for process in env.started())
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_parallel_calls_reach_the_same_process(env: _Env) -> None:
+    proxy = object()
+    _client, release = await env.external.hold("pooled", "scope", proxy, env.client())
+
+    busy = asyncio.create_task(env.call("nap", {"seconds": 1.5}, proxy, "busy"))
+    while not any(host.rpcs for host in env.external.connections.values()):
+        await asyncio.sleep(0.01)
+    beside = await env.call("pid", {}, proxy, "beside")
+    assert not busy.done(), "The parallel call did not wait for the busy one"
+    napped = await busy
+    await env.settle()
+
+    [start] = env.started()
+    assert napped.structured_content == beside.structured_content == {"pid": start["pid"]}
+    assert len(env.external.connections) == 1 and not _gone(start)
+    await release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_unheld_parallel_calls_open_one_connection_that_closes_after(env: _Env) -> None:
+    """Without an executor holding it, simultaneous first calls still start one server."""
+    proxy = object()
+    replies = await asyncio.gather(
+        *(env.call("nap", {"seconds": 0.5}, proxy, f"cold-{index}") for index in range(3))
+    )
+    await env.settle()
+
+    [start] = env.started()
+    assert {reply.structured_content["pid"] for reply in replies} == {start["pid"]}
+    assert not env.external.connections and _gone(start), "Idle and unheld, it closes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_an_inline_input_belongs_to_the_call_waiting_on_the_connection(env: _Env) -> None:
+    """Each call's elicitation is attributed to that call, not an earlier one.
+
+    SABOTAGE: keep finished calls in ``host.leases`` (skip ``connections.release``) and
+    the second input is refused as ambiguous.
+    """
+    proxy = object()
+    _client, release = await env.external.hold("pooled", "scope", proxy, env.client())
+    questions: asyncio.Queue[TaskSnapshot] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    env.app.state.questions.on_change = lambda task: (
+        loop.call_soon_threadsafe(questions.put_nowait, task)
+        if task.raw_status == "pending"
+        else None
+    )
+    history = env.app.state.task_history
+    for tag in ("first", "second"):
+        call = asyncio.create_task(env.call("choose", {"tag": tag}, proxy, tag))
+        question = await asyncio.wait_for(questions.get(), 30)
+        assert question.owner.parent_handle is not None
+        invocation = await asyncio.to_thread(history.task_snapshot, question.owner.parent_handle)
+        assert invocation is not None and invocation.invocation_id == "pool-" + tag
+        await asyncio.to_thread(
+            env.app.state.questions.answer,
+            question.handle,
+            QuestionReply(metadata={"value": "answer-" + tag}, responder_human="human"),
+        )
+        result = await asyncio.wait_for(call, 30)
+        assert result.structured_content == {"tag": tag, "value": "answer-" + tag}
+        while not questions.empty():  # the routing annotation's revision of the same question
+            assert questions.get_nowait().handle == question.handle
+    await env.settle()
+    assert len(env.started()) == 1
+    await release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_an_inline_input_with_two_plain_calls_waiting_is_refused(env: _Env) -> None:
+    """Stdio carries no link from a server request to its call: with two calls waiting on
+    plain replies, an elicitation could be either one's, so it is refused, not guessed."""
+    proxy = object()
+    _client, release = await env.external.hold("pooled", "scope", proxy, env.client())
+    asked: list[TaskSnapshot] = []
+    env.app.state.questions.on_change = asked.append
+
+    busy = asyncio.create_task(env.call("nap", {"seconds": 1.5}, proxy, "busy"))
+    while not any(host.rpcs for host in env.external.connections.values()):
+        await asyncio.sleep(0.01)
+    chosen = await asyncio.wait_for(env.call("choose", {"tag": "both"}, proxy, "both"), 30)
+    await busy
+    await env.settle()
+
+    assert chosen.is_error and not asked
+    assert len(env.started()) == 1
+    await release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_a_fleet_drop_closes_the_held_connection(env: _Env) -> None:
+    proxy, other = object(), object()
+    _client, release = await env.external.hold("pooled", "scope", proxy, env.client())
+    await env.call("pid", {}, proxy, "before")
+    owners = {f"in-process:{id(proxy):x}"}
+
+    assert (
+        await connections.retire_owned(env.external, {f"in-process:{id(other):x}"}, "/w", "x") == 0
+    )
+    assert await connections.retire_owned(env.external, owners, "/w", "idle_ttl") == 1
+    await env.settle()
+
+    assert not env.external.connections
+    assert all(_gone(process) for process in env.started())
+    await release()  # the executor's own close afterwards is harmless
+
+
+def _host(**fields: Any) -> Any:
+    client = SimpleNamespace(is_connected=lambda: True, unconfirmed_adoptions=())
+    base = {
+        "client": client,
+        "pool": ("s", "scope", "in-process:1"),
+        "closing": False,
+        "superseded": False,
+        "broken": False,
+        "leases": {},
+        "settling": [],
+        "calls": {},
+        "rpcs": set(),
+        "holders": 0,
+    }
+    return SimpleNamespace(**(base | fields))
+
+
+@pytest.mark.asyncio
+async def test_a_call_shares_a_working_connection_and_prefers_the_held_one() -> None:
+    owner = object()
+    pool = connections.pool_key("s", "scope", owner)
+    busy = _host(pool=pool, leases={object(): None}, rpcs={object()})
+    held = _host(pool=pool, holders=1)
+    unusable = [
+        _host(pool=pool, holders=2, broken=True),
+        _host(pool=pool, holders=2, superseded=True),
+        _host(pool=pool, holders=2, closing=True),
+        _host(pool=("s", "other", pool[2]), holders=2),
+    ]
+    tasks = SimpleNamespace(connections=dict(enumerate([busy, held, *unusable])), _pool_locks={})
+    token = object()
+
+    assert await connections._lease(tasks, "s", None, "scope", owner, token) is held
+    held.broken = True
+    assert await connections._lease(tasks, "s", None, "scope", owner, object()) is busy, (
+        "A busy connection is shared, not skipped"
+    )
+    held.broken = False
+    assert token in held.leases
+
+    submission = SimpleNamespace(handle="plain")
+    held.leases[token] = submission
+    connections.release(held, object())  # someone else's token: not released
+    assert held.leases[token] is submission
+    assert connections.waiting_inline(held) == [submission]
+    held.calls = {"t1": SimpleNamespace(submission=SimpleNamespace(handle="plain"))}
+    assert connections.waiting_inline(held) == [], "A call that became a task names itself"
+    connections.release(held, token)
+    assert token not in held.leases and held.settling == [submission]
+
+
+def test_only_a_transport_failure_stops_a_connection_being_shared() -> None:
+    host = _host()
+    connections.note_failure(host, MCPError(-32602, "bad"))
+    assert host.broken is False
+    connections.note_failure(host, RuntimeError("Connection closed"))
+    assert host.broken is True
+
+
+@pytest.mark.asyncio
+async def test_the_holder_is_only_offered_while_its_owner_is_open() -> None:
+    open_ = True
+
+    async def hold(*_: Any) -> Any:
+        raise AssertionError("not called")
+
+    remove = shared_direct_connections.register(asyncio.get_running_loop(), hold, lambda: open_)
+    try:
+        assert shared_direct_connections.holder() is hold
+        open_ = False
+        assert shared_direct_connections.holder() is None
+    finally:
+        remove()
+    open_ = True
+    assert shared_direct_connections.holder() is None

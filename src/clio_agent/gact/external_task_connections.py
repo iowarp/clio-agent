@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
+from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -12,15 +13,17 @@ from uuid import uuid4
 from fastmcp import Client
 from fastmcp.client.transports import FastMCPTransport, SSETransport, StdioTransport
 from fastmcp_tasks.client_models import ClientGetTaskResult
+from mcp.shared.exceptions import MCPError
 
 from clio_agent.arc.task_types import BackendReference
 from clio_agent.gact import view_call_cancel, view_call_ledger
-from clio_agent.tools import fleet_close_listeners
+from clio_agent.tools import fleet_close_listeners, shared_direct_connections
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
 
 if TYPE_CHECKING:
+    from clio_agent.arc.task_types import SubmissionContext
     from clio_agent.gact.external_tasks import ExternalConnection, ExternalTasks
 
 logger = logging.getLogger(__name__)
@@ -58,13 +61,26 @@ async def connection(
     auth_scope: str,
     *,
     original: BackendReference | None = None,
+    pool_owner: Any = None,
+    lease: object | None = None,
+    holder: bool = False,
 ) -> ExternalConnection:
-    """Retain a fully configured direct transport on the application lifespan."""
+    """Retain a fully configured direct transport on the application lifespan.
+
+    ``pool_owner`` keeps a direct (stdio or SSE) connection open after its call, for
+    every later or parallel call through the same fleet proxy (:func:`lease_or_open`);
+    it opens leased by ``lease``, or held when ``holder``.
+    """
     from clio_agent.gact.external_tasks import ExternalConnection
 
     if self._closing:
         raise ValueError("External task observation is closing")
     isolated = isinstance(configured.transport, (StdioTransport, SSETransport))
+    pool = (
+        pool_key(server, auth_scope, pool_owner)
+        if isolated and pool_owner is not None and original is None
+        else None
+    )
     if isolated and (
         configured.is_connected()
         or any(
@@ -101,6 +117,10 @@ async def connection(
                 ),
                 isolated=isolated,
                 cache_key=key,
+                pool=pool,
+                owner_ref=pool_owner if pool is not None else None,
+                leases={lease: None} if pool is not None and lease is not None else {},
+                holders=1 if pool is not None and holder else 0,
             )
 
             async def observe(session: Any, task_id: str, reply: ClientGetTaskResult) -> None:
@@ -181,6 +201,126 @@ async def connection(
 def accepted_call(host: ExternalConnection, handle: str) -> bool:
     """Whether the server accepted submission ``handle`` as a task on ``host``."""
     return any(call.submission.handle == handle for call in host.calls.values())
+
+
+def pool_key(server: str, auth_scope: str, owner: Any) -> tuple[str, str, str]:
+    """The pool of kept-alive direct connections to ``server`` through fleet proxy ``owner``."""
+    return (server, auth_scope, f"in-process:{id(owner):x}")
+
+
+def _usable(host: ExternalConnection) -> bool:
+    return (
+        host.client is not None
+        and host.client.is_connected()
+        and not (host.closing or host.superseded or host.broken)
+    )
+
+
+def lease_or_open(
+    self: ExternalTasks,
+    server: str,
+    configured: Client,
+    auth_scope: str,
+    owner: Any,
+    token: object,
+) -> Awaitable[ExternalConnection]:
+    """The connection one call uses: the fleet's kept-alive one, shared, when ``owner``.
+
+    Parallel calls through one fleet proxy reach the same server process, as they did
+    through the proxy: a stateful server (a scene, a notebook kernel, a database session)
+    keeps its state across them. Without ``owner``, or for an in-process server, this is
+    :func:`connection` as before. Each call's progress names its own token; an
+    elicitation without a task belongs to the only call still waiting on a plain reply
+    (external_task_inputs).
+    """
+    if owner is None or not isinstance(configured.transport, (StdioTransport, SSETransport)):
+        return connection(self, server, configured, auth_scope)
+    return _lease(self, server, configured, auth_scope, owner, token)
+
+
+async def _lease(
+    self: ExternalTasks,
+    server: str,
+    configured: Client,
+    auth_scope: str,
+    owner: Any,
+    token: object,
+) -> ExternalConnection:
+    pool = pool_key(server, auth_scope, owner)
+    async with self._pool_locks.setdefault(pool, asyncio.Lock()):
+        ready = [host for host in self.connections.values() if host.pool == pool and _usable(host)]
+        if ready:
+            host = max(ready, key=lambda candidate: candidate.holders)
+            host.leases[token] = None
+            return host
+        logger.info("external_mcp_kept_alive_opened server=%s by=call pool=%s", server, pool[2])
+        return await connection(self, server, configured, auth_scope, pool_owner=owner, lease=token)
+
+
+def release(host: ExternalConnection, token: object) -> None:
+    """End ``token``'s lease on ``host``; its record may still be landing (``settling``)."""
+    if host.pool is None or token not in host.leases:
+        return
+    submission = host.leases.pop(token)
+    if submission is not None:
+        host.settling.append(submission)
+
+
+def waiting_inline(host: ExternalConnection) -> list[SubmissionContext]:
+    """Calls on a kept-alive connection still waiting on a plain (task-less) reply."""
+    tasks = {call.submission.handle for call in host.calls.values()}
+    return [
+        submission
+        for submission in host.leases.values()
+        if submission is not None and submission.handle not in tasks
+    ]
+
+
+def note_failure(host: ExternalConnection, error: BaseException) -> None:
+    """A kept-alive connection whose transport failed under a call is not leased again."""
+    if host.pool is not None and not isinstance(error, MCPError):
+        host.broken = True
+
+
+async def hold(
+    self: ExternalTasks, server: str, auth_scope: str, owner: Any, configured: Client
+) -> tuple[Any, Callable[[], Awaitable[None]]]:
+    """Hold the fleet's kept-alive direct connection to ``server`` for an executor.
+
+    The executor lists, reads resources and listens over it, and calls share it
+    (:func:`lease_or_open`), so the server runs once per fleet. ``configured`` (a fresh,
+    unentered client) opens it when none is open. Returns the client and the coroutine
+    function releasing the hold; the last release lets an idle connection close
+    (:func:`retire_connection`).
+    """
+    pool = pool_key(server, auth_scope, owner)
+    async with self._pool_locks.setdefault(pool, asyncio.Lock()):
+        open_hosts = [
+            host for host in self.connections.values() if host.pool == pool and _usable(host)
+        ]
+        if open_hosts:
+            host = max(open_hosts, key=lambda candidate: candidate.holders)
+            host.holders += 1
+        else:
+            logger.info(
+                "external_mcp_kept_alive_opened server=%s by=holder pool=%s", server, pool[2]
+            )
+            host = await connection(
+                self, server, configured, auth_scope, pool_owner=owner, holder=True
+            )
+    released = False
+
+    async def release_hold() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        host.holders = max(0, host.holders - 1)
+        if not host.holders:
+            await retire_connection(self, host)
+
+    assert host.client is not None
+    return host.client, release_hold
 
 
 async def abandon_view_call(
@@ -265,10 +405,42 @@ def watch_fleets(self: ExternalTasks) -> None:
     self._unwatch_fleets = fleet_close_listeners.listen(dropped)
 
 
+def share_direct_connections(self: ExternalTasks) -> None:
+    """Let executors on the application's loop hold its kept-alive direct connections.
+
+    Removed by :func:`close_connections`; built outside a running loop (tests), nothing
+    is registered and executors keep their own connections.
+    """
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    owner = weakref.ref(self)
+
+    def available() -> bool:
+        tasks = owner()
+        return tasks is not None and not tasks._closing
+
+    async def held(
+        server: str, auth_scope: str, proxy: Any, configured: Any
+    ) -> tuple[Any, Callable[[], Awaitable[None]]]:
+        tasks = owner()
+        if tasks is None or tasks._closing:
+            raise RuntimeError("External task observation is closing")
+        return await hold(tasks, server, auth_scope, proxy, configured)
+
+    self._unshare_direct = shared_direct_connections.register(loop, held, available)
+
+
 async def retire_owned(self: ExternalTasks, owners: set[str], root: str, reason: str) -> int:
     """Retire every retained connection to one of ``owners``; return how many matched."""
 
-    matched = [host for host in tuple(self.connections.values()) if host.cache_key[2] in owners]
+    matched = [
+        host
+        for host in tuple(self.connections.values())
+        if host.cache_key[2] in owners or (getattr(host, "pool", None) or ("", "", ""))[2] in owners
+    ]
     for host in matched:
         await _retire_stale(
             self, host, EXTERNAL_MCP_CONNECTION_FLEET_CLOSED, fleet=root or "-", because=reason
@@ -291,7 +463,9 @@ async def retire_connection(
     """Close one exclusive transport only after submission and observation custody ends.
 
     A shared connection closes only at shutdown, or once it was superseded (its proxy is
-    no longer routed to): then it goes when its last call's custody ends.
+    no longer routed to): then it goes when its last call's custody ends. A kept-alive
+    direct connection stays open while a call leases it or an executor holds it (and it
+    still works); otherwise it closes like an exclusive one.
     """
     async with host.reconnect_lock:
         if (
@@ -310,10 +484,10 @@ async def retire_connection(
         if not shutdown:
             if self.history.requires_recovery or host.calls:
                 return
-            if host.invocation is not None:
-                current = await self.history.io.run(
-                    self.history.task_snapshot, host.invocation.handle
-                )
+            for invocation in (host.invocation, *host.settling):
+                if invocation is None:
+                    continue
+                current = await self.history.io.run(self.history.task_snapshot, invocation.handle)
                 if current is None or (
                     current.terminal_at is None
                     and not (
@@ -322,6 +496,14 @@ async def retire_connection(
                     )
                 ):
                     return
+                if invocation in host.settling:
+                    host.settling.remove(invocation)
+        if (
+            host.pool is not None
+            and not (shutdown or host.superseded)
+            and (host.leases or (host.holders and _usable(host)))
+        ):
+            return
         client = host.client
         host.closing = True
         try:
@@ -334,6 +516,7 @@ async def retire_connection(
         if self.connections.get(host.cache_key) is host:
             self.connections.pop(host.cache_key)
         host.client, host.invocation = None, None
+        host.settling.clear()
         host.calls.clear()
         host.drivers.clear()
 
@@ -343,6 +526,8 @@ async def close_connections(self: ExternalTasks) -> None:
     self._closing = True
     if unwatch := getattr(self, "_unwatch_fleets", None):
         unwatch()
+    if unshare := getattr(self, "_unshare_direct", None):
+        unshare()
     if self._opening:
         await asyncio.shield(asyncio.gather(*tuple(self._opening.values()), return_exceptions=True))
     hosts = tuple(self.connections.values())

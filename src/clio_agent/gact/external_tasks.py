@@ -74,6 +74,16 @@ class ExternalConnection:
     superseded: bool = False  # replaced while busy (EXTERNAL_MCP_CONNECTION_SUPERSEDED)
     #: This connection's tool listing, read once per connected client (reset on reconnect).
     tools: dict[str, Any] | None = None
+    #: A direct connection kept alive across calls (external_task_connections.lease_or_open):
+    #: ``(server, auth_scope, owner)``, ``owner`` naming the fleet's namespace proxy.
+    pool: tuple[str, str, str] | None = None
+    owner_ref: Any = None  # the proxy itself, so its id is not reused while pooled
+    #: Calls using it now, by lease, with each one's submission once it has one.
+    leases: dict[object, SubmissionContext | None] = field(default_factory=dict)
+    #: Finished calls whose records may still be landing (retire_connection waits for them).
+    settling: list[SubmissionContext] = field(default_factory=list)
+    holders: int = 0  # executors using it for their namespace (shared_direct_connections)
+    broken: bool = False  # its transport failed under a call: never leased again
 
 
 class ExternalTasks:
@@ -83,6 +93,7 @@ class ExternalTasks:
         self.app, self.history, self.recovery = app, app.state.task_history, app.state.task_recovery
         self.connections: dict[tuple[str, str, str], ExternalConnection] = {}
         self._opening: dict[tuple[str, str, str], asyncio.Task[ExternalConnection]] = {}
+        self._pool_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         self._retiring: set[asyncio.Task[None]] = set()
         self._closing = False
         # Read-only calls sent before their admission is written (external_read_only),
@@ -90,9 +101,12 @@ class ExternalTasks:
         self._lazy: dict[str, LazyAdmission] = {}
         self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
         self._unwatch_fleets: Callable[[], None] | None = None
+        self._unshare_direct: Callable[[], None] | None = None
         external_task_connections.watch_fleets(self)
+        external_task_connections.share_direct_connections(self)
 
     connection = external_task_connections.connection
+    hold = external_task_connections.hold
     _retire_connection = external_task_connections.retire_connection
 
     async def restore(self, handles: tuple[str, ...] | None = None) -> None:
@@ -255,18 +269,28 @@ class ExternalTasks:
         auth_scope: str,
         progress_handler: Callable[[float, float | None, str | None], Awaitable[None]]
         | None = None,
+        pool_owner: Any = None,
     ) -> Any:
-        """Confirm custody before one SDK tools/call; uncertain replies are never replayed."""
+        """Confirm custody before one SDK tools/call; uncertain replies are never replayed.
+
+        With ``pool_owner`` (the fleet's namespace proxy), a direct connection to
+        ``server`` stays open for every call through that proxy, parallel ones included,
+        instead of starting the server for each call.
+        """
         if self._closing:
             raise ValueError("External task observation is closing")
         public = dict(arguments)
         description = public.pop("_clio_task_description", None) or safe_description(name, public)
         if not isinstance(description, str) or len(description) > 2000:
             raise ValueError("Task description is invalid")
-        host = await self.connection(server, configured, auth_scope)
+        lease = object()
+        host = await external_task_connections.lease_or_open(
+            self, server, configured, auth_scope, pool_owner, lease
+        )
         try:
-            return await self._call(host, name, public, description, progress_handler)
+            return await self._call(host, name, public, description, progress_handler, lease)
         finally:
+            external_task_connections.release(host, lease)
             self._schedule_retirement(host)
 
     async def _call(
@@ -276,6 +300,7 @@ class ExternalTasks:
         public: dict[str, Any],
         description: str,
         progress_handler: Callable[[float, float | None, str | None], Awaitable[None]] | None,
+        lease: object = None,
     ) -> Any:
         """Submit one call using its captured schema and trusted invocation identity."""
         assert host.client is not None
@@ -366,7 +391,9 @@ class ExternalTasks:
             content = content_reference(sid, submission.model_dump(mode="json"))
             self._lazy[handle] = lazy
         admitted = lazy.then if lazy is not None else (lambda write: write)
-        if host.isolated:
+        if host.pool is not None:  # shared by parallel calls: each one's own invocation
+            host.leases[lease] = submission
+        elif host.isolated:
             if host.invocation is not None:
                 raise ValueError("An invocation-bound transport cannot serve another submission")
             host.invocation = submission
@@ -425,6 +452,7 @@ class ExternalTasks:
                     type(error).__name__,
                 )
                 reason = external_task_connections.failure_reason(host, error)
+                external_task_connections.note_failure(host, error)
                 failure = submission_failure(error)
                 if failure == "rejected":
                     await self._record_or_defer(

@@ -15,6 +15,7 @@ from clio_agent.arc.task_types import (
     TaskProgress,
     TaskSnapshot,
 )
+from clio_agent.gact import external_task_connections
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_publication import publish_task_notice
 from clio_agent.tools.task_client import (
@@ -148,8 +149,17 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                     and raw.get("params") == payload
                 ):
                     candidates.append((current, key, raw))
-        inline = host.inline.get()
-        if inline is None and host.isolated and host.rpcs and not host.calls:
+        inline = host.inline.get() if host.pool is None else None
+        if inline is None and host.pool is not None and host.rpcs:
+            # Parallel calls share a kept-alive connection; inputs naming a task
+            # (task-<id>-...) went above. The rest belong to the call waiting on a plain
+            # reply, when only one is: several make it ambiguous, and it is refused.
+            waiting = external_task_connections.waiting_inline(host)
+            if len(waiting) == 1 and not any(
+                str(request.request_id).startswith(f"task-{task_id}-") for task_id in host.calls
+            ):
+                inline = waiting[0]
+        elif inline is None and host.isolated and host.rpcs and not host.calls:
             inline = host.invocation
         if inline is not None and any(
             call.submission.handle == inline.handle for call in host.calls.values()

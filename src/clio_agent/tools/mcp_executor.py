@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
+from clio_agent.tools import shared_direct_connections
 from clio_agent.tools.launcher_cache_lock import (
     aacquire_launcher_cache_lock,
     uses_shared_launcher_cache,
@@ -400,6 +401,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         return _MCPCallOutcome(json.dumps(value), result, "shell")
                     namespace, _, bare = name.partition("_")
                     proxy = self._namespace_servers.get(namespace)
+                    pool_owner = proxy  # the fleet's proxy: its direct connection stays open
                     if proxy is None and bare and name in self._mcp_tools:
                         proxy = _builtin_namespace_server(namespace)
                     if proxy is not None:
@@ -432,6 +434,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             dict(args),
                             auth_scope=auth_scope,
                             progress_handler=progress_handler,
+                            pool_owner=pool_owner,
                         )
                     except Exception as error:
                         self._namespace_call_failed(namespace if proxy is not None else None, error)
@@ -526,11 +529,15 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             direct_client, decision = resolve_and_build_direct_client(namespace, direct_factories)
             record_namespace_route_decision(namespace, decision)
             ctx = direct_client if direct_client is not None else self._client_factory(proxy)
+            hold = shared_direct_connections.holder() if direct_client is not None else None
+            if direct_client is not None and hold is None:
+                # No host holder on this loop (CLI, tests): this executor owns the connection.
+                logger.info("mcp_direct_namespace_unshared namespace=%s", namespace)
             if spec is not None and uses_shared_launcher_cache(spec):
                 async with aacquire_launcher_cache_lock(namespace):
-                    client = await enter_connection(ctx)
+                    client, ctx = await self._enter_namespace(namespace, proxy, ctx, spec, hold)
             else:
-                client = await enter_connection(ctx)
+                client, ctx = await self._enter_namespace(namespace, proxy, ctx, spec, hold)
         except Exception:
             spawn_diet.spawn_failed(namespace)
             raise
@@ -557,6 +564,21 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._ensure_tools_watch(namespace)
         self._ensure_resource_watches(namespace)
         return client
+
+    async def _enter_namespace(
+        self, namespace: str, proxy: Any, ctx: Any, spec: Any, hold: Any
+    ) -> tuple[Any, Any]:
+        """Enter ``ctx``, or hold the application's kept-alive direct connection instead.
+
+        Returns the connected client and the context to exit when the namespace closes.
+        """
+        if hold is None:
+            return await enter_connection(ctx), ctx
+        auth_scope = hashlib.sha256(
+            json.dumps(spec or {}, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        client, release = await hold(namespace, auth_scope, proxy, ctx)
+        return client, shared_direct_connections.HeldConnection(release)
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
         """Resolve one namespace; reject unknown names before composite discovery."""
