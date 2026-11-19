@@ -85,6 +85,10 @@ def connected_data_search_ndp(
         or len(resource_format) > 64
     ):
         raise ValueError("Use nonnegative offsets and a bounded catalog query")
+    if organization:
+        from clio_agent.gact.storage.organization_branches import note_organization  # noqa: PLC0415
+
+        note_organization(organization)
     service = _service()
     if dataset_id:
         catalog = _catalog_id(service, endpoint_id) if endpoint_id else ""
