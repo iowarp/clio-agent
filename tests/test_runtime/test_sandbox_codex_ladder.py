@@ -174,17 +174,24 @@ def test_only_the_linux_proxy_fence_names_the_relay_tunnel(
     platform: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Codex's Linux proxy passes only public hosts on, so the SSH helper needs the relay."""
-    from clio_agent.runtime import net_chokepoint, net_connect, sandbox_net  # noqa: PLC0415
+    from clio_agent.runtime import (  # noqa: PLC0415
+        fence_service,
+        net_chokepoint,
+        net_connect,
+        sandbox_net,
+    )
 
     monkeypatch.setattr(net_chokepoint, "open_child_channel", lambda *_a, **_k: 4321)
     state = sandbox._resolve_backend(platform=platform, codex_detection=_codex_ok())
-    _child, port, overlay = sandbox_net.open_child_egress(state, ["/ws"])
+    child, port, overlay = sandbox_net.open_child_egress(state, ["/ws"])
     assert port == 4321
     assert overlay["HTTPS_PROXY"] == "http://127.0.0.1:4321"
     if platform == "linux":
         assert overlay[net_connect.RELAY_VARIABLE] == "[2001:db8::c110]:443"
+        assert overlay[fence_service.FENCE_CHILD_VARIABLE] == child
     else:
         assert net_connect.RELAY_VARIABLE not in overlay
+        assert fence_service.FENCE_CHILD_VARIABLE not in overlay
 
 
 @pytest.mark.parametrize(
