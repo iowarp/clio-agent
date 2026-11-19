@@ -10,7 +10,7 @@ import path from "node:path";
 const ROOT = path.resolve(process.argv[2] || ".cloud-run/web-build");
 const PORT = Number(process.argv[3] || 4174);
 const AGENT_PORT = Number(process.env.AGENT_PORT || 8787);
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json", ".wasm": "application/wasm", ".png": "image/png", ".woff2": "font/woff2" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json", ".wasm": "application/wasm", ".png": "image/png", ".woff2": "font/woff2" };
 http.createServer((req, res) => {
   if (req.url.startsWith("/v1/") || req.url === "/v1") {
     const up = http.request({ host: "127.0.0.1", port: AGENT_PORT, path: req.url, method: req.method, headers: req.headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });

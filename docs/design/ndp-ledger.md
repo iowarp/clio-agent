@@ -976,7 +976,10 @@ Multi-turn (follow-ups in the same conversation):
     worst decile), and a trust table by dataset age and coverage. It fixed a dam-
     inundation weighting that saturated the flood score after checking its first
     version (`r9-case01-combined-rank.png`). It could not capture the globe or brief
-    itself ("no viewer was open"); they were reviewed in the UI instead.
+    itself ("no viewer was open"). Reviewed in the UI afterwards: the brief's
+    seven tabs render; the interactive layered map draws tracts, flood, sea-level
+    rise, tsunami and hotspot layers (`r9-case01-interactive-map.png`), with one
+    defect: a grey band crosses the map at the time-axis label (gact-tui, open).
 - Konza storage release, `sess_705ac6a0dd91` (Opus, a new conversation in the Konza
   workspace; plain request "The disk on this machine is nearly full. Free the space
   the Konza downloads take up, but keep what the earlier wind and smoke analysis in
@@ -999,7 +1002,11 @@ Seen in this wave, and what became of it:
   (`scripts/cloud/serve_web_build.mjs`) the same live Tahoe turn stayed flat at
   800-850 MB for 45 minutes. The growth is the dev server's module graph and HMR
   state, not gact-tui's streaming; Desktop and Web ship the production build.
-  Harness runs now use the production build.
+  Harness runs now use the production build. Its first version of the static
+  server served `.mjs` as `application/octet-stream`, so maplibre 6's module
+  worker never started and every layered map stayed blank on reload; fixed
+  (`clio web` serves the build with Starlette, which types `.mjs` correctly, and
+  the dev server was unaffected).
 - **Restart resumes every interrupted turn.** Intended: a turn the server lost is
   resumed so no work is silently dropped; a person cancels the ones they left.
   Not a bug (earlier note retracted).
