@@ -216,6 +216,7 @@ def publish_refusal(
             server=scope.server,
             tool=tool,
             uri=outcome.uri,
+            refusal_detail=outcome.detail,
         )
     bus = getattr(app.state, "bus", None)
     if bus is not None:

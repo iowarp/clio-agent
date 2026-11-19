@@ -242,7 +242,14 @@ class PluginPages:
 
     async def action(self, plugin: str, page: str, body: Mapping[str, Any]) -> dict[str, Any]:
         context = await self.context(plugin, page, create=False)
-        return await plugin_tabs(self._app).action(context, plugin, page, body)
+        try:
+            return await plugin_tabs(self._app).action(context, plugin, page, body)
+        except PluginTabError as exc:
+            if exc.reason != "plugin_tab_not_open":
+                raise
+            raise PluginTabError(
+                404, "plugin_page_not_open", f"page {plugin}/{page} is not open"
+            ) from exc
 
 
 def plugin_pages(app: Any) -> PluginPages:

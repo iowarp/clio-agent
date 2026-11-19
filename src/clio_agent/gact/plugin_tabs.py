@@ -408,6 +408,12 @@ class PluginTabs:
             surfaces = carry_revisions(state.surfaces, surfaces)
             state.surfaces, state.reason, state.detail = surfaces, reason, detail
             state.revision += 1
+            if self._open.get(key) is None:
+                # A close finished while this open was reading. The client's requests race
+                # on separate connections (a remount sends open, close, open), and this open
+                # answers last, so the tab is open: keep it, and watch it again.
+                self._open[key] = state
+                state.subscribed = False
             need_subscribe = not state.subscribed
         if need_subscribe:
             # Per tab, on the session's own bound executor: an executor holds one watch
@@ -433,6 +439,11 @@ class PluginTabs:
             )
         if last and state is not None:
             await self._subscribe(state, subscribed=False)
+            with self._lock:
+                reopened = self._open.get(key)
+            if reopened is not None:
+                # An open answered while this watch was being dropped: watch it again.
+                reopened.subscribed = await self._subscribe(reopened, subscribed=True)
         return {"closed": True}
 
     async def refresh(self, key: TabKey) -> None:
@@ -676,9 +687,18 @@ class PluginTabs:
             str(raw_action.get("surfaceId") or "") if isinstance(raw_action, Mapping) else ""
         )
         with self._lock:
+            known = key in self._open
+        if not known:
+            # The client acts on a tab it shows, so the host lost the open record (a close
+            # that raced the client's reopen, or a restart): read the tab again first.
+            await self.open(session_id, plugin, tab)
+        with self._lock:
             state = self._open.get(key)
             surface = state.surfaces.get((session_id, surface_id)) if state is not None else None
         if state is None:
+            reason = self.failure(session_id, plugin, tab)
+            if reason:
+                raise PluginTabError(409, reason, f"tab {plugin}/{tab} is unavailable")
             raise PluginTabError(404, "plugin_tab_not_open", f"tab {plugin}/{tab} is not open")
         if surface is None or surface.state == "deleted":
             raise PluginTabError(404, "not_found", f"A2UI surface not found: {surface_id}")

@@ -285,8 +285,13 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
      response as HS2
 ```
 
-- An unknown tab is `plugin_tab_not_found` (404). `actions` on a tab that is not open is
-  `plugin_tab_not_open` (404).
+- An unknown tab is `plugin_tab_not_found` (404). `actions` on a tab the host does not
+  hold open (a server restart, or a `close` that raced the client's reopen) reads the
+  tab again first, then acts; it is `plugin_tab_not_open` (404) only when that read
+  opens nothing, or 409 with the tab's reason when the read failed.
+- `open` and `close` may race: a client that remounts sends `open`, `close`, `open` on
+  separate connections, and they can arrive in any order. An `open` that answers after
+  a `close` keeps the tab open and watched, so the last answer the client got holds.
 - `open` sends `resources/read` for the tab's resource and starts watching it for
   updates. The read result is the tab's whole state: its A2UI items replace every
   surface the tab held. The first batch must start with `createSurface`.
@@ -342,8 +347,8 @@ POST /v1/sessions/{sid}/plugin-tabs/{plugin}/{tab}/actions
 - `close` drops the tab's surfaces and, when no session still has the tab open, ends the
   listen stream.
 - Tab surfaces are not part of the transcript and are not seen by the model. They live
-  in memory for the open tab (a server restart forgets them; `actions` then answers
-  `plugin_tab_not_open` and the client calls `open`). Every tab surface carries the tab
+  in memory for the open tab; after a server restart the next `actions` or `open` reads
+  the tab again. Every tab surface carries the tab
   server's `owner`. Actions on them follow HS2; their results are applied to the tab.
 - `available: false` with a typed `reason` (`plugin_tab_server_unavailable`,
   `plugin_tab_resource_failed`) when the server is not mounted or the read failed. A read
@@ -397,9 +402,9 @@ POST /v1/plugin-pages/{plugin}/{page}/actions
   page is `available: false, reason: "plugin_not_trusted"`, and opening it is 409 with
   that reason. A page whose last read failed carries the tab reasons
   (`plugin_tab_server_unavailable`, `plugin_tab_resource_failed`).
-- An unknown page is `plugin_page_not_found` (404). `actions` before the first `open` is
-  `plugin_page_not_open` (404); after a server restart it is `plugin_tab_not_open` and
-  the client calls `open` again.
+- An unknown page is `plugin_page_not_found` (404). `actions` before the first `open`
+  (no context yet) is `plugin_page_not_open` (404). After a server restart, or a `close`
+  that raced a reopen, `actions` reads the page again first, as for a tab.
 - Events arrive on the context's stream, `GET /v1/sessions/{context_session_id}/events`:
   `plugin_page.surface.upserted {page_id, revision, surface}`,
   `plugin_page.surface.deleted {page_id, revision, surface_id}`,

@@ -443,10 +443,53 @@ async def test_a_tab_not_in_the_session_is_not_found(tab_app: tuple[Any, _Execut
         with pytest.raises(tabs_module.PluginTabError) as caught:
             await tabs.open("other", "host-fixture", "panel")
         assert (caught.value.status, caught.value.reason) == (404, "plugin_tab_not_found")
+    finally:
+        tabs.shutdown()
 
-        with pytest.raises(tabs_module.PluginTabError) as not_open:
-            await tabs.action("s1", "host-fixture", "panel", _action("bump", {"by": 1}))
-        assert not_open.value.reason == "plugin_tab_not_open"
+
+async def test_an_action_on_a_tab_the_host_forgot_reads_it_again(
+    tab_app: tuple[Any, _Executor],
+) -> None:
+    app, executor = tab_app
+    tabs = tabs_module.PluginTabs(app)
+    try:
+        # No open first: the host lost its record (a restart), but the client shows the tab.
+        result = await tabs.action("s1", "host-fixture", "panel", _action("bump", {"by": 1}))
+
+        assert result["outcome"] == "applied"
+        assert executor.calls == [("hostfx_bump", {"by": 1})]
+        assert executor.watching == {("hostfx", hostfx.PANEL_URI): True}
+    finally:
+        tabs.shutdown()
+
+
+async def test_a_close_that_races_an_open_leaves_the_tab_open(
+    tab_app: tuple[Any, _Executor],
+) -> None:
+    app, executor = tab_app
+    tabs = tabs_module.PluginTabs(app)
+    reading, release = asyncio.Event(), asyncio.Event()
+    read = tabs._read
+
+    async def slow_read(state: Any) -> Any:
+        reading.set()
+        await release.wait()
+        return await read(state)
+
+    tabs._read = slow_read  # type: ignore[method-assign]
+    try:
+        # A remount sends open, close, open; the close answers while the open still reads.
+        opening = asyncio.ensure_future(tabs.open("s1", "host-fixture", "panel"))
+        await reading.wait()
+        await tabs.close("s1", "host-fixture", "panel")
+        release.set()
+        opened = await opening
+
+        assert [surface["id"] for surface in opened["surfaces"]] == [hostfx.SURFACE_ID]
+        assert executor.watching == {("hostfx", hostfx.PANEL_URI): True}
+        tabs._read = read  # type: ignore[method-assign]
+        result = await tabs.action("s1", "host-fixture", "panel", _action("bump", {"by": 1}))
+        assert result["outcome"] == "applied"
     finally:
         tabs.shutdown()
 
