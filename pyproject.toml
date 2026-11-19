@@ -405,7 +405,7 @@ override-dependencies = ["mcp==2.2.0"]
 [tool.uv.sources]
 # Develop pins the merged sibling commits so their unreleased work runs without a
 # release: clio-schemas (clio.mcp-app.v1 with recordingUri, clio.choice-table.v1, the s3 connected-source
-# provider, the map's flat-map and globe facts) and clio-kit (paraview-mcp 3.1.0, geo 2.4.0, the slicer, and the pdf,
+# provider, the map's flat-map and globe facts) and clio-kit (paraview-mcp 3.2.0, geo 2.4.0, the slicer, and the pdf,
 # earthdata, home-assistant and spice servers that run their pinned upstream releases,
 # apps ledger KM; the chemistry servers ase, decimer, fdmnes, graspa and pubchem and the
 # clio-chemistry bundle with avogadro, from clio-kit's claude/chemistry-in-clio branch until it merges,
@@ -415,4 +415,4 @@ override-dependencies = ["mcp==2.2.0"]
 # published PyPI versions (release-clio; docs/design/sdk/mcp-apps-ledger.md, GP). uv
 # only: the built wheel's metadata keeps the plain specifiers above.
 clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "9e92d6fe8fe07e6d74e84f865c99c6a748802cdc" }
-clio-kit = { git = "https://github.com/iowarp/clio-kit", rev = "19296639e7818d2d7298f7e4a16d7eab80906bdd" }
+clio-kit = { git = "https://github.com/iowarp/clio-kit", rev = "f9e86fc6928cb3bf05ef69856ca46e938455b822" }
