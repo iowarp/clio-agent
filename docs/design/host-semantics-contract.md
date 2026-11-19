@@ -537,9 +537,10 @@ the first message, without the agent having to find and offer it.
 
 - **Set up.** The plugin declares `setup.files`. It counts as set up when any of those
   files, under its `PLUGIN_DATA` folder, holds a value: JSON or YAML that parses to a
-  non-empty list, mapping or scalar, or any other file with text in it. A missing or
-  empty file, `[]`, `{}`, `null`, or a path that leaves the folder through a link does
-  not count. A plugin keeps the file empty (`[]`), or removes it, when nothing is set up.
+  non-empty list or scalar, or to a mapping with at least one non-empty value, or any
+  other file with text in it. A missing or empty file, `[]`, `{}`, `null`, a mapping
+  whose values are all empty (`sites: {}`), or a path that leaves the folder through a
+  link does not count. A plugin empties the file, or removes it, when nothing is set up.
   Owner: `plugins/setup_state.py`.
 - **Joining.** `POST /v1/sessions` adds each set-up plugin of the person's library to the
   new conversation's delta (`add`, as if the person had added it), so its servers, their

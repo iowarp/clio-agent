@@ -3,9 +3,10 @@
 A plugin declares in its ``ai.iowarp.clio`` extension the files under its ``PLUGIN_DATA``
 folder that hold what the person configured through it (``setup.files``), such as the
 endpoints they added on its page. The plugin is set up when any of those files holds a
-non-empty value: a JSON or YAML file that parses to a non-empty list, mapping or scalar,
-or any other file with text in it. A missing, empty or unreadable file, or one that
-parses to nothing (``[]``, ``{}``, ``null``), does not count.
+non-empty value: a JSON or YAML file that parses to a non-empty list or scalar, or to a
+mapping with at least one non-empty value, or any other file with text in it. A missing,
+empty or unreadable file, or one that parses to nothing (``[]``, ``{}``, ``null``, or a
+mapping whose values are all empty such as ``sites: {}``), does not count.
 
 A plugin the person has set up joins new conversations by default
 (:mod:`clio_agent.gact.plugin_join`). Nothing here names a particular plugin.
@@ -52,7 +53,13 @@ def _holds_value(path: Path) -> bool:
             return True
     except (ValueError, yaml.YAMLError):
         return False
-    return value not in (None, "", [], {})
+    if isinstance(value, dict):
+        return any(not _empty(item) for item in value.values())
+    return not _empty(value)
+
+
+def _empty(value: Any) -> bool:
+    return value is None or (isinstance(value, (str, list, dict)) and not value)
 
 
 def is_set_up(record: Any, data_dir: Path | None = None) -> bool:
