@@ -125,6 +125,9 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     if isinstance(requested, str):
         requested = [requested]
     pending = [handle for handle in result.get("pending", []) if isinstance(handle, str)]
+    awaiting = {
+        handle for handle in result.get("awaiting_input", []) if isinstance(handle, str)
+    } & set(pending)
     outcomes = result.get("outcomes", result.get("results", []))
     # Decode released receipt fields without consulting a second task authority.
     outcomes = [
@@ -221,6 +224,16 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
                 )
             if status in _UNSUCCESSFUL:
                 block["severity"] = "error"
+        elif handle in awaiting:
+            block.update(
+                label=f"{handle}: Waiting for input",
+                text=(
+                    "This task asked a question and is waiting for its answer. "
+                    "It resumes once the question is answered; it was not cancelled."
+                ),
+                result_kind="snapshot",
+                status="input_required",
+            )
         elif handle in pending:
             block.update(
                 label=handle,
@@ -253,7 +266,11 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     if result.get("interrupted") == "mail_received":
         counts.insert(0, "New input received")
     if pending:
-        counts.insert(0, f"{len(pending)} pending")
+        counts.insert(
+            0,
+            f"{len(pending)} pending"
+            + (f" ({len(awaiting)} waiting for input)" if awaiting else ""),
+        )
     if failed:
         counts.append(f"{failed} unsuccessful")
     if attention:

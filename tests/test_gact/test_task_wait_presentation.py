@@ -99,6 +99,26 @@ def test_mixed_wait_receipt_counts_only_collected_results() -> None:
     assert shown["summary"] == "1 pending, 1 result collected"
 
 
+def test_task_waiting_for_an_answer_is_not_shown_as_plain_pending() -> None:
+    """An ``input_required`` task says it waits for an answer, and still was not collected."""
+    shown = wait_presentation(
+        {"tasks": ["asks", "runs"], "timeout_s": 30},
+        {
+            "outcomes": [],
+            "pending": ["asks", "runs"],
+            "awaiting_input": ["asks", "gone"],
+            "timed_out": True,
+        },
+    )
+    assert shown["summary"] == "2 pending (1 waiting for input), 0 results collected"
+    asks, runs = shown["blocks"][2], shown["blocks"][3]
+    assert asks["label"] == "asks: Waiting for input"
+    assert asks["status"] == "input_required" and asks["result_kind"] == "snapshot"
+    assert "waiting for its answer" in asks["text"] and "not cancelled" in asks["text"]
+    assert runs["status"] == "pending"
+    assert "Pending when this call returned" in runs["text"]
+
+
 def test_completed_wait_has_no_pending_snapshot() -> None:
     """A fully collected wait does not retain a running indicator."""
     shown = wait_presentation({}, {"results": [{"handle": "ready"}], "pending": []})

@@ -153,6 +153,28 @@ async def test_uncertain_legacy_status_does_not_require_an_episode_to_end_wait(
 
 
 @pytest.mark.asyncio
+async def test_wait_names_the_pending_task_that_waits_for_an_answer(arc: ARCMemory) -> None:
+    """A task in ``input_required`` stays pending, and the wait says it awaits an answer."""
+    history = TaskHistory(arc)
+    asks = await asyncio.to_thread(record_task, history, "task_asks")
+    runs = await asyncio.to_thread(record_task, history, "task_runs")
+    await asyncio.to_thread(
+        history.record_snapshot,
+        asks.model_copy(update={"status": "input_required", "activity": "waiting_for_input"}),
+        observation_id="asks-question",
+    )
+    operations, caller = TaskOperations(history, forbid_cancel), TaskCaller("owner", "human")
+    result = await asyncio.wait_for(
+        operations.wait(caller, [asks.handle, runs.handle], timeout_s=0), 1
+    )
+    assert result["timed_out"] and set(result["pending"]) == {asks.handle, runs.handle}
+    assert result["awaiting_input"] == [asks.handle]
+    await asyncio.to_thread(finish, history, runs)
+    result = await asyncio.wait_for(operations.wait(caller, runs.handle, timeout_s=0), 1)
+    assert "awaiting_input" not in result
+
+
+@pytest.mark.asyncio
 async def test_a_cancellation_still_settling_keeps_the_wait_going(arc: ARCMemory) -> None:
     """While a member's cancellation job runs, its interim uncertain mark is progress:
     the wait goes on until the member settles. If the job ends with the member still
