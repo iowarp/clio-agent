@@ -159,9 +159,8 @@ def scope_summarizer(
         segments = app.state.arc.context_view(sid, scope).segments
         history = getattr(app.state, "task_history", None)
         messages = fold_steps(model_context_segments(segments, history, sid, scope))
-        if clip_results > 0:
-            messages = clip_tool_results(messages, clip_results)
+        sent = clip_tool_results(messages, clip_results) if clip_results > 0 else messages
         model = wrap_lm_with_hooks(lm)
-        return _ask(model, Request(model=model.model, messages=_with_prompt(messages, prompt)))
+        return _ask(model, Request(model=model.model, messages=_with_prompt(sent, prompt)))
 
     return summarize

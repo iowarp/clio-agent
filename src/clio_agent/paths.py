@@ -327,6 +327,15 @@ def workspace_cache_dir(root: str | Path) -> Path:
     return user_cache_dir() / "sandbox" / workspace_key(root)
 
 
+def shared_uv_cache_dir() -> Path:
+    """Return the one uv cache every workspace's shells share.
+
+    A sibling of the per-workspace ``sandbox`` caches, never the cache root itself: a
+    shell's write fence grants this folder alone, so CLIO's own caches stay out of reach.
+    """
+    return user_cache_dir() / "uv-shared"
+
+
 def workspace_shared_dir(root: str | Path) -> Path:
     """Return the explicit, authored project configuration location."""
     return Path(root) / ".clio-agent" / "shared"

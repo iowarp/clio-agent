@@ -129,7 +129,7 @@ def join_running_turn(app: Any, session_id: str, mode: str) -> dict[str, Any]:
             settle_basis(app, session_id)
         module, _dynamic = _rebuilt(app, session_id)
         joined = _adopt(loop, module, prompt=mode == "now")
-    except Exception as exc:  # noqa: BLE001 - reported typed in the offer's result and trace
+    except Exception as exc:  # noqa: BLE001 - forwards: typed join_reason in the offer result
         trace.event("TOOLS", "%s mode=%s error=%r", PLUGIN_JOIN_FAILED, mode, exc)
         return {"apply": mode, "joined": [], "join_reason": f"rebuild_failed: {exc}"}
     listed = {tool.name for tool in loop.tools}

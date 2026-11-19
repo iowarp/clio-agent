@@ -11,6 +11,10 @@ starts, and the agent keeps every tool.
   the call's parameters from the whole conversation. When a call of this turn names a
   summoned target, the person is recorded as its starter; a summoned target no call
   started is recorded on the turn's answer as not started.
+* ``plugin``: a plugin or connector the person has that this conversation does not
+  carry. The addition says the person asked for it and that ``offer_plugin`` adds it;
+  the card's Add (which also turns a connector on and asks for its needs) is still the
+  person's, so naming a plugin never adds one by itself.
 * ``server``: that server's deferred tools are loaded through ``search_tools``' own
   ``select:`` path, with a line saying the person pointed the message at them.
 
@@ -41,8 +45,14 @@ SUBAGENT = "subagent"
 SERVER = "server"
 WORKFLOW = "workflow"
 FLOW = "flow"
+PLUGIN = "plugin"
 #: The kinds a call of the turn starts, and the call (tool) each asks for.
-DELEGATED = {SUBAGENT: "spawn_agent_task", WORKFLOW: "run_workflow", FLOW: "run_flow"}
+DELEGATED = {
+    SUBAGENT: "spawn_agent_task",
+    WORKFLOW: "run_workflow",
+    FLOW: "run_flow",
+    PLUGIN: "offer_plugin",
+}
 #: Message metadata naming what the person summoned (the transcript reads it).
 SUMMONS_KEY = "summons"
 #: Assistant metadata: which summoned targets the turn's calls started.
@@ -79,6 +89,7 @@ class Summons:
             "servers": list(self.targets.get(SERVER, [])),
             "workflows": list(self.targets.get(WORKFLOW, [])),
             "flows": list(self.targets.get(FLOW, [])),
+            "plugins": list(self.targets.get(PLUGIN, [])),
         }
 
 
@@ -90,6 +101,7 @@ def _known(app: "FastAPI", sid: str) -> tuple[Any, dict[str, list[dict[str, Any]
     """The session's resolution and, per kind, the rows a person can summon."""
 
     from clio_agent.gact.agents.resolution import delegable_subagents, session_resolution
+    from clio_agent.gact.plugin_offer import offerable  # noqa: PLC0415
     from clio_agent.plugins.workflows import resolution_workflows  # noqa: PLC0415
 
     resolution = session_resolution(app, sid)
@@ -118,6 +130,15 @@ def _known(app: "FastAPI", sid: str) -> tuple[Any, dict[str, list[dict[str, Any]
             for row in getattr(resolution, "flows", None) or []
             if row.get("id") not in _INTERNAL_FLOWS
         ],
+        PLUGIN: [
+            {
+                "id": str(row["id"]),
+                "name": str(row.get("name") or row["id"]),
+                "kind": str(row.get("kind") or ""),
+                "description": str(row.get("summary") or ""),
+            }
+            for row in offerable(app, sid)
+        ],
     }
 
 
@@ -135,7 +156,7 @@ def summon_targets(app: "FastAPI", sid: str) -> dict[str, Any]:
     try:
         resolution, known = _known(app, sid)
     except SessionAgentUnavailable:
-        return {"subagents": [], "servers": [], "workflows": [], "flows": []}
+        return {"subagents": [], "servers": [], "workflows": [], "flows": [], "plugins": []}
     servers = dict(resolution.mcp_servers or {})
     executor = session_executor(app, sid)
     prepared = getattr(executor, "is_namespace_prepared", None)
@@ -162,6 +183,7 @@ def summon_targets(app: "FastAPI", sid: str) -> dict[str, Any]:
         ],
         "workflows": known[WORKFLOW],
         "flows": known[FLOW],
+        "plugins": known[PLUGIN],
     }
 
 
@@ -208,10 +230,11 @@ def plan_summons(app: "FastAPI", sid: str, parts: Sequence["Part"]) -> Summons:
             servers=names[SERVER],
             workflows=names[WORKFLOW],
             flows=names[FLOW],
+            plugins=names[PLUGIN],
         )
     targets = {
         kind: list(dict.fromkeys(p.target for p in wanted if p.target_kind == kind))
-        for kind in (SUBAGENT, SERVER, WORKFLOW, FLOW)
+        for kind in (SUBAGENT, SERVER, WORKFLOW, FLOW, PLUGIN)
     }
     for kind, tool in DELEGATED.items():
         if targets[kind]:
@@ -251,7 +274,7 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
     """The turn's additions for what the person summoned, ahead of their message.
 
     A delegated target's text is its core injection (``summon_subagent``,
-    ``summon_workflow``, ``summon_flow``); a server's is a marker the agent loop
+    ``summon_workflow``, ``summon_flow``, ``summon_plugin``); a server's is a marker the agent loop
     expands (:func:`expand_server_summons`).
     """
 
@@ -259,7 +282,9 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
     from clio_agent.injections.resolution import render  # noqa: PLC0415
 
     record = summons_metadata if isinstance(summons_metadata, dict) else {}
-    if not any(record.get(key) for key in ("subagents", "workflows", "flows", "servers")):
+    if not any(
+        record.get(key) for key in ("subagents", "workflows", "flows", "plugins", "servers")
+    ):
         return []
     try:
         _resolution, known = _known(app, sid)
@@ -274,6 +299,7 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
         *((SUBAGENT, row.get("role")) for row in record.get("subagents") or ()),
         *((WORKFLOW, name) for name in record.get("workflows") or ()),
         *((FLOW, name) for name in record.get("flows") or ()),
+        *((PLUGIN, name) for name in record.get("plugins") or ()),
     ]
     for kind, name in wanted:
         row = rows.get(kind, {}).get(name) or {}
@@ -306,6 +332,7 @@ def open_turn(app: "FastAPI", turn_id: str, message_id: str, summons_metadata: A
         *({"kind": SUBAGENT, "target": row.get("role")} for row in record.get("subagents") or ()),
         *({"kind": WORKFLOW, "target": name} for name in record.get("workflows") or ()),
         *({"kind": FLOW, "target": name} for name in record.get("flows") or ()),
+        *({"kind": PLUGIN, "target": name} for name in record.get("plugins") or ()),
     ]
     if rows and turn_id:
         with _CLAIMS_LOCK:
