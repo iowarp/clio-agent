@@ -41,4 +41,6 @@ def test_elevated_backend_keeps_its_existing_cache_redirection(
         details={"codex": {"implementation": "elevated"}},
     )
     env = sandbox._child_cache_env([tmp_path], state=state, profile=sandbox.PROFILE_FLEET)
-    assert all(env[key] == str(cache) for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS)
+    assert all(
+        Path(env[key]).resolve() == cache.resolve() for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS
+    )

@@ -410,7 +410,11 @@ and reads the real `CONNECT` from inside it. A private, link-local or loopback h
 reached this way (an SSH login node on a cluster network, say) always needs consent,
 in or out of deny mode: unless a workspace `host_pattern` policy already decides it,
 the person gets a `network_egress` request naming the address kind and can allow it
-once, allow it for the workspace, or decline. A decline holds for the rest of the turn
+once, allow it for the workspace, or decline. An allow is held too: "once" covers that
+host and port for the rest of the turn (a scheduler client opens one connection per
+command), and an allow for the session covers it until the session ends; another port
+asks again. An allow also covers the child sessions the session starts (a delegate, or
+the agent that answers a plugin's question). A decline holds for the rest of the turn
 it was given in: a client that retries the same host fails at once without asking
 again, and the next turn asks afresh (a workspace policy the person adds still
 decides first). The same holds for any `network_egress` request. The connection is recorded as
@@ -421,6 +425,44 @@ loopback, private and non-public names are refused, and the CONNECT helper says 
 when it happens. Fenced MCP servers get the same `ssh` shims as the shell, so a
 server that runs `ssh` (a remote-site adapter, say) takes the same route and asks the
 same question.
+
+Raw TCP clients that ignore proxies and are not `ssh` (Slurm's `sbatch`, `squeue` and
+`scontrol` dialing `slurmctld`) reach only the endpoints a site declares in
+`sandbox.forward_tcp` (`CLIO_SANDBOX_FORWARD_TCP`, comma-separated `host:port`, for
+example `ares:6817,ares:6819`). Every Linux-fenced child (shell, MCP server, kernel)
+then starts behind the CONNECT helper's forwarder (`runtime/fence_forward.py`), which
+listens inside the sandbox and carries each connection through the same relay, so it
+is recorded and asks the same `network_egress` question. A host that resolves to a
+loopback address on this machine (a login node that is also the controller) is
+forwarded at that address. Any other host gets its own `127.0.0.N` address (N from 2),
+and a host given by name is renamed for the child: the forwarder runs the program in a
+user and mount namespace of its own (same uid and gid, no added privilege, the fence's
+read-only mounts stay read-only) with a private `/etc/hosts` in which the name points at
+that address, so `sbatch` resolving `ares` reaches the forwarder unchanged. Every such
+endpoint is also listed in the child's `CLIO_FORWARDED_TCP` (`host:port=address:port`),
+for a client given an IP address or a kernel that refuses the namespace. Nothing is
+forwarded without a declaration. A client with a
+short connect timeout (Slurm's `MessageTimeout`) may give up while the person is
+deciding; its retry goes through on the held answer.
+
+The Linux fence allows Unix-domain sockets, because `ssh -o ControlMaster`, munge and
+other local IPC need them and they carry no route off the machine (abstract sockets
+belong to the child's own network namespace). A child can bind a socket only where it
+can write (its workspace, data directories and temp). Connecting is not confined by
+path, so CLIO denies the known host control sockets inside the fence: the session's
+runtime directory (`$XDG_RUNTIME_DIR`, which holds the user bus and agent sockets),
+D-Bus, systemd and nscd (a resolver path that would bypass the proxy), Docker,
+containerd, Podman, libvirt, snapd and LXD, and X11, tmux and screen sockets. A socket a
+host service opens elsewhere stays reachable, so treat Unix sockets as local IPC the
+child can use, not as part of the network barrier.
+
+A socket path holds at most 107 bytes. When a fenced shell's, kernel's or plugin
+server's `TMPDIR`, `TEMP` or `TMP` is deeper than 64 bytes (a session scratch folder or
+the fence's per-workspace cache under a long `CLIO_AGENT_HOME`), CLIO points it at a
+short alias instead: a symlink `/tmp/clio-<uid>-<hash>` owned by the user, which leads
+to the same folder. Files and sockets still land in that folder, and deleting or
+sweeping a session removes its scratch alias. A name already there that is not the
+user's own link is never used.
 
 On macOS the Codex write fence does not restrict network routes. Tools that honor
 `HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's

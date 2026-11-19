@@ -107,11 +107,8 @@ _MAX_CONCURRENT_EGRESS_PROMPTS = 32
 _PENDING_EGRESS: dict[tuple[str, str], dict[str, Any]] = {}
 _PENDING_EGRESS_LOCK = threading.Lock()
 
-#: Egress asks the person answered "Deny", keyed ``(workspace_id, host, write)`` and holding
-#: the ``(session_id, turn_id)`` the ask belonged to. A retry of the same host during that turn
-#: fails at once instead of asking again; the next turn asks afresh. A workspace host policy
-#: the person adds still decides first, since it is consulted before any ask.
-_DENIED_EGRESS: dict[tuple[str, str, bool], tuple[str, str]] = {}
+#: Egress answers held past their connection (a "Deny" for the turn, an "Allow" for the turn or
+#: session) live in :mod:`clio_agent.gact.runtime.egress_holds`.
 
 #: Typed deny reasons recorded on the trace when a deny-mode egress is blocked (no silent
 #: fallback — every boundary denial reaches the trace via :func:`_record_egress_denied`).
@@ -676,25 +673,22 @@ def _prompt_egress(
     prompts are bounded by :data:`_MAX_CONCURRENT_EGRESS_PROMPTS`; over the cap a further
     distinct-host connect fails CLOSED with a typed reason (never unbounded blocked prompts).
 
-    A "Deny" answer holds for the rest of the turn it was given in (:data:`_DENIED_EGRESS`), so a
-    client that retries the refused host fails fast instead of asking the person again.
+    A "Deny" answer holds for that host for the rest of its turn, "Allow once" for that host and
+    port for the rest of its turn, and "Allow for this session" for the session
+    (:mod:`egress_holds`): a client that opens many connections (ssh retries, a scheduler's
+    submit and status commands) is asked once.
     """
+    from clio_agent.gact.runtime import egress_holds  # noqa: PLC0415
+
     host = (rec.host or "").strip().lower()
     key = (workspace_id, host)
-    denial_key = (workspace_id, host, write)
-    with _PENDING_EGRESS_LOCK:
-        held = _DENIED_EGRESS.get(denial_key)
-        if held is not None:
-            if _running_turn_id(app, held[0]) == held[1]:
-                denied_this_turn = True
-            else:
-                _DENIED_EGRESS.pop(denial_key, None)
-                denied_this_turn = False
-        else:
-            denied_this_turn = False
-    if denied_this_turn:
+    port = int(rec.port or 0)
+    if egress_holds.denied_this_turn(app, workspace_id, host, write):
         _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_DENIED_THIS_TURN)
         return "deny"
+    attributed = _active_session_for_workspace(app, workspace_id)
+    if egress_holds.allowed_still(app, workspace_id, host, port, write, attributed):
+        return "allow"
     with _PENDING_EGRESS_LOCK:
         prompt = _PENDING_EGRESS.get(key)
         is_creator = prompt is None
@@ -720,7 +714,7 @@ def _prompt_egress(
                 "event": threading.Event(),
                 "row": {
                     "id": pid,
-                    "session_id": _active_session_for_workspace(app, workspace_id),
+                    "session_id": attributed,
                     "kind": NETWORK_EGRESS_REQUEST_KIND,
                     "egress_kind": "write" if write else "read",
                     "tool_call": {
@@ -772,31 +766,29 @@ def _prompt_egress(
         _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_TIMEOUT)
         return "deny"
     action = str(row.get("action") or "deny")
+    session_id = str(row.get("session_id") or "")
     if allows(action):
+        if is_creator and action in {"allow", "allow_session"}:
+            egress_holds.hold_allow(
+                app,
+                workspace_id,
+                host,
+                port,
+                write,
+                session_id,
+                for_session=action == "allow_session",
+            )
         return "allow"
     if is_creator:
-        session_id = str(row.get("session_id") or "")
-        with _PENDING_EGRESS_LOCK:
-            _DENIED_EGRESS[denial_key] = (session_id, _running_turn_id(app, session_id))
+        egress_holds.hold_denial(app, workspace_id, host, write, session_id)
     return "deny"
 
 
-def _running_turn_id(app: "FastAPI", session_id: str) -> str:
-    """The id of the turn running on ``session_id`` now, or ``""`` when it is idle."""
-    runner = getattr(app.state, "turn_runner", None)
-    if runner is None or not session_id:
-        return ""
-    try:
-        handle = runner.handle(session_id)
-    except Exception:  # noqa: BLE001 - an unreadable runner counts as idle
-        return ""
-    return str(getattr(handle, "turn_id", "") or "") if handle is not None else ""
-
-
 def clear_egress_denials() -> None:
-    """Forget every held "Deny" answer (test isolation seam)."""
-    with _PENDING_EGRESS_LOCK:
-        _DENIED_EGRESS.clear()
+    """Forget every held egress answer (test isolation seam)."""
+    from clio_agent.gact.runtime import egress_holds  # noqa: PLC0415
+
+    egress_holds.clear()
 
 
 def _emit_egress_requested(app: "FastAPI", session_id: str, row: dict[str, Any]) -> None:

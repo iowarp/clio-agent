@@ -320,6 +320,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESOURCE_TEXT_SCAN_BYTES` | `resources.text_scan_bytes` | int | `2097152` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_UPLOAD_CHUNK_BYTES` | `resources.upload_chunk_bytes` | int | `8388608` | `src/clio_agent/gact/routes/resources.py` |
 | `CLIO_SANDBOX_ENABLED` | `sandbox.enabled` | bool | `true` | `src/clio_agent/runtime/sandbox.py` |
+| `CLIO_SANDBOX_FORWARD_TCP` | `sandbox.forward_tcp` | list | _(unset)_ | `src/clio_agent/runtime/fence_forward.py` |
 | `CLIO_SCHEDULER_JITTER_WINDOW_S` | `scheduler.jitter_window_s` | int | `0` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_MAX_LIFETIME_S` | `scheduler.max_lifetime_s` | int | `0` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_MAX_RETRIES` | `scheduler.max_retries` | int | `5` | `src/clio_agent/gact/scheduler.py` |
@@ -434,6 +435,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_SHORT_TEMP` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_TECTONIC` | unmigrated | `src/clio_agent/runtime/tectonic.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
+| `CLIO_EGRESS_RELAY` | unmigrated | `src/clio_agent/runtime/net_connect.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/env_file.py` |
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
 | `CLIO_GACT_CAPABILITIES_REFRESH_S` | unmigrated | `src/clio_agent/gact/capabilities_snapshot.py` |

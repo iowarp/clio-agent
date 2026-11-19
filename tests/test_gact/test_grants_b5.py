@@ -827,6 +827,102 @@ def test_a_denied_host_is_not_asked_again_in_the_same_turn(tmp_path, captured_ev
     assert _answer_next("allow")["decision"] == "allow"
 
 
+def test_an_allowed_host_and_port_is_not_asked_again_in_the_same_turn(
+    tmp_path, captured_events
+) -> None:
+    """ "Allow once" holds for that host and port for the turn; "for this session" for the session.
+
+    A scheduler's command line (sbatch, squeue, scontrol) opens a connection per command.
+    """
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    sid = app.state.sessions.create(workspace_id=ws.id).id
+    running = {"turn": "turn_1"}
+    app.state.turn_runner = SimpleNamespace(
+        handle=lambda s: SimpleNamespace(turn_id=running["turn"]) if s == sid else None
+    )
+    rec = _local_record("10.9.8.7", str(root), network="private")
+    from dataclasses import replace
+
+    other_port = replace(rec, port=6819)
+
+    def _answer_next(record, action: str) -> str:
+        result: dict = {}
+        t = threading.Thread(
+            target=lambda: result.update(decision=grants._egress_gate_decision(app, record)),
+            daemon=True,
+        )
+        t.start()
+        pid = _await_egress_prompt(app)
+        assert pid, "the host must be asked about"
+        row = app.state.permissions[pid]
+        row["status"] = "resolved"
+        row["action"] = action
+        app.state.permission_events[pid].set()
+        t.join(timeout=5)
+        return result["decision"]
+
+    assert _answer_next(rec, "allow") == "allow"
+    asked = _types(captured_events).count("permission.requested")
+    for _ in range(5):
+        assert grants._egress_gate_decision(app, rec) == "allow"
+    assert _types(captured_events).count("permission.requested") == asked
+    # Another port of the same host is its own question.
+    assert _answer_next(other_port, "allow_session") == "allow"
+
+    running["turn"] = "turn_2"
+    assert grants._egress_gate_decision(app, other_port) == "allow"  # held for the session
+    assert _answer_next(rec, "deny") == "deny"  # "allow once" ended with its turn
+
+
+def test_an_allow_covers_the_sessions_its_session_started(tmp_path, captured_events) -> None:
+    """A child session (a delegate, the agent answering a plugin's question) shares the answer.
+
+    Connections are attributed to the workspace's newest session, so a child the turn starts
+    must not turn the held "Allow once" into a second question; an unrelated session still asks.
+    """
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    sid = app.state.sessions.create(workspace_id=ws.id).id
+    app.state.turn_runner = SimpleNamespace(
+        handle=lambda s: SimpleNamespace(turn_id="turn_1") if s == sid else None
+    )
+    rec = _local_record("10.9.8.7", str(root), network="private")
+
+    result: dict = {}
+    t = threading.Thread(
+        target=lambda: result.update(decision=grants._egress_gate_decision(app, rec)),
+        daemon=True,
+    )
+    t.start()
+    pid = _await_egress_prompt(app)
+    row = app.state.permissions[pid]
+    row["status"] = "resolved"
+    row["action"] = "allow"
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == "allow"
+    asked = _types(captured_events).count("permission.requested")
+
+    child = app.state.sessions.create(workspace_id=ws.id, parent_session_id=sid).id
+    app.state.sessions.create(workspace_id=ws.id, parent_session_id=child)
+    assert grants._egress_gate_decision(app, rec) == "allow"  # a grandchild is newest
+    assert _types(captured_events).count("permission.requested") == asked
+
+    app.state.sessions.create(workspace_id=ws.id)
+    t = threading.Thread(target=grants._egress_gate_decision, args=(app, rec), daemon=True)
+    t.start()
+    pid = _await_egress_prompt(app)
+    assert pid, "an unrelated session is asked"
+    app.state.permissions[pid].update(status="resolved", action="deny")
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+
+
 @pytest.mark.parametrize(("policy", "decision"), [("allow", "allow"), ("deny", "deny")])
 def test_a_workspace_host_policy_decides_a_local_host(
     tmp_path, captured_events, policy: str, decision: str

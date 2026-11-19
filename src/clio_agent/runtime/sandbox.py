@@ -426,6 +426,11 @@ def _child_cache_env(
         )
     overlay: dict[str, str] = dict.fromkeys(redirected, target)
     overlay["FASTMCP_CHECK_FOR_UPDATES"] = "off"
+    # A deep cache dir leaves no room for a unix socket under TEMP/TMP (ssh ControlMaster,
+    # munge, multiprocessing); a short /tmp alias leads to the same folder.
+    from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+
+    overlay.update(socket_safe_temp(overlay))
     # LibreOffice keeps its user profile under ~/.config (XDG_CONFIG_HOME alone is not
     # enough), which the fence makes read-only: a confined `soffice --convert-to` then
     # aborts with an uncaught DeploymentException. Its UserInstallation bootstrap
@@ -591,6 +596,12 @@ def wrap_confined(
                 ) from exc
             # A helper that launches soffice passes this on; soffice itself also gets argv.
             env_overlay[sandbox_office_seatbelt.OSL_SOCKET_PATH] = office_pipe_dir
+        from clio_agent.runtime.fence_forward import wrap_forwarding  # noqa: PLC0415
+
+        # Linux proxy fence only: declared raw TCP endpoints (a Slurm controller) are forwarded
+        # from inside the sandbox through the relay, so the chokepoint records and asks.
+        cmd, arg_list, forward_env = wrap_forwarding(cmd, arg_list, net_env)
+        env_overlay.update(forward_env)
         try:
             cmd, arg_list = _compose_fence_prefix(
                 resolved_state,

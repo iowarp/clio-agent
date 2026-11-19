@@ -1299,6 +1299,10 @@ KEY_NOTES: dict[str, str] = {
         "Whether tool-execution sandboxing/confinement is applied; disable only for trusted local "
         "dev where sandbox setup gets in the way."
     ),
+    "sandbox.forward_tcp": (
+        "Raw TCP host:port endpoints (a Slurm controller) that Linux-fenced children reach "
+        "through CLIO's proxy, which records them and asks the person; empty forwards nothing."
+    ),
     "scheduler.jitter_window_s": (
         "Seconds-wide window a schedule's fire time is deterministically jittered within; raise to "
         "spread schedules sharing one provider quota."

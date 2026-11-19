@@ -103,6 +103,9 @@ def synthesize_codex_profile(
         filesystem[str(protected_root)] = "read"
     for protected_root in denied:
         filesystem[str(protected_root)] = "deny"
+    if platform.startswith("linux") and not mxc:
+        for socket_root in linux_control_socket_masks(writes):
+            filesystem.setdefault(socket_root, "deny")
     profile: dict[str, Any] = {
         "description": (
             f"clio sandbox profile {profile_name!r}: read-anywhere, "
@@ -127,12 +130,86 @@ def synthesize_codex_profile(
 #: Codex's proxy, which chains every public CONNECT to CLIO's per-child chokepoint. Codex dials
 #: loopback and private targets directly instead of through that upstream, so local binding
 #: stays off (refused, never unrecorded) and SOCKS is off (Codex does not chain it to CLIO).
+#: Unix sockets are local IPC, not a route out of the namespace: ssh ``ControlMaster``,
+#: munge (Slurm's credentials) and a server's own helpers need them. Codex can only allow them
+#: all on Linux, so binds stay inside the writable territory (the rest of the tree is
+#: read-only) and the host's control sockets are masked (:func:`linux_control_socket_masks`).
 _LINUX_MANAGED_NET: dict[str, Any] = {
     "enable_socks5": False,
     "enable_socks5_udp": False,
     "allow_local_binding": False,
+    "dangerously_allow_all_unix_sockets": True,
     "domains": {"*": "allow"},
 }
+
+#: Host sockets a fenced child must not reach once unix sockets are allowed: each controls
+#: something outside the fence (containers, the session and system buses, systemd, the
+#: display, terminal multiplexers) or resolves names on the host network (an unrecorded way
+#: out). ``{runtime}`` is the user's runtime folder and ``{uid}`` the user's id.
+_LINUX_CONTROL_SOCKETS: tuple[str, ...] = (
+    "{runtime}",
+    "/run/user/{uid}",
+    "/run/dbus",
+    "/var/run/dbus",
+    "/run/systemd",
+    "/run/nscd",
+    "/var/run/nscd",
+    "/run/docker.sock",
+    "/var/run/docker.sock",
+    "/run/containerd",
+    "/run/podman",
+    "/run/libvirt",
+    "/run/snapd.socket",
+    "/run/snapd-snap.socket",
+    "/var/snap/lxd/common/lxd",
+    "/run/screen",
+    "/tmp/.X11-unix",
+    "/tmp/.ICE-unix",
+    "/tmp/tmux-{uid}",
+    "{home}/.docker/run",
+    "{home}/.screen",
+)
+
+
+def linux_control_socket_masks(write_roots: Sequence[str] = ()) -> list[str]:
+    """The host control-socket paths to deny on Linux (see :data:`_LINUX_CONTROL_SOCKETS`).
+
+    Only paths that exist are masked, by their resolved location: bubblewrap cannot mask a
+    missing path (it fails to create the mount point under a read-only ``/run``). A mask that
+    would hide a writable root is left out, so the territory always stays usable; paths that
+    need a user id are skipped where there is none.
+    """
+    import os  # noqa: PLC0415 - only on the Linux path
+
+    getuid = getattr(os, "getuid", None)
+    uid = str(getuid()) if getuid is not None else ""
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip() or (f"/run/user/{uid}" if uid else "")
+    home = str(Path.home()).replace("\\", "/")
+    masks: list[str] = []
+    for template in _LINUX_CONTROL_SOCKETS:
+        if ("{uid}" in template and not uid) or ("{runtime}" in template and not runtime):
+            continue
+        path = _present(template.format(uid=uid, runtime=runtime, home=home))
+        if not path or path in masks or any(_contains(path, root) for root in write_roots):
+            continue
+        masks.append(path)
+    return masks
+
+
+def _present(path: str) -> str:
+    """``path`` resolved through symlinks when it exists on this host, else ``""``."""
+    import os  # noqa: PLC0415 - only on the Linux path
+
+    if not os.path.lexists(path):
+        return ""
+    return os.path.realpath(path).replace("\\", "/")
+
+
+def _contains(parent: str, child: str) -> bool:
+    """Whether ``child`` is ``parent`` or lies under it (POSIX paths, compared as written)."""
+    parent = parent.rstrip("/") or "/"
+    child = child.replace("\\", "/")
+    return child == parent or child.startswith(parent + "/")
 
 
 #: The top-level keys clio's synthesizer is allowed to emit. clio validates its OWN table
@@ -219,7 +296,8 @@ def _validate_codex_network(profile: dict[str, Any]) -> None:
         for key, value in _LINUX_MANAGED_NET.items()
     ):
         raise CodexProfileError(
-            "Linux requires Codex's proxy without SOCKS or local binding, chained to CLIO"
+            "Linux requires Codex's proxy without SOCKS or local binding, chained to CLIO, "
+            "with unix sockets for local IPC"
         )
     mode = network["mode"]
     # ``isinstance`` guard FIRST so a drifted unhashable mode (list/dict) raises the typed
@@ -293,7 +371,12 @@ def _render_layer_toml(
     lines.append(f"enabled = {_toml_bool(network['enabled'])}")
     lines.append(f"mode = {_toml_str(network['mode'])}")
     lines.append(f"allow_upstream_proxy = {_toml_bool(network['allow_upstream_proxy'])}")
-    for flag in ("enable_socks5", "enable_socks5_udp", "allow_local_binding"):
+    for flag in (
+        "enable_socks5",
+        "enable_socks5_udp",
+        "allow_local_binding",
+        "dangerously_allow_all_unix_sockets",
+    ):
         if flag in network:
             lines.append(f"{flag} = {_toml_bool(network[flag])}")
     if "domains" in network:
