@@ -246,6 +246,34 @@ async def test_a_start_whose_holder_stopped_waiting_is_joined_not_repeated(env: 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_a_reader_joins_the_starting_server_instead_of_starting_another(env: _Env) -> None:
+    """Dry 14: a connector check started its own server of a namespace while the
+    conversation's was still starting, so two servers of it ran at once.
+
+    SABOTAGE: drop the in-flight join in ``live_client`` -> ``None`` (the caller then
+    starts a second server); drop the owner filter -> another fleet's server answers.
+    """
+    slow = env.tmp / "slow_server.py"
+    slow.write_text("import time\ntime.sleep(2)\n" + SERVER, encoding="utf-8")
+    transport = StdioTransport(sys.executable, ["-B", str(slow), str(env.starts)], cwd=str(env.tmp))
+    proxy = object()
+    holding = asyncio.create_task(
+        env.external.hold("pooled", "scope", proxy, Client(transport, mode="legacy", timeout=20))
+    )
+    while not env.external._pool_opening:
+        await asyncio.sleep(0.01)
+
+    assert await env.external.live_client("pooled", [object()]) is None, "Another fleet's"
+    reader = await env.external.live_client("pooled", [proxy])
+    assert reader is not None
+    assert {tool.name for tool in await reader.list_tools()} >= {"pid"}
+    _client, release = await holding
+    assert len(env.started()) == 1
+    await release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
 async def test_parallel_calls_reach_the_same_process(env: _Env) -> None:
     proxy = object()
     _client, release = await env.external.hold("pooled", "scope", proxy, env.client())

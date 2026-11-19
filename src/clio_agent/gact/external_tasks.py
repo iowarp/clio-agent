@@ -114,6 +114,7 @@ class ExternalTasks:
 
     connection = external_task_connections.connection
     hold = external_task_connections.hold
+    live_client = external_task_connections.live_client
     _retire_connection = external_task_connections.retire_connection
 
     async def restore(self, handles: tuple[str, ...] | None = None) -> None:

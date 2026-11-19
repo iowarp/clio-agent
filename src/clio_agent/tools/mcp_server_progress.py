@@ -28,6 +28,7 @@ from collections.abc import Callable
 from typing import Any
 
 from clio_agent.arc.daemon_progress import NO_PROGRESS
+from clio_agent.runtime import trace
 from clio_agent.runtime.progress import ProcessTreeWork, progressed
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,8 @@ def install_spawn_tracking() -> None:
         if tree is not None and isinstance(pid, int):
             tree.add_root(pid)
         command = str(args[0] if args else kwargs.get("command", ""))
-        logger.info(
+        trace.event(
+            "TOOLS",
             "mcp_server_spawned pid=%s command=%s measured=%s",
             pid,
             command.rsplit("/", 1)[-1],

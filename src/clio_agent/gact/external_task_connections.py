@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -292,6 +292,34 @@ async def _lease(
         host = await _pooled(self, server, configured, auth_scope, owner, "call")
         host.leases[token] = None
         return host
+
+
+async def live_client(self: ExternalTasks, server: str, owners: Iterable[Any]) -> Any | None:
+    """A kept-alive client of ``server`` through one of ``owners`` (fleet proxies), joining
+    a start in flight; ``None`` when none runs.
+
+    For a reader that only needs the server to answer (a connector's tool count): it
+    uses the process the conversations already run, so the namespace never has a
+    second server alive beside it. The join has no limit of its own: the start it joins
+    is watched by its own connect (stall reporting, no ceiling).
+    """
+    tags = {pool_key(server, "", owner)[2] for owner in owners}
+    for pool, (opening, _tree) in tuple(self._pool_opening.items()):
+        if pool[0] == server and pool[2] in tags and not opening.done():
+            logger.info("external_mcp_live_client_joined server=%s", server)
+            with suppress(Exception):  # a failed start leaves no process to read
+                await asyncio.shield(opening)
+    ready = [
+        host
+        for host in self.connections.values()
+        if host.pool is not None
+        and host.pool[0] == server
+        and host.pool[2] in tags
+        and _usable(host)
+    ]
+    if not ready:
+        return None
+    return max(ready, key=lambda candidate: candidate.holders).client
 
 
 def release(host: ExternalConnection, token: object) -> None:

@@ -180,8 +180,49 @@ def unreachable_reason(found: Entry, declared: Mapping[str, Any], detail: str) -
     return f"{found.name} could not be started or reached: {detail[:300]}"
 
 
+async def _live_tools(
+    app: Any, found: Entry, declared: Mapping[str, Any]
+) -> list[dict[str, Any]] | None:
+    """The tools of the server the conversations run for ``found``'s ``declared``
+    connection now, read over that same process (``None`` when none runs), so a check
+    never starts a second server beside it. Joining a start in flight has no limit of
+    its own (its connect reports stalls); the listing itself has ``PROBE_SECONDS``."""
+
+    from clio_agent.gact.connector_rebind import live_owners  # noqa: PLC0415
+
+    app_state = getattr(app, "state", None)
+    external = getattr(app_state, "external_tasks", None)
+    agent = getattr(app_state, "agent", None)
+    if external is None or agent is None:
+        return None
+    owners = live_owners(agent, found.id, declared)
+    if not owners:
+        return None
+
+    async def read() -> list[Any] | None:
+        client = await external.live_client(found.id, owners)
+        if client is None:
+            return None
+        return list(await asyncio.wait_for(client.list_tools(), PROBE_SECONDS))
+
+    loop = getattr(app_state, "mcp_app_loop", None)
+    if loop is None or asyncio.get_running_loop() is loop:
+        tools = await read()
+    else:
+        tools = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(read(), loop))
+    if tools is None:
+        return None
+    trace.event("TOOLS", "connector_probe_live_server connector=%s", found.id)
+    return [tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in tools]
+
+
 async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = False) -> dict:
-    """List the connector's tools once (cached until its configuration changes)."""
+    """List the connector's tools once (cached until its configuration changes).
+
+    When a conversation's server of this exact connection runs (or is starting), it
+    answers: the namespace never has a second server alive beside it (one with a node
+    slot or a scene would lose it). Only otherwise is a server started to check it.
+    """
 
     from clio_agent.gact.routes.mcp_configuration import (  # noqa: PLC0415
         _probe_user_mcp_server,
@@ -193,11 +234,24 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
         return cached
     declared = materialize.resolved(found, choice.values)
     try:
-        tools, error = await asyncio.wait_for(
-            _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
-        )
+        live = await _live_tools(app, found, declared)
     except TimeoutError:
-        tools, error = [], f"timed out after {int(PROBE_SECONDS)} s"
+        live, error = None, f"timed out after {int(PROBE_SECONDS)} s"
+    except Exception as exc:  # noqa: BLE001 - the running server's own failure is the outcome
+        live, error = None, f"{type(exc).__name__}: {exc}"
+    else:
+        error = None
+    if live is not None:
+        tools: list[Any] = live
+    elif error is not None:
+        tools = []
+    else:
+        try:
+            tools, error = await asyncio.wait_for(
+                _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
+            )
+        except TimeoutError:
+            tools, error = [], f"timed out after {int(PROBE_SECONDS)} s"
     result: dict[str, Any] = {"key": key, "tool_count": None, "status": "ready", "reason": None}
     if error is None:
         result["tool_count"] = len(listing.offered(found.id, list(tools)))

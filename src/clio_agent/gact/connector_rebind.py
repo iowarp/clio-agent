@@ -85,6 +85,27 @@ def _same_connection(a: Any, b: Any) -> bool:
     return all(getattr(a, name, None) == getattr(b, name, None) for name in fields)
 
 
+def live_owners(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> list[Any]:
+    """The namespace proxies of resident fleets that run exactly ``declaration``'s
+    connection: their kept-alive server is the one a new server of it would duplicate."""
+
+    owners: list[Any] = []
+    for _root, executor in _executors(agent):
+        specs = getattr(executor, "_clio_namespace_specs", None)
+        inner = getattr(executor, "_async_executor", None)
+        proxies = getattr(inner, "_namespace_servers", None)
+        if not isinstance(specs, dict) or namespace not in specs or not isinstance(proxies, dict):
+            continue
+        if getattr(executor, "closed", False) or getattr(executor, "_closed", False):
+            continue
+        proxy = proxies.get(namespace)
+        if proxy is not None and _same_connection(
+            rebound_spec(specs[namespace], declaration, namespace), specs[namespace]
+        ):
+            owners.append(proxy)
+    return owners
+
+
 def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
     """Route ``namespace`` of ``executor`` to a fresh proxy of ``spec`` (its connection
     is closed, so the next use starts it with ``spec``)."""
