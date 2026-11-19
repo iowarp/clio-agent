@@ -81,6 +81,30 @@ class PluginTabError(RuntimeError):
         super().__init__(message)
 
 
+def _prepare_server(executor: Any, namespace: str) -> None:
+    """Start the tab's server the way a turn does before the tab reads it.
+
+    A page runs no turn, and its context starts a warm-up only when it is created, so a
+    read could otherwise reach a server nothing prepared. On Windows that launches the
+    ``uvx`` build inside the fence, where it cannot run. Joining the server's one
+    preparation also makes a read during a slow first start wait for it, not fail.
+    """
+
+    from clio_agent.gact.mcp_background_prepare import prepare_for_turn  # noqa: PLC0415
+
+    prepared = getattr(executor, "is_namespace_prepared", None)
+    if callable(prepared) and prepared(namespace):
+        return
+    spec = (getattr(executor, "_clio_namespace_specs", None) or {}).get(namespace)
+    if spec is None:
+        return
+    failures = prepare_for_turn(executor, {namespace: spec})
+    if namespace in failures:
+        raise PluginTabError(
+            503, SERVER_UNAVAILABLE, f"server {namespace!r} did not start: {failures[namespace]}"
+        )
+
+
 @dataclass
 class TabState:
     """One open tab in one session."""
@@ -325,12 +349,15 @@ class PluginTabs:
         from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
 
         namespace, uri = state.watch_key
+
+        def read(executor: Any) -> Any:
+            _prepare_server(executor, namespace)
+            return executor.read_resource(namespace, uri)
+
         try:
-            result = await _run_bound(
-                self._app,
-                state.session_id,
-                lambda executor: executor.read_resource(namespace, uri),
-            )
+            result = await _run_bound(self._app, state.session_id, read)
+        except PluginTabError:
+            raise
         except ValueError as exc:
             if "unknown MCP namespace" in str(exc):
                 raise PluginTabError(503, SERVER_UNAVAILABLE, str(exc)) from exc
