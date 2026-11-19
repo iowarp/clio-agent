@@ -29,7 +29,7 @@ def build_capture_a2ui_surface_tool() -> Any:
 
     def capture_a2ui_surface(
         surface_id: str,
-        expected_revision: int,
+        expected_revision: int | None = None,
         component_id: str = "",
         viewer_id: str = "",
         expected_view_revision: int | None = None,
@@ -38,8 +38,9 @@ def build_capture_a2ui_surface_tool() -> Any:
     ) -> dict[str, Any]:
         """Inspect real pixels from an open widget or named saved dashboard version.
 
-        First inspect its definition and viewers with inspect_a2ui_surface.
-        Pass the expected revision; optionally select a viewer and view epoch.
+        Pass the revision you inspected as expected_revision to refuse a view that has
+        changed since; without it the surface's current revision is captured, and the
+        result says which. Optionally select a viewer and view epoch.
         Use expected_view_revision=null while loading; zero is a real epoch.
         component_id captures a displayed component, otherwise the whole view.
         Hidden tabs and absent viewers fail explicitly. A stale view must be re-inspected.
@@ -56,6 +57,8 @@ def build_capture_a2ui_surface_tool() -> Any:
 
             try:
                 saved = read_dashboard_report(app, sid, artifact_id)["surface"]
+                if expected_revision is None:
+                    expected_revision = int(saved["revision"])
                 if saved["id"] != surface_id or saved["revision"] != expected_revision:
                     return refusal(
                         "a2ui_view_stale",
@@ -66,6 +69,8 @@ def build_capture_a2ui_surface_tool() -> Any:
         surface = app.state.a2ui_store.get(sid, surface_id)
         if not artifact_id and (surface is None or surface.state == "deleted"):
             return refusal("a2ui_surface_not_found", detail=f"No live surface: {surface_id}")
+        if not artifact_id and expected_revision is None:
+            expected_revision = surface.revision
         if not artifact_id and surface.revision != expected_revision:
             return refusal(
                 "a2ui_view_stale", detail="The definition changed; inspect its current revision."
@@ -161,7 +166,10 @@ def build_capture_a2ui_surface_tool() -> Any:
             "surface_id": {"type": "string", "description": "Surface id from inspection."},
             "expected_revision": {
                 "type": "integer",
-                "description": "Exact definition revision to capture.",
+                "description": (
+                    "Definition revision you inspected; a changed view is refused. "
+                    "Omit to capture the current revision."
+                ),
             },
             "component_id": {
                 "type": "string",
