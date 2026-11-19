@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -72,6 +74,23 @@ def test_rows_say_what_is_missing_and_why_unreachable(fixture_catalog: Path) -> 
     assert service.row(app, signin)["state"]["needs"] == ["account"]
 
 
+# Generous bounds under the per-test hang guard: a loaded runner gets time, a hang still fails.
+_WAIT_S = 60.0
+
+
+def _until(worker: threading.Thread, found: Callable[[], Any]) -> Any:
+    deadline = time.monotonic() + _WAIT_S
+    while not (value := found()):
+        assert worker.is_alive() and time.monotonic() < deadline, "the call never waited"
+        worker.join(0.05)
+    return value
+
+
+def _finished(worker: threading.Thread) -> None:
+    worker.join(_WAIT_S)
+    assert not worker.is_alive(), "the waiting call did not continue"
+
+
 def test_a_waiting_call_continues_on_submit_and_is_refused_on_decline(
     fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -90,17 +109,18 @@ def test_a_waiting_call_continues_on_submit_and_is_refused_on_decline(
             app, "sess_a", "fixture-secret", "fixture-secret_fixture_secret_check"
         )
 
-    async def set_values(_app: Any, connector_id: str, values: Any, **_: Any) -> dict:
-        secrets.save(connector_id, values)
+    applied: list[str] = []
+
+    async def apply(_app: Any, found: Any) -> dict:
+        # The submit saves the secret, then applies it everywhere. Applying probes a real
+        # server, which is not what this test is about and can outlive the event loop.
+        applied.append(found.id)
         return {}
 
-    monkeypatch.setattr(service, "set_values", set_values)
+    monkeypatch.setattr(service, "apply", apply)
     worker = threading.Thread(target=call)
     worker.start()
-    for _ in range(100):
-        if getattr(app.state, "connector_setups", None):
-            break
-        worker.join(0.05)
+    _until(worker, lambda: getattr(app.state, "connector_setups", None))
     (row_id,) = list(app.state.connector_setups)
     card = connector_setup.projected(app, {"sess_a"})[0]
     assert card.kind == "connector_setup" and card.payload["missing"][0]["key"] == "token"
@@ -110,24 +130,25 @@ def test_a_waiting_call_continues_on_submit_and_is_refused_on_decline(
     answered = asyncio.run(
         connector_setup.respond(app, {"sess_a"}, card.id, "submit", {"token": "zz-typed-zz"})
     )
-    worker.join(5)
+    _finished(worker)
     assert answered.status == "answered" and outcome["value"] is None
+    assert applied == ["fixture-secret"]
     assert "zz-typed-zz" not in repr(app.state.connector_setups[row_id])
 
     secrets.save("fixture-secret", {"token": None})
+    outcome.clear()
     worker = threading.Thread(target=call)
     worker.start()
-    for _ in range(100):
-        pending = [r for r in app.state.connector_setups.values() if r["status"] == "pending"]
-        if pending:
-            break
-        worker.join(0.05)
+    pending = _until(
+        worker,
+        lambda: [r for r in app.state.connector_setups.values() if r["status"] == "pending"],
+    )
     asyncio.run(
         connector_setup.respond(
             app, {"sess_a"}, connector_setup.PREFIX + pending[0]["id"], "decline", {}
         )
     )
-    worker.join(5)
+    _finished(worker)
     assert outcome["value"] == "deny"
     assert outcome["value"].deny_message.startswith("connector_declined:")
     assert "Fixture Secret" in outcome["value"].deny_message

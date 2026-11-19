@@ -79,7 +79,7 @@ def parse_vrt(text: str, vrt_url: str) -> tuple[str, list[tuple[str, Bounds]]]:
         name, rect = source.find("SourceFilename"), source.find("DstRect")
         if name is None or rect is None or not (name.text or "").strip():
             continue
-        filename = name.text.strip()
+        filename = (name.text or "").strip()
         if filename.startswith("/vsicurl/"):
             url = filename[len("/vsicurl/") :]
         elif name.get("relativeToVRT") == "1":
@@ -179,11 +179,11 @@ def tiles_covering(
             continue
         try:
             crs, sources = parse_vrt(_fetch_vrt(mosaic.url), mosaic.url)
-            for url, bounds in sources:
+            for url, extent in sources:
                 matched = _resources_for(url, tiles)
                 if not matched:
                     continue
-                wgs = _to_wgs84(crs, bounds)
+                wgs = _to_wgs84(crs, extent)
                 for item in matched:
                     footprint.setdefault(item.id, wgs)
             methods.append(f"mosaic {mosaic.name} ({len(sources)} sources)")
@@ -217,8 +217,8 @@ def tiles_covering(
             for future in concurrent.futures.as_completed(futures):
                 item = futures[future]
                 try:
-                    crs, bounds = future.result()
-                    footprint[item.id] = _to_wgs84(crs, bounds)
+                    crs, native = future.result()
+                    footprint[item.id] = _to_wgs84(crs, native)
                 except (OSError, ValueError, RuntimeError) as exc:  # recorded per tile
                     undetermined[item.id] = f"header unreadable: {str(exc)[:160]}"
 
