@@ -172,6 +172,64 @@ def test_any_other_launcher_has_nothing_to_provision() -> None:
     assert mcp_prepare.provision_plan(spec, "/bin/node") == mcp_prepare.PROVISION_NOT_APPLICABLE
 
 
+_GIT_SOURCE = "clio-relay @ git+https://example.invalid/clio-relay@3d0ff6b"
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "warm"),
+    [
+        (
+            "uvx",
+            ("--from", _GIT_SOURCE, "clio-relay", "serve"),
+            ("/bin/uvx", "--from", _GIT_SOURCE, "python", "-c", "pass"),
+        ),
+        (
+            "C:\\Tools\\uvx.EXE",
+            ("--python", "3.13", "weather-mcp", "--port", "1"),
+            ("/bin/uvx", "--python", "3.13", "--from", "weather-mcp", "python", "-c", "pass"),
+        ),
+        (
+            "uv",
+            ("tool", "run", "--with=extra", "-q", "kicad-mcp"),
+            ("/bin/uv", "tool", "run", "--with=extra", "-q", "--from", "kicad-mcp")
+            + ("python", "-c", "pass"),
+        ),
+    ],
+)
+def test_windows_builds_a_uvx_environment_without_starting_the_server(
+    monkeypatch: pytest.MonkeyPatch, command: str, args: tuple[str, ...], warm: tuple[str, ...]
+) -> None:
+    """Outside the fence the environment, a git clone included, is built; the server is not run."""
+
+    monkeypatch.setattr(mcp_prepare, "builds_outside_fence", lambda: True)
+    spec = MCPServerSpec(name="relay", transport="stdio", command=command, args=args)
+
+    plan = mcp_prepare.provision_plan(spec, warm[0])
+
+    assert isinstance(plan, mcp_prepare.ProvisionPlan)
+    assert plan.argv == warm
+    assert "(environment only)" in mcp_prepare._plan_label(plan)
+
+
+@pytest.mark.parametrize(
+    ("outside", "args"),
+    [
+        (True, ("--some-new-option", "x", "weather-mcp")),
+        (True, ("--from", _GIT_SOURCE)),
+        (False, ("--from", _GIT_SOURCE, "clio-relay", "serve")),
+    ],
+)
+def test_a_uvx_launcher_is_never_guessed_at(
+    monkeypatch: pytest.MonkeyPatch, outside: bool, args: tuple[str, ...]
+) -> None:
+    """An unmodeled option, no server command, or a fence that hosts builds: no plan."""
+
+    monkeypatch.setattr(mcp_prepare, "builds_outside_fence", lambda: outside)
+    spec = MCPServerSpec(name="relay", transport="stdio", command="uvx", args=args)
+
+    assert mcp_prepare.provision_plan(spec, "/bin/uvx") == mcp_prepare.PROVISION_NOT_APPLICABLE
+
+
 # --------------------------------------------------------------------------- #
 # Provisioning runs                                                           #
 # --------------------------------------------------------------------------- #

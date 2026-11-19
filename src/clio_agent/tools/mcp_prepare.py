@@ -25,6 +25,10 @@ second spawn when the session later connected. This module splits that work:
     (:data:`_KIT_BUILD_SHIM`, a fallback only). Otherwise an older clio-kit builds the
     environment when the server starts, as before; the provision step then records the
     typed reason :data:`PROVISION_UNSUPPORTED_LAUNCHER` and moves on.
+  - Where builds run outside the fence, a ``uvx`` / ``uv tool run`` launcher is prepared
+    by the same command with the server replaced by ``python -c pass``
+    (:func:`uvx_warm_argv`): it builds the ephemeral environment, a git source's clone
+    included, into the cache the server's start then reuses.
   - Any other launcher has nothing to provision (:data:`PROVISION_NOT_APPLICABLE`).
 
   On Windows the provisioning command runs outside the sandbox: the AppContainer denies
@@ -587,12 +591,66 @@ def _clio_kit_plan(
     return PROVISION_UNSUPPORTED_LAUNCHER
 
 
+def uvx_warm_argv(command: str, args: Sequence[str], resolved: str) -> tuple[str, ...] | None:
+    """The argv that builds a ``uvx`` / ``uv tool run`` server's environment without starting it.
+
+    The declared options are kept and the server command is replaced by the environment's
+    ``python -c pass``. uv keys the ephemeral environment on the requirements, not on the
+    command, so the server's later start reuses it. That start then only verifies a pinned
+    git source with ``git rev-parse``, instead of cloning it through Git for Windows' MSYS
+    ``sh``, which cannot start inside the Windows fence. ``None`` when ``command`` is
+    neither launcher, or when an option this module does not model makes the server
+    command impossible to locate safely.
+    """
+
+    from clio_agent.tools.launcher_cache_lock import _launcher_name  # noqa: PLC0415
+    from clio_agent.tools.uv_launcher import _BOOL_FLAGS, _VALUE_FLAGS, _is_uv  # noqa: PLC0415
+
+    tokens = [str(arg) for arg in args]
+    if _launcher_name(command) == "uvx":
+        prefix: list[str] = [resolved]
+    elif _is_uv(command) and tokens[:2] == ["tool", "run"]:
+        prefix, tokens = [resolved, "tool", "run"], tokens[2:]
+    else:
+        return None
+    options: list[str] = []
+    has_source = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-") or token == "-":
+            break
+        flag, _, inline = token.partition("=")
+        if flag == "--from" or flag in _VALUE_FLAGS:
+            width = 1 if inline else 2
+            if index + width > len(tokens):
+                return None
+            has_source = has_source or flag == "--from"
+            options.extend(tokens[index : index + width])
+            index += width
+            continue
+        if flag in _BOOL_FLAGS and not inline:
+            options.append(token)
+            index += 1
+            continue
+        return None
+    if index >= len(tokens):
+        return None
+    if not has_source:
+        options.extend(["--from", tokens[index]])
+    return (*prefix, *options, "python", "-c", "pass")
+
+
 def provision_plan(spec: Any, resolved_command: str) -> ProvisionPlan | str:
     """The provisioning command for ``spec``, or the typed outcome when there is none."""
 
     from clio_agent.tools.launcher_cache_lock import _launcher_name  # noqa: PLC0415
 
     command, args = str(spec.command), [str(arg) for arg in spec.args]
+    if builds_outside_fence():
+        warm = uvx_warm_argv(command, args, resolved_command)
+        if warm is not None:
+            return ProvisionPlan(argv=warm)
     launcher = _uv_run(command, args)
     if launcher is not None:
         if launcher.sync_disabled:
@@ -689,6 +747,8 @@ def _plan_label(plan: ProvisionPlan) -> str:
         return f"clio-kit mcp-server {' '.join(plan.argv[3:])} (build only)"
     if plan.kit_prepare:
         return f"clio-kit mcp-server --prepare {plan.argv[-1]}"
+    if plan.argv[-3:] == ("python", "-c", "pass"):
+        return f"{Path(plan.argv[0]).stem} {' '.join(plan.argv[1:-3])} (environment only)"
     return " ".join(plan.argv[:2])
 
 
@@ -1217,5 +1277,6 @@ __all__ = [
     "reason_catalog",
     "record",
     "uv_project_environment",
+    "uvx_warm_argv",
     "wait_for_namespaces",
 ]
