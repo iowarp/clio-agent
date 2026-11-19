@@ -316,7 +316,7 @@ async def hold(
     The executor lists, reads resources and listens over it, and calls share it
     (:func:`lease_or_open`), so the server runs once per fleet. ``configured`` (a fresh,
     unentered client) opens it when none is open. Returns the client and the coroutine
-    function releasing the hold; the last release lets an idle connection close
+    function releasing the hold; the connection itself stays until its fleet closes
     (:func:`retire_connection`).
     """
     pool = pool_key(server, auth_scope, owner)
@@ -490,8 +490,9 @@ async def retire_connection(
 
     A shared connection closes only at shutdown, or once it was superseded (its proxy is
     no longer routed to): then it goes when its last call's custody ends. A kept-alive
-    direct connection stays open while a call leases it or an executor holds it (and it
-    still works); otherwise it closes like an exclusive one.
+    direct connection stays open while it still works, until its fleet closes (the
+    reaper, a restart or a rebuild) or it is superseded; a broken one closes like an
+    exclusive one once no call leases it.
     """
     async with host.reconnect_lock:
         if (
@@ -527,8 +528,11 @@ async def retire_connection(
         if (
             host.pool is not None
             and not (shutdown or host.superseded)
-            and (host.leases or (host.holders and _usable(host)))
+            and (host.leases or _usable(host))
         ):
+            # A kept-alive server lives as long as its fleet, as it did behind the proxy:
+            # a later call finds its state (a scene, a kernel, a session) whether or not
+            # an executor holds it. The fleet's close retires it (watch_fleets).
             return
         client = host.client
         host.closing = True

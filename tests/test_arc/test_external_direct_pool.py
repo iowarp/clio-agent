@@ -3,8 +3,8 @@
 Before the pool, every call to a direct (stdio) server started the server again: a 7 s
 cold start per page action for a ``uvx`` server, and a stateful server (a scene, a
 notebook kernel) lost its state between calls. Calls through one fleet proxy, parallel
-ones included, now share the connection an executor holds for its namespace: one
-process per fleet.
+ones included, now share one connection, whether or not an executor holds it: one
+process per fleet, until the fleet closes.
 """
 
 from __future__ import annotations
@@ -194,7 +194,15 @@ async def test_calls_share_the_held_connection_instead_of_starting_the_server(en
 
     await release()
     await env.settle()
-    assert not env.external.connections, "The last release closes an idle connection"
+    assert len(env.external.connections) == 1, "A working connection outlives its holder"
+    after = await env.call("recall", {}, proxy, "after-release")
+    assert after.structured_content == {"value": "scene"}
+    assert [start["pid"] for start in env.started()] == [held]
+
+    owners = {f"in-process:{id(proxy):x}"}
+    assert await connections.retire_owned(env.external, owners, "/w", "idle_ttl") == 1
+    await env.settle()
+    assert not env.external.connections, "The fleet's close retires it"
     assert all(_gone(process) for process in env.started())
 
 
@@ -220,8 +228,9 @@ async def test_parallel_calls_reach_the_same_process(env: _Env) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)  # Real stdio servers start and must retire.
-async def test_unheld_parallel_calls_open_one_connection_that_closes_after(env: _Env) -> None:
-    """Without an executor holding it, simultaneous first calls still start one server."""
+async def test_unheld_parallel_calls_open_one_connection_that_stays(env: _Env) -> None:
+    """Without an executor holding it, simultaneous first calls still start one server,
+    and it stays up for the fleet's life."""
     proxy = object()
     replies = await asyncio.gather(
         *(env.call("nap", {"seconds": 0.5}, proxy, f"cold-{index}") for index in range(3))
@@ -230,7 +239,31 @@ async def test_unheld_parallel_calls_open_one_connection_that_closes_after(env: 
 
     [start] = env.started()
     assert {reply.structured_content["pid"] for reply in replies} == {start["pid"]}
-    assert not env.external.connections and _gone(start), "Idle and unheld, it closes"
+    assert len(env.external.connections) == 1 and not _gone(start), "Unheld, it stays"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_unheld_sequential_calls_keep_the_server_and_its_state(env: _Env) -> None:
+    """A server that joined mid-turn (no executor connected or held it) keeps one process
+    across calls: a scene opened by one call is there for the next.
+
+    SABOTAGE: in ``retire_connection`` keep a pooled host only while ``host.holders`` is
+    set (the 001b45e71 rule); each call then starts the server and ``recall`` finds
+    nothing.
+    """
+    proxy = object()
+    await env.call("remember", {"value": "scene"}, proxy, "open")
+    await env.settle()
+    recalled = await env.call("recall", {}, proxy, "use")
+    await env.settle()
+
+    assert recalled.structured_content == {"value": "scene"}
+    assert len(env.started()) == 1, "One start per fleet, not one per call"
+    owners = {f"in-process:{id(proxy):x}"}
+    assert await connections.retire_owned(env.external, owners, "/w", "idle_ttl") == 1
+    await env.settle()
+    assert not env.external.connections and all(_gone(p) for p in env.started())
 
 
 @pytest.mark.asyncio
