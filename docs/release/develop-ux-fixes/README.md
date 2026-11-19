@@ -4,7 +4,7 @@ The issues below were reported from a Desktop 0.7.1 demo (backend v0.9.7.1). Eac
 was checked against develop: clio-agent `8247abe`, gact-tui `22fc042` and the
 marketplace commit develop pins, `7d1933c`. Each was reproduced on a live,
 isolated develop stack where that was possible. The fixes are on
-`claude/develop-ux-fixes` in clio-agent (7 commits) and, because this session cannot
+`claude/develop-ux-fixes` in clio-agent (8 commits) and, because this session cannot
 push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (7 commits).
 
 Apply the gact-tui patches on a branch from gact-tui `develop`:
@@ -85,7 +85,20 @@ branch (`8b7fe01`).
   concurrent caller waits for it (`tests/test_gact/test_kernel_concurrent_start.py`
   fails on the old code).
 
-## Seen once, not changed
+- **`stack.sh stop` left the stack's clio-core daemon running** (twice, both after the
+  store had refused writes). The server ran past its shutdown budget with a held
+  turn and ended without stopping its daemon, which runs in its own session.
+  Installed CLIO cleans that up at its next start; the cloud stack deletes its state,
+  so `stop`, `restart` and `agent-stop` now run the same owner-safe cleanup.
 
-- `stack.sh stop` left the stopped stack's clio-core runtime (`clio_run`) and its
-  log pump running once; both exited on SIGTERM.
+### Checked live on the fixed stack
+
+- Kernel race: a Deep research run on the 1 GB store started 14 kernels with no
+  scope started twice; all 37 `run_code` scripts completed; the flow completed and
+  saved its report; no write was lost.
+- Full store: on a 128 MB store the run filled it. The conversation then showed
+  "Nothing new can be recorded" with "CLIO's conversation store is full, so nothing
+  new can be recorded. Free disk space or give the store more room, then restart
+  CLIO." above the composer, under the waiting row.
+- Leftover daemon: after that run, `agent-stop` printed "clio-core: stopped" and no
+  process of the stack remained.
