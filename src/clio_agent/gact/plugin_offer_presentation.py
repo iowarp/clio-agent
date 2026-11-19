@@ -73,6 +73,15 @@ def _searched(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]
     )
     if more := int(row.get("more") or 0):
         blocks.append({"id": "more", "type": "text", "label": "Not shown", "text": f"{more} more"})
+    if here := [str(item) for item in row.get("in_this_conversation") or []]:
+        blocks.append(
+            {
+                "id": "here",
+                "type": "text",
+                "label": "Already in this conversation",
+                "text": ", ".join(here),
+            }
+        )
     return {**head, "summary": str(row.get("message") or ""), "blocks": blocks}
 
 

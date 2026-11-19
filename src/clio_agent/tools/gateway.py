@@ -260,7 +260,9 @@ def build_gateway(
     else:
         make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
-    from clio_agent.tools import hidden_tools, mcp_task_routing  # noqa: PLC0415
+    from clio_agent.tools import hidden_tools, mcp_task_routing, mount_failures  # noqa: PLC0415
+
+    mount_failures.ensure_root(cwd, declared_specs)
 
     # Attached to the gateway object (not a module map keyed by id(gw)): it
     # dies with the gateway, id-reuse cannot alias a stale registry, and a
@@ -297,18 +299,15 @@ def build_gateway(
             existing.add(name)
             registry[name] = proxy
             specs_registry[name] = spec
-            # #1281 F9 (adversarial review): an INJECTED proxy_factory (tests:
-            # an in-process double with no real transport behind the spec)
-            # means `spec` may not honestly describe how to reach this
-            # namespace directly -- skip stamping a factory built from
-            # transport_for(spec) rather than mount one that would silently
-            # dial something the test never intended.
+            mount_failures.clear(cwd, name)
+            # #1281 F9: an INJECTED proxy_factory (a test double) may not describe how
+            # to reach this namespace directly, so no direct factory is stamped for it.
             if proxy_factory is None:
                 direct_factories[name] = mcp_task_routing.direct_client_factory(
                     spec, spec_cwd, handlers=handlers, capabilities=capabilities, namespace=name
                 )
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
-            logger.warning("failed to mount declared MCP %r: %s", name, exc)
+            mount_failures.record(cwd, name, exc)
     gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
     gw._clio_namespace_specs = specs_registry  # type: ignore[attr-defined]
     gw._clio_namespace_direct_factories = direct_factories  # type: ignore[attr-defined]

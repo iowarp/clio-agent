@@ -472,6 +472,55 @@ def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[st
     return result
 
 
+def _here_matching(app: Any, session_id: str, search: str) -> list[dict[str, Any]]:
+    """The plugins already in this conversation that ``search`` names: by id, description,
+    server name or the instructions its servers last sent. A search for what is already
+    here must not read as "there is none" (the agent would then work around it)."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+    from clio_agent.gact.offer_search import words_of  # noqa: PLC0415
+    from clio_agent.plugins.recorded_instructions import plugin_instructions  # noqa: PLC0415
+
+    words = words_of(search)
+    if not words:
+        return []
+    try:
+        resolution = session_resolution(app, session_id)
+    except (SessionAgentUnavailable, RuntimeError):
+        return []
+    out: list[dict[str, Any]] = []
+    for plugin in resolution.plugins:
+        pid = str(plugin.get("id") or "")
+        if (plugin.get("provenance") or {}).get("source") == "core":
+            continue  # always here, and named in the prompt already
+        servers = sorted(
+            name for name, row in resolution.mcp_servers.items() if row.get("plugin") == pid
+        )
+        said = [pid, str(plugin.get("description") or ""), *servers, plugin_instructions(pid)]
+        if pid and all(word in " ".join(said).casefold() for word in words):
+            out.append({"id": pid, "servers": servers})
+    return out
+
+
+def _here_note(here: list[dict[str, Any]]) -> str:
+    """What the agent can use of the matching plugins already here, and any that failed."""
+
+    from clio_agent.tools import mount_failures  # noqa: PLC0415
+    from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
+
+    ids = ", ".join(row["id"] for row in here)
+    servers = [server for row in here for server in row["servers"]]
+    failed = mount_failures.note(get_active_tool_workspace_root(), servers)
+    return (
+        f"Already in this conversation, so not offered: {ids}. Its skills load with "
+        "load_skill and its tools are in your tool list or found with search_tools."
+        + (f" {failed}" if failed else "")
+    )
+
+
 async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> dict[str, Any]:
     from clio_agent.gact.connector_setup import wait_for_card  # noqa: PLC0415
 
@@ -557,9 +606,13 @@ async def offer_plugin(
             ),
         }
     if search.strip() or category.strip():
-        return offer_search.search_result(
+        found = offer_search.search_result(
             rows, shown, set(chosen.exclude), offer_listed(), search=search, category=category
         )
+        if here := await asyncio.to_thread(_here_matching, app, session_id, search):
+            found["in_this_conversation"] = [row["id"] for row in here]
+            found["message"] += f" {_here_note(here)}"
+        return found
     from clio_agent.gact.connector_needs_offer import optional_needs  # noqa: PLC0415
 
     return {

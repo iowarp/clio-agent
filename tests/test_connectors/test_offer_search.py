@@ -279,3 +279,50 @@ def test_the_agent_is_told_where_the_list_is_chosen() -> None:
         f"2 of these are not in your plugin list (the person's choice in "
         f"{offer_list.SETTINGS_PLACE}); offer_plugin offers them the same way"
     )
+
+
+def test_a_search_names_what_is_already_here_and_why_it_did_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dry 17: a search for a joined plugin whose server never mounted said "Nothing the
+    person can add matches", so the agent worked around it with the shell."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents import resolution
+    from clio_agent.plugins import recorded_instructions
+    from clio_agent.tools import mount_failures
+
+    joined = SimpleNamespace(
+        plugins=[
+            {"id": "core", "description": "remote sites", "provenance": {"source": "core"}},
+            {"id": "compute", "description": "Run packages on remote sites.", "provenance": {}},
+            {"id": "notes", "description": "Notebooks.", "provenance": {}},
+        ],
+        mcp_servers={"runner": {"plugin": "compute"}, "nb": {"plugin": "notes"}},
+    )
+    monkeypatch.setattr(resolution, "session_resolution", lambda _app, _sid: joined)
+    told = {"compute": "Sites configured: lab (ssh). Packages: solver 1.0."}
+    monkeypatch.setattr(recorded_instructions, "plugin_instructions", lambda p: told.get(p, ""))
+    monkeypatch.setattr(mount_failures, "_FAILED", {})
+    monkeypatch.setattr(
+        "clio_agent.tools.execution.get_active_tool_workspace_root", lambda: "/w/root"
+    )
+
+    assert plugin_offer._here_matching(None, "s", "remote sites") == [
+        {"id": "compute", "servers": ["runner"]}
+    ]
+    here = plugin_offer._here_matching(None, "s", "SOLVER lab")
+    assert [row["id"] for row in here] == ["compute"]
+    assert plugin_offer._here_matching(None, "s", "zebra") == []
+    assert plugin_offer._here_note(here).startswith(
+        "Already in this conversation, so not offered: compute."
+    )
+    mount_failures.record("/w/root", "runner", RuntimeError("working directory gone"))
+    note = plugin_offer._here_note(here)
+    assert "The runner server is in this conversation but did not start" in note
+    assert "working directory gone" in note
+    shown = present({"search": "solver"}, None, {"search": "solver", "count": 0, "matches": [],
+                    "in_this_conversation": ["compute"], "message": note})  # fmt: skip
+    blocks = {block["id"]: block for block in shown["blocks"]}
+    assert blocks["here"]["text"] == "compute" and shown["summary"] == note

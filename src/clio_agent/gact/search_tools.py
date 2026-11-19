@@ -266,6 +266,10 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
         )
     if row.get("loading"):
         blocks.append({"id": "loading", "type": "text", "text": str(row["loading"])})
+    if row.get("not_started"):
+        blocks.append(
+            {"id": "not-started", "type": "text", "severity": "warning", "text": row["not_started"]}
+        )
     if tools:
         summary = f"Loaded {len(tools)} tool{'s' if len(tools) != 1 else ''}"
         status = ""
@@ -311,9 +315,14 @@ def build_search_tools_tool() -> Any:
         text, structured = search_result(catalog, query, limit)
         if structured["missing"] or not structured["tools"]:  # a view may still be loading
             from clio_agent.gact.mcp_app_tools import loading_note  # noqa: PLC0415
+            from clio_agent.tools import mount_failures  # noqa: PLC0415
+            from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
 
             if loading := loading_note(_ctx.active_app(), _ctx.active_session_id()):
                 text, structured["loading"] = f"{text}\n\n{loading}", loading
+            asked = [*structured["missing"], *_select_names(query), *query.split()]
+            if failed := mount_failures.note(get_active_tool_workspace_root(), asked):
+                text, structured["not_started"] = f"{text}\n\n{failed}", failed
         if not structured["tools"]:  # it may name a plugin or connector to add instead
             from clio_agent.gact.plugin_offer import (  # noqa: PLC0415
                 offerable_matching,
