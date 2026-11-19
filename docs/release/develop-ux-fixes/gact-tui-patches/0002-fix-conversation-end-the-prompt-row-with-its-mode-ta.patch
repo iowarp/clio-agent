@@ -1,0 +1,101 @@
+From 859fe58ddd68e041f307ec67a836c7617475bbef Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 15:31:42 +0000
+Subject: [PATCH 2/4] fix(conversation): end the prompt row with its mode tag,
+ at the bubble's edge
+
+The hover-only time and actions came after the Plan/Deep research tag in the
+row under a prompt. Hidden with opacity they still took their width, so on a
+pointer screen the tag sat about 125 px left of the bubble's right edge
+(measured on develop 2026-11-19). They now come first in the row, so the tag
+ends it and the actions appear to its left on hover; DOM and focus order match
+what is shown.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ .../clio/conversation-message-row.tsx         | 26 ++++++++++---------
+ .../clio/conversation-prompt-mode.test.tsx    | 23 ++++++++++++++++
+ 2 files changed, 37 insertions(+), 12 deletions(-)
+
+diff --git a/web/src/components/clio/conversation-message-row.tsx b/web/src/components/clio/conversation-message-row.tsx
+index 9c80ba040..6144ce1c1 100644
+--- a/web/src/components/clio/conversation-message-row.tsx
++++ b/web/src/components/clio/conversation-message-row.tsx
+@@ -505,6 +505,20 @@ export const ConversationMessageRow = memo(function ConversationMessageRow({
+                   )}
+                   data-slot="user-message-actions"
+                 >
++                  <div
++                    className={cn(
++                      'flex items-center gap-3',
++                      // Time and actions show on hover; opacity, not visibility, keeps them focusable.
++                      // They come first: hidden, they still take their width, and after the
++                      // mode tag they pushed it off the bubble's edge (live 2026-11-18).
++                      'sm:pointer-events-none sm:opacity-0 sm:group-focus-within/prompt:pointer-events-auto sm:group-focus-within/prompt:opacity-100 sm:group-hover/prompt:pointer-events-auto sm:group-hover/prompt:opacity-100',
++                    )}
++                  >
++                    <time dateTime={message.created_at} title={formatDateTime(message.created_at)}>
++                      {formatClockTime(message.created_at)}
++                    </time>
++                    {actions}
++                  </div>
+                   {pendingSteer ? (
+                     <>
+                       {/* runs-attention: Queued is an empty ring and the word. */}
+@@ -546,18 +560,6 @@ export const ConversationMessageRow = memo(function ConversationMessageRow({
+                       role="img"
+                     />
+                   ) : null}
+-                  <div
+-                    className={cn(
+-                      'flex items-center gap-3',
+-                      // Time and actions show on hover; opacity, not visibility, keeps them focusable.
+-                      'sm:pointer-events-none sm:opacity-0 sm:group-focus-within/prompt:pointer-events-auto sm:group-focus-within/prompt:opacity-100 sm:group-hover/prompt:pointer-events-auto sm:group-hover/prompt:opacity-100',
+-                    )}
+-                  >
+-                    <time dateTime={message.created_at} title={formatDateTime(message.created_at)}>
+-                      {formatClockTime(message.created_at)}
+-                    </time>
+-                    {actions}
+-                  </div>
+                 </div>
+               ) : null}
+             </div>
+diff --git a/web/src/components/clio/conversation-prompt-mode.test.tsx b/web/src/components/clio/conversation-prompt-mode.test.tsx
+index 790fad364..470b3e061 100644
+--- a/web/src/components/clio/conversation-prompt-mode.test.tsx
++++ b/web/src/components/clio/conversation-prompt-mode.test.tsx
+@@ -68,6 +68,29 @@ it('labels special prompt modes while leaving Execute unmarked', () => {
+   expect(screen.getByText('Run this task.')).toBeInTheDocument();
+ });
+ 
++// Live 2026-11-18: the hover-only time and actions after the tag kept their width while
++// hidden, so the tag sat well left of the bubble's right edge.
++it('ends the prompt row with the mode tag, after the hover-only time and actions', () => {
++  render(
++    <AppearanceProvider>
++      <ConversationDisplayProvider>
++        <ClioConversation
++          artifacts={{}}
++          messages={[prompt('deep_research', 'Research this topic.')]}
++          subagents={{}}
++          surfaces={{}}
++          tasks={{}}
++          tools={{}}
++        />
++      </ConversationDisplayProvider>
++    </AppearanceProvider>,
++  );
++  const tag = screen.getByLabelText('Sent in Deep research mode');
++  const row = tag.closest('[data-slot="user-message-actions"]')!;
++  expect(row.lastElementChild).toBe(tag);
++  expect(row.firstElementChild?.querySelector('time')).not.toBeNull();
++});
++
+ it('retains the recorded Plan mode after a transcript round trip', () => {
+   const sent = prompt('plan', 'Plan this change before executing it.');
+   const reloaded = JSON.parse(JSON.stringify(sent)) as Message;
+-- 
+2.43.0
+

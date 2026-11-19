@@ -1,0 +1,171 @@
+From 80621f7e2dbede7ac830bc68b1e0b294bd0f755b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 15:31:42 +0000
+Subject: [PATCH 1/4] fix(a2ui): render CheckBox as CLIO's own checkbox with a
+ real hit target
+
+The kernel catalog took CheckBox straight from the upstream basic catalog, so
+an agent's checkboxes were bare 13 px native boxes with bold labels against
+them (live 2026-11-18: an EarthScope station picker). Every other interactive
+control already had a CLIO wrapper. ClioCheckBox uses the shared Radix
+checkbox; the whole row (box and label) is the hit target, at least 36 px tall
+and 44 px on touch, and a failed check is shown in words beside the box.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ .../components/clio/a2ui-checkbox.test.tsx    | 63 +++++++++++++++++++
+ web/src/components/clio/a2ui-checkbox.tsx     | 41 ++++++++++++
+ web/src/lib/a2ui/kernel-catalog.tsx           |  4 +-
+ 3 files changed, 106 insertions(+), 2 deletions(-)
+ create mode 100644 web/src/components/clio/a2ui-checkbox.test.tsx
+ create mode 100644 web/src/components/clio/a2ui-checkbox.tsx
+
+diff --git a/web/src/components/clio/a2ui-checkbox.test.tsx b/web/src/components/clio/a2ui-checkbox.test.tsx
+new file mode 100644
+index 000000000..a3a63911b
+--- /dev/null
++++ b/web/src/components/clio/a2ui-checkbox.test.tsx
+@@ -0,0 +1,63 @@
++import { Catalog, MessageProcessor, type A2uiMessage } from '@a2ui/web_core/v0_9';
++import { cleanup, render, screen } from '@testing-library/react';
++import userEvent from '@testing-library/user-event';
++import { afterEach, expect, it } from 'vitest';
++import { A2uiSurface, KERNEL_COMPONENTS, KERNEL_FUNCTIONS } from '@/lib/a2ui/kernel-catalog';
++
++afterEach(cleanup);
++
++function renderStations(checks: unknown[] = []) {
++  const catalog = new Catalog(
++    'test://checkbox',
++    [...KERNEL_COMPONENTS.values()],
++    [...KERNEL_FUNCTIONS.values()],
++  );
++  const processor = new MessageProcessor([catalog], () => undefined, { version: 'v0.9.1' });
++  processor.processMessages([
++    { version: 'v0.9.1', createSurface: { surfaceId: 'stations', catalogId: catalog.id } },
++    {
++      version: 'v0.9.1',
++      updateDataModel: { surfaceId: 'stations', path: '/p', value: { a: false, b: true } },
++    },
++    {
++      version: 'v0.9.1',
++      updateComponents: {
++        surfaceId: 'stations',
++        components: [
++          { id: 'root', component: 'Row', children: ['a', 'b'] },
++          { id: 'a', component: 'CheckBox', label: 'P395', value: { path: '/p/a' }, checks },
++          { id: 'b', component: 'CheckBox', label: 'P396', value: { path: '/p/b' } },
++        ],
++      },
++    },
++  ] as A2uiMessage[]);
++  const surface = processor.model.getSurface('stations')!;
++  render(<A2uiSurface surface={surface} />);
++  return surface;
++}
++
++it('renders CLIO checkboxes whose whole row is a labelled hit target', () => {
++  renderStations();
++  const first = screen.getByRole('checkbox', { name: 'P395' });
++  expect(first).toHaveAttribute('data-slot', 'checkbox');
++  expect(first).not.toBeChecked();
++  expect(screen.getByRole('checkbox', { name: 'P396' })).toBeChecked();
++  const row = screen.getByText('P395').closest('label')!;
++  expect(row.className).toContain('min-h-9');
++  expect(row.className).toContain('pointer-coarse:min-h-11');
++});
++
++it('writes the bound value when the label is clicked', async () => {
++  const surface = renderStations();
++  await userEvent.click(screen.getByText('P395'));
++  expect(surface.dataModel.get('/p/a')).toBe(true);
++  expect(screen.getByRole('checkbox', { name: 'P395' })).toBeChecked();
++  await userEvent.click(screen.getByRole('checkbox', { name: 'P396' }));
++  expect(surface.dataModel.get('/p/b')).toBe(false);
++});
++
++it('shows a failed check in words beside the box', () => {
++  renderStations([{ condition: { path: '/p/b/missing' }, message: 'Pick at least one station' }]);
++  expect(screen.getByRole('alert')).toHaveTextContent('Pick at least one station');
++  expect(screen.getByRole('checkbox', { name: 'P395' })).toHaveAttribute('aria-invalid', 'true');
++});
+diff --git a/web/src/components/clio/a2ui-checkbox.tsx b/web/src/components/clio/a2ui-checkbox.tsx
+new file mode 100644
+index 000000000..f6a29dbfb
+--- /dev/null
++++ b/web/src/components/clio/a2ui-checkbox.tsx
+@@ -0,0 +1,41 @@
++import { createComponentImplementation } from '@a2ui/react/v0_9';
++import { CheckBoxApi } from '@a2ui/web_core/v0_9/basic_catalog';
++import { useId } from 'react';
++import { Checkbox } from '@/components/ui/checkbox';
++import { cn } from '@/lib/utils';
++
++/**
++ * Render an A2UI CheckBox as CLIO's own checkbox. The whole row (box and label) is the
++ * hit target, at least 36 px tall and 44 px on touch; the upstream control was a bare
++ * 13 px native box with its bold label against it (live 2026-11-18).
++ */
++export const ClioCheckBox = createComponentImplementation(CheckBoxApi, ({ props }) => {
++  const id = useId();
++  const error = props.validationErrors?.[0];
++  return (
++    <div className="min-w-0 self-start" data-slot="a2ui-checkbox">
++      <label
++        htmlFor={id}
++        className={cn(
++          'flex min-h-9 cursor-pointer items-center gap-2.5 rounded-md px-1.5 text-sm',
++          'hover:bg-muted/60 pointer-coarse:min-h-11',
++          error && 'text-destructive',
++        )}
++      >
++        <Checkbox
++          id={id}
++          checked={props.value === true}
++          onCheckedChange={(checked) => props.setValue(checked === true)}
++          aria-invalid={error ? true : undefined}
++          className="pointer-coarse:size-5"
++        />
++        <span className="min-w-0 break-words">{props.label}</span>
++      </label>
++      {error ? (
++        <p role="alert" className="px-1.5 text-xs text-destructive">
++          {error}
++        </p>
++      ) : null}
++    </div>
++  );
++});
+diff --git a/web/src/lib/a2ui/kernel-catalog.tsx b/web/src/lib/a2ui/kernel-catalog.tsx
+index 8cb18876c..bbea612fb 100644
+--- a/web/src/lib/a2ui/kernel-catalog.tsx
++++ b/web/src/lib/a2ui/kernel-catalog.tsx
+@@ -8,7 +8,6 @@ import {
+ } from '@a2ui/web_core/v0_9';
+ import type { ResolvedChildRef } from '@a2ui/web_core/v0_9';
+ import {
+-  CheckBox,
+   Column,
+   Card,
+   Divider,
+@@ -26,6 +25,7 @@ import { lazy, Suspense, type CSSProperties } from 'react';
+ import { z } from 'zod';
+ import { ClioDateTimeInput } from '@/components/clio/a2ui-date-time-input';
+ import { ClioA2UIButton } from '@/components/clio/a2ui-button';
++import { ClioCheckBox } from '@/components/clio/a2ui-checkbox';
+ import {
+   Confirmation,
+   ConfirmationAction,
+@@ -684,7 +684,7 @@ const KERNEL_COMPONENT_LIST: ReactComponentImplementation[] = [
+   Divider,
+   ClioA2UIButton,
+   TextField,
+-  CheckBox,
++  ClioCheckBox,
+   ClioChoicePicker,
+   Slider,
+   ClioDateTimeInput,
+-- 
+2.43.0
+

@@ -1,0 +1,368 @@
+From fa93d8a1ceadaa7fea60bd6e1e89f2240feaa930 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 15:32:20 +0000
+Subject: [PATCH 4/4] fix(flows): headline a run error by its first line; keep
+ the rest in Details
+
+A deep research run whose planner reply could not be parsed showed the whole
+2,000-character message (the model's raw reply as JSON) as the run card's red
+headline, beside a "The flow stopped:" label squeezed into its own column
+(reproduced on develop 2026-11-19 with the server's own execution view). The
+headline is now the message's first line, clamped to two lines, under "The
+flow hit an error" for a flow_error. Details gains the error type and the full
+message in a scrolling block, and says how many characters the record cut when
+the server reports message_truncated_chars.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ .../components/clio/flow-run-parts.test.tsx   | 45 +++++++++++++++++++
+ web/src/components/clio/flow-run-parts.tsx    | 40 +++++++++++++++--
+ web/src/locales/el/messages.po                | 10 +++++
+ web/src/locales/en/messages.po                | 10 +++++
+ web/src/locales/es/messages.po                | 10 +++++
+ web/src/locales/ja/messages.po                | 10 +++++
+ web/src/locales/pseudo/messages.po            | 10 +++++
+ 7 files changed, 132 insertions(+), 3 deletions(-)
+ create mode 100644 web/src/components/clio/flow-run-parts.test.tsx
+
+diff --git a/web/src/components/clio/flow-run-parts.test.tsx b/web/src/components/clio/flow-run-parts.test.tsx
+new file mode 100644
+index 000000000..f7f4fcacf
+--- /dev/null
++++ b/web/src/components/clio/flow-run-parts.test.tsx
+@@ -0,0 +1,45 @@
++import { flowOutcomeSchema } from '@clio/core/v3';
++import { cleanup, render, screen } from '@testing-library/react';
++import userEvent from '@testing-library/user-event';
++import { afterEach, expect, it, vi } from 'vitest';
++import { FlowStall } from './flow-run-parts';
++
++afterEach(cleanup);
++
++// Live 2026-11-17: a planner parse error's message carried the model's whole reply, and
++// the run card's headline was 2,000 characters of JSON that stopped mid-object.
++const reply = `{"directions": [${'{"focus": "occurrence in drinking water"}, '.repeat(60)}`;
++const parseError = flowOutcomeSchema.parse({
++  reason: 'flow_error',
++  error: 'AdapterParseError',
++  message: `The planner's reply could not be read as a plan.\n\nLM Response: ${reply}`,
++  message_truncated_chars: 1180,
++});
++
++it('headlines an error by its first line and keeps the full message in Details', async () => {
++  render(<FlowStall cancelled={false} details onOpenHandle={vi.fn()} outcome={parseError} />);
++  const headline = document.querySelector('[data-slot="flow-stall-headline"]')!;
++  expect(headline).toHaveTextContent("The planner's reply could not be read as a plan.");
++  expect(headline.textContent).not.toContain('LM Response');
++  expect(headline.className).toContain('line-clamp-2');
++  expect(screen.getByText('The flow hit an error:')).toBeVisible();
++
++  await userEvent.click(screen.getByText('Details'));
++  expect(screen.getByText('AdapterParseError')).toBeVisible();
++  expect(
++    screen.getByText('Message (the record kept its start; 1,180 more characters were cut)'),
++  ).toBeVisible();
++  expect(screen.getByText(/LM Response: \{"directions"/u)).toBeVisible();
++});
++
++it('keeps a one-line message as the headline without repeating it in Details', async () => {
++  const stall = flowOutcomeSchema.parse({
++    reason: 'flow_stall',
++    message: 'No researcher returned a finding.',
++  });
++  render(<FlowStall cancelled={false} details onOpenHandle={vi.fn()} outcome={stall} />);
++  expect(screen.getByText('No researcher returned a finding.')).toBeVisible();
++  await userEvent.click(screen.getByText('Details'));
++  expect(screen.queryByText('Message')).toBeNull();
++  expect(screen.getAllByText('No researcher returned a finding.')).toHaveLength(1);
++});
+diff --git a/web/src/components/clio/flow-run-parts.tsx b/web/src/components/clio/flow-run-parts.tsx
+index 5a3a5af55..2693b69e3 100644
+--- a/web/src/components/clio/flow-run-parts.tsx
++++ b/web/src/components/clio/flow-run-parts.tsx
+@@ -344,7 +344,17 @@ export function FlowStall({
+       ? t`Research was blocked`
+       : outcome.reason === 'flow_stall'
+         ? t`The flow stalled`
+-        : t`The flow stopped`;
++        : outcome.reason === 'flow_error'
++          ? t`The flow hit an error`
++          : t`The flow stopped`;
++  // An unexpected error's message can be a whole model reply: the headline is its first
++  // line, clamped, and the full text is in Details (live, 2,000 characters of JSON).
++  const message = outcome.message.trim();
++  const headline = message.split('\n', 1)[0] ?? '';
++  const errorType = typeof outcome.error === 'string' ? outcome.error : '';
++  const cut =
++    typeof outcome.message_truncated_chars === 'number' ? outcome.message_truncated_chars : 0;
++  const fullMessage = message !== headline || headline.length > 240 || cut > 0;
+   const open = outcome.handle ? (
+     <Button
+       className="h-6 w-fit px-2 text-xs"
+@@ -375,6 +385,12 @@ export function FlowStall({
+           <dd>{outcome.ended_by.message}</dd>
+         </>
+       ) : null}
++      {errorType ? (
++        <>
++          <dt className="text-muted-foreground">{t`Error`}</dt>
++          <dd className="font-mono">{errorType}</dd>
++        </>
++      ) : null}
+       {outcome.step ? (
+         <>
+           <dt className="text-muted-foreground">{t`Step`}</dt>
+@@ -402,12 +418,15 @@ export function FlowStall({
+           {title}
+           {outcome.step ? ` at ${outcome.step}` : ''}:
+         </span>
+-        <span className="min-w-[min(100%,14rem)] flex-1 [overflow-wrap:anywhere]">
++        <span
++          className="line-clamp-2 min-w-[min(100%,14rem)] flex-1 [overflow-wrap:anywhere]"
++          data-slot="flow-stall-headline"
++        >
+           {stopped
+             ? outcome.stop_reason === 'conversation_stop'
+               ? t`Stopped with this conversation's Stop. A restart keeps the steps that finished.`
+               : t`A restart keeps the steps that finished.`
+-            : outcome.message || t`No message was recorded.`}
++            : headline || t`No message was recorded.`}
+         </span>
+         {open}
+       </div>
+@@ -416,6 +435,21 @@ export function FlowStall({
+           <summary className="w-fit cursor-pointer text-muted-foreground">{t`Details`}</summary>
+           <div className="mt-1 grid gap-1">
+             {facts}
++            {!stopped && fullMessage ? (
++              <div className="grid gap-1">
++                <p className="text-muted-foreground">
++                  {cut > 0
++                    ? plural(cut, {
++                        one: 'Message (the record kept its start; # more character was cut)',
++                        other: 'Message (the record kept its start; # more characters were cut)',
++                      })
++                    : t`Message`}
++                </p>
++                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono">
++                  {message}
++                </pre>
++              </div>
++            ) : null}
+             {outcome.observed !== undefined ? (
+               <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono">
+                 {JSON.stringify(outcome.observed, null, 2)}
+diff --git a/web/src/locales/el/messages.po b/web/src/locales/el/messages.po
+index 164792d10..b650f7a82 100644
+--- a/web/src/locales/el/messages.po
++++ b/web/src/locales/el/messages.po
+@@ -1890,6 +1890,10 @@ msgstr "{count}, έως {atOnce} ταυτόχρονα"
+ msgid "{count}+ links"
+ msgstr "{count}+ σύνδεσμοι"
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "{cut, plural, one {Message (the record kept its start; # more character was cut)} other {Message (the record kept its start; # more characters were cut)}}"
++msgstr "{cut, plural, one {Μήνυμα (η εγγραφή κράτησε την αρχή του· αποκόπηκε # ακόμη χαρακτήρας)} other {Μήνυμα (η εγγραφή κράτησε την αρχή του· αποκόπηκαν # ακόμη χαρακτήρες)}}"
++
+ #: src/hooks/use-execution-provenance.ts
+ msgid "{danglingEdges, plural, one {# relationship references missing nodes} other {# relationships reference missing nodes}}"
+ msgstr "{danglingEdges, plural, one {# σχέση αναφέρεται σε κόμβους που λείπουν} other {# σχέσεις αναφέρονται σε κόμβους που λείπουν}}"
+@@ -14859,6 +14863,7 @@ msgid "error"
+ msgstr "σφάλμα"
+ 
+ #: src/components/clio/agent-plugin-tree.tsx
++#: src/components/clio/flow-run-parts.tsx
+ #: src/components/clio/script-run-body.tsx
+ #: src/components/clio/tool-technical-details.tsx
+ #: src/components/clio/workspace-resource-derivatives.tsx
+@@ -21327,6 +21332,7 @@ msgstr "Πηγαίος κώδικας Mermaid"
+ msgid "Mesh unavailable"
+ msgstr "Το πλέγμα δεν είναι διαθέσιμο"
+ 
++#: src/components/clio/flow-run-parts.tsx
+ #: src/lib/transcript-message-preview.ts
+ msgid "Message"
+ msgstr "Μήνυμα"
+@@ -36459,6 +36465,10 @@ msgstr "Η ροή δεν έχει γίνει ακόμη αποδεκτή."
+ msgid "The flow has not started any task yet."
+ msgstr "Η ροή δεν έχει ξεκινήσει ακόμη καμία εργασία."
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "The flow hit an error"
++msgstr "Η ροή συνάντησε σφάλμα"
++
+ #: src/components/clio/flow-run-parts.tsx
+ msgid "The flow saw"
+ msgstr "Τι είδε η ροή"
+diff --git a/web/src/locales/en/messages.po b/web/src/locales/en/messages.po
+index d95777257..94e6ede03 100644
+--- a/web/src/locales/en/messages.po
++++ b/web/src/locales/en/messages.po
+@@ -1889,6 +1889,10 @@ msgstr "{count}, up to {atOnce} at a time"
+ msgid "{count}+ links"
+ msgstr "{count}+ links"
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "{cut, plural, one {Message (the record kept its start; # more character was cut)} other {Message (the record kept its start; # more characters were cut)}}"
++msgstr "{cut, plural, one {Message (the record kept its start; # more character was cut)} other {Message (the record kept its start; # more characters were cut)}}"
++
+ #: src/hooks/use-execution-provenance.ts
+ msgid "{danglingEdges, plural, one {# relationship references missing nodes} other {# relationships reference missing nodes}}"
+ msgstr "{danglingEdges, plural, one {# relationship references missing nodes} other {# relationships reference missing nodes}}"
+@@ -14858,6 +14862,7 @@ msgid "error"
+ msgstr "error"
+ 
+ #: src/components/clio/agent-plugin-tree.tsx
++#: src/components/clio/flow-run-parts.tsx
+ #: src/components/clio/script-run-body.tsx
+ #: src/components/clio/tool-technical-details.tsx
+ #: src/components/clio/workspace-resource-derivatives.tsx
+@@ -21326,6 +21331,7 @@ msgstr "Mermaid source"
+ msgid "Mesh unavailable"
+ msgstr "Mesh unavailable"
+ 
++#: src/components/clio/flow-run-parts.tsx
+ #: src/lib/transcript-message-preview.ts
+ msgid "Message"
+ msgstr "Message"
+@@ -36458,6 +36464,10 @@ msgstr "The flow has not been accepted yet."
+ msgid "The flow has not started any task yet."
+ msgstr "The flow has not started any task yet."
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "The flow hit an error"
++msgstr "The flow hit an error"
++
+ #: src/components/clio/flow-run-parts.tsx
+ msgid "The flow saw"
+ msgstr "The flow saw"
+diff --git a/web/src/locales/es/messages.po b/web/src/locales/es/messages.po
+index 2dc773691..e37425715 100644
+--- a/web/src/locales/es/messages.po
++++ b/web/src/locales/es/messages.po
+@@ -1890,6 +1890,10 @@ msgstr "{count}, hasta {atOnce} a la vez"
+ msgid "{count}+ links"
+ msgstr "{count}+ enlaces"
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "{cut, plural, one {Message (the record kept its start; # more character was cut)} other {Message (the record kept its start; # more characters were cut)}}"
++msgstr "{cut, plural, one {Mensaje (el registro conservó el inicio; se recortó # carácter más)} other {Mensaje (el registro conservó el inicio; se recortaron # caracteres más)}}"
++
+ #: src/hooks/use-execution-provenance.ts
+ msgid "{danglingEdges, plural, one {# relationship references missing nodes} other {# relationships reference missing nodes}}"
+ msgstr "{danglingEdges, plural, one {# relación hace referencia a nodos inexistentes} other {# relaciones hacen referencia a nodos inexistentes}}"
+@@ -14859,6 +14863,7 @@ msgid "error"
+ msgstr "error"
+ 
+ #: src/components/clio/agent-plugin-tree.tsx
++#: src/components/clio/flow-run-parts.tsx
+ #: src/components/clio/script-run-body.tsx
+ #: src/components/clio/tool-technical-details.tsx
+ #: src/components/clio/workspace-resource-derivatives.tsx
+@@ -21327,6 +21332,7 @@ msgstr "Código fuente de Mermaid"
+ msgid "Mesh unavailable"
+ msgstr "Malla no disponible"
+ 
++#: src/components/clio/flow-run-parts.tsx
+ #: src/lib/transcript-message-preview.ts
+ msgid "Message"
+ msgstr "Mensaje"
+@@ -36459,6 +36465,10 @@ msgstr "El flujo aún no se ha aceptado."
+ msgid "The flow has not started any task yet."
+ msgstr "El flujo aún no ha iniciado ninguna tarea."
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "The flow hit an error"
++msgstr "El flujo encontró un error"
++
+ #: src/components/clio/flow-run-parts.tsx
+ msgid "The flow saw"
+ msgstr "Lo que vio el flujo"
+diff --git a/web/src/locales/ja/messages.po b/web/src/locales/ja/messages.po
+index 446d25893..4ce5bde78 100644
+--- a/web/src/locales/ja/messages.po
++++ b/web/src/locales/ja/messages.po
+@@ -1890,6 +1890,10 @@ msgstr "{count}件、一度に最大{atOnce}件"
+ msgid "{count}+ links"
+ msgstr "{count}件以上のリンク"
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "{cut, plural, one {Message (the record kept its start; # more character was cut)} other {Message (the record kept its start; # more characters were cut)}}"
++msgstr "{cut, plural, other {メッセージ (記録には冒頭のみ保存。残り # 文字は省略されました)}}"
++
+ #: src/hooks/use-execution-provenance.ts
+ msgid "{danglingEdges, plural, one {# relationship references missing nodes} other {# relationships reference missing nodes}}"
+ msgstr "{danglingEdges, plural, one {#件の関係が存在しないノードを参照しています} other {#件の関係が存在しないノードを参照しています}}"
+@@ -14859,6 +14863,7 @@ msgid "error"
+ msgstr "エラー"
+ 
+ #: src/components/clio/agent-plugin-tree.tsx
++#: src/components/clio/flow-run-parts.tsx
+ #: src/components/clio/script-run-body.tsx
+ #: src/components/clio/tool-technical-details.tsx
+ #: src/components/clio/workspace-resource-derivatives.tsx
+@@ -21327,6 +21332,7 @@ msgstr "Mermaidソース"
+ msgid "Mesh unavailable"
+ msgstr "メッシュを利用できません"
+ 
++#: src/components/clio/flow-run-parts.tsx
+ #: src/lib/transcript-message-preview.ts
+ msgid "Message"
+ msgstr "メッセージ"
+@@ -36459,6 +36465,10 @@ msgstr "フローはまだ受け付けられていません。"
+ msgid "The flow has not started any task yet."
+ msgstr "フローはまだタスクを開始していません。"
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "The flow hit an error"
++msgstr "フローでエラーが発生しました"
++
+ #: src/components/clio/flow-run-parts.tsx
+ msgid "The flow saw"
+ msgstr "フローが受け取った結果"
+diff --git a/web/src/locales/pseudo/messages.po b/web/src/locales/pseudo/messages.po
+index ac8d0bff1..100c366e7 100644
+--- a/web/src/locales/pseudo/messages.po
++++ b/web/src/locales/pseudo/messages.po
+@@ -1889,6 +1889,10 @@ msgstr ""
+ msgid "{count}+ links"
+ msgstr ""
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "{cut, plural, one {Message (the record kept its start; # more character was cut)} other {Message (the record kept its start; # more characters were cut)}}"
++msgstr ""
++
+ #: src/hooks/use-execution-provenance.ts
+ msgid "{danglingEdges, plural, one {# relationship references missing nodes} other {# relationships reference missing nodes}}"
+ msgstr ""
+@@ -14850,6 +14854,7 @@ msgid "error"
+ msgstr ""
+ 
+ #: src/components/clio/agent-plugin-tree.tsx
++#: src/components/clio/flow-run-parts.tsx
+ #: src/components/clio/script-run-body.tsx
+ #: src/components/clio/tool-technical-details.tsx
+ #: src/components/clio/workspace-resource-derivatives.tsx
+@@ -21309,6 +21314,7 @@ msgstr ""
+ msgid "Mesh unavailable"
+ msgstr ""
+ 
++#: src/components/clio/flow-run-parts.tsx
+ #: src/lib/transcript-message-preview.ts
+ msgid "Message"
+ msgstr ""
+@@ -36440,6 +36446,10 @@ msgstr ""
+ msgid "The flow has not started any task yet."
+ msgstr ""
+ 
++#: src/components/clio/flow-run-parts.tsx
++msgid "The flow hit an error"
++msgstr ""
++
+ #: src/components/clio/flow-run-parts.tsx
+ msgid "The flow saw"
+ msgstr ""
+-- 
+2.43.0
+
