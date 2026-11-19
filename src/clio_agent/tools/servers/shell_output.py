@@ -36,6 +36,7 @@ or grep the returned path through the owning workspace's file policy.
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import io
 import json
@@ -368,6 +369,19 @@ async def _forward(ctx: ProgressReporter, capture: StreamCapture, text: str) -> 
     )
     try:
         await ctx.report_progress(progress=capture.total_bytes, total=None, message=message)
+    except asyncio.CancelledError as exc:
+        # A delivery channel torn down mid-report (a stopped caller's connection) can
+        # surface as a cancelled await. Unless this reader itself was cancelled, that is
+        # a display failure: the reader must keep draining, or the shell's process-tree
+        # cleanup is never confirmed and its cancellation never settles.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        logger.warning(
+            "shell progress delivery failed stream=%s reason=progress_delivery_cancelled error=%r",
+            capture.stream,
+            exc,
+        )
     except Exception as exc:  # noqa: BLE001 - display progress cannot fail the command
         logger.warning(
             "shell progress delivery failed stream=%s reason=progress_delivery_failed error=%r",

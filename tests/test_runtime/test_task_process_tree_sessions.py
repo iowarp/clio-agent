@@ -56,3 +56,31 @@ def test_terminate_stops_a_descendant_in_another_session() -> None:
         if not _ended(escaped):
             escaped.kill()
         owner.stdout.close()
+
+
+class _Refusing:
+    def kill(self) -> None:
+        raise psutil.AccessDenied(pid=1)
+
+
+class _Killable:
+    killed = False
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_terminate_continues_past_a_refused_kill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refused kill used to raise out of ``terminate``: the shell then skipped its
+    settlement wait and recorded its cleanup as unknown, so a cancel never settled."""
+    tree = TaskProcessTree.__new__(TaskProcessTree)
+    tree.pid, tree.birth, tree.job, tree.kernel = 999_999_999, None, None, None
+    later = _Killable()
+    monkeypatch.setattr(tree, "_descendants", lambda: [_Refusing(), later])
+
+    def refuse(_pgid: int, _signal: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(os, "killpg", refuse)
+    tree.terminate()
+    assert later.killed

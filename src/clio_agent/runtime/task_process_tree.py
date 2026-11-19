@@ -158,13 +158,17 @@ class TaskProcessTree:
             escaped = self._descendants()
             try:
                 os.killpg(self.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            except (ProcessLookupError, PermissionError):
+                pass  # gone, or a member we may not signal; the sweep below still runs
             for process in escaped:
                 try:
                     process.kill()
                 except psutil.NoSuchProcess:
                     pass  # it ended with its group
+                except psutil.AccessDenied:
+                    # One refused kill must not abandon the rest of the sweep, nor
+                    # the settlement wait that confirms the tree actually ended.
+                    continue
 
     def _descendants(self) -> list[psutil.Process]:
         """The owned process's live descendants, wherever their group or session."""
@@ -173,7 +177,7 @@ class TaskProcessTree:
             if self.birth is None or process.create_time() != self.birth:
                 return []  # not the process this tree was given
             return process.children(recursive=True)
-        except psutil.NoSuchProcess:
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             return []
 
     def close(self) -> None:

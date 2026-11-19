@@ -119,6 +119,10 @@ async def cancel_session_state_async(
     await app.state.task_history.io.run(stop_session_loop, app, sid)
     await app.state.task_history.io.run(stop_session_goal, app, sid)
     composer = await app.state.task_history.io.run(stop_session_composer_autostart, app, sid)
+    # A stopped turn no longer waits on its person: its servers idle out with the fleet.
+    from clio_agent.gact.session_warmup import release_session_fleet  # noqa: PLC0415
+
+    release_session_fleet(sid)
     if assignment is None:
         effect = {
             "status": "stopping" if stopping else "idle",

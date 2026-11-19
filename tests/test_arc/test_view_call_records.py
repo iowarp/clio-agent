@@ -153,7 +153,7 @@ async def test_a_view_only_call_records_a_size_and_hash_not_its_content(
 async def test_a_view_poll_cut_off_ends_unknown_and_wakes_no_one(
     arc: ARCMemory, tmp_path: Path
 ) -> None:
-    """SABOTAGE: record ``self._attention`` in ``abandon_view_call`` and an episode opens."""
+    """SABOTAGE: record ``self._attention`` in ``abandon_call`` and an episode opens."""
     app, root = await _environment(arc, tmp_path)
     history = app.state.task_history
     external = ExternalTasks(app)

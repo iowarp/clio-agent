@@ -349,29 +349,50 @@ async def hold(
     return host.client, release_hold
 
 
-async def abandon_view_call(
-    self: ExternalTasks, host: ExternalConnection, handle: str, rpc: Any, lazy: Any
-) -> None:
-    """Cancel the RPC of a view's call outside a turn whose request went away.
+#: What a plain call's task record says when its turn was stopped mid-call.
+TURN_CALL_CANCELLED = "mcp_call_cancelled_by_stop"
+TURN_CALL_CANCELLED_TEXT = (
+    f"{TURN_CALL_CANCELLED}: the turn was stopped before the service answered; "
+    "the call was cancelled and whether the service acted on it is not known."
+)
 
-    Only for a plain call (no task was accepted for it): nothing else waits for its
-    reply, so the RPC is cancelled on the wire and its record ends cancelled with the
-    typed reason and ``settlement: unknown``, opening no attention episode: the call is
-    the view's, so no model is woken for it (:mod:`.view_call_ledger`). A turn's call
-    and an accepted task keep their custody rules unchanged.
+
+def _cut_off_text(self: ExternalTasks, sid: str) -> str:
+    """Why a plain call is cut off now: its view's request went, or its turn stopped."""
+    if view_call_cancel.requested():
+        return view_call_cancel.VIEW_CALL_CANCELLED_TEXT
+    from clio_agent.gact.cancellation_check import turn_stop_requested  # noqa: PLC0415
+
+    if turn_stop_requested(getattr(self, "app", None), sid):
+        return TURN_CALL_CANCELLED_TEXT
+    return ""
+
+
+async def abandon_call(
+    self: ExternalTasks, host: ExternalConnection, handle: str, rpc: Any, lazy: Any, sid: str = ""
+) -> None:
+    """Cancel the RPC of a plain call nobody waits for any more.
+
+    That is a view's call outside a turn whose request went away, or a turn's call
+    when the turn was stopped (Stop, or its assignment cancelled; not the service's
+    shutdown, whose restart recovers it). No task was accepted for it, so nothing else
+    waits for its reply: the RPC is cancelled on the wire (``notifications/cancelled``)
+    and its record ends cancelled with the typed reason and ``settlement: unknown``,
+    opening no attention episode, so no model is woken for it (:mod:`.view_call_ledger`).
+    An accepted task keeps its custody: it is the conversation's started work, which
+    Stop keeps or cancels as a task (``children``).
     """
-    if not view_call_cancel.requested() or accepted_call(host, handle):
+    if accepted_call(host, handle):
         return
+    text = _cut_off_text(self, sid)
+    if not text:
+        return
+    logger.info("external_mcp_call_cut_off handle=%s reason=%s", handle, text.split(":", 1)[0])
     rpc.cancel()
     if lazy is None:  # written ahead: it ends cancelled, outcome unknown, no wake (MC-F2)
         await self._record_or_defer(
             "external-call:" + handle,
-            partial(
-                view_call_ledger.settle_cut_off,
-                self.history,
-                handle,
-                view_call_cancel.VIEW_CALL_CANCELLED_TEXT,
-            ),
+            partial(view_call_ledger.settle_cut_off, self.history, handle, text),
         )
     self._lazy.pop(handle, None)
 

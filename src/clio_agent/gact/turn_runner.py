@@ -329,6 +329,11 @@ class TurnRunner:
         with self._lock:
             return sid in self._turns
 
+    def active_sessions(self) -> tuple[str, ...]:
+        """Every session holding a reserved segment now."""
+        with self._lock:
+            return tuple(self._turns)
+
     def working(self, sid: str) -> bool:
         """Reserved for real work: a turn, its retirement or a runtime change.
 

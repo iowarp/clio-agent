@@ -451,7 +451,7 @@ class ExternalTasks:
                 stopped = True
                 if rpc.cancelled():
                     raise
-                await external_task_connections.abandon_view_call(self, host, handle, rpc, lazy)
+                await external_task_connections.abandon_call(self, host, handle, rpc, lazy, sid)
             except Exception as error:
                 logger.exception(
                     "Task boundary reason=external_submission_failed error_type=%s",

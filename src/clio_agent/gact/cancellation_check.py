@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact import view_call_cancel
@@ -41,3 +41,24 @@ def make_cancellation_checker(app: "FastAPI") -> Callable[[], bool]:
 
     check.cause = cause  # type: ignore[attr-defined]  # read by tools.foreground_cancellation
     return check
+
+
+def turn_stop_requested(app: Any, sid: str) -> bool:
+    """Whether ``sid``'s turn was stopped (Stop, a cancelled assignment), not by shutdown.
+
+    A shutdown keeps its own semantics: the restart recovers the calls in flight.
+    """
+    state = getattr(app, "state", None)
+    if state is None or not sid:
+        return False
+    from clio_agent.gact.runtime.turn_cancellation_info import (  # noqa: PLC0415
+        turn_cancelled_by_shutdown,
+    )
+
+    if turn_cancelled_by_shutdown(app):
+        return False
+    event = getattr(state, "cancel_events", {}).get(sid)
+    if (event is not None and event.is_set()) or sid in getattr(state, "cancel_flags", ()):
+        return True
+    runner = getattr(state, "turn_runner", None)
+    return bool(runner is not None and runner.stop_requested(sid))
