@@ -16,6 +16,12 @@
 # (scripts/acceptance/continuity_check.py); CLIO_UI_DIR does the same for the web UI
 # with another gact-tui checkout.
 #
+# The UI is the production web build by default, served with /v1 forwarded to the
+# agent as `clio web` serves it (scripts/cloud/serve_web_build.mjs). The Vite dev
+# server's memory grows by about 1.4 GB per 10 minutes of a streaming turn, which
+# killed harness browsers on long live runs (ndp-ledger R9); CLIO_UI_DEV=1 runs the
+# dev server instead, for UI work that wants hot reload.
+#
 # Ports: AGENT_PORT (default 8787, the UI's default service address) and
 # UI_PORT (default 5173); FIXTURE_PORT (default 8790) serves the browser fixture
 # site as a.fixture.localhost and b.fixture.localhost, and FIXTURE_TLS_PORT (default
@@ -103,7 +109,14 @@ start_ui() {
   # neutral GACT profile. The override is gitignored in gact-tui.
   local brand="$tui/brand.config.local.json"
   [ -f "$brand" ] || printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$ROOT" > "$brand"
-  launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
+  if [ "${CLIO_UI_DEV:-0}" = "1" ]; then
+    launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
+  else
+    (cd "$web" && npx vite build --outDir "$STATE/web-build" --emptyOutDir) > "$STATE/ui-build.log" 2>&1 \
+      || { echo "ui: build failed; see $STATE/ui-build.log"; return 1; }
+    AGENT_PORT="$AGENT_PORT" launch "$STATE/ui.pid" "$STATE/ui.log" "$ROOT" \
+      node scripts/cloud/serve_web_build.mjs "$STATE/web-build" "$UI_PORT"
+  fi
   if wait_http "http://127.0.0.1:$UI_PORT/" 120; then
     echo "ui: http://127.0.0.1:$UI_PORT"
   else
