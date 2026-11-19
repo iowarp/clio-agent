@@ -169,7 +169,9 @@ def test_wrap_confined_owns_the_pipe_dir_on_darwin(roots, pipe_parent, monkeypat
     from clio_agent.runtime import sandbox_net
 
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(sandbox_net, "open_child_egress", lambda state, roots, **kwargs: ("", None, {}))
+    monkeypatch.setattr(
+        sandbox_net, "open_child_egress", lambda state, roots, **kwargs: ("", None, {})
+    )
     confined = sandbox.wrap_confined(
         "/opt/soffice",
         ["--headless", "--convert-to", "pdf", "a.docx"],
@@ -193,7 +195,9 @@ def test_other_spawns_get_no_pipe_dir(roots, monkeypatch, platform, office_spawn
     from clio_agent.runtime import sandbox_net
 
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setattr(sandbox_net, "open_child_egress", lambda state, roots, **kwargs: ("", None, {}))
+    monkeypatch.setattr(
+        sandbox_net, "open_child_egress", lambda state, roots, **kwargs: ("", None, {})
+    )
     monkeypatch.setattr(
         office, "create_office_pipe_dir", lambda: pytest.fail("no pipe dir expected")
     )

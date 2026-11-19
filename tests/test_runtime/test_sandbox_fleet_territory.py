@@ -119,7 +119,10 @@ def test_windows_fleet_can_lock_uv_tools(platform, env, expected, tmp_path, monk
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(sandbox_roots.sys, "platform", platform)
-    assert sandbox_roots._windows_uv_tool_dir() == expected
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(sandbox_roots.sys, "platform", platform)
+        resolved = sandbox_roots._windows_uv_tool_dir()
+    assert resolved == expected
     if expected is not None:
+        monkeypatch.setattr(sandbox_roots, "_windows_uv_tool_dir", lambda: expected)
         assert expected in sandbox_roots._platform_tool_cache_dirs()
