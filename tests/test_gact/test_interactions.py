@@ -328,6 +328,30 @@ def test_invalid_answer_retains_the_question_and_prefill(
     assert not any(item.handle == task.handle for item in app.state.task_history.pending_mail(sid))
 
 
+def test_an_elicitation_names_the_call_that_waits_on_it(
+    world: tuple[Any, TestClient, str],
+) -> None:
+    """Live 2026-11-19: "Search web" spun for 24 minutes on a source consent the
+    transcript could not tie to it, because the call id was only in the payload."""
+    app, client, sid = world
+    task = app.state.questions.create(
+        app.state.task_history.latest_assignment(sid).owner,
+        QuestionDefinition(
+            prompt="Allow searches through Keenable?",
+            kind="choice",
+            options=({"label": "Allow", "value": "approve"},),
+            allow_freeform=False,
+            source="mcp_elicitation",
+            metadata={"elicitation": {"mode": "form", "invocation_id": "call_search_1"}},
+        ),
+        invocation_id="inline-elicitation",
+    )
+    response = client.get(f"/v1/sessions/{sid}/interactions", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    (row,) = [i for i in response.json()["interactions"] if i["task_id"] == task.handle]
+    assert row["source"]["invocation_id"] == "call_search_1"
+
+
 def test_capabilities_advertise_normalized_interactions(world: tuple[Any, TestClient, str]) -> None:
     _app, client, _sid = world
     response = client.get("/v1/capabilities")

@@ -355,6 +355,12 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
     """Render a common Question through the shipped interaction contract."""
     bundle = question.metadata.get("question_bundle")
     invocation = str(question.metadata.get("invocation_id") or "")
+    elicitation = question.metadata.get("elicitation")
+    if not invocation and isinstance(elicitation, dict):
+        # An MCP elicitation (a search source's consent among them) records the call
+        # that raised it only in its elicitation block; without this link the waiting
+        # call read as a bare spinner, never "waiting for you" (live 2026-11-19).
+        invocation = str(elicitation.get("invocation_id") or "")
     if not invocation and question.source == "ask_user":
         # ask_user records its Question under the asking tool call's id, which links
         # the waiting call to this interaction.
