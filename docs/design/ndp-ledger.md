@@ -939,12 +939,57 @@ Multi-turn (follow-ups in the same conversation):
   - Follow-up 3 (rank exposed owl and goshawk areas): all 64 PACs scored by
     unburned share, high-load fuel and slope, top 12 mapped with fires, habitat and
     lidar slope, each score broken down (`r9-tahoe-followup3-pac-exposure.png`).
-- Snow depth follow-up 1 (other years), partial: interrupted by a restart, CLIO
-  resumed it on its own; the agent searched later flights and found the only
-  snow-on survey in NDP is March 2010 (the 2021 point cloud covers the valley floor
-  only, below 648 m against the areas' 999 m minimum), leaving a summer 2020 3DEP
-  DEM as the only later surface. It then waited on a file-write permission with no
-  harness to answer it and was cancelled; the second follow-up was not sent.
+- Snow depth, three turns in `sess_cdfff373304d` (Opus; export taken after the last):
+  - Follow-up 1 (other years): searched NDP more than 25 ways and found the only
+    snow-on survey is March 2010. It then compared the snow-free ground of August
+    2010 with the summer 2020 3DEP 1 m DEM instead, removing a per-area datum offset;
+    the surfaces agree to about 0.1 m (NMAD) with no elevation trend, which bounds the
+    2010 depth map's error at the decimetre level. It says a second snow year needs a
+    source outside NDP (`r9-snow-followup1-2020-change.png`). The first attempt at
+    this turn waited on a permission with no harness and was cancelled; the rerun was
+    cut short by my own test run filling the disk (below) and finished on a person's
+    "you stopped before finishing" follow-up.
+  - Follow-up 2 (where deepest, elevation and slope): terrain from the snow-off lidar
+    on the same 10 m cells. Wolverton deepest (mean 2.44 m, top 1% above 5.6 m near
+    3,100 m on 28 degree north-facing slopes); about 0.13 m more snow per 100 m of
+    elevation on one curve shared by all areas; north-facing slopes 0.4-0.9 m deeper
+    than south-facing at the same elevation; slopes over 40 degrees hold less.
+    Elevation, slope and aspect explain 40-61% of the cell variance. It found 84-95%
+    of the "deepest" cells in three areas were swath-edge artefacts and trimmed a 30 m
+    rim before ranking (`r9-snow-followup2-terrain.png`).
+- Case 01 (San Diego hazards), three turns in `sess_32d8d73c5ba8` (Opus; rerun of the
+  Sonnet partial). Visual review: interactive globe with 12 switchable layers plus
+  a tabbed A2UI brief; static overview and ranking figures reviewed by the agent:
+  - Turn 1: a tabbed A2UI brief (map, overview, 72 h forecast, hotspots and
+    incidents, sources with status) from NDP's NIFC, VIIRS, CPUC and Cal OES records
+    and the NWS: an active mountain Wind Advisory and Beach Hazards Statement, two
+    incidents both prescribed burns.
+  - Follow-up 1 (other hazards, one map): first corrected the person's premise (the
+    brief had no air-quality data; NDP has no air-monitor feed for San Diego and
+    refused the Cal OES air layer), then added CAL FIRE severity zones, USGS
+    debris-flow, FEMA flood, DWR dam inundation, CGS tsunami and CoSMoS sea-level
+    rise, saying which are NDP records and which come from the same Cal OES
+    organization without being NDP records (`r9-case01-hazard-layers.png`).
+  - Follow-up 2 (rank the worst, how far to trust it): 628 tracts scored from the
+    unsimplified polygons, rank ranges across 9 weighting schemes, robust and
+    scheme-sensitive top 20 marked, population exposure (about 374,000 people in the
+    worst decile), and a trust table by dataset age and coverage. It fixed a dam-
+    inundation weighting that saturated the flood score after checking its first
+    version (`r9-case01-combined-rank.png`). It could not capture the globe or brief
+    itself ("no viewer was open"); they were reviewed in the UI instead.
+- Konza storage release, `sess_705ac6a0dd91` (Opus, a new conversation in the Konza
+  workspace; plain request "The disk on this machine is nearly full. Free the space
+  the Konza downloads take up, but keep what the earlier wind and smoke analysis in
+  this workspace actually uses."): `connected_data_status`, then
+  `connected_data_release` of the eight older snapshots and the one raw file no
+  script used (109 MB), then asked whether raw files already extracted to CSVs still
+  count as used. On "release every raw file already extracted", released 2.11 GB more,
+  kept the WindObserver II file a script still reads, loaded all 12 CSVs the
+  analysis depends on to check them, and did not rerun a script that overwrites its
+  own input. Source 2.26 GB to 33 MB on disk. Pass. The same request in the original
+  Konza conversation could not see the tool: a conversation keeps the agent
+  resolved when it started (connected-data 2.0.0), so it proposed `rm -rf` outside
+  the sandbox; a person declined.
 
 Seen in this wave, and what became of it:
 
@@ -973,4 +1018,14 @@ Seen in this wave, and what became of it:
   models (`when.models`, `8cfd547cc`); the core plugin tells Opus that an answer
   listing undone steps it could take is unfinished, and tells Sonnet to keep going
   and to present results as views. Verified by tests; live effect is measured by
-  the case 01 rerun and the snow follow-ups below.
+  the case 01 rerun and the snow follow-ups above: neither Opus run ended with a
+  list of undone steps it could have taken.
+- **Interrupted turns resumed with no one following them.** After a restart, three
+  turns interrupted hours earlier (a Tahoe lidar run, a Konza and a snow duplicate)
+  resumed; the Tahoe one wrote 905 MB of tiles into its scratch and, with the live
+  runs, took the disk to 351 MB free. They were cancelled by hand. Resuming is
+  intended, but a turn whose person has gone should not keep spending disk and
+  model time unseen; open for release.
+- **My own parallel test run filled the disk** (four xdist workers each preallocating
+  a clio-core store) while two live runs were going; clio-core refused writes and both
+  turns ended in error. Reruns above. Tests are no longer run beside live runs.
