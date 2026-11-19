@@ -90,7 +90,11 @@ def test_the_agents_connect_counts_before_approval_not_after(
         )
 
     service = SimpleNamespace(ndp_selection_lock=threading.Lock())
-    arguments = {"provider": "ndp", "root": "r", "configuration": {"resource_ids": []}}
+    arguments = {
+        "provider": "ndp",
+        "root": "r",
+        "configuration": {"endpoint_id": "ndp", "resource_ids": ["x"]},
+    }
     for org in ("trpa", "cal-fire"):
         service.ndp = SimpleNamespace(selected=lambda *_, o=org: dataset(o))
         connect_tool.connection_approval(service, "ws", arguments, in_turn=True)
