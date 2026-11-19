@@ -259,6 +259,11 @@ def install_probe_hardening() -> None:
 
     sdk_probe.negotiate_auto = hardened_negotiate_auto
     fastmcp_client.negotiate_auto = hardened_negotiate_auto
+    # The hardened probe waits on the connecting server's own work; give every connect
+    # a tree to measure, wherever it is opened.
+    from clio_agent.tools.mcp_server_progress import install_connection_trees  # noqa: PLC0415
+
+    install_connection_trees()
     _INSTALLED = True
     logger.info(
         "mcp_probe_hardening_installed reason=timeout_is_not_an_era_verdict retries=%d",

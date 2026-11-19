@@ -72,7 +72,13 @@ def process_work(pid: int) -> float | None:
     except psutil.AccessDenied:
         return cpu
     # 1 MiB of I/O counts as one CPU second: a process flushing to a slow disk is busy.
-    return cpu + (io.read_bytes + io.write_bytes) / float(1 << 20)
+    # Linux's byte counters see only block devices; its char counters also see a server
+    # importing from a network filesystem (an NFS home), which is busy, not stuck.
+    read = getattr(io, "read_chars", None)
+    written = getattr(io, "write_chars", None)
+    if read is None or written is None:
+        read, written = io.read_bytes, io.write_bytes
+    return cpu + (read + written) / float(1 << 20)
 
 
 def tree_work(pid: int) -> float | None:

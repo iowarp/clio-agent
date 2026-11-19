@@ -1196,6 +1196,10 @@ async def test_plain_guarded_input_completes_mrtr_through_the_sync_executor_forc
         gw = build_gateway({namespace: spec})
         executor = SyncMCPToolExecutor(
             gw,
+            # The call also cold-starts the backend through the proxy; on a loaded host
+            # that alone outlasts the 30 s default. The MRTR round trip is under test,
+            # not the call budget.
+            timeout=120.0,
             namespace_servers=namespace_proxies(gw),
             preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
             client_factory=_elicit_client,

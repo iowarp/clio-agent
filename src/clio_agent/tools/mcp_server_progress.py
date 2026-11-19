@@ -184,20 +184,79 @@ def connection_context() -> contextvars.Context:
     """A fresh context for a connection that outlives the call that opens it.
 
     It carries only the current wait's server tree, so a server the connection spawns
-    still counts as the wait's progress (:func:`install_spawn_tracking`).
+    still counts as the wait's progress (:func:`install_spawn_tracking`). Opened outside
+    a wait, it gets a tree of its own, so its discover probe can still tell a server
+    that is starting from one that is stuck.
     """
+    tree = _SERVER_TREE.get()
+    if tree is None:
+        install_spawn_tracking()
+        tree = ProcessTreeWork()
     context = contextvars.Context()
-    context.run(_SERVER_TREE.set, _SERVER_TREE.get())
+    context.run(_SERVER_TREE.set, tree)
     return context
+
+
+def bind_connection_tree() -> contextvars.Token[ProcessTreeWork | None] | None:
+    """Bind a server tree for a client connect that runs outside any wait.
+
+    The stdio spawn and the ``server/discover`` probe both run inside the connect, so
+    the probe measures exactly the server this connect started and keeps waiting while
+    it works (up to ``tools.mcp.max_wait_s``) instead of spending a fixed budget on a
+    slow machine. Inside a wait, its tree already applies and nothing is bound. Pass
+    the token to :func:`release_connection_tree` in the same task.
+    """
+    if _SERVER_TREE.get() is not None:
+        return None
+    install_spawn_tracking()
+    return _SERVER_TREE.set(ProcessTreeWork())
+
+
+def release_connection_tree(token: contextvars.Token[ProcessTreeWork | None] | None) -> None:
+    """Undo :func:`bind_connection_tree`."""
+    if token is not None:
+        _SERVER_TREE.reset(token)
+
+
+_CONNECTION_TREES_INSTALLED = False
+
+
+def install_connection_trees() -> None:
+    """Make every MCP client connect measure the server it starts.
+
+    Wraps ``fastmcp.Client.__aenter__``, the one connect seam every client shares (a
+    proxy's per-request clone, a plain transport client, an executor namespace), with
+    :func:`bind_connection_tree`. The session task it starts copies the binding, so the
+    stdio spawn and the ``server/discover`` probe share one tree. Idempotent.
+    """
+    global _CONNECTION_TREES_INSTALLED
+    if _CONNECTION_TREES_INSTALLED:
+        return
+    from fastmcp.client.client import Client  # noqa: PLC0415
+
+    enter = Client.__aenter__
+
+    async def __aenter__(self: Any) -> Any:  # noqa: N807 - the connect seam itself
+        token = bind_connection_tree()
+        try:
+            return await enter(self)
+        finally:
+            release_connection_tree(token)
+
+    Client.__aenter__ = __aenter__  # type: ignore[method-assign]
+    _CONNECTION_TREES_INSTALLED = True
 
 
 __all__ = [
     "REMOVED_DEADLINE_KEYS",
     "NoProgressTimeout",
+    "bind_connection_tree",
     "connection_context",
+    "install_connection_trees",
     "install_spawn_tracking",
     "mcp_max_wait_s",
     "mcp_no_progress_s",
+    "release_connection_tree",
     "server_work",
     "wait_while_server_works",
 ]

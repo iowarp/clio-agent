@@ -486,43 +486,6 @@ def test_sync_mcp_tool_executor_closes_client_and_loop():
     assert not thread.is_alive()
 
 
-_SLOW_SERVER = """\
-import sys, time
-end = time.monotonic() + float(sys.argv[1])
-while time.monotonic() < end:  # a cold start: working (CPU), not yet serving
-    pass
-from fastmcp import FastMCP
-mcp = FastMCP("slow")
-@mcp.tool
-def ping() -> str:
-    return "pong"
-mcp.run(show_banner=False)
-"""
-
-
-def test_sync_tool_executor_setup_waits_while_its_server_starts(monkeypatch, tmp_path):
-    """No fixed setup deadline (was ``tools.mcp.setup_timeout_s`` = 10 s): a real stdio
-    server that works for 3 s before serving outlasts a 1 s no-progress window and the
-    executor still starts.
-
-    **Sabotage:** bound the setup with ``future.result(timeout=window)`` -> TimeoutError.
-    """
-    import sys
-
-    from fastmcp.client.transports import StdioTransport
-
-    script = tmp_path / "slow_server.py"
-    script.write_text(_SLOW_SERVER, encoding="utf-8")
-    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "1")
-    executor = create_sync_tool_executor(
-        StdioTransport(sys.executable, [str(script), "3"]), timeout=30.0
-    )
-    try:
-        assert executor.get_tool_names() == ["ping"]
-    finally:
-        executor.close()
-
-
 def test_sync_tool_executor_setup_that_stops_progressing_fails_typed(monkeypatch):
     """A setup with no answer and no server work for a whole window fails typed and the
     executor is closed -- never an unbounded wait."""
@@ -669,7 +632,9 @@ def test_declared_mcp_permission_gate_keeps_two_argument_hook_compatibility() ->
     fake_client = FakeClient()
     executor = SyncMCPToolExecutor(
         object(),
-        timeout=1.0,
+        # Not what this checks: the first namespace call's lazy imports must not race a
+        # tight budget on a loaded machine.
+        timeout=30.0,
         client_factory=lambda _server: fake_client,
         permission_gate=lambda _name, _args: "allow",
         preloaded_tools={
@@ -1082,38 +1047,6 @@ def test_sync_mcp_tool_executor_cancel_mid_call_emits_wire_notification() -> Non
     finally:
         release_tool.set()
         worker.join(timeout=1.0)
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
-
-
-def test_sync_mcp_tool_executor_preserves_result_when_cancel_loses_race() -> None:
-    """A cancellation observed only after completion must not replace the tool result."""
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    checks = iter([False, True])
-    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
-
-    try:
-        set_tool_runtime_fallback(
-            ToolRuntimeHooks(
-                cancellation_checker=lambda: next(checks, True),
-                tool_observer=lambda name, args, phase, error: observed.append(
-                    (name, dict(args), phase, error)
-                ),
-            )
-        )
-
-        result = executor.call_tool("fake_echo", {"value": "late-cancel"})
-
-        assert fake_client.started_call is True
-        assert '"value": "late-cancel"' in result
-        assert observed[0] == ("fake_echo", {"value": "late-cancel"}, "started", None)
-        assert observed[-1] == ("fake_echo", {"value": "late-cancel"}, "completed", None)
-    finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 

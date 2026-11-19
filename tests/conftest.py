@@ -122,6 +122,7 @@ from tests._process_hygiene import (
 )
 from tests._test_runtime_isolation import (
     cleanup_test_runtime,
+    stop_bytecode_warmup,
 )
 
 
@@ -188,6 +189,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     try:
         if not hasattr(session.config, "workerinput"):
+            stop_bytecode_warmup()
             # An xdist worker the hang guard ended (tests/_hang_guard.py) never ran its
             # own teardown: its private daemon and run root are left behind. Every worker
             # is gone by the time the controller finishes, so reap them now instead of

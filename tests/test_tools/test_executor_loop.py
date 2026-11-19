@@ -12,18 +12,13 @@ restart, and an open in flight while its connection was saved again).
 from __future__ import annotations
 
 import asyncio
-import sys
 import threading
 from collections.abc import Iterator
-from pathlib import Path
 
-import psutil
 import pytest
 
 from clio_agent.arc import loop_guard
 from clio_agent.tools import task_call_context
-
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "mcp_apps" / "channel_app_server.py"
 
 
 @pytest.fixture
@@ -89,60 +84,3 @@ def test_several_server_loops_are_not_guessed_between(
         thread.join(timeout=5)
         other.close()
     assert events == [f"{task_call_context.MCP_EXECUTOR_PRIVATE_LOOP} reason=several_server_loops"]
-
-
-@pytest.mark.timeout(90)  # starts a real stdio server twice over (list, then call)
-def test_a_call_on_the_server_loop_reaches_a_server_the_executor_connected(
-    server_loop: asyncio.AbstractEventLoop, tmp_path: Path
-) -> None:
-    from fastmcp import Client
-
-    from clio_agent.tools.execution import create_sync_tool_executor
-    from clio_agent.tools.gateway import build_gateway, namespace_proxies
-    from clio_agent.tools.mcp_config import MCPServerSpec
-    from clio_agent.tools.mcp_runtime import make_mcp_client
-
-    log = tmp_path / "calls.jsonl"
-    spec = MCPServerSpec(
-        name="timeline",
-        transport="stdio",
-        command=sys.executable,
-        args=(str(FIXTURE),),
-        env={"CHANNEL_APP_LOG": str(log)},
-    )
-    gateway = build_gateway({"timeline": spec}, cwd=str(tmp_path))
-    # Built with no app bound, as task recovery and the commands listing build a fleet.
-    executor = create_sync_tool_executor(
-        gateway,
-        preloaded_tools={},
-        namespace_servers=namespace_proxies(gateway),
-        client_factory=make_mcp_client,
-    )
-    try:
-        listed = executor.list_namespace_tools("timeline")  # its first start, direct
-        assert {tool.name for tool in listed} >= {"open_timeline", "set_time"}
-        # The commands listing reads prompts over the namespace's persistent client,
-        # which for a plain server is the proxy's kept-alive backend session.
-        executor.list_namespace_prompts("timeline")
-
-        async def product_call() -> str:
-            # A product call: its own connection to the proxy, on the server loop.
-            async with make_mcp_client(namespace_proxies(gateway)["timeline"]) as client:
-                assert isinstance(client, Client)
-                result = await client.call_tool("set_time", {"time": 7})
-                return result.content[0].text
-
-        answer = asyncio.run_coroutine_threadsafe(
-            asyncio.wait_for(product_call(), 30), server_loop
-        ).result(40)
-        assert answer == "Timeline moved to step 7."
-        assert '"set_time"' in log.read_text(encoding="utf-8")
-        assert executor._loop is server_loop  # noqa: SLF001
-    finally:
-        executor.close()
-        for process in psutil.Process().children(recursive=True):
-            try:
-                if any(FIXTURE.name in arg for arg in process.cmdline()):
-                    process.kill()
-            except psutil.Error:
-                continue

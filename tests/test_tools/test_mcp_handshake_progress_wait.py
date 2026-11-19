@@ -116,3 +116,77 @@ def test_a_wait_with_no_server_process_at_all_is_no_progress() -> None:
 
     with pytest.raises(NoProgressTimeout):
         asyncio.run(wait_while_server_works(never(), slice_s=0.2))
+
+
+@pytest.fixture
+def one_second_discover_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each ``server/discover`` times out after 1 s and is never retried on budget."""
+    import mcp.client.session as sdk_session
+
+    monkeypatch.setattr(sdk_session, "DISCOVER_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setenv("CLIO_MCP_PROBE_TIMEOUT_RETRIES", "0")
+
+
+async def _list_through_proxy(script: Path, *args: str) -> list[str]:
+    """The proxy's per-request backend clone, entered as a gateway call or a page read
+    enters it: outside any wait."""
+    from clio_agent.tools.gateway import _proxy_for_spec
+    from clio_agent.tools.mcp_config import spec_from_declaration
+
+    spec = spec_from_declaration("probe", {"command": sys.executable, "args": [str(script), *args]})
+    backend = _proxy_for_spec(spec, str(script.parent)).client_factory()
+    backend.mode = "auto"  # what the factory sets under a modern front's request
+    try:
+        async with backend as client:
+            return [tool.name for tool in await client.list_tools()]
+    finally:
+        await backend.transport.disconnect()
+
+
+@pytest.mark.timeout(120)  # a real server that works 4 s before it can answer
+@pytest.mark.usefixtures("one_second_discover_budget")
+def test_a_proxied_connect_outside_any_wait_waits_while_its_server_starts(
+    server_script: Path,
+) -> None:
+    """Found under load: a page or proxy connect has no wait around it, so its discover
+    probe had a fixed budget and a server still starting read as one that never answers.
+
+    **Sabotage:** make ``install_connection_trees`` return without wrapping
+    ``Client.__aenter__`` -> the probe sees no server work, spends its budget at 1 s and
+    raises ``server/discover`` timed out.
+    """
+    assert asyncio.run(_list_through_proxy(server_script, "slow", "4")) == ["ping"]
+
+
+@pytest.mark.timeout(120)  # a real server that works 4 s before it can answer
+@pytest.mark.usefixtures("one_second_discover_budget")
+def test_a_plain_client_connect_waits_while_its_server_starts(server_script: Path) -> None:
+    """A client entered directly (an owned transport, a fleet probe) gets the same
+    measured wait as one entered through the proxy."""
+    from clio_agent.tools.mcp_probe_hardening import install_probe_hardening
+
+    install_probe_hardening()
+
+    async def listed() -> list[str]:
+        transport = StdioTransport(command=sys.executable, args=[str(server_script), "slow", "4"])
+        try:
+            async with Client(transport, mode="auto") as client:
+                return [tool.name for tool in await client.list_tools()]
+        finally:
+            await transport.disconnect()
+
+    assert asyncio.run(listed()) == ["ping"]
+
+
+@pytest.mark.timeout(120)  # spawns a real server that never answers
+@pytest.mark.usefixtures("one_second_discover_budget")
+def test_a_proxied_connect_to_an_idle_server_still_spends_the_budget(
+    server_script: Path,
+) -> None:
+    """Measuring the server never turns an idle, unanswering one into an endless wait."""
+    from mcp.shared.exceptions import MCPError
+
+    started = time.monotonic()
+    with pytest.raises((MCPError, ExceptionGroup)):
+        asyncio.run(_list_through_proxy(server_script, "hung"))
+    assert time.monotonic() - started < 60.0

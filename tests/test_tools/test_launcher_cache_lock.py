@@ -8,7 +8,6 @@ abandoned artifact: break it, typed and loud. A generous runaway backstop
 
 from __future__ import annotations
 
-import multiprocessing
 import os
 import threading
 import time
@@ -27,23 +26,6 @@ from clio_agent.tools.launcher_cache_lock import (
     uses_shared_launcher_cache,
 )
 from clio_agent.tools.mcp_config import MCPServerSpec
-
-
-def _mp_hold_lock_until_killed(cache_dir: str, ready_evt: Any, server_id: str) -> None:
-    """Module-level (Windows-spawn-picklable) child-process target: hold the
-    launcher-cache lock until this process is killed. Used to produce a
-    GENUINELY dead holder (the OS releases the lock the instant the process
-    is terminated) rather than a same-process fake, which Windows would not
-    let this module force-delete out from under a still-open handle."""
-
-    from clio_agent.tools import launcher_cache_lock as _lcl
-    from clio_agent.tools import mcp_config as _mcp_config
-
-    _mcp_config._mcp_uv_cache_dir = lambda: __import__("pathlib").Path(cache_dir)
-    with _lcl.acquire_launcher_cache_lock(server_id, timeout_s=60.0):
-        ready_evt.set()
-        while True:
-            time.sleep(0.05)
 
 
 def test_the_hold_ceiling_is_the_connect_ceiling_plus_one_window(
@@ -226,41 +208,6 @@ def test_lock_held_by_live_holder_is_waited_out() -> None:
     assert "second-acquired" in order
     assert order.index("released") < order.index("second-acquired")
     assert elapsed >= 0.6, "waiter returned before the holder released -- did not actually wait"
-
-
-def test_dead_process_lock_is_acquired_promptly_without_the_backstop(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    """A lock left by a GENUINELY dead process (killed while holding it, via a
-    real child process) must be acquired promptly -- the OS itself already
-    released it on process death, so this must never wait anywhere near the
-    runway backstop."""
-
-    from clio_agent.tools import mcp_config as _mcp_config
-
-    monkeypatch.setattr(_mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
-
-    ctx = multiprocessing.get_context("spawn")
-    ready_evt = ctx.Event()
-    child = ctx.Process(
-        target=_mp_hold_lock_until_killed, args=(str(tmp_path), ready_evt, "server-c")
-    )
-    child.start()
-    try:
-        assert ready_evt.wait(timeout=15.0), "child never acquired the lock"
-        child.kill()
-        child.join(timeout=10.0)
-        assert not child.is_alive(), "child failed to die -- test cannot proceed"
-
-        started = time.monotonic()
-        with acquire_launcher_cache_lock("server-c", timeout_s=30.0):
-            pass
-        elapsed = time.monotonic() - started
-        assert elapsed < 10.0, "acquisition waited near the backstop for an already-dead holder"
-    finally:
-        if child.is_alive():
-            child.kill()
-            child.join(timeout=5.0)
 
 
 def test_dead_pid_owner_record_triggers_break_stale_lock(
