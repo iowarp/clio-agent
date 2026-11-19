@@ -40,7 +40,7 @@ from clio_agent import _dspy_lazy_proxies  # noqa: E402
 
 _dspy_lazy_proxies.install()
 
-__version__ = "0.9.7"
+__version__ = "0.9.7.1"
 __author__ = "IOWarp Team"
 
 __all__ = [

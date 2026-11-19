@@ -113,7 +113,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.7
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.7.1
 clio-agent serve
 ```
 
@@ -177,7 +177,7 @@ $u = 'https://clio.iowarp.ai/install.ps1'
 **Pins** (deployments and CI): `--version <pypi version>` for a release,
 `--ref <branch, tag or commit>` for source. The older spellings still work:
 `CLIO_VERSION=<v>` is `--version <v>`, `CLIO_REF=<ref>` is `--source --ref <ref>`.
-For this release, `CLIO_VERSION=0.9.7 bash install/install.sh` selects the stable
+For this release, `CLIO_VERSION=0.9.7.1 bash install/install.sh` selects the stable
 0.9.7 frontend and backend.
 `GACT_REF` and `GACT_VERSION` no longer select a frontend: the TUI is frozen.
 `CLIO_INSTALLER_REF` selects a different launcher-script ref.
