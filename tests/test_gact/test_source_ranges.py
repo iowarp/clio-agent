@@ -80,6 +80,23 @@ def test_a_sidecar_probe_is_not_answered_with_the_files_bytes() -> None:
     assert client.get(url, headers={"Range": "bytes=0-1"}).status_code == 206
 
 
+def test_a_large_file_without_range_streams_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    # GDAL with CPL_VSIL_CURL_USE_HEAD=NO learns the size from an unranged GET; a 416
+    # there made it report every large tile as an unsupported format.
+    from clio_agent.gact.routes import source_ranges
+
+    monkeypatch.setattr(source_ranges, "WHOLE_READ_LIMIT", 100)
+    monkeypatch.setattr(source_ranges, "STREAM_CHUNK", 64)
+    body = bytes(range(256)) * 2
+    app, _ = _app_with(body)
+    client = TestClient(app, client=LOOPBACK)
+    whole = client.get("/v1/sessions/sess_a/source-ranges/rng_test/a.bin")
+    assert whole.status_code == 200 and whole.content == body
+    assert whole.headers["content-length"] == str(len(body))
+    stats = client.get("/v1/sessions/sess_a/source-range-stats/rng_test").json()
+    assert stats["bytes_served"] == len(body) and stats["requests"] == 8
+
+
 def test_refusals_are_typed_by_status() -> None:
     app, _ = _app_with(b"x" * 100)
     loop = TestClient(app, client=LOOPBACK)

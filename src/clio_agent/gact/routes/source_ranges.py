@@ -4,7 +4,10 @@ Loopback only: the handle is the capability, minted for one session by
 ``connected_data_open`` with ``range``. ``HEAD`` gives the size; ``GET`` with one
 ``bytes=`` range answers 206 with exactly those bytes, read through the source's adapter;
 ``/v1/sessions/{sid}/source-range-stats/{handle}`` reports the bytes and requests
-served so far. A trailing file name after the handle must be the handle's own file:
+served so far. A ``GET`` without ``Range`` streams the whole file in chunks: GDAL with
+``CPL_VSIL_CURL_USE_HEAD=NO`` (the geoservices server) learns a file's size from such a
+``GET``'s headers and then drops the connection, and refusing it (416) made GDAL report
+every large tile as an unsupported format. A trailing file name after the handle must be the handle's own file:
 readers such as GDAL probe sidecars by appending to the URL (``….tif.aux.xml``,
 ``….msk``), and answering those with the file's own bytes made GDAL parse a raster as
 XML, hundreds of reads per open. Any other name is 404, as a missing sidecar is.
@@ -14,15 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.auth import is_loopback_address
 from clio_agent.gact.storage.range_handles import RangeHandle, registry
 
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
-#: A read without ``Range`` is served whole only up to this size.
+#: A read without ``Range`` up to this size is answered in one body; larger, it streams.
 WHOLE_READ_LIMIT = 8 * 2**20
+#: The chunk a streamed whole read fetches at a time.
+STREAM_CHUNK = 2**20
 
 
 def _handle(app: FastAPI, request: Request, sid: str, handle: str, name: str = "") -> RangeHandle:
@@ -61,6 +68,18 @@ def _span(header: str | None, size: int) -> tuple[int, int] | None:
     return start, end
 
 
+async def _stream(app: FastAPI, found: RangeHandle) -> AsyncIterator[bytes]:
+    """The whole file, one chunk at a time; a client that disconnects stops the reads."""
+    start = 0
+    while start < found.size:
+        data = await asyncio.to_thread(found.read, start, min(STREAM_CHUNK, found.size - start))
+        if not data:
+            return
+        registry(app).served(found, len(data))
+        start += len(data)
+        yield data
+
+
 def register_source_range_routes(app: FastAPI) -> None:
     """Serve minted range handles."""
 
@@ -84,10 +103,14 @@ def register_source_range_routes(app: FastAPI) -> None:
         span = _span(request.headers.get("range"), found.size)
         if span is None:
             if found.size > WHOLE_READ_LIMIT:
-                raise HTTPException(
-                    status_code=416,
-                    detail="Request a byte range; this file is served by range only",
-                    headers={"Content-Range": f"bytes */{found.size}"},
+                return StreamingResponse(
+                    _stream(app, found),
+                    media_type="application/octet-stream",
+                    headers={
+                        "Content-Length": str(found.size),
+                        "Accept-Ranges": "bytes",
+                        "ETag": f'"{found.revision}"',
+                    },
                 )
             span, status = (0, max(0, found.size - 1)), 200
         else:
