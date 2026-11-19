@@ -129,9 +129,111 @@ def test_human_or_producer_changes_during_capture_refuse(change: dict[str, Any])
             future.result(timeout=2)
 
 
+def test_unavailable_says_whether_the_surface_is_unmounted_hidden_or_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal names the case and what would make the surface capturable."""
+    bridge = A2UIVisualFeedback()
+    with pytest.raises(VisualFeedbackError) as unmounted:
+        bridge.capture("sid", "surface", 1)
+    assert unmounted.value.reason == "a2ui_viewer_unavailable"
+    assert "need not be on screen" in str(unmounted.value)
+    assert "no longer visible" not in str(unmounted.value)
+    bridge.report("sid", viewer(visible=False))
+    with pytest.raises(VisualFeedbackError, match="open but hidden.*foreground"):
+        bridge.capture("sid", "surface", 1)
+    # A lease that lapses before its viewer claims the capture: it closed, said as such.
+    monkeypatch.setattr("clio_agent.gact.a2ui_visual.VIEWER_TTL", 0.3)
+    bridge.report("sid", viewer(view_revision=1))
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(bridge.capture, "sid", "surface", 1)
+        with pytest.raises(VisualFeedbackError, match="closed during the capture"):
+            future.result(timeout=3)
+
+
+def test_concurrent_captures_survive_a_page_too_busy_to_renew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live: three parallel captures, one of a suspended surface, on one page.
+
+    Capturing one view held the page's main thread for seconds, so no viewer on it
+    renewed its lease, and every capture failed as if its viewer had closed. A viewer
+    working on a claimed capture keeps its lease until the capture's deadline.
+    """
+    monkeypatch.setattr("clio_agent.gact.a2ui_visual.VIEWER_TTL", 0.2)
+    bridge = A2UIVisualFeedback()
+    reports = {
+        surface: viewer(f"viewer-{surface}", surface_id=surface)
+        for surface in ("section-a", "section-b", "glider")
+    }
+    reports["glider"] = viewer(
+        "viewer-glider",
+        surface_id="glider",
+        view_revision=4,
+        state={"suspended": True, "readiness": {"ready": True, "detail": ""}},
+    )
+    for report in reports.values():
+        bridge.report("sid", report)
+    with ThreadPoolExecutor(3) as pool:
+        futures = {surface: pool.submit(bridge.capture, "sid", surface, 1) for surface in reports}
+        # Each viewer renews and claims its own request, as the page's viewers do.
+        jobs: dict[str, dict[str, Any]] = {}
+        deadline = time.monotonic() + CAPTURE_TIMEOUT
+        while len(jobs) < len(reports) and time.monotonic() < deadline:
+            for surface, report in reports.items():
+                for job in bridge.report("sid", report):
+                    jobs[surface] = job
+            time.sleep(0.005)
+        assert set(jobs) == set(reports)
+        time.sleep(0.6)  # The page is busy: no viewer renews for three TTLs.
+        for surface, report in reports.items():
+            bridge.complete("sid", reply(jobs[surface], report))
+        for surface, future in futures.items():
+            _, evidence = future.result(timeout=3)
+            assert evidence["viewer"]["surface_id"] == surface
+
+
+def test_capture_goes_to_the_viewer_still_reporting_not_a_lapsing_lease() -> None:
+    """A renderer that just unmounted keeps its lease for a moment; it must not win."""
+    bridge = A2UIVisualFeedback()
+    lapsing, current = viewer("viewer-a"), viewer("viewer-b")
+    bridge.report("sid", lapsing)
+    time.sleep(0.01)
+    bridge.report("sid", current)
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(bridge.capture, "sid", "surface", 1)
+        job = claim(bridge, current)
+        assert bridge.report("sid", lapsing) == []
+        bridge.complete("sid", reply(job, current))
+        _, evidence = future.result(timeout=2)
+    assert evidence["viewer"]["viewer_id"] == "viewer-b"
+
+
+def test_suspended_surface_viewer_continues_the_lease_and_takes_the_capture() -> None:
+    """A transcript surface scrolled away reports suspended under the same viewer.
+
+    Its renderer unmounts, but the same viewer id reports a new epoch saying it is
+    suspended and ready: a capture is dispatched to it and its pixels are accepted.
+    """
+    bridge = A2UIVisualFeedback()
+    bridge.report("sid", viewer(view_revision=3))
+    suspended = viewer(
+        view_revision=4,
+        state={"suspended": True, "readiness": {"ready": True, "detail": ""}},
+    )
+    bridge.report("sid", suspended)
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(bridge.capture, "sid", "surface", 1, component_id="view-2")
+        job = claim(bridge, suspended)
+        assert (job["view_revision"], job["component_id"]) == (4, "view-2")
+        bridge.complete("sid", reply(job, suspended))
+        _, evidence = future.result(timeout=2)
+    assert evidence["viewer"]["state"]["suspended"] is True
+
+
 def test_unavailable_stale_timeout_failure_and_malformed_pixels() -> None:
     bridge = A2UIVisualFeedback()
-    with pytest.raises(VisualFeedbackError, match="Open the requested"):
+    with pytest.raises(VisualFeedbackError, match="No CLIO window has this surface mounted"):
         bridge.capture("sid", "surface", 1)
     bridge.report("sid", viewer())
     with pytest.raises(VisualFeedbackError, match="expected definition"):
