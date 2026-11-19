@@ -93,9 +93,6 @@ def select_source(
     service: StorageService, workspace_id: str, dataset: NDPDataset, workspace_root: Path
 ) -> SourceRecord:
     """Persist selected metadata after the caller's UI or tool approval, without linking."""
-    from clio_agent.gact.storage.organization_branches import note_organization  # noqa: PLC0415
-
-    note_organization(dataset.organization)
     with service.ndp_selection_lock:
         existing = existing_selection(service, workspace_id, dataset)
         if existing is not None:

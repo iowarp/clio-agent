@@ -66,3 +66,38 @@ def test_no_note_without_a_spawn_tool_or_with_the_switch_off(
 def test_outside_a_turn_nothing_happens(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(clio_react, "active_loop", lambda: None)
     branches.note_organization("trpa")  # no loop: no error, no note
+
+
+def test_the_agents_connect_counts_before_approval_not_after(
+    running: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent's own connect counts in its turn; the approved execution does not.
+    The approved connect runs outside the turn (a live Tahoe run reached eight
+    organizations that way and noted nothing). SABOTAGE: drop ``in_turn`` from the
+    count and the post-approval calls count twice; drop the count and nothing notes."""
+    import threading
+
+    from clio_agent.gact.storage import connect_tool, ndp_selection
+
+    monkeypatch.setattr(ndp_selection, "existing_selection", lambda *_: None)
+
+    def dataset(org: str) -> Any:
+        return SimpleNamespace(
+            organization=org,
+            endpoint=SimpleNamespace(name="ndp"),
+            resources=[],
+            model_dump=lambda **_: {"organization": org},
+        )
+
+    service = SimpleNamespace(ndp_selection_lock=threading.Lock())
+    arguments = {"provider": "ndp", "root": "r", "configuration": {"resource_ids": []}}
+    for org in ("trpa", "cal-fire"):
+        service.ndp = SimpleNamespace(selected=lambda *_, o=org: dataset(o))
+        connect_tool.connection_approval(service, "ws", arguments, in_turn=True)
+        connect_tool.connection_approval(service, "ws", arguments)  # the approved run
+    assert running.recorder.notes == []
+    service.ndp = SimpleNamespace(selected=lambda *_: dataset("nifc"))
+    connect_tool.connection_approval(service, "ws", arguments)
+    assert running.recorder.notes == []
+    connect_tool.connection_approval(service, "ws", arguments, in_turn=True)
+    assert "3 organizations (trpa, cal-fire, nifc)" in running.recorder.notes[0][1]
