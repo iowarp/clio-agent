@@ -392,6 +392,41 @@ class ResourceStore:
             self._flush_locked()
             return record.model_copy(deep=True)
 
+    def adopt_immutable(self, resource_id: str, source: Path) -> ResourceRecord | None:
+        """Take ``source``'s bytes for an empty upload by hard link instead of a copy.
+
+        For a file that never changes (a read-only download snapshot), a link gives
+        custody the same immutable bytes without a second copy on disk; a large NDP
+        download was otherwise held twice by the time it reached the model. Returns
+        None, with a typed reason in the log, when linking is impossible (another file
+        system, no link support); the caller then copies.
+        """
+        with self._lock:
+            record = self._require_locked(resource_id)
+            if record.state != "uploading" or record.received_size != 0:
+                return None
+            size = os.stat(source).st_size
+            if size != record.declared_size:
+                return None
+            upload = self._upload_path(record)
+            try:
+                upload.unlink(missing_ok=True)
+                os.link(source, upload)
+            except OSError as exc:
+                upload.touch(exist_ok=True)
+                logger.warning(
+                    "resource custody reason=custody_link_unavailable resource=%s error=%s",
+                    resource_id,
+                    exc,
+                )
+                return None
+            record.received_size = size
+            record.updated_at = _now_iso()
+            record = self._finalize_locked(record)
+            self._records[record.id] = record
+            self._flush_locked()
+            return record.model_copy(deep=True)
+
     def _finalize_locked(self, record: ResourceRecord) -> ResourceRecord:
         upload = self._upload_path(record)
         digest = hashlib.sha256()

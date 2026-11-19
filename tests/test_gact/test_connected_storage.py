@@ -119,6 +119,35 @@ def test_explicit_download_attachment_is_immutable_and_works_disconnected(
     assert resource.connected_source["id"] == record.source.id
 
 
+def test_a_read_only_download_is_attached_by_link_not_a_second_copy(
+    source_setup: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The snapshot never changes, so custody shares its inode; without links it copies."""
+    import os
+
+    from clio_agent.gact.resource_custody import ResourceStore
+    from clio_agent.gact.storage.references import source_resource
+
+    store, _, _, _ = source_setup
+    record = transfer(source_setup)
+    record = record.model_copy(update={"download_access": "read_only"})
+    resources = ResourceStore(root=store.root.parent / "resources", max_resource_bytes=10000)
+    snapshot = store.root / record.source.id / record.manifest_id / "readme.txt"
+    resource = source_resource(store, resources, record, "readme.txt")
+    held = resources.content_path(resource)
+    assert os.stat(held).st_ino == os.stat(snapshot).st_ino
+    assert held.read_text() == "original" and resource.sha256
+
+    def no_links(*_args: object) -> None:
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(os, "link", no_links)
+    other = ResourceStore(root=store.root.parent / "resources2", max_resource_bytes=10000)
+    copied = source_resource(store, other, record, "readme.txt")
+    assert os.stat(other.content_path(copied)).st_ino != os.stat(snapshot).st_ino
+    assert other.content_path(copied).read_text() == "original"
+
+
 def test_apply_only_selected_changes_and_advances_baseline(source_setup: tuple) -> None:
     store, _, adapter, _ = source_setup
     record = transfer(source_setup)

@@ -192,6 +192,9 @@ def source_resource(
         declared_size=os.stat(win_extended_path(path)).st_size,
         client_upload_id="source:" + identity,
     )
+    if resource.state == "uploading" and linked_path is None and record.download_read_only:
+        # A read-only download snapshot never changes: custody links it, no second copy.
+        resource = resources.adopt_immutable(resource.id, Path(win_extended_path(path))) or resource
     if resource.state == "uploading":
         with open(win_extended_path(path), "rb") as stream:
             stream.seek(resource.received_size)
