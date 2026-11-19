@@ -107,6 +107,12 @@ _MAX_CONCURRENT_EGRESS_PROMPTS = 32
 _PENDING_EGRESS: dict[tuple[str, str], dict[str, Any]] = {}
 _PENDING_EGRESS_LOCK = threading.Lock()
 
+#: Egress asks the person answered "Deny", keyed ``(workspace_id, host, write)`` and holding
+#: the ``(session_id, turn_id)`` the ask belonged to. A retry of the same host during that turn
+#: fails at once instead of asking again; the next turn asks afresh. A workspace host policy
+#: the person adds still decides first, since it is consulted before any ask.
+_DENIED_EGRESS: dict[tuple[str, str, bool], tuple[str, str]] = {}
+
 #: Typed deny reasons recorded on the trace when a deny-mode egress is blocked (no silent
 #: fallback — every boundary denial reaches the trace via :func:`_record_egress_denied`).
 REASON_EGRESS_POLICY_DENY = "policy_deny"
@@ -115,6 +121,7 @@ REASON_EGRESS_PROMPT_CAP = "egress_gate_prompt_cap_reached"
 REASON_EGRESS_STORE_UNRESOLVED = "egress_gate_store_unresolved"
 REASON_EGRESS_DECISION_ERROR = "egress_gate_decision_error"
 REASON_EGRESS_PROMPT_UNWRITABLE = "egress_gate_prompt_unwritable"
+REASON_EGRESS_DENIED_THIS_TURN = "egress_denied_this_turn"
 #: N2 write-gate typed reasons (never a silent path). A write-gate decision that RAISES fails
 #: CLOSED (deny) for a write-shaped egress — a wiring bug must not silently allow a write; a
 #: matching ``deny`` host policy on a write is recorded distinctly from the deny-mode read deny.
@@ -668,9 +675,26 @@ def _prompt_egress(
     (review finding 4) — one user decision unblocks every waiter. Distinct concurrently-open
     prompts are bounded by :data:`_MAX_CONCURRENT_EGRESS_PROMPTS`; over the cap a further
     distinct-host connect fails CLOSED with a typed reason (never unbounded blocked prompts).
+
+    A "Deny" answer holds for the rest of the turn it was given in (:data:`_DENIED_EGRESS`), so a
+    client that retries the refused host fails fast instead of asking the person again.
     """
     host = (rec.host or "").strip().lower()
     key = (workspace_id, host)
+    denial_key = (workspace_id, host, write)
+    with _PENDING_EGRESS_LOCK:
+        held = _DENIED_EGRESS.get(denial_key)
+        if held is not None:
+            if _running_turn_id(app, held[0]) == held[1]:
+                denied_this_turn = True
+            else:
+                _DENIED_EGRESS.pop(denial_key, None)
+                denied_this_turn = False
+        else:
+            denied_this_turn = False
+    if denied_this_turn:
+        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_DENIED_THIS_TURN)
+        return "deny"
     with _PENDING_EGRESS_LOCK:
         prompt = _PENDING_EGRESS.get(key)
         is_creator = prompt is None
@@ -748,7 +772,31 @@ def _prompt_egress(
         _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_TIMEOUT)
         return "deny"
     action = str(row.get("action") or "deny")
-    return "allow" if allows(action) else "deny"
+    if allows(action):
+        return "allow"
+    if is_creator:
+        session_id = str(row.get("session_id") or "")
+        with _PENDING_EGRESS_LOCK:
+            _DENIED_EGRESS[denial_key] = (session_id, _running_turn_id(app, session_id))
+    return "deny"
+
+
+def _running_turn_id(app: "FastAPI", session_id: str) -> str:
+    """The id of the turn running on ``session_id`` now, or ``""`` when it is idle."""
+    runner = getattr(app.state, "turn_runner", None)
+    if runner is None or not session_id:
+        return ""
+    try:
+        handle = runner.handle(session_id)
+    except Exception:  # noqa: BLE001 - an unreadable runner counts as idle
+        return ""
+    return str(getattr(handle, "turn_id", "") or "") if handle is not None else ""
+
+
+def clear_egress_denials() -> None:
+    """Forget every held "Deny" answer (test isolation seam)."""
+    with _PENDING_EGRESS_LOCK:
+        _DENIED_EGRESS.clear()
 
 
 def _emit_egress_requested(app: "FastAPI", session_id: str, row: dict[str, Any]) -> None:
@@ -838,6 +886,7 @@ __all__ = [
     "SCOPE_SESSION",
     "SCOPE_WORKSPACE",
     "apply_root_grant",
+    "clear_egress_denials",
     "revoke_root_grant",
     "emit_boundary_for_derived_policy",
     "emit_boundary_granted",

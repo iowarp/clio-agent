@@ -410,7 +410,10 @@ and reads the real `CONNECT` from inside it. A private, link-local or loopback h
 reached this way (an SSH login node on a cluster network, say) always needs consent,
 in or out of deny mode: unless a workspace `host_pattern` policy already decides it,
 the person gets a `network_egress` request naming the address kind and can allow it
-once, allow it for the workspace, or decline. The connection is recorded as
+once, allow it for the workspace, or decline. A decline holds for the rest of the turn
+it was given in: a client that retries the same host fails at once without asking
+again, and the next turn asks afresh (a workspace policy the person adds still
+decides first). The same holds for any `network_egress` request. The connection is recorded as
 `proxy-enforced` with its `network` kind. CLIO resolves the name once and dials the
 addresses it classified, and refuses any relayed connection that would land on a port
 CLIO itself serves. Other programs (`curl`, Python clients) keep Codex's rule:
@@ -477,6 +480,13 @@ folders, where its tool caches are redirected. CLIO's cache and config folders (
 servers' environments, settings, hook trust, credentials, the plugin store) are the
 servers' only, so a shell command cannot break a running server, widen its own limits or
 replace a credential (`runtime/sandbox_roots.py`; KiCad ledger FN-3).
+
+**Server launchers' homes exist before the fence starts.** A fence rules only on
+folders that exist, and the launchers that start MCP servers create theirs on first
+use (`uvx` locks `<uv data>/tools/.lock`, `npx` fills the npm cache). CLIO creates uv's
+data, cache and tool folders (`UV_TOOL_DIR` when set), the npm cache and clio-kit's
+folders before granting them, so a fresh machine or a fresh `XDG_DATA_HOME` starts a
+plugin server on its first try.
 
 **Boundary feedback in the result (#1905).** A denial is diagnosed once, in the
 confinement layer (`runtime/sandbox_diagnosis.py`): a per-platform denial signature

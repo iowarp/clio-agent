@@ -124,5 +124,31 @@ def test_windows_fleet_can_lock_uv_tools(platform, env, expected, tmp_path, monk
         resolved = sandbox_roots._windows_uv_tool_dir()
     assert resolved == expected
     if expected is not None:
-        monkeypatch.setattr(sandbox_roots, "_windows_uv_tool_dir", lambda: expected)
-        assert expected in sandbox_roots._platform_tool_cache_dirs()
+        monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+        tools = tmp_path / "roaming" / "uv" / "tools"
+        monkeypatch.setattr(sandbox_roots, "_windows_uv_tool_dir", lambda: tools)
+        assert tools in sandbox_roots._platform_tool_cache_dirs()
+        assert tools.is_dir()
+
+
+def test_launcher_homes_exist_on_a_fresh_data_home(tmp_path, monkeypatch) -> None:
+    """uvx writes ``<uv-data>/tools/.lock`` on its first run; a fresh data home lacks uv."""
+    import sys
+
+    if sys.platform != "linux":
+        return
+    from clio_agent.runtime.sandbox_roots import _platform_tool_cache_dirs
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "uv-tools"))
+    monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm"))
+    dirs = _platform_tool_cache_dirs()
+    for home in (
+        tmp_path / "data" / "uv",
+        tmp_path / "cache" / "uv",
+        tmp_path / "uv-tools",
+        tmp_path / "npm",
+    ):
+        assert home in dirs
+        assert home.is_dir()

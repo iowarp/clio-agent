@@ -28,10 +28,12 @@ def _clean_registries():
     sandbox_roots.clear_write_root_grants()
     sandbox_net.clear_namespace_children()
     grants._PENDING_EGRESS.clear()
+    grants.clear_egress_denials()
     yield
     sandbox_roots.clear_write_root_grants()
     sandbox_net.clear_namespace_children()
     grants._PENDING_EGRESS.clear()
+    grants.clear_egress_denials()
 
 
 @pytest.fixture
@@ -771,6 +773,58 @@ def test_a_local_host_asks_the_person_outside_deny_mode(
     app.state.permission_events[pid].set()
     t.join(timeout=5)
     assert result["decision"] == decision
+
+
+def test_a_denied_host_is_not_asked_again_in_the_same_turn(tmp_path, captured_events) -> None:
+    """A "Deny" holds for the rest of its turn: retries fail at once, the next turn asks again."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    sid = app.state.sessions.create(workspace_id=ws.id).id
+    running = {"turn": "turn_1"}
+    app.state.turn_runner = SimpleNamespace(
+        handle=lambda s: SimpleNamespace(turn_id=running["turn"]) if s == sid else None
+    )
+    rec = _local_record("10.9.8.7", str(root), network="private")
+
+    def _answer_next(action: str) -> dict:
+        result: dict = {}
+        t = threading.Thread(
+            target=lambda: result.update(decision=grants._egress_gate_decision(app, rec)),
+            daemon=True,
+        )
+        t.start()
+        pid = _await_egress_prompt(app)
+        assert pid, "the host must be asked about"
+        row = app.state.permissions[pid]
+        row["status"] = "resolved"
+        row["action"] = action
+        app.state.permission_events[pid].set()
+        t.join(timeout=5)
+        return result
+
+    assert _answer_next("deny")["decision"] == "deny"
+    asked = _types(captured_events).count("permission.requested")
+    for _ in range(5):
+        assert grants._egress_gate_decision(app, rec) == "deny"
+    assert _types(captured_events).count("permission.requested") == asked
+    assert grants.REASON_EGRESS_DENIED_THIS_TURN in _resolved_reasons(captured_events)
+
+    # A policy the person adds still decides before the held answer.
+    policy = {
+        "scope": "workspace",
+        "scope_id": ws.id,
+        "action": "allow",
+        "host_pattern": "10.9.8.7",
+    }
+    app.state.permission_policies.append(policy)
+    assert grants._egress_gate_decision(app, rec) == "allow"
+    app.state.permission_policies.remove(policy)
+
+    # The next turn asks again.
+    running["turn"] = "turn_2"
+    assert _answer_next("allow")["decision"] == "allow"
 
 
 @pytest.mark.parametrize(("policy", "decision"), [("allow", "allow"), ("deny", "deny")])
