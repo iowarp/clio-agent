@@ -1,0 +1,243 @@
+From 14d9defd1ba6513f3b97e91d4e1561985c8dc4cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 19:32:29 +0000
+Subject: [PATCH 7/7] fix(interactions): show a full store as such, with the
+ service's sentence
+
+The service now reports clio_core_writes_refused among a conversation's
+interaction degradations while refused writes hold its work. Every clio_core_
+reason was shown as "A saved session has a damaged data record" under "Some
+responses could not be read", which says the wrong thing about a full store.
+That reason now shows the service's own sentence (store full, disk low) under
+"Nothing new can be recorded".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ web/src/components/clio/composer-failure.ts   |  5 ++--
+ .../clio/pending-interaction-notices.test.tsx | 20 ++++++++++++++++
+ .../clio/pending-interaction-notices.tsx      |  7 +++++-
+ web/src/hooks/use-workspace-data.test.tsx     | 17 ++++++++++++++
+ web/src/hooks/use-workspace-data.ts           | 23 ++++++++++++-------
+ web/src/locales/el/messages.po                |  4 ++++
+ web/src/locales/en/messages.po                |  4 ++++
+ web/src/locales/es/messages.po                |  4 ++++
+ web/src/locales/ja/messages.po                |  4 ++++
+ web/src/locales/pseudo/messages.po            |  4 ++++
+ 10 files changed, 81 insertions(+), 11 deletions(-)
+ create mode 100644 web/src/components/clio/pending-interaction-notices.test.tsx
+
+diff --git a/web/src/components/clio/composer-failure.ts b/web/src/components/clio/composer-failure.ts
+index df87d9c7e..33daa9ece 100644
+--- a/web/src/components/clio/composer-failure.ts
++++ b/web/src/components/clio/composer-failure.ts
+@@ -29,8 +29,9 @@ export function humanFailureText(text: string | undefined | null): string | unde
+   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+ }
+ 
+-/** Typed refusals that mean CLIO cannot record anything new (its store refuses writes). */
+-const STORE_REFUSALS = new Set(['clio_core_writes_refused']);
++/** The typed refusal that means CLIO cannot record anything new (its store refuses writes). */
++export const STORE_REFUSED = 'clio_core_writes_refused';
++const STORE_REFUSALS = new Set([STORE_REFUSED]);
+ 
+ /**
+  * The service's own sentence when a send was refused because CLIO's conversation
+diff --git a/web/src/components/clio/pending-interaction-notices.test.tsx b/web/src/components/clio/pending-interaction-notices.test.tsx
+new file mode 100644
+index 000000000..ad210fdd9
+--- /dev/null
++++ b/web/src/components/clio/pending-interaction-notices.test.tsx
+@@ -0,0 +1,20 @@
++import { cleanup, render, screen } from '@testing-library/react';
++import { afterEach, expect, it } from 'vitest';
++import { STORE_REFUSED } from './composer-failure';
++import { PendingSurfaceNotices } from './pending-interaction-notices';
++
++afterEach(cleanup);
++
++it('titles a store that refuses writes for what it means, with the service sentence', () => {
++  const error = new Error("CLIO's conversation store is full, so nothing new can be recorded.");
++  error.name = STORE_REFUSED;
++  render(<PendingSurfaceNotices error={error} />);
++  expect(screen.getByText('Nothing new can be recorded')).toBeVisible();
++  expect(screen.getByText(/conversation store is full/u)).toBeVisible();
++  expect(screen.queryByText('Some responses could not be read')).toBeNull();
++});
++
++it('keeps the read-failure title for any other failure', () => {
++  render(<PendingSurfaceNotices error={new Error('One session could not be read')} />);
++  expect(screen.getByText('Some responses could not be read')).toBeVisible();
++});
+diff --git a/web/src/components/clio/pending-interaction-notices.tsx b/web/src/components/clio/pending-interaction-notices.tsx
+index 114c5abd1..e2d2c5744 100644
+--- a/web/src/components/clio/pending-interaction-notices.tsx
++++ b/web/src/components/clio/pending-interaction-notices.tsx
+@@ -12,6 +12,7 @@ import type { PendingInteraction } from '@clio/core/v3';
+ import { AlertTriangleIcon, BotIcon } from 'lucide-react';
+ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+ import { AskError } from './ask-card';
++import { STORE_REFUSED } from './composer-failure';
+ import { t, ph } from '@lingui/core/macro';
+ 
+ /**
+@@ -34,7 +35,11 @@ export function PendingSurfaceNotices({
+       {error ? (
+         <Alert variant="destructive">
+           <AlertTriangleIcon aria-hidden="true" />
+-          <AlertTitle>{t`Some responses could not be read`}</AlertTitle>
++          <AlertTitle>
++            {error.name === STORE_REFUSED
++              ? t`Nothing new can be recorded`
++              : t`Some responses could not be read`}
++          </AlertTitle>
+           <AlertDescription>{error.message}</AlertDescription>
+         </Alert>
+       ) : null}
+diff --git a/web/src/hooks/use-workspace-data.test.tsx b/web/src/hooks/use-workspace-data.test.tsx
+index be04bc162..dfd4a7687 100644
+--- a/web/src/hooks/use-workspace-data.test.tsx
++++ b/web/src/hooks/use-workspace-data.test.tsx
+@@ -310,6 +310,23 @@ describe('useWorkspaceData interaction reads', () => {
+     );
+   });
+ 
++  // Live 2026-11-19: a full store held a running deep-research flow and the
++  // conversation said nothing; the service's sentence is the notice, not "damaged record".
++  it('shows the store-full sentence while refused writes hold the work', async () => {
++    mocks.repository.capabilities.mockResolvedValue({
++      capabilities: { x_clio_interactions: true },
++      gact_versions: [],
++    });
++    const sentence =
++      "CLIO's conversation store is full, so nothing new can be recorded. Free disk space or give the store more room, then restart CLIO.";
++    mocks.repository.pendingInteractionProjection.mockResolvedValue({
++      interactions: [],
++      degradations: [{ reason: 'clio_core_writes_refused', detail: sentence }],
++    });
++    const { result } = renderWorkspaceData();
++    await waitFor(() => expect(result.current.interactionsError?.message).toBe(sentence));
++  });
++
+   it('keeps a damaged background session notice out of an unrelated clean session', async () => {
+     mocks.repository.capabilities.mockResolvedValue({
+       capabilities: { x_clio_interactions: true },
+diff --git a/web/src/hooks/use-workspace-data.ts b/web/src/hooks/use-workspace-data.ts
+index 7469c5582..39efaa222 100644
+--- a/web/src/hooks/use-workspace-data.ts
++++ b/web/src/hooks/use-workspace-data.ts
+@@ -60,6 +60,7 @@ import {
+   interactionRootSessionId,
+   legacyPendingInteractions,
+ } from '@/lib/pending-interaction-contract';
++import { STORE_REFUSED } from '@/components/clio/composer-failure';
+ 
+ interface UseWorkspaceDataInput {
+   contextTargetId: string;
+@@ -653,14 +654,20 @@ export function useWorkspaceData({
+       approvals.error ??
+       questions.error ??
+       attentionInteractionsError ??
+-      (normalizedInteractions.data?.degradations ?? []).map(
+-        (degradation) =>
+-          new Error(
+-            degradation.reason.startsWith('clio_core_')
+-              ? 'A saved session has a damaged data record. Its interactive responses are unavailable.'
+-              : degradation.detail,
+-          ),
+-      )[0] ??
++      (normalizedInteractions.data?.degradations ?? []).map((degradation) => {
++        // A store refusing writes holds running work; the service's sentence says what
++        // to do (store full, disk low), and the notice is titled for it by its name.
++        if (degradation.reason === STORE_REFUSED) {
++          const error = new Error(degradation.detail);
++          error.name = STORE_REFUSED;
++          return error;
++        }
++        return new Error(
++          degradation.reason.startsWith('clio_core_')
++            ? 'A saved session has a damaged data record. Its interactive responses are unavailable.'
++            : degradation.detail,
++        );
++      })[0] ??
+       undefined,
+     // `capabilities` failing is a degradation, not a failed response read: the
+     // legacy ledgers above still run and still answer, so every pending
+diff --git a/web/src/locales/el/messages.po b/web/src/locales/el/messages.po
+index b650f7a82..39876cd48 100644
+--- a/web/src/locales/el/messages.po
++++ b/web/src/locales/el/messages.po
+@@ -24251,6 +24251,10 @@ msgstr "Τίποτα δεν ταιριάζει με {shown}"
+ msgid "Nothing needs you."
+ msgstr "Τίποτα δεν σας χρειάζεται."
+ 
++#: src/components/clio/pending-interaction-notices.tsx
++msgid "Nothing new can be recorded"
++msgstr "Δεν μπορεί να καταγραφεί τίποτα νέο"
++
+ #: src/lib/extension-library-entries.ts
+ #: src/lib/plugin-presentation.ts
+ msgid "Nothing of its own"
+diff --git a/web/src/locales/en/messages.po b/web/src/locales/en/messages.po
+index 94e6ede03..a52339e31 100644
+--- a/web/src/locales/en/messages.po
++++ b/web/src/locales/en/messages.po
+@@ -24250,6 +24250,10 @@ msgstr "Nothing matches {shown}"
+ msgid "Nothing needs you."
+ msgstr "Nothing needs you."
+ 
++#: src/components/clio/pending-interaction-notices.tsx
++msgid "Nothing new can be recorded"
++msgstr "Nothing new can be recorded"
++
+ #: src/lib/extension-library-entries.ts
+ #: src/lib/plugin-presentation.ts
+ msgid "Nothing of its own"
+diff --git a/web/src/locales/es/messages.po b/web/src/locales/es/messages.po
+index e37425715..1d4b94f79 100644
+--- a/web/src/locales/es/messages.po
++++ b/web/src/locales/es/messages.po
+@@ -24251,6 +24251,10 @@ msgstr "Nada coincide con {shown}"
+ msgid "Nothing needs you."
+ msgstr "Nada te necesita."
+ 
++#: src/components/clio/pending-interaction-notices.tsx
++msgid "Nothing new can be recorded"
++msgstr "No se puede registrar nada nuevo"
++
+ #: src/lib/extension-library-entries.ts
+ #: src/lib/plugin-presentation.ts
+ msgid "Nothing of its own"
+diff --git a/web/src/locales/ja/messages.po b/web/src/locales/ja/messages.po
+index 4ce5bde78..c276dc30f 100644
+--- a/web/src/locales/ja/messages.po
++++ b/web/src/locales/ja/messages.po
+@@ -24251,6 +24251,10 @@ msgstr "{shown}と一致するものはありません"
+ msgid "Nothing needs you."
+ msgstr "対応が必要なものはありません。"
+ 
++#: src/components/clio/pending-interaction-notices.tsx
++msgid "Nothing new can be recorded"
++msgstr "新しい内容を記録できません"
++
+ #: src/lib/extension-library-entries.ts
+ #: src/lib/plugin-presentation.ts
+ msgid "Nothing of its own"
+diff --git a/web/src/locales/pseudo/messages.po b/web/src/locales/pseudo/messages.po
+index 100c366e7..f6db3bed3 100644
+--- a/web/src/locales/pseudo/messages.po
++++ b/web/src/locales/pseudo/messages.po
+@@ -24233,6 +24233,10 @@ msgstr ""
+ msgid "Nothing needs you."
+ msgstr ""
+ 
++#: src/components/clio/pending-interaction-notices.tsx
++msgid "Nothing new can be recorded"
++msgstr ""
++
+ #: src/lib/extension-library-entries.ts
+ #: src/lib/plugin-presentation.ts
+ msgid "Nothing of its own"
+-- 
+2.43.0
+

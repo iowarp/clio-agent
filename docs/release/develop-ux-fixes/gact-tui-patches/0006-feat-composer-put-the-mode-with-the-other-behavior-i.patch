@@ -1,7 +1,7 @@
 From ca2ba15aa2188a857c11b588f4ccb180308e2dad Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 19 Nov 2026 19:20:02 +0000
-Subject: [PATCH 6/6] feat(composer): put the mode with the other behavior
+Subject: [PATCH 6/7] feat(composer): put the mode with the other behavior
  icons, without its word
 
 The composer's mode was a word ("Execute", "Deep research") beside the model at

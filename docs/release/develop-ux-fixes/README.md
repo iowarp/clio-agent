@@ -4,8 +4,8 @@ The issues below were reported from a Desktop 0.7.1 demo (backend v0.9.7.1). Eac
 was checked against develop: clio-agent `8247abe`, gact-tui `22fc042` and the
 marketplace commit develop pins, `7d1933c`. Each was reproduced on a live,
 isolated develop stack where that was possible. The fixes are on
-`claude/develop-ux-fixes` in clio-agent (4 commits) and, because this session cannot
-push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (6 commits).
+`claude/develop-ux-fixes` in clio-agent (7 commits) and, because this session cannot
+push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (7 commits).
 
 Apply the gact-tui patches on a branch from gact-tui `develop`:
 
@@ -59,22 +59,33 @@ branch (`8b7fe01`).
   Keenable consent showed two buttons, and pressing the first sent
   `{"action": "answer", "metadata": {"choice": "approve"}}` (item 12).
 
-## Found while validating (not changed here)
+## Found while validating, and fixed
 
-- **The cloud stack's 128 MB store fills during a Deep research run once scripts
-  run.** `scripts/cloud/stack.sh` sets `CLIO_ARC_CTE_FILE_CAPACITY=128MB`; an explicit
-  capacity turns off managed growth. With `run_code` allowed, one run filled
-  `storage.bin_node0` (exactly 134,217,728 bytes). Clio-core then refused writes with
-  code 12: 53 lost, logged as `clio_core_put_write_lost`. The flow's session went to `error` while its task
-  stayed `active`, so the conversation stayed "running" and its waiting call never
-  settled. A normal install's store starts at 2 GB or more and grows. A 2 GB rerun
-  completed. Two follow-ups: the cloud cap, and a task whose
-  session errored should not stay `active`. That is a second way a group can stay open.
-- **Two kernels start for one agent at once.** Parallel `run_code` calls from one
-  researcher logged `kernel started` twice for the same key. One call then failed in
-  6 ms ("the Python kernel did not start" / "did not take its tools" / "stopped"):
-  3 of 31 in the fixed run. The develop stack logged the same double start in edit
-  mode, so it predates this change; Deep research now runs scripts, so it shows
-  up more.
+- **A full store left a run "running" for good, with nothing on screen.** The cloud
+  stack capped the store at 128 MB (`scripts/cloud/stack.sh`), which turns off
+  growth. With `run_code` allowed, one Deep research run filled it
+  (`storage.bin_node0` exactly 134,217,728 bytes). Clio-core then refused writes with
+  code 12 (53 lost). The flow's outcome could not be recorded, so its task stayed
+  `active` and the conversation stayed "running". Recording nothing is correct:
+  CLIO cannot record while the store refuses writes. Saying nothing was the bug.
+  - clio-agent: while the task history holds recordings after a refused write, a
+    conversation's interactions carry `clio_core_writes_refused` with the same
+    sentence a refused send gets ("CLIO's conversation store is full …"). It is
+    live and goes once recovery confirms the writes.
+  - gact-tui: that notice shows the service's sentence under "Nothing new can be
+    recorded"; before, every `clio_core_*` reason read "a damaged data record".
+  - Cloud stack: 1 GB instead of 128 MB (`CLIO_ARC_CTE_FILE_CAPACITY` still
+    overrides it).
+- **Two kernels started for one agent at once.** Parallel `run_code` calls from one
+  researcher logged `kernel started` twice for the same key, and one call failed
+  within milliseconds ("the Python kernel did not start" / "did not take its tools" /
+  "stopped"): 3 of 31 in one run. `kernel_for` started a registered kernel after
+  releasing its lock, so a second call took the starting kernel for a dead one and
+  replaced it mid-start. A starting kernel is now shared: its start runs once and a
+  concurrent caller waits for it (`tests/test_gact/test_kernel_concurrent_start.py`
+  fails on the old code).
+
+## Seen once, not changed
+
 - `stack.sh stop` left the stopped stack's clio-core runtime (`clio_run`) and its
   log pump running once; both exited on SIGTERM.
